@@ -14,7 +14,7 @@ instant startup). This tutorial shows you when and how to use each.
 | Execution speed | Native (fast) | Interpreted (~10-50x slower) |
 | Output format | Platform binary | `.eskb` portable bytecode |
 | Autodiff | Full (forward + reverse) | Forward-mode + bounded reverse-mode AD |
-| Platform | Requires LLVM 21 | Runs anywhere (including WASM) |
+| Platform | Requires an LLVM toolchain (18-24) | Runs anywhere (including WASM) |
 | Best for | Production, performance | REPL, prototyping, web, scripting |
 
 **Rule of thumb:** Use the LLVM backend for anything performance-sensitive.

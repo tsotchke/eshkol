@@ -36,9 +36,9 @@ sudo dpkg -i eshkol_*.deb
 
 ### Linux (from source, any distribution)
 
-Eshkol requires LLVM 21, which most distributions do not ship by default.
-The universal build script detects your distro family, provisions LLVM 21
-and the build dependencies for it, and then configures and builds:
+Eshkol's default pinned LLVM major is 21, which most distributions do not ship
+by default. The universal build script detects your distro family, provisions
+LLVM 21 and the build dependencies for it, and then configures and builds:
 
 ```bash
 git clone https://github.com/tsotchke/eshkol.git
@@ -95,7 +95,7 @@ eshkol-run hello.esk -o hello
 ./hello
 ```
 
-**Requirements**: LLVM 21, C++20 compiler, CMake 3.14+, Ninja, native image codecs on Linux (`libpng-dev`, `libjpeg-dev`, `libwebp-dev`; macOS uses ImageIO/CoreGraphics)
+**Requirements**: LLVM 21 by default — the compiler builds against LLVM **18 through 24**, selected with `-DESHKOL_REQUIRED_LLVM_MAJOR=<n>`; a C++20 compiler; CMake 3.14+; Ninja; native image codecs on Linux (`libpng-dev`, `libjpeg-dev`, `libwebp-dev`; macOS uses ImageIO/CoreGraphics)
 **Platforms**: Linux, macOS (x86-64, ARM64), Windows (native x86-64)
 
 **Web REPL**: Visit [eshkol.ai](https://eshkol.ai) for an interactive Eshkol environment without installation — includes a full REPL, tutorials, and runnable examples.

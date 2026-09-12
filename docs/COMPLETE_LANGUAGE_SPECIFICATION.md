@@ -1415,6 +1415,39 @@ All math functions support dual numbers and AD nodes for automatic differentiati
 - `(truncate x)` - Round toward zero
 - `(round x)` - Round to nearest integer
 
+#### Directed Rounding
+
+Two unary `double -> double` builtins, wired into **both** execution engines
+(native codegen and the bytecode VM), with no `(require …)`:
+
+- `(fl-next-up x)` - the next representable double strictly greater than `x`
+- `(fl-next-down x)` - the next representable double strictly less than `x`
+
+Both wrap C99 `nextafter`, so the step is the true local ulp — correct across
+power-of-two boundaries and into the subnormals, unlike a hand-rolled
+`x * (1 ± epsilon)`. Unlike every other function in this section they take part
+in **no** automatic differentiation: directed rounding has no sound derivative,
+so they deliberately bypass the generic math dispatcher and reject complex,
+dual, AD-node and tensor operands with a typed error rather than misreading the
+payload as a double. They are also not vector-mapped.
+
+```scheme
+(display (fl-next-up 1.0)) (newline)
+(display (fl-next-down 1.0)) (newline)
+(display (= (fl-next-down (fl-next-up 0.1)) 0.1)) (newline)
+```
+```
+1.0000000000000002
+0.9999999999999999
+#t
+```
+
+They are the primitive beneath **certified enclosures** — outward-rounded
+interval arithmetic and rigorous Taylor models, where every result endpoint is
+built from exactly one such nudge so the soundness argument holds through a
+whole computation. See
+[reference/stdlib/certified-enclosures.md](reference/stdlib/certified-enclosures.md).
+
 ### 4.3 Comparison Operators
 
 All comparison operators return booleans and support numeric type promotion.
@@ -4575,7 +4608,7 @@ This document provides a **complete** specification of the Eshkol programming la
 - REPL JIT with precompiled stdlib
 - Quantum RNG (8-qubit circuit simulation)
 - GPU dispatch (Metal SF64 + CUDA, forward and backward)
-- Compilation pipeline (LLVM 21 required)
+- Compilation pipeline (LLVM 18-24; major pinned per build, default 21)
 - Runtime architecture
 - Exact arithmetic (bignum, rational, numeric tower)
 - Complex number type with overflow-safe division
