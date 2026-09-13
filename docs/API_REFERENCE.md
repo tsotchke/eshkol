@@ -3699,10 +3699,11 @@ Default margin = 0.0.
 (define pred #(2.0 1.0 0.1))
 (define target #(1.0 0.0 0.0))            ; one-hot: class 0
 
-(mse-loss pred target)                     ; => 0.67
-(cross-entropy-loss pred target)           ; => 0.417 (mean, after internal softmax)
-(focal-loss pred target 2.0)               ; => 0.0485 (downweights easy examples)
-(huber-loss pred target 1.0)               ; => 0.335
+(mse-loss pred target)                     ; => 0.6699999999999999
+(cross-entropy-loss pred target)           ; => 0.41703001627783376 (mean, after internal softmax)
+(focal-loss pred target 2.0)               ; => 0.04849234340769356 (downweights easy examples)
+(focal-loss pred target 0.0)               ; => 0.41703001627783376 (γ = 0 is cross-entropy)
+(huber-loss pred target 1.0)               ; => 0.33499999999999996
 
 ;; Metric learning
 (define anchor #(1.0 0.0 0.0))
@@ -3712,15 +3713,6 @@ Default margin = 0.0.
 ;; = max(d(a,p) - d(a,n) + 1, 0) = max(0.1414 - 1.4142 + 1, 0) = 0 — an easy
 ;; triplet, already satisfying the margin, so no gradient signal.
 ```
-
-> **Known limitation — `focal-loss` does not reduce to cross-entropy at γ = 0
-> (build item).** The documented definition
-> `L = -(1 - p_t)^γ · log(p_t)` makes `(focal-loss pred target 0.0)` identical
-> to `(cross-entropy-loss pred target)`. It is not: on the example above the
-> first answers `5.407818755714168` and the second `0.41703001627783376`, and
-> γ = 2.0 gives `5.373048677674095`. γ *is* read — the answer moves with it —
-> but the base term is wrong. The definition above is the contract; the
-> implementation does not meet it yet.
 
 ### Optimizers
 

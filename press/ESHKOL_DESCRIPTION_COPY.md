@@ -484,7 +484,7 @@ Each item below cites the file or measurement that grounds the claim.
   trace-emitting harness now has a shared PASS/FAIL/INFRA/SKIP vocabulary, so an
   infrastructure timeout cannot publish itself as a code defect. Release gates,
   measured on the v1.3.5-evolve release cut: the aggregate suite 46/46 suites;
-  CTest 530/530; executable language coverage 1,115/1,115 (100.0%, floor PASS);
+  CTest 541/541; executable language coverage 1,115/1,115 (100.0%, floor PASS);
   SICP full-book gate 88/88 probes across all five chapters under both `-r` and
   AOT; reference-Scheme differential oracle 34/34 AGREE against chibi-scheme
   0.12.0; VM parity differential 338/338 over a 961-row manifest (604

@@ -716,7 +716,7 @@ Noesis companion repository.
 - `lib/backend/weight_matrices.c` — the analytical weight
   constructor and verifier (7,544 lines).
 - `lib/backend/vm_core.c` — the production bytecode VM opcode enum
-  (66 values; layer 2, see §0), plus the 720-ID native-call surface.
+  (72 values; layer 2, see §0), plus the 743-ID native-call surface.
 - `lib/backend/weight_matrices.c §103-136` — the SDNC weight-matrix
   layer's 83-opcode ISA enum (`OP_COUNT=84` incl. `OP_SWAP=83`).
 - `lib/backend/qllm_backward.c` + `inc/eshkol/backend/qllm_backward.h`
@@ -731,13 +731,14 @@ Noesis companion repository.
 
 ## 12. The production VM native-call surface (layer 2)
 
-The production bytecode VM (layer 2, §0) reaches beyond its 66 opcodes
-through `OP_NATIVE_CALL`. On `master` it dispatches **720 distinct
-native-call IDs, spanning 20–2118** (`lib/backend/vm_native.c`, driven by
+The production bytecode VM (layer 2, §0) reaches beyond its 72 opcodes
+through `OP_NATIVE_CALL`. On the v1.3.5-evolve cut it dispatches **743 distinct
+native-call IDs, spanning 0–2230** (`lib/backend/vm_native.c`, driven by
 the builtin table in `eshkol_vm.c`). These are host-runtime IDs threaded
-through the single `OP_NATIVE_CALL` boundary. The map below is the verified
-current surface — earlier docs' narrower ranges (e.g. "AD 370–409",
-"consciousness 500–549") understate it.
+through the single `OP_NATIVE_CALL` boundary. The map below verifies the
+principal capability ranges — earlier docs' narrower ranges (e.g. "AD 370–409",
+"consciousness 500–549") understate them — and the complete ID set is the
+`case` labels of that dispatch.
 
 | Capability | Native-call IDs (current) | Verified behaviour |
 |---|---|---|

@@ -117,8 +117,8 @@ to miss.
   `ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR` is set, carrying the same stable
   31-bit head-symbol hash the call marker uses, and the marker survives ESKB
   serialization so the standalone VM binary and the `--profile hosted-vm`
-  route report identically. Differential coverage measured 303/1137 (26.65%)
-  and high-risk 152/473 (32.14%) on `integration/astra-v135`.
+  route report identically. When the marker landed, differential coverage
+  measured 303/1137 (26.65%) and high-risk 152/473 (32.14%).
 - **The high-risk floor is a measured ratchet, not a literal (PR-13).**
   `ENGINE_PARITY_BASELINE.json`'s `high_risk_differential_floor` used to be a
   hardcoded `1.0` (100%), written by `--update-baseline` as a literal rather
@@ -139,13 +139,16 @@ to miss.
   ceiling, reporting it as a malformed baseline rather than a failed run
   (`scripts/check_engine_parity_threshold.py --self-test` proves this: a
   floor above the ceiling is rejected as malformed, a run below the recorded
-  floor fails, a run at or above it passes). The current measured values on
-  `integration/astra-v135`: differential coverage 312/1137 (27.44%,
-  ceiling 426/1137 or 37.47%), high-risk 153/473 (32.35%, ceiling 171/473 or
-  36.15%).
+  floor fails, a run at or above it passes). Measured on the v1.3.5-evolve
+  release cut (287 corpus programs, 215 clean on both engines, 5 dispositioned
+  divergences, none new, none regressed): differential coverage 321/1139
+  (28.18%, ceiling 433/1139 or 38.02%), high-risk 155/473 (32.77%, ceiling
+  173/473 or 36.58%). The ratchet was introduced at 312/1137 (27.44%) and
+  153/473 (32.35%).
 - **Raising the high-risk floor is corpus growth, not VM work (DD-15,
-  build item, target v1.4).** The 320 high-risk constructs no corpus program
-  under native currently mentions at all, broken down by surface category:
+  build item, target v1.4).** When DD-15 was filed, the 320 high-risk
+  constructs without differential evidence broke down by surface category as
+  follows (318 remain on the release cut):
   194 `tensor_ad`, 56 `geometry`, 38 `numeric`, 14 `consciousness`, 7
   `control_flow`, 6 `memory_region`, 5 `macro_syntax`. None of these can gain
   differential evidence until a `tests/vm_parity/corpus/*.esk` program

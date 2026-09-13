@@ -60,7 +60,7 @@ continuations on every engine, VM region reclamation, certified enclosures,
 validated ESKM v1 model I/O, enforced linear typing, and exact AD proven
 structurally rather than differentially, on top of the v1.3.4
 resident-correctness and consumer-hardening waves. Release gates:
-aggregate suite 46/46 suites, CTest **530/530** (remeasured on the v1.3.5-evolve release cut,
+aggregate suite 46/46 suites, CTest **541/541** (remeasured on the v1.3.5-evolve release cut,
 2026-09-11; supersedes the 198/198 figure of `afbaaf5b` and the stale 183/183
 and 190/190 figures before it), executable language coverage
 **1,115/1,115** (100.0%) — the canonical surface count, see

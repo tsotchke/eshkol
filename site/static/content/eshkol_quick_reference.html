@@ -101,7 +101,10 @@
 
 ;; apply: leading fixed args before the final list argument
 (apply + &#39;(1 2 3))              ;; -&gt; 6
-(apply + 1 2 &#39;(3 4 5))          ;; -&gt; 15 (leading args consed onto the list)</code></pre>
+(apply + 1 2 &#39;(3 4 5))          ;; -&gt; 15 (leading args consed onto the list;
+                                ;;    NATIVE ONLY — the bytecode VM rejects the
+                                ;;    leading-args form for any operator)
+(apply vector-copy (list (vector 7 8 9)))  ;; -&gt; #(7 8 9)  (builtins are values)</code></pre>
 <h2 id="vectors-tensors">Vectors &amp; Tensors</h2>
 <pre class="scheme"><code>(vector 1 2 3)            ;; create vector (heterogeneous, 16-byte tagged)
 (vref v i)                ;; get element
@@ -158,8 +161,8 @@
 (curl F v)                ;; curl(F) at v (3D)
 (laplacian f v)           ;; laplacian(f) at v
 (directional-derivative f v dir)</code></pre>
-<h3 id="arbitrary-order-ad-taylor-towers-v1.3.0-evolve">Arbitrary-Order
-AD (Taylor Towers, v1.3.0-evolve)</h3>
+<h3 id="arbitrary-order-ad-taylor-towers">Arbitrary-Order AD (Taylor
+Towers)</h3>
 <p>See the <a href="guide/AUTOMATIC_DIFFERENTIATION.md">Automatic
 Differentiation guide</a> for the full walkthrough.</p>
 <pre class="scheme"><code>;; Core tower builtins (no require needed)
@@ -210,7 +213,28 @@ Differentiation guide</a> for the full walkthrough.</p>
 
 ;; number-&gt;string / string-&gt;number with bignums
 (number-&gt;string (expt 2 128))
-(string-&gt;number &quot;999999999999999999999&quot;)  ;; -&gt; bignum</code></pre>
+(string-&gt;number &quot;999999999999999999999&quot;)  ;; -&gt; bignum
+
+;; Exact roots and exact expt (v1.3.5)
+(sqrt 4/9)                 ;; -&gt; 2/3   exact
+(sqrt 16)                  ;; -&gt; 4     exact
+(expt 8 1/3)               ;; -&gt; 2     exact rational exponent, exact root
+(expt 2/3 -3)              ;; -&gt; 27/8  rational base, negative exponent
+(expt 1/3 50)              ;; -&gt; 1/717897987691852588770249
+(sqrt 2)                   ;; -&gt; 1.4142135623730951  (no exact root)
+
+;; Exact values survive literals, quotes and vectors (v1.3.5)
+#(1/2 3 1.5 123456789012345678901234567890)
+&#39;123456789012345678901234567890          ;; exact, quoted or evaluated
+`(x ,(/ 1 3))                            ;; -&gt; (x 1/3)
+(tensor 1/2 2/3)                         ;; -&gt; #(0.5 0.6666666666666666)
+                                         ;;    tensors are dense f64 by
+                                         ;;    construction; #(...) stays exact
+
+;; Exactness through differentiation follows the RUNTIME value (v1.3.5)
+(derivative (lambda (x) (* x x)) 1/3)    ;; -&gt; 2/3   exact</code></pre>
+<p>Everything above answers identically on the native engine and the
+bytecode VM.</p>
 <h2 id="complex-numbers">Complex Numbers</h2>
 <pre class="scheme"><code>;; Creation
 (make-rectangular 3.0 4.0)    ;; 3+4i
@@ -226,7 +250,7 @@ Differentiation guide</a> for the full walkthrough.</p>
 (+ z1 z2)                 ;; complex addition
 (* z1 z2)                 ;; complex multiplication
 (/ z1 z2)                 ;; complex division (Smith&#39;s formula)
-(sqrt (make-rectangular -1.0 0.0))  ;; -&gt; 0+1i
+(sqrt (make-rectangular -1.0 0.0))  ;; -&gt; +i   (zero real part elided)
 (exp (make-rectangular 0.0 pi))     ;; -&gt; -1+0i (Euler&#39;s identity)
 
 ;; Predicates
@@ -386,7 +410,17 @@ sin cos tan asin acos atan atan2
 sinh cosh tanh asinh acosh atanh
 
 ;; Exponential
-exp log log10 log2 sqrt pow</code></pre>
+exp log log10 log2 sqrt pow
+
+;; Directed rounding (no AD; both engines)
+fl-next-up fl-next-down</code></pre>
+<pre class="scheme"><code>(fl-next-up 1.0)      ;; -&gt; 1.0000000000000002
+(fl-next-down 1.0)    ;; -&gt; 0.9999999999999999</code></pre>
+<p>The primitive beneath certified enclosures —
+<code>ia+</code>/<code>ia*</code>/<code>ia-sqrt</code>/… and the
+rigorous Taylor models
+<code>tm-var</code>/<code>tm+</code>/<code>tm*</code>/<code>tm-bound</code>/<code>tm-prove-bound</code>,
+all reached with <code>(require core.ad.taylor_models)</code>.</p>
 <h2 id="type-predicates">Type Predicates</h2>
 <pre class="scheme"><code>(null? x)    (pair? x)     (list? x)
 (number? x)  (integer? x)  (real? x)
@@ -510,5 +544,19 @@ stdlib)</h2>
 -l LIB              Link library
 -L PATH             Library path
 -n, --no-stdlib     Skip stdlib
+-e, --eval EXPR     JIT-evaluate one expression
+-r, --run FILE      JIT-compile and run in memory (no artifact written)
 --shared-lib        Link a shared library (C-ABI exports; add -c for an object)
---wasm       WebAssembly output</code></pre>
+--wasm              WebAssembly output
+--profile NAME      Execution profile: hosted-native, hosted-wasm, hosted-vm,
+                    freestanding-kernel-native, freestanding-mcu-native,
+                    freestanding-vm, embedded-vm
+-B, --emit-eskb P   Emit a bytecode-VM ESKB module to P
+--version           Version string
+--features          This build&#39;s compile-time capabilities, as KEY=VALUE lines
+--abi-fingerprint   The object-ABI fingerprint (ADR-0012) this build uses</code></pre>
+<p>Machine-driven use: <code>eshkol-repl --machine</code> speaks
+<strong>EREPL v1</strong>, a versioned JSON request/response protocol
+over the original READY/DONE/FAIL framing, with
+<code>tools/erepl_client.py</code> as the reference client. See <a
+href="reference/runtime/eshkol-repl.md">reference/runtime/eshkol-repl.md</a>.</p>

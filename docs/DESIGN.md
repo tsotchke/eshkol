@@ -19,7 +19,7 @@ Source (.esk)
  Macro Expansion        syntax-rules, hygienic renaming, ellipsis patterns
      |                  case-lambda, parameterize, cond-expand, define-record-type
      v
- S-Expression Parsing   Explicit continuation stack, 94 operation types
+ S-Expression Parsing   Explicit continuation stack, 113 operation types
      |                  Internal define -> letrec* transformation
      v                  HoTT type annotation attachment, line/column tracking
                         (a child parse suspends into a heap coroutine frame, so
@@ -254,7 +254,7 @@ Eshkol has two production execution backends serving different purposes:
 
 **LLVM Backend** (primary): Compiles to native ARM64/x86 binaries via LLVM IR. Uses 16-byte tagged values with 36 specialized codegen modules. This is the default path for `eshkol-run`.
 
-**Bytecode VM** (complementary): 63-opcode register+stack interpreter (`eshkol_vm.c`, 2,806 lines; roughly 51,092 lines across the full `eshkol_vm.c` + `vm_*.c` module family) with 250+ native call IDs covering the full language — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`.
+**Bytecode VM** (complementary): 72-opcode register+stack interpreter (`eshkol_vm.c`, 2,806 lines; roughly 51,092 lines across the full `eshkol_vm.c` + `vm_*.c` module family) with 743 native-call IDs covering the full language — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`.
 
 **Weight Matrix Transformer**: Programs encoded as neural network weights (`weight_matrices.c`, ~7,400 lines). Architecture: d_model=256, 6 layers, FFN_DIM=2304, 12.22M parameters. 82 canonical opcodes in weights; `OP_NATIVE_CALL` remains the external dispatch boundary. 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass (126/126 inline, 123/123 traced). Exports QLMW binary format for qLLM loading.
 
@@ -311,4 +311,4 @@ The LLVM and VM backends share the same language semantics but use independent v
 
 ---
 
-*Eshkol v1.3.5-evolve is a production compiler integrating automatic differentiation, deterministic memory management, homoiconic native code, GPU acceleration, cognitive computing primitives, and a dual backend architecture (LLVM + bytecode VM). The codebase ships with 1,042 built-in functions across a 1,108-construct declared language surface, an ASan/UBSan CI lane with a proved-armed leak detector, and 46 test sub-suites passing end-to-end.*
+*Eshkol v1.3.5-evolve is a production compiler integrating automatic differentiation, deterministic memory management, homoiconic native code, GPU acceleration, cognitive computing primitives, and a dual backend architecture (LLVM + bytecode VM). The codebase ships with 1,052 built-in functions across a 1,115-construct declared language surface, an ASan/UBSan CI lane with a proved-armed leak detector, and 46 test sub-suites passing end-to-end.*

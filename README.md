@@ -60,7 +60,7 @@ Eshkol brings **mathematical computing to Lisp** and delivers what other languag
 - **Zero-overhead abstractions** - Arena allocation is O(1), no runtime penalties for safety. Ownership annotations (`owned`/`move`/`borrow`) and `(the <type> expr)` ascription are erased at compile time today, but this is *not yet* backed by discharged type-level proofs — no proof obligation is checked before erasure (`BorrowChecker` has zero production callers; `(the ...)` is a trusted no-op). Proof-carrying erasure is a build item under ADR-0004 (target v1.9.0/v2.0) — corrected 2026-08-25, conformity audit item f3
 - **Deterministic performance** - No garbage collector means no unpredictable pauses. Critical for real-time systems and production ML
 - **Native compilation** - LLVM backend generates machine code competitive with hand-written C while preserving high-level expressiveness
-- **Web platform** - Compiles to WebAssembly with a 97-binding `web-*` browser API (`lib/web/web.esk`). The project website is itself written in Eshkol. AD works in the browser via dual number propagation through the 64-opcode core bytecode VM
+- **Web platform** - Compiles to WebAssembly with a 97-binding `web-*` browser API (`lib/web/web.esk`). The project website is itself written in Eshkol. AD works in the browser via dual number propagation through the 72-opcode core bytecode VM
 - **Consciousness engine** - 22 compiled primitives: logic programming (unification, knowledge bases), active inference (factor graphs, belief propagation, free energy), and global workspace theory (softmax competition, content broadcasting)
 - **Mathematical rigor** - HoTT type foundations provide the language's dependent-type surface; no proof obligation is currently discharged by the compiler (no SMT solving, no Lean/proof-assistant export, `TypeEnvironment::areEquivalent` is identity-only) — "provable, not just tested" is the ADR-0000 Stage 14b / v2.0 target, not the present state. Corrected 2026-08-25, conformity audit item f4
 
@@ -70,9 +70,9 @@ Eshkol brings **mathematical computing to Lisp** and delivers what other languag
 
 **No installation required.** Visit **[eshkol.ai](https://eshkol.ai)** to try Eshkol in your browser:
 
-- **Playground** — Full REPL running the 64-opcode core bytecode VM in WebAssembly
+- **Playground** — Full REPL running the 72-opcode core bytecode VM in WebAssembly
 - **Learn** — interactive textbook with runnable code examples, plus 27 in-depth tutorials
-- **Examples** — 11 complete programs you can run instantly (AD, neural networks, ODE solving, logic programming)
+- **Examples** — 10 complete programs you can run instantly (AD, neural networks, ODE solving, logic programming)
 
 The website itself is written in Eshkol (1,658 lines of `site/src/main.esk`) and compiles to a 304,056-byte (about 297 KiB) WASM binary. Automatic differentiation works in the browser:
 
@@ -667,9 +667,9 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
 ### v1.3.5-evolve Release
 
 **Feed the compiler a source file sixteen thousand parentheses deep, on a
-thread with an eight-megabyte stack, and it compiles it.** The recursive-descent
-parser now suspends a child parse into a heap-allocated coroutine frame and
-resumes it through a linked list, so native stack consumption is independent of
+thread with an eight-megabyte stack, and it compiles it.** Recursive descent was
+replaced by an explicit continuation stack: a child parse suspends into a
+heap-allocated coroutine frame and resumes through a linked list, so native stack consumption is independent of
 grammar nesting — and the type checker's `synthesize` and the code generator's
 `codegenAST -> codegenOperation -> codegenCall -> codegenArithmetic` chain run
 on the same driver. Two gates hold the line on Linux x64 and macOS ARM64, one at
@@ -794,8 +794,7 @@ migration contracts, and what this release explicitly does not claim.
   cache links, image-codec dependencies, generic ARM64 stdlib code,
   architecture-matched compiler-rt, and CUDA consumer paths are verified by
   the release workflow rather than inferred from builder-local success.
-- **Execution-backed evidence**: the aggregate suite 45/45 suites and 770
-  individual tests, the SICP full-book gate 88/88 probes across all five
+- **Execution-backed evidence**: the aggregate suite 46/46 suites, the SICP full-book gate 88/88 probes across all five
   chapters under both `-r` and AOT, and the reference-Scheme differential
   oracle 34/34 AGREE against chibi-scheme 0.12.0. The language-surface gate
   enforces a monotonic floor of declared constructs at 100% execution-backed
@@ -1103,7 +1102,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: aggregate suite 46/46 suites; CTest 530/530 (remeasured on the v1.3.5-evolve release cut, 2026-09-11, Release with `-DESHKOL_BUILD_TESTS=ON`; supersedes the 198/198 figure of commit `afbaaf5b`); executable language coverage 1,115/1,115 (100.0%, floor PASS); VM parity differential 338/338 over a 961-row manifest (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`), remeasured on the release cut on 2026-09-11 and superseding the 188/188 figure of commit `afbaaf5b` and the 183/183, 1,091/1,091 and 184/184 figures before it
+- **Testing**: aggregate suite 46/46 suites; CTest 541/541 (remeasured on the v1.3.5-evolve release cut, 2026-09-11, Release with `-DESHKOL_BUILD_TESTS=ON`; supersedes the 198/198 figure of commit `afbaaf5b`); executable language coverage 1,115/1,115 (100.0%, floor PASS); VM parity differential 338/338 over a 961-row manifest (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`), remeasured on the release cut on 2026-09-11 and superseding the 188/188 figure of commit `afbaaf5b` and the 183/183, 1,091/1,091 and 184/184 figures before it
 - **Platform**: macOS x64/ARM64, Linux x64/ARM64, and Windows x64/ARM64. CUDA 12.4 packages target Linux x64/ARM64 and Windows x64; Windows ARM64 CUDA is not advertised.
 
 ---

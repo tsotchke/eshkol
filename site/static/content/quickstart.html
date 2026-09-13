@@ -4,13 +4,24 @@
 practical examples. You’ll learn functions, lists, tensors, and
 automatic differentiation - the tools for scientific computing and AI
 systems programming.</p>
+<blockquote>
+<p><strong>Reading the <code>; =&gt;</code> annotations.</strong> They
+give an expression’s <strong>value</strong>. An inexact value is
+sometimes written with its <code>.0</code> (<code>6.0</code>) for
+clarity, but what the compiler <em>prints</em> for an integral double
+omits the decimal point — <code>6</code>, not <code>6.0</code> — and the
+value is still inexact. <code>-0.0</code> is the one exception and
+prints in full. Text inside a fenced result block is the exact printed
+output. See <a
+href="reference/language/numeric-tower.md#exactness">reference/language/numeric-tower.md</a>.</p>
+</blockquote>
 <hr />
 <h2 id="try-without-installing">Try Without Installing</h2>
 <p>Visit <strong><a href="https://eshkol.ai">eshkol.ai</a></strong> to
 try Eshkol in your browser:</p>
 <ul>
-<li><strong>Playground</strong> — Full REPL with a 64-opcode core VM and
-555+ built-in functions running in WebAssembly</li>
+<li><strong>Playground</strong> — Full REPL with a 72-opcode core VM and
+741 VM-table builtins running in WebAssembly</li>
 <li><strong>Learn</strong> — interactive textbook with runnable code
 examples, plus 27 in-depth tutorials</li>
 <li><strong>Examples</strong> — 10 complete programs you can run
@@ -29,9 +40,9 @@ brew install eshkol</code></pre>
 sudo dpkg -i eshkol_*.deb</code></pre>
 <h3 id="linux-from-source-any-distribution">Linux (from source, any
 distribution)</h3>
-<p>Eshkol requires LLVM 21, which most distributions do not ship by
-default. The universal build script detects your distro family,
-provisions LLVM 21 and the build dependencies for it, and then
+<p>Eshkol’s default pinned LLVM major is 21, which most distributions do
+not ship by default. The universal build script detects your distro
+family, provisions LLVM 21 and the build dependencies for it, and then
 configures and builds:</p>
 <pre class="bash"><code>git clone https://github.com/tsotchke/eshkol.git
 cd eshkol
@@ -110,11 +121,14 @@ eshkol-repl
 echo &#39;(display &quot;Hello, Eshkol!&quot;)&#39; &gt; hello.esk
 eshkol-run hello.esk -o hello
 ./hello</code></pre>
-<p><strong>Requirements</strong>: LLVM 21, C++20 compiler, CMake 3.14+,
-Ninja, native image codecs on Linux (<code>libpng-dev</code>,
-<code>libjpeg-dev</code>, <code>libwebp-dev</code>; macOS uses
-ImageIO/CoreGraphics) <strong>Platforms</strong>: Linux, macOS (x86-64,
-ARM64), Windows (native x86-64)</p>
+<p><strong>Requirements</strong>: LLVM 21 by default — the compiler
+builds against LLVM <strong>18 through 24</strong>, selected with
+<code>-DESHKOL_REQUIRED_LLVM_MAJOR=&lt;n&gt;</code>; a C++20 compiler;
+CMake 3.14+; Ninja; native image codecs on Linux
+(<code>libpng-dev</code>, <code>libjpeg-dev</code>,
+<code>libwebp-dev</code>; macOS uses ImageIO/CoreGraphics)
+<strong>Platforms</strong>: Linux, macOS (x86-64, ARM64), Windows
+(native x86-64)</p>
 <p><strong>Web REPL</strong>: Visit <a
 href="https://eshkol.ai">eshkol.ai</a> for an interactive Eshkol
 environment without installation — includes a full REPL, tutorials, and
@@ -270,10 +284,13 @@ Differentiation (5 minutes)</h2>
 differentiation</strong>.</p>
 <h3 id="symbolic-differentiation">Symbolic Differentiation</h3>
 <p>Compile-time transformation with algebraic simplification.</p>
-<pre class="scheme"><code>; Symbolic derivative (AST transformation)
-(diff &#39;(* x x) &#39;x)              ; =&gt; (* 2 x)
-(diff &#39;(sin (* 2 x)) &#39;x)        ; =&gt; (* 2 (cos (* 2 x)))
-(diff &#39;(/ 1 x) &#39;x)              ; =&gt; (/ -1 (* x x))</code></pre>
+<pre class="scheme"><code>; Symbolic derivative (AST transformation).
+; `diff` takes its expression and variable UNQUOTED: it is a special form the
+; parser recognises, not a procedure applied to data. A quoted argument raises
+; a diagnostic naming the correct spelling rather than answering.
+(diff (* x x) x)                ; =&gt; (* 2 x)
+(diff (sin (* 2 x)) x)          ; =&gt; (* (cos (* 2 x)) 2)
+(diff (/ 1 x) x)                ; =&gt; (/ (- 1) (* x x))</code></pre>
 <h3 id="forward-mode-ad-dual-numbers">Forward-Mode AD (Dual
 Numbers)</h3>
 <p>Efficient for functions ℝ → ℝⁿ (single input, many outputs).</p>
@@ -283,7 +300,8 @@ Numbers)</h3>
 
 ; Works with complex expressions
 (define (g x) (sin (exp x)))
-(derivative g 0.0)        ; =&gt; 1.0 (chain rule automatic)
+(derivative g 0.0)        ; =&gt; 0.5403023058681398
+                          ;    chain rule automatic: cos(e^x)·e^x at x=0 = cos 1
 
 ; Higher-order: returns derivative function
 (define df (derivative f))
@@ -690,14 +708,15 @@ href="../lib/stdlib.esk"><code>lib/stdlib.esk</code></a></p>
 
 (define data &#39;(4.0 7.0 13.0 2.0 9.0 15.0 6.0 11.0))
 
-(display (median data))         ; =&gt; 8.0
-(display (std-dev data))        ; =&gt; 4.183...
-(display (percentile data 75))  ; =&gt; 13.0
+(display (median data))         ; =&gt; 8
+(display (std-dev data))        ; =&gt; 4.181432170919432
+(display (percentile data 75))  ; =&gt; 11.5   (linear interpolation between order
+                                ;            statistics, as NumPy&#39;s default)
 
 ;; Summary statistics
 (define summary (describe data))
-;; Returns: ((count . 8) (mean . 8.375) (std . 4.183) (min . 2.0)
-;;           (q1 . 5.5) (median . 8.0) (q3 . 12.5) (max . 15.0))</code></pre>
+;; Returns: ((count . 8) (mean . 8.375) (std . 4.181432170919432) (min . 2)
+;;           (q1 . 5.5) (median . 8) (q3 . 11.5) (max . 15))</code></pre>
 <hr />
 <h3 id="ode-solvers">ODE Solvers</h3>
 <pre class="scheme"><code>(require math.ode)
@@ -705,11 +724,15 @@ href="../lib/stdlib.esk"><code>lib/stdlib.esk</code></a></p>
 ;; Solve dy/dt = -y, y(0) = 1.0 (analytical: y = e^(-t))
 (define (f t y) (- y))
 
+;; The final-value solvers take (f t0 y0 tf h): initial time, initial value,
+;; FINAL time, and step size — not a step count.
+
 ;; Euler method
-(display (euler-final f 0.0 1.0 0.01 100))  ; =&gt; ~0.366 (e^(-1))
+(display (euler-final f 0.0 1.0 1.0 0.01))  ; =&gt; 0.3660323412732296
 
 ;; 4th-order Runge-Kutta (more accurate)
-(display (rk4-final f 0.0 1.0 0.01 100))    ; =&gt; ~0.3679 (closer to e^(-1))</code></pre>
+(display (rk4-final f 0.0 1.0 1.0 0.01))    ; =&gt; 0.3678794412023553
+                                            ;    e^(-1) = 0.36787944117144233</code></pre>
 <hr />
 <h3 id="cli-compilation-workflow">CLI Compilation Workflow</h3>
 <pre class="bash"><code># Compile to named executable
@@ -823,7 +846,8 @@ gcc program.o build/libeshkol-static.a -o program -lm
 <pre class="bash"><code>eshkol-run -c mylib.esk -o mylib.o
 ar rcs libmylib.a mylib.o</code></pre>
 <hr />
-<h2 id="v1.1-features">v1.1 Features</h2>
+<h2 id="exact-arithmetic-complex-numbers-and-the-numeric-tower">Exact
+Arithmetic, Complex Numbers and the Numeric Tower</h2>
 <h3 id="exact-arithmetic-bignums-rationals">Exact Arithmetic (Bignums
 &amp; Rationals)</h3>
 <pre class="scheme"><code>;; Arbitrary-precision integers
@@ -840,7 +864,23 @@ ar rcs libmylib.a mylib.o</code></pre>
 
 ;; R7RS: exact + inexact → inexact
 (+ big 0.5)         ; =&gt; 9223372036854776000 (a double, printed without a
-                    ;    decimal point because it has no fractional part)</code></pre>
+                    ;    decimal point because it has no fractional part)
+
+;; Exact roots and exact expt: exactness follows the VALUE, not the operator
+(sqrt 4/9)          ; =&gt; 2/3   exact
+(expt 8 1/3)        ; =&gt; 2     exact rational exponent with an exact root
+(expt 2/3 -3)       ; =&gt; 27/8  rational base, negative exponent
+(sqrt 2)            ; =&gt; 1.4142135623730951  (no exact root)
+
+;; Exactness survives literals, quotes, and vector elements
+#(1/2 3 1.5 123456789012345678901234567890)
+&#39;123456789012345678901234567890     ; exact, quoted or evaluated
+
+;; …and differentiation, which reads the runtime value rather than the source
+(derivative (lambda (x) (* x x)) 1/3)   ; =&gt; 2/3   exact</code></pre>
+<p>Everything above answers identically under
+<code>eshkol-run -r</code>, under AOT, and under the bytecode VM —
+bignum-backed rationals included.</p>
 <hr />
 <h3 id="complex-numbers">Complex Numbers</h3>
 <pre class="scheme"><code>;; Create complex numbers
@@ -933,8 +973,8 @@ eshkol&gt; :quit</code></pre>
 <p><strong>REPL Features</strong>: Cross-eval persistence, hot code
 reload, stdlib support, type introspection.</p>
 <hr />
-<h3 id="machine-learning-with-v1.1-builtins">Machine Learning with v1.1
-Builtins</h3>
+<h3 id="machine-learning-with-the-tensor-builtins">Machine Learning with
+the Tensor Builtins</h3>
 <pre class="scheme"><code>;; Initialize weights with Kaiming initialization
 (define W1 (zeros 4 3))
 (kaiming-normal! W1 3)              ; fan-in = 3

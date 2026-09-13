@@ -1,11 +1,25 @@
 <h1 id="eshkol-v1.3.5-api-reference">Eshkol v1.3.5 API Reference</h1>
 <p><strong>Version</strong>: 1.3.5 <strong>Last Updated</strong>:
-2026-09-07 <strong>Audience</strong>: Scientific Computing &amp; AI
+2026-09-11 <strong>Audience</strong>: Scientific Computing &amp; AI
 Systems Programming</p>
 <p>This reference documents Eshkol’s language surface and implementation
 contracts. The generated language-surface inventory and the AD support
 matrix distinguish implemented operations, engine-specific restrictions,
 and measured parity.</p>
+<blockquote>
+<p><strong>Reading the <code>; =&gt;</code> annotations.</strong> They
+give an expression’s <strong>value</strong>, and an inexact value is
+written with its <code>.0</code> (<code>6.0</code>) where that is what
+makes the example clear. What the compiler <strong>prints</strong> for
+an integral double omits the decimal point —
+<code>(derivative (lambda (x) (* x x)) 3.0)</code> displays
+<code>6</code>, not <code>6.0</code>, and it is still inexact. The one
+exception is <code>-0.0</code>, which prints in full because reading
+<code>-0</code> back would lose both the inexactness and the sign.
+Output shown inside a fenced result block is always the exact printed
+text. See <a
+href="reference/language/numeric-tower.md#exactness">reference/language/numeric-tower.md</a>.</p>
+</blockquote>
 <hr />
 <h2 id="table-of-contents">Table of Contents</h2>
 <ol type="1">
@@ -400,10 +414,18 @@ backpropagation (efficient for ℝⁿ→ℝ)</li>
 <p><strong>Syntax</strong>: <code>(diff expr var)</code></p>
 <p>Symbolic differentiation at compile time. Returns S-expression of
 derivative formula.</p>
+<p><code>diff</code> takes its expression and variable
+<strong>unquoted</strong> — it is a special form the parser recognises,
+not a procedure applied to data. A quoted argument raises a diagnostic
+naming the correct spelling rather than answering.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(diff &#39;(* x x) &#39;x)  ; =&gt; (* 2 x)
-(diff &#39;(sin (* 2 x)) &#39;x)  ; =&gt; (* 2 (cos (* 2 x)))
-(diff &#39;(+ (* x x) (* 3 x) 5) &#39;x)  ; =&gt; (+ (* 2 x) 3)</code></pre>
+<pre class="scheme"><code>(diff (* x x) x)                ; =&gt; (* 2 x)
+(diff (sin (* 2 x)) x)          ; =&gt; (* (cos (* 2 x)) 2)
+(diff (+ (* x x) (* 3 x) 5) x)  ; =&gt; (+ (* 2 x) 3)
+
+(diff &#39;(* x x) &#39;x)
+;; raises: diff: symbolic differentiation of a quoted expression is not yet
+;;         implemented (pass an unquoted expression, e.g. (diff (* x x) x))</code></pre>
 <p><strong>Mode</strong>: Compile-time symbolic transformation<br />
 <strong>Input</strong>: Expression AST, variable symbol<br />
 <strong>Output</strong>: S-expression (simplified derivative
@@ -470,8 +492,13 @@ outputs)<br />
 href="../lib/backend/llvm_codegen.cpp"><code>codegenGradient()</code></a></p>
 <p><strong>Graph Construction</strong>: - Forward pass builds
 computation graph (AD nodes on tape) - Backward pass propagates
-gradients via chain rule - Supports nested gradients (arbitrary depth)
-with tape stack</p>
+gradients via chain rule - Nested gradients are supported through a tape
+stack, up to the forward carrier’s nesting ceiling: any depth of
+first-order passes composes, and one pass of order &gt;= 2 composes with
+one enclosing first-order pass. Two enclosing levels over a pass of
+order &gt;= 2 is not supported in v1.3.5 (ledger SW-154) — see <a
+href="reference/ad/support-matrix.md#nesting-ceiling-sw-154">the AD
+support matrix</a> for the full table and the exact diagnostics.</p>
 <h4 id="native-squared-geodesic-distance-bridge">Native squared
 geodesic-distance bridge</h4>
 <p>The native bridge provides <code>ad_squared_distance</code> and
@@ -667,7 +694,7 @@ Manipulation</h3>
 <code>(vref tensor idx)</code></p>
 <p>N-dimensional tensor indexing with slicing support.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(define M #((1 2 3) (4 5 6)))
+<pre class="scheme"><code>(define M #(#(1 2 3) #(4 5 6)))
 (tensor-get M 0 1)   ; =&gt; 2 (scalar element)
 (tensor-get M 1)     ; =&gt; #(4 5 6) (row slice)
 (vref #(10 20 30) 1) ; =&gt; 20 (1D shorthand)</code></pre>
@@ -686,7 +713,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenTensorVectorRef()</code></a>
 <code>(tensor-set tensor value idx...)</code></p>
 <p>Sets tensor element (mutable).</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(define M #((1 2) (3 4)))
+<pre class="scheme"><code>(define M #(#(1 2) #(3 4)))
 (tensor-set M 99 0 1)  ; M[0,1] := 99</code></pre>
 <p><strong>Type</strong>: Tensor mutation<br />
 <strong>Implementation</strong>: <a
@@ -696,7 +723,7 @@ href="../lib/backend/tensor_codegen.cpp"><code>tensorSet()</code></a></p>
 <p><strong>Syntax</strong>: <code>(transpose matrix)</code></p>
 <p>Transposes 2D matrix (swaps rows and columns).</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(transpose #((1 2 3) (4 5 6)))  ; =&gt; #((1 4) (2 5) (3 6))</code></pre>
+<pre class="scheme"><code>(transpose #(#(1 2 3) #(4 5 6)))  ; =&gt; #((1 4) (2 5) (3 6))</code></pre>
 <p><strong>Type</strong>: Matrix transformation<br />
 <strong>Complexity</strong>: O(mn) time, O(mn) space<br />
 <strong>Implementation</strong>: <a
@@ -718,7 +745,7 @@ href="../lib/backend/tensor_codegen.cpp"><code>reshape()</code></a></p>
 <p><strong>Syntax</strong>: <code>(flatten tensor)</code></p>
 <p>Flattens N-dimensional tensor to 1D (zero-copy view).</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(flatten #((1 2) (3 4)))  ; =&gt; #(1 2 3 4)</code></pre>
+<pre class="scheme"><code>(flatten #(#(1 2) #(3 4)))  ; =&gt; #(1 2 3 4)</code></pre>
 <p><strong>Type</strong>: Dimensionality reduction<br />
 <strong>Implementation</strong>: <a
 href="../lib/backend/llvm_codegen.cpp"><code>codegenFlatten()</code></a></p>
@@ -727,7 +754,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenFlatten()</code></a></p>
 <p><strong>Syntax</strong>: <code>(tensor-shape tensor)</code></p>
 <p>Returns dimension sizes as Scheme list.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(tensor-shape #((1 2 3) (4 5 6)))  ; =&gt; (2 3)</code></pre>
+<pre class="scheme"><code>(tensor-shape #(#(1 2 3) #(4 5 6)))  ; =&gt; (2 3)</code></pre>
 <p><strong>Type</strong>: Metadata query<br />
 <strong>Returns</strong>: Cons-based list of int64 dimensions<br />
 <strong>Implementation</strong>: <a
@@ -786,7 +813,7 @@ id="tensor-add-tensor-sub-tensor-mul-tensor-div"><code>tensor-add</code>,
 vectors.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(tensor-add #(1 2 3) #(4 5 6))  ; =&gt; #(5 7 9)
-(tensor-mul #((1 2) (3 4)) #((2 2) (2 2)))  ; =&gt; #((2 4) (6 8))</code></pre>
+(tensor-mul #(#(1 2) #(3 4)) #(#(2 2) #(2 2)))  ; =&gt; #((2 4) (6 8))</code></pre>
 <p><strong>Type</strong>: Element-wise binary operations<br />
 <strong>Constraint</strong>: Operands must have same shape<br />
 <strong>Implementation</strong>: <a
@@ -801,7 +828,7 @@ href="../lib/backend/tensor_codegen.cpp"><code>tensorArithmetic()</code></a></p>
 (tensor-dot #(1 2 3) #(4 5 6))  ; =&gt; 32
 
 ; 2D matrices: matmul
-(matmul #((1 2) (3 4)) #((5 6) (7 8)))  ; =&gt; #((19 22) (43 50))</code></pre>
+(matmul #(#(1 2) #(3 4)) #(#(5 6) #(7 8)))  ; =&gt; #((19 22) (43 50))</code></pre>
 <p><strong>Type</strong>: Linear algebra operation<br />
 <strong>Complexity</strong>: O(mnk) for m×k @ k×n matrices<br />
 <strong>Implementation</strong>: <a
@@ -813,7 +840,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenMatmul()</code></a></p>
 <p><strong>Syntax</strong>: <code>(trace matrix)</code></p>
 <p>Sum of diagonal elements.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(trace #((1 2) (3 4)))  ; =&gt; 5</code></pre>
+<pre class="scheme"><code>(trace #(#(1 2) #(3 4)))  ; =&gt; 5</code></pre>
 <p><strong>Type</strong>: Matrix invariant<br />
 <strong>Implementation</strong>: <a
 href="../lib/backend/llvm_codegen.cpp"><code>codegenTrace()</code></a></p>
@@ -938,7 +965,7 @@ pivoting (row swaps for numerical stability).</p>
 <p><strong>Complexity:</strong> O(n³/3) for n×n matrices.</p>
 <p><strong>Implementation:</strong> <code>tensorLU</code> in <a
 href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
-<pre class="scheme"><code>(define A #((2.0 1.0) (1.0 3.0)))
+<pre class="scheme"><code>(define A #(#(2.0 1.0) #(1.0 3.0)))
 (let ((result (tensor-lu A)))
   (let ((L (car result)) (U (cadr result)) (P (caddr result)))
     ;; P·A = L·U
@@ -951,8 +978,8 @@ href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codege
 factorization.</p>
 <p><strong>Implementation:</strong> <code>tensorDet</code> in <a
 href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
-<pre class="scheme"><code>(tensor-det #((2.0 1.0) (1.0 3.0)))   ; =&gt; 5.0
-(tensor-det #((1.0 0.0) (0.0 1.0)))   ; =&gt; 1.0 (identity)</code></pre>
+<pre class="scheme"><code>(tensor-det #(#(2.0 1.0) #(1.0 3.0)))   ; =&gt; 5.0
+(tensor-det #(#(1.0 0.0) #(0.0 1.0)))   ; =&gt; 1.0 (identity)</code></pre>
 <h4 id="tensor-inverse"><code>tensor-inverse</code></h4>
 <p><strong>Syntax:</strong> <code>(tensor-inverse A)</code> → Tensor</p>
 <p>Matrix inverse A⁻¹ via LU decomposition with forward and back
@@ -961,7 +988,7 @@ substitution.</p>
 matrices (det ≈ 0).</p>
 <p><strong>Implementation:</strong> <code>tensorInverse</code> in <a
 href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
-<pre class="scheme"><code>(define A #((2.0 1.0) (1.0 3.0)))
+<pre class="scheme"><code>(define A #(#(2.0 1.0) #(1.0 3.0)))
 (define Ainv (tensor-inverse A))
 (tensor-matmul A Ainv)   ; =&gt; ~identity matrix</code></pre>
 <h4 id="tensor-solve"><code>tensor-solve</code></h4>
@@ -972,7 +999,7 @@ back substitution.</p>
 substitution.</p>
 <p><strong>Implementation:</strong> <code>tensorSolve</code> in <a
 href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
-<pre class="scheme"><code>(define A #((2.0 1.0) (1.0 3.0)))
+<pre class="scheme"><code>(define A #(#(2.0 1.0) #(1.0 3.0)))
 (define b #(3.0 5.0))
 (tensor-solve A b)   ; =&gt; #(0.8 1.4) — solution x where Ax = b</code></pre>
 <h4 id="tensor-cholesky"><code>tensor-cholesky</code></h4>
@@ -989,7 +1016,7 @@ systems (covariance matrices, kernel matrices in Gaussian processes).
 Twice as efficient as general LU.</p>
 <p><strong>Implementation:</strong> <code>tensorCholesky</code> in <a
 href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
-<pre class="scheme"><code>(define A #((4.0 2.0) (2.0 3.0)))   ; symmetric positive-definite
+<pre class="scheme"><code>(define A #(#(4.0 2.0) #(2.0 3.0)))   ; symmetric positive-definite
 (define L (tensor-cholesky A))
 ;; L·L^T = A</code></pre>
 <h4 id="tensor-qr"><code>tensor-qr</code></h4>
@@ -1004,7 +1031,7 @@ stable and efficient.</p>
 minimization), eigenvalue algorithms (QR iteration).</p>
 <p><strong>Implementation:</strong> <code>tensorQR</code> in <a
 href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
-<pre class="scheme"><code>(define A #((1.0 1.0) (0.0 1.0) (1.0 0.0)))   ; 3×2
+<pre class="scheme"><code>(define A #(#(1.0 1.0) #(0.0 1.0) #(1.0 0.0)))   ; 3×2
 (let ((result (tensor-qr A)))
   (let ((Q (car result)) (R (cadr result)))
     ;; Q is 3×2 orthogonal, R is 2×2 upper-triangular
@@ -1023,7 +1050,7 @@ low-rank approximation (truncated SVD), matrix pseudoinverse, condition
 number computation.</p>
 <p><strong>Implementation:</strong> <code>tensorSVD</code> in <a
 href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
-<pre class="scheme"><code>(define A #((1.0 2.0) (3.0 4.0) (5.0 6.0)))   ; 3×2
+<pre class="scheme"><code>(define A #(#(1.0 2.0) #(3.0 4.0) #(5.0 6.0)))   ; 3×2
 (let ((result (tensor-svd A)))
   (let ((U (car result)) (S (cadr result)) (Vt (caddr result)))
     ;; U is 3×2, S is #(σ₁ σ₂), Vt is 2×2
@@ -1046,8 +1073,8 @@ scalar | | <code>"ij,ij-&gt;"</code> | Frobenius inner product |
 <code>(einsum "i,i-&gt;" u v)</code> → scalar |</p>
 <p><strong>Implementation:</strong> <code>tensorEinsum</code> in <a
 href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
-<pre class="scheme"><code>(define A #((1.0 2.0) (3.0 4.0)))
-(define B #((5.0 6.0) (7.0 8.0)))
+<pre class="scheme"><code>(define A #(#(1.0 2.0) #(3.0 4.0)))
+(define B #(#(5.0 6.0) #(7.0 8.0)))
 (einsum &quot;ij,jk-&gt;ik&quot; A B)   ; matrix multiply: #((19.0 22.0) (43.0 50.0))
 (einsum &quot;ii-&gt;&quot; A)            ; trace: 5.0
 (einsum &quot;ij-&gt;ji&quot; A)          ; transpose: #((1.0 3.0) (2.0 4.0))</code></pre>
@@ -1364,6 +1391,37 @@ etc.</p>
 (ceiling 3.2)  ; =&gt; 4.0
 (round 3.5)    ; =&gt; 4.0</code></pre>
 <hr />
+<h3 id="directed-rounding">Directed Rounding</h3>
+<p><strong>Functions</strong>: <code>fl-next-up</code>,
+<code>fl-next-down</code></p>
+<p>Unary <code>double -&gt; double</code> builtins wrapping C99
+<code>nextafter</code>: the next representable double strictly above /
+below the argument. Available on both engines with no
+<code>(require …)</code>. They take part in <strong>no</strong>
+automatic differentiation — directed rounding has no sound derivative —
+so they bypass the generic math dispatcher and reject complex, dual,
+AD-node and tensor operands with a typed error instead of misreading the
+payload as a double; they are not vector-mapped either.</p>
+<p><strong>Examples</strong>:</p>
+<pre class="scheme"><code>(fl-next-up 1.0)                          ; =&gt; 1.0000000000000002
+(fl-next-down 1.0)                        ; =&gt; 0.9999999999999999
+(= (fl-next-down (fl-next-up 0.1)) 0.1)   ; =&gt; #t</code></pre>
+<p>These are the primitive beneath <strong>certified enclosures</strong>
+— outward-rounded interval arithmetic (<code>ia+</code>,
+<code>ia*</code>, <code>ia-sqrt</code>, <code>ia-exp</code>, …) and
+rigorous Taylor models (<code>tm-var</code>, <code>tm+</code>,
+<code>tm*</code>, <code>tm-bound</code>, <code>tm-prove-bound</code>,
+<code>tm-prove-nonzero</code>), reached through
+<code>(require core.ad.taylor_models)</code>. Every result endpoint
+there is built from exactly one such nudge, which is what keeps the
+soundness argument valid across a whole computation. See <a
+href="reference/stdlib/certified-enclosures.md">reference/stdlib/certified-enclosures.md</a>.</p>
+<p><strong>Implementation</strong>: <code>codegenNextafter()</code> in
+<a
+href="../lib/backend/llvm_codegen.cpp"><code>lib/backend/llvm_codegen.cpp</code></a>;
+native ids 2228/2229 in <a
+href="../lib/backend/vm_native.c"><code>lib/backend/vm_native.c</code></a>.</p>
+<hr />
 <h3 id="numeric-predicates">Numeric Predicates</h3>
 <p><strong>Functions</strong>: <code>number?</code>,
 <code>integer?</code>, <code>real?</code>, <code>zero?</code>,
@@ -1515,9 +1573,21 @@ runtime</p>
 <h4 id="system-exit"><code>system</code>, <code>exit</code></h4>
 <p><strong>Syntax</strong>: <code>(system command)</code>,
 <code>(exit [code])</code></p>
+<p><code>exit</code>’s argument may be a literal <strong>or a computed
+expression</strong>, on every engine (native JIT, native AOT and the
+bytecode VM). It is evaluated and converted by runtime type tag: an
+exact integer is truncated to a valid process status, a flonum is
+clamped to <code>[0, 255]</code> and truncated, and a boolean follows
+R7RS 6.11 (<code>#t</code> is 0, <code>#f</code> is 1). Any other
+runtime type raises a catchable runtime error rather than feeding an
+arbitrary bit pattern to the process exit status.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(system &quot;ls -la&quot;)
-(exit 0)</code></pre>
+(exit 0)
+(exit (vector-length (vector 1 2 3)))   ; exits 3
+(exit 3.7)                              ; exits 3
+(exit #t)                               ; exits 0
+(exit #f)                               ; exits 1</code></pre>
 <hr />
 <h4 id="current-seconds-sleep"><code>current-seconds</code>,
 <code>sleep</code></h4>
@@ -1816,15 +1886,15 @@ complex arguments, on the principal branch with C99 Annex G branch cuts.
 <code>round</code>, <code>cbrt</code> and <code>abs</code> are
 real-domain only and signal a catchable type error on a complex (use
 <code>magnitude</code> for <code>|z|</code>).</p>
-<pre class="scheme"><code>(sqrt (make-rectangular -1.0 0.0))    ; =&gt; 0.0+1.0i
-(exp (make-rectangular 0.0 3.14159))  ; =&gt; -1.0+0.0i (approximately)
+<pre class="scheme"><code>(sqrt (make-rectangular -1.0 0.0))    ; =&gt; +i   (zero real part elided; +/-1 imaginary prints as +i/-i)
+(exp (make-rectangular 0.0 3.14159))  ; =&gt; -0.9999999999964793+2.65358979335273e-06i
 (expt (make-rectangular 0.0 1.0)
       (make-rectangular 0.0 1.0))     ; =&gt; 0.20787957635076193 (i^i)</code></pre>
 <pre class="scheme"><code>(define z1 (make-rectangular 3.0 4.0))
-(magnitude z1)      ; =&gt; 5.0
-(angle z1)          ; =&gt; 0.9273... (atan(4/3))
-(+ z1 z1)           ; =&gt; 6.0+8.0i
-(* z1 (make-rectangular 0.0 1.0))  ; =&gt; -4.0+3.0i</code></pre>
+(magnitude z1)      ; =&gt; 5
+(angle z1)          ; =&gt; 0.9272952180016122 (atan(4/3))
+(+ z1 z1)           ; =&gt; 6+8i
+(* z1 (make-rectangular 0.0 1.0))  ; =&gt; -4+3i</code></pre>
 <hr />
 <h2 id="continuations-control-flow">Continuations &amp; Control
 Flow</h2>
@@ -2968,16 +3038,31 @@ of feature detectors.</p>
 href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="activation-function-examples">Activation Function Examples</h4>
 <pre class="scheme"><code>(define x #(-2.0 -1.0 0.0 1.0 2.0))
-(relu x)               ; =&gt; #(0.0 0.0 0.0 1.0 2.0)
-(sigmoid x)            ; =&gt; #(0.119 0.269 0.5 0.731 0.881)
-(softmax x)            ; =&gt; #(0.012 0.032 0.087 0.237 0.644)
-(gelu x)               ; =&gt; #(-0.045 -0.159 0.0 0.841 1.955)
-(leaky-relu x 0.1)     ; =&gt; #(-0.2 -0.1 0.0 1.0 2.0)
-(silu x)               ; =&gt; #(-0.238 -0.269 0.0 0.731 1.762)
-(elu x)                ; =&gt; #(-0.865 -0.632 0.0 1.0 2.0)
-(mish x)               ; =&gt; #(-0.252 -0.303 0.0 0.865 1.944)
+(relu x)               ; =&gt; #(0 0 0 1 2)
+(sigmoid x)            ; =&gt; #(0.11920292202211755 0.2689414213699951 0.5 0.7310585786300049 0.8807970779778823)
+(softmax x)            ; =&gt; #(0.011656230956039605 0.03168492079612427 0.0861285444362687 0.23412165725273662 0.6364086465588308)
+(gelu x)               ; =&gt; #(-0.04540230591222494 -0.15880800939172324 0 0.8411919906082768 1.954597694087775)
+(leaky-relu x)         ; =&gt; #(-0.02 -0.01 0 1 2)
+(silu x)               ; =&gt; #(-0.2384058440442351 -0.2689414213699951 0 0.7310585786300049 1.7615941559557646)
+(elu x)                ; =&gt; #(-0.8646647167633873 -0.6321205588285577 0 1 2)
+(mish x)               ; =&gt; #(-0.2525014826957091 -0.30340146137410895 0 0.8650983882673103 1.9439589595339946)
 (dropout x 0.5 #t)     ; =&gt; #(0.0 -2.0 0.0 2.0 0.0) (varies, scaled by 2)
 (dropout x 0.5 #f)     ; =&gt; #(-2.0 -1.0 0.0 1.0 2.0) (unchanged in inference)</code></pre>
+<p>(An integral double prints without a decimal point — see <a
+href="reference/language/numeric-tower.md#exactness">the numeric
+tower</a>. <code>#(0 0 0 1 2)</code> above is five inexact values, not
+five exact integers.)</p>
+<blockquote>
+<p><strong>Known limitation — <code>leaky-relu</code>’s α argument is
+ignored (build item).</strong> <code>(leaky-relu x 0.1)</code> and
+<code>(leaky-relu x 0.5)</code> both answer
+<code>#(-0.02 -0.01 0 1 2)</code>: the documented α is accepted and then
+not applied, so the negative slope is always the default 0.01. The
+signature and semantics above are the contract; the codegen does not yet
+honour the second operand. Until it does, use
+<code>(leaky-relu x)</code> for the default slope, or scale
+explicitly.</p>
+</blockquote>
 <h3 id="loss-functions">Loss Functions</h3>
 <p>Loss functions quantify the discrepancy between model predictions and
 ground truth targets. They provide the scalar objective L(θ) that
@@ -3117,6 +3202,14 @@ probability for the true class. Default γ = 2.0.</p>
 - p_t)^γ down-weights the contribution of easy examples (high p_t),
 focusing the training signal on hard, misclassified examples. When γ =
 0, focal loss reduces to standard cross-entropy.</p>
+<p><code>pred</code> and <code>target</code> follow exactly the
+<code>cross-entropy-loss</code> contract — <code>pred</code> is logits,
+the softmax is internal, and <code>target</code> is either a probability
+row of the same shape or a class index with the class axis dropped — and
+the two share one implementation, so
+<code>(focal-loss pred target 0)</code> and
+<code>(cross-entropy-loss pred target)</code> agree to the last bit. γ
+must be finite and non-negative.</p>
 <p><strong>Use case:</strong> Severe class imbalance (RetinaNet for
 object detection, where background examples vastly outnumber foreground
 objects).</p>
@@ -3175,16 +3268,19 @@ href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cp
 <pre class="scheme"><code>(define pred #(2.0 1.0 0.1))
 (define target #(1.0 0.0 0.0))            ; one-hot: class 0
 
-(mse-loss pred target)                     ; =&gt; 0.67
-(cross-entropy-loss pred target)           ; =&gt; 0.417 (mean, after internal softmax)
-(focal-loss pred target 2.0)               ; =&gt; 0.069 (downweights easy examples)
-(huber-loss pred target 1.0)               ; =&gt; 0.335
+(mse-loss pred target)                     ; =&gt; 0.6699999999999999
+(cross-entropy-loss pred target)           ; =&gt; 0.41703001627783376 (mean, after internal softmax)
+(focal-loss pred target 2.0)               ; =&gt; 0.04849234340769356 (downweights easy examples)
+(focal-loss pred target 0.0)               ; =&gt; 0.41703001627783376 (γ = 0 is cross-entropy)
+(huber-loss pred target 1.0)               ; =&gt; 0.33499999999999996
 
 ;; Metric learning
 (define anchor #(1.0 0.0 0.0))
 (define positive #(0.9 0.1 0.0))
 (define negative #(0.0 1.0 0.0))
-(triplet-loss anchor positive negative 1.0) ; =&gt; max(d(a,p) - d(a,n) + 1, 0)</code></pre>
+(triplet-loss anchor positive negative 1.0) ; =&gt; 0
+;; = max(d(a,p) - d(a,n) + 1, 0) = max(0.1414 - 1.4142 + 1, 0) = 0 — an easy
+;; triplet, already satisfying the margin, so no gradient signal.</code></pre>
 <h3 id="optimizers">Optimizers</h3>
 <p>Optimizers adjust model parameters θ to minimize a loss function L(θ)
 by following gradient information. The simplest approach is stochastic
@@ -3472,11 +3568,27 @@ Example</h4>
     (linear-warmup-lr 0.001 step 1000)
     (cosine-annealing-lr 0.001 0.0 (- step 1000) 9000)))
 
-(lr-schedule 0)       ; =&gt; 0.0 (start of warmup)
-(lr-schedule 500)     ; =&gt; 0.0005 (mid-warmup)
-(lr-schedule 1000)    ; =&gt; 0.001 (full learning rate)
-(lr-schedule 5500)    ; =&gt; 0.0005 (mid-cosine)
-(lr-schedule 10000)   ; =&gt; ~0.0 (end of training)</code></pre>
+;; called directly, each scheduler follows its documented curve:
+(linear-warmup-lr    0.001 0    1000)  ; =&gt; 0
+(linear-warmup-lr    0.001 500  1000)  ; =&gt; 5e-04
+(linear-warmup-lr    0.001 1000 1000)  ; =&gt; 0.001
+(cosine-annealing-lr 0.001 0.0 0    9000)  ; =&gt; 0.001
+(cosine-annealing-lr 0.001 0.0 4500 9000)  ; =&gt; 5e-04
+(cosine-annealing-lr 0.001 0.0 9000 9000)  ; =&gt; 0</code></pre>
+<blockquote>
+<p><strong>Known limitation — a scheduler called through a user
+function’s parameter answers 0 (build item).</strong> The composition
+above is the intended shape, and the direct calls show the intended
+values. But <code>(define (w s) (linear-warmup-lr 0.001 s 1000))</code>
+makes <code>(w 500)</code> answer <code>0</code> where
+<code>(linear-warmup-lr 0.001 500 1000)</code> answers
+<code>5e-04</code>: the <code>step</code> operand arriving as a user
+function’s parameter is not read the way a literal is.
+<code>lr-schedule</code> above therefore prints <code>0</code> for both
+warmup queries on this build. Call the scheduler with the step
+expression written at the call site, or bind it to a top-level value,
+until the operand handling is fixed.</p>
+</blockquote>
 <h3 id="convolutional-neural-networks">Convolutional Neural
 Networks</h3>
 <p>Convolution extracts local spatial features by sliding a learnable
@@ -4284,7 +4396,7 @@ href="reference/runtime/environment-variables.md">runtime/environment-variables.
 accept tensors, vectors, or lists as input and internally flatten to a
 uniform representation before computation.</p>
 <p><strong>Module</strong>: <code>lib/math/statistics.esk</code>
-<strong>Import</strong>: <code>(require statistics)</code></p>
+<strong>Import</strong>: <code>(require math.statistics)</code></p>
 <h3 id="central-tendency-and-spread">Central Tendency and Spread</h3>
 <h4 id="median"><code>median</code></h4>
 <p><strong>Syntax</strong>: <code>(median data)</code></p>
@@ -4425,7 +4537,7 @@ and maximum.</p>
 functions provide convenient wrappers over the core tensor operations
 documented in <a href="#tensor-operations">Tensor Operations</a>.</p>
 <p><strong>Module</strong>: <code>lib/tensor/utils.esk</code>
-<strong>Import</strong>: <code>(require tensor-utils)</code></p>
+<strong>Import</strong>: <code>(require tensor.utils)</code></p>
 <h3 id="shape-manipulation">Shape Manipulation</h3>
 <h4 id="hstack"><code>hstack</code></h4>
 <p><strong>Syntax</strong>:
@@ -4434,7 +4546,7 @@ documented in <a href="#tensor-operations">Tensor Operations</a>.</p>
 tensors, this joins columns side by side. All tensors must have the same
 number of rows.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(hstack #((1 2) (3 4)) #((5) (6)))  ; =&gt; #((1 2 5) (3 4 6))</code></pre>
+<pre class="scheme"><code>(hstack #(#(1 2) #(3 4)) #(#(5) #(6)))  ; =&gt; #((1 2 5) (3 4 6))</code></pre>
 <p><strong>Returns</strong>: Tensor (concatenated along axis 1)</p>
 <hr />
 <h4 id="vstack"><code>vstack</code></h4>
@@ -4444,7 +4556,7 @@ number of rows.</p>
 tensors, this joins rows top to bottom. All tensors must have the same
 number of columns.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(vstack #((1 2) (3 4)) #((5 6)))  ; =&gt; #((1 2) (3 4) (5 6))</code></pre>
+<pre class="scheme"><code>(vstack #(#(1 2) #(3 4)) #(#(5 6)))  ; =&gt; #((1 2) (3 4) (5 6))</code></pre>
 <p><strong>Returns</strong>: Tensor (concatenated along axis 0)</p>
 <hr />
 <h4 id="reshape-as"><code>reshape-as</code></h4>
@@ -4454,9 +4566,17 @@ number of columns.</p>
 <code>template</code>. The total number of elements must be equal.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(define A #(1 2 3 4 5 6))
-(define B #((0 0 0) (0 0 0)))
+(define B #(#(0 0 0) #(0 0 0)))
 (reshape-as A B)  ; =&gt; #((1 2 3) (4 5 6))</code></pre>
 <p><strong>Returns</strong>: Tensor (reshaped to template’s shape)</p>
+<blockquote>
+<p><strong>Known limitation — <code>reshape-as</code> does not terminate
+(build item).</strong> On this build the call above runs without
+producing a result or a diagnostic. Use
+<code>(reshape A (tensor-shape B))</code> instead, which answers
+<code>#((1 2 3) (4 5 6))</code>. The contract above is what
+<code>reshape-as</code> is to do.</p>
+</blockquote>
 <hr />
 <h4 id="squeeze-all"><code>squeeze-all</code></h4>
 <p><strong>Syntax</strong>: <code>(squeeze-all tensor)</code></p>
@@ -4511,7 +4631,7 @@ broadcasting.</p>
 <p>Returns the number of dimensions (rank) of the tensor.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(tensor-ndim #(1 2 3))           ; =&gt; 1
-(tensor-ndim #((1 2) (3 4)))     ; =&gt; 2
+(tensor-ndim #(#(1 2) #(3 4)))     ; =&gt; 2
 (tensor-ndim (zeros 2 3 4))      ; =&gt; 3</code></pre>
 <p><strong>Returns</strong>: Integer (number of dimensions)</p>
 <hr />
@@ -4521,7 +4641,7 @@ broadcasting.</p>
 dimension sizes).</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(tensor-size #(1 2 3 4 5))       ; =&gt; 5
-(tensor-size #((1 2) (3 4)))     ; =&gt; 4
+(tensor-size #(#(1 2) #(3 4)))     ; =&gt; 4
 (tensor-size (zeros 2 3 4))      ; =&gt; 24</code></pre>
 <p><strong>Returns</strong>: Integer (total element count)</p>
 <hr />
@@ -4539,14 +4659,14 @@ dimension sizes).</p>
 <p>Returns <code>#t</code> if the tensor is one-dimensional.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(is-vector? #(1 2 3))           ; =&gt; #t
-(is-vector? #((1 2) (3 4)))     ; =&gt; #f</code></pre>
+(is-vector? #(#(1 2) #(3 4)))     ; =&gt; #f</code></pre>
 <p><strong>Returns</strong>: Boolean</p>
 <hr />
 <h4 id="is-matrix"><code>is-matrix?</code></h4>
 <p><strong>Syntax</strong>: <code>(is-matrix? tensor)</code></p>
 <p>Returns <code>#t</code> if the tensor is two-dimensional.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(is-matrix? #((1 2) (3 4)))     ; =&gt; #t
+<pre class="scheme"><code>(is-matrix? #(#(1 2) #(3 4)))     ; =&gt; #t
 (is-matrix? #(1 2 3))           ; =&gt; #f</code></pre>
 <p><strong>Returns</strong>: Boolean</p>
 <hr />
@@ -5266,6 +5386,17 @@ support for common probability distributions.</p>
 owned by the Eshkol runtime. A given seed starts the same sequence on
 native JIT, native AOT, and the bytecode VM; backend choice does not
 change seeded results.</p>
+<pre class="scheme"><code>(require &quot;random&quot;)
+(set-random-seed! 42)
+(let* ((a (random-int 0 100)) (b (random-int 0 100)) (c (random-int 0 100)))
+  (display (list a b c)) (newline))</code></pre>
+<pre><code>(75 34 11)</code></pre>
+<p>Byte-identical under <code>eshkol-run -r</code>, under an
+AOT-compiled binary, and under the bytecode VM. Bind the draws in
+sequence (<code>let*</code>) rather than relying on the
+argument-evaluation order of an enclosing call, which is unspecified and
+does differ between engines — the <em>stream</em> is the same either
+way, but which draw lands in which argument position is not.</p>
 <h3 id="basic-pseudorandom-functions">Basic Pseudorandom Functions</h3>
 <h4 id="random-float"><code>random-float</code></h4>
 <p><strong>Syntax</strong>: <code>(random-float)</code></p>

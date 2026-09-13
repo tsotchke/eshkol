@@ -4066,13 +4066,15 @@ per-form-coverage opcodes (67-71) landed.
 tracked independently of this doc</td>
 </tr>
 <tr>
-<td>722 VM-reachable native call IDs</td>
+<td>741 VM-reachable builtins</td>
 <td>Yes</td>
 <td>Math, string, IO, complex, rational, bignum, dual, AD, tensor,
 logic, inference, workspace, hash, bytevector, parameter;
 <code>tests/coverage/language_surface.json</code>
-<code>counts.builtins_in_vm_table</code> — corrected 2026-08-25 from
-“694” (conformity audit item d7)</td>
+<code>counts.builtins_in_vm_table</code> — 741 on the v1.3.5-evolve cut,
+dispatched through 743 distinct native-call IDs spanning 0–2230 in
+<code>lib/backend/vm_native.c</code>; corrected 2026-08-25 from “694”
+(conformity audit item d7) and remeasured since</td>
 </tr>
 <tr>
 <td>ESKB binary format</td>

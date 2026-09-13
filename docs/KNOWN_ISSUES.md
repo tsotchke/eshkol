@@ -733,12 +733,15 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   self-labelled "kept #if 0 stub bodies for now" (superseded by
   `LogicWorkspaceCodegen`). Cheap, unambiguous cleanup; filed as a BUILD ITEM,
   no target version (mechanical debt, any release) — conformity audit item e6.
-- **89.86% of the language surface has never been differentially compared**
-  between engines, per the project's own ledger (PR-10,
-  `.icc/silent-wrong-ledger.yaml`, open: 113 of 1,114 constructs carry
-  differential evidence) even though the engine-parity gate reports PASS.
-  Not a new finding — cross-referenced here because it was previously absent
-  from this document — conformity audit item e6.
+- **71.82% of the language surface has not yet been differentially compared**
+  between engines (PR-10, `.icc/silent-wrong-ledger.yaml`, open). On the
+  v1.3.5-evolve release cut 321 of 1,139 constructs carry differential
+  evidence (28.18%), up from 113 of 1,114 (10.14%) when the ledger entry was
+  filed, and both engine-parity floors are now measured ratchets rather than
+  literals, so the figure is recorded and can only rise. Raising it is corpus
+  growth, filed for v1.4 as DD-15 (see [VM_PARITY.md](VM_PARITY.md)).
+  Cross-referenced here because it was previously absent from this document —
+  conformity audit item e6.
 - **`vm_geometric_manifold_dim` returns 0 unconditionally** in the *enabled*
   configuration (`lib/backend/vm_geometric.c:712-722`) — a silent-wrong-answer
   shape, not a loud error. Filed as a BUILD ITEM, target v1.4.0 — conformity

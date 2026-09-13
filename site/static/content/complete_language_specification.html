@@ -1416,6 +1416,35 @@ differentiation.</p>
 <li><code>(truncate x)</code> - Round toward zero</li>
 <li><code>(round x)</code> - Round to nearest integer</li>
 </ul>
+<h4 id="directed-rounding">Directed Rounding</h4>
+<p>Two unary <code>double -&gt; double</code> builtins, wired into
+<strong>both</strong> execution engines (native codegen and the bytecode
+VM), with no <code>(require …)</code>:</p>
+<ul>
+<li><code>(fl-next-up x)</code> - the next representable double strictly
+greater than <code>x</code></li>
+<li><code>(fl-next-down x)</code> - the next representable double
+strictly less than <code>x</code></li>
+</ul>
+<p>Both wrap C99 <code>nextafter</code>, so the step is the true local
+ulp — correct across power-of-two boundaries and into the subnormals,
+unlike a hand-rolled <code>x * (1 ± epsilon)</code>. Unlike every other
+function in this section they take part in <strong>no</strong> automatic
+differentiation: directed rounding has no sound derivative, so they
+deliberately bypass the generic math dispatcher and reject complex,
+dual, AD-node and tensor operands with a typed error rather than
+misreading the payload as a double. They are also not vector-mapped.</p>
+<pre class="scheme"><code>(display (fl-next-up 1.0)) (newline)
+(display (fl-next-down 1.0)) (newline)
+(display (= (fl-next-down (fl-next-up 0.1)) 0.1)) (newline)</code></pre>
+<pre><code>1.0000000000000002
+0.9999999999999999
+#t</code></pre>
+<p>They are the primitive beneath <strong>certified enclosures</strong>
+— outward-rounded interval arithmetic and rigorous Taylor models, where
+every result endpoint is built from exactly one such nudge so the
+soundness argument holds through a whole computation. See <a
+href="reference/stdlib/certified-enclosures.md">reference/stdlib/certified-enclosures.md</a>.</p>
 <h3 id="comparison-operators">4.3 Comparison Operators</h3>
 <p>All comparison operators return booleans and support numeric type
 promotion.</p>
@@ -1563,8 +1592,25 @@ Effects</h4>
 Function to List</h4>
 <p><strong>Signature:</strong> <code>(apply proc arg... list)</code></p>
 <p><strong>Example:</strong></p>
-<pre class="scheme"><code>(apply + &#39;(1 2 3))  ; =&gt; 6
-(apply + 1 2 &#39;(3 4))  ; =&gt; 10</code></pre>
+<pre class="scheme"><code>(apply + &#39;(1 2 3))    ; =&gt; 6
+(apply + 1 2 &#39;(3 4))  ; =&gt; 10   (native only, see below)
+(apply vector-copy (list (vector 7 8 9)))   ; =&gt; #(7 8 9)</code></pre>
+<p><code>proc</code> may be any callable value, including a builtin
+reached as a first-class value rather than in operator position:
+<code>apply</code> resolves its operator through the same route
+<code>map</code> and a user higher-order call use, so a builtin gains a
+value representation exactly once. A genuinely undefined name fails
+compilation with a diagnostic, never a silent <code>()</code>.</p>
+<blockquote>
+<p><strong>Engine difference — the leading-args form is
+native-only.</strong> The bytecode VM supports
+<code>(apply proc arg-list)</code>. It does <strong>not</strong> support
+arguments before the list, for any operator: under the VM,
+<code>(apply + 1 2 '(3 4))</code> raises
+<code>arity mismatch: expected 2 arguments, got 4</code>. Write
+<code>(apply + (append '(1 2) '(3 4)))</code> for a form that runs on
+both engines.</p>
+</blockquote>
 <h3 id="string-operations">4.7 String Operations</h3>
 <h4 id="string-construction">4.7.1 String Construction</h4>
 <ul>
@@ -2730,7 +2776,41 @@ Detection</h4>
 <h4 id="topological-sorting">Topological Sorting</h4>
 <p>Modules loaded in dependency order (dependencies before
 dependents)</p>
-<h3 id="pre-compiled-modules">9.4 Pre-compiled Modules</h3>
+<h3 id="built-in-r7rs-libraries">9.4 Built-in R7RS Libraries</h3>
+<p>Some R7RS library names have no source file on the load path because
+Eshkol provides them itself. Those names are mapped through
+<strong>one</strong> table, <code>inc/eshkol/builtin_libraries.h</code>,
+consulted by the native front end’s
+<code>join_r7rs_library_name()</code> and by the bytecode VM’s
+<code>vm_library_name_from_datum()</code> — neither engine can drift
+from the other’s idea of which libraries exist, and adding one is a
+single row.</p>
+<table>
+<thead>
+<tr>
+<th>Library name</th>
+<th>Provided by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(scheme base)</code></td>
+<td>the built-in standard library</td>
+</tr>
+</tbody>
+</table>
+<p>Any other library name resolves as a source file like every other
+module, and a name that resolves to nothing is refused rather than
+silently ignored. Because the mapping happens where the library-name
+datum is joined, every R7RS import modifier reaches it —
+<code>only</code>, <code>except</code>, <code>prefix</code>,
+<code>rename</code> — on both engines.</p>
+<pre class="scheme"><code>(import (scheme base))
+(import (only (scheme base) car))
+(import (except (scheme base) vector-fill!))
+(display (list (car (list 1 2)) (cdr (list 1 2)))) (newline)</code></pre>
+<pre><code>(1 (2))</code></pre>
+<h3 id="pre-compiled-modules">9.5 Pre-compiled Modules</h3>
 <p>Modules can be pre-compiled to <code>.o</code> files for faster
 loading: - <code>stdlib.o</code> - Pre-compiled standard library -
 Linked at final executable creation - <code>require</code> statements
@@ -2861,6 +2941,45 @@ later ones</li>
 <li>Previous definitions injectable as external declarations</li>
 <li>Cross-evaluation function calls supported</li>
 </ul>
+<h3 id="machine-mode-the-erepl-v1-protocol">11.3 Machine mode — the
+EREPL v1 protocol</h3>
+<p><code>eshkol-repl --machine</code> turns the REPL into a
+long-running, JIT-warm worker for a driver program (a kernel, a
+language-server backend, a sister project’s test harness): it loads the
+standard library and warms the JIT once, then evaluates forms sent on
+stdin without paying the cold-start cost again.</p>
+<p>Two layers, and both are always present:</p>
+<ul>
+<li><strong>Bare-line framing</strong> (the original protocol,
+unchanged). <code>EREPL READY</code> once, after warm-up;
+<code>EREPL DONE</code> / <code>EREPL FAIL</code> once per evaluated
+top-level form. A driver that watches only those three lines and reads
+stdout between them keeps working exactly as before.</li>
+<li><strong>EREPL v1</strong>, a versioned JSON request/response layer
+on top of it. A stdin line whose first non-whitespace character is
+<code>{</code> is a request (no Eshkol form can start with
+<code>{</code>, so the two can never collide); a response is one stderr
+line beginning <code>EREPL/1</code> followed by a single-line JSON
+object, echoing the request’s <code>"id"</code>. A <code>ready</code>
+frame carries <code>protocol_version</code>, <code>pid</code> and
+<code>eshkol_version</code>.</li>
+</ul>
+<p><strong>stdout carries only what an evaluated program itself
+wrote.</strong> Framing never appears there, and a JSON
+<code>"op":"eval"</code> request does not auto-display the form’s value
+either: the value comes back in the response frame’s <code>value</code>
+field with a coarse <code>value_type</code>, and the bytes the form
+printed come back in <code>stdout</code> in the same frame. That is the
+property the protocol exists to guarantee — stdout and stderr are
+independent OS pipes, so a driver that had to correlate them by arrival
+order would be racing on every platform. Errors are reported as a
+structured <code>error</code> object with a <code>kind</code>, so a
+driver never classifies a failure by matching this project’s message
+wording.</p>
+<p><code>tools/erepl_client.py</code> is a complete, stdlib-only Python
+reference client and the executable form of this contract. The full
+frame grammar and the per-<code>op</code> schemas are in <a
+href="reference/runtime/eshkol-repl.md">reference/runtime/eshkol-repl.md</a>.</p>
 <hr />
 <h2 id="advanced-features">12. Advanced Features</h2>
 <h3 id="closures">12.1 Closures</h3>
@@ -3386,10 +3505,11 @@ double.</li>
 <h4 id="transcendental-functions">15.3.3 Transcendental Functions</h4>
 <p>The math builtins extend to the complex domain on the principal
 branch, with the branch cuts of C99 Annex G (signed zero selects the
-branch, so <code>(sqrt (make-rectangular -1.0 0.0))</code> is
-<code>0.0+1.0i</code> and
-<code>(sqrt (make-rectangular -1.0 -0.0))</code> is
-<code>0.0-1.0i</code>):</p>
+branch, so <code>(sqrt (make-rectangular -1.0 0.0))</code> prints
+<code>+i</code> and <code>(sqrt (make-rectangular -1.0 -0.0))</code>
+prints <code>-i</code> — a zero real part is elided and an imaginary
+part of +/-1 prints as <code>+i</code>/<code>-i</code>, per 2.x’s
+display convention):</p>
 <p><code>sqrt</code>, <code>exp</code>, <code>log</code>,
 <code>exp2</code>, <code>log2</code>, <code>log10</code>,
 <code>sin</code>, <code>cos</code>, <code>tan</code>, <code>asin</code>,
@@ -4261,8 +4381,8 @@ through <code>tenth</code></p>
 <p><strong>Vector Calculus:</strong> <code>divergence</code>,
 <code>curl</code>, <code>laplacian</code>,
 <code>directional-derivative</code></p>
-<p><strong>Arbitrary-Order Taylor Towers (v1.3.0-evolve, see
-8.5):</strong> <code>taylor</code>, <code>derivative-n</code> (core, no
+<p><strong>Arbitrary-Order Taylor Towers (see 8.5):</strong>
+<code>taylor</code>, <code>derivative-n</code> (core, no
 <code>require</code> needed); <code>taylor-propagate</code>,
 <code>mixed-partial</code>, <code>gradient-n</code>
 (<code>core.ad.guw</code>); <code>taylor-model</code>,
@@ -4273,6 +4393,22 @@ through <code>tenth</code></p>
 (<code>core.ad.sparse_guw</code>); <code>taylor-ode-solve</code>,
 <code>taylor-root</code>, <code>taylor-inverse-series</code>
 (<code>core.ad.taylor_numerics</code>)</p>
+<p><strong>Certified enclosures (directed rounding, see 4.2):</strong>
+<code>fl-next-up</code>, <code>fl-next-down</code> (core builtins on
+both engines, no <code>require</code> needed); outward-rounded interval
+arithmetic
+<code>ia+ ia- ia* ia/ ia-neg ia-ipow ia-scale ia-sqrt ia-exp ia-log ia-sin ia-cos ia-atan (ia-pi)</code>
+(<code>core.ad.rigorous_interval</code>); rigorous Taylor models
+<code>tm-const tm-var tm+ tm* tm-compose tm-integrate tm-deriv tm-bound tm-enclose tm-rigorous? tm-prove-nonzero tm-prove-bound</code>
+plus <code>tm-exp tm-sin tm-cos tm-log tm-sqrt tm-atan tm-recip</code>
+(<code>core.ad.rigorous_taylor_models</code>). Both are re-exported from
+<code>(require core.ad.taylor_models)</code>. These are the
+<strong>proof-backed</strong> layer beneath the validated
+<code>core.ad.interval</code> / <code>core.ad.taylor_models</code>
+family above, whose remainders are epsilon-widened or sampled;
+<code>tm-rigorous?</code> distinguishes the two kinds of model at run
+time. See <a
+href="reference/stdlib/certified-enclosures.md">reference/stdlib/certified-enclosures.md</a>.</p>
 <h3 id="all-type-predicates-20">22.8 All Type Predicates (20+)</h3>
 <p><code>null?</code>, <code>boolean?</code>, <code>char?</code>,
 <code>string?</code>, <code>symbol?</code>, <code>number?</code>,
@@ -4574,21 +4710,21 @@ in the implementation.</p>
 <code>tests/coverage/language_surface.json</code> and
 <code>tests/coverage/coverage_policy.json</code>, the machine sources
 the coverage gate reads) - All 116 special forms and 113 parser AST
-operations - All 1,052 built-in functions (1,108 declared constructs in
-total) - 250+ VM native call IDs - 63-opcode bytecode VM with ESKB
-binary format - Complete type system (15+ types with 18+ heap subtypes)
-- Full memory management system (OALR arenas) - Entire standard library
-(40 modules) - Complete autodiff system (forward, reverse, symbolic, 83
-AD node types declared in <code>inc/eshkol/ad_node_registry.def</code>)
-- Dual backend architecture (LLVM + bytecode VM) - Weight matrix
+operations - All 1,052 built-in functions (1,115 declared constructs in
+total) - 743 VM native-call IDs - 72-opcode bytecode VM with ESKB binary
+format - Complete type system (15+ types with 18+ heap subtypes) - Full
+memory management system (OALR arenas) - Entire standard library (40
+modules) - Complete autodiff system (forward, reverse, symbolic, 83 AD
+node types declared in <code>inc/eshkol/ad_node_registry.def</code>) -
+Dual backend architecture (LLVM + bytecode VM) - Weight matrix
 transformer (3-way verified) - Module system with <code>require</code>,
 <code>provide</code>, <code>load</code> - REPL JIT with precompiled
 stdlib - Quantum RNG (8-qubit circuit simulation) - GPU dispatch (Metal
-SF64 + CUDA, forward and backward) - Compilation pipeline (LLVM 21
-required) - Runtime architecture - Exact arithmetic (bignum, rational,
-numeric tower) - Complex number type with overflow-safe division -
-First-class continuations, dynamic-wind, and exception handling -
-Consciousness engine (logic programming, active inference, global
-workspace) - Parallel execution model (thread pool, futures, memory
-safety) - GPU dispatch (Metal SF64, CUDA, cost model) - Signal
-processing (FFT, windows, filters, convolution)</p>
+SF64 + CUDA, forward and backward) - Compilation pipeline (LLVM 18-24;
+major pinned per build, default 21) - Runtime architecture - Exact
+arithmetic (bignum, rational, numeric tower) - Complex number type with
+overflow-safe division - First-class continuations, dynamic-wind, and
+exception handling - Consciousness engine (logic programming, active
+inference, global workspace) - Parallel execution model (thread pool,
+futures, memory safety) - GPU dispatch (Metal SF64, CUDA, cost model) -
+Signal processing (FFT, windows, filters, convolution)</p>

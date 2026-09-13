@@ -59,7 +59,7 @@ pages and lets them fan out to their siblings.
   - [memory-model.md](reference/runtime/memory-model.md) — tagged values, arena allocator, `with-region` semantics
   - [parallelism.md](reference/runtime/parallelism.md) — `parallel-map`/`-fold`/`-filter`/`-execute`, work-stealing pool
   - [jit-internals.md](reference/runtime/jit-internals.md) — run cache, stdlib object cache, large code model
-- [Bytecode VM (breakdown)](breakdown/BYTECODE_VM.md) — 64-opcode core interpreter, ESKB format, WebAssembly execution
+- [Bytecode VM (breakdown)](breakdown/BYTECODE_VM.md) — 72-opcode core interpreter, ESKB format, WebAssembly execution
 - [REPL JIT (breakdown)](breakdown/REPL_JIT.md) — LLVM OrcJIT, opt-level matching, stdlib preloading, hot reload
 - [VM Parity](VM_PARITY.md) — bytecode-VM vs native-codegen parity ratchet: 961 rows (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`), differential 338/338
 - [VM Memory Ops as Weight Matrices](breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md) — lifting VM opcodes into transformer weight constructions
@@ -202,7 +202,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 
 - [Public Benchmarks reference index](reference/benchmarks/INDEX.md) — reproducible, one-command benchmark suite on the four axes Eshkol claims superiority (exact-AD cost curves, Ozaki-II CRT GEMM, flat-RSS, differentiable quantum kernels); see [`bench/README.md`](../bench/README.md) for the full reproduction guide and [`bench/reference-run/results.md`](../bench/reference-run/results.md) for the published reference run
 - [Testing & Adversarial Harnesses](TESTING.md) — SICP gate plus the adversarial harnesses and how to run them
-- [Test Coverage](TEST_COVERAGE.md) — what the suite gate verifies on the v1.3.5-evolve cut: 46/46 suites, CTest 530/530, VM parity differential 338/338
+- [Test Coverage](TEST_COVERAGE.md) — what the suite gate verifies on the v1.3.5-evolve cut: 46/46 suites, CTest 541/541, VM parity differential 338/338
 - [Depth-coverage matrix](DEPTH_COVERAGE_MATRIX.md) — whole-language depth-parametric testing (pillar P6 auditor)
 
 Adversarial-campaign pillar harnesses (`tests/`):

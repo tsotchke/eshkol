@@ -1201,7 +1201,7 @@ Map Eshkol names to C names:
 
 ### Features
 
-- **Tab completion** for all 1,042 builtins
+- **Tab completion** for all 1,052 builtins
 - **Syntax highlighting** with ANSI colors
 - **Command history** (persistent across sessions)
 - **Multi-line input** with balanced parenthesis detection

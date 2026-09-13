@@ -654,7 +654,7 @@
 
       (render-feature-card grid4
         "Permanent release oracles"
-        "Nothing here is a one-off check. CTest at 530 tests, the 46-suite aggregate, reference and generative differentials, WebAssembly import equality, engine-parity differential floors of 28.18% and 32.77% measured as ratchets, and readiness 100 all run as repeatable release gates."))
+        "Nothing here is a one-off check. CTest at 541 tests, the 46-suite aggregate, reference and generative differentials, WebAssembly import equality, engine-parity differential floors of 28.18% and 32.77% measured as ratchets, and readiness 100 all run as repeatable release gates."))
 
     section))
 

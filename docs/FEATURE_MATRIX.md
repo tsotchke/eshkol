@@ -2,7 +2,7 @@
 
 **Status Key** (table cells): `Yes` = Production | `WIP` = In Progress | `Planned` = Planned | `No` = Not Planned | `Partial` = Partially supported
 
-This matrix lists every implemented and planned feature in the Eshkol ecosystem. Every **Production** feature is code-verified, with extensive test coverage (the aggregate gate runs 46 suites; CTest is 530/530 on the v1.3.5-evolve cut).
+This matrix lists every implemented and planned feature in the Eshkol ecosystem. Every **Production** feature is code-verified, with extensive test coverage (the aggregate gate runs 46 suites; CTest is 541/541 on the v1.3.5-evolve cut).
 
 **Language surface count (canonical):** the declared language surface is
 **1,115** constructs — 1,052 builtins, 116 special forms, 113 AST ops and 16
@@ -905,7 +905,7 @@ not-yet-production, and is listed above accordingly.)
 |---------|--------|-------|
 | **Bytecode VM** |
 | 72-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch; `OP_COUNT = 72` in `lib/backend/vm_core.c`, the enum `vm_run.c`'s dispatch table indexes — corrected 2026-08-25 from "64" (conformity audit item d7) and remeasured here after the long-closure, secondary-raise, popped-tail-call and per-form-coverage opcodes (67-71) landed. `lib/backend/eshkol_compiler.c` mirrors the enum exactly; `lib/backend/eshkol_benchmark.c` still declares its own `OpCode` stopping at 63, a separate ODR-cleanup code issue tracked independently of this doc |
-| 722 VM-reachable native call IDs | Yes | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter; `tests/coverage/language_surface.json` `counts.builtins_in_vm_table` — corrected 2026-08-25 from "694" (conformity audit item d7) |
+| 741 VM-reachable builtins | Yes | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter; `tests/coverage/language_surface.json` `counts.builtins_in_vm_table` — 741 on the v1.3.5-evolve cut, dispatched through 743 distinct native-call IDs spanning 0–2230 in `lib/backend/vm_native.c`; corrected 2026-08-25 from "694" (conformity audit item d7) and remeasured since |
 | ESKB binary format | Yes | Section-based layout, LEB128 encoding, CRC32 checksums |
 | `-B` flag (bytecode emission) | Yes | `eshkol-run input.esk -B output.eskb` |
 | VM compiler integration | Yes | eshkol_vm.c linked into compiler build |

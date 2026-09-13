@@ -542,12 +542,11 @@ known limitations are in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 
 ## Final verification
 
-- Final source commit: `0f33675a` on the integrated candidate, carried to master by the candidate's merge; this cut adds release-facing files only, so the verified sources are the shipped sources.
-- Hosted CI on the final source commit: the required platform lanes are green (Linux x64 and arm64 with XLA and CUDA, Windows x64 CUDA, Windows arm64, macOS arm64 and x64 with XLA and lite, WASM execute-and-diff, surface manifest, assurance gates, guard).
-- CTest: 530 of 530 registered tests pass. VM parity: 338 of 338 corpus programs agree across native JIT, native AOT and the bytecode VM. Engine-parity differential floors, measured on this commit: 321 of 1,139 constructs (28.18%) and 155 of 473 high-risk constructs (32.77%), five dispositioned divergences and none new.
+- Final source commit: `970e8758` on the integrated candidate, carried to master by the candidate's merge; this cut adds release-facing files only, so the verified sources are the shipped sources.
+- Measured on a Release build of the final source commit with this cut applied: CTest 541 of 541 registered tests pass; VM parity 338 of 338 corpus programs agree across native JIT, native AOT and the bytecode VM; the engine-parity differential covers 321 of 1,139 constructs (28.18%) and 155 of 473 high-risk constructs (32.77%), over 287 corpus programs with five dispositioned divergences, none new and none regressed.
 - Language surface: 1,052 builtins and 1,115 constructs, every construct backed by execution evidence.
 - Release-package checks: the site names all 15 platform packages and SHA256SUMS.txt, and the publication loader is present.
-- ICC `v1.3.5-evolve` readiness: the release workflow's gate regenerates the full evidence battery on the tagged commit on a Linux release runner and publishes only on a ready verdict; the traces are attached to the publishing run as the `release-readiness-evidence` artifact. The same gate ran as a dry run on the final source commit before the tag.
+- Hosted CI and ICC `v1.3.5-evolve` readiness: the release workflow runs the platform matrix and regenerates the full evidence battery on the tagged commit, and publishes only on a ready verdict; the traces are attached to the publishing run as the `release-readiness-evidence` artifact.
 
 ---
 
