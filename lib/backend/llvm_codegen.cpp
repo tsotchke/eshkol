@@ -224,6 +224,8 @@ void append_host_tensorcore_link_args(std::vector<std::string>& link_args) {
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/GlobalVariable.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/raw_os_ostream.h>
@@ -9630,13 +9632,17 @@ private:
             ast->column,
             static_cast<uint32_t>(ast->operation.op));
 
-        if (!builder->GetInsertBlock() ||
-            eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
+        BasicBlock* site_block = builder->GetInsertBlock();
+        if (!site_block || !site_block->getParent() ||
+            eshkol::llvm_compat::terminatorOrNull(site_block)) {
             return;
         }
+        Function* site_function = site_block->getParent();
+        Module& site_module = *site_function->getParent();
 
         Type* void_type = Type::getVoidTy(*context);
         Type* ptr_type = PointerType::getUnqual(*context);
+        Type* i8_type = Type::getInt8Ty(*context);
         Type* i32_type = Type::getInt32Ty(*context);
         Value* source = languageCoverageString(source_path);
         Value* line = ConstantInt::get(i32_type, ast->line);
@@ -9644,7 +9650,44 @@ private:
         Value* operation = ConstantInt::get(
             i32_type, static_cast<uint32_t>(ast->operation.op));
 
-        FunctionCallee op_hook = module->getOrInsertFunction(
+        // First-execution guard (the SanitizerCoverage guard pattern).
+        //
+        // The runtime writes a record only the first time a site executes,
+        // so every later call into it is pure overhead; in a hot loop that
+        // was one call per iteration. Each emitted site therefore owns a
+        // private i8 guard in the module that holds the site. Private
+        // linkage keeps guards from ever colliding across AOT objects, JIT
+        // and REPL modules, or --shared-lib builds. After the first
+        // execution a site costs one load and one predicted branch.
+        //
+        // The load/store pair is deliberately unsynchronised: two threads
+        // can both observe 0 and both enter the hooks. That race is benign,
+        // because the runtime still deduplicates every record, so it can
+        // only cost a redundant hook call, never a lost or duplicated record.
+        //
+        // The builder ends in a fresh, unterminated continuation block, so
+        // the node's own codegen proceeds as it did when the hooks were
+        // emitted inline. Callers read GetInsertBlock() after codegen for
+        // PHI incoming edges, and allocas go through entry-block builders.
+        auto* guard = new GlobalVariable(
+            site_module, i8_type, /*isConstant=*/false,
+            GlobalValue::PrivateLinkage, ConstantInt::get(i8_type, 0),
+            "eshkol_language_coverage_guard");
+        Value* seen = builder->CreateLoad(i8_type, guard, "coverage_seen");
+        Value* first_execution = builder->CreateICmpEQ(
+            seen, ConstantInt::get(i8_type, 0), "coverage_first");
+        BasicBlock* record_block =
+            BasicBlock::Create(*context, "coverage_record", site_function);
+        BasicBlock* resume_block =
+            BasicBlock::Create(*context, "coverage_resume", site_function);
+        builder->CreateCondBr(
+            first_execution, record_block, resume_block,
+            MDBuilder(*context).createBranchWeights(1, (1U << 20) - 1));
+
+        builder->SetInsertPoint(record_block);
+        builder->CreateStore(ConstantInt::get(i8_type, 1), guard);
+
+        FunctionCallee op_hook = site_module.getOrInsertFunction(
             "eshkol_language_coverage_exec_op",
             FunctionType::get(void_type,
                               {ptr_type, i32_type, i32_type, i32_type},
@@ -9658,13 +9701,16 @@ private:
             *ast->operation.call_op.func->variable.id) {
             Value* name = languageCoverageString(
                 ast->operation.call_op.func->variable.id);
-            FunctionCallee call_hook = module->getOrInsertFunction(
+            FunctionCallee call_hook = site_module.getOrInsertFunction(
                 "eshkol_language_coverage_exec_call",
                 FunctionType::get(void_type,
                                   {ptr_type, i32_type, i32_type, ptr_type},
                                   false));
             builder->CreateCall(call_hook, {source, line, column, name});
         }
+
+        builder->CreateBr(resume_block);
+        builder->SetInsertPoint(resume_block);
     }
 
     Value* codegenAST(const eshkol_ast_t* ast) {
@@ -15629,6 +15675,17 @@ private:
                     Value* tagged = typedValueToTaggedValue(tv);
                     exit_code = builder->CreateTrunc(safeExtractInt64(tagged), int32_type);
                 }
+            }
+            if (language_coverage_enabled_) {
+                // _exit bypasses C++ destructors, so buffered coverage records
+                // must be flushed here. The exec-call hook used to do this on
+                // every execution of the call site; it is now guarded to run
+                // once per site, which would miss a site that is reached again
+                // after its first execution did not terminate the process.
+                llvm::FunctionCallee flush_func = module->getOrInsertFunction(
+                    "eshkol_language_coverage_flush",
+                    FunctionType::get(void_type, {}, false));
+                builder->CreateCall(flush_func, {});
             }
             llvm::FunctionCallee exit_func = module->getOrInsertFunction("_exit",
                 FunctionType::get(void_type, {int32_type}, false));

@@ -6875,6 +6875,22 @@ if(ESHKOL_BUILD_TESTS)
                     --eshkol-vm $<TARGET_FILE:eshkol-vm-standalone-test>
         )
     endif()
+    # A coverage-instrumented site inside a loop must reach the runtime hook
+    # once, not once per iteration (JIT, AOT and VM, plus an IR structure
+    # check). Deterministic: compares hook-entry counts, never wall time.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_language_coverage_hook_guard.py")
+        add_test(
+            NAME language_coverage_hook_guard_test
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_language_coverage_hook_guard.py"
+                    --eshkol-run $<TARGET_FILE:eshkol-run>
+                    --eshkol-vm $<TARGET_FILE:eshkol-vm-standalone-test>
+                    --lib-dir "${CMAKE_BINARY_DIR}"
+        )
+        set_tests_properties(language_coverage_hook_guard_test PROPERTIES
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            TIMEOUT 900)
+    endif()
     if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/escape_matrix/test_parity_backlog.py")
         add_test(
             NAME parity_backlog_build_free_test
