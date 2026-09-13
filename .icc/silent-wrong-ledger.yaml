@@ -8217,7 +8217,7 @@ entries:
       therefore use only the `(apply f arg-list)` form throughout.
   - id: DD-14
     bucket: DOC-DEBT
-    status: open
+    status: closed
     title: "CMakeLists.txt:1352's pjrt_client.cpp comment cites a file that lives only on unmerged feat/xla-* branches"
     evidence: >-
       CMakeLists.txt:1352 (inside the XLA-enabled include_directories block; drifted from 1304 as later content
@@ -8244,7 +8244,17 @@ entries:
       the moment the PJRT client lane merges; deleting it now would strip the rationale for a real build-config
       decision that already needs to be correct for the pending merge.
     resolution: >-
-      Not yet resolved. Filed as an open DOC-DEBT item rather than corrected in place or allowlisted, because
+      Resolved on fix/v135-parity-floor-exact by making the comments accurate for the current tree instead of
+      waiting for the PJRT client lane to merge. The claim had drifted again, to CMakeLists.txt:1379 (claim_id
+      eb66ac1163da6d62), so the recorded residual id 94fa917d39f6856d had gone stale and the residual gate
+      reported the claim as unexplained. The XLA include-path comment, the STABLEHLO_INCLUDE_DIRS note and the
+      PJRT smoke-test comment no longer name lib/backend/xla/pjrt_client.cpp or
+      inc/eshkol/backend/xla/pjrt_client.h as files in this tree. They state the rule in terms of what exists:
+      the deps/pjrt include path is guarded by ESHKOL_XLA_ENABLED, the same condition under which the LIB_SRC
+      glob compiles lib/backend/xla/ into eshkol-static and ESHKOL_XLA_RUNTIME_SRC selects
+      lib/backend/xla/xla_runtime.cpp. The rationale for the include path is kept. An icc doc-typed-claims
+      re-run on that branch reports no wrong claim in CMakeLists.txt. The original disposition, now superseded,
+      follows. Filed as an open DOC-DEBT item rather than corrected in place or allowlisted, because
       neither disposition fits: it is not a detector misattribution (the citation is exactly what the comment
       means), and it is not a stale historical fact (it describes forward-looking, real, in-flight work, not
       a past state) -- it is a genuine doc/tree mismatch that will self-resolve when one of the feat/xla-*
@@ -8252,6 +8262,8 @@ entries:
       the comment rewritten. Tracked via `residual_claim_ids` below so the doc-typed-claims-residual gate
       treats it as an accounted-for wrong claim until then.
     residual_claim_ids: [94fa917d39f6856d]
+    closed_at: "fix/v135-parity-floor-exact"
+    closed_by: "branch fix/v135-parity-floor-exact"
     caught_by: [doc-typed-claims-residual-v135]
     opened_at: "51defcf7 (integration/astra-v135)"
     notes: >-
@@ -12769,3 +12781,102 @@ entries:
       second claimant. `exp` was a latent hole for as long as the libm block was
       hand-maintained and one entry was missing from it; the fix does not add the
       missing entry alone, it removes the reliance on the name.
+  - id: LE-25
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: closed
+    closed_at: "c0e09fb7"
+    closed_by: "branch fix/typecheck-named-let-seed-widening"
+    family: type-system/named-let
+    title: "type checker: a named-let loop parameter was frozen to its seed's synthesized type, so a correct accumulator warned on its recursive call (five warnings compiling the standard library, a sixth in core.ad.sparse_guw)"
+    repro: >-
+      `ESHKOL_PATH=$PWD/lib ./build/eshkol-run --shared-lib -c -o out lib/stdlib.esk`,
+      or the minimal shape
+      `(define (f full k tdom) (let tloop ((m (+ k 1)) (acc (cons 0.0 0.0)))
+      (if (<= m (* 2 k)) (tloop (+ m 1) (interval-add acc ...)) acc)))`.
+      The five standard-library sites are lib/core/ad/rigorous_interval.esk
+      (ia-ipow), lib/core/ad/rigorous_taylor_models.esk (ia-horner-local and the
+      remainder tail) and lib/core/ad/taylor_models.esk (tm-poly-range and the
+      remainder tail): each seeds an accumulator with a literal pair and feeds it
+      back the result of an interval operation.
+    observed_before: >-
+      Compiling the standard library printed
+      "[WARN] Type warning: argument 2 of 'loop': expected Pair<Value, Value>, got Pair (line 355:37)",
+      "argument 2 of 'loop': expected Pair<Number, Number>, got Pair<Value, Value> (line 131:25)",
+      "argument 2 of 'tloop': expected Pair<Number, Number>, got Pair<Value, Value> (line 203:33)",
+      "argument 2 of 'loop': expected Pair<Value, Value>, got Pair (line 184:18)",
+      "argument 2 of 'tloop': expected Pair<Float64, Float64>, got Pair (line 251:28)"
+      and "HoTT: 5 type warnings detected". Every program was correct: an interval
+      is a pair of numbers throughout. The Windows test harness surfaces
+      standard-library compile warnings, so
+      tests/typesystem/no_false_positive_test.esk (EXPECT-NO-STDERR: [WARN])
+      failed the windows-arm64-lite lane.
+    correct: >-
+      No warning. A loop parameter holds the seed on the first iteration and the
+      recursive call's argument on every later one, so its type is their join.
+    root_cause: >-
+      synthesizeLetTask() in lib/types/type_checker.cpp pre-bound the loop name as
+      makeFunctionType(binding_types, Value), where binding_types were synthesized
+      from the INITIALISERS, and re-bound it with the same types after the body.
+      Each parameter was therefore frozen to its seed's precise type
+      (Pair<Float64, Float64> from (cons 0.0 0.0)), and the call-site check,
+      which accepts an argument only when isSubtype(actual, expected), rejected the
+      wider value the loop actually carries. Tracked pair types are nominal and
+      only Pair<A,B> <: Pair holds, so the wider Pair never fit. The numeric-tower
+      exception at the call site had patched exactly this defect for numbers only.
+    fix: >-
+      A named let's inferred parameters are typed by the least common supertype of
+      the seed and every argument supplied at a call to that loop, computed to a
+      fixpoint over the body. Calls are attributed to the loop by binding identity
+      (scope index and bound type), so a shadowing inner binding of the same name
+      is not counted. Each pass is speculative: its diagnostics, recorded errors,
+      linearity count and linear-usage counters are rolled back if it widened a
+      parameter, and the pass that widens nothing is the real check. Widening
+      stops at informative joins: a join that reaches the dynamic top type Value
+      (Pair with String, Int64 with String) is not adopted, so an incompatible
+      recursive argument is still reported. Annotated and linear bindings are
+      contracts and are never widened. Termination: a parameter moves strictly up
+      its finite supertype chain.
+    observed_after: >-
+      Standard-library compile: zero [WARN] lines. run_typesystem_tests.sh:
+      62/62 (59/61 before; the two failures before were the new fixtures,
+      expected). Type diagnostics and exit status of every tests/typesystem and
+      tests/types fixture are byte-identical before and after except the two
+      fixtures written for this change. Negative checks still report:
+      pair accumulator fed a string "argument 2 of 'loop': expected
+      Pair<Float64, Float64>, got String"; numeric accumulator fed a string
+      "argument 2 of 'loop': expected Int64, got String"; non-loop call
+      "argument 1 of 'area': expected Number, got String"; a loop widened at one
+      call site and fed a string at another now reports "expected Pair, got
+      String" (before it reported that line against Pair<Float64, Float64> plus a
+      false positive on the legitimate site).
+    evidence: >-
+      tests/typesystem/named_let_accumulator_widening_test.esk (the five shapes;
+      five warnings before, none after),
+      named_let_pair_accumulator_string_reject_test.esk,
+      named_let_numeric_accumulator_string_reject_test.esk,
+      named_let_widened_then_string_reject_test.esk,
+      plain_call_incompatible_argument_reject_test.esk and
+      declared_numeric_param_join_test.esk, all in the existing
+      scripts/run_typesystem_tests.sh sweep. Corpus sweep: all 2134 .esk files under tests/ and examples/ compiled compile-only before and after, type diagnostics and exit status compared per file; the only differences are the new fixtures, a sixth false positive of this defect removed (lib/core/ad/sparse_guw.esk:371, "argument 2 of 'nloop': expected Pair<List, Value>, got Pair<List, Pair<List, Pair<List, Value>>>", reached from tests/ad/sparse_tensors_test.esk), and two tests/ml exit codes explained by the before binary predating the LE-24 codegen fix. No file that reported a genuine type warning or error before stopped reporting it. ctest with every target built: 540/541; the one failure, build_fingerprint_gate, flags stale records left in the gitignored local trace scripts/icc_traces/build_fingerprint.jsonl by an earlier run_vm_parity against a binary since relinked with identical sha256, the fresh records match, and the same gate fails the same way on a build of the unmodified base. run_vm_parity: 338/338 on the final binaries.
+    caught_by: [windows-arm64-lite, direct-measurement]
+    missed_by: [run_typesystem_tests, ctest, icc-smoke]
+    notes: >-
+      Filed LOUD-ERROR by the SW-63 precedent: a type-checker verdict printed on
+      stderr, never a wrong value. Two findings recorded, not fixed here.
+      (1) Gradual consistency: the call-site check uses strict subtyping and only
+      skips when either side is exactly Value; it is not componentwise. Under
+      consistency all five would also have been accepted (Pair<Value, Value> is
+      consistent with Pair<Number, Number>; bare Pair with any Pair<A,B>), but that
+      is not the root: the argument really is wider than the seed. The lattice
+      gap underneath is that bare Pair and Pair<Value, Value> are distinct nominal
+      ids with only Pair<Value, Value> <: Pair, and tracked pairs are not
+      covariant. (2) cond, case, match, when, unless, do and guard return Value
+      without synthesizing their bodies, so an application argument inside them
+      is never checked: a named-let fed a string from a cond clause is silent
+      before and after this change.
+      The numeric-tower exception is subsumed for inferred named-let
+      accumulators (removing it changed no fixture, no suite result and no
+      stdlib warning) but still carries declared numeric parameters of ordinary
+      functions, so it stays, with its comment corrected and
+      declared_numeric_param_join_test.esk pinning it.

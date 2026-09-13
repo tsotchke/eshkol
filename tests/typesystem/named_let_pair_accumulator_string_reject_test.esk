@@ -1,0 +1,17 @@
+;; Type System Test: widening a named-let parameter to what the loop carries
+;; never absorbs an incompatible value. A pair-seeded accumulator fed a STRING
+;; on the recursive call has no informative join with its seed, so the loop
+;; parameter keeps its type and the recursive call is still reported.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN]
+;; EXPECT-STDERR: argument 2 of 'loop': expected Pair<Float64, Float64>, got String
+
+(define (bad-pair-loop n)
+  (let loop ((i 0) (acc (cons 0.0 0.0)))
+    (if (>= i n)
+        acc
+        (loop (+ i 1) "not an interval"))))
+
+(display (bad-pair-loop 0))
+(newline)
