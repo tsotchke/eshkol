@@ -9777,6 +9777,11 @@ private:
             }
         }
 
+        // AST nodes built by hand while generating this node (desugarings
+        // performed during codegen) are born with this node's location, or
+        // with the nearest enclosing located node's when it has none.
+        EshkolAstBirthLocationScope birth_location(src_line, src_column);
+
         // DWARF DEBUG INFO: Set source location on builder for subsequent
         // instructions. Always re-anchored to the function being emitted into --
         // a node with no line of its own must still not leave a location scoped
@@ -11275,8 +11280,7 @@ private:
                     installed_bridge = true;
                 }
 
-                eshkol_ast_t func_ast;
-                memset(&func_ast, 0, sizeof(func_ast));
+                eshkol_ast_t func_ast{};
                 func_ast.type = ESHKOL_VAR;
                 func_ast.variable.id = (char*)user_name;
 

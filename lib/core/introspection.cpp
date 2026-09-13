@@ -959,8 +959,7 @@ eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
 
         if (num_bindings > 0) {
             // Create let bindings array - each binding is a (var, value) pair
-            eshkol_ast_t* bindings = static_cast<eshkol_ast_t*>(
-                arena_allocate(get_global_arena(),num_bindings * 2 * sizeof(eshkol_ast_t)));
+            eshkol_ast_t* bindings = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (num_bindings * 2) * sizeof(eshkol_ast_t)), (num_bindings * 2));
 
             current = env;
             size_t i = 0;
@@ -1137,8 +1136,7 @@ eshkol_tagged_value_t eshkol_compile_with_env(
     // If there are environment bindings, wrap in a let-expression
     if (env && env->count > 0) {
         // Create let bindings array - each binding is a (var, value) pair
-        eshkol_ast_t* bindings = static_cast<eshkol_ast_t*>(
-            arena_allocate(get_global_arena(),env->count * 2 * sizeof(eshkol_ast_t)));
+        eshkol_ast_t* bindings = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (env->count * 2) * sizeof(eshkol_ast_t)), (env->count * 2));
 
         for (size_t i = 0; i < env->count; i++) {
             // Variable name
@@ -1148,8 +1146,7 @@ eshkol_tagged_value_t eshkol_compile_with_env(
 
             // Value - convert the tagged value to an AST representation
             eshkol_tagged_value_t val = env->values[i];
-            eshkol_ast_t val_ast;
-            memset(&val_ast, 0, sizeof(val_ast));
+            eshkol_ast_t val_ast{};
 
             // Handle strings first since they use multiple type representations
             if (is_string(val)) {

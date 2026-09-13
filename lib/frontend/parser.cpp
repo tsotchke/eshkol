@@ -1693,7 +1693,7 @@ static ParserTask<eshkol_ast_t> parse_atom(const Token& token) {
                     for (size_t j = i; j < s.size(); j++) {
                         if (s[j] < '0' || s[j] > '9') return false;
                     }
-                    memset(node, 0, sizeof(*node));
+                    *node = eshkol_ast_t{};
                     stamp_node(*node, token.line, token.column);
                     *is_zero = false;
                     try {
@@ -5015,6 +5015,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
     const Token head_token = token;
     // Set source location from first token in the list
     stamp_node(ast, token.line, token.column);
+    // Nodes synthesised while lowering this form (internal-define letrec*,
+    // body sequences, named-let/do/case/record-type expansions, ...) are
+    // born with the form's own location, the same one stamped above.
+    EshkolAstBirthLocationScope birth_location(token.line, token.column);
     
     // Empty list (ESH-0217).
     //
@@ -11187,6 +11191,11 @@ static ParserTask<eshkol_ast_t> parse_expression(SchemeTokenizer& tokenizer) {
     }
 
     Token token = tokenizer.nextToken();
+    // Every node born while parsing this expression (atoms, quote and
+    // vector shorthands, and anything they desugar into) inherits the
+    // expression's own location unless it is stamped with a more precise
+    // one. parse_list narrows this to the head token of a list form.
+    EshkolAstBirthLocationScope birth_location(token.line, token.column);
 
     switch (token.type) {
         case TOKEN_LPAREN:

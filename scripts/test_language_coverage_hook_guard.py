@@ -56,6 +56,7 @@ class LanguageCoverageHookGuardTest(unittest.TestCase):
     eshkol_run = None
     eshkol_vm = None
     lib_dir = None
+    work_root = None
 
     def environment(self, trace_dir):
         env = os.environ.copy()
@@ -94,7 +95,8 @@ class LanguageCoverageHookGuardTest(unittest.TestCase):
         return records
 
     def measure(self, mode, iterations):
-        root = pathlib.Path(tempfile.mkdtemp(prefix="coverage-guard-"))
+        root = pathlib.Path(tempfile.mkdtemp(prefix="coverage-guard-",
+                                             dir=self.work_root))
         self.addCleanup(shutil.rmtree, root, True)
         trace_dir = root / "trace"
         trace_dir.mkdir()
@@ -149,7 +151,8 @@ class LanguageCoverageHookGuardTest(unittest.TestCase):
     def test_generated_hook_calls_sit_behind_their_guard(self):
         """Structural proof: each hook call is in a block entered only when
         that site's private guard byte was zero, and that block sets it."""
-        root = pathlib.Path(tempfile.mkdtemp(prefix="coverage-guard-ir-"))
+        root = pathlib.Path(tempfile.mkdtemp(prefix="coverage-guard-ir-",
+                                             dir=self.work_root))
         self.addCleanup(shutil.rmtree, root, True)
         trace_dir = root / "trace"
         trace_dir.mkdir()
@@ -208,7 +211,12 @@ def main():
     parser.add_argument("--eshkol-run", required=True)
     parser.add_argument("--eshkol-vm", required=True)
     parser.add_argument("--lib-dir", required=True)
+    parser.add_argument("--work-dir", default=None,
+                        help="parent for the fresh run directories")
     args, unittest_args = parser.parse_known_args()
+    if args.work_dir:
+        os.makedirs(args.work_dir, exist_ok=True)
+        LanguageCoverageHookGuardTest.work_root = os.path.abspath(args.work_dir)
     LanguageCoverageHookGuardTest.eshkol_run = os.path.abspath(args.eshkol_run)
     LanguageCoverageHookGuardTest.eshkol_vm = os.path.abspath(args.eshkol_vm)
     LanguageCoverageHookGuardTest.lib_dir = os.path.abspath(args.lib_dir)

@@ -46,6 +46,7 @@
 #ifdef __cplusplus
 
 #include <fstream>
+#include <new>
 
 extern "C" {
 #endif
@@ -3040,6 +3041,65 @@ typedef struct eshkol_operation {
     };
 } eshkol_operations_t;
 
+#ifdef __cplusplus
+} /* extern "C" */
+
+/**
+ * @brief Birth location for AST nodes built in C++.
+ *
+ * Every eshkol_ast_t constructed in C++ -- a local, `new eshkol_ast_t`,
+ * `new eshkol_ast_t[n]`, value-initialisation, or eshkol_ast_construct_array()
+ * over raw arena memory -- starts with `line`/`column` copied from this
+ * thread-local location, and with `source_file_id`/`node_id` set to 0.
+ *
+ * The parser, the macro expander and codegen each open an
+ * EshkolAstBirthLocationScope for the form they are processing, so a node
+ * synthesised while handling that form (internal-define letrec*, body
+ * sequences, named-let and `do` lowering, record-type expansion, nodes built
+ * by hand in codegen, ...) inherits the location of the form it was
+ * generated from. A node's own stamp still overrides its birth location.
+ * Outside any scope the birth location is 0/0, which means "no originating
+ * form" (for example an AST rebuilt from a runtime S-expression).
+ *
+ * Before this, such nodes kept whatever bytes were on the stack or heap, so
+ * language-coverage records and diagnostics carried nondeterministic columns.
+ * Putting the rule in construction means a new construction site cannot
+ * reintroduce that.
+ */
+struct eshkol_ast_birth_location_t {
+    uint32_t line;
+    uint32_t column;
+};
+
+inline thread_local eshkol_ast_birth_location_t eshkol_ast_birth_location = {0, 0};
+
+/** RAII: nodes born while this scope is innermost inherit (line, column).
+ *  A scope with line 0 keeps the enclosing birth location. Scopes nest
+ *  strictly, including across the parser and codegen coroutines, which
+ *  complete (and run this destructor) before resuming their awaiter. */
+class EshkolAstBirthLocationScope {
+public:
+    EshkolAstBirthLocationScope(uint32_t line, uint32_t column) noexcept
+        : saved_(eshkol_ast_birth_location) {
+        if (line > 0) eshkol_ast_birth_location = {line, column};
+    }
+    ~EshkolAstBirthLocationScope() { eshkol_ast_birth_location = saved_; }
+    EshkolAstBirthLocationScope(const EshkolAstBirthLocationScope&) = delete;
+    EshkolAstBirthLocationScope& operator=(const EshkolAstBirthLocationScope&) = delete;
+
+private:
+    eshkol_ast_birth_location_t saved_;
+};
+
+#define ESHKOL_AST_BORN_AT(field) = eshkol_ast_birth_location.field
+#define ESHKOL_AST_BORN_ZERO = 0
+
+extern "C" {
+#else
+#define ESHKOL_AST_BORN_AT(field)
+#define ESHKOL_AST_BORN_ZERO
+#endif
+
 /**
  * @brief Frontend abstract-syntax-tree node.
  *
@@ -3106,8 +3166,10 @@ typedef struct eshkol_ast {
     uint32_t inferred_hott_type;
 
     // Source location for error reporting
-    uint32_t line;      // 1-based line number (0 = unknown)
-    uint32_t column;    // 1-based column number (0 = unknown)
+    // Initialised at construction from the birth location (see
+    // EshkolAstBirthLocationScope above) in C++.
+    uint32_t line ESHKOL_AST_BORN_AT(line);      // 1-based line number (0 = unknown)
+    uint32_t column ESHKOL_AST_BORN_AT(column);  // 1-based column number (0 = unknown)
     /* Originating source FILE, as an id into the parser's interned table
      * (0 = unknown). See eshkol_intern_source_file/eshkol_source_file_name.
      *
@@ -3119,11 +3181,11 @@ typedef struct eshkol_ast {
      * nodes are 0 and inherit their enclosing form's file, which is exactly
      * right because a form cannot span two files.
      *
-     * Deliberately an ID and not a `const char*`: AST nodes are built in many
-     * places without a central zero-init, so an unset field holds garbage. A
+     * Deliberately an ID and not a `const char*`: C++ construction zeroes it,
+     * but a node assembled in C or over unconstructed memory may not. A
      * garbage id simply falls outside the table and reads as "unknown"; a
      * garbage pointer would be dereferenced by the diagnostic printer. */
-    uint32_t source_file_id;
+    uint32_t source_file_id ESHKOL_AST_BORN_ZERO;
 
     /* Stable identity of this node in the frontend node-identity substrate
      * (ADR-0000 Stage 1; see inc/eshkol/frontend/node_identity.h).
@@ -3138,12 +3200,30 @@ typedef struct eshkol_ast {
      *
      * ESHKOL_NODE_ID_NONE (0) means "no identity", which is what a node
      * synthesized outside the parser reads as. Like `source_file_id` this is
-     * deliberately an id and not a pointer: nodes are built in places that
-     * do not zero-initialize, so this field can hold garbage, and a garbage
+     * deliberately an id and not a pointer: C++ construction zeroes it, but a
+     * node assembled over unconstructed memory could hold garbage, and a garbage
      * NodeId is rejected by its tag and its bound and reads as unknown —
      * never as a confident wrong location. */
-    uint32_t node_id;
+    uint32_t node_id ESHKOL_AST_BORN_ZERO;
 } eshkol_ast_t;
+
+#ifdef __cplusplus
+} /* extern "C" */
+
+/** Construct @p count value-initialised nodes in raw storage (for example an
+ *  arena block) so they receive the same birth location as any other C++
+ *  construction. Returns @p storage as a node pointer; null stays null. */
+inline eshkol_ast_t* eshkol_ast_construct_array(void* storage, size_t count) {
+    eshkol_ast_t* nodes = static_cast<eshkol_ast_t*>(storage);
+    if (!nodes) return nodes;
+    for (size_t i = 0; i < count; i++) {
+        new (static_cast<void*>(&nodes[i])) eshkol_ast_t{};
+    }
+    return nodes;
+}
+
+extern "C" {
+#endif
 
 // ===== Unified AST Literal Builders =====
 // These set both the AST type fields AND inferred_hott_type for consistent type tracking.

@@ -6886,8 +6886,25 @@ if(ESHKOL_BUILD_TESTS)
                     --eshkol-run $<TARGET_FILE:eshkol-run>
                     --eshkol-vm $<TARGET_FILE:eshkol-vm-standalone-test>
                     --lib-dir "${CMAKE_BINARY_DIR}"
+                    --work-dir "${CMAKE_BINARY_DIR}/test-work/language-coverage-hook-guard"
         )
         set_tests_properties(language_coverage_hook_guard_test PROPERTIES
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            TIMEOUT 900)
+    endif()
+    # Coverage evidence must be reproducible: an instrumented desugaring corpus
+    # compiled and run twice (JIT and AOT) must write identical record sets,
+    # and every record must name a line and column inside its source file.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_language_coverage_determinism.py")
+        add_test(
+            NAME language_coverage_determinism_test
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_language_coverage_determinism.py"
+                    --eshkol-run $<TARGET_FILE:eshkol-run>
+                    --lib-dir "${CMAKE_BINARY_DIR}"
+                    --work-dir "${CMAKE_BINARY_DIR}/test-work/language-coverage-determinism"
+        )
+        set_tests_properties(language_coverage_determinism_test PROPERTIES
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
             TIMEOUT 900)
     endif()
