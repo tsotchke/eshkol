@@ -74,6 +74,13 @@ import re
 import subprocess
 import sys
 import tempfile
+from fractions import Fraction
+
+# The exact-fraction reader and writer are shared with the threshold gate, so
+# the baseline this script records and the trace it emits are graded by one
+# definition of "at or above the floor".
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from check_engine_parity_threshold import exact_fraction, record_fraction  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASELINE = os.path.join(REPO, "tests", "vm_parity", "ENGINE_PARITY_BASELINE.json")
@@ -443,28 +450,59 @@ def main():
           % (len(high_risk_ceiling_constructs), len(high_risk_surface),
              100.0 * high_risk_ceiling))
 
+    # Every measurement below is also kept as its integer counts. Comparisons
+    # use those counts (Fraction is integer cross-multiplication), never a
+    # rounded or epsilon-widened float.
+    counts = (len(credited), len(surface))
+    high_risk_counts = ((len(high_risk_credited), len(high_risk_surface))
+                        if high_risk_surface else (1, 1))
+    ceiling_counts = (len(ceiling_constructs), len(surface))
+    high_risk_ceiling_counts = ((len(high_risk_ceiling_constructs),
+                                 len(high_risk_surface))
+                                if high_risk_surface else (1, 1))
+    measured = Fraction(*counts)
+    high_risk_measured = Fraction(*high_risk_counts)
+
     known = set(baseline.get("divergent_programs", []))
     new_div = [d for d in divergences if d["program"] not in known]
-    floor = float(baseline.get("differential_floor", 0.0))
-    high_risk_floor = float(baseline.get("high_risk_differential_floor", 1.0))
-    if not 0.0 <= floor <= 1.0 or not 0.0 <= high_risk_floor <= 1.0:
-        die("baseline floors must be fractions in [0, 1]")
+
+    # Recorded floors are read exactly: from the integer counts the baseline
+    # stores beside each floor, or, for a baseline written before the counts
+    # existed, as the exact binary value of its float. `*_counts` stays None
+    # for such a legacy float, so the emitted trace carries only what the
+    # baseline actually recorded.
+    def recorded_floor(key, default):
+        try:
+            value = exact_fraction(baseline, key)
+        except ValueError as exc:
+            die("baseline is malformed: %s" % exc)
+        if value is None:
+            value = Fraction(default)
+        if not 0 <= value <= 1:
+            die("baseline floors must be fractions in [0, 1]")
+        numerator = baseline.get(key + "_numerator")
+        denominator = baseline.get(key + "_denominator")
+        return value, ((numerator, denominator) if numerator is not None else None)
+
+    floor, floor_counts = recorded_floor("differential_floor", 0)
+    high_risk_floor, high_risk_floor_counts = recorded_floor(
+        "high_risk_differential_floor", 1)
     if not args.update_baseline:
         # Only enforced when GRADING an existing baseline against this run's
         # own measured ceiling -- --update-baseline is exactly how a
         # malformed literal floor gets repaired, so it must not refuse to
         # write the repair.
-        if floor > ceiling + 1e-9:
-            die("baseline is malformed: differential_floor %.4f exceeds this "
-                "run's own ceiling %.4f (constructs the corpus can ever "
+        if floor > Fraction(*ceiling_counts):
+            die("baseline is malformed: differential_floor %.9f exceeds this "
+                "run's own ceiling %d/%d (constructs the corpus can ever "
                 "exercise) -- no run can pass; fix the baseline, not the run"
-                % (floor, ceiling))
-        if high_risk_floor > high_risk_ceiling + 1e-9:
-            die("baseline is malformed: high_risk_differential_floor %.4f "
-                "exceeds this run's own high-risk ceiling %.4f (high-risk "
+                % ((float(floor),) + ceiling_counts))
+        if high_risk_floor > Fraction(*high_risk_ceiling_counts):
+            die("baseline is malformed: high_risk_differential_floor %.9f "
+                "exceeds this run's own high-risk ceiling %d/%d (high-risk "
                 "constructs the corpus can ever exercise) -- no run can "
                 "pass; fix the baseline, not the run"
-                % (high_risk_floor, high_risk_ceiling))
+                % ((float(high_risk_floor),) + high_risk_ceiling_counts))
     if args.update_baseline:
         # The trace this process emits below is read by check_engine_parity_
         # threshold.py as "the current state of the gate". During an update
@@ -477,30 +515,32 @@ def main():
         # the very run that repairs a malformed baseline report the repair
         # as a failure.
         #
-        # Exact, not rounded: the baseline FILE below stores round(fraction, 4)
-        # for readability, but rounding to 4 places can move a floor UP past
-        # the exact fraction it came from (0.323467... -> stored 0.3235), and
-        # comparing that rounded floor against this run's own EXACT fraction
-        # in `result` below would make this run fail against its own
-        # just-written baseline. Keeping the in-memory floor exact here
-        # sidesteps that instead of widening the pass/fail epsilon to hide it.
-        floor = fraction
-        high_risk_floor = high_risk_fraction
+        # The baseline FILE below records these same counts, so the floor in
+        # memory, the floor in the trace and the floor on disk are one exact
+        # value. (The file used to store round(fraction, 4), which can round
+        # UP past the measurement: 155/473 = 0.327695... was stored as 0.3277,
+        # and the next ordinary run failed against its own recorded floor.)
+        floor, floor_counts = measured, counts
+        high_risk_floor, high_risk_floor_counts = (high_risk_measured,
+                                                   high_risk_counts)
 
-    # A 1e-9 epsilon absorbs float round-trip noise (notably: a floor written
-    # as round(fraction, 4) can round UP past the very fraction it was set
-    # from -- 0.323467... rounds to the stored 0.3235, which is fractionally
-    # ABOVE 0.323467...) without weakening the gate: the corpus has 1137
-    # surface constructs, so the smallest real change in a fraction is
-    # 1/1137 =~ 0.00088, nine orders of magnitude above this epsilon.
-    EPS = 1e-9
+    def record_floor(payload, key, value, value_counts):
+        if value_counts is not None:
+            record_fraction(payload, key, *value_counts)
+        else:
+            payload[key] = float(value)
+
+    def describe(value, value_counts):
+        if value_counts is not None:
+            return "%d/%d (%.2f%%)" % (value_counts + (100.0 * float(value),))
+        return "%.9f" % float(value)
+
+    passed = (not new_div and not regressions
+              and measured >= floor and high_risk_measured >= high_risk_floor)
     result = {
         "kind": "runtime_event",
         "name": "engine_semantic_parity",
-        "value": ("PASS" if (not new_div and not regressions
-                             and fraction >= floor - EPS
-                             and high_risk_fraction >= high_risk_floor - EPS)
-                   else "FAIL"),
+        "value": "PASS" if passed else "FAIL",
         "snippet": ("%d/%d constructs with differential evidence (%.2f%%), "
                     "%d divergent program(s), %d new"
                     % (len(credited), len(surface), 100.0 * fraction,
@@ -508,8 +548,8 @@ def main():
         "differential_fraction": fraction,
         "high_risk_differential_fraction": high_risk_fraction,
         "high_risk_uncovered": sorted(high_risk_surface - high_risk_credited),
-        "differential_floor": floor,
-        "high_risk_differential_floor": high_risk_floor,
+        "differential_floor": float(floor),
+        "high_risk_differential_floor": float(high_risk_floor),
         "ceiling_fraction": ceiling,
         "high_risk_ceiling_fraction": high_risk_ceiling,
         "confidence": 0.95,
@@ -518,22 +558,26 @@ def main():
         # that this event exists; the repository threshold gate consumes these
         # fields and checks the allowed divergence count and coverage floor.
         "threshold": {
-            "differential_fraction": fraction,
-            "minimum_differential_fraction": floor,
             "divergent_programs": len(divergences),
             "allowed_divergent_programs": len(known),
             "new_divergent_programs": len(new_div),
             "regressed_programs": len(regressions),
             "allowed_new_divergent_programs": 0,
-            # High-risk axis + its achievability ceiling, so the lightweight
-            # gate (check_engine_parity_threshold.py) can independently
-            # reject a baseline whose literal floor a run can never reach,
-            # not just fail on it.
-            "high_risk_differential_fraction": high_risk_fraction,
-            "high_risk_minimum_differential_fraction": high_risk_floor,
-            "high_risk_ceiling_fraction": high_risk_ceiling,
         },
     }
+    # Each fraction is written with its integer counts, which is what
+    # check_engine_parity_threshold.py grades. The high-risk axis and its
+    # achievability ceiling are included so that gate can independently
+    # reject a baseline whose literal floor a run can never reach, not just
+    # fail on it.
+    threshold = result["threshold"]
+    record_fraction(threshold, "differential_fraction", *counts)
+    record_floor(threshold, "minimum_differential_fraction", floor, floor_counts)
+    record_fraction(threshold, "high_risk_differential_fraction", *high_risk_counts)
+    record_floor(threshold, "high_risk_minimum_differential_fraction",
+                 high_risk_floor, high_risk_floor_counts)
+    record_fraction(threshold, "high_risk_ceiling_fraction",
+                    *high_risk_ceiling_counts)
     os.makedirs(TRACE_DIR, exist_ok=True)
     with open(TRACE, "w", encoding="utf-8") as f:
         f.write(json.dumps(result) + "\n")
@@ -559,33 +603,42 @@ def main():
         if missing_dispositions:
             die("every retained divergence needs a named disposition; missing: %s"
                 % ", ".join(missing_dispositions))
+        new_baseline = {
+            "_comment": ("Ratchet for scripts/run_engine_parity_coverage.py. "
+                         "divergent_programs may never grow; "
+                         "differential_floor and high_risk_differential_floor "
+                         "are both the MEASURED fraction from the run that "
+                         "wrote them, never a literal target -- a later check "
+                         "fails only when its own measurement falls below the "
+                         "recorded value here; a later --update-baseline may "
+                         "record a higher measurement. Each floor is recorded "
+                         "exactly, as the integer counts it was measured from "
+                         "(*_numerator = credited constructs, *_denominator = "
+                         "surface constructs) beside the unrounded float they "
+                         "divide to; the counts are what is graded, so a floor "
+                         "can never exceed the measurement it came from. "
+                         "Neither floor can exceed its own run's achievability "
+                         "ceiling (see ceiling_fraction / "
+                         "high_risk_ceiling_fraction in "
+                         "scripts/icc_traces/engine_parity_coverage.jsonl) -- "
+                         "run_engine_parity_coverage.py refuses to grade a "
+                         "baseline where one does."),
+            "dispositions": {name: dispositions[name]
+                             for name in sorted(dispositions)
+                             if name in {d["program"] for d in divergences}},
+            "divergent_programs": sorted(d["program"] for d in divergences),
+            "both_ran_programs": sorted(both_ran_now),
+        }
+        record_fraction(new_baseline, "differential_floor", *counts)
+        record_fraction(new_baseline, "high_risk_differential_floor",
+                        *high_risk_counts)
         with open(BASELINE, "w", encoding="utf-8") as f:
-            json.dump({
-                "_comment": ("Ratchet for scripts/run_engine_parity_coverage.py. "
-                             "divergent_programs may never grow; "
-                             "differential_floor and high_risk_differential_floor "
-                             "are both the MEASURED fraction from the run that "
-                             "wrote them, never a literal target -- a later check "
-                             "fails only when its own measurement falls below the "
-                             "recorded value here; a later --update-baseline may "
-                             "record a higher measurement. Neither floor can "
-                             "exceed its own run's achievability ceiling (see "
-                             "ceiling_fraction / high_risk_ceiling_fraction in "
-                             "scripts/icc_traces/engine_parity_coverage.jsonl) -- "
-                             "run_engine_parity_coverage.py refuses to grade a "
-                             "baseline where one does."),
-                "dispositions": {name: dispositions[name]
-                                 for name in sorted(dispositions)
-                                 if name in {d["program"] for d in divergences}},
-                "divergent_programs": sorted(d["program"] for d in divergences),
-                "both_ran_programs": sorted(both_ran_now),
-                "differential_floor": round(fraction, 4),
-                "high_risk_differential_floor": round(high_risk_fraction, 4),
-            }, f, indent=2)
+            json.dump(new_baseline, f, indent=2)
             f.write("\n")
-        print("  baseline written: %d divergent program(s), floor %.4f, "
-              "high-risk floor %.4f (ceiling %.4f)"
-              % (len(divergences), fraction, high_risk_fraction, high_risk_ceiling))
+        print("  baseline written: %d divergent program(s), floor %d/%d, "
+              "high-risk floor %d/%d (ceiling %d/%d)"
+              % ((len(divergences),) + counts + high_risk_counts
+                 + high_risk_ceiling_counts))
         return 0
 
     rc = 0
@@ -611,17 +664,19 @@ def main():
             if d["constructs"]:
                 print("      constructs exercised on both: %s"
                       % ", ".join(d["constructs"][:12]))
-    if fraction < floor - EPS:
+    if measured < floor:
         rc = 1
         print()
-        print("FAIL: differential construct coverage %.2f%% fell below the "
-              "recorded floor %.2f%%." % (100.0 * fraction, 100.0 * floor))
-    if high_risk_fraction < high_risk_floor - EPS:
+        print("FAIL: differential construct coverage %s fell below the "
+              "recorded floor %s." % (describe(measured, counts),
+                                      describe(floor, floor_counts)))
+    if high_risk_measured < high_risk_floor:
         rc = 1
         print()
-        print("FAIL: high-risk differential construct coverage %.2f%% fell "
-              "below the recorded floor %.2f%%." %
-              (100.0 * high_risk_fraction, 100.0 * high_risk_floor))
+        print("FAIL: high-risk differential construct coverage %s fell "
+              "below the recorded floor %s." %
+              (describe(high_risk_measured, high_risk_counts),
+               describe(high_risk_floor, high_risk_floor_counts)))
         for name in sorted(high_risk_surface - high_risk_credited)[:40]:
             print("  uncovered high-risk construct: %s" % name)
 

@@ -1,5 +1,5 @@
 {
-  "_comment": "Ratchet for scripts/run_engine_parity_coverage.py. divergent_programs may never grow; differential_floor and high_risk_differential_floor are both the MEASURED fraction from the run that wrote them, never a literal target -- a later check fails only when its own measurement falls below the recorded value here; a later --update-baseline may record a higher measurement. Neither floor can exceed its own run's achievability ceiling (see ceiling_fraction / high_risk_ceiling_fraction in scripts/icc_traces/engine_parity_coverage.jsonl) -- run_engine_parity_coverage.py refuses to grade a baseline where one does.",
+  "_comment": "Ratchet for scripts/run_engine_parity_coverage.py. divergent_programs may never grow; differential_floor and high_risk_differential_floor are both the MEASURED fraction from the run that wrote them, never a literal target -- a later check fails only when its own measurement falls below the recorded value here; a later --update-baseline may record a higher measurement. Each floor is recorded exactly, as the integer counts it was measured from (*_numerator = credited constructs, *_denominator = surface constructs) beside the unrounded float they divide to; the counts are what is graded, so a floor can never exceed the measurement it came from. Neither floor can exceed its own run's achievability ceiling (see ceiling_fraction / high_risk_ceiling_fraction in scripts/icc_traces/engine_parity_coverage.jsonl) -- run_engine_parity_coverage.py refuses to grade a baseline where one does.",
   "dispositions": {
     "tests/logic/workspace_test.esk": "VM workspace step-counter initialization remains a documented VM-subset difference; the row is measured and named rather than excused by an opaque path-only baseline.",
     "tests/parser/sexpr_test.esk": "The VM does not preserve the native nested tensor representation in this S-expression probe; this is a documented VM-subset difference.",
@@ -231,6 +231,10 @@
     "tests/vm_parity/corpus/vector_payload_limit.esk",
     "tests/vm_parity/corpus/with_region_lowering.esk"
   ],
-  "differential_floor": 0.2818,
-  "high_risk_differential_floor": 0.3277
+  "differential_floor": 0.28182616330114135,
+  "differential_floor_numerator": 321,
+  "differential_floor_denominator": 1139,
+  "high_risk_differential_floor": 0.3276955602536998,
+  "high_risk_differential_floor_numerator": 155,
+  "high_risk_differential_floor_denominator": 473
 }
