@@ -105,6 +105,14 @@ public:
     void bind(const std::string& name, TypeId type);
     /** Look up @p name, searching from the innermost scope outward. Returns nullopt if unbound. */
     std::optional<TypeId> lookup(const std::string& name) const;
+    /** Number of active scopes; the innermost scope's index is scopeCount() - 1. */
+    size_t scopeCount() const { return scopes_.size(); }
+    /**
+     * Index (0 = global) of the innermost scope that binds @p name, i.e. the
+     * binding lookup() would return, or nullopt if unbound. Identifies WHICH
+     * binding a use resolves to, where lookup() only says what type it has.
+     */
+    std::optional<size_t> bindingScopeOf(const std::string& name) const;
 
     // Type aliases (from define-type)
     /** Register a (possibly parameterized) type alias introduced by `define-type`. */
@@ -678,6 +686,29 @@ private:
     BorrowChecker borrow_;
     UnsafeContext unsafe_;
     std::vector<TypeCheckResult> errors_;
+
+    // Named-let parameter widening (see synthesizeLetTask()). A named let's
+    // loop parameters are typed by the join of every value the loop carries in
+    // them -- the seed and each recursive call's argument -- not by the seed
+    // alone. One frame per named let whose body is being synthesized; a call
+    // that resolves to the frame's own loop binding records its argument types.
+    struct LoopFrame {
+        std::string name;
+        size_t scope_index;                        // scope the loop name is bound in
+        TypeId loop_type;                          // signature the body is checked against
+        std::vector<std::vector<TypeId>> args;     // per parameter: types supplied by calls
+    };
+    std::vector<LoopFrame> loop_frames_;
+
+    // Diagnostics produced while a named-let body is synthesized against a
+    // signature that may still widen are held back, and only the pass that
+    // reaches the fixpoint releases them. Depth > 0 means "inside such a pass";
+    // nested passes append to the same buffer, so an inner loop's released
+    // diagnostics stay subject to the outer loop's decision.
+    size_t speculation_depth_ = 0;
+    std::vector<std::string> deferred_diagnostics_;
+    /** Print one diagnostic line to stderr, or hold it while speculating. */
+    void emitDiagnostic(const std::string& line);
 
     ContinuationTask<TypeCheckResult> synthesizeTask(eshkol_ast_t* expr);
     ContinuationTask<TypeCheckResult> checkTask(eshkol_ast_t* expr, TypeId expected);

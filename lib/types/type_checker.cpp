@@ -91,6 +91,17 @@ std::optional<TypeId> Context::lookup(const std::string& name) const {
 }
 
 /**
+ * @brief Index (0 = global) of the innermost scope binding @p name — the
+ * binding lookup() resolves to — or std::nullopt if @p name is unbound.
+ */
+std::optional<size_t> Context::bindingScopeOf(const std::string& name) const {
+    for (size_t i = scopes_.size(); i-- > 0;) {
+        if (scopes_[i].count(name)) return i;
+    }
+    return std::nullopt;
+}
+
+/**
  * @brief Register a type alias introduced by a `define-type` form.
  *
  * Records @p type_expr under @p name so later references to @p name resolve
@@ -1655,6 +1666,29 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
         arg_types.push_back((co_await synthesizeTask(const_cast<eshkol_ast_t*>(&call.variables[i]))));
     }
 
+    // A call to an enclosing named let's own loop binding supplies values for
+    // its parameters; record their types so synthesizeLetTask() can type each
+    // parameter by everything the loop carries in it. Only the innermost frame
+    // of that name can be the target, and only when the name still resolves to
+    // that frame's binding — an inner `let` rebinding the name shadows it.
+    if (!loop_frames_.empty() && func_expr->type == ESHKOL_VAR && func_expr->variable.id) {
+        const std::string callee = func_expr->variable.id;
+        for (auto frame = loop_frames_.rbegin(); frame != loop_frames_.rend(); ++frame) {
+            if (frame->name != callee) continue;
+            auto scope = ctx_.bindingScopeOf(callee);
+            auto bound = ctx_.lookup(callee);
+            if (scope && *scope == frame->scope_index && bound && *bound == frame->loop_type) {
+                size_t n = std::min(frame->args.size(), static_cast<size_t>(call.num_vars));
+                for (size_t i = 0; i < n; ++i) {
+                    if (arg_types[i].success) {
+                        frame->args[i].push_back(arg_types[i].inferred_type);
+                    }
+                }
+            }
+            break;
+        }
+    }
+
     // Check for builtin operators first
     if (func_expr->type == ESHKOL_VAR && func_expr->variable.id) {
         std::string func_name = func_expr->variable.id;
@@ -2739,14 +2773,20 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
                         // e.g. Vector <: (+ boolean (vector any)).
                         bool compatible = env_.isSubtype(actual, expected);
 
-                        // Numeric-tower join (item 4): a numeric accumulator
-                        // declared/inferred at one rung (e.g. Float64 from a 0.0
-                        // seed) recombined with a value widened to Number through
-                        // heterogeneous records must not error on the recursive
-                        // call — all operands are real and the tower promotes them
-                        // at runtime regardless. Two numeric types are always
-                        // reconcilable to their join, so accept. A non-numeric
-                        // actual (e.g. String) is still rejected below.
+                        // Numeric-tower join (item 4) for DECLARED numeric
+                        // parameters: `(define (scale (x : float64)) ...)` called
+                        // with a value widened to Number through heterogeneous
+                        // records must not warn — all operands are real and the
+                        // tower promotes them at runtime regardless. Two numeric
+                        // types are always reconcilable to their join, so accept.
+                        // A non-numeric actual (e.g. String) is still rejected
+                        // below. An INFERRED named-let accumulator (Float64 from a
+                        // 0.0 seed, fed Number on the recursive call) no longer
+                        // reaches this rule: synthesizeLetTask() types the loop
+                        // parameter by the join of everything the loop carries,
+                        // for every type, so the recursive argument is already a
+                        // subtype. This rule remains for annotated parameters,
+                        // which are contracts and are never widened.
                         if (!compatible &&
                             isNumericType(env_, expected) && isNumericType(env_, actual)) {
                             compatible = true;
@@ -2975,6 +3015,9 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLetTask(eshkol_ast_t* e
     // Collect binding types
     std::vector<TypeId> binding_types;
     std::vector<std::string> binding_names;
+    // Whether each binding's type was inferred from its initialiser (and so
+    // describes only the seed) rather than declared by an annotation or linear.
+    std::vector<bool> binding_inferred;
     // Name plus the index it was bound at: a binding's scope runs from the next
     // binding's value through the body, so its region depends on where it sits.
     std::vector<std::pair<std::string, size_t>> linear_bindings;
@@ -3018,6 +3061,8 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLetTask(eshkol_ast_t* e
 
         binding_names.push_back(name);
         binding_types.push_back(binding_type);
+        binding_inferred.push_back(!(let.binding_types && let.binding_types[i]) &&
+                                   !(binding_type.flags & TYPE_FLAG_LINEAR));
         // A linear-typed let binding is use-once checked over the let body, the
         // same way a linear parameter is over a function body. This used to be
         // skipped (#320) because the incidental usage counters were too coarse
@@ -3032,23 +3077,102 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLetTask(eshkol_ast_t* e
         }
     }
 
-    // Handle named let (loop): pre-bind the loop name as a recursive function
-    // Named let: (let loop ((i 0)) body) - loop is a function that takes i and returns body type
-    if (let.name) {
-        // For named let, we need to figure out the return type
-        // Pre-bind with Value return type, then update after body synthesis
-        TypeId loop_type = env_.makeFunctionType(binding_types, BuiltinTypes::Value);
-        ctx_.bind(let.name, loop_type);
-    }
+    TypeCheckResult body_result = TypeCheckResult::ok(BuiltinTypes::Value);
 
-    // Synthesize body type
-    auto body_result = (co_await synthesizeTask(let.body));
+    if (!let.name) {
+        body_result = (co_await synthesizeTask(let.body));
+    } else {
+        // Named let: `(let loop ((x seed) ...) body)` binds `loop` as a
+        // recursive procedure over the bindings. A loop parameter holds the
+        // seed on the first iteration and whatever a recursive call passes on
+        // every later one, so its type is the JOIN of all of those — not the
+        // seed's synthesized type. Freezing it to the seed made a correct loop
+        // warn whenever the seed was synthesized more precisely than the values
+        // the loop computes: an interval accumulator seeded (cons 0.0 0.0) is
+        // Pair<Float64, Float64>, the interval sum fed back is Pair, and
+        // `Pair <: Pair<Float64, Float64>` rightly fails.
+        //
+        // The join is computed to a fixpoint over the body. Each pass binds the
+        // parameters and the loop at the current signature, synthesizes the
+        // body while recording the argument types of every call to this loop
+        // (loop_frames_), then widens each inferred parameter to its least
+        // common supertype with each recorded argument. Widening one parameter
+        // can change the types computed for another's arguments, and the loop
+        // may be called from several sites, hence the iteration. It terminates:
+        // a parameter only ever moves strictly up its own finite supertype
+        // chain. A pass that widened something is discarded — its diagnostics
+        // were judged against a signature that was too narrow — and the pass
+        // that widens nothing is the real check.
+        //
+        // Widening is to INFORMATIVE joins only. A join that reaches the
+        // dynamic top type `Value` (Pair with String, Int64 with String) says
+        // the loop carries unrelated kinds of value in one slot; adopting it
+        // would switch the call-site check off for exactly the argument that
+        // is wrong. Such an argument contributes nothing, so the parameter keeps
+        // its type and the recursive call is reported against it. A declared
+        // (annotated) or linear binding is a contract and is never widened.
+        std::vector<TypeId> params = binding_types;
+        const size_t loop_scope = ctx_.scopeCount() - 1;
+        const auto linear_before = ctx_.snapshotLinearUsage();
 
-    // For named let, update the loop function's return type based on body
-    if (let.name && body_result.success) {
-        // Re-bind with the actual return type (though this is after the fact)
-        TypeId loop_type = env_.makeFunctionType(binding_types, body_result.inferred_type);
-        ctx_.bind(let.name, loop_type);
+        for (;;) {
+            // Parameters may have been narrowed as a side effect of the previous
+            // pass (arithmetic narrows a Value-typed variable); start each pass
+            // from the signature being tested.
+            for (size_t i = 0; i < params.size(); ++i) {
+                if (binding_inferred[i]) ctx_.bind(binding_names[i], params[i]);
+            }
+            TypeId loop_type = env_.makeFunctionType(params, BuiltinTypes::Value);
+            ctx_.bind(let.name, loop_type);
+
+            const size_t errors_mark = errors_.size();
+            const size_t deferred_mark = deferred_diagnostics_.size();
+            const size_t linearity_mark = linearity_violations_;
+
+            loop_frames_.push_back(LoopFrame{let.name, loop_scope, loop_type,
+                                             std::vector<std::vector<TypeId>>(params.size())});
+            ++speculation_depth_;
+            body_result = (co_await synthesizeTask(let.body));
+            --speculation_depth_;
+            LoopFrame frame = std::move(loop_frames_.back());
+            loop_frames_.pop_back();
+
+            bool widened = false;
+            for (size_t i = 0; i < params.size(); ++i) {
+                if (!binding_inferred[i]) continue;
+                for (TypeId arg : frame.args[i]) {
+                    if (arg == params[i] || arg == BuiltinTypes::Value) continue;
+                    if (env_.isSubtype(arg, params[i])) continue;
+                    auto join = env_.leastCommonSupertype(params[i], arg);
+                    if (!join || *join == BuiltinTypes::Value || *join == params[i]) continue;
+                    params[i] = *join;
+                    widened = true;
+                }
+            }
+
+            if (!widened) {
+                // Fixpoint: this pass is the check. Release what it held unless
+                // an enclosing loop's pass is still deciding.
+                if (speculation_depth_ == 0) {
+                    for (size_t d = deferred_mark; d < deferred_diagnostics_.size(); ++d) {
+                        fprintf(stderr, "%s\n", deferred_diagnostics_[d].c_str());
+                    }
+                    deferred_diagnostics_.resize(deferred_mark);
+                }
+                break;
+            }
+
+            // Not yet a fixpoint: undo everything this pass recorded.
+            errors_.resize(errors_mark);
+            deferred_diagnostics_.resize(deferred_mark);
+            linearity_violations_ = linearity_mark;
+            ctx_.restoreLinearUsage(linear_before);
+        }
+
+        // Re-bind the loop with the body's return type for the rest of the scope.
+        if (body_result.success) {
+            ctx_.bind(let.name, env_.makeFunctionType(params, body_result.inferred_type));
+        }
     }
 
     // A named let is a loop: its body runs an unknown number of times, so a
@@ -3596,12 +3720,25 @@ void TypeChecker::reportTypeIssue(const std::string& msg, const eshkol_ast_t* no
         loc_msg += ")";
     }
 
-    if (strict_types_) {
-        fprintf(stderr, "[ERROR] Type error: %s\n", loc_msg.c_str());
-    } else {
-        fprintf(stderr, "[WARN] Type warning: %s\n", loc_msg.c_str());
-    }
+    emitDiagnostic((strict_types_ ? "[ERROR] Type error: " : "[WARN] Type warning: ") +
+                   loc_msg);
     addError(msg, node ? node->line : 0, node ? node->column : 0);
+}
+
+/**
+ * @brief Print @p line (plus a newline) to stderr, or hold it back while a
+ * named-let body is being synthesized against a signature that may still widen.
+ *
+ * See synthesizeLetTask(): a pass that does not reach the fixpoint discards
+ * what it held; the pass that does releases it, in order, once no enclosing
+ * speculative pass remains.
+ */
+void TypeChecker::emitDiagnostic(const std::string& line) {
+    if (speculation_depth_ > 0) {
+        deferred_diagnostics_.push_back(line);
+        return;
+    }
+    fprintf(stderr, "%s\n", line.c_str());
 }
 
 /**
@@ -3641,7 +3778,7 @@ void TypeChecker::reportLinearViolation(const std::string& msg,
     std::string loc_msg = msg;
     appendLocation(loc_msg, node);
 
-    fprintf(stderr, "[ERROR] Type error: %s\n", loc_msg.c_str());
+    emitDiagnostic("[ERROR] Type error: " + loc_msg);
     linearity_violations_++;
     addError(msg, node ? node->line : 0, node ? node->column : 0);
 }
@@ -4670,7 +4807,7 @@ void TypeChecker::reportLinearVerdict(const std::string& name,
                               "' is not statically decidable here (body contains " +
                               verdict.blocker + "); use-exactly-once is NOT enforced for it";
             appendLocation(loc, site);
-            fprintf(stderr, "[WARN] Linearity not enforced: %s\n", loc.c_str());
+            emitDiagnostic("[WARN] Linearity not enforced: " + loc);
         }
         return;
     }
