@@ -1,0 +1,29 @@
+;; Type System Test: a named-let loop with two recursive call sites, one of
+;; which legitimately widens the accumulator (a pair operation whose result is
+;; the wider Pair) and one of which feeds it a STRING. The legitimate site
+;; widens the parameter to Pair; the string site is still reported, against
+;; the widened parameter. Widening joins only informative types: Pair and
+;; String meet at the dynamic top, which would switch the check off, so the
+;; string never contributes.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN]
+;; EXPECT-STDERR: argument 2 of 'loop': expected Pair, got String
+;; EXPECT-NO-STDERR: got Pair (
+
+;; the two arms build differently-typed pairs, so the result is the wider Pair
+(define (reorder p)
+  (if (<= (car p) (cdr p))
+      (cons (car p) (cdr p))
+      (cons 1.5 (car p))))
+
+(define (mixed-loop n)
+  (let loop ((i 0) (acc (cons 0.0 0.0)))
+    (if (>= i n)
+        acc
+        (if (even? i)
+            (loop (+ i 1) (reorder acc))
+            (loop (+ i 1) "not an interval")))))
+
+(display (mixed-loop 0))
+(newline)
