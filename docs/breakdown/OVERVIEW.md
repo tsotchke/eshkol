@@ -228,7 +228,7 @@ v1.1-accelerate adds eight major feature systems to the v1.0-foundation core:
 
 ### Machine Learning Framework (75+ Builtins)
 
-A complete ML framework implemented as compiler-level builtins. The dispatch entry point is [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) (2,023 lines after the v1.2 split); the per-domain implementations live in thirteen `tensor_*_codegen.cpp` siblings (22,355 lines combined) with SIMD acceleration and automatic GPU dispatch:
+A complete ML framework implemented as compiler-level builtins. The dispatch entry point is [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) (2,012 lines after the v1.2 split); the per-domain implementations live in thirteen `tensor_*_codegen.cpp` siblings (22,355 lines combined) with SIMD acceleration and automatic GPU dispatch:
 
 - **Activations** (16): relu, relu6, sigmoid, tanh, gelu, swish, mish, softmax, log-softmax, softplus, softsign, leaky-relu, prelu, elu, selu, celu
 - **Loss functions** (14): mse-loss, mae-loss, cross-entropy-loss, bce-loss, huber-loss, kl-div-loss, hinge-loss, smooth-l1-loss, focal-loss, triplet-loss, contrastive-loss, label-smoothing-loss, cosine-embedding-loss
