@@ -28,7 +28,11 @@ pruned_from: 'v1.3.5 astra doc-typed-claims residual pass (integration/astra-v13
   docs/ESHKOL_V1_ARCHITECTURE.md, docs/FEATURE_MATRIX.md, docs/breakdown/{COMPILER_ARCHITECTURE,DEVELOPER_TOOLS,OVERVIEW,REPL_JIT,SCHEME_COMPATIBILITY,XLA_BACKEND}.md,
   docs/design/AUDIT_2026_08_25_RESOLUTION.md) rather than allowlisted, per the standing DD-01 convention
   that correcting a groundable claim beats exempting it. Net: 77 kept + 4 added = 81 entries, reconciling
-  exactly against 70 explained + 4 new EXEMPT-HISTORICAL + 1 DOC-DEBT + 48 doc corrections = 123.'
+  exactly against 70 explained + 4 new EXEMPT-HISTORICAL + 1 DOC-DEBT + 48 doc corrections = 123.
+  2026-09-13: db85666284b594af (docs/design/adr/0006-language-conformance-modules.md:222,
+  lib/backend/call_apply_codegen.cpp:1129) pruned as stale -- the file has grown back to 1,150 lines, so
+  icc doc-typed-claims now grounds the claim and it no longer matches any wrong claim by id or stable key.
+  80 entries remain.'
 regenerated_at: '2026-08-28'
 regenerated_from: 'DD-01 closure (2026-08-28): icc doc-typed-claims --repo eshkol-ledger-debt --claim-limit
   20000 --finding-limit 2000 --format json at c459f292 + this fix''s own doc corrections, measured final_wrong_count=76
@@ -894,14 +898,3 @@ entries:
   reason: same `4bf871a0`-pinned historical snapshot as claim 1ef94e09a80a0a7f -- confirmed in range against
     that commit's 51-line file; the file was rewritten to 6 lines after the audit, on this same branch, as
     the ADR's tracked visibility BUILD ITEM landed. Added 2026-09-10.
-- claim_id: db85666284b594af
-  path: docs/design/adr/0006-language-conformance-modules.md
-  line: 222
-  claim_type: file_path
-  subject: lib/backend/call_apply_codegen.cpp
-  value: 1129
-  disposition: EXEMPT-HISTORICAL
-  reason: same `4bf871a0`-pinned historical audit as claim 1ef94e09a80a0a7f -- at that commit
-    call_apply_codegen.cpp was 1,270 lines and the cited 1129-1153 range was in bounds (verified via `git
-    show 4bf871a0:lib/backend/call_apply_codegen.cpp`); the file has since shrunk to 1,076 lines on this
-    branch. Added 2026-09-10.

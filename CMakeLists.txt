@@ -1369,18 +1369,18 @@ if(ESHKOL_XLA_ENABLED)
     # The vendored PJRT C ABI header, on the include path for EVERY XLA build.
     #
     # It used to be added only inside the STABLEHLO_ROOT branch below, as one
-    # entry of STABLEHLO_INCLUDE_DIRS. But lib/backend/xla/pjrt_client.cpp is a
-    # member of ESHKOL_XLA_RUNTIME_SRC, which is populated on
-    # ESHKOL_XLA_ENABLED alone — with no reference to STABLEHLO_ROOT. So
-    # configuring -DESHKOL_XLA_ENABLED=ON without STABLEHLO_ROOT (the
-    # system-LLVM fallback documented immediately below as a supported mode)
-    # produced a build that could not compile:
-    #
-    #   lib/backend/xla/pjrt_client.cpp:34:10: fatal error:
-    #       'pjrt_c_api.h' file not found
+    # entry of STABLEHLO_INCLUDE_DIRS. But lib/backend/xla/ sources enter
+    # eshkol-static through the LIB_SRC glob, and ESHKOL_XLA_RUNTIME_SRC
+    # (lib/backend/xla/xla_runtime.cpp) is selected, on ESHKOL_XLA_ENABLED
+    # alone, with no reference to STABLEHLO_ROOT. A PJRT client source there
+    # that includes deps/pjrt/pjrt_c_api.h is compiled whenever XLA is ON, so
+    # an include path added only under STABLEHLO_ROOT breaks
+    # -DESHKOL_XLA_ENABLED=ON without STABLEHLO_ROOT (the system-LLVM
+    # fallback documented immediately below as a supported mode) with
+    # "fatal error: 'pjrt_c_api.h' file not found".
     #
     # The condition guarding the include path and the condition selecting the
-    # source file have to be the same condition. This is that condition. The
+    # sources have to be the same condition. This is that condition. The
     # entry in STABLEHLO_INCLUDE_DIRS is left in place: it is idempotent, and
     # deleting it would leave the bundled-LLVM branch's include list looking
     # deliberately incomplete to the next reader.
@@ -1416,8 +1416,8 @@ if(ESHKOL_XLA_ENABLED)
         set(STABLEHLO_INCLUDE_DIRS
             "${STABLEHLO_ROOT}"
             # The vendored PJRT C ABI header. It belongs on the global XLA-mode
-            # include path rather than only in LLVM_INCLUDE_DIRS, because
-            # lib/backend/xla/pjrt_client.cpp is compiled into eshkol-static,
+            # include path rather than only in LLVM_INCLUDE_DIRS, because the
+            # lib/backend/xla/ sources that use it build into eshkol-static,
             # which does not consume the per-target LLVM include list.
             "${CMAKE_SOURCE_DIR}/deps/pjrt"
             "${STABLEHLO_ROOT}/llvm-project/llvm/include"
@@ -9223,11 +9223,11 @@ endif()
 # ===== PJRT Smoke Test =====
 # Mirrors the xla_codegen_test target above exactly (same library, same
 # LLVM/MLIR/StableHLO linkage, same platform-specific options): it links
-# against eshkol-static purely to reach PjrtPlugin/PjrtClient/findPjrtPlugin
-# (inc/eshkol/backend/xla/pjrt_client.h), which is compiled into eshkol-static
-# whenever ESHKOL_XLA_ENABLED is ON (see the lib/backend/xla/*.cpp glob
-# above). It additionally needs libdl for dlopen/dlsym/dlclose — nothing else
-# in this build has needed that before pjrt_client.cpp.
+# against eshkol-static to reach the PJRT client (PjrtPlugin/PjrtClient), a
+# lib/backend/xla/ source the LIB_SRC glob compiles in whenever XLA is ON, and
+# needs libdl for the plugin loader's dlopen/dlsym. It is configured only when
+# tests/xla/pjrt_smoke_test.cpp exists; neither that test nor the PJRT client
+# source is in this tree yet, so here the block is inert.
 if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/pjrt_smoke_test.cpp")
     message(STATUS "Building PJRT smoke test")
 
