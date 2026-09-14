@@ -230,7 +230,7 @@ class Controller(unittest.TestCase):
                     self.release.verify_published(SHA)
         self.assertFalse(self.release.state.get("completed"))
 
-    def test_refreshed_candidate_notes_are_finalized_only_with_recorded_proof(self):
+    def test_notes_are_prepared_without_claiming_success_and_are_idempotent(self):
         self.release.checkout.mkdir()
         path = self.release.checkout / "RELEASE_NOTES.md"
         path.write_text('# Eshkol v1.3.5-evolve — Release Notes\n\n'
@@ -239,13 +239,42 @@ class Controller(unittest.TestCase):
             '<!-- RELEASE_EVIDENCE_PENDING -->\n')
         self.release.execute = True
         with patch.object(self.release, "git"):
-            with self.assertRaisesRegex(module.Wait, "notes finalized"):
-                self.release.finalize_notes({"headRefName": "release/v135-cut-final"}, {"html_url": "https://github.com/run/10"})
+            with self.assertRaisesRegex(module.Wait, "notes prepared"):
+                self.release.prepare_notes({"headRefName": "release/v135-cut-final"})
         content = path.read_text()
         self.assertNotIn("Hardening remains open", content)
         self.assertNotIn("RELEASE_EVIDENCE_PENDING", content)
         self.assertIn("September 11 measurements below are historical", content)
-        self.assertIn("https://github.com/run/10", content)
+        self.assertIn("publication requires passing CI, strict readiness, and asset checks", content)
+        self.assertNotIn("validated release", content)
+        self.assertIn("https://github.com/tsotchke/eshkol/actions/workflows/release.yml", content)
+        with patch.object(self.release, "git") as git:
+            self.release.prepare_notes({"headRefName": "release/v135-cut-final"})
+        git.assert_not_called()
+
+    def test_notes_change_precedes_candidate_validation_and_merge(self):
+        self.config.update(candidate_pr=612, cut_pr=628)
+        (self.path / "dispatch.jsonl").write_text("")
+        (self.path / "thoughts.jsonl").write_text("")
+        self.release.checkout.mkdir()
+        (self.release.checkout / "RELEASE_NOTES.md").write_text(
+            '# Eshkol v1.3.5-evolve — Release Notes\n\n'
+            '**Status:** release candidate; verification pending.\n')
+        self.release.execute = True
+        cut = {"number": 628, "state": "OPEN", "headRefOid": SHA,
+               "headRefName": "release/v135-cut-final", "baseRefName": "master",
+               "isDraft": False, "statusCheckRollup": []}
+        with patch.object(module, "utcnow", return_value=module.timestamp("2026-09-14T14:00:00Z")), \
+                patch.object(self.release, "required", return_value={"sanitizer"}), \
+                patch.object(self.release, "lanes_ready"), \
+                patch.object(self.release, "pr", side_effect=[{"state": "MERGED"}, cut, cut]), \
+                patch.object(self.release, "refresh_cut"), patch.object(self.release, "docs_ready"), \
+                patch.object(self.release, "git"), patch.object(self.release, "gh") as gh, \
+                patch.object(self.release, "proof_and_checks") as validation:
+            with self.assertRaisesRegex(module.Wait, "notes prepared"):
+                self.release.step()
+        validation.assert_not_called()
+        gh.assert_not_called()
 
     def test_restart_preserves_completed_release_and_does_not_publish_twice(self):
         self.release.state.update(completed=True, release_url="https://github.com/tsotchke/eshkol/releases/tag/v1.3.5-evolve")
