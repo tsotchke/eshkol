@@ -36,7 +36,7 @@ Source (.esk)
  Typed AST
      |
      v
- LLVM IR Generation     39 specialized codegen modules (118,737 lines)
+ LLVM IR Generation     39 specialized codegen modules (118,470 lines)
      |                  Tagged value lowering, closure compilation, AD dispatch
      v
  LLVM Optimization      Inlining, LICM, GVN, loop unrolling, auto-vectorization
@@ -252,9 +252,9 @@ Interactive development via LLVM OrcJIT (4,354 lines). Preloads 237 stdlib funct
 
 Eshkol has two production execution backends serving different purposes:
 
-**LLVM Backend** (primary): Compiles to native ARM64/x86 binaries via LLVM IR. Uses 16-byte tagged values with 36 specialized codegen modules. This is the default path for `eshkol-run`.
+**LLVM Backend** (primary): Compiles to native ARM64/x86 binaries via LLVM IR. Uses 16-byte tagged values with 39 specialized codegen modules totaling 118,470 lines. This is the default path for `eshkol-run`.
 
-**Bytecode VM** (complementary): 72-opcode register+stack interpreter (`eshkol_vm.c`, 2,850 lines; roughly 51,092 lines across the full `eshkol_vm.c` + `vm_*.c` module family) with 743 native-call IDs covering the full language — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`.
+**Bytecode VM** (complementary): 72-opcode register+stack interpreter (`eshkol_vm.c`, 2,850 lines; roughly 57,650 lines across the full `eshkol_vm.c` + `vm_*.c` module family) with 743 native-call IDs covering the full language — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`.
 
 **Weight Matrix Transformer**: Programs encoded as neural network weights (`weight_matrices.c`, ~7,400 lines). Architecture: d_model=256, 6 layers, FFN_DIM=2304, 12.22M parameters. 82 canonical opcodes in weights; `OP_NATIVE_CALL` remains the external dispatch boundary. 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass (126/126 inline, 123/123 traced). Exports QLMW binary format for qLLM loading.
 
@@ -282,8 +282,8 @@ The LLVM and VM backends share the same language semantics but use independent v
 
 | Component | Lines | Files |
 |:---|---:|---:|
-| LLVM backend (main + modules) | ~87,300 | 21 |
-| Bytecode VM + runtime libs | ~51,092 | 33 |
+| LLVM backend (main + modules) | ~118,470 | 39 |
+| Bytecode VM + runtime libs | ~57,650 | 39 |
 | XLA/StableHLO backend | ~3,960 | 6 |
 | GPU/Metal backend | ~11,800 | 5 |
 | Frontend (parser, macro, types) | ~18,000 | 3 |
