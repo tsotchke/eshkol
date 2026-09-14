@@ -47,6 +47,10 @@ This directory indexes Eshkol's architecture documentation.
 - Native freestanding and VM freestanding architecture
 - BSP contracts and downstream kernel handoff
 
+### Release Invariant Contracts
+
+**[Release invariant contracts](../design/adr/0014-release-invariant-contracts.md)** — keeps parser identity, OALR deep-walk dispatch, generated flat-AD WASM imports, and pre-grade release receipts aligned through executable contracts.
+
 ### TensorCore Integration
 
 **[TensorCore compiler-adapter ownership](tensorcore-adapter.md)** - ownership boundary between Eshkol and the TensorCore integration: AST/IR lowering, LLVM declarations, calling conventions, and packaging live in Eshkol; public C ABI, status/dtype/backend values, buffers, kernels, transports, and device discovery live in TensorCore.

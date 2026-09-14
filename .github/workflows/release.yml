@@ -1308,6 +1308,7 @@ jobs:
           set -euxo pipefail
           scripts/run_language_coverage.sh
           scripts/run_vm_parity.sh
+          bash scripts/run_release_invariant_probes.sh
 
       # Refresh all stores for the alias bound above, then run the incident-class
       # architecture invariants and emit the architecture_model evidence.

@@ -6825,6 +6825,31 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_geometry_guard_test.py)
 endif()
 
+# Release-invariant contracts are source-level checks for the architecture
+# model and the typed receipts emitted before the release architecture grade.
+# Keep them in CTest so normal developer and CI test selections exercise the
+# same contracts as the release workflow.
+if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
+    foreach(_release_invariant_test IN ITEMS
+            test_release_invariant_contracts
+            test_release_probe_receipts)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/${_release_invariant_test}.py")
+            add_test(NAME ${_release_invariant_test}
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/${_release_invariant_test}.py)
+            set_tests_properties(${_release_invariant_test} PROPERTIES
+                LABELS "toolchain;release-invariants")
+        endif()
+    endforeach()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_flat_ad_import_test.py")
+        add_test(NAME wasm_flat_ad_import_test
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_flat_ad_import_test.py)
+        set_tests_properties(wasm_flat_ad_import_test PROPERTIES
+            LABELS "toolchain;wasm;imports")
+    endif()
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_geometry_guard_runtime_test.js")
     find_program(NODE_EXECUTABLE node)
     if(NODE_EXECUTABLE)
@@ -7799,6 +7824,22 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "continuation_pin_budget_boundary_test.sh: PASS"
             FAIL_REGULAR_EXPRESSION "FAILED|FAIL:")
+    endif()
+
+    # The continuation transcript gate must fail closed when expected or
+    # actual normalization fails; empty command-substitution output must
+    # never compare equal and report a false pass.
+    if(UNIX AND EXISTS
+       "${CMAKE_CURRENT_SOURCE_DIR}/tests/continuations/normalizer_failure_test.sh")
+        add_test(
+            NAME continuation_normalizer_failure
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/continuations/normalizer_failure_test.sh"
+        )
+        set_tests_properties(continuation_normalizer_failure PROPERTIES
+            TIMEOUT 60
+            PASS_REGULAR_EXPRESSION "normalizer_failure_test.sh: PASS"
+            FAIL_REGULAR_EXPRESSION "unexpectedly passed|false PASSED")
     endif()
 
     # SW-113: the seeded drand48-compatible generator is one runtime contract,
@@ -10648,4 +10689,14 @@ endif()
 
 if(BUILD_TESTING)
     add_subdirectory(tests/bridge/qllm_private_abi)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_nested_diagnostics_test.py")
+    add_test(NAME ownership_nested_diagnostics
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_nested_diagnostics_test.py
+            $<TARGET_FILE:eshkol-run>)
+    set_tests_properties(ownership_nested_diagnostics PROPERTIES
+        TIMEOUT 90 LABELS "ownership;memory;regression")
 endif()
