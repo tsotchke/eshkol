@@ -343,14 +343,26 @@ directory as a pass.
 **Release-blocking readiness.** Publishing a release is additionally gated by the
 `release-readiness-gate` job in `.github/workflows/release.yml`, which regenerates
 the oracle traces at the tagged SHA and runs `icc architecture-verify` +
-`icc readiness --target v1.3-evolve`. `publish-release` depends on it, so **no
+`icc readiness --target v1.3.5-evolve`. `publish-release` depends on it, so **no
 release asset is published unless readiness is ready/100** at the cut SHA. The gate
 requires ICC to be provisioned on the release runner via the `ICC_BIN` repository
 variable (a path to the ICC binary; optionally `ICC_REPO` for the registered index
 name, default `eshkol_lang`). If ICC is unavailable on a real tag push the gate
 emits a loud error and blocks the release — it never fail-opens to a green publish.
-A non-publishing `workflow_dispatch` dry-run treats the same conditions as advisory
-warnings, since it ships nothing.
+A non-publishing `workflow_dispatch` dry run requires the same evidence when
+`strict_readiness=true`; the default dry run reports readiness as advisory.
+
+The runner also needs SBCL and `prlimit` for the pinned Rosette Wire oracle,
+and Python development headers matching its interpreter. The workflow creates
+an isolated environment containing pybind11, NumPy, and PyYAML and enables the
+Python binding lifetime test. Provision native prerequisites before dispatch;
+the workflow does not install system packages on the shared runner.
+
+The readiness recipe runs baseline coverage and VM parity, smoke probes,
+remaining evidence producers and architecture verification, then the final ICC
+verdict in separate steps. Each step uses the same compiler/runtime artifacts
+and evidence cohort, bound to the commit and workflow run attempt. A failed or
+missing earlier phase cannot be resumed as a completed phase.
 
 ## Development Guidelines
 
