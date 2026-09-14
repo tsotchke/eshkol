@@ -30,9 +30,13 @@ Release invariants use executable, fail-closed contracts at each boundary:
   infrastructure failure. Only measured outcomes emit typed `test_result`
   receipts; infrastructure failure emits no result that could be mistaken
   for a verdict.
-- The release workflow emits ABI/layout, closed-enum, and VM-parity receipts
+- The release workflow emits ABI/layout, closed-enum, live AD-counter, and VM-parity receipts
   before the ICC architecture grade. The VM parity gate supplies its own
-  aggregate receipt.
+  aggregate receipt. The AD counter gate measures both an exact positive case
+  and a real finite-difference negative control before grading.
+- Package verification is required on both archive-producing workflow paths.
+- Bridge backward functions must match their canonical registry rows, including
+  the squared-distance implementation in its separate translation unit.
 
 CTest registers the source-contract, receipt-contract, and generated WASM
 import tests so local and CI test runs exercise the same assertions.

@@ -57,7 +57,7 @@ test "$PROBE_INFRA" -eq 1
         self.assertIn('eshkol_release_invariant_probes', smoke)
         self.assertNotIn('probe abi_layout_pin ', smoke)
         recipe = (ROOT / "scripts/lib/release_invariant_probes.sh").read_text()
-        for name in ("abi_layout_pin", "abi_object_header_ratchet", "closed_enum_dispatch_exhaustive"):
+        for name in ("abi_layout_pin", "abi_object_header_ratchet", "closed_enum_dispatch_exhaustive", "ad_exactness_gate"):
             self.assertIn("probe " + name + " ", recipe)
         vm_script = (ROOT / "scripts/run_vm_parity.sh").read_text()
         self.assertIn('emit_test_result "vm_parity_gate" "PASS"', vm_script)

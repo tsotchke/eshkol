@@ -88,14 +88,14 @@ class ReleaseInvariantContractTests(unittest.TestCase):
     def test_ad_counter_spec_is_armed_and_its_live_negative_control_is_pinned(self):
         spec = capability("ad_counter_measurement")
         self.assertEqual(spec["arming"]["kind"], "runtime_event")
-        self.assertEqual(spec["arming"]["path"], "scripts/run_icc_smoke.sh")
-        self.assertEqual(spec["pattern"], r"(?m)^probe ad_exactness_gate")
+        self.assertEqual(spec["arming"]["path"], "scripts/lib/release_invariant_probes.sh")
+        self.assertEqual(spec["pattern"], r"(?m)^\s*probe ad_exactness_gate")
         self.assertEqual(
             spec["dependency_constructor"],
             r'run_case "fd-counter" tests/ad/fd_counter_negative_test\.esk'
         )
 
-        smoke_path = "scripts/run_icc_smoke.sh"
+        smoke_path = "scripts/lib/release_invariant_probes.sh"
         gate_path = "scripts/run_ad_exactness_gate.sh"
         test_path = "tests/ad/fd_counter_negative_test.esk"
         smoke = text(smoke_path)
@@ -115,6 +115,8 @@ class ReleaseInvariantContractTests(unittest.TestCase):
         self.assertEqual(invariant["kind"], "intended-invariant")
         self.assertEqual(invariant["fidelity"], "runtime")
         self.assertEqual(invariant["evidence"]["trace_name_pattern"], "^ad_exactness_gate$")
+        self.assertEqual(invariant["guard"]["path"], smoke_path)
+        self.assertEqual(invariant["guard"]["symbol"], "eshkol_release_invariant_probes")
         oracle = (ROOT / ".icc/completion-oracles.yaml").read_text()
         self.assertIn('event_names: ["ad_exactness_gate"]', oracle)
         self.assertIn("both engines", oracle)

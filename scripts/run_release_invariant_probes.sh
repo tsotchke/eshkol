@@ -21,4 +21,4 @@ fi
 eshkol_emit_build_fingerprint_event "$TRACE_DIR" release_invariant_probes "$BUILD_DIR" eshkol-run || exit $?
 eshkol_release_invariant_probes
 echo "Release invariant probes: $PROBE_TOTAL total, $PROBE_FAILURES failures, $PROBE_INFRA infrastructure failures"
-[ "$PROBE_FAILURES" -eq 0 ] && [ "$PROBE_INFRA" -eq 0 ] && [ "$PROBE_TOTAL" -eq 3 ]
+[ "$PROBE_FAILURES" -eq 0 ] && [ "$PROBE_INFRA" -eq 0 ] && [ "$PROBE_TOTAL" -eq 4 ]

@@ -426,8 +426,8 @@ capabilities:
       - {path: scripts/run_ad_exactness_gate.sh}
     arming:
       kind: runtime_event
-      path: scripts/run_icc_smoke.sh
-    pattern: '(?m)^probe ad_exactness_gate'
+      path: scripts/lib/release_invariant_probes.sh
+    pattern: '(?m)^\s*probe ad_exactness_gate'
     dependencies: [ad-tower]
     dependency_constructor: 'run_case "fd-counter" tests/ad/fd_counter_negative_test\.esk'
     dependency_paths: [scripts/run_ad_exactness_gate.sh]
@@ -477,9 +477,9 @@ invariants:
     impl: {path: scripts/run_ad_exactness_gate.sh, symbol: run_case}
     reference: {path: scripts/run_ad_exactness_gate.sh, symbol: check_output}
     guard:
-      path: scripts/run_ad_exactness_gate.sh
-      symbol: run_case
-      pattern: check_output
+      path: scripts/lib/release_invariant_probes.sh
+      symbol: eshkol_release_invariant_probes
+      pattern: '(?m)^\s*probe ad_exactness_gate'
     evidence:
       trace_name_pattern: '^ad_exactness_gate$'
       max_age_days: 45

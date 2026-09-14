@@ -494,11 +494,7 @@ probe ad_adversarial_fd_oracle \
 # number of perturbations it evaluated, and the assertion form goes #f), on both
 # engines, plus the matmul tape-node ratchet. Readiness must never again be able
 # to certify exactness on the strength of a counter that cannot move.
-probe ad_exactness_gate \
-    'the no-finite-differences guarantee is enforced by a counter that can actually read nonzero: exact gradients report 0 FD evals, a real finite-difference backward reports exactly its perturbations and turns the shipped assertion #f (both engines), and matmul AD tape node counts stay within their ratchet with gradients exact' \
-    'cd "$REPO_ROOT";
-     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash scripts/run_ad_exactness_gate.sh 2>&1) || exit 1;
-     printf "%s" "$out" | grep -q "AD exactness gate: PASS"'
+# The shared early release probes above execute ad_exactness_gate and emit its typed receipt.
 
 probe region_evac_subtype_coverage \
     'ESH-0214d/e region escape-evacuator keeps promoted logic/workspace/PROMISE subtype interiors intact under ESHKOL_ARENA_POISON=1 (AOT, flat RSS)' \
