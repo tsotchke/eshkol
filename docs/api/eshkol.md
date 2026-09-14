@@ -18,7 +18,7 @@ Eshkol runtime/compiler version numbers and version string. ESHKOL_VERSION_MAJOR
 
 ### `ESHKOL_STATIC_ASSERT`
 
-*Macro* — line 41
+*Macro* — line 42
 
 ```c
 #define ESHKOL_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
@@ -28,7 +28,7 @@ Compile-time assertion, portable across C11 and C++11 compilation. Expands to `s
 
 ### `eshkol_type_t`
 
-*Enum* — line 64
+*Enum* — line 65
 
 ```c
 typedef enum {
@@ -61,7 +61,7 @@ AST/parser-level value type tag used by eshkol_ast_t. Distinguishes the primitiv
 
 ### `eshkol_value_type_t`
 
-*Enum* — line 103
+*Enum* — line 104
 
 ```c
 typedef enum {
@@ -120,7 +120,7 @@ Runtime tag stored in eshkol_tagged_value_t::type. Identifies the kind of value 
 
 ### `eshkol_tagged_data_t`
 
-*Union* — line 176
+*Union* — line 177
 
 ```c
 typedef union eshkol_tagged_data {
@@ -135,7 +135,7 @@ Raw payload union backing eshkol_tagged_value_t and cons cell slots. Exactly one
 
 ### `eshkol_tagged_value_t`
 
-*Struct* — line 194
+*Struct* — line 195
 
 ```c
 typedef struct eshkol_tagged_value {
@@ -155,7 +155,7 @@ Universal runtime representation of an Eshkol value. Every Scheme value flowing 
 
 ### `eshkol_dual_number_t`
 
-*Struct* — line 220
+*Struct* — line 221
 
 ```c
 typedef struct eshkol_dual_number {
@@ -174,7 +174,7 @@ Dual number for forward-mode automatic differentiation. Carries the value 4-jet 
 
 ### `esh_taylor_t`
 
-*Struct* — line 259
+*Struct* — line 260
 
 ```c
 typedef struct esh_taylor {
@@ -193,7 +193,7 @@ Arbitrary-order forward-mode AD Taylor series (Taylor tower). A flexible-array s
 
 ### `eshkol_complex_number_t`
 
-*Struct* — line 355
+*Struct* — line 356
 
 ```c
 typedef struct eshkol_complex_number {
@@ -206,7 +206,7 @@ Complex number for signal processing, FFT, and complex analysis. Stores the real
 
 ### `eshkol_make_int64`
 
-*Function* — line 402
+*Function* — line 403
 
 ```c
 static inline eshkol_tagged_value_t eshkol_make_int64(int64_t val, bool exact) { ... }
@@ -225,7 +225,7 @@ A tagged value of type ESHKOL_VALUE_INT64.
 
 ### `eshkol_make_double`
 
-*Function* — line 416
+*Function* — line 417
 
 ```c
 static inline eshkol_tagged_value_t eshkol_make_double(double val) { ... }
@@ -243,7 +243,7 @@ A tagged value of type ESHKOL_VALUE_DOUBLE with the inexact flag set.
 
 ### `eshkol_make_ptr`
 
-*Function* — line 431
+*Function* — line 432
 
 ```c
 static inline eshkol_tagged_value_t eshkol_make_ptr(uint64_t ptr, uint8_t type) { ... }
@@ -262,7 +262,7 @@ A tagged value with `flags`/`reserved` cleared and `data.ptr_val = ptr`.
 
 ### `eshkol_make_complex`
 
-*Function* — line 445
+*Function* — line 446
 
 ```c
 static inline eshkol_tagged_value_t eshkol_make_complex(uint64_t ptr) { ... }
@@ -280,7 +280,7 @@ A tagged value of type ESHKOL_VALUE_COMPLEX (always inexact).
 
 ### `eshkol_unpack_int64`
 
-*Function* — line 459
+*Function* — line 460
 
 ```c
 static inline int64_t eshkol_unpack_int64(const eshkol_tagged_value_t* val) { ... }
@@ -298,7 +298,7 @@ The raw `data.int_val` field, without any type checking.
 
 ### `eshkol_unpack_double`
 
-*Function* — line 468
+*Function* — line 469
 
 ```c
 static inline double eshkol_unpack_double(const eshkol_tagged_value_t* val) { ... }
@@ -316,7 +316,7 @@ The raw `data.double_val` field, without any type checking.
 
 ### `eshkol_unpack_ptr`
 
-*Function* — line 477
+*Function* — line 478
 
 ```c
 static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) { ... }
@@ -334,7 +334,7 @@ The raw `data.ptr_val` field, without any type checking.
 
 ### `eshkol_object_header_t`
 
-*Struct* — line 589
+*Struct* — line 590
 
 ```c
 typedef struct eshkol_object_header {
@@ -349,7 +349,7 @@ typedef struct eshkol_object_header {
 
 ### `heap_subtype_t`
 
-*Enum* — line 642
+*Enum* — line 643
 
 ```c
 typedef enum {
@@ -388,7 +388,7 @@ Concrete data-structure kind for a value tagged ESHKOL_VALUE_HEAP_PTR. Stored in
 
 ### `eshkol_heap_subtype_is_declared`
 
-*Function* — line 695
+*Function* — line 696
 
 ```c
 static inline bool eshkol_heap_subtype_is_declared(uint8_t sub) { ... }
@@ -398,7 +398,7 @@ Is `sub` a DECLARED member of heap_subtype_t? The one predicate that separates t
 
 ### `callable_subtype_t`
 
-*Enum* — line 742
+*Enum* — line 743
 
 ```c
 typedef enum {
@@ -415,7 +415,7 @@ Concrete callable kind for a value tagged ESHKOL_VALUE_CALLABLE. Stored in the e
 
 ### `eshkol_callable_subtype_is_declared`
 
-*Function* — line 755
+*Function* — line 756
 
 ```c
 static inline bool eshkol_callable_subtype_is_declared(uint8_t sub) { ... }
@@ -425,7 +425,7 @@ Is `sub` a DECLARED member of callable_subtype_t? See eshkol_heap_subtype_is_dec
 
 ### `handle_subtype_t`
 
-*Enum* — line 780
+*Enum* — line 781
 
 ```c
 typedef enum {
@@ -447,7 +447,7 @@ Concrete external-resource kind for a value tagged ESHKOL_VALUE_HANDLE. Reserved
 
 ### `buffer_subtype_t`
 
-*Enum* — line 805
+*Enum* — line 806
 
 ```c
 typedef enum {
@@ -467,7 +467,7 @@ Concrete memory-region kind for a value tagged ESHKOL_VALUE_BUFFER. Reserved for
 
 ### `stream_subtype_t`
 
-*Enum* — line 827
+*Enum* — line 828
 
 ```c
 typedef enum {
@@ -485,7 +485,7 @@ Concrete async data-flow kind for a value tagged ESHKOL_VALUE_STREAM. Reserved f
 
 ### `event_subtype_t`
 
-*Enum* — line 847
+*Enum* — line 848
 
 ```c
 typedef enum {
@@ -504,7 +504,7 @@ Concrete real-time event kind for a value tagged ESHKOL_VALUE_EVENT. Reserved fo
 
 ### `eshkol_make_dual`
 
-*Function* — line 1054
+*Function* — line 1055
 
 ```c
 static inline eshkol_dual_number_t eshkol_make_dual(double value, double derivative) { ... }
@@ -523,7 +523,7 @@ An eshkol_dual_number_t with both fields set.
 
 ### `eshkol_dual_value`
 
-*Function* — line 1067
+*Function* — line 1068
 
 ```c
 static inline double eshkol_dual_value(const eshkol_dual_number_t* d) { ... }
@@ -541,7 +541,7 @@ The `value` field.
 
 ### `eshkol_dual_derivative`
 
-*Function* — line 1076
+*Function* — line 1077
 
 ```c
 static inline double eshkol_dual_derivative(const eshkol_dual_number_t* d) { ... }
@@ -559,7 +559,7 @@ The `derivative` field.
 
 ### `ad_node_type_t`
 
-*Enum* — line 1111
+*Enum* — line 1112
 
 ```c
 typedef enum {
@@ -577,7 +577,7 @@ Operation kind recorded at each node of the reverse-mode AD tape. Selects which 
 
 ### `backward`
 
-*Struct* — line 1165
+*Struct* — line 1166
 
 ```c
 typedef struct eshkol_custom_vjp {
@@ -593,7 +593,7 @@ Custom vector-Jacobian-product descriptor for AD_NODE_CUSTOM. An AD_NODE_CUSTOM 
 
 ### `ad_node_t`
 
-*Struct* — line 1186
+*Struct* — line 1187
 
 ```c
 typedef struct ad_node {
@@ -654,7 +654,7 @@ One node of the reverse-mode AD computational graph. Records a single operation'
 
 ### `ad_tape_t`
 
-*Struct* — line 1254
+*Struct* — line 1255
 
 ```c
 typedef struct ad_tape {
@@ -674,7 +674,7 @@ Tape recording all AD nodes created during a forward pass. Nodes are appended to
 
 ### `CLOSURE_ENV_GET_NUM_CAPTURES`
 
-*Macro* — line 1287
+*Macro* — line 1288
 
 ```c
 #define CLOSURE_ENV_GET_NUM_CAPTURES(packed) ((uint64_t)(packed) & UINT64_C(0xFFFFFFFF))
@@ -684,7 +684,7 @@ Accessors/constructor for the packed `num_captures` field of eshkol_closure_env_
 
 ### `eshkol_closure_env_t`
 
-*Struct* — line 1303
+*Struct* — line 1304
 
 ```c
 typedef struct eshkol_closure_env {
@@ -697,7 +697,7 @@ Arena-allocated environment holding a closure's captured variables. Laid out as 
 
 ### `eshkol_closure_t`
 
-*Struct* — line 1340
+*Struct* — line 1341
 
 ```c
 typedef struct eshkol_closure {
@@ -717,7 +717,7 @@ Full closure object: function pointer plus captured environment. Allocated whene
 
 ### `eshkol_closure_get_return_type`
 
-*Function* — line 1374
+*Function* — line 1375
 
 ```c
 static inline uint8_t eshkol_closure_get_return_type(eshkol_tagged_value_t tagged) { ... }
@@ -735,7 +735,7 @@ One of the CLOSURE_RETURN_* constants, or CLOSURE_RETURN_UNKNOWN if `tagged` is 
 
 ### `eshkol_closure_returns_vector`
 
-*Function* — line 1406
+*Function* — line 1407
 
 ```c
 static inline bool eshkol_closure_returns_vector(eshkol_tagged_value_t tagged) { ... }
@@ -755,7 +755,7 @@ true if eshkol_closure_get_return_type() reports CLOSURE_RETURN_VECTOR.
 
 ### `eshkol_closure_returns_scalar`
 
-*Function* — line 1416
+*Function* — line 1417
 
 ```c
 static inline bool eshkol_closure_returns_scalar(eshkol_tagged_value_t tagged) { ... }
@@ -775,7 +775,7 @@ true if eshkol_closure_get_return_type() reports CLOSURE_RETURN_SCALAR.
 
 ### `eshkol_primitive_t`
 
-*Struct* — line 1435
+*Struct* — line 1436
 
 ```c
 typedef struct eshkol_primitive {
@@ -792,7 +792,7 @@ Runtime representation of a primitive/builtin function. Primitives are similar t
 
 ### `eshkol_exception_type_t`
 
-*Enum* — line 1466
+*Enum* — line 1467
 
 ```c
 typedef enum {
@@ -812,7 +812,7 @@ Built-in exception type codes for R7RS-style error handling. Stored in eshkol_ex
 
 ### `eshkol_exception_t`
 
-*Struct* — line 1487
+*Struct* — line 1488
 
 ```c
 typedef struct eshkol_exception {
@@ -830,7 +830,7 @@ Arena-allocated exception/condition object. Represents a raised R7RS condition: 
 
 ### `eshkol_exception_handler_t`
 
-*Struct* — line 1504
+*Struct* — line 1505
 
 ```c
 typedef struct eshkol_exception_handler {
@@ -898,7 +898,7 @@ One entry in the `guard`/exception handler stack. Each active `guard` form pushe
 
 ### `eshkol_make_exception`
 
-*Function* — line 1577
+*Function* — line 1578
 
 ```c
 eshkol_exception_t* eshkol_make_exception(eshkol_exception_type_t type, const char* message);
@@ -917,7 +917,7 @@ Newly allocated eshkol_exception_t, with no irritants and no location set.
 
 ### `eshkol_make_exception_with_header`
 
-*Function* — line 1588
+*Function* — line 1589
 
 ```c
 eshkol_exception_t* eshkol_make_exception_with_header(eshkol_exception_type_t type, const char* message);
@@ -936,7 +936,7 @@ Newly allocated eshkol_exception_t preceded by an object header.
 
 ### `eshkol_exception_add_irritant`
 
-*Function* — line 1594
+*Function* — line 1595
 
 ```c
 void eshkol_exception_add_irritant(eshkol_exception_t* exc, eshkol_tagged_value_t irritant);
@@ -951,7 +951,7 @@ Append an irritant value to an exception's irritant list.
 
 ### `eshkol_exception_add_irritant_ptr`
 
-*Function* — line 1600
+*Function* — line 1601
 
 ```c
 void eshkol_exception_add_irritant_ptr(eshkol_exception_t* exc, const eshkol_tagged_value_t* irritant);
@@ -966,7 +966,7 @@ Append an irritant value to an exception's irritant list, by pointer.
 
 ### `eshkol_exception_set_location`
 
-*Function* — line 1608
+*Function* — line 1609
 
 ```c
 void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t line, uint32_t column, const char* filename);
@@ -983,7 +983,7 @@ Attach source-location information to an exception for diagnostics.
 
 ### `eshkol_raise`
 
-*Function* — line 1618
+*Function* — line 1619
 
 ```c
 void eshkol_raise(eshkol_exception_t* exception);
@@ -997,7 +997,7 @@ Raise an exception, transferring control to the innermost active handler. Sets `
 
 ### `eshkol_raise_secondary_exception`
 
-*Function* — line 1631
+*Function* — line 1632
 
 ```c
 void eshkol_raise_secondary_exception(eshkol_exception_t* original);
@@ -1011,7 +1011,7 @@ Raise the secondary exception required when a non-continuable handler returns.
 
 ### `eshkol_error_object_p`
 
-*Function* — line 1638
+*Function* — line 1639
 
 ```c
 int eshkol_error_object_p(const eshkol_tagged_value_t* obj);
@@ -1029,7 +1029,7 @@ Nonzero if `obj` is an error/exception object, zero otherwise.
 
 ### `eshkol_error_object_message`
 
-*Function* — line 1644
+*Function* — line 1645
 
 ```c
 void eshkol_error_object_message(const eshkol_tagged_value_t* obj, eshkol_tagged_value_t* out);
@@ -1044,7 +1044,7 @@ R7RS `error-object-message` accessor.
 
 ### `eshkol_error_object_irritants`
 
-*Function* — line 1650
+*Function* — line 1651
 
 ```c
 void eshkol_error_object_irritants(const eshkol_tagged_value_t* obj, eshkol_tagged_value_t* out);
@@ -1059,7 +1059,7 @@ R7RS `error-object-irritants` accessor.
 
 ### `eshkol_push_exception_handler`
 
-*Function* — line 1655
+*Function* — line 1656
 
 ```c
 void eshkol_push_exception_handler(void* jmp_buf_ptr);
@@ -1073,7 +1073,7 @@ Push a new exception handler frame onto the handler stack.
 
 ### `eshkol_pop_exception_handler`
 
-*Function* — line 1659
+*Function* — line 1660
 
 ```c
 void eshkol_pop_exception_handler(void);
@@ -1083,7 +1083,7 @@ Pop the innermost exception handler frame, restoring the previous one.
 
 ### `eshkol_exception_handler_depth`
 
-*Function* — line 1669
+*Function* — line 1670
 
 ```c
 int64_t eshkol_exception_handler_depth(void);
@@ -1097,7 +1097,7 @@ Current depth of `g_exception_handler_stack`.
 
 ### `eshkol_exception_handlers_unwind_to`
 
-*Function* — line 1677
+*Function* — line 1678
 
 ```c
 void eshkol_exception_handlers_unwind_to(int64_t depth);
@@ -1111,7 +1111,7 @@ Pop exception handler frames until the chain is `depth` deep. A no-op when the c
 
 ### `eshkol_guard_replay_snapshot`
 
-*Function* — line 1690
+*Function* — line 1691
 
 ```c
 void eshkol_guard_replay_snapshot(const eshkol_tagged_value_t* vals,
@@ -1128,7 +1128,7 @@ Attach a guard-loop replay snapshot to the top `frames` handler frames. SW-58. C
 
 ### `eshkol_guard_replay_restore`
 
-*Function* — line 1705
+*Function* — line 1706
 
 ```c
 int eshkol_guard_replay_restore(eshkol_tagged_value_t* out, int64_t count);
@@ -1147,7 +1147,7 @@ Restore a guard-loop replay snapshot from the handler frame that fired. SW-58. C
 
 ### `eshkol_promise_eval_mark`
 
-*Function* — line 1716
+*Function* — line 1717
 
 ```c
 void* eshkol_promise_eval_mark(void);
@@ -1161,7 +1161,7 @@ Opaque mark accepted by eshkol_promise_eval_commit_to() and eshkol_promise_eval_
 
 ### `eshkol_promise_eval_begin`
 
-*Function* — line 1718
+*Function* — line 1719
 
 ```c
 void eshkol_promise_eval_begin(void* promise, int64_t original_state);
@@ -1171,7 +1171,7 @@ Begin evaluating an unforced promise (original_state is 0 or 2).
 
 ### `eshkol_promise_eval_commit_one`
 
-*Function* — line 1720
+*Function* — line 1721
 
 ```c
 void eshkol_promise_eval_commit_one(void* promise,
@@ -1182,7 +1182,7 @@ Commit the current ordinary promise to `result.`
 
 ### `eshkol_promise_eval_commit_to`
 
-*Function* — line 1723
+*Function* — line 1724
 
 ```c
 void eshkol_promise_eval_commit_to(void* mark,
@@ -1193,7 +1193,7 @@ Commit all pending delay-force promises back to `mark.`
 
 ### `eshkol_promise_eval_unwind_to`
 
-*Function* — line 1726
+*Function* — line 1727
 
 ```c
 void eshkol_promise_eval_unwind_to(void* mark);
@@ -1203,7 +1203,7 @@ Roll back all active promise evaluations back to `mark.`
 
 ### `eshkol_exception_type_matches`
 
-*Function* — line 1733
+*Function* — line 1734
 
 ```c
 int eshkol_exception_type_matches(eshkol_exception_t* exc, eshkol_exception_type_t type);
@@ -1222,7 +1222,7 @@ Nonzero if `exc->type == type`, zero otherwise.
 
 ### `eshkol_make_exception_value`
 
-*Function* — line 1740
+*Function* — line 1741
 
 ```c
 static inline eshkol_tagged_value_t eshkol_make_exception_value(eshkol_exception_t* exc) { ... }
@@ -1240,7 +1240,7 @@ A tagged value of type ESHKOL_VALUE_EXCEPTION pointing at `exc.`
 
 ### `eshkol_continuation_state_t`
 
-*Struct* — line 1762
+*Struct* — line 1763
 
 ```c
 typedef struct eshkol_continuation_state {
@@ -1290,7 +1290,7 @@ Captured state for a first-class continuation created by `call/cc`. Holds the se
 
 ### `ESHKOL_TAIL_TRANSFER_MAX_ARGS`
 
-*Macro* — line 1816
+*Macro* — line 1817
 
 ```c
 #define ESHKOL_TAIL_TRANSFER_MAX_ARGS 32
@@ -1300,7 +1300,7 @@ Widest argument list a single tail transfer may carry. A transfer copies the cal
 
 ### `eshkol_tail_transfer_t`
 
-*Struct* — line 1833
+*Struct* — line 1834
 
 ```c
 typedef struct eshkol_tail_transfer {
@@ -1315,7 +1315,7 @@ The pending general tail call of one thread (ADR-0006 section 3). A tail call th
 
 ### `eshkol_tail_transfer_slot`
 
-*Function* — line 1848
+*Function* — line 1849
 
 ```c
 eshkol_tail_transfer_t* eshkol_tail_transfer_slot(void);
@@ -1329,7 +1329,7 @@ Never NULL.
 
 ### `eshkol_dynamic_wind_entry_t`
 
-*Struct* — line 1857
+*Struct* — line 1858
 
 ```c
 typedef struct eshkol_dynamic_wind_entry {
@@ -1343,7 +1343,7 @@ One entry in the `dynamic-wind` stack. Records the before/after thunks of an act
 
 ### `eshkol_make_continuation_state_flags`
 
-*Function* — line 1905
+*Function* — line 1906
 
 ```c
 eshkol_continuation_state_t* eshkol_make_continuation_state_flags(void* arena,
@@ -1365,7 +1365,7 @@ Newly allocated eshkol_continuation_state_t.
 
 ### `eshkol_make_continuation_state`
 
-*Function* — line 1920
+*Function* — line 1921
 
 ```c
 eshkol_continuation_state_t* eshkol_make_continuation_state(void* arena, void* jmp_buf_ptr);
@@ -1384,7 +1384,7 @@ Newly allocated eshkol_continuation_state_t.
 
 ### `eshkol_make_continuation_closure`
 
-*Function* — line 1929
+*Function* — line 1930
 
 ```c
 void* eshkol_make_continuation_closure(void* arena, void* state_ptr);
@@ -1403,7 +1403,7 @@ Opaque pointer to the resulting closure object.
 
 ### `eshkol_continuation_capture_stack`
 
-*Function* — line 1942
+*Function* — line 1943
 
 ```c
 void eshkol_continuation_capture_stack(void* arena, void* state_ptr);
@@ -1418,7 +1418,7 @@ Snapshot the live C stack into the continuation, making it re-entrant. Must be c
 
 ### `eshkol_continuation_capture_handlers`
 
-*Function* — line 1944
+*Function* — line 1945
 
 ```c
 void eshkol_continuation_capture_handlers(void* state_ptr);
@@ -1428,7 +1428,7 @@ Capture the currently installed native exception-handler chain.
 
 ### `eshkol_continuation_resume`
 
-*Function* — line 1954
+*Function* — line 1955
 
 ```c
 void eshkol_continuation_resume(void* state_ptr);
@@ -1442,7 +1442,7 @@ Resume a captured continuation, delivering state->value. Never returns. Restores
 
 ### `eshkol_continuation_restore_handlers`
 
-*Function* — line 1956
+*Function* — line 1957
 
 ```c
 void eshkol_continuation_restore_handlers(void* state_ptr);
@@ -1452,7 +1452,7 @@ Restore the handler chain captured in a native continuation.
 
 ### `eshkol_reroot_dynamic_wind`
 
-*Function* — line 1968
+*Function* — line 1969
 
 ```c
 void eshkol_reroot_dynamic_wind(void* target_mark);
@@ -1466,7 +1466,7 @@ Move the dynamic-wind stack to `target_mark,` running the `after` thunks of exte
 
 ### `eshkol_stack_base_fn`
 
-*Typedef* — line 1975
+*Typedef* — line 1976
 
 ```c
 typedef uintptr_t (*eshkol_stack_base_fn)(void);
@@ -1476,7 +1476,7 @@ Probe returning the highest address of the calling thread's stack. Returns 0 whe
 
 ### `eshkol_set_stack_base_hook`
 
-*Function* — line 1985
+*Function* — line 1986
 
 ```c
 void eshkol_set_stack_base_hook(eshkol_stack_base_fn fn);
@@ -1490,7 +1490,7 @@ Install the thread-stack-base probe used by continuation capture. Stack geometry
 
 ### `eshkol_push_dynamic_wind`
 
-*Function* — line 1992
+*Function* — line 1993
 
 ```c
 void eshkol_push_dynamic_wind(void* arena, const eshkol_tagged_value_t* before, const eshkol_tagged_value_t* after);
@@ -1506,7 +1506,7 @@ Push a new dynamic-wind frame with the given before/after thunks.
 
 ### `eshkol_pop_dynamic_wind`
 
-*Function* — line 1999
+*Function* — line 2000
 
 ```c
 void eshkol_pop_dynamic_wind(void);
@@ -1516,7 +1516,7 @@ Pop the innermost dynamic-wind frame without running its after-thunk. Used for n
 
 ### `eshkol_unwind_dynamic_wind`
 
-*Function* — line 2009
+*Function* — line 2010
 
 ```c
 void eshkol_unwind_dynamic_wind(void* saved_wind_mark);
@@ -1530,7 +1530,7 @@ Run after-thunks for all dynamic-wind frames above a saved marker. Invoked when 
 
 ### `eshkol_init_stack_size`
 
-*Function* — line 2044
+*Function* — line 2045
 
 ```c
 void eshkol_init_stack_size(void);
@@ -1540,7 +1540,7 @@ Initialize process/thread stack sizing for deep recursion support. Should be cal
 
 ### `eshkol_stack_guard_check`
 
-*Function* — line 2068
+*Function* — line 2069
 
 ```c
 void eshkol_stack_guard_check(void);
@@ -1550,7 +1550,7 @@ Per-call native-stack headroom check emitted at user function entry. ESH-0101 / 
 
 ### `eshkol_stack_guard_headroom`
 
-*Function* — line 2077
+*Function* — line 2078
 
 ```c
 uint64_t eshkol_stack_guard_headroom(void);
@@ -1560,7 +1560,7 @@ Usable stack bytes remaining for the calling thread, or 0 if the thread's stack 
 
 ### `eshkol_stack_guard_fault_in_region`
 
-*Function* — line 2085
+*Function* — line 2086
 
 ```c
 bool eshkol_stack_guard_fault_in_region(const void* fault_address);
@@ -1570,7 +1570,7 @@ Test whether a POSIX fault address lies in this thread's stack guard. Signal-han
 
 ### `eshkol_lambda_entry_t`
 
-*Struct* — line 2094
+*Struct* — line 2095
 
 ```c
 typedef struct eshkol_lambda_entry {
@@ -1584,7 +1584,7 @@ One entry mapping a compiled function pointer to its source form.
 
 ### `eshkol_lambda_registry_t`
 
-*Struct* — line 2103
+*Struct* — line 2104
 
 ```c
 typedef struct eshkol_lambda_registry {
@@ -1598,7 +1598,7 @@ Growable table of eshkol_lambda_entry_t used for homoiconicity.
 
 ### `eshkol_lambda_registry_init`
 
-*Function* — line 2119
+*Function* — line 2120
 
 ```c
 void eshkol_lambda_registry_init(void);
@@ -1608,7 +1608,7 @@ Initialize the global lambda registry (allocate backing storage). Must be called
 
 ### `eshkol_lambda_registry_destroy`
 
-*Function* — line 2123
+*Function* — line 2124
 
 ```c
 void eshkol_lambda_registry_destroy(void);
@@ -1618,7 +1618,7 @@ Free the global lambda registry's backing storage.
 
 ### `eshkol_lambda_registry_add`
 
-*Function* — line 2130
+*Function* — line 2131
 
 ```c
 void eshkol_lambda_registry_add(uint64_t func_ptr, uint64_t sexpr_ptr, const char* name);
@@ -1634,7 +1634,7 @@ Register a compiled function pointer's S-expression source and name.
 
 ### `eshkol_lambda_registry_lookup`
 
-*Function* — line 2136
+*Function* — line 2137
 
 ```c
 uint64_t eshkol_lambda_registry_lookup(uint64_t func_ptr);
@@ -1652,7 +1652,7 @@ The registered sexpr_ptr, or 0 if `func_ptr` is not registered.
 
 ### `eshkol_display_opts_t`
 
-*Struct* — line 2149
+*Struct* — line 2150
 
 ```c
 typedef struct eshkol_display_opts {
@@ -1668,7 +1668,7 @@ Options controlling how eshkol_display_value_opts() renders a value.
 
 ### `eshkol_display_default_opts`
 
-*Function* — line 2161
+*Function* — line 2162
 
 ```c
 static inline eshkol_display_opts_t eshkol_display_default_opts(void) { ... }
@@ -1682,7 +1682,7 @@ Options with max_depth=100, unquoted strings, no type tags, output=stdout.
 
 ### `eshkol_format_double`
 
-*Function* — line 2182
+*Function* — line 2183
 
 ```c
 int eshkol_format_double(char* buf, size_t n, double v);
@@ -1702,7 +1702,7 @@ Number of characters that would be written (as with snprintf), not counting the 
 
 ### `eshkol_fprint_double`
 
-*Function* — line 2188
+*Function* — line 2189
 
 ```c
 void eshkol_fprint_double(void* file, double v);
@@ -1717,7 +1717,7 @@ Print a double to a FILE* using Eshkol's flonum external representation.
 
 ### `eshkol_display_value`
 
-*Function* — line 2195
+*Function* — line 2196
 
 ```c
 void eshkol_display_value(const eshkol_tagged_value_t* value);
@@ -1731,7 +1731,7 @@ Display a tagged value to stdout using default options ('display' semantics).
 
 ### `eshkol_display_value_opts`
 
-*Function* — line 2201
+*Function* — line 2202
 
 ```c
 void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_display_opts_t* opts);
@@ -1746,7 +1746,7 @@ Display a tagged value to stdout with caller-specified options.
 
 ### `eshkol_write_value_to_port`
 
-*Function* — line 2208
+*Function* — line 2209
 
 ```c
 void eshkol_write_value_to_port(const eshkol_tagged_value_t* value, void* port);
@@ -1761,7 +1761,7 @@ Write a tagged value (R7RS `write` semantics: strings/chars quoted) to a port.
 
 ### `eshkol_display_value_to_port`
 
-*Function* — line 2214
+*Function* — line 2215
 
 ```c
 void eshkol_display_value_to_port(const eshkol_tagged_value_t* value, void* port);
@@ -1776,7 +1776,7 @@ Display a tagged value (R7RS `display` semantics: strings/chars unquoted) to a p
 
 ### `eshkol_runtime_current_output_fp`
 
-*Function* — line 2222
+*Function* — line 2223
 
 ```c
 void* eshkol_runtime_current_output_fp(void);
@@ -1786,7 +1786,7 @@ Get the current-output-port's underlying `FILE*` (as `void*`).
 
 ### `eshkol_runtime_current_input_fp`
 
-*Function* — line 2224
+*Function* — line 2225
 
 ```c
 void* eshkol_runtime_current_input_fp(void);
@@ -1796,7 +1796,7 @@ Get the current-input-port's underlying `FILE*` (as `void*`).
 
 ### `eshkol_runtime_current_error_fp`
 
-*Function* — line 2226
+*Function* — line 2227
 
 ```c
 void* eshkol_runtime_current_error_fp(void);
@@ -1806,7 +1806,7 @@ Get the current-error-port's underlying `FILE*` (as `void*`).
 
 ### `eshkol_runtime_set_current_output_fp`
 
-*Function* — line 2231
+*Function* — line 2232
 
 ```c
 void eshkol_runtime_set_current_output_fp(void* fp);
@@ -1820,7 +1820,7 @@ Set the current-output-port's underlying `FILE*`.
 
 ### `eshkol_runtime_set_current_input_fp`
 
-*Function* — line 2236
+*Function* — line 2237
 
 ```c
 void eshkol_runtime_set_current_input_fp(void* fp);
@@ -1834,7 +1834,7 @@ Set the current-input-port's underlying `FILE*`.
 
 ### `eshkol_runtime_set_current_error_fp`
 
-*Function* — line 2241
+*Function* — line 2242
 
 ```c
 void eshkol_runtime_set_current_error_fp(void* fp);
@@ -1848,7 +1848,7 @@ Set the current-error-port's underlying `FILE*`.
 
 ### `eshkol_runtime_copy_string`
 
-*Function* — line 2244
+*Function* — line 2245
 
 ```c
 void* eshkol_runtime_copy_string(void* arena, const char* source);
@@ -1858,7 +1858,7 @@ Copy a NUL-terminated C buffer into a header-tagged, arena-owned string.
 
 ### `eshkol_intern_symbol_lookup`
 
-*Function* — line 2261
+*Function* — line 2262
 
 ```c
 void* eshkol_intern_symbol_lookup(const char* name);
@@ -1876,7 +1876,7 @@ Address of the resolved symbol, or NULL if not found.
 
 ### `eshkol_check_forward_ref`
 
-*Function* — line 2274
+*Function* — line 2275
 
 ```c
 void* eshkol_check_forward_ref(void* loaded_fn_ptr,
@@ -1898,7 +1898,7 @@ The resolved function pointer to call.
 
 ### `eshkol_raise_not_pair`
 
-*Function* — line 2281
+*Function* — line 2282
 
 ```c
 void eshkol_raise_not_pair(const char* op_name);
@@ -1912,7 +1912,7 @@ Raise a runtime "not a pair" error for an operation requiring a pair.
 
 ### `eshkol_display_list`
 
-*Function* — line 2288
+*Function* — line 2289
 
 ```c
 void eshkol_display_list(uint64_t cons_ptr, eshkol_display_opts_t* opts);
@@ -1927,7 +1927,7 @@ Display a list (cons cell chain) as its printed representation.
 
 ### `eshkol_display_lambda`
 
-*Function* — line 2295
+*Function* — line 2296
 
 ```c
 void eshkol_display_lambda(uint64_t func_ptr, eshkol_display_opts_t* opts);
@@ -1942,7 +1942,7 @@ Display a raw lambda by looking up its S-expression in the lambda registry.
 
 ### `eshkol_display_closure`
 
-*Function* — line 2302
+*Function* — line 2303
 
 ```c
 void eshkol_display_closure(uint64_t closure_ptr, eshkol_display_opts_t* opts);
@@ -1957,7 +1957,7 @@ Display a closure by extracting and printing its embedded S-expression.
 
 ### `hott_type_kind_t`
 
-*Enum* — line 2319
+*Enum* — line 2320
 
 ```c
 typedef enum {
@@ -1996,7 +1996,7 @@ Kind discriminator for hott_type_expr_t. Selects which member of hott_type_expr_
 
 ### `hott_type_expr_t`
 
-*Struct* — line 2363
+*Struct* — line 2364
 
 ```c
 typedef struct hott_type_expr {
@@ -2048,7 +2048,7 @@ Homotopy-Type-Theory-inspired static type expression. Represents the type of an 
 
 ### `HOTT_MAKE_PRIMITIVE`
 
-*Macro* — line 2413
+*Macro* — line 2414
 
 ```c
 #define HOTT_MAKE_PRIMITIVE(kind) ((hott_type_expr_t){.kind = (kind)})
@@ -2066,7 +2066,7 @@ A compound literal hott_type_expr_t with `kind` set and the union left zero-init
 
 ### `pattern_type_t`
 
-*Enum* — line 2422
+*Enum* — line 2423
 
 ```c
 typedef enum {
@@ -2085,7 +2085,7 @@ Kind discriminator for eshkol_pattern_t, one per `match` pattern form.
 
 ### `eshkol_pattern_t`
 
-*Struct* — line 2444
+*Struct* — line 2445
 
 ```c
 typedef struct eshkol_pattern {
@@ -2134,7 +2134,7 @@ One pattern node in a `match` expression's pattern tree. `type` selects the acti
 
 ### `eshkol_match_clause_t`
 
-*Struct* — line 2488
+*Struct* — line 2489
 
 ```c
 typedef struct eshkol_match_clause {
@@ -2148,7 +2148,7 @@ One `(pattern [when guard] body)` clause of a `match` expression.
 
 ### `macro_pattern_type_t`
 
-*Enum* — line 2506
+*Enum* — line 2507
 
 ```c
 typedef enum {
@@ -2164,7 +2164,7 @@ Kind discriminator for eshkol_macro_pattern_t elements.
 
 ### `eshkol_macro_pattern_t`
 
-*Struct* — line 2525
+*Struct* — line 2526
 
 ```c
 typedef struct eshkol_macro_pattern {
@@ -2188,7 +2188,7 @@ One element of a `syntax-rules` macro pattern. `type` selects the active union m
 
 ### `macro_template_type_t`
 
-*Enum* — line 2544
+*Enum* — line 2545
 
 ```c
 typedef enum {
@@ -2203,7 +2203,7 @@ Kind discriminator for eshkol_macro_template_t elements.
 
 ### `eshkol_macro_template_t`
 
-*Struct* — line 2562
+*Struct* — line 2563
 
 ```c
 typedef struct eshkol_macro_template {
@@ -2229,7 +2229,7 @@ One element of a `syntax-rules` macro expansion template. `type` selects the act
 
 ### `eshkol_macro_rule_t`
 
-*Struct* — line 2583
+*Struct* — line 2584
 
 ```c
 typedef struct eshkol_macro_rule {
@@ -2242,7 +2242,7 @@ One `(pattern template)` rewrite rule of a `syntax-rules` macro.
 
 ### `eshkol_macro_def_t`
 
-*Struct* — line 2591
+*Struct* — line 2592
 
 ```c
 typedef struct eshkol_macro_def {
@@ -2258,7 +2258,7 @@ Full macro definition: `(define-syntax name (syntax-rules (literals...) rules...
 
 ### `eshkol_op_t`
 
-*Enum* — line 2614
+*Enum* — line 2615
 
 ```c
 typedef enum {
@@ -2395,7 +2395,7 @@ Operation/special-form tag for eshkol_ast_t's `operation` union member. Selects 
 
 ### `eshkol_operations_t`
 
-*Struct* — line 2757
+*Struct* — line 2758
 
 ```c
 typedef struct eshkol_operation {
@@ -2690,7 +2690,7 @@ Tagged union of operands for every special form/operator kind. `op` (eshkol_op_t
 
 ### `eshkol_ast_birth_location_t`
 
-*Struct* — line 3069
+*Struct* — line 3070
 
 ```c
 struct eshkol_ast_birth_location_t
@@ -2700,7 +2700,7 @@ Birth location for AST nodes built in C++. Every eshkol_ast_t constructed in C++
 
 ### `EshkolAstBirthLocationScope`
 
-*class* — line 3080
+*class* — line 3081
 
 ```c
 class EshkolAstBirthLocationScope
@@ -2710,7 +2710,7 @@ RAII: nodes born while this scope is innermost inherit (line, column). A scope w
 
 ### `eshkol_ast_t`
 
-*Struct* — line 3117
+*Struct* — line 3120
 
 ```c
 typedef struct eshkol_ast {
@@ -2803,15 +2803,17 @@ typedef struct eshkol_ast {
 
 
 
- uint32_t node_id ESHKOL_AST_BORN_ZERO;
+
+
+ eshkol_node_id_t node_id ESHKOL_AST_BORN_ZERO;
 } eshkol_ast_t;
 ```
 
-Frontend abstract-syntax-tree node. The single node type used throughout parsing, macro expansion, type checking, and codegen. `type` (eshkol_type_t) selects the active union member: scalar literal fields (`int64_val`, `double_val`, ...), string literal storage (`str_val`), a function/lambda definition (`eshkol_func`), a variable reference (`variable`), a cons cell (`cons_cell`), a tensor literal (`tensor_val`), or a compound operation (`operation`, an eshkol_operations_t tagged by its own `op` field). `inferred_hott_type` caches the type checker's result (0 = not yet checked); `line`/`column` give 1-based source location for diagnostics (0 = unknown).
+Frontend abstract-syntax-tree node. The single node type used throughout parsing, macro expansion, type checking, and codegen. `type` (eshkol_type_t) selects the active union member: scalar literal fields (`int64_val`, `double_val`, ...), string literal storage (`str_val`), a function/lambda definition (`eshkol_func`), a variable reference (`variable`), a cons cell (`cons_cell`), a tensor literal (`tensor_val`), or a compound operation (`operation`, an eshkol_operations_t tagged by its own `op` field). `inferred_hott_type` caches the type checker's result (0 = not yet checked); `line`/`column` give 1-based source location for diagnostics (0 = unknown). `node_id` uses the parser allocator's `eshkol_node_id_t` key type, a `uint32_t` alias, so semantic side tables use the same key without changing the public field width or layout.
 
 ### `eshkol_ast_construct_array`
 
-*Function* — line 3216
+*Function* — line 3221
 
 ```c
 inline eshkol_ast_t* eshkol_ast_construct_array(void* storage, size_t count) { ... }
@@ -2821,7 +2823,7 @@ Construct `count` value-initialised nodes in raw storage (for example an arena b
 
 ### `eshkol_ast_make_int64`
 
-*Function* — line 3241
+*Function* — line 3246
 
 ```c
 static inline void eshkol_ast_make_int64(eshkol_ast_t* node, int64_t val) { ... }
@@ -2831,7 +2833,7 @@ In-place literal-node builders for eshkol_ast_t. Each `eshkol_ast_make_*` functi
 
 ### `eshkol_ast_clean`
 
-*Function* — line 3289
+*Function* — line 3294
 
 ```c
 void eshkol_ast_clean(eshkol_ast_t *ast);
@@ -2845,7 +2847,7 @@ Recursively release resources owned by an AST node (not the node itself).
 
 ### `eshkol_ast_pretty_print`
 
-*Function* — line 3295
+*Function* — line 3300
 
 ```c
 void eshkol_ast_pretty_print(const eshkol_ast_t *ast, int indent);
@@ -2860,7 +2862,7 @@ Print a human-readable, indented dump of an AST subtree (debugging aid).
 
 ### `eshkol_alloc_symbolic_ast`
 
-*Function* — line 3302
+*Function* — line 3307
 
 ```c
 eshkol_ast_t* eshkol_alloc_symbolic_ast(void);
@@ -2874,7 +2876,7 @@ Newly allocated AST node.
 
 ### `eshkol_make_var_ast`
 
-*Function* — line 3308
+*Function* — line 3313
 
 ```c
 eshkol_ast_t* eshkol_make_var_ast(const char* name);
@@ -2892,7 +2894,7 @@ Newly allocated AST node referencing `name.`
 
 ### `eshkol_make_int_ast`
 
-*Function* — line 3314
+*Function* — line 3319
 
 ```c
 eshkol_ast_t* eshkol_make_int_ast(int64_t value);
@@ -2910,7 +2912,7 @@ Newly allocated AST node.
 
 ### `eshkol_make_double_ast`
 
-*Function* — line 3320
+*Function* — line 3325
 
 ```c
 eshkol_ast_t* eshkol_make_double_ast(double value);
@@ -2928,7 +2930,7 @@ Newly allocated AST node.
 
 ### `eshkol_make_binary_op_ast`
 
-*Function* — line 3328
+*Function* — line 3333
 
 ```c
 eshkol_ast_t* eshkol_make_binary_op_ast(const char* op, eshkol_ast_t* left, eshkol_ast_t* right);
@@ -2948,7 +2950,7 @@ Newly allocated AST node representing `(op left right)`.
 
 ### `eshkol_make_unary_call_ast`
 
-*Function* — line 3335
+*Function* — line 3340
 
 ```c
 eshkol_ast_t* eshkol_make_unary_call_ast(const char* func, eshkol_ast_t* arg);
@@ -2967,7 +2969,7 @@ Newly allocated AST node representing `(func arg)`.
 
 ### `eshkol_copy_ast`
 
-*Function* — line 3341
+*Function* — line 3346
 
 ```c
 eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast);
@@ -2985,7 +2987,7 @@ Newly allocated, independent copy of `ast.`
 
 ### `eshkol_wrap_with_display`
 
-*Function* — line 3349
+*Function* — line 3354
 
 ```c
 eshkol_ast_t* eshkol_wrap_with_display(eshkol_ast_t* expr);
@@ -3003,7 +3005,7 @@ A new AST node that evaluates `expr` and displays its result.
 
 ### `hott_make_integer_type`
 
-*Function* — line 3361
+*Function* — line 3366
 
 ```c
 hott_type_expr_t* hott_make_integer_type(void);
@@ -3017,7 +3019,7 @@ Newly allocated type expression.
 
 ### `hott_make_primitive_type`
 
-*Function* — line 3382
+*Function* — line 3387
 
 ```c
 hott_type_expr_t* hott_make_primitive_type(hott_type_kind_t kind);
@@ -3035,7 +3037,7 @@ Newly allocated type expression.
 
 ### `hott_make_type_var`
 
-*Function* — line 3390
+*Function* — line 3395
 
 ```c
 hott_type_expr_t* hott_make_type_var(const char* name);
@@ -3053,7 +3055,7 @@ Newly allocated type expression.
 
 ### `hott_make_arrow_type`
 
-*Function* — line 3400
+*Function* — line 3405
 
 ```c
 hott_type_expr_t* hott_make_arrow_type(hott_type_expr_t** param_types, uint64_t num_params, hott_type_expr_t* return_type);
@@ -3073,7 +3075,7 @@ Newly allocated type expression.
 
 ### `hott_make_list_type`
 
-*Function* — line 3406
+*Function* — line 3411
 
 ```c
 hott_type_expr_t* hott_make_list_type(hott_type_expr_t* element_type);
@@ -3091,7 +3093,7 @@ Newly allocated type expression.
 
 ### `hott_make_vector_type`
 
-*Function* — line 3412
+*Function* — line 3417
 
 ```c
 hott_type_expr_t* hott_make_vector_type(hott_type_expr_t* element_type);
@@ -3109,7 +3111,7 @@ Newly allocated type expression.
 
 ### `hott_make_tensor_type`
 
-*Function* — line 3418
+*Function* — line 3423
 
 ```c
 hott_type_expr_t* hott_make_tensor_type(hott_type_expr_t* element_type);
@@ -3127,7 +3129,7 @@ Newly allocated type expression.
 
 ### `hott_make_pointer_type`
 
-*Function* — line 3424
+*Function* — line 3429
 
 ```c
 hott_type_expr_t* hott_make_pointer_type(hott_type_expr_t* element_type);
@@ -3145,7 +3147,7 @@ Newly allocated type expression.
 
 ### `hott_make_pair_type`
 
-*Function* — line 3431
+*Function* — line 3436
 
 ```c
 hott_type_expr_t* hott_make_pair_type(hott_type_expr_t* left, hott_type_expr_t* right);
@@ -3164,7 +3166,7 @@ Newly allocated type expression.
 
 ### `hott_make_product_type`
 
-*Function* — line 3438
+*Function* — line 3443
 
 ```c
 hott_type_expr_t* hott_make_product_type(hott_type_expr_t* left, hott_type_expr_t* right);
@@ -3183,7 +3185,7 @@ Newly allocated type expression.
 
 ### `hott_make_sum_type`
 
-*Function* — line 3445
+*Function* — line 3450
 
 ```c
 hott_type_expr_t* hott_make_sum_type(hott_type_expr_t* left, hott_type_expr_t* right);
@@ -3202,7 +3204,7 @@ Newly allocated type expression.
 
 ### `hott_make_forall_type`
 
-*Function* — line 3453
+*Function* — line 3458
 
 ```c
 hott_type_expr_t* hott_make_forall_type(char** type_vars, uint64_t num_vars, hott_type_expr_t* body);
@@ -3222,7 +3224,7 @@ Newly allocated type expression.
 
 ### `hott_copy_type_expr`
 
-*Function* — line 3461
+*Function* — line 3466
 
 ```c
 hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type);
@@ -3240,7 +3242,7 @@ Newly allocated, independent copy.
 
 ### `hott_free_type_expr`
 
-*Function* — line 3466
+*Function* — line 3471
 
 ```c
 void hott_free_type_expr(hott_type_expr_t* type);
@@ -3254,7 +3256,7 @@ Recursively free a type expression and its owned children.
 
 ### `hott_type_to_string`
 
-*Function* — line 3474
+*Function* — line 3479
 
 ```c
 char* hott_type_to_string(const hott_type_expr_t* type);
@@ -3272,7 +3274,7 @@ Newly allocated, NUL-terminated string; caller owns and must free it.
 
 ### `hott_pack_type_id`
 
-*Function* — line 3487
+*Function* — line 3492
 
 ```c
 static inline uint32_t hott_pack_type_id(uint16_t id, uint8_t universe, uint8_t flags) { ... }
@@ -3292,7 +3294,7 @@ The packed uint32_t value.
 
 ### `hott_unpack_type_id`
 
-*Function* — line 3496
+*Function* — line 3501
 
 ```c
 static inline uint16_t hott_unpack_type_id(uint32_t packed) { ... }
@@ -3310,7 +3312,7 @@ The id component (bits 0-15).
 
 ### `hott_unpack_universe`
 
-*Function* — line 3505
+*Function* — line 3510
 
 ```c
 static inline uint8_t hott_unpack_universe(uint32_t packed) { ... }
@@ -3328,7 +3330,7 @@ The universe component (bits 16-23).
 
 ### `hott_unpack_flags`
 
-*Function* — line 3514
+*Function* — line 3519
 
 ```c
 static inline uint8_t hott_unpack_flags(uint32_t packed) { ... }
@@ -3346,7 +3348,7 @@ The flags component (bits 24-31).
 
 ### `hott_type_is_set`
 
-*Function* — line 3523
+*Function* — line 3528
 
 ```c
 static inline int hott_type_is_set(uint32_t packed) { ... }
@@ -3364,7 +3366,7 @@ Nonzero if `packed` is non-zero (a type has been assigned), zero if unset.
 
 ### `eshkol_parse_next_ast`
 
-*Function* — line 3536
+*Function* — line 3541
 
 ```c
 eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file);
@@ -3382,7 +3384,7 @@ The parsed AST node (type ESHKOL_INVALID or similar sentinel at end of input, pe
 
 ### `eshkol_parse_next_ast_from_stream`
 
-*Function* — line 3547
+*Function* — line 3552
 
 ```c
 eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream);
@@ -3400,7 +3402,7 @@ The parsed AST node.
 
 ### `eshkol_reset_parse_line_counter`
 
-*Function* — line 3558
+*Function* — line 3563
 
 ```c
 extern "C" void eshkol_reset_parse_line_counter(void);
@@ -3410,7 +3412,7 @@ Reset the parser's cumulative line/column counter to line 1, column 1. Call befo
 
 ### `eshkol_set_parse_source_context`
 
-*Function* — line 3560
+*Function* — line 3565
 
 ```c
 extern "C" void eshkol_set_parse_source_context(const char* source_name);
@@ -3420,7 +3422,7 @@ Set/query the diagnostic and coverage source name for the current parser thread.
 
 ### `eshkol_intern_source_file`
 
-*Function* — line 3572
+*Function* — line 3577
 
 ```c
 extern "C" uint32_t eshkol_intern_source_file(const char* path);
@@ -3438,7 +3440,7 @@ A nonzero id, or 0 when `path` is NULL/empty.
 
 ### `eshkol_source_file_name`
 
-*Function* — line 3580
+*Function* — line 3585
 
 ```c
 extern "C" const char* eshkol_source_file_name(uint32_t id);
@@ -3456,7 +3458,7 @@ The interned path, or NULL when `id` is 0 or not a live id (which is how an unse
 
 ### `eshkol_reset_parse_errors`
 
-*Function* — line 3582
+*Function* — line 3587
 
 ```c
 extern "C" void eshkol_reset_parse_errors(void);
@@ -3471,207 +3473,207 @@ Reset/query the current thread's cumulative parser error state.
 | `ESHKOL_VERSION_MINOR` | Macro | 18 |
 | `ESHKOL_VERSION_PATCH` | Macro | 19 |
 | `ESHKOL_VERSION_STRING` | Macro | 20 |
-| `ESHKOL_STATIC_ASSERT` | Macro | 43 |
-| `arena_t` | Struct | 54 |
-| `ESHKOL_VALUE_EXACT_FLAG` | Macro | 155 |
-| `ESHKOL_VALUE_INEXACT_FLAG` | Macro | 156 |
-| `ESHKOL_PORT_INPUT_FLAG` | Macro | 159 |
-| `ESHKOL_PORT_OUTPUT_FLAG` | Macro | 160 |
-| `ESHKOL_PORT_BINARY_FLAG` | Macro | 161 |
-| `ESHKOL_PORT_ANY_FLAG` | Macro | 162 |
-| `ESHKOL_VALUE_EXACT_INT64` | Macro | 165 |
-| `ESHKOL_VALUE_INEXACT_DOUBLE` | Macro | 166 |
-| `ESHKOL_STATIC_ASSERT` | Function | 207 |
-| `ESHKOL_STATIC_ASSERT` | Function | 232 |
-| `ESHKOL_DUAL_HEAP_PAYLOAD_SIZE` | Macro | 238 |
-| `ESH_TAYLOR_COEFF_MASK` | Macro | 271 |
-| `ESH_TAYLOR_COEFF_F64` | Macro | 272 |
-| `ESH_TAYLOR_COEFF_RATIONAL` | Macro | 282 |
-| `ESH_TAYLOR_TANGENT_FLAG` | Macro | 289 |
-| `ESH_TAYLOR_PRIMAL_NEGATIVE_FLAG` | Macro | 290 |
-| `ESH_TAYLOR_PRIMAL_POSITIVE_FLAG` | Macro | 291 |
-| `ESH_TAYLOR_TANGENT_EXACT_FLAG` | Macro | 292 |
-| `ESH_TAYLOR_TANGENT2_FLAG` | Macro | 293 |
-| `ESH_TAYLOR_TANGENT2_EXACT_FLAG` | Macro | 294 |
-| `ESH_TAYLOR_HAS_TANGENT` | Macro | 295 |
-| `ESH_TAYLOR_TANGENT_IS_EXACT` | Macro | 296 |
-| `ESH_TAYLOR_HAS_TANGENT2` | Macro | 297 |
-| `ESH_TAYLOR_TANGENT2_IS_EXACT` | Macro | 298 |
-| `ESH_TAYLOR_EPOCH_SHIFT` | Macro | 309 |
-| `ESH_TAYLOR_EPOCH_MASK` | Macro | 310 |
-| `ESH_TAYLOR_GET_EPOCH` | Macro | 311 |
-| `ESH_TAYLOR_MK_FLAGS` | Macro | 312 |
-| `eshkol_taylor_order_tagged` | Function | 319 |
-| `eshkol_taylor_project_tangent_outer` | Function | 326 |
-| `eshkol_taylor_project_forward_tangent` | Function | 333 |
-| `ESH_AD_NEST_NONE` | Macro | 342 |
-| `ESH_AD_NEST_CARRY_JET` | Macro | 343 |
-| `ESH_AD_NEST_RIDE` | Macro | 344 |
-| `ESH_AD_NEST_CARRY_TWR` | Macro | 345 |
-| `ESH_AD_NEST_UNSUPPORTED` | Macro | 346 |
-| `ESHKOL_STATIC_ASSERT` | Function | 361 |
-| `ESHKOL_AD_PAYLOAD_LAYOUTS` | Macro | 370 |
-| `eshkol_ad_payload_subtype_t` | Enum | 374 |
-| `ESHKOL_AD_PAYLOAD_LAYOUT_ENUM` | Macro | 375 |
-| `eshkol_ad_payload_size` | Function | 381 |
-| `ESHKOL_AD_PAYLOAD_LAYOUT_SIZE` | Macro | 383 |
-| `ESHKOL_IS_NULL_TYPE` | Macro | 486 |
-| `ESHKOL_IS_INT64_TYPE` | Macro | 487 |
-| `ESHKOL_IS_DOUBLE_TYPE` | Macro | 488 |
-| `ESHKOL_IS_BOOL_TYPE` | Macro | 489 |
-| `ESHKOL_IS_CHAR_TYPE` | Macro | 490 |
-| `ESHKOL_IS_SYMBOL_TYPE` | Macro | 491 |
-| `ESHKOL_IS_DUAL_NUMBER_TYPE` | Macro | 492 |
-| `ESHKOL_IS_COMPLEX_TYPE` | Macro | 493 |
-| `ESHKOL_IS_INT_STORAGE_TYPE` | Macro | 503 |
-| `ESHKOL_IS_HEAP_PTR_TYPE` | Macro | 513 |
-| `ESHKOL_IS_CALLABLE_TYPE` | Macro | 514 |
-| `ESHKOL_IS_LOGIC_VAR_TYPE` | Macro | 515 |
-| `ESHKOL_IS_LOGIC_VAR` | Macro | 518 |
-| `ESHKOL_LOGIC_VAR_ID` | Macro | 519 |
-| `ESHKOL_IS_CONS_PTR_TYPE` | Macro | 525 |
-| `ESHKOL_IS_STRING_PTR_TYPE` | Macro | 526 |
-| `ESHKOL_IS_VECTOR_PTR_TYPE` | Macro | 527 |
-| `ESHKOL_IS_TENSOR_PTR_TYPE` | Macro | 528 |
-| `ESHKOL_IS_HASH_PTR_TYPE` | Macro | 529 |
-| `ESHKOL_IS_EXCEPTION_TYPE` | Macro | 530 |
-| `ESHKOL_IS_CLOSURE_PTR_TYPE` | Macro | 531 |
-| `ESHKOL_IS_LAMBDA_SEXPR_TYPE` | Macro | 532 |
-| `ESHKOL_IS_AD_NODE_PTR_TYPE` | Macro | 533 |
-| `ESHKOL_IS_ANY_HEAP_TYPE` | Macro | 536 |
-| `ESHKOL_IS_ANY_CALLABLE_TYPE` | Macro | 544 |
-| `ESHKOL_IS_ANY_PTR_TYPE` | Macro | 550 |
-| `ESHKOL_IS_EXACT` | Macro | 554 |
-| `ESHKOL_IS_INEXACT` | Macro | 555 |
-| `ESHKOL_MAKE_EXACT` | Macro | 558 |
-| `ESHKOL_MAKE_INEXACT` | Macro | 559 |
-| `ESHKOL_GET_BASE_TYPE` | Macro | 561 |
-| `ESHKOL_OBJ_FLAG_MARKED` | Macro | 571 |
-| `ESHKOL_OBJ_FLAG_LINEAR` | Macro | 572 |
-| `ESHKOL_OBJ_FLAG_BORROWED` | Macro | 573 |
-| `ESHKOL_OBJ_FLAG_CONSUMED` | Macro | 574 |
-| `ESHKOL_OBJ_FLAG_SHARED` | Macro | 575 |
-| `ESHKOL_OBJ_FLAG_WEAK` | Macro | 576 |
-| `ESHKOL_OBJ_FLAG_PINNED` | Macro | 577 |
-| `ESHKOL_OBJ_FLAG_EXTERNAL` | Macro | 578 |
-| `ESHKOL_STATIC_ASSERT` | Function | 597 |
-| `ESHKOL_GET_HEADER` | Macro | 865 |
-| `ESHKOL_GET_DATA_PTR` | Macro | 869 |
-| `ESHKOL_GET_SUBTYPE` | Macro | 873 |
-| `ESHKOL_GET_FLAGS` | Macro | 877 |
-| `ESHKOL_SET_SUBTYPE` | Macro | 881 |
-| `ESHKOL_SET_FLAGS` | Macro | 885 |
-| `ESHKOL_HAS_FLAG` | Macro | 889 |
-| `ESHKOL_ADD_FLAG` | Macro | 893 |
-| `ESHKOL_CLEAR_FLAG` | Macro | 897 |
-| `ESHKOL_GET_OBJ_SIZE` | Macro | 901 |
-| `ESHKOL_GET_OBJECT_BASE` | Macro | 906 |
-| `ESHKOL_GET_OBJECT_TOTAL_SIZE` | Macro | 914 |
-| `ESHKOL_GET_REF_COUNT` | Macro | 919 |
-| `ESHKOL_INC_REF` | Macro | 923 |
-| `ESHKOL_DEC_REF` | Macro | 927 |
-| `ESHKOL_IS_CONS_COMPAT` | Macro | 940 |
-| `ESHKOL_IS_STRING_COMPAT` | Macro | 947 |
-| `ESHKOL_IS_VECTOR_COMPAT` | Macro | 954 |
-| `ESHKOL_IS_TENSOR_COMPAT` | Macro | 961 |
-| `ESHKOL_IS_HASH_COMPAT` | Macro | 968 |
-| `ESHKOL_IS_EXCEPTION_COMPAT` | Macro | 975 |
-| `ESHKOL_IS_MULTI_VALUE` | Macro | 982 |
-| `ESHKOL_IS_BIGNUM` | Macro | 988 |
-| `ESHKOL_IS_CLOSURE_COMPAT` | Macro | 994 |
-| `ESHKOL_IS_LAMBDA_SEXPR_COMPAT` | Macro | 1001 |
-| `ESHKOL_IS_AD_NODE_COMPAT` | Macro | 1008 |
-| `ESHKOL_IS_HEAP_PTR_COMPAT` | Macro | 1015 |
-| `ESHKOL_IS_CALLABLE_COMPAT` | Macro | 1025 |
-| `ESHKOL_IS_HANDLE` | Macro | 1032 |
-| `ESHKOL_IS_BUFFER` | Macro | 1035 |
-| `ESHKOL_IS_STREAM` | Macro | 1038 |
-| `ESHKOL_IS_EVENT` | Macro | 1041 |
-| `ESHKOL_AD_NODE` | Macro | 1112 |
-| `ESHKOL_AD_NODE` | Macro | 1124 |
-| `ESHKOL_AD_NODE` | Macro | 1132 |
-| `ESHKOL_AD_NODE` | Macro | 1139 |
-| `ESHKOL_STATIC_ASSERT` | Function | 1147 |
-| `CLOSURE_ENV_GET_FIXED_PARAMS` | Macro | 1288 |
-| `CLOSURE_ENV_IS_VARIADIC` | Macro | 1289 |
-| `CLOSURE_ENV_PACK` | Macro | 1290 |
-| `ESHKOL_STATIC_ASSERT` | Function | 1309 |
-| `CLOSURE_RETURN_UNKNOWN` | Macro | 1314 |
-| `CLOSURE_RETURN_SCALAR` | Macro | 1315 |
-| `CLOSURE_RETURN_VECTOR` | Macro | 1316 |
-| `CLOSURE_RETURN_LIST` | Macro | 1317 |
-| `CLOSURE_RETURN_FUNCTION` | Macro | 1318 |
-| `CLOSURE_RETURN_BOOL` | Macro | 1319 |
-| `CLOSURE_RETURN_STRING` | Macro | 1320 |
-| `CLOSURE_RETURN_VOID` | Macro | 1321 |
-| `CLOSURE_FLAG_VARIADIC` | Macro | 1324 |
-| `CLOSURE_FLAG_NAMED` | Macro | 1325 |
-| `ESHKOL_CLOSURE_FLAG_VARIADIC` | Macro | 1326 |
-| `ESHKOL_CLOSURE_FLAG_NAMED` | Macro | 1327 |
-| `ESHKOL_STATIC_ASSERT` | Function | 1353 |
-| `CLOSURE_RETURNS_VECTOR` | Macro | 1357 |
-| `CLOSURE_RETURNS_SCALAR` | Macro | 1358 |
-| `CLOSURE_RETURNS_FUNCTION` | Macro | 1359 |
-| `CLOSURE_TYPE_KNOWN` | Macro | 1360 |
-| `PRIMITIVE_FLAG_VARIADIC` | Macro | 1426 |
-| `PRIMITIVE_FLAG_PURE` | Macro | 1427 |
-| `ESHKOL_STATIC_ASSERT` | Function | 1445 |
-| `PRIMITIVE_IS_VARIADIC` | Macro | 1449 |
-| `PRIMITIVE_IS_PURE` | Macro | 1452 |
-| `g_current_exception` | Variable | 1566 |
-| `g_exception_handler_stack` | Variable | 1568 |
-| `eshkol_exception_handler_snapshot` | Function | 1708 |
-| `eshkol_exception_handler_restore_snapshot` | Function | 1709 |
-| `g_dynamic_wind_stack` | Variable | 1864 |
-| `eshkol_make_parameter` | Function | 2017 |
-| `eshkol_parameter_push` | Function | 2018 |
-| `eshkol_parameter_pop` | Function | 2019 |
-| `eshkol_parameter_ref` | Function | 2020 |
-| `eshkol_parameter_set` | Function | 2021 |
-| `eshkol_parameter_set_converter` | Function | 2022 |
-| `eshkol_parameter_converter_ref` | Function | 2023 |
-| `eshkol_make_parameter_ptr` | Function | 2025 |
-| `eshkol_parameter_push_ptr` | Function | 2026 |
-| `eshkol_parameter_set_ptr` | Function | 2027 |
-| `eshkol_parameter_set_converter_ptr` | Function | 2028 |
-| `eshkol_parameter_ref_ptr` | Function | 2030 |
-| `eshkol_parameter_converter_ref_ptr` | Function | 2031 |
-| `g_lambda_registry` | Variable | 2110 |
-| `arena_tagged_cons_cell` | Struct | 2144 |
-| `eshkol_write_value` | Function | 2202 |
-| `eshkol_runtime_register_port` | Function | 2250 |
-| `eshkol_runtime_port_is_open` | Function | 2251 |
-| `eshkol_runtime_port_is_string` | Function | 2252 |
-| `eshkol_runtime_close_port` | Function | 2253 |
-| `hott_type_expr` | Struct | 2351 |
-| `eshkol_pattern` | Struct | 2434 |
-| `eshkol_ast` | Struct | 2435 |
-| `eshkol_macro_pattern` | Struct | 2515 |
-| `eshkol_macro_template` | Struct | 2552 |
-| `eshkol_ast` | Struct | 2743 |
-| `eshkol_operation` | Struct | 2744 |
-| `eshkol_ast_birth_location_t::line` | Variable | 3070 |
-| `eshkol_ast_birth_location_t::column` | Variable | 3071 |
-| `EshkolAstBirthLocationScope::EshkolAstBirthLocationScope` | Function | 3081 |
-| `EshkolAstBirthLocationScope::~EshkolAstBirthLocationScope` | Function | 3086 |
-| `EshkolAstBirthLocationScope::EshkolAstBirthLocationScope` | Function | 3087 |
-| `EshkolAstBirthLocationScope::saved_` | Variable | 3090 |
-| `ESHKOL_AST_BORN_AT` | Macro | 3094 |
-| `ESHKOL_AST_BORN_ZERO` | Macro | 3095 |
-| `ESHKOL_AST_BORN_AT` | Macro | 3099 |
-| `eshkol_ast_make_double` | Function | 3247 |
-| `eshkol_ast_make_bool` | Function | 3253 |
-| `eshkol_ast_make_char` | Function | 3259 |
-| `eshkol_ast_make_null` | Function | 3265 |
-| `eshkol_ast_make_string` | Function | 3271 |
-| `eshkol_ast_make_symbol` | Function | 3278 |
-| `hott_make_real_type` | Function | 3362 |
-| `hott_make_boolean_type` | Function | 3363 |
-| `hott_make_string_type` | Function | 3364 |
-| `hott_make_char_type` | Function | 3365 |
-| `hott_make_symbol_type` | Function | 3366 |
-| `hott_make_null_type` | Function | 3367 |
-| `hott_make_any_type` | Function | 3368 |
-| `hott_make_nothing_type` | Function | 3369 |
-| `eshkol_get_parse_source_context` | Function | 3561 |
-| `eshkol_parse_had_error` | Function | 3583 |
+| `ESHKOL_STATIC_ASSERT` | Macro | 44 |
+| `arena_t` | Struct | 55 |
+| `ESHKOL_VALUE_EXACT_FLAG` | Macro | 156 |
+| `ESHKOL_VALUE_INEXACT_FLAG` | Macro | 157 |
+| `ESHKOL_PORT_INPUT_FLAG` | Macro | 160 |
+| `ESHKOL_PORT_OUTPUT_FLAG` | Macro | 161 |
+| `ESHKOL_PORT_BINARY_FLAG` | Macro | 162 |
+| `ESHKOL_PORT_ANY_FLAG` | Macro | 163 |
+| `ESHKOL_VALUE_EXACT_INT64` | Macro | 166 |
+| `ESHKOL_VALUE_INEXACT_DOUBLE` | Macro | 167 |
+| `ESHKOL_STATIC_ASSERT` | Function | 208 |
+| `ESHKOL_STATIC_ASSERT` | Function | 233 |
+| `ESHKOL_DUAL_HEAP_PAYLOAD_SIZE` | Macro | 239 |
+| `ESH_TAYLOR_COEFF_MASK` | Macro | 272 |
+| `ESH_TAYLOR_COEFF_F64` | Macro | 273 |
+| `ESH_TAYLOR_COEFF_RATIONAL` | Macro | 283 |
+| `ESH_TAYLOR_TANGENT_FLAG` | Macro | 290 |
+| `ESH_TAYLOR_PRIMAL_NEGATIVE_FLAG` | Macro | 291 |
+| `ESH_TAYLOR_PRIMAL_POSITIVE_FLAG` | Macro | 292 |
+| `ESH_TAYLOR_TANGENT_EXACT_FLAG` | Macro | 293 |
+| `ESH_TAYLOR_TANGENT2_FLAG` | Macro | 294 |
+| `ESH_TAYLOR_TANGENT2_EXACT_FLAG` | Macro | 295 |
+| `ESH_TAYLOR_HAS_TANGENT` | Macro | 296 |
+| `ESH_TAYLOR_TANGENT_IS_EXACT` | Macro | 297 |
+| `ESH_TAYLOR_HAS_TANGENT2` | Macro | 298 |
+| `ESH_TAYLOR_TANGENT2_IS_EXACT` | Macro | 299 |
+| `ESH_TAYLOR_EPOCH_SHIFT` | Macro | 310 |
+| `ESH_TAYLOR_EPOCH_MASK` | Macro | 311 |
+| `ESH_TAYLOR_GET_EPOCH` | Macro | 312 |
+| `ESH_TAYLOR_MK_FLAGS` | Macro | 313 |
+| `eshkol_taylor_order_tagged` | Function | 320 |
+| `eshkol_taylor_project_tangent_outer` | Function | 327 |
+| `eshkol_taylor_project_forward_tangent` | Function | 334 |
+| `ESH_AD_NEST_NONE` | Macro | 343 |
+| `ESH_AD_NEST_CARRY_JET` | Macro | 344 |
+| `ESH_AD_NEST_RIDE` | Macro | 345 |
+| `ESH_AD_NEST_CARRY_TWR` | Macro | 346 |
+| `ESH_AD_NEST_UNSUPPORTED` | Macro | 347 |
+| `ESHKOL_STATIC_ASSERT` | Function | 362 |
+| `ESHKOL_AD_PAYLOAD_LAYOUTS` | Macro | 371 |
+| `eshkol_ad_payload_subtype_t` | Enum | 375 |
+| `ESHKOL_AD_PAYLOAD_LAYOUT_ENUM` | Macro | 376 |
+| `eshkol_ad_payload_size` | Function | 382 |
+| `ESHKOL_AD_PAYLOAD_LAYOUT_SIZE` | Macro | 384 |
+| `ESHKOL_IS_NULL_TYPE` | Macro | 487 |
+| `ESHKOL_IS_INT64_TYPE` | Macro | 488 |
+| `ESHKOL_IS_DOUBLE_TYPE` | Macro | 489 |
+| `ESHKOL_IS_BOOL_TYPE` | Macro | 490 |
+| `ESHKOL_IS_CHAR_TYPE` | Macro | 491 |
+| `ESHKOL_IS_SYMBOL_TYPE` | Macro | 492 |
+| `ESHKOL_IS_DUAL_NUMBER_TYPE` | Macro | 493 |
+| `ESHKOL_IS_COMPLEX_TYPE` | Macro | 494 |
+| `ESHKOL_IS_INT_STORAGE_TYPE` | Macro | 504 |
+| `ESHKOL_IS_HEAP_PTR_TYPE` | Macro | 514 |
+| `ESHKOL_IS_CALLABLE_TYPE` | Macro | 515 |
+| `ESHKOL_IS_LOGIC_VAR_TYPE` | Macro | 516 |
+| `ESHKOL_IS_LOGIC_VAR` | Macro | 519 |
+| `ESHKOL_LOGIC_VAR_ID` | Macro | 520 |
+| `ESHKOL_IS_CONS_PTR_TYPE` | Macro | 526 |
+| `ESHKOL_IS_STRING_PTR_TYPE` | Macro | 527 |
+| `ESHKOL_IS_VECTOR_PTR_TYPE` | Macro | 528 |
+| `ESHKOL_IS_TENSOR_PTR_TYPE` | Macro | 529 |
+| `ESHKOL_IS_HASH_PTR_TYPE` | Macro | 530 |
+| `ESHKOL_IS_EXCEPTION_TYPE` | Macro | 531 |
+| `ESHKOL_IS_CLOSURE_PTR_TYPE` | Macro | 532 |
+| `ESHKOL_IS_LAMBDA_SEXPR_TYPE` | Macro | 533 |
+| `ESHKOL_IS_AD_NODE_PTR_TYPE` | Macro | 534 |
+| `ESHKOL_IS_ANY_HEAP_TYPE` | Macro | 537 |
+| `ESHKOL_IS_ANY_CALLABLE_TYPE` | Macro | 545 |
+| `ESHKOL_IS_ANY_PTR_TYPE` | Macro | 551 |
+| `ESHKOL_IS_EXACT` | Macro | 555 |
+| `ESHKOL_IS_INEXACT` | Macro | 556 |
+| `ESHKOL_MAKE_EXACT` | Macro | 559 |
+| `ESHKOL_MAKE_INEXACT` | Macro | 560 |
+| `ESHKOL_GET_BASE_TYPE` | Macro | 562 |
+| `ESHKOL_OBJ_FLAG_MARKED` | Macro | 572 |
+| `ESHKOL_OBJ_FLAG_LINEAR` | Macro | 573 |
+| `ESHKOL_OBJ_FLAG_BORROWED` | Macro | 574 |
+| `ESHKOL_OBJ_FLAG_CONSUMED` | Macro | 575 |
+| `ESHKOL_OBJ_FLAG_SHARED` | Macro | 576 |
+| `ESHKOL_OBJ_FLAG_WEAK` | Macro | 577 |
+| `ESHKOL_OBJ_FLAG_PINNED` | Macro | 578 |
+| `ESHKOL_OBJ_FLAG_EXTERNAL` | Macro | 579 |
+| `ESHKOL_STATIC_ASSERT` | Function | 598 |
+| `ESHKOL_GET_HEADER` | Macro | 866 |
+| `ESHKOL_GET_DATA_PTR` | Macro | 870 |
+| `ESHKOL_GET_SUBTYPE` | Macro | 874 |
+| `ESHKOL_GET_FLAGS` | Macro | 878 |
+| `ESHKOL_SET_SUBTYPE` | Macro | 882 |
+| `ESHKOL_SET_FLAGS` | Macro | 886 |
+| `ESHKOL_HAS_FLAG` | Macro | 890 |
+| `ESHKOL_ADD_FLAG` | Macro | 894 |
+| `ESHKOL_CLEAR_FLAG` | Macro | 898 |
+| `ESHKOL_GET_OBJ_SIZE` | Macro | 902 |
+| `ESHKOL_GET_OBJECT_BASE` | Macro | 907 |
+| `ESHKOL_GET_OBJECT_TOTAL_SIZE` | Macro | 915 |
+| `ESHKOL_GET_REF_COUNT` | Macro | 920 |
+| `ESHKOL_INC_REF` | Macro | 924 |
+| `ESHKOL_DEC_REF` | Macro | 928 |
+| `ESHKOL_IS_CONS_COMPAT` | Macro | 941 |
+| `ESHKOL_IS_STRING_COMPAT` | Macro | 948 |
+| `ESHKOL_IS_VECTOR_COMPAT` | Macro | 955 |
+| `ESHKOL_IS_TENSOR_COMPAT` | Macro | 962 |
+| `ESHKOL_IS_HASH_COMPAT` | Macro | 969 |
+| `ESHKOL_IS_EXCEPTION_COMPAT` | Macro | 976 |
+| `ESHKOL_IS_MULTI_VALUE` | Macro | 983 |
+| `ESHKOL_IS_BIGNUM` | Macro | 989 |
+| `ESHKOL_IS_CLOSURE_COMPAT` | Macro | 995 |
+| `ESHKOL_IS_LAMBDA_SEXPR_COMPAT` | Macro | 1002 |
+| `ESHKOL_IS_AD_NODE_COMPAT` | Macro | 1009 |
+| `ESHKOL_IS_HEAP_PTR_COMPAT` | Macro | 1016 |
+| `ESHKOL_IS_CALLABLE_COMPAT` | Macro | 1026 |
+| `ESHKOL_IS_HANDLE` | Macro | 1033 |
+| `ESHKOL_IS_BUFFER` | Macro | 1036 |
+| `ESHKOL_IS_STREAM` | Macro | 1039 |
+| `ESHKOL_IS_EVENT` | Macro | 1042 |
+| `ESHKOL_AD_NODE` | Macro | 1113 |
+| `ESHKOL_AD_NODE` | Macro | 1125 |
+| `ESHKOL_AD_NODE` | Macro | 1133 |
+| `ESHKOL_AD_NODE` | Macro | 1140 |
+| `ESHKOL_STATIC_ASSERT` | Function | 1148 |
+| `CLOSURE_ENV_GET_FIXED_PARAMS` | Macro | 1289 |
+| `CLOSURE_ENV_IS_VARIADIC` | Macro | 1290 |
+| `CLOSURE_ENV_PACK` | Macro | 1291 |
+| `ESHKOL_STATIC_ASSERT` | Function | 1310 |
+| `CLOSURE_RETURN_UNKNOWN` | Macro | 1315 |
+| `CLOSURE_RETURN_SCALAR` | Macro | 1316 |
+| `CLOSURE_RETURN_VECTOR` | Macro | 1317 |
+| `CLOSURE_RETURN_LIST` | Macro | 1318 |
+| `CLOSURE_RETURN_FUNCTION` | Macro | 1319 |
+| `CLOSURE_RETURN_BOOL` | Macro | 1320 |
+| `CLOSURE_RETURN_STRING` | Macro | 1321 |
+| `CLOSURE_RETURN_VOID` | Macro | 1322 |
+| `CLOSURE_FLAG_VARIADIC` | Macro | 1325 |
+| `CLOSURE_FLAG_NAMED` | Macro | 1326 |
+| `ESHKOL_CLOSURE_FLAG_VARIADIC` | Macro | 1327 |
+| `ESHKOL_CLOSURE_FLAG_NAMED` | Macro | 1328 |
+| `ESHKOL_STATIC_ASSERT` | Function | 1354 |
+| `CLOSURE_RETURNS_VECTOR` | Macro | 1358 |
+| `CLOSURE_RETURNS_SCALAR` | Macro | 1359 |
+| `CLOSURE_RETURNS_FUNCTION` | Macro | 1360 |
+| `CLOSURE_TYPE_KNOWN` | Macro | 1361 |
+| `PRIMITIVE_FLAG_VARIADIC` | Macro | 1427 |
+| `PRIMITIVE_FLAG_PURE` | Macro | 1428 |
+| `ESHKOL_STATIC_ASSERT` | Function | 1446 |
+| `PRIMITIVE_IS_VARIADIC` | Macro | 1450 |
+| `PRIMITIVE_IS_PURE` | Macro | 1453 |
+| `g_current_exception` | Variable | 1567 |
+| `g_exception_handler_stack` | Variable | 1569 |
+| `eshkol_exception_handler_snapshot` | Function | 1709 |
+| `eshkol_exception_handler_restore_snapshot` | Function | 1710 |
+| `g_dynamic_wind_stack` | Variable | 1865 |
+| `eshkol_make_parameter` | Function | 2018 |
+| `eshkol_parameter_push` | Function | 2019 |
+| `eshkol_parameter_pop` | Function | 2020 |
+| `eshkol_parameter_ref` | Function | 2021 |
+| `eshkol_parameter_set` | Function | 2022 |
+| `eshkol_parameter_set_converter` | Function | 2023 |
+| `eshkol_parameter_converter_ref` | Function | 2024 |
+| `eshkol_make_parameter_ptr` | Function | 2026 |
+| `eshkol_parameter_push_ptr` | Function | 2027 |
+| `eshkol_parameter_set_ptr` | Function | 2028 |
+| `eshkol_parameter_set_converter_ptr` | Function | 2029 |
+| `eshkol_parameter_ref_ptr` | Function | 2031 |
+| `eshkol_parameter_converter_ref_ptr` | Function | 2032 |
+| `g_lambda_registry` | Variable | 2111 |
+| `arena_tagged_cons_cell` | Struct | 2145 |
+| `eshkol_write_value` | Function | 2203 |
+| `eshkol_runtime_register_port` | Function | 2251 |
+| `eshkol_runtime_port_is_open` | Function | 2252 |
+| `eshkol_runtime_port_is_string` | Function | 2253 |
+| `eshkol_runtime_close_port` | Function | 2254 |
+| `hott_type_expr` | Struct | 2352 |
+| `eshkol_pattern` | Struct | 2435 |
+| `eshkol_ast` | Struct | 2436 |
+| `eshkol_macro_pattern` | Struct | 2516 |
+| `eshkol_macro_template` | Struct | 2553 |
+| `eshkol_ast` | Struct | 2744 |
+| `eshkol_operation` | Struct | 2745 |
+| `eshkol_ast_birth_location_t::line` | Variable | 3071 |
+| `eshkol_ast_birth_location_t::column` | Variable | 3072 |
+| `EshkolAstBirthLocationScope::EshkolAstBirthLocationScope` | Function | 3082 |
+| `EshkolAstBirthLocationScope::~EshkolAstBirthLocationScope` | Function | 3087 |
+| `EshkolAstBirthLocationScope::EshkolAstBirthLocationScope` | Function | 3088 |
+| `EshkolAstBirthLocationScope::saved_` | Variable | 3091 |
+| `ESHKOL_AST_BORN_AT` | Macro | 3095 |
+| `ESHKOL_AST_BORN_ZERO` | Macro | 3096 |
+| `ESHKOL_AST_BORN_AT` | Macro | 3100 |
+| `eshkol_ast_make_double` | Function | 3252 |
+| `eshkol_ast_make_bool` | Function | 3258 |
+| `eshkol_ast_make_char` | Function | 3264 |
+| `eshkol_ast_make_null` | Function | 3270 |
+| `eshkol_ast_make_string` | Function | 3276 |
+| `eshkol_ast_make_symbol` | Function | 3283 |
+| `hott_make_real_type` | Function | 3367 |
+| `hott_make_boolean_type` | Function | 3368 |
+| `hott_make_string_type` | Function | 3369 |
+| `hott_make_char_type` | Function | 3370 |
+| `hott_make_symbol_type` | Function | 3371 |
+| `hott_make_null_type` | Function | 3372 |
+| `hott_make_any_type` | Function | 3373 |
+| `hott_make_nothing_type` | Function | 3374 |
+| `eshkol_get_parse_source_context` | Function | 3566 |
+| `eshkol_parse_had_error` | Function | 3588 |

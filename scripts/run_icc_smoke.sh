@@ -121,73 +121,7 @@ rm() {
     return 0
 }
 
-# Emit one trace line as a JSON-L event with explicit `kind`. ICC's
-# runtime_evidence parser was extended (2026-05-07) to recognize records
-# carrying an explicit `kind` field as pre-shaped events, instead of
-# walking their keys with the ML-training-log heuristic.
-#
-# The oracle criterion matches:
-#     event_kinds: [eshkol_smoke]
-#     event_names: ["<probe_id>"]
-#     event_values: ["PASS"]
-emit_event() {
-    local probe_id="$1" status="$2" snippet="$3"
-    : "${TRACE_FILE:?}"
-    # json.dumps handles newlines, tabs, control bytes, quotes, backslashes,
-    # and Unicode labels. Hand-escaping only quotes/backslashes produced
-    # invalid JSON-L whenever a failing probe emitted a multiline diagnostic.
-    python3 -c '
-import json, sys
-print(json.dumps({"kind": "eshkol_smoke", "name": sys.argv[1],
-                  "value": sys.argv[2], "snippet": sys.argv[3],
-                  "confidence": 0.95}, ensure_ascii=False))
-' "$probe_id" "$status" "$snippet" >> "${TRACE_FILE:?}"
-}
-
-PROBE_TOTAL=0
-PROBE_FAILURES=0
-PROBE_INFRA=0
-
-probe() {
-    local probe_id="$1" label="$2" cmd="$3"
-    local out status snippet class
-    PROBE_TOTAL=$((PROBE_TOTAL + 1))
-    # Capture combined stdout+stderr so the snippet is informative when
-    # something fails. Bound the snippet so a multi-MB log doesn't blow
-    # up the trace file.
-    out=$(eval "$cmd" 2>&1)
-    status=$?
-    if [ "$status" -eq 0 ]; then
-        snippet="${label}: OK"
-        emit_event "$probe_id" PASS "$snippet"
-        printf '  ✓ %-40s %s\n' "$probe_id" "$label"
-        return
-    fi
-    # A probe body is an ad hoc `eval`'d shell snippet, most of which call
-    # eshkol-run/a compiled binary directly with no timeout wrapper at all —
-    # so today the ONLY exit codes this classifier can recognize as
-    # "harness could not run" rather than "the code is wrong" are the
-    # small, well-known set scripts/lib/harness_outcome.sh defines: a
-    # SIGKILL/SIGTERM/SIGINT the environment sent (137/143/130), or the 124/
-    # 125/142 shapes any probe that DOES wrap itself in
-    # eshkol_outcome_guarded (directly, or transitively through a script
-    # that sources this file) can now produce. Everything else stays FAIL,
-    # per eshkol_outcome_classify_exit's own principle: an unrecognized
-    # nonzero exit is a claim about the CODE until a harness explicitly
-    # says otherwise.
-    class=$(eshkol_outcome_classify_exit "$status")
-    if [ "$class" = INFRA ]; then
-        PROBE_INFRA=$((PROBE_INFRA + 1))
-        snippet=$(printf '%s' "$out" | tail -c 200)
-        emit_event "$probe_id" INFRA "$snippet"
-        printf '  ⚠ %-40s %s (infra, exit %d — no verdict obtained)\n' "$probe_id" "$label" "$status"
-    else
-        PROBE_FAILURES=$((PROBE_FAILURES + 1))
-        snippet=$(printf '%s' "$out" | tail -c 200)
-        emit_event "$probe_id" FAIL "$snippet"
-        printf '  ✗ %-40s %s (exit %d)\n' "$probe_id" "$label" "$status"
-    fi
-}
+. "$REPO_ROOT/scripts/lib/icc_probe.sh"
 
 echo "Running ICC smoke probes → $TRACE_FILE"
 echo
@@ -227,11 +161,8 @@ probe jit_repl_clean_exit "eshkol-run -r returns 0 on a noop input" \
 # cleanly and read each other's objects at the wrong offsets — silently. These
 # two probes are the evidence for INV-object-abi-mixed-link-refused and
 # INV-object-abi-site-ratchet respectively.
-probe abi_layout_pin "object header layout and guard symbol are pinned" \
-    '"$(dirname "$ESHKOL_RUN")/abi_layout_pin_test"'
-
-probe abi_object_header_ratchet "no new object-header layout dependence" \
-    'python3 "$REPO_ROOT/scripts/abi_header_inventory.py" check --repo "$REPO_ROOT"'
+. "$REPO_ROOT/scripts/lib/release_invariant_probes.sh"
+eshkol_release_invariant_probes
 
 # ─────────────────────────────────────────────────────────────────
 # Agent FFI probes (#234/#236/#237/#248 contracts)

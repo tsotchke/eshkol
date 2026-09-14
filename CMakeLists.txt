@@ -6825,6 +6825,31 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_geometry_guard_test.py)
 endif()
 
+# Release-invariant contracts are source-level checks for the architecture
+# model and the typed receipts emitted before the release architecture grade.
+# Keep them in CTest so normal developer and CI test selections exercise the
+# same contracts as the release workflow.
+if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
+    foreach(_release_invariant_test IN ITEMS
+            test_release_invariant_contracts
+            test_release_probe_receipts)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/${_release_invariant_test}.py")
+            add_test(NAME ${_release_invariant_test}
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/${_release_invariant_test}.py)
+            set_tests_properties(${_release_invariant_test} PROPERTIES
+                LABELS "toolchain;release-invariants")
+        endif()
+    endforeach()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_flat_ad_import_test.py")
+        add_test(NAME wasm_flat_ad_import_test
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_flat_ad_import_test.py)
+        set_tests_properties(wasm_flat_ad_import_test PROPERTIES
+            LABELS "toolchain;wasm;imports")
+    endif()
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_geometry_guard_runtime_test.js")
     find_program(NODE_EXECUTABLE node)
     if(NODE_EXECUTABLE)

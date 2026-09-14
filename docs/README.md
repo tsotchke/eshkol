@@ -189,6 +189,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0010 — Closed-loop assurance architecture](design/adr/0010-closed-loop-assurance.md)
 - [ADR 0011 — Hosted guest collectors over OALR regions](design/adr/0011-guest-collector-adapter.md) — how a garbage-collected guest language (Python, Common Lisp) is hosted in a region without Eshkol ever tracing; includes a runnable falsifier in [`0011-gc-adapter-falsifier/`](design/adr/0011-gc-adapter-falsifier/)
 - [ADR 0012 — Object ABI: discrimination, enforcement, and the staged migration](design/adr/0012-object-abi-staged-migration.md) — how a heap object is discriminated, where the invariant is enforced, and the staged path from the 8-byte v1 header to the 32-byte v2 header; the site inventory it migrates is [`design/ABI_V2_MIGRATION_INVENTORY.md`](design/ABI_V2_MIGRATION_INVENTORY.md)
+- [ADR 0013 — Release invariant contracts are measured before grading](design/adr/0013-release-invariant-contracts.md)
 
 ## Testing and Quality Gates
 

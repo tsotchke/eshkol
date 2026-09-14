@@ -416,13 +416,16 @@ invariants:
     sites:
       - id: parser-node-key
         path: inc/eshkol/eshkol.h
-        key_pattern: 'uint32_t node_id'
+        key_pattern: '(?m)^\s*(\w+)\s+node_id\b'
       - id: span-substrate
         path: inc/eshkol/frontend/node_identity.h
-        key_pattern: 'eshkol_node_id_t'
-      - id: semantic-substrate
+        key_pattern: '(\w+)\s+eshkol_node_id_new\s*\('
+      - id: binding-query-node-key
         path: inc/eshkol/frontend/semantic_identity.h
-        key_pattern: 'eshkol_binding_id_t.*node_id|eshkol_typed_expr_info'
+        key_pattern: 'eshkol_binding_id_for_node\s*\(\s*(\w+)\s+node_id\b'
+      - id: typed-query-node-key
+        path: inc/eshkol/frontend/semantic_identity.h
+        key_pattern: 'eshkol_typed_expr_info\s*\(\s*(\w+)\s+node_id\b'
 
   - id: INV-ad-counters-measure-real-events
     kind: dependency-presence
@@ -631,7 +634,7 @@ invariants:
         key_pattern: 'HEAP_SUBTYPE_([A-Z0-9_]+)\s*=\s*\d+,\s*//.*\[DEEPWALK\]'
       - id: region-evacuator-switch
         path: lib/core/runtime_regions.cpp
-        key_pattern: 'case\s+HEAP_SUBTYPE_(\w+)\s*:\s*return\s+EVAC_'
+        key_pattern: 'case\s+HEAP_SUBTYPE_(\w+)\s*:\s*return\s+EVAC_(?!LEAF\b)'
 
   # 6b. The SAME invariant for the bytecode VM's Stage-1 evacuator (SW-14).
   #     It matters MORE here than natively: a VM `Value` addresses the heap by a
