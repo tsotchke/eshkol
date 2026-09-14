@@ -513,7 +513,7 @@ Eshkol v1.2.1-scale represents a **mature, production-ready implementation** for
 | GPU/Metal backend | ~11,779 | 5 |
 | Frontend (parser, macro, types) | ~16,400 | 3 |
 | Runtime (arena, logic, inference, workspace) | ~7,200 | 12 |
-| REPL JIT | ~4,354 | 1 |
+| REPL JIT | ~4,679 | 1 |
 | Tools (LSP, package manager, VS Code) | ~2,200 | 4+ |
 | Headers | ~26,200 | 75 |
 | Weight matrix transformer | ~7,400 | 1 |
@@ -529,7 +529,7 @@ Eshkol v1.2.1-scale represents a **mature, production-ready implementation** for
 
 ### Tooling
 
-- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp), 4,611 lines): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
+- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp), 4,679 lines): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
 - **LSP server** ([eshkol_lsp.cpp](../../tools/lsp/eshkol_lsp.cpp), 954 lines): Completions, hover, go-to-definition, diagnostics, formatting
 - **VSCode extension** ([tools/vscode-eshkol/](../../tools/vscode-eshkol/)): Syntax highlighting, LSP integration, build tasks
 - **Package manager** ([eshkol_pkg.cpp](../../tools/pkg/eshkol_pkg.cpp), 876 lines): eshkol-pkg init/build/run/add/clean, TOML manifests, git-based registry

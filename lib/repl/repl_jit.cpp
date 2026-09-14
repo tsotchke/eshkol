@@ -65,6 +65,8 @@
 #include <cstdint>
 #ifdef _WIN32
 #include <malloc.h>           // _aligned_malloc / _aligned_free
+#elif defined(__unix__) || defined(__APPLE__)
+#include <dlfcn.h>            // dladdr / dlopen for module-scoped JIT symbols
 #endif
 #include <filesystem>
 #include <set>
@@ -726,6 +728,58 @@ using namespace llvm::orc;
 
 namespace eshkol {
 
+#if defined(__unix__) || defined(__APPLE__)
+// This translation-unit-local object identifies the exact image containing
+// the JIT resolver, even when an embedding host exports an identically named
+// runtime global that could interpose `__repl_shared_arena`.
+static const unsigned char repl_runtime_image_anchor = 0xE5;
+
+/**
+ * Return a handle to the image that owns the REPL runtime anchor, if that
+ * image is already loaded as a dynamic library. In Python, the extension is
+ * commonly loaded RTLD_LOCAL, so ORC's current-process search cannot see its
+ * exported runtime symbols. Keep this lookup scoped to the owning image.
+ *
+ * The permanent handle is initialized once per image, rather than once per
+ * ReplJITContext, so repeated contexts do not accumulate dlopen references.
+ * Executables are not necessarily dlopen-able; failure is expected there and
+ * leaves the existing current-process resolver as the fallback.
+ */
+static sys::DynamicLibrary get_repl_runtime_image_library() {
+    static sys::DynamicLibrary library = [] {
+        Dl_info image{};
+        if (dladdr(static_cast<const void*>(&repl_runtime_image_anchor), &image) == 0 ||
+            !image.dli_fname || !*image.dli_fname) {
+            return sys::DynamicLibrary();
+        }
+
+        int flags = RTLD_LAZY | RTLD_LOCAL;
+#ifdef RTLD_NOLOAD
+        // The extension is already executing this code. Avoid loading a
+        // second image if its loader path cannot be matched exactly.
+        flags |= RTLD_NOLOAD;
+#endif
+        // Do not let a previous loader error affect diagnostics, and consume
+        // the expected failure for non-dlopen-able executable images.
+        (void)dlerror();
+        void* handle = dlopen(image.dli_fname, flags);
+        if (!handle) {
+            (void)dlerror();
+            return sys::DynamicLibrary();
+        }
+
+        std::string error;
+        auto loaded = sys::DynamicLibrary::addPermanentLibrary(handle, &error);
+        if (!loaded.isValid()) {
+            dlclose(handle);
+            return sys::DynamicLibrary();
+        }
+        return loaded;
+    }();
+    return library;
+}
+#endif
+
 // Forward declarations for static helper functions
 static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& content);
 // base_dir defaults to the directory of the file currently being compiled —
@@ -1003,9 +1057,23 @@ void ReplJITContext::initializeJIT() {
     // Enable REPL mode in the compiler for cross-evaluation symbol persistence
     eshkol_repl_enable();
 
-    // Add symbol resolver for current process
-    // This allows JIT code to call runtime functions from eshkol-static
+    // Add symbol resolvers. A Python extension is commonly dlopen'ed
+    // RTLD_LOCAL, so its exported eshkol-static runtime symbols are not in
+    // RTLD_DEFAULT even though they are present in the extension's dynsym.
+    // Search the image containing the runtime first, by its own loader handle,
+    // without promoting it into process-global scope. Ordinary executables
+    // cannot always be dlopen'ed; in that case the existing process resolver
+    // below continues to serve their exported host symbols.
     auto& main_dylib = jit_->getMainJITDylib();
+#if defined(__unix__) || defined(__APPLE__)
+    auto runtime_image = get_repl_runtime_image_library();
+    if (runtime_image.isValid()) {
+        main_dylib.addGenerator(
+            std::make_unique<orc::DynamicLibrarySearchGenerator>(
+                runtime_image, jit_->getDataLayout().getGlobalPrefix()));
+    }
+#endif
+
     auto generator = orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
         jit_->getDataLayout().getGlobalPrefix());
 

@@ -856,7 +856,7 @@ __test_modules_mod_a__helper
 
 ## REPL/JIT System
 
-**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) (4,611 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp) (1,743 lines)
+**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) (4,679 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp) (1,743 lines)
 
 ### Architecture
 
@@ -1112,7 +1112,7 @@ eshkol/
 │   │   └── dependent.cpp    # Dependent types (534 lines)
 │   │
 │   ├── repl/
-│   │   ├── repl_jit.cpp     # JIT compiler (4,354 lines)
+│   │   ├── repl_jit.cpp     # JIT compiler (4,679 lines)
 │   │   └── repl_utils.h     # REPL utilities
 │   │
 │   └── quantum/
@@ -1320,7 +1320,7 @@ These features are **designed but not implemented**. See roadmap documents for d
 - [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (1226 lines; 4,259 across all `runtime_*` memory modules)
 - [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (11,691 lines)
 - [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (6,061 lines)
-- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,611 lines)
+- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,679 lines)
 - [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (6,099 lines)
 
 ### Forward-looking design documents

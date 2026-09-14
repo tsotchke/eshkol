@@ -242,7 +242,7 @@ Provides DOM manipulation, event handling, Canvas 2D drawing, Fetch API, LocalSt
 
 ### REPL JIT
 
-Interactive development via LLVM OrcJIT (4,354 lines). Preloads 237 stdlib functions and 305 globals from precompiled `.o` + `.bc` metadata. Optimization level matched to precompiled objects to avoid ABI mismatches on struct argument passing.
+Interactive development via LLVM OrcJIT (4,679 lines). Preloads 237 stdlib functions and 305 globals from precompiled `.o` + `.bc` metadata. Optimization level matched to precompiled objects to avoid ABI mismatches on struct argument passing.
 
 ### Package Manager
 
