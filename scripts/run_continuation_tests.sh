@@ -45,12 +45,20 @@ FAIL=0
 
 # Normalise a transcript (mirrors scripts/run_vm_parity.sh's normalize).
 normalise() {
-    perl -ne 'next if
+    # The override exists for the fault-injection regression. Production uses
+    # the locale-independent C locale for both tools; callers must still check
+    # this function's status because pipefail alone cannot make a failed
+    # command substitution distinguishable from an empty transcript.
+    if [ -n "${ESHKOL_CONT_NORMALIZER:-}" ]; then
+        "$ESHKOL_CONT_NORMALIZER"
+        return
+    fi
+    LC_ALL=C perl -ne 'next if
         /^WARN/ or /^INFO:/ or /^DEBUG/ or
         /^\[ESKB\]/ or /^\[GPU\]/ or /^\s*\[compiled:/ or
         /^=== Eshkol VM/ or /^=== Execution complete ===/ or
         /^remark:/ or /^warning: <unknown>/;
-        print' | tr -d '\n'
+        print' | LC_ALL=C tr -d '\n'
 }
 
 # Run a command with a timeout, portably (macOS has no timeout(1)).
@@ -92,24 +100,44 @@ for test_file in tests/continuations/*.esk; do
         FAIL=$((FAIL + 1))
         continue
     fi
-    want=$(normalise < "$exp_file")
+    if ! want=$(normalise < "$exp_file"); then
+        echo "FAILED $test_file::expected-normalization"
+        echo "  could not normalise expected transcript $exp_file"
+        FAIL=$((FAIL + 1))
+        continue
+    fi
 
-    got=$(run_bounded "$RUN" -r "$test_file" 2>/dev/null | normalise)
-    check "$test_file::native-jit" "$want" "$got"
+    if got=$(run_bounded "$RUN" -r "$test_file" 2>/dev/null | normalise); then
+        check "$test_file::native-jit" "$want" "$got"
+    else
+        echo "FAILED $test_file::native-jit::transcript-normalization"
+        echo "  could not collect and normalise native JIT transcript"
+        FAIL=$((FAIL + 1))
+    fi
 
     exe="$WORK/$name"
     if run_bounded "$RUN" -o "$exe" "$test_file" >/dev/null 2>&1 && [ -x "$exe" ]; then
-        got=$(run_bounded "$exe" 2>/dev/null | normalise)
-        check "$test_file::native-aot" "$want" "$got"
+        if got=$(run_bounded "$exe" 2>/dev/null | normalise); then
+            check "$test_file::native-aot" "$want" "$got"
+        else
+            echo "FAILED $test_file::native-aot::transcript-normalization"
+            echo "  could not collect and normalise native AOT transcript"
+            FAIL=$((FAIL + 1))
+        fi
     else
         echo "FAILED $test_file::native-aot"
         echo "  AOT compile failed"
         FAIL=$((FAIL + 1))
     fi
 
-    got=$(ESHKOL_VM_NO_DISASM=1 ESHKOL_VM_REGION_QUIET=1 \
-          run_bounded "$VM" "$test_file" 2>/dev/null | normalise)
-    check "$test_file::vm" "$want" "$got"
+    if got=$(ESHKOL_VM_NO_DISASM=1 ESHKOL_VM_REGION_QUIET=1 \
+             run_bounded "$VM" "$test_file" 2>/dev/null | normalise); then
+        check "$test_file::vm" "$want" "$got"
+    else
+        echo "FAILED $test_file::vm::transcript-normalization"
+        echo "  could not collect and normalise VM transcript"
+        FAIL=$((FAIL + 1))
+    fi
 done
 
 echo ""

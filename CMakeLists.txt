@@ -7826,6 +7826,22 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             FAIL_REGULAR_EXPRESSION "FAILED|FAIL:")
     endif()
 
+    # The continuation transcript gate must fail closed when expected or
+    # actual normalization fails; empty command-substitution output must
+    # never compare equal and report a false pass.
+    if(UNIX AND EXISTS
+       "${CMAKE_CURRENT_SOURCE_DIR}/tests/continuations/normalizer_failure_test.sh")
+        add_test(
+            NAME continuation_normalizer_failure
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/continuations/normalizer_failure_test.sh"
+        )
+        set_tests_properties(continuation_normalizer_failure PROPERTIES
+            TIMEOUT 60
+            PASS_REGULAR_EXPRESSION "normalizer_failure_test.sh: PASS"
+            FAIL_REGULAR_EXPRESSION "unexpectedly passed|false PASSED")
+    endif()
+
     # SW-113: the seeded drand48-compatible generator is one runtime contract,
     # so a fixed seed must produce identical scalar and tensor-random sequences
     # through native JIT, native AOT, and the bytecode VM. The test script also
