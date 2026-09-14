@@ -2672,11 +2672,13 @@ endif()
 # silent no-op.
 #
 # SCOPE — deliberately these targets rather than a global
-# CMAKE_POSITION_INDEPENDENT_CODE.  Only the runtime (and the agent-FFI
-# archive, set where it is defined) is ever consumed by a `-shared` link;
-# ESHKOL_NON_RUNTIME_SRC — the LLVM backend, parser and REPL that make up the
-# rest of `eshkol-static` — is linked only into the eshkol-run/eshkol-repl
-# executables, so compiling it PIC would pay the cost with no beneficiary.
+# CMAKE_POSITION_INDEPENDENT_CODE.  The runtime (and agent-FFI archive, set
+# where it is defined) is consumed by `-shared` links. Normally the LLVM
+# backend, parser and REPL in `eshkol-static` are linked only into executables;
+# when Python bindings are enabled, however, `eshkol-static` and
+# `eshkol-repl-lib` are also force-loaded into a shared module. That optional
+# consumer enables PIC on those actual STATIC compile targets in the Python
+# block below, keeping the extra compiler/repl cost out of other builds.
 #
 # Accepted consequence: these objects are also members of `eshkol-static`, so
 # the compiler's own runtime half becomes PIC too.  The alternative — a second,
@@ -10480,6 +10482,14 @@ if(ESHKOL_PYTHON_BINDINGS)
     find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
     find_package(pybind11 QUIET)
     if(pybind11_FOUND)
+        # On ELF platforms the Python extension is a shared object and
+        # force-loads both archives below. Mark the targets that compile their
+        # own sources PIC; setting PIC on an archive of OBJECT-library outputs
+        # would not affect those objects, which are handled above.
+        if(UNIX AND NOT APPLE)
+            set_target_properties(eshkol-static eshkol-repl-lib PROPERTIES
+                POSITION_INDEPENDENT_CODE ON)
+        endif()
         pybind11_add_module(eshkol_py bindings/python/eshkol_module.cpp)
         target_include_directories(eshkol_py PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
         if(LLVM_LIBRARY_DIRS)
