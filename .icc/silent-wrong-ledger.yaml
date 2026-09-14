@@ -13026,3 +13026,101 @@ entries:
       (3) A define's return-annotation check reports a body of type Value against
       the annotation (gradient_callable_arity_test.esk:67), where gradual typing
       would accept it.
+  - id: LE-27
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: closed
+    closed_at: "00be2055"
+    closed_by: "branch fix/v135-ad-closure-capture"
+    family: ad-named-differentiand-capture
+    title: "native: differentiating a let-bound capturing closure inside a nested lambda failed LLVM module verification (\"Referring to an argument in another function!\"), and under a shadowing binding returned a wrong derivative"
+    repro: >-
+      `(define (outer h) (let ((H (lambda (Z) (* Z Z h)))) ((lambda (Z)
+      (derivative-n H Z 1)) 1.0))) (display (outer 0.1))` under
+      `eshkol-run -r` or compiled with `eshkol-run -o`. The same failure occurs
+      when the nested lambda is passed to map or for-each, under let or let*,
+      with derivative, derivative-n, taylor, gradient, jacobian, hessian,
+      divergence, curl, laplacian and directional-derivative, and when the
+      closure captures a set!-mutated variable ("Referring to an instruction in
+      another function!"). The closure computed correctly when it was top-level,
+      a function parameter, capture-free, or wrapped as `(lambda (x) (H x))`.
+      Two related shapes were silently wrong: `((lambda (h) (derivative H h)) 1.0)`
+      printed 2 and `(let ((h 5.0)) (derivative H 1.0))` printed a garbage
+      double such as 12315480352, both where 0.2 is correct. Found alongside:
+      `((gradient H) 1.0)` crashed with SIGSEGV; `(map H l)` inside a nested
+      lambda failed verification the same way; `reduce` with any capturing
+      procedure failed verification ("Incorrect number of arguments passed to
+      called function!").
+    observed_before: >-
+      `ERROR: LLVM module verification failed: Referring to an argument in
+      another function!` naming `store %eshkol_tagged_value %h, ptr
+      %deriv_capture_value`, then `Failed to generate LLVM IR`, on the JIT and
+      AOT routes. Shadowing shapes: 2 and 12315480352 where 0.2 is correct.
+      Curried gradient: fatal signal SIGSEGV.
+    correct: >-
+      0.2 for every shape above; the values pinned in the guarding tests.
+    root_cause: >-
+      Every AD operator that calls a statically resolved differentiand's
+      llvm::Function directly has to pass the function's capture arguments. Four
+      copies of that code in lib/backend/autodiff_codegen.cpp (the derivative
+      monolith shared by derivative/derivative-n/taylor, the gradient reverse
+      path, resolveGradientCaptures and loadCapturesForAutodiff, which serve
+      gradient, jacobian and hessian and through them divergence, curl,
+      laplacian and the directional derivative) rebuilt the captures by looking
+      up each captured variable's NAME in the symbol tables at the AD call site.
+      For a differentiand reached by name, that name is only meaningful where
+      the closure was created. Inside a separately emitted nested lambda the
+      table still mapped `h` to the enclosing function's llvm::Argument (the
+      nested lambda never captured `h`; it captured `H`), so the store referred
+      to another function. Under a binding that shadows `h`, the lookup found
+      the shadowing binding. MapCodegen::loadCapturedValues had the same by-name
+      lookup. gradientHigherOrder wrapped a capturing static function in a
+      capture-free closure, and codegenReduce called a capturing function with
+      no capture arguments.
+    fix: >-
+      One resolver, AutodiffCodegen::appendDifferentiandCaptures, replaces the
+      four copies. A named differentiand's captures are read from the closure
+      object the name evaluates to (emitClosureCaptureArguments in
+      inc/eshkol/backend/closure_capture_scope.h, which follows the closure-call
+      ABI, including the environment-pointer ABI for more than 64 captures); an
+      inline lambda's are still resolved by name at the site that created it.
+      Structural safeguard: every resolved capture value must belong to the
+      function being emitted (valueUsableInFunction); a value owned by an
+      enclosing function is reached through the current function's own capture
+      pointer, and otherwise code generation fails with the variable name, the
+      owning function, the function being emitted and the source location
+      instead of emitting cross-function IR. map reads a named procedure's
+      captures from its closure and applies the same scope check; the curried
+      gradient uses the closure value of a capturing differentiand; reduce
+      dispatches on the closure value of a capturing procedure.
+    observed_after: >-
+      The fifteen reported reproducers print the correct values under the JIT
+      and AOT routes; the shadowing shapes print 0.2; the curried gradient prints
+      0.2; map and reduce inside nested lambdas print the expected lists and
+      sums.
+    evidence: >-
+      tests/ad/named_differentiand_closure_capture_test.esk (40 checks: every
+      reported failing and passing shape, three captured parameters, two lambda
+      levels, a captured mutable variable, both shadowing shapes, derivative-n
+      orders 2 and 3, taylor, scalar hessian, scalar and vector gradient,
+      directional derivative, laplacian, divergence, curried derivative and
+      gradient) and tests/closures/named_closure_static_call_capture_test.esk
+      (8 checks), each registered as cached JIT, uncached JIT and AOT CTest
+      variants; both fail to compile on the unmodified base and pass after the
+      fix. tests/vm_parity/corpus/84_named_closure_derivative_capture.esk prints
+      identical output natively and on the VM.
+    caught_by: [user-reported]
+    missed_by: [ad_capture_global_shadow_test, inline_differentiand_loop_capture_test, vm-parity]
+    notes: >-
+      Filed LOUD-ERROR by the LE-21 precedent (a module verification failure).
+      The shadowing shapes were silent. Two defects found during the audit are
+      not fixed here and remain open: (1) a differentiand variable reassigned
+      with set! to a different lambda is still differentiated as the lambda it
+      was first bound to, because static procedure resolution ignores the
+      assignment (`(let ((H (lambda (Z) (* Z Z h)))) (set! H (lambda (Z) (* Z h)))
+      (derivative H 1.0))` prints 0.2 where 0.1 is correct; calling `(H 1.0)`
+      is correct); (2) `remove` with a procedure predicate that is not statically
+      resolved returns raw double bits for inexact elements
+      (`(remove p (list 1.0 2.0 3.0))` with a parameter predicate prints
+      (4607182418800017408)), so a capturing predicate is left on its loud
+      failure rather than routed there.
