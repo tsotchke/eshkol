@@ -1,6 +1,6 @@
 # Eshkol v1.3.5-evolve — Release Notes
 
-**Planned release date:** Monday, September 14, 2026, after 09:00 America/Montreal.
+**Planned release date:** Tuesday, September 15, 2026, after 09:00 America/Montreal.
 **Status:** publication requires passing CI, strict readiness, and asset checks.
 
 The September 11 measurements below were taken on the previous candidate and do not establish readiness for this refresh.

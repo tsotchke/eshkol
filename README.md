@@ -12,7 +12,7 @@ Eshkol is a Scheme-based programming language that unifies functional programmin
 
 **v1.3.5-evolve** — compiler and VM correctness, exact and nested AD,
 validated tensor/checkpoint operations, and stronger release verification.
-The refreshed candidate is planned for Monday, September 14, 2026, after 09:00
+The refreshed candidate is planned for Tuesday, September 15, 2026, after 09:00
 America/Montreal; final verification remains pending. The
 [release notes](RELEASE_NOTES.md) describe the integrated changes and migration
 requirements. Production TPU training belongs to the separate accelerator

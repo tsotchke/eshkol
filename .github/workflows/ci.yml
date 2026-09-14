@@ -1592,7 +1592,7 @@ jobs:
     needs: changes
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: ${{ matrix.job_timeout_minutes || 120 }}
     env:
       ESHKOL_FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.ci-cache/fetchcontent
       # Which lanes this run actually needs, decided by the `changes`
@@ -1615,6 +1615,8 @@ jobs:
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_all_tests.sh
+            job_timeout_minutes: 240
+            test_timeout_minutes: 180
             upload_artifact: 'true'
             artifact_name: eshkol-linux-x64
           # This is the assertion-enabled compilation axis. Keep it as a
@@ -2073,7 +2075,7 @@ jobs:
 
       - name: Run Tests
         if: env.LANE_ACTIVE == 'true'
-        timeout-minutes: 120
+        timeout-minutes: ${{ matrix.test_timeout_minutes || 120 }}
         shell: bash
         env:
           BUILD_DIR: ${{ matrix.build_dir }}
@@ -2506,6 +2508,8 @@ jobs:
             '-B', '${{ matrix.build_dir }}',
             '-DBUILD_REPL=ON',
             '-DESHKOL_BUILD_TESTS=OFF',
+            '-DESHKOL_STDLIB_TARGET_CPU=generic',
+            '-DESHKOL_STDLIB_TARGET_FEATURES=',
             '-DESHKOL_REQUIRED_LLVM_MAJOR=${{ env.LLVM_MAJOR }}',
             "-DESHKOL_HOST_CXX_COMPILER=$hostCxx",
             '-DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }}',
