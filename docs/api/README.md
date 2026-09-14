@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2323/5175 public symbols documented (44.9%), 2852 undocumented.
+**Coverage:** 2339/5191 public symbols documented (45.1%), 2852 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -175,13 +175,13 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `types/`
 
-188/355 symbols documented.
+204/371 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`types/dependent.h`](types/dependent.md) | 63 | 29 |
 | [`types/hott_types.h`](types/hott_types.md) | 121 | 68 |
-| [`types/type_checker.h`](types/type_checker.md) | 171 | 91 |
+| [`types/type_checker.h`](types/type_checker.md) | 187 | 107 |
 
 ### `util/`
 

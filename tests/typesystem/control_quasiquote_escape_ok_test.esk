@@ -1,0 +1,18 @@
+;; Type System Test: well-typed code inside a quasiquote template's unquote and unquote-splicing stays silent now that
+;; the checker synthesizes it (no false positive from descending into it).
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+; Only escapes are evaluated: the quoted symbols and the nested quasiquote's
+; inner escape are data.
+(define (report x)
+  `(area ,(area x 2) label ,(label "abc") nested `(,(area "data" "only"))))
+(display (report 3))
+(newline)
+
+(display (area 2 3))
+(newline)

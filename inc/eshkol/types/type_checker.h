@@ -724,6 +724,45 @@ private:
     ContinuationTask<TypeCheckResult> synthesizeLetTask(eshkol_ast_t* expr);
     ContinuationTask<TypeCheckResult> synthesizeIfTask(eshkol_ast_t* expr);
 
+    // === Control and binding forms (every evaluated subexpression is checked) ===
+
+    /** `cond`: tests as a ladder, each body in its own scope; result joins the bodies (+ Boolean without else). */
+    ContinuationTask<TypeCheckResult> synthesizeCondTask(eshkol_ast_t* expr);
+    /** `case`: the key once, each body in its own scope; result joins the bodies (+ Boolean without else). */
+    ContinuationTask<TypeCheckResult> synthesizeCaseTask(eshkol_ast_t* expr);
+    /** `when` / `unless`: test, then the body in its own scope; result joins the body with Boolean. */
+    ContinuationTask<TypeCheckResult> synthesizeWhenUnlessTask(eshkol_ast_t* expr);
+    /** `do`: each loop variable is the fixpoint join of its init and its step. */
+    ContinuationTask<TypeCheckResult> synthesizeDoTask(eshkol_ast_t* expr);
+    /** `guard`: body, then handler clauses with the condition variable bound to Value. */
+    ContinuationTask<TypeCheckResult> synthesizeGuardTask(eshkol_ast_t* expr);
+    /** `match`: scrutinee once, each clause in its own scope with its pattern variables bound. */
+    ContinuationTask<TypeCheckResult> synthesizeMatchTask(eshkol_ast_t* expr);
+    /** `and` / `or`: every operand; `and` refines later operands by earlier predicates. */
+    ContinuationTask<TypeCheckResult> synthesizeAndOrTask(eshkol_ast_t* expr);
+    /** `let-values` / `let*-values`: producers, then the body with the variables bound to Value. */
+    ContinuationTask<TypeCheckResult> synthesizeLetValuesTask(eshkol_ast_t* expr);
+    /** A clause ladder shared by cond and guard; appends one result type per clause taken. */
+    ContinuationTask<TypeCheckResult> synthesizeClauseLadderTask(eshkol_ast_t* clauses, uint64_t count,
+                                                                 std::vector<TypeId>& results,
+                                                                 bool& has_else);
+    /** One clause body: empty yields @p test_type, `=> receiver` the receiver's codomain. */
+    ContinuationTask<TypeCheckResult> synthesizeClauseBodyTask(eshkol_ast_t* body, uint64_t count,
+                                                               TypeId test_type);
+    /** Expressions run in sequence; the last one's type, @p empty_type if none. Never fails. */
+    ContinuationTask<TypeCheckResult> synthesizeSequenceTask(eshkol_ast_t* exprs, uint64_t count,
+                                                             TypeId empty_type);
+    /** The unquote escapes of a quasiquote template at nesting level @p depth. */
+    ContinuationTask<TypeCheckResult> synthesizeQuasiTemplateTask(eshkol_ast_t* node, int depth);
+    /** The predicate expressions inside a match pattern. */
+    ContinuationTask<TypeCheckResult> synthesizePatternExpressionsTask(const eshkol_pattern_t* pattern);
+    /** Bind the variables a match pattern binds, given the type of the value it matches. */
+    void bindPatternVariables(const eshkol_pattern_t* pattern, TypeId matched);
+    /** Least common supertype of branch result types; Value when any is Value or none is shared. */
+    TypeId joinBranchTypes(const std::vector<TypeId>& types) const;
+    /** Result of applying a value of type @p callee: its codomain, or Value. */
+    TypeId applicationResultOf(TypeId callee) const;
+
     // === Checking Helpers ===
 
     ContinuationTask<TypeCheckResult> checkLambdaTask(eshkol_ast_t* expr, TypeId expected);

@@ -1,0 +1,18 @@
+;; Type System Test: well-typed code inside `dynamic-wind`'s before, thunk and after stays silent now that
+;; the checker synthesizes it (no false positive from descending into it).
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (wound x)
+  (dynamic-wind (lambda () 0)
+                (lambda () (area x 2))
+                (lambda () 0)))
+(display (wound 3))
+(newline)
+
+(display (area 2 3))
+(newline)

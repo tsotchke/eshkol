@@ -1,0 +1,20 @@
+;; Type System Test: well-typed code inside a `match` scrutinee, pattern predicate and clause body stays silent now that
+;; the checker synthesizes it (no false positive from descending into it).
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (describe v)
+  (match v
+    ((? number? n) (area n 2))
+    ((? string? s) (label s))
+    ((cons a b) (area a b))
+    (other 0)))
+(display (describe 4))
+(newline)
+
+(display (area 2 3))
+(newline)

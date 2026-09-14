@@ -1,0 +1,17 @@
+;; Type System Test: well-typed code inside a `when` test and body stays silent now that
+;; the checker synthesizes it (no false positive from descending into it).
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (maybe-area x)
+  (when (number? x)
+    (area x 2)))
+(display (maybe-area 3))
+(newline)
+
+(display (area 2 3))
+(newline)

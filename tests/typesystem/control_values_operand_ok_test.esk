@@ -1,0 +1,15 @@
+;; Type System Test: well-typed code inside a `values` operand stays silent now that
+;; the checker synthesizes it (no false positive from descending into it).
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (pair-of x)
+  (values (area x 2) (label "abc")))
+(call-with-values (lambda () (pair-of 3)) (lambda (a b) (display a) (newline)))
+
+(display (area 2 3))
+(newline)
