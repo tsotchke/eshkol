@@ -12,6 +12,16 @@ set(ESHKOL_VERSION "1.3.5")
 
 project("Eshkol" VERSION ${ESHKOL_VERSION} LANGUAGES C CXX)
 
+# Python's ELF extension force-loads the static compiler, REPL, runtime and
+# agent dependency closure into a shared object. Enable PIC before creating
+# any project or FetchContent targets so every CMake-built static archive in
+# that closure inherits it. Ordinary builds retain the narrower PIC scope
+# applied to runtime and agent-FFI targets below.
+option(ESHKOL_PYTHON_BINDINGS "Build Python bindings via pybind11" OFF)
+if(ESHKOL_PYTHON_BINDINGS AND UNIX AND NOT APPLE)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 set(ESHKOL_USING_MSVC FALSE)
 if(MSVC)
     set(ESHKOL_USING_MSVC TRUE)
@@ -2671,14 +2681,12 @@ endif()
 # compiling, so POSITION_INDEPENDENT_CODE on the STATIC target would be a
 # silent no-op.
 #
-# SCOPE — deliberately these targets rather than a global
-# CMAKE_POSITION_INDEPENDENT_CODE.  The runtime (and agent-FFI archive, set
-# where it is defined) is consumed by `-shared` links. Normally the LLVM
-# backend, parser and REPL in `eshkol-static` are linked only into executables;
-# when Python bindings are enabled, however, `eshkol-static` and
-# `eshkol-repl-lib` are also force-loaded into a shared module. That optional
-# consumer enables PIC on those actual STATIC compile targets in the Python
-# block below, keeping the extra compiler/repl cost out of other builds.
+# In ordinary builds, deliberately set PIC on only the runtime and agent-FFI
+# targets consumed by generated `-shared` outputs; the compiler, parser and
+# REPL are linked only into executables. The optional Python ELF extension
+# force-loads those archives and the static agent dependency closure too, so
+# CMAKE_POSITION_INDEPENDENT_CODE is enabled near project() above, before any
+# targets or FetchContent dependencies are created, only for that build mode.
 #
 # Accepted consequence: these objects are also members of `eshkol-static`, so
 # the compiler's own runtime half becomes PIC too.  The alternative — a second,
@@ -10473,8 +10481,6 @@ if(DEFINED ESHKOL_GENERATED_INCLUDE_DIR AND TARGET eshkol-agent-ffi)
 endif()
 
 # ===== Python Bindings (pybind11) =====
-option(ESHKOL_PYTHON_BINDINGS "Build Python bindings via pybind11" OFF)
-
 if(ESHKOL_PYTHON_BINDINGS)
     # Earlier test registration discovers only the interpreter. Modern
     # pybind11 reuses that discovery, so request the development component
@@ -10482,14 +10488,6 @@ if(ESHKOL_PYTHON_BINDINGS)
     find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
     find_package(pybind11 QUIET)
     if(pybind11_FOUND)
-        # On ELF platforms the Python extension is a shared object and
-        # force-loads both archives below. Mark the targets that compile their
-        # own sources PIC; setting PIC on an archive of OBJECT-library outputs
-        # would not affect those objects, which are handled above.
-        if(UNIX AND NOT APPLE)
-            set_target_properties(eshkol-static eshkol-repl-lib PROPERTIES
-                POSITION_INDEPENDENT_CODE ON)
-        endif()
         pybind11_add_module(eshkol_py bindings/python/eshkol_module.cpp)
         target_include_directories(eshkol_py PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
         if(LLVM_LIBRARY_DIRS)
