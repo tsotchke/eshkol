@@ -10474,6 +10474,10 @@ endif()
 option(ESHKOL_PYTHON_BINDINGS "Build Python bindings via pybind11" OFF)
 
 if(ESHKOL_PYTHON_BINDINGS)
+    # Earlier test registration discovers only the interpreter. Modern
+    # pybind11 reuses that discovery, so request the development component
+    # explicitly to provide Python3_add_library and the matching headers.
+    find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
     find_package(pybind11 QUIET)
     if(pybind11_FOUND)
         pybind11_add_module(eshkol_py bindings/python/eshkol_module.cpp)
