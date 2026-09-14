@@ -172,6 +172,12 @@ class ReleaseInvariantContractTests(unittest.TestCase):
         self.assertNotEqual(removed_definition, definitions)
         self.assertFalse(grade(name, {definition_path: removed_definition}))
 
+        unregistered_definition = definitions + (
+            '\nextern "C" void tensor_squared_distance_extra_backward('
+            'ad_node_t* node) { (void)node; }\n'
+        )
+        self.assertFalse(grade(name, {definition_path: unregistered_definition}))
+
     def test_squared_distance_registration_uses_its_definition_not_dispatcher_declaration(self):
         name = "INV-ad-squared-distance-backward-defined-and-registered"
         self.assertTrue(grade(name))

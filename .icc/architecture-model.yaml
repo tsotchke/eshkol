@@ -1049,7 +1049,7 @@ invariants:
         key_pattern: '(?m)^ESHKOL_AD_NODE\((?!SQUARED_DISTANCE,)[^)]*\bBRIDGE,\s*(\w+)\)'
       - id: bridge-backward-definitions
         path: lib/bridge/tensor_backward.cpp
-        key_pattern: '(?m)^extern "C" void (tensor_(?!squared_distance)\w+_backward)\(ad_node_t\*[^)]*\)\s*\{'
+        key_pattern: '(?m)^extern "C" void (tensor_(?!squared_distance_backward\b)\w+_backward)\(ad_node_t\*[^)]*\)\s*\{'
 
   - id: INV-ad-squared-distance-backward-defined-and-registered
     kind: key-space-equality
