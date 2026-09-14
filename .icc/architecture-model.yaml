@@ -33,6 +33,19 @@ description: >
 # COMPONENTS — module/file groups with roles
 # --------------------------------------------------------------------------
 components:
+  - id: packaging
+    role: tooling
+    description: >
+      Release package staging and manifest validation. The release workflow
+      validates each staged package against the checked-in package surface
+      before its archive is produced.
+    modules:
+      - .icc/package-manifest.yaml
+      - scripts/check_package_manifest.py
+      - .github/workflows/release.yml
+    entry_points:
+      - {path: scripts/check_package_manifest.py}
+
   - id: frontend-reader
     role: frontend
     description: S-expression reader, parser, and macro expander (special-form dispatch).
@@ -333,6 +346,9 @@ capabilities:
       kind: runtime_event
       path: scripts/check_package_manifest.py
     pattern: package_manifest_complete
+    dependencies: [packaging]
+    dependency_constructor: "scripts/check_package_manifest\\.py"
+    dependency_paths: [.github/workflows/release.yml]
 
   - id: diagnostic_golden_corpus
     feature: >
@@ -398,6 +414,23 @@ capabilities:
     dependency_constructor: "ESHKOL_ARENA_POISON"
     dependency_paths: [lib/backend/vm_region_evac.c, lib/core/runtime_arena_core.cpp]
 
+  - id: ad_counter_measurement
+    feature: >
+      AD instrumentation counters are wired to real events. The focused
+      contract here is the finite-difference counter: a real FD reporting call
+      must be present, and its executable negative control proves that a real
+      FD backward makes the exactness predicate false.
+    entry_points:
+      - {path: tests/ad/fd_counter_negative_test.esk}
+      - {path: lib/core/system_builtins.c}
+    arming:
+      kind: symbol
+      path: tests/ad/fd_counter_negative_test.esk
+      pattern: ad-finite-difference-evals
+    dependencies: [ad-tower]
+    dependency_constructor: "eshkol_ad_count_fd\\(\\);"
+    dependency_paths: [lib/core/system_builtins.c]
+
 # --------------------------------------------------------------------------
 # INVARIANTS — one per incident class from the adversarial campaign
 # --------------------------------------------------------------------------
@@ -436,12 +469,10 @@ invariants:
       The AD counter substrate exposes primal, reverse, tape, scalar-node,
       tensor-node, and finite-difference counts, with reset and read APIs. The
       tape zero-gradient operation is explicit so a reverse pass can be reused
-      without carrying stale scalar or tensor adjoints.
-    impl: {path: lib/core/runtime_autodiff.cpp, symbol: arena_tape_zero_gradients}
-    guard:
-      path: lib/core/arena_memory.h
-      symbol: arena_tape_zero_gradients
-      pattern: 'arena_tape_zero_gradients'
+      without carrying stale scalar or tensor adjoints. The capability also
+      binds the executable finite-difference negative control: a real FD
+      backward must make the exactness predicate false.
+    capability: ad_counter_measurement
 
   # 1. Dispatch parity is a classified, executable contract.  Literal table
   #    equality is incorrect: each backend intentionally owns internal helpers
@@ -816,9 +847,9 @@ invariants:
       stdlib artifacts, the full lib/**/*.esk source mirror, docs) are
       checked against a single declared manifest (.icc/package-manifest.yaml)
       before the archive is tar'd/zipped, so a packaging-step refactor that
-      silently drops a required file fails CI instead of shipping. Actual
-      PASS/FAIL is graded by the `package_manifest_complete` runtime_event
-      criterion (.icc/completion-oracles.yaml).
+      silently drops a required file fails CI instead of shipping. The
+      capability binds both the check's emitted receipt and the release
+      workflow's verifier invocation.
     capability: package_surface_manifest
 
   - id: INV-diagnostic-corpus-no-drift
@@ -1001,14 +1032,30 @@ invariants:
       equality is the one the generation cannot enforce on its own: every row
       that CLAIMS a bridge backward must name a function that is actually
       DEFINED, and every backward function that exists must be claimed by a
-      row.  A row naming a missing function already fails to compile; this
-      catches the other direction — a backward rule that exists, works, and is
-      wired to nothing, which is how seven bridge ops sat with correct
-      backwards registered while the dispatcher dropped their gradients.
+      row. The squared-distance bridge is defined in space_form_ad.cpp; the
+      other bridge definitions are in tensor_backward.cpp.
     sites:
       - id: ad-node-registry-bridge-rows
         path: inc/eshkol/ad_node_registry.def
-        key_pattern: '^ESHKOL_AD_NODE\([^)]*\bBRIDGE,\s*(\w+)\)'
+        key_pattern: '(?m)^ESHKOL_AD_NODE\((?!SQUARED_DISTANCE,)[^)]*\bBRIDGE,\s*(\w+)\)'
       - id: bridge-backward-definitions
         path: lib/bridge/tensor_backward.cpp
-        key_pattern: '^extern "C" void (tensor_\w+_backward)\(ad_node_t\*'
+        key_pattern: '(?m)^extern "C" void (tensor_(?!squared_distance)\w+_backward)\(ad_node_t\*[^)]*\)\s*\{'
+
+  - id: INV-ad-squared-distance-backward-defined-and-registered
+    kind: key-space-equality
+    incident: ad-node-type-without-backward-disposition
+    severity: critical
+    fidelity: grep
+    description: >
+      The sole bridge backward defined outside tensor_backward.cpp remains
+      explicitly registered: tensor_squared_distance_backward. Matching its
+      registry row to its actual function body catches a removed declaration
+      even though the dispatcher translation unit retains a forward declaration.
+    sites:
+      - id: squared-distance-registry-row
+        path: inc/eshkol/ad_node_registry.def
+        key_pattern: '(?m)^ESHKOL_AD_NODE\(SQUARED_DISTANCE,\s*\d+,\s*TENSOR,\s*BRIDGE,\s*(tensor_squared_distance_backward)\)'
+      - id: squared-distance-backward-definition
+        path: lib/bridge/space_form_ad.cpp
+        key_pattern: '(?m)^extern "C" void (tensor_squared_distance_backward)\(ad_node_t\*[^)]*\)\s*\{'

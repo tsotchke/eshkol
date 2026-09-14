@@ -19,6 +19,14 @@ def grade(name, replacements=None):
     return bool(spaces) and all(spaces) and all(s == spaces[0] for s in spaces[1:])
 
 
+def capability(name):
+    return next(c for c in MODEL["capabilities"] if c["id"] == name)
+
+
+def text(path, replacements=None):
+    return (replacements or {}).get(path, (ROOT / path).read_text())
+
+
 class IdentityTests(unittest.TestCase):
     name = "INV-node-identity-single-substrate"
 
@@ -74,6 +82,78 @@ class DeepWalkTests(unittest.TestCase):
     def test_new_interior_pointer_subtype_requires_real_dispatch(self):
         source = (ROOT / self.header).read_text() + "\nHEAP_SUBTYPE_NEW_INTERIOR = 200, // [DEEPWALK]\n"
         self.assertFalse(grade(self.name, {self.header: source}))
+
+
+class ReleaseInvariantContractTests(unittest.TestCase):
+    def test_ad_counter_spec_is_armed_and_its_live_negative_control_is_pinned(self):
+        spec = capability("ad_counter_measurement")
+        self.assertEqual(spec["arming"]["path"], "tests/ad/fd_counter_negative_test.esk")
+        self.assertEqual(spec["arming"]["pattern"], "ad-finite-difference-evals")
+        self.assertEqual(spec["dependency_constructor"], r"eshkol_ad_count_fd\(\);")
+
+        builtin_path = "lib/core/system_builtins.c"
+        test_path = "tests/ad/fd_counter_negative_test.esk"
+        builtin = text(builtin_path)
+        negative = text(test_path)
+        self.assertRegex(builtin, spec["dependency_constructor"])
+        self.assertIn("(= fd-count-after 4)", negative)
+        self.assertIn("(not (= fd-count-after 0))", negative)
+
+        no_writer_call = builtin.replace("    eshkol_ad_count_fd();", "    /* missing counter instrumentation */")
+        self.assertNotEqual(no_writer_call, builtin)
+        self.assertNotRegex(no_writer_call, spec["dependency_constructor"])
+        no_verification = negative.replace("(not (= fd-count-after 0))", "#f")
+        self.assertNotEqual(no_verification, negative)
+        self.assertNotIn("(not (= fd-count-after 0))", no_verification)
+
+    def test_package_manifest_spec_requires_receipt_and_release_verification_call(self):
+        spec = capability("package_surface_manifest")
+        self.assertEqual(spec["arming"]["path"], "scripts/check_package_manifest.py")
+        self.assertEqual(spec["pattern"], "package_manifest_complete")
+        workflow_path = ".github/workflows/release.yml"
+        manifest_path = ".icc/package-manifest.yaml"
+        workflow = text(workflow_path)
+        manifest = text(manifest_path)
+        checker = text("scripts/check_package_manifest.py")
+        self.assertRegex(workflow, spec["dependency_constructor"])
+        self.assertIn("package_surface:", manifest)
+        self.assertIn('PROBE_ID = "package_manifest_complete"', checker)
+
+        omitted_call = re.sub(spec["dependency_constructor"], "", workflow)
+        self.assertNotEqual(omitted_call, workflow)
+        self.assertNotRegex(omitted_call, spec["dependency_constructor"])
+
+    def test_ad_bridge_registry_matches_actual_definitions(self):
+        name = "INV-ad-node-declared-in-registry"
+        self.assertTrue(grade(name))
+        registry_path = "inc/eshkol/ad_node_registry.def"
+        registry = text(registry_path)
+        removed_row, count = re.subn(
+            r"(?m)^ESHKOL_AD_NODE\(TENSOR_MATMUL,[^\n]*\n", "", registry, count=1
+        )
+        self.assertEqual(count, 1)
+        self.assertNotEqual(removed_row, registry)
+        self.assertFalse(grade(name, {registry_path: removed_row}))
+
+        definition_path = "lib/bridge/tensor_backward.cpp"
+        definitions = text(definition_path)
+        removed_definition = definitions.replace(
+            'extern "C" void tensor_matmul_backward(ad_node_t* node) {',
+            'extern "C" void tensor_matmul_backward(ad_node_t* node);', 1
+        )
+        self.assertNotEqual(removed_definition, definitions)
+        self.assertFalse(grade(name, {definition_path: removed_definition}))
+
+    def test_squared_distance_registration_uses_its_definition_not_dispatcher_declaration(self):
+        name = "INV-ad-squared-distance-backward-defined-and-registered"
+        self.assertTrue(grade(name))
+        registry_path = "inc/eshkol/ad_node_registry.def"
+        registry = text(registry_path)
+        omitted = registry.replace(
+            "ESHKOL_AD_NODE(SQUARED_DISTANCE,", "ESHKOL_AD_NODE(UNREGISTERED_SQUARED_DISTANCE,", 1
+        )
+        self.assertNotEqual(omitted, registry)
+        self.assertFalse(grade(name, {registry_path: omitted}))
 
 
 if __name__ == "__main__":
