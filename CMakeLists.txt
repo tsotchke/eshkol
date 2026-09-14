@@ -10558,7 +10558,9 @@ if(ESHKOL_PYTHON_BINDINGS)
                      COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
                              "${CMAKE_CURRENT_SOURCE_DIR}/tests/bindings/python_capsule_lifetime_test.py")
             set_tests_properties(python_bindings_capsule_lifetime PROPERTIES
-                ENVIRONMENT "ESHKOL_PYTHON_MODULE_DIR=$<TARGET_FILE_DIR:eshkol_py>")
+                ENVIRONMENT "ESHKOL_PYTHON_MODULE_DIR=$<TARGET_FILE_DIR:eshkol_py>"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "SKIP:|FAIL:")
         endif()
     else()
         message(STATUS "Python bindings: pybind11 not found, skipping")
