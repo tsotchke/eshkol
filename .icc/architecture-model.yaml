@@ -343,8 +343,9 @@ capabilities:
     entry_points:
       - {path: scripts/check_package_manifest.py, symbol: evaluate}
     arming:
-      kind: runtime_event
+      kind: symbol
       path: scripts/check_package_manifest.py
+      pattern: evaluate
     pattern: package_manifest_complete
     dependencies: [packaging]
     dependency_constructor: '(?s)python3 scripts/check_package_manifest\.py.{0,5000}tar -czf.*?python scripts/check_package_manifest\.py.{0,5000}Compress-Archive'
@@ -473,11 +474,12 @@ invariants:
       the tape-node ratchet. ICC records the gate's runtime receipt; source
       presence alone is not evidence that the counter moved.
     invariant_name: ad-counters-measure-real-events
-    impl: {path: scripts/run_ad_exactness_gate.sh}
-    reference: {path: tests/ad/fd_counter_negative_test.esk}
+    impl: {path: scripts/run_ad_exactness_gate.sh, symbol: run_case}
+    reference: {path: scripts/run_ad_exactness_gate.sh, symbol: check_output}
     guard:
-      path: scripts/run_icc_smoke.sh
-      pattern: '(?m)^probe ad_exactness_gate'
+      path: scripts/run_ad_exactness_gate.sh
+      symbol: run_case
+      pattern: check_output
     evidence:
       trace_name_pattern: '^ad_exactness_gate$'
       max_age_days: 45

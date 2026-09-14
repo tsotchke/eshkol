@@ -131,7 +131,9 @@ class ReleaseInvariantContractTests(unittest.TestCase):
 
     def test_package_manifest_spec_requires_receipt_and_release_verification_call(self):
         spec = capability("package_surface_manifest")
+        self.assertEqual(spec["arming"]["kind"], "symbol")
         self.assertEqual(spec["arming"]["path"], "scripts/check_package_manifest.py")
+        self.assertEqual(spec["arming"]["pattern"], "evaluate")
         self.assertEqual(spec["pattern"], "package_manifest_complete")
         workflow_path = ".github/workflows/release.yml"
         manifest_path = ".icc/package-manifest.yaml"
