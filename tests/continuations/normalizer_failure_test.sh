@@ -53,6 +53,10 @@ count=$((count + 1))
 printf '%s\n' "$count" > "$ESHKOL_CONT_NORMALIZER_COUNT"
 if [ "${ESHKOL_CONT_NORMALIZER_FAIL_CALL:-all}" = all ] ||
    [ "$count" -eq "$ESHKOL_CONT_NORMALIZER_FAIL_CALL" ]; then
+    # Preserve a transcript that would compare equal if the caller ignored
+    # this failing status: the assertion is specifically about fail-closed
+    # handling, not an accidental mismatch caused by empty output.
+    cat
     exit 23
 fi
 cat
@@ -86,17 +90,18 @@ if grep -q '^PASSED ' "$expected_log"; then
 fi
 grep -q "continuations: 0 passed, $fixture_count failed" "$expected_log"
 
-# Let the expected transcript normalize, then fail the first actual transcript.
-actual_log=$(run_injected_case actual 2)
-grep -q 'FAILED .*::native-jit::transcript-normalization' "$actual_log"
 first_fixture=$(find "$REPO_ROOT/tests/continuations" -maxdepth 1 -name '*.esk' | sort | head -1)
 first_label=${first_fixture#"$REPO_ROOT/"}
-first_label=${first_label%.esk}
-if grep -q "^PASSED $first_label::native-jit$" "$actual_log"; then
-    echo "normalizer_failure_test: actual injection emitted a false native JIT PASSED" >&2
-    cat "$actual_log" >&2
-    exit 1
-fi
-grep -q "continuations: $((fixture_count * 3 - 1)) passed, 1 failed" "$actual_log"
+for injected_call in '2 native-jit' '3 native-aot' '4 vm'; do
+    read -r fail_call engine <<< "$injected_call"
+    actual_log=$(run_injected_case "actual-$engine" "$fail_call")
+    grep -q "FAILED .*::$engine::transcript-normalization" "$actual_log"
+    if grep -q "^PASSED $first_label::$engine$" "$actual_log"; then
+        echo "normalizer_failure_test: actual injection emitted a false $engine PASSED" >&2
+        cat "$actual_log" >&2
+        exit 1
+    fi
+    grep -q "continuations: $((fixture_count * 3 - 1)) passed, 1 failed" "$actual_log"
+done
 
 echo "normalizer_failure_test.sh: PASS"
