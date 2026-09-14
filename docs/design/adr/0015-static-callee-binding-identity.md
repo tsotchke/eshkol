@@ -1,7 +1,7 @@
 # ADR-0015: Static callee binding identity
 
-**Status:** Accepted  
-**Ledger:** LE-28  
+**Status:** Accepted
+**Ledger:** LE-28
 **Scope:** Native LLVM code generation, JIT and AOT.
 
 ## Context
