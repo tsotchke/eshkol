@@ -100,7 +100,7 @@ COMMON_PRELUDE() {
 (define (calibrate thunk)
   (let loop ((iters 4))
     (let* ((t0 (current-time-ns))
-           (dummy (run-n thunk iters))
+           (discarded-calibration-result (run-n thunk iters))
            (t1 (current-time-ns))
            (elapsed (- t1 t0)))
       (if (or (>= elapsed TARGET-NS) (>= iters MAX-ITERS))
@@ -108,7 +108,7 @@ COMMON_PRELUDE() {
           (loop (* iters 2))))))
 
 (define (sample-round thunk iters)
-  (let* ((t0 (current-time-ns)) (dummy (run-n thunk iters)) (t1 (current-time-ns)))
+  (let* ((t0 (current-time-ns)) (discarded-sample-result (run-n thunk iters)) (t1 (current-time-ns)))
     (- t1 t0)))
 
 (define (sample-rounds thunk iters rounds)
