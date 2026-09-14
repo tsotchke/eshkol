@@ -10674,3 +10674,13 @@ endif()
 if(BUILD_TESTING)
     add_subdirectory(tests/bridge/qllm_private_abi)
 endif()
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_nested_diagnostics_test.py")
+    add_test(NAME ownership_nested_diagnostics
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_nested_diagnostics_test.py
+            $<TARGET_FILE:eshkol-run>)
+    set_tests_properties(ownership_nested_diagnostics PROPERTIES
+        TIMEOUT 90 LABELS "ownership;memory;regression")
+endif()
