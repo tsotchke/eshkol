@@ -7,6 +7,7 @@
 #include <eshkol/backend/builtin_declarations.h>
 #include <eshkol/backend/call_apply_codegen.h>
 #include <eshkol/backend/codegen_context.h>
+#include <eshkol/backend/ir_builder.h>
 #include <eshkol/backend/collection_codegen.h>
 #include <eshkol/backend/complex_codegen.h>
 #include <eshkol/backend/control_flow_codegen.h>
@@ -170,6 +171,7 @@ namespace ControlFlowCallbacks {
     bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
     // Binding callback for assignment conversion of lexical locals.
     bool isVarSetWrapper(const void* ast, const char* name, void* context);
+    bool isReassignedTopLevelNameWrapper(const char* name, void* context);
     // Companion assignment-conversion queries (SW-62): whether the mutated
     // location can still be read after the mutation through a context that
     // outlives the native frame, and whether an escaping continuation may
@@ -243,7 +245,7 @@ class EshkolLLVMCodeGen {
 private:
     std::unique_ptr<LLVMContext> context;
     std::unique_ptr<Module> module;
-    std::unique_ptr<IRBuilder<>> builder;
+    std::unique_ptr<eshkol::CodegenIRBuilder> builder;
 
     // Monotonic counter used by codegen sites that need a unique-but-stable
     // suffix in IR variable names (e.g. pattern-match argument slots). We
@@ -494,6 +496,18 @@ private:
      * definitions, which is every name in practice, keep the direct call.
      */
     std::unordered_set<std::string> redefined_toplevel_names;
+    /* Top-level names bound to a callable in this compilation unit. Kept in
+     * lockstep with the implementation definition in llvm_codegen.cpp. */
+    std::unordered_set<std::string> toplevel_callee_names;
+
+    /* Names whose top-level binding is reassigned: defined more than once, or
+     * the target of a set! at top-level scope. Such a binding never gets a
+     * static `<name>_func` alias (static_callee_binding.h). Answered lazily
+     * per name from the unit's top-level forms and memoised, so only names
+     * that are actually bound to lambdas pay for the scan. */
+    const eshkol_ast_t* toplevel_asts_for_reassignment = nullptr;
+    size_t num_toplevel_asts_for_reassignment = 0;
+    std::unordered_map<std::string, bool> reassigned_toplevel_memo;
 
     // ESH-0078: Maps a defined function name to its source body AST, so an AD
     // operator applied to a NAMED function (via var) can run the same
@@ -737,6 +751,11 @@ private:
     void collectRedefinedTopLevelNames(const eshkol_ast_t* asts, size_t num_asts);
 
     bool isRedefinedTopLevelName(const char* name) const;
+
+    /* Is the top-level binding of `name` reassigned in this compilation unit
+     * (defined more than once, or the target of a set! at top-level scope)?
+     * Such a binding gets no static `<name>_func` alias. */
+    bool isReassignedTopLevelName(const char* name);
 
     /* Wrap a top-level LLVM function in a zero-capture arena closure and
      * return it as a CALLABLE tagged_value — the first-class value of a
@@ -1013,6 +1032,7 @@ private:
     Value* codegenArenaConsCell(Value* car_val, Value* cdr_val);
     // Phase 3B: Simplified tagged cons cell allocation - direct tagged_value storage!
     Value* codegenTaggedArenaConsCell(const TypedValue& car_val, const TypedValue& cdr_val);
+    Value* codegenTaggedArenaConsCellCopying(Value* car_tagged, Value* cdr_tagged);
 
     // ROBUST SOLUTION: Create cons cell directly from tagged_value with type preservation
     // This stores the VALUE from tagged_value into the cons cell car, preserving the type
@@ -1254,9 +1274,6 @@ private:
     // Convert TypedValue to tagged_value (AST→IR boundary crossing)
     Value* typedValueToTaggedValue(const TypedValue& tv);
 
-    // Simple helper to wrap tagged_value in TypedValue (for cons cell creation)
-    // This avoids complex control flow by just storing the tagged_value as-is
-    TypedValue taggedValueToTypedValue(Value* tagged_val);
 
     // ===== POLYMORPHIC ARITHMETIC FUNCTIONS (Phase 1.3 + Phase 2 Dual Number Support) =====
     // These operate on tagged_value parameters and handle mixed types + dual numbers
@@ -2104,6 +2121,12 @@ private:
     // Every F<BODY> this module has referred to, so finalization can tell a real
     // split body from a declaration that still needs a forwarder.
     std::vector<Function*> tail_body_decls_;
+
+    // Guarded named-let and do-loop codegen context; this state is part of
+    // the implementation object's cross-TU layout even though its helpers
+    // are defined in llvm_codegen.cpp.
+    std::set<std::string> tco_loop_bound_names_;
+    bool in_do_loop_codegen_ = false;
 
     /**
      * @brief Declare eshkol_tail_transfer_slot(), the per-thread record accessor.

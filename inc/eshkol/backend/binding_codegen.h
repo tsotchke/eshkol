@@ -169,6 +169,9 @@ private:
     IsVarSetFunc is_var_set_callback_ = nullptr;
     IsVarObservedFunc is_var_observed_callback_ = nullptr;
     IsContinuationEscapeFunc is_continuation_escape_callback_ = nullptr;
+    // Decide whether a top-level name is reassigned in the compilation unit.
+    using IsReassignedTopLevelFunc = bool (*)(const char* name, void* context);
+    IsReassignedTopLevelFunc is_reassigned_toplevel_callback_ = nullptr;
     void* callback_context_ = nullptr;
 
     // Symbol tables (references to main codegen's tables)
@@ -217,13 +220,26 @@ private:
     llvm::Value* ensureTaggedValue(llvm::Value* value, eshkol_value_type_t value_type);
 
     /**
-     * Register a lambda function binding.
-     * Sets up _func and _sexpr entries in symbol tables.
+     * Record, or refuse, the static `<var>_func` alias of a lambda binding
+     * (see static_callee_binding.h).
      *
      * @param var_name Variable name
      * @param lambda_name Lambda function name
+     * @param reassigned True when the binding is the target of a set! in its
+     *        scope or is a redefined top-level name; such a binding gets no
+     *        alias and every call through it dispatches on its runtime value.
      */
-    void registerLambdaBinding(const std::string& var_name, const std::string& lambda_name);
+    void registerLambdaBinding(const std::string& var_name, const std::string& lambda_name,
+                               bool reassigned);
+
+    /** @return true if @p name is a top-level name that is reassigned (set!
+     *  at top-level scope, or defined more than once). Without an analysis
+     *  callback every name is reported reassigned, which only forgoes the
+     *  static alias. */
+    bool isReassignedTopLevelName(const char* name) const {
+        return !is_reassigned_toplevel_callback_ ||
+               is_reassigned_toplevel_callback_(name, callback_context_);
+    }
 
 public:
     /**
@@ -300,6 +316,15 @@ public:
      */
     void setLetrecExcludedCaptureNames(std::set<std::string>* names) {
         letrec_excluded_capture_names_ = names;
+    }
+
+    /**
+     * Set the compiler-owned query for reassigned top-level names: names that
+     * are the target of a set! at top-level scope or are defined more than
+     * once. A top-level lambda binding of such a name gets no static alias.
+     */
+    void setReassignedTopLevelAnalysisCallback(IsReassignedTopLevelFunc callback) {
+        is_reassigned_toplevel_callback_ = callback;
     }
 
     // === Tail Call Optimization ===

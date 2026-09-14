@@ -4278,6 +4278,66 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: named_closure_static_call_capture"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_ad_test.esk")
+        add_test(
+            NAME reassigned_callee_ad_subset_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_ad_test.esk"
+        )
+        set_tests_properties(reassigned_callee_ad_subset_jit PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: reassigned_callee_identity"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME reassigned_callee_ad_subset_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/reassigned_callee_ad_subset_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_ad_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/reassigned_callee_ad_subset_aot'"
+        )
+        set_tests_properties(reassigned_callee_ad_subset_aot PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "PASS: reassigned_callee_identity"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_identity_test.esk")
+        add_test(
+            NAME reassigned_callee_identity_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_identity_test.esk"
+        )
+        set_tests_properties(reassigned_callee_identity_jit PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "PASS: reassigned_callee_identity"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME reassigned_callee_identity_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/reassigned_callee_identity_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_identity_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/reassigned_callee_identity_aot'"
+        )
+        set_tests_properties(reassigned_callee_identity_aot PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: reassigned_callee_identity"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_hof_test.esk")
+        add_test(
+            NAME reassigned_callee_hof_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_hof_test.esk"
+        )
+        set_tests_properties(reassigned_callee_hof_jit PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: reassigned_callee_hof"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME reassigned_callee_hof_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/reassigned_callee_hof_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_hof_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/reassigned_callee_hof_aot'"
+        )
+        set_tests_properties(reassigned_callee_hof_aot PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "PASS: reassigned_callee_hof"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     # LE-20: a named-let parameter was reported "Undefined variable" when it was
     # referenced inside a NESTED named let whose binding form contained a further
     # named let that rebound the same name. The capture analysis subtracted the

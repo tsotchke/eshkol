@@ -1,0 +1,86 @@
+;; Mutating a procedure-valued binding must keep every list-HOF route tied to
+;; its runtime closure. The named replacements avoid coupling this packing
+;; check to the AD fixture's independent local type-inference cases.
+(define (callee-times-ten Q) (* Q 10))
+(define (callee-add A B) (+ A B))
+(define (callee-keeps-above-one N) (> N 1))
+(extern void reassigned-callee-unused :real unresolved_reassigned_callee_external)
+
+(define npass 0)
+(define nfail 0)
+(define (check name got want)
+  (if (equal? got want)
+      (set! npass (+ npass 1))
+      (begin
+        (set! nfail (+ nfail 1))
+        (display "FAIL: ") (display name)
+        (display " got=") (display got)
+        (display " want=") (display want) (newline))))
+
+(define (reassigned-map-apply)
+  (let ((H (lambda (Old) (* Old Old))))
+    (set! H callee-times-ten)
+    (list (H 2)
+          (apply H (list 2))
+          (map H (list 1 2))
+          (vector-map H (vector 1 2)))))
+(let ((got (reassigned-map-apply)))
+  (check "direct call" (list-ref got 0) 20)
+  (check "apply" (list-ref got 1) 20)
+  (check "map" (list-ref got 2) (list 10 20))
+  (check "vector-map" (list-ref got 3) (vector 10 20)))
+
+(define (reassigned-reduce)
+  (let ((P (lambda (A B) (* A B))))
+    (set! P callee-add)
+    (reduce P 0 (list 1 2 3))))
+(check "reduce" (reassigned-reduce) 6)
+
+(define (reassigned-remove-predicate)
+  (let ((P (lambda (N) #f)))
+    (set! P callee-keeps-above-one)
+    (remove P (list 1.0 2.0 3.0))))
+(check "remove returns tagged inexact list elements"
+       (reassigned-remove-predicate) (list 1.0))
+
+;; The nested procedures are emitted before the later set!, so their static
+;; callee facts must cover the whole binding scope rather than source order.
+(define (make-captured-derivative)
+  (let ((D (lambda (Z) (* Z Z))))
+    (let ((run (lambda (Z) (derivative D Z))))
+      (set! D callee-times-ten)
+      run)))
+(check "captured differentiand after later set!"
+       ((make-captured-derivative) 2) 10)
+
+(define (make-captured-remove)
+  (let ((P (lambda (N) #f)))
+    (let ((run (lambda () (remove P (list 1 2 3)))))
+      (set! P callee-keeps-above-one)
+      run)))
+(check "captured remove predicate after later set!"
+       ((make-captured-remove)) (list 1))
+
+;; Item comparisons use their tagged Scheme values, including heap pairs.
+(check "remove uses equal? over pair values"
+       (remove (list 1 2) (list (list 1 2) (list 3 4)))
+       (list (list 3 4)))
+(check "remv uses eqv?" (remv 2 (list 1 2 3)) (list 1 3))
+(check "remq uses eq?" (remq 'b (list 'a 'b 'c)) (list 'a 'c))
+
+;; Top-level binding-fact scanning must skip the extern declaration's ABI
+;; metadata; its parameter type list is not an AST child array.
+(define (reassigned-after-extern-times-three Q) (* Q 3))
+(define EXTERN_SCAN_F (lambda (Z) (* Z Z)))
+(set! EXTERN_SCAN_F reassigned-after-extern-times-three)
+(check "set! after extern metadata uses runtime callee"
+       (derivative EXTERN_SCAN_F 2) 3)
+
+(display "----") (newline)
+(if (= nfail 0)
+    (begin (display "PASS: reassigned_callee_hof ")
+           (display npass) (display "/") (display npass) (display " checks") (newline))
+    (begin (display "FAIL: reassigned_callee_hof ")
+           (display nfail) (display " of ") (display (+ npass nfail))
+           (display " checks failed") (newline)
+           (exit 1)))

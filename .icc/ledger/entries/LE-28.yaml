@@ -1,0 +1,71 @@
+id: LE-28
+bucket: SILENT-WRONG
+subtag: semantic
+status: closed
+closed_at: "2ab7562be"
+family: static-callee-binding-identity
+title: >-
+  A static `<name>_func` alias outlived the binding that created it, so
+  reassignment, redefinition and same-name shadowing could call the wrong
+  differentiand or higher-order procedure; dynamic `remove` also lost tags
+repro: >-
+  `(let ((H (lambda (Z) (* Z Z)))) (set! H (lambda (Z) (* Z Z Z)))
+  (derivative H 2.0))` must return 12. A static resolver used the first
+  lambda and returned 4. The same stale alias affected direct calls, `apply`,
+  `map`, `reduce`, `vector-map` and every differentiation operator. A sibling
+  `let` or parameter named `H` could inherit another binding's alias. For
+  dynamic `(remove p (list 1.0 2.0 3.0))`, a predicate that keeps values above
+  one returned raw floating-point bits rather than `(1.0)`.
+observed_before: >-
+  The differentiand's direct call observed the reassigned lambda, but
+  `derivative` still lowered the name to its original LLVM Function. Named
+  high-order paths similarly bypassed the current runtime value. Dynamic
+  removal extracted untagged payload bits for item comparison and tested a
+  predicate result as an integer rather than a tagged Scheme value.
+correct: >-
+  Every call and differentiation operation observes the procedure currently
+  stored in the binding. Sibling and parameter bindings resolve only aliases
+  owned by their own storage. A runtime remove predicate retains exactly the
+  elements for which it returns #f, and item removal preserves full tagged
+  values under equal?, eqv? and eq?.
+root_cause: >-
+  Static callee resolution was keyed by spelling and LLVM function table
+  presence, not by the mutable storage location that the name denotes at the
+  use site. Binding registration did not retain the binding's storage owner;
+  direct-call, apply, map and AD fast paths consequently accepted stale or
+  shadowed aliases. The dynamic remove path unpacked predicate results and
+  list cars without retaining their type tags. During the fix, reassignment
+  analysis also exposed that ESHKOL_EXTERN_OP carries a distinct extern
+  signature layout, not the generic call_op child layout.
+fix: >-
+  `inc/eshkol/backend/static_callee_binding.h` is the common static-callee
+  binding abstraction. It records the alias owner storage, refuses aliases
+  for reassigned bindings, and rejects same-name runtime storage unless the
+  alias owner is that binding. Top-level callable mutation facts are cached
+  before code generation with the existing lexical mutation analysis. Direct
+  calls, apply, map, reduce, remove and AD resolvers consult the same facts;
+  dynamic procedures dispatch through the closure value. Remove uses tagged
+  truthiness, tagged equality arguments and type-preserving list-cell copies.
+  The mutation walker routes ESHKOL_EXTERN_OP to its no-AST-children case.
+  `scripts/gate_compiler_architecture.py` now compares the duplicated
+  EshkolLLVMCodeGen member layout and member types across code-generation
+  translation units.
+observed_after: >-
+  The combined reassigned-callee fixture passes 60/60 JIT checks. The focused
+  reassigned-callee HOF fixture passes 12/12 JIT checks, including captured
+  closures emitted before a later set!, tagged inexact remove results, and
+  comparator behavior. CTest passes all six focused AD/HOF JIT and AOT cases.
+  The standard library object and bitcode build successfully. The AD suite
+  passes 61/61; the list suite passes 129/129.
+evidence: >-
+  tests/closures/reassigned_callee_identity_test.esk and
+  tests/closures/reassigned_callee_hof_test.esk, registered as cached JIT and
+  AOT CTest cases. The passing recorded ICC execution is
+  `reassigned_callee_full_jit_aot_final`; logs and build evidence are in
+  `.scratch/hardening-resume-20260914/callee-identity/logs/`.
+caught_by: [user-reported]
+missed_by: [existing-ad-regressions, existing-list-suite]
+notes: >-
+  The compiler member-layout mismatch and extern AST child-route defect were
+  independently exposed while building the mandatory regressions. The
+  duplicated class layouts are now checked by the compiler architecture gate.
