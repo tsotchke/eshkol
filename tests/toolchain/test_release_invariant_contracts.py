@@ -87,24 +87,47 @@ class DeepWalkTests(unittest.TestCase):
 class ReleaseInvariantContractTests(unittest.TestCase):
     def test_ad_counter_spec_is_armed_and_its_live_negative_control_is_pinned(self):
         spec = capability("ad_counter_measurement")
-        self.assertEqual(spec["arming"]["path"], "tests/ad/fd_counter_negative_test.esk")
-        self.assertEqual(spec["arming"]["pattern"], "ad-finite-difference-evals")
-        self.assertEqual(spec["dependency_constructor"], r"eshkol_ad_count_fd\(\);")
+        self.assertEqual(spec["arming"]["kind"], "runtime_event")
+        self.assertEqual(spec["arming"]["path"], "scripts/run_icc_smoke.sh")
+        self.assertEqual(spec["pattern"], r"(?m)^probe ad_exactness_gate")
+        self.assertEqual(
+            spec["dependency_constructor"],
+            r'run_case "fd-counter" tests/ad/fd_counter_negative_test\.esk'
+        )
 
-        builtin_path = "lib/core/system_builtins.c"
+        smoke_path = "scripts/run_icc_smoke.sh"
+        gate_path = "scripts/run_ad_exactness_gate.sh"
         test_path = "tests/ad/fd_counter_negative_test.esk"
-        builtin = text(builtin_path)
+        smoke = text(smoke_path)
+        gate = text(gate_path)
         negative = text(test_path)
-        self.assertRegex(builtin, spec["dependency_constructor"])
+        self.assertRegex(smoke, spec["pattern"])
+        self.assertRegex(gate, spec["dependency_constructor"])
+        self.assertIn("run_one_pass_gradient_gate.sh", gate)
+        self.assertIn("matmul_tape_node_count_test.esk", gate)
         self.assertIn("(= fd-count-after 4)", negative)
         self.assertIn("(not (= fd-count-after 0))", negative)
 
-        no_writer_call = builtin.replace("    eshkol_ad_count_fd();", "    /* missing counter instrumentation */")
-        self.assertNotEqual(no_writer_call, builtin)
-        self.assertNotRegex(no_writer_call, spec["dependency_constructor"])
+        invariant = next(
+            i for i in MODEL["invariants"]
+            if i["id"] == "INV-ad-counters-measure-real-events"
+        )
+        self.assertEqual(invariant["kind"], "intended-invariant")
+        self.assertEqual(invariant["fidelity"], "runtime")
+        self.assertEqual(invariant["evidence"]["trace_name_pattern"], "^ad_exactness_gate$")
+        oracle = (ROOT / ".icc/completion-oracles.yaml").read_text()
+        self.assertIn('event_names: ["ad_exactness_gate"]', oracle)
+        self.assertIn("both engines", oracle)
+
         no_verification = negative.replace("(not (= fd-count-after 0))", "#f")
         self.assertNotEqual(no_verification, negative)
         self.assertNotIn("(not (= fd-count-after 0))", no_verification)
+        no_negative_gate = gate.replace("tests/ad/fd_counter_negative_test.esk", "")
+        self.assertNotEqual(no_negative_gate, gate)
+        self.assertNotRegex(no_negative_gate, spec["dependency_constructor"])
+        no_smoke_probe = smoke.replace("probe ad_exactness_gate", "")
+        self.assertNotEqual(no_smoke_probe, smoke)
+        self.assertNotRegex(no_smoke_probe, spec["pattern"])
 
     def test_package_manifest_spec_requires_receipt_and_release_verification_call(self):
         spec = capability("package_surface_manifest")
@@ -118,10 +141,15 @@ class ReleaseInvariantContractTests(unittest.TestCase):
         self.assertRegex(workflow, spec["dependency_constructor"])
         self.assertIn("package_surface:", manifest)
         self.assertIn('PROBE_ID = "package_manifest_complete"', checker)
+        self.assertIn("tar -czf", workflow)
+        self.assertIn("Compress-Archive", workflow)
 
-        omitted_call = re.sub(spec["dependency_constructor"], "", workflow)
-        self.assertNotEqual(omitted_call, workflow)
-        self.assertNotRegex(omitted_call, spec["dependency_constructor"])
+        omitted_linux = workflow.replace("python3 scripts/check_package_manifest.py", "python3 check_package_manifest.py")
+        self.assertNotEqual(omitted_linux, workflow)
+        self.assertNotRegex(omitted_linux, spec["dependency_constructor"])
+        omitted_windows = workflow.replace("python scripts/check_package_manifest.py", "python check_package_manifest.py")
+        self.assertNotEqual(omitted_windows, workflow)
+        self.assertNotRegex(omitted_windows, spec["dependency_constructor"])
 
     def test_ad_bridge_registry_matches_actual_definitions(self):
         name = "INV-ad-node-declared-in-registry"

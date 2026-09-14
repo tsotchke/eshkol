@@ -347,7 +347,7 @@ capabilities:
       path: scripts/check_package_manifest.py
     pattern: package_manifest_complete
     dependencies: [packaging]
-    dependency_constructor: "scripts/check_package_manifest\\.py"
+    dependency_constructor: '(?s)python3 scripts/check_package_manifest\.py.{0,5000}tar -czf.*?python scripts/check_package_manifest\.py.{0,5000}Compress-Archive'
     dependency_paths: [.github/workflows/release.yml]
 
   - id: diagnostic_golden_corpus
@@ -422,14 +422,14 @@ capabilities:
       FD backward makes the exactness predicate false.
     entry_points:
       - {path: tests/ad/fd_counter_negative_test.esk}
-      - {path: lib/core/system_builtins.c}
+      - {path: scripts/run_ad_exactness_gate.sh}
     arming:
-      kind: symbol
-      path: tests/ad/fd_counter_negative_test.esk
-      pattern: ad-finite-difference-evals
+      kind: runtime_event
+      path: scripts/run_icc_smoke.sh
+    pattern: '(?m)^probe ad_exactness_gate'
     dependencies: [ad-tower]
-    dependency_constructor: "eshkol_ad_count_fd\\(\\);"
-    dependency_paths: [lib/core/system_builtins.c]
+    dependency_constructor: 'run_case "fd-counter" tests/ad/fd_counter_negative_test\.esk'
+    dependency_paths: [scripts/run_ad_exactness_gate.sh]
 
 # --------------------------------------------------------------------------
 # INVARIANTS — one per incident class from the adversarial campaign
@@ -461,17 +461,26 @@ invariants:
         key_pattern: 'eshkol_typed_expr_info\s*\(\s*(\w+)\s+node_id\b'
 
   - id: INV-ad-counters-measure-real-events
-    kind: dependency-presence
+    kind: intended-invariant
     incident: ad-counter-vacuous-zero
     severity: critical
-    fidelity: grep
+    fidelity: runtime
     description: >
-      The AD counter substrate exposes primal, reverse, tape, scalar-node,
-      tensor-node, and finite-difference counts, with reset and read APIs. The
-      tape zero-gradient operation is explicit so a reverse pass can be reused
-      without carrying stale scalar or tensor adjoints. The capability also
-      binds the executable finite-difference negative control: a real FD
-      backward must make the exactness predicate false.
+      A live AD counter must measure real work, not make the exactness
+      assertion true by construction. The wired runtime gate runs the positive
+      exact-gradient case and the real finite-difference negative control,
+      checks the exact perturbation count and #f assertion result, and verifies
+      the tape-node ratchet. ICC records the gate's runtime receipt; source
+      presence alone is not evidence that the counter moved.
+    invariant_name: ad-counters-measure-real-events
+    impl: {path: scripts/run_ad_exactness_gate.sh}
+    reference: {path: tests/ad/fd_counter_negative_test.esk}
+    guard:
+      path: scripts/run_icc_smoke.sh
+      pattern: '(?m)^probe ad_exactness_gate'
+    evidence:
+      trace_name_pattern: '^ad_exactness_gate$'
+      max_age_days: 45
     capability: ad_counter_measurement
 
   # 1. Dispatch parity is a classified, executable contract.  Literal table
