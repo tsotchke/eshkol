@@ -45,19 +45,19 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
        |
        v
 +------------------+
-| 1. MACRO         |  lib/frontend/macro_expander.cpp (1,658 lines)
+| 1. MACRO         |  lib/frontend/macro_expander.cpp (1,820 lines)
 |    EXPANSION     |  Hygienic expansion via syntax-rules
 +------------------+
        |
        v
 +------------------+
-| 2. S-EXPRESSION  |  lib/frontend/parser.cpp (11,116 lines)
+| 2. S-EXPRESSION  |  lib/frontend/parser.cpp (11,691 lines)
 |    PARSING       |  Builds eshkol_ast_t tree, 94 operation types
 +------------------+
        |
        v
 +------------------+
-| 3. HoTT TYPE     |  lib/types/type_checker.cpp (3,910 lines)
+| 3. HoTT TYPE     |  lib/types/type_checker.cpp (6,061 lines)
 |    CHECKING      |  Constraint generation + unification (non-blocking)
 +------------------+
        |
@@ -85,7 +85,7 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
 
 ### Macro System
 
-**Implementation:** [`lib/frontend/macro_expander.cpp`](../../lib/frontend/macro_expander.cpp) (1,816 lines)
+**Implementation:** [`lib/frontend/macro_expander.cpp`](../../lib/frontend/macro_expander.cpp) (1,820 lines)
 
 Hygienic macro expansion runs before parsing. The system supports:
 
@@ -110,7 +110,7 @@ Several R7RS derived forms (`case-lambda`, `parameterize`, `cond-expand`, `defin
 
 ### S-Expression Parser
 
-**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,625 lines)
+**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,691 lines)
 
 The parser builds an AST from S-expressions through an explicit continuation stack: a child parse suspends into a heap-allocated coroutine frame and is resumed through a linked list, so native stack consumption is independent of grammar nesting. It handles:
 
@@ -156,7 +156,7 @@ typedef struct eshkol_ast {
 
 ## Type Checking (HoTT System)
 
-**Implementation:** [`lib/types/type_checker.cpp`](../../lib/types/type_checker.cpp) (4,924 lines)
+**Implementation:** [`lib/types/type_checker.cpp`](../../lib/types/type_checker.cpp) (6,061 lines)
 
 Eshkol uses a Homotopy Type Theory-inspired type system with a universe hierarchy:
 
@@ -620,7 +620,7 @@ builder->CreateStore(new_counter, counter_ptr);
 
 ## JIT Compilation (REPL)
 
-**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,610 lines)
+**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,611 lines)
 
 The REPL uses **LLVM's LLJIT** (via OrcJIT v2) for interactive execution.
 

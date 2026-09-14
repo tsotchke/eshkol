@@ -53,7 +53,7 @@ The `vref` operator is AD-aware: when extracting from tensors during gradient co
 
 The compiler executes a 5-phase pipeline:
 
-**Phase 1: Macro Expansion** (1,658 lines in [macro_expander.cpp](../../lib/frontend/macro_expander.cpp))
+**Phase 1: Macro Expansion** (1,820 lines in [macro_expander.cpp](../../lib/frontend/macro_expander.cpp))
 
 Hygienic macro expansion via `syntax-rules` pattern matching. The system supports ellipsis (`...`) for repetition, nested patterns, and scope-safe renaming. Several R7RS derived forms — `case-lambda`, `parameterize`, `cond-expand`, `define-record-type` — are transformed during this phase or the subsequent parse phase.
 
@@ -64,7 +64,7 @@ Hygienic macro expansion via `syntax-rules` pattern matching. The system support
 ;; Output: (if (> x 0) (begin (display x)) #f)
 ```
 
-**Phase 2: S-Expression Parsing** (11,116 lines in [parser.cpp](../../lib/frontend/parser.cpp))
+**Phase 2: S-Expression Parsing** (11,691 lines in [parser.cpp](../../lib/frontend/parser.cpp))
 
 Builds an AST from S-expressions. The parser drives an explicit continuation stack rather than the native stack, so nesting depth costs heap rather than stack. It handles:
 - 94 operation types (see `eshkol_op_t` enum in [eshkol.h](../../inc/eshkol/eshkol.h))
@@ -77,7 +77,7 @@ Builds an AST from S-expressions. The parser drives an explicit continuation sta
 
 Each AST node includes a `uint32_t inferred_hott_type` field packed as `[TypeId:16][universe:8][flags:8]`, set by the type checker.
 
-**Phase 3: HoTT Type Checking** (3,910 lines in [type_checker.cpp](../../lib/types/type_checker.cpp))
+**Phase 3: HoTT Type Checking** (6,061 lines in [type_checker.cpp](../../lib/types/type_checker.cpp))
 
 Hindley-Milner-style inference with universe hierarchy extensions. The algorithm:
 
@@ -88,7 +88,7 @@ Hindley-Milner-style inference with universe hierarchy extensions. The algorithm
 
 Unlike traditional type checkers, Eshkol's is **non-blocking**: type errors don't prevent compilation. This enables rapid prototyping but requires runtime type guards for safety (via tagged values).
 
-**Phase 4: LLVM IR Generation** (44,003 lines in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus 35 further specialised modules; the compiler tree as a whole totals about 329,100 lines)
+**Phase 4: LLVM IR Generation** (47,107 lines in [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) plus 35 further specialised modules; the compiler tree as a whole totals about 329,100 lines)
 
 Translates ASTs to LLVM IR. The modular architecture distributes code generation across specialized modules:
 
@@ -529,7 +529,7 @@ Eshkol v1.2.1-scale represents a **mature, production-ready implementation** for
 
 ### Tooling
 
-- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp), 4,610 lines): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
+- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp), 4,611 lines): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
 - **LSP server** ([eshkol_lsp.cpp](../../tools/lsp/eshkol_lsp.cpp), 954 lines): Completions, hover, go-to-definition, diagnostics, formatting
 - **VSCode extension** ([tools/vscode-eshkol/](../../tools/vscode-eshkol/)): Syntax highlighting, LSP integration, build tasks
 - **Package manager** ([eshkol_pkg.cpp](../../tools/pkg/eshkol_pkg.cpp), 876 lines): eshkol-pkg init/build/run/add/clean, TOML manifests, git-based registry
