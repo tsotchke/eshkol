@@ -1380,8 +1380,11 @@ def main() -> int:
     args = ap.parse_args()
 
     root = args.repo.resolve()
-    compdb = args.compile_commands or (root / "build" / "compile_commands.json")
-    compiler = args.compiler or (root / "build" / "eshkol-run")
+    build_dir = Path(os.environ.get("BUILD_DIR", "build"))
+    if not build_dir.is_absolute():
+        build_dir = root / build_dir
+    compdb = args.compile_commands or (build_dir / "compile_commands.json")
+    compiler = args.compiler or (build_dir / "eshkol-run")
 
     if args.command == "selftest":
         return do_selftest(root)

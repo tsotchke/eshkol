@@ -7,7 +7,11 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-RUN="$ROOT/build/eshkol-run"
+BUILD_DIR="${BUILD_DIR:-build}"
+case "$BUILD_DIR" in
+    /*) RUN="$BUILD_DIR/eshkol-run" ;;
+    *)  RUN="$ROOT/$BUILD_DIR/eshkol-run" ;;
+esac
 TEST="$ROOT/tests/stress/found/deep_recursion_270k_no_diagnostic.esk"
 WORKER_TEST="$ROOT/tests/runtime/parallel_stack_overflow_diagnostic_test.esk"
 SCRATCH="$ROOT/.scratch/stack-overflow-diagnostic.$$"
