@@ -32,8 +32,9 @@ fi
 if eshkol_durable_enabled; then
     TRACE_DIR="${TRACE_DIR:-$ESHKOL_ICC_WORK/traces}"
 else
-    TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
+    TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
 fi
+export TRACE_DIR ICC_TRACE_DIR="$TRACE_DIR" ESHKOL_TRACE_DIR="$TRACE_DIR"
 TRACE_FILE="$TRACE_DIR/eshkol_smoke.jsonl"
 mkdir -p "$TRACE_DIR"
 
@@ -280,8 +281,14 @@ fi
 probe stdlib_o_loads "build/stdlib.o exists and is non-empty" \
     'test -s "$BUILD_DIR_PATH/stdlib.o"'
 
-probe stdlib_compiles_clean "stdlib rebuilds without errors" \
-    'cd "$REPO_ROOT" && touch lib/stdlib.esk && cmake --build "$BUILD_DIR_PATH" --target stdlib >/dev/null 2>&1'
+probe stdlib_compiles_clean "stdlib rebuilds to isolated outputs with the release compiler" \
+    'if eshkol_durable_enabled; then
+         stdlib_output_root="$ESHKOL_ICC_WORK";
+     else
+         stdlib_output_root="$ESHKOL_SCRATCH_ROOT";
+     fi;
+     python3 "$REPO_ROOT/scripts/compile_stdlib_isolated.py" \
+       --build-dir "$BUILD_DIR_PATH" --output-root "$stdlib_output_root"'
 
 probe error_messages_have_source_locations "Diagnostic includes line:col" \
     'tmp=$(mktemp).esk; bin=$(mktemp).bin; rm -f "$bin";
@@ -677,7 +684,24 @@ probe generative_differential_oracle 'generated R7RS programs agree across chibi
 # dedicated harness also writes runtime_event evidence consumed directly by
 # INV-language-surface-exercise and the total-language completion oracle.
 probe language_surface_coverage_floor 'exposure-engine language coverage meets the committed monotonic floor' \
-    'cd "$REPO_ROOT" && ./scripts/run_language_coverage.sh'
+    'if [ "${ESHKOL_LANGUAGE_COVERAGE_ALREADY_RUN:-0}" != 1 ]; then
+     ICC_TRACE_DIR="$TRACE_DIR" ./scripts/run_language_coverage.sh || exit $?
+     fi;
+     python3 - "$TRACE_DIR/language_surface_coverage.jsonl" <<PY
+import json, sys
+path = sys.argv[1]
+events = []
+with open(path, encoding="utf-8") as handle:
+    for line in handle:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("kind") == "runtime_event" and event.get("name") == "language_surface_coverage":
+            events.append(event)
+if not events or events[-1].get("value") != "PASS":
+    raise SystemExit("missing current language_surface_coverage PASS receipt")
+PY'
 # The ledger says what the VM supports; this makes the ledger prove it by
 # RUNNING both engines over the whole callable surface. Without it a row can
 # claim vm-supported for a name that aborts the VM, and vm_parity_audit.py
@@ -699,11 +723,11 @@ probe surface_parity_execution_backed 'every name native resolves is resolved by
 probe engine_semantic_parity 'no corpus program computes a different answer on the two engines, and differential construct coverage holds its floor' \
     'if eshkol_durable_enabled; then
          workdir=$(eshkol_durable_prepare_dir engine-parity) || exit $?;
-         cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py --workdir "$workdir" && \
-           python3 scripts/check_engine_parity_threshold.py;
+         cd "$REPO_ROOT" && TRACE_DIR="$TRACE_DIR" BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py --workdir "$workdir" && \
+           python3 scripts/check_engine_parity_threshold.py --trace-file "$TRACE_DIR/engine_parity_coverage.jsonl";
      else
-         cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py && \
-           python3 scripts/check_engine_parity_threshold.py;
+         cd "$REPO_ROOT" && TRACE_DIR="$TRACE_DIR" BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py && \
+           python3 scripts/check_engine_parity_threshold.py --trace-file "$TRACE_DIR/engine_parity_coverage.jsonl";
      fi'
 
 # -- fix-campaign regression gates (2026-07-10): exact-oracle-verified fixes --

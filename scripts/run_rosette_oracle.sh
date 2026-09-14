@@ -62,9 +62,10 @@ ROSETTE_PIN_SHA="bb34bbe7536f2ea9829dc302c6a578e9fdd877a0"
 
 BUILD_DIR="${ESHKOL_ROSETTE_BUILD_DIR:-${REPO_ROOT}/build}"
 NATIVE_DIR="${SCRATCH_DIR}/rosette-native"
-TRACE_FILE="${REPO_ROOT}/scripts/icc_traces/rosette.jsonl"
+TRACE_DIR="${TRACE_DIR:-${REPO_ROOT}/scripts/icc_traces}"
+TRACE_FILE="${TRACE_DIR}/rosette.jsonl"
 
-mkdir -p "${SCRATCH_DIR}" "${NATIVE_DIR}" "$(dirname "${TRACE_FILE}")"
+mkdir -p "${SCRATCH_DIR}" "${NATIVE_DIR}" "${TRACE_DIR}"
 
 fail_event() { # name snippet
     local name="$1" snippet="$2"

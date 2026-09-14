@@ -80,12 +80,17 @@ fi
 # yourself.
 : "${CMAKE_BUILD_TYPE:=RelWithDebInfo}"
 
-cmake -S "$REPO_ROOT" -B "$BUILD_DIR" \
-    -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
-    -DESHKOL_ENABLE_ASAN="${ASAN}" \
-    -DESHKOL_ENABLE_UBSAN="${UBSAN}" \
-    -DESHKOL_ENABLE_TSAN="${TSAN}" \
-    -DESHKOL_ENABLE_MSAN="${MSAN}"
+cmake_args=(
+    "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+    "-DESHKOL_ENABLE_ASAN=${ASAN}"
+    "-DESHKOL_ENABLE_UBSAN=${UBSAN}"
+    "-DESHKOL_ENABLE_TSAN=${TSAN}"
+    "-DESHKOL_ENABLE_MSAN=${MSAN}"
+)
+if [[ -n "${LLVM_CONFIG:-}" ]]; then
+    cmake_args+=("-DLLVM_CONFIG_EXECUTABLE=${LLVM_CONFIG}")
+fi
+cmake -S "$REPO_ROOT" -B "$BUILD_DIR" "${cmake_args[@]}"
 
 cmake --build "$BUILD_DIR" --target eshkol-run stdlib --parallel "$JOBS"
 

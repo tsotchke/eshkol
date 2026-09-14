@@ -70,8 +70,8 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         self.assertEqual(upload["with"]["if-no-files-found"], "error")
         self.assertNotIn("always()", upload["if"])
 
-    def test_readiness_builds_are_bounded_without_extending_timeout(self):
-        self.assertEqual(self.job["timeout-minutes"], "360")
+    def test_readiness_budget_and_build_parallelism_cover_the_expanded_recipe(self):
+        self.assertEqual(self.job["timeout-minutes"], "720")
         commands = "\n".join(step.get("run", "") for step in self.job["steps"])
         builds = [line.strip() for line in commands.splitlines() if "cmake --build" in line]
         self.assertEqual(len(builds), 3)
