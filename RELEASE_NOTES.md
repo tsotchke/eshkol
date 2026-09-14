@@ -1,7 +1,9 @@
 # Eshkol v1.3.5-evolve — Release Notes
 
 **Planned release date:** Monday, September 14, 2026, after 09:00 America/Montreal.
-**Status:** refreshed release candidate; final verification and publication are pending. Callee-identity, type-precision, and ICC-invariant hardening remain open. The September 11 measurements below were taken on the previous candidate and do not establish readiness for this refresh.
+**Status:** publication requires passing CI, strict readiness, and asset checks.
+
+The September 11 measurements below were taken on the previous candidate and do not establish readiness for this refresh.
 
 Feed the compiler a source file sixteen thousand parentheses deep, on a thread
 with an eight-megabyte stack, and it compiles it. That is not a metaphor for
@@ -548,6 +550,9 @@ results recorded for the previous cut were measured before the merge from
 The refreshed candidate has not yet rerun the platform matrix, CTest, VM and
 engine parity, language-coverage evidence, package checks, or ICC readiness.
 Do not infer a readiness score or publication approval from the earlier run.
+
+
+The final candidate and tagged commit are checked before publication. Validation results are recorded in the [Release workflow](https://github.com/tsotchke/eshkol/actions/workflows/release.yml).
 
 ---
 
