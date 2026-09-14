@@ -519,27 +519,63 @@ public:
     // === Capture Resolution (for calculus operators) ===
 
     /**
-     * Load captured variable arguments for an autodiff function call.
-     * Resolves captures from symbol tables with REPL mode support.
+     * Load captured variable arguments for an autodiff function call whose
+     * only user parameter is the first one.
      * @param func_ptr The function to load captures for
      * @param context_name Debug label for error messages
+     * @param func_ast The differentiand expression func_ptr was resolved from
      * @return Vector of capture Value* arguments
      */
     std::vector<llvm::Value*> loadCapturesForAutodiff(
         llvm::Function* func_ptr,
-        const std::string& context_name);
+        const std::string& context_name,
+        const eshkol_ast_t* func_ast);
 
     /**
-     * Append captured variable arguments to a gradient function call.
-     * Resolves captures from symbol tables with REPL mode support.
+     * Append captured variable arguments to a gradient function call. The
+     * parameters beyond call_args.size() are the capture parameters.
      * @param func_ptr The function to resolve captures for
      * @param call_args Vector to append capture arguments to
      * @param context_label Debug label for error messages
+     * @param func_ast The differentiand expression func_ptr was resolved from
      */
     void resolveGradientCaptures(
         llvm::Function* func_ptr,
         std::vector<llvm::Value*>& call_args,
-        const std::string& context_label);
+        const std::string& context_label,
+        const eshkol_ast_t* func_ast);
+
+    /**
+     * Append one capture pointer per capture parameter of a statically
+     * resolved differentiand. The single authority for every AD operator's
+     * direct call: a named differentiand's captures come from its closure
+     * object; an inline lambda's from its free variables' bindings at this
+     * site. Every value used belongs to the function being emitted; a
+     * capture that cannot be supplied from it is reported with its variable
+     * name and source location and fails code generation.
+     * @param func_ast The differentiand expression func_ptr was resolved from
+     * @param func_ptr The callee
+     * @param first_capture_param Index of the callee's first capture parameter
+     * @param out Argument vector to append to
+     * @param what Operator name for diagnostics
+     * @return false if a capture could not be supplied
+     */
+    bool appendDifferentiandCaptures(
+        const eshkol_ast_t* func_ast,
+        llvm::Function* func_ptr,
+        size_t first_capture_param,
+        std::vector<llvm::Value*>& out,
+        const std::string& what);
+
+    /**
+     * Capture-slot pointers of the closure object a named differentiand
+     * evaluates to, in capture-parameter order; empty when the expression
+     * does not evaluate to a closure value.
+     */
+    std::vector<llvm::Value*> differentiandEnvironmentCaptures(
+        const eshkol_ast_t* func_ast,
+        llvm::Function* func_ptr,
+        size_t first_capture_param);
 
     /** Higher-order gradient: (gradient f) → closure */
     llvm::Value* gradientHigherOrder(const eshkol_operations_t* op);

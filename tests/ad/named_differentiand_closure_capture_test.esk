@@ -1,0 +1,248 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  A differentiated closure reached by NAME supplies its own captures
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  When an AD operator's differentiand is a variable bound to a closure, the
+;;  native backend calls the closure's compiled function directly and has to
+;;  pass that function's capture arguments itself. It used to rebuild them by
+;;  looking up each captured variable's NAME at the AD call site. That lookup
+;;  is only right when the name still means the binding the closure captured:
+;;
+;;    - Inside a separately compiled nested function (a lambda called
+;;      directly, or passed to map / for-each), the name could still map to
+;;      the ENCLOSING function's argument or alloca. The emitted IR referred
+;;      to another function and LLVM module verification failed
+;;      ("Referring to an argument in another function!").
+;;    - Under a binding that shadows the captured name, the lookup found the
+;;      shadowing binding and the derivative was silently wrong.
+;;
+;;  The captures now come from the closure object the name evaluates to, and
+;;  every capture value is checked to belong to the function being emitted.
+;;
+;;  Every check pins the analytic value. Shapes that already worked (top-level
+;;  closure, closure passed as a parameter, closure without captures, closure
+;;  called through a wrapper lambda) are kept as controls. Runs identically
+;;  under -r with and without the run cache, and as a compiled binary; prints
+;;  a PASS/FAIL summary and exits non-zero on any failure.
+;; ─────────────────────────────────────────────────────────────────────────
+
+(define npass 0)
+(define nfail 0)
+
+(define (rel-ok got want)
+  (let ((d (abs (- got want))))
+    (or (< d 1e-9)
+        (< (/ d (+ 1e-30 (abs want))) 1e-9))))
+
+(define (check name got want)
+  (if (and (number? got) (rel-ok got want))
+      (set! npass (+ npass 1))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL: ") (display name)
+             (display " got=") (display got)
+             (display " want=") (display want) (newline))))
+
+(define (nth lst i) (if (<= i 0) (car lst) (nth (cdr lst) (- i 1))))
+
+(define (check-list name got want)
+  (let loop ((g got) (w want) (i 0))
+    (cond ((and (null? g) (null? w)) #t)
+          ((or (null? g) (null? w))
+           (set! nfail (+ nfail 1))
+           (display "FAIL: ") (display name) (display " length mismatch got=")
+           (display got) (display " want=") (display want) (newline))
+          (else
+           (check (string-append name " [" (number->string i) "]") (car g) (car w))
+           (loop (cdr g) (cdr w) (+ i 1))))))
+
+(define (check-vector name got want)
+  (let loop ((i 0))
+    (if (< i (length want))
+        (begin (check (string-append name " [" (number->string i) "]")
+                      (vector-ref got i) (nth want i))
+               (loop (+ i 1))))))
+
+;; ── 1. the failing shapes: H = h Z^2 captures the enclosing parameter h ───
+;; dH/dZ = 2 h Z
+
+(define (direct-call-derivative-n h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    ((lambda (Z) (derivative-n H Z 1)) 1.0)))
+(check "direct lambda call, derivative-n" (direct-call-derivative-n 0.1) 0.2)
+
+(define (map-derivative-n h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    (map (lambda (Z) (derivative-n H Z 1)) (list 1.0 2.0))))
+(check-list "map, derivative-n" (map-derivative-n 0.1) (list 0.2 0.4))
+
+(define (for-each-let-derivative-n h)
+  (let ((H (lambda (Z) (* Z Z h)))
+        (acc '()))
+    (for-each (lambda (Z) (set! acc (cons (derivative-n H Z 1) acc))) (list 1.0 2.0))
+    (reverse acc)))
+(check-list "for-each under let, derivative-n" (for-each-let-derivative-n 0.1) (list 0.2 0.4))
+
+;; H = Z^2 / G with G = 2h bound by let*: dH/dZ = Z / h
+(define (for-each-let-star-derivative-n h)
+  (let* ((G (* 2.0 h))
+         (H (lambda (Z) (/ (* Z Z) G)))
+         (acc '()))
+    (for-each (lambda (Z) (set! acc (cons (derivative-n H Z 1) acc))) (list 1.0 2.0))
+    (reverse acc)))
+(check-list "for-each under let*, derivative-n" (for-each-let-star-derivative-n 0.1) (list 10.0 20.0))
+
+(define (for-each-derivative h)
+  (let ((H (lambda (Z) (* Z Z h)))
+        (acc '()))
+    (for-each (lambda (Z) (set! acc (cons (derivative H Z) acc))) (list 1.0 2.0))
+    (reverse acc)))
+(check-list "for-each, derivative" (for-each-derivative 0.1) (list 0.2 0.4))
+
+(define (direct-call-derivative h)
+  (let* ((H (lambda (Z) (* Z Z h))))
+    ((lambda (Z) (derivative H Z)) 1.0)))
+(check "direct lambda call under let*, derivative" (direct-call-derivative 0.1) 0.2)
+
+;; ── 2. controls: shapes that computed correctly before ───────────────────
+
+(define H-top (lambda (Z) (* Z Z 0.1)))
+(check-list "control: top-level closure"
+            (map (lambda (Z) (derivative-n H-top Z 1)) (list 1.0 2.0)) (list 0.2 0.4))
+
+(define (apply-to-param H)
+  (map (lambda (Z) (derivative-n H Z 1)) (list 1.0 2.0)))
+(check-list "control: closure passed as a parameter"
+            (apply-to-param (lambda (Z) (* Z Z 0.1))) (list 0.2 0.4))
+
+(define (no-capture h)
+  (let ((H (lambda (Z) (* Z Z))))
+    (map (lambda (Z) (derivative-n H Z 1)) (list 1.0 2.0))))
+(check-list "control: closure without captures" (no-capture 0.1) (list 2.0 4.0))
+
+(define (wrapped h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    (map (lambda (Z) (derivative-n (lambda (x) (H x)) Z 1)) (list 1.0 2.0))))
+(check-list "control: closure called through a wrapper lambda" (wrapped 0.1) (list 0.2 0.4))
+
+(define (same-function h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    (derivative H 1.0)))
+(check "control: differentiated in the defining function" (same-function 0.1) 0.2)
+
+(define (local-define h)
+  (define (G Z) (* Z Z h))
+  ((lambda (Z) (derivative G Z)) 1.0))
+(check "control: local define differentiated in a nested lambda" (local-define 0.1) 0.2)
+
+;; ── 3. more than one captured enclosing parameter ────────────────────────
+;; H = a Z^3 + b Z + c: dH/dZ = 3 a Z^2 + b = 3*2*2.25 + 3 = 16.5 at Z = 1.5
+(define (several-captures a b c)
+  (let ((H (lambda (Z) (+ (* a Z Z Z) (* b Z) c))))
+    ((lambda (Z) (derivative H Z)) 1.5)))
+(check "captures three enclosing parameters" (several-captures 2.0 3.0 5.0) 16.5)
+
+;; ── 4. differentiated two lambda levels below the defining function ──────
+(define (two-levels h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    ((lambda (u) ((lambda (Z) (derivative-n H Z 1)) u)) 1.0)))
+(check "two lambda levels deep" (two-levels 0.1) 0.2)
+
+;; ── 5. a captured mutable variable: the derivative sees the update ───────
+;; H = k Z^2 with k set! to 3 before differentiating: 2 k Z = 6 at Z = 1
+(define (mutable-capture h)
+  (let ((k h))
+    (let ((H (lambda (Z) (* k Z Z))))
+      (set! k 3.0)
+      ((lambda (Z) (derivative H Z)) 1.0))))
+(check "captured mutable variable" (mutable-capture 0.1) 6.0)
+
+;; ── 6. a shadowing binding at the AD call site is not the captured one ────
+(define (shadowed-by-parameter h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    ((lambda (h) (derivative H h)) 1.0)))
+(check "nested lambda parameter shadows the captured name" (shadowed-by-parameter 0.1) 0.2)
+
+(define (shadowed-by-let h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    (let ((h 5.0))
+      (derivative H 1.0))))
+(check "let binding shadows the captured name" (shadowed-by-let 0.1) 0.2)
+
+;; ── 7. higher-order derivatives ──────────────────────────────────────────
+;; H = h Z^4: H'' = 12 h Z^2, H''' = 24 h Z
+(define (higher-order h k)
+  (let ((H (lambda (Z) (* h Z Z Z Z))))
+    ((lambda (Z) (derivative-n H Z k)) 1.0)))
+(check "derivative-n order 2" (higher-order 0.1 2) 1.2)
+(check "derivative-n order 3" (higher-order 0.1 3) 2.4)
+
+;; taylor of h Z^2 at 1: coefficients h, 2h, h
+(define (taylor-coefficients h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    ((lambda (Z) (taylor H Z 2)) 1.0)))
+(check-list "taylor coefficients" (taylor-coefficients 0.1) (list 0.1 0.2 0.1))
+
+;; hessian of a scalar function: h Z^3 -> 6 h Z = 1.2 at Z = 2
+(define (scalar-hessian h)
+  (let ((H (lambda (Z) (* Z Z Z h))))
+    ((lambda (Z) (hessian H Z)) 2.0)))
+(check "hessian of a scalar closure" (scalar-hessian 0.1) 1.2)
+
+;; ── 8. gradient and the vector operators over a capturing closure ────────
+(define (scalar-gradient h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    ((lambda (Z) (gradient H Z)) 1.0)))
+(check "gradient, scalar point" (scalar-gradient 0.1) 0.2)
+
+;; L = a (x^2 + y) at (1, 2): grad = (2 a x, a) = (6, 3)
+(define (vector-gradient a)
+  (let ((L (lambda (v) (* a (+ (* (vector-ref v 0) (vector-ref v 0)) (vector-ref v 1))))))
+    ((lambda (p) (gradient L p)) (vector 1.0 2.0))))
+(check-vector "gradient, vector point" (vector-gradient 3.0) (list 6.0 3.0))
+
+;; directional derivative of the same L along (1, 0): 2 a x = 6
+(define (directional a)
+  (let ((L (lambda (v) (* a (+ (* (vector-ref v 0) (vector-ref v 0)) (vector-ref v 1))))))
+    ((lambda (p) (directional-derivative L p (vector 1.0 0.0))) (vector 1.0 2.0))))
+(check "directional derivative" (directional 3.0) 6.0)
+
+;; laplacian of a (x^2 + y^2): 4 a = 12
+(define (laplacian-of a)
+  (let ((L (lambda (v) (* a (+ (* (vector-ref v 0) (vector-ref v 0))
+                               (* (vector-ref v 1) (vector-ref v 1)))))))
+    ((lambda (p) (laplacian L p)) (vector 1.0 2.0))))
+(check "laplacian" (laplacian-of 3.0) 12.0)
+
+;; divergence of a (x, y): 2 a = 6
+(define (divergence-of a)
+  (let ((F (lambda (v) (vector (* a (vector-ref v 0)) (* a (vector-ref v 1))))))
+    ((lambda (p) (divergence F p)) (vector 1.0 2.0))))
+(check "divergence" (divergence-of 3.0) 6.0)
+
+;; ── 9. the curried forms over a capturing closure ────────────────────────
+(define (curried-derivative h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    ((lambda (Z) ((derivative H) Z)) 1.0)))
+(check "curried derivative" (curried-derivative 0.1) 0.2)
+
+(define (curried-gradient h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    ((lambda (Z) ((gradient H) Z)) 1.0)))
+(check "curried gradient of a named closure" (curried-gradient 0.1) 0.2)
+
+(define (curried-gradient-inline h)
+  ((gradient (lambda (Z) (* Z Z h))) 1.0))
+(check "curried gradient of an inline capturing lambda" (curried-gradient-inline 0.1) 0.2)
+
+;; ── summary ──────────────────────────────────────────────────────────────
+(display "----") (newline)
+(if (= nfail 0)
+    (begin
+      (display "PASS: named_differentiand_closure_capture ")
+      (display npass) (display "/") (display npass)
+      (display " checks") (newline))
+    (begin
+      (display "FAIL: named_differentiand_closure_capture ")
+      (display nfail) (display " of ") (display (+ npass nfail))
+      (display " checks failed") (newline)
+      (exit 1)))

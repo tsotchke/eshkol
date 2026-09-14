@@ -1,0 +1,82 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  Higher-order forms that call a closure's compiled function directly
+;;  must supply the closure's own captured variables
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  `map` and `reduce` call a statically known procedure directly instead of
+;;  dispatching on its closure value. A procedure that closes over variables
+;;  then needs its capture arguments passed at the call site:
+;;
+;;    - `map` rebuilt them by looking up each captured variable's name where
+;;      the map appears. Inside a separately compiled nested lambda that name
+;;      could still map to the enclosing function's argument, and LLVM module
+;;      verification failed ("Referring to an argument in another function!").
+;;      Its captures now come from the closure object the name evaluates to.
+;;    - `reduce` passed no capture arguments at all, so any capturing
+;;      procedure failed verification ("Incorrect number of arguments passed
+;;      to called function!"). It now dispatches on the closure value.
+;;
+;;  Every check pins the exact expected value.
+;; ─────────────────────────────────────────────────────────────────────────
+
+(define npass 0)
+(define nfail 0)
+
+(define (check name got want)
+  (if (equal? got want)
+      (set! npass (+ npass 1))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL: ") (display name)
+             (display " got=") (display got)
+             (display " want=") (display want) (newline))))
+
+;; map, named capturing closure, inside a nested lambda
+(define (map-nested h)
+  (let ((H (lambda (Z) (* Z h))))
+    ((lambda (l) (map H l)) (list 1 2 3))))
+(check "map of a named closure inside a nested lambda" (map-nested 10) (list 10 20 30))
+
+;; map over two lists, named closure capturing two enclosing parameters
+(define (map-two-lists a b)
+  (let ((H (lambda (x y) (+ (* a x) (* b y)))))
+    ((lambda (xs ys) (map H xs ys)) (list 1 2) (list 3 4))))
+(check "two-list map of a named closure inside a nested lambda" (map-two-lists 2 10) (list 32 44))
+
+;; the nested lambda's own parameter shadows the captured name
+(define (map-shadowed h)
+  (let ((H (lambda (Z) (* Z h))))
+    ((lambda (h) (map H h)) (list 1 2 3))))
+(check "map where a nested parameter shadows the captured name" (map-shadowed 10) (list 10 20 30))
+
+;; control: the same map in the defining function
+(define (map-same-function h)
+  (let ((H (lambda (Z) (* Z h))))
+    (map H (list 1 2 3))))
+(check "control: map in the defining function" (map-same-function 10) (list 10 20 30))
+
+;; reduce with a capturing procedure: named, inline, and inside a nested lambda
+(define (reduce-named h)
+  (let ((H (lambda (acc x) (+ acc (* x h)))))
+    (reduce H 0 (list 1 2 3))))
+(check "reduce of a named capturing closure" (reduce-named 10) 60)
+
+(define (reduce-inline h)
+  (reduce (lambda (acc x) (+ acc (* x h))) 0 (list 1 2 3)))
+(check "reduce of an inline capturing lambda" (reduce-inline 10) 60)
+
+(define (reduce-nested h)
+  (let ((H (lambda (acc x) (+ acc (* x h)))))
+    ((lambda (l) (reduce H 0 l)) (list 1 2 3))))
+(check "reduce of a named closure inside a nested lambda" (reduce-nested 10) 60)
+
+;; control: reduce with a procedure that captures nothing
+(check "control: reduce of a capture-free lambda" (reduce (lambda (acc x) (+ acc x)) 0 (list 1 2 3)) 6)
+
+(display "----") (newline)
+(if (= nfail 0)
+    (begin (display "PASS: named_closure_static_call_capture ")
+           (display npass) (display "/") (display npass) (display " checks") (newline))
+    (begin (display "FAIL: named_closure_static_call_capture ")
+           (display nfail) (display " of ") (display (+ npass nfail))
+           (display " checks failed") (newline)
+           (exit 1)))

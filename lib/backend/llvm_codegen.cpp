@@ -17,6 +17,7 @@
 #include <eshkol/backend/llvm_compat.h>
 #include <eshkol/backend/libm_codegen.h>
 #include <eshkol/backend/link_probe.h>
+#include <eshkol/backend/closure_capture_scope.h>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -41517,6 +41518,13 @@ private:
 
         Value* proc = resolveLambdaFunction(&op->call_op.variables[0], 2);
         Function* proc_fn = proc ? dyn_cast<Function>(proc) : nullptr;
+        // A procedure that closes over variables cannot be called directly
+        // below: the direct call passes (acc, elem) and no capture
+        // arguments. Its closure value carries the environment, so dispatch
+        // on that value instead (closure_capture_scope.h).
+        if (eshkol::functionHasCaptureParameters(proc_fn)) {
+            proc_fn = nullptr;
+        }
 
         // RUNTIME CLOSURE FALLBACK (ESH-0070 class): when the procedure is
         // not statically resolvable — a function parameter, a binding that

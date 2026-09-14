@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2339/5191 public symbols documented (45.1%), 2852 undocumented.
+**Coverage:** 2347/5199 public symbols documented (45.1%), 2852 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -43,17 +43,18 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1267/2944 symbols documented.
+1275/2952 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`backend/arithmetic_codegen.h`](backend/arithmetic_codegen.md) | 55 | 48 |
-| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 186 | 119 |
+| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 188 | 121 |
 | [`backend/binding_codegen.h`](backend/binding_codegen.md) | 71 | 22 |
 | [`backend/blas_backend.h`](backend/blas_backend.md) | 23 | 23 |
 | [`backend/builtin_declarations.h`](backend/builtin_declarations.md) | 16 | 6 |
 | [`backend/call_apply_codegen.h`](backend/call_apply_codegen.md) | 54 | 22 |
 | [`backend/cblas_compat.h`](backend/cblas_compat.md) | 7 | 0 |
+| [`backend/closure_capture_scope.h`](backend/closure_capture_scope.md) | 6 | 6 |
 | [`backend/codegen_context.h`](backend/codegen_context.md) | 188 | 44 |
 | [`backend/collection_codegen.h`](backend/collection_codegen.md) | 32 | 20 |
 | [`backend/complex_codegen.h`](backend/complex_codegen.md) | 34 | 23 |

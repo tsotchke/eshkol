@@ -1,0 +1,63 @@
+; VM<->native parity: a closure reached by NAME and differentiated inside a
+; separately compiled nested lambda supplies its own captured variables.
+;
+; The native backend calls a named differentiand's compiled function directly
+; and must pass its capture arguments. It used to rebuild them by looking up
+; each captured variable's name at the AD call site, which inside a nested
+; lambda could still resolve to the enclosing function's argument (LLVM
+; module verification failed) and under a shadowing binding resolved to the
+; wrong variable (a wrong derivative). The VM always read the closure's own
+; upvalues. `derivative`, `derivative-n` and `gradient` are vm-supported per
+; PARITY.tsv; every point is inexact.
+
+; H = h Z^2 captures the enclosing parameter h: dH/dZ = 2 h Z
+(define (direct-call h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    ((lambda (Z) (derivative-n H Z 1)) 1.0)))
+(display (direct-call 0.1)) (newline)
+; 0.2
+
+(define (through-map h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    (map (lambda (Z) (derivative H Z)) (list 1.0 2.0))))
+(display (through-map 0.1)) (newline)
+; (0.2 0.4)
+
+; let*: H = Z^2 / (2h), dH/dZ = Z / h
+(define (through-for-each h)
+  (let* ((G (* 2.0 h))
+         (H (lambda (Z) (/ (* Z Z) G))))
+    (for-each (lambda (Z) (display (derivative-n H Z 1)) (newline)) (list 1.0 2.0))))
+(through-for-each 0.1)
+; 10
+; 20
+
+; A nested lambda parameter and a let binding that shadow the captured name.
+(define (shadowed-by-parameter h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    ((lambda (h) (derivative H h)) 1.0)))
+(display (shadowed-by-parameter 0.1)) (newline)
+; 0.2
+
+(define (shadowed-by-let h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    (let ((h 5.0))
+      (derivative H 1.0))))
+(display (shadowed-by-let 0.1)) (newline)
+; 0.2
+
+; A captured mutable variable, two lambda levels down.
+(define (mutable-two-levels h)
+  (let ((k h))
+    (let ((H (lambda (Z) (* k Z Z))))
+      (set! k 3.0)
+      ((lambda (u) ((lambda (Z) (derivative H Z)) u)) 1.0))))
+(display (mutable-two-levels 0.1)) (newline)
+; 6
+
+; gradient of L = a (x^2 + y) at (1, 2): (2 a x, a) = (6, 3)
+(define (vector-gradient a)
+  (let ((L (lambda (v) (* a (+ (* (vector-ref v 0) (vector-ref v 0)) (vector-ref v 1))))))
+    ((lambda (p) (gradient L p)) (vector 1.0 2.0))))
+(display (vector-gradient 3.0)) (newline)
+; #(6 3)

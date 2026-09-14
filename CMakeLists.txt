@@ -4199,6 +4199,84 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: inline_differentiand_loop_capture"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # A differentiand reached by NAME (a variable bound to a closure) is called
+    # directly by the AD operators, which must pass the closure's captures. They
+    # used to re-resolve each captured variable's name at the AD call site:
+    # inside a separately compiled nested lambda that found the enclosing
+    # function's argument (LLVM module verification failed), and under a
+    # shadowing binding it found the wrong variable. The captures now come from
+    # the closure object (appendDifferentiandCaptures). JIT with and without the
+    # run cache, and AOT.
+    add_test(
+        NAME named_differentiand_closure_capture_cached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/named_differentiand_closure_capture_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(named_differentiand_closure_capture_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: named_differentiand_closure_capture"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME named_differentiand_closure_capture_uncached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/named_differentiand_closure_capture_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(named_differentiand_closure_capture_uncached
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: named_differentiand_closure_capture"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME named_differentiand_closure_capture_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/named_differentiand_closure_capture_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/named_differentiand_closure_capture_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/named_differentiand_closure_capture_aot'"
+    )
+    set_tests_properties(named_differentiand_closure_capture_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: named_differentiand_closure_capture"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # map and reduce call a statically known procedure directly. map re-resolved
+    # a named closure's captures by name at the call site (cross-function IR
+    # inside a nested lambda); reduce passed none. map now reads the closure's
+    # environment and reduce dispatches on the closure value.
+    add_test(
+        NAME named_closure_static_call_capture_cached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/named_closure_static_call_capture_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(named_closure_static_call_capture_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: named_closure_static_call_capture"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME named_closure_static_call_capture_uncached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/named_closure_static_call_capture_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(named_closure_static_call_capture_uncached
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: named_closure_static_call_capture"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME named_closure_static_call_capture_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/named_closure_static_call_capture_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/named_closure_static_call_capture_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/named_closure_static_call_capture_aot'"
+    )
+    set_tests_properties(named_closure_static_call_capture_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: named_closure_static_call_capture"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # LE-20: a named-let parameter was reported "Undefined variable" when it was
     # referenced inside a NESTED named let whose binding form contained a further
     # named let that rebound the same name. The capture analysis subtracted the
