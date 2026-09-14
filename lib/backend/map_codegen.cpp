@@ -8,6 +8,7 @@
 
 #include <eshkol/backend/map_codegen.h>
 #include <eshkol/backend/closure_capture_scope.h>
+#include <eshkol/backend/static_callee_binding.h>
 #include <eshkol/backend/llvm_compat.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -142,27 +143,12 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
     // runtime-closure fallbacks below dispatch on the local value, which is
     // the binding lexical scope selects. resolveLambdaFunction applies the
     // same guard, so the two static paths agree.
-    bool proc_locally_shadowed = false;
-    if (op->call_op.variables[0].type == ESHKOL_VAR && symbol_table_ &&
-        current_function_ && *current_function_) {
-        auto shadow_it = symbol_table_->find(op->call_op.variables[0].variable.id);
-        if (shadow_it != symbol_table_->end() && shadow_it->second) {
-            Value* shadow_v = shadow_it->second;
-            bool is_param = isa<Argument>(shadow_v) &&
-                cast<Argument>(shadow_v)->getParent() == *current_function_;
-            bool is_local_alloca = isa<AllocaInst>(shadow_v) &&
-                cast<AllocaInst>(shadow_v)->getFunction() == *current_function_;
-            if (is_param || is_local_alloca) {
-                std::string shadow_scoped_key =
-                    (*current_function_)->getName().str() + "." +
-                    std::string(op->call_op.variables[0].variable.id) + "_func";
-                proc_locally_shadowed =
-                    symbol_table_->find(shadow_scoped_key) == symbol_table_->end() &&
-                    (!global_symbol_table_ ||
-                     global_symbol_table_->find(shadow_scoped_key) == global_symbol_table_->end());
-            }
-        }
-    }
+    const bool proc_locally_shadowed =
+        op->call_op.variables[0].type == ESHKOL_VAR &&
+        op->call_op.variables[0].variable.id && current_function_ &&
+        eshkol::staticCalleeHiddenByRuntimeBinding(
+            symbol_table_, global_symbol_table_, *current_function_,
+            op->call_op.variables[0].variable.id);
 
     if (!proc_locally_shadowed &&
         op->call_op.variables[0].type == ESHKOL_VAR && global_symbol_table_ && nested_function_captures_) {

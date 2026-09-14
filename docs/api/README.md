@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2368/5241 public symbols documented (45.2%), 2873 undocumented.
+**Coverage:** 2377/5269 public symbols documented (45.1%), 2892 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -43,16 +43,16 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1275/2952 symbols documented.
+1284/2980 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`backend/arithmetic_codegen.h`](backend/arithmetic_codegen.md) | 55 | 48 |
 | [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 188 | 121 |
-| [`backend/binding_codegen.h`](backend/binding_codegen.md) | 71 | 22 |
+| [`backend/binding_codegen.h`](backend/binding_codegen.md) | 75 | 24 |
 | [`backend/blas_backend.h`](backend/blas_backend.md) | 23 | 23 |
 | [`backend/builtin_declarations.h`](backend/builtin_declarations.md) | 16 | 6 |
-| [`backend/call_apply_codegen.h`](backend/call_apply_codegen.md) | 54 | 22 |
+| [`backend/call_apply_codegen.h`](backend/call_apply_codegen.md) | 57 | 22 |
 | [`backend/cblas_compat.h`](backend/cblas_compat.md) | 7 | 0 |
 | [`backend/closure_capture_scope.h`](backend/closure_capture_scope.md) | 6 | 6 |
 | [`backend/codegen_context.h`](backend/codegen_context.md) | 188 | 44 |
@@ -69,7 +69,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/ir_builder.h`](backend/ir_builder.md) | 10 | 0 |
 | [`backend/libm_codegen.h`](backend/libm_codegen.md) | 5 | 5 |
 | [`backend/link_probe.h`](backend/link_probe.md) | 1 | 1 |
-| [`backend/llvm_codegen.h`](backend/llvm_codegen.md) | 736 | 17 |
+| [`backend/llvm_codegen.h`](backend/llvm_codegen.md) | 744 | 17 |
 | [`backend/llvm_compat.h`](backend/llvm_compat.md) | 5 | 0 |
 | [`backend/logic_workspace_codegen.h`](backend/logic_workspace_codegen.md) | 42 | 25 |
 | [`backend/map_codegen.h`](backend/map_codegen.md) | 54 | 23 |
@@ -78,6 +78,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/parallel_codegen.h`](backend/parallel_codegen.md) | 61 | 19 |
 | [`backend/qllm_backward.h`](backend/qllm_backward.md) | 9 | 0 |
 | [`backend/riemannian_core.h`](backend/riemannian_core.md) | 87 | 26 |
+| [`backend/static_callee_binding.h`](backend/static_callee_binding.md) | 13 | 7 |
 | [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 74 | 56 |
 | [`backend/system_codegen.h`](backend/system_codegen.md) | 277 | 265 |
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 50 | 42 |
