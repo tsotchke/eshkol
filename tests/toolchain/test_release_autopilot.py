@@ -148,6 +148,40 @@ class Controller(unittest.TestCase):
                 self.release.proof("master", SHA)
         gh.assert_not_called()
 
+    def test_strict_validation_starts_while_ci_is_pending(self):
+        order = []
+
+        def proof(branch, sha):
+            order.append(("proof", branch, sha))
+            raise module.Wait("strict proof is running")
+
+        def checks():
+            order.append(("checks",))
+            return [{"name": "sanitizer", "conclusion": "IN_PROGRESS"}]
+
+        with patch.object(self.release, "proof", side_effect=proof):
+            with self.assertRaisesRegex(module.Wait, "Checks not green: sanitizer"):
+                self.release.proof_and_checks("release/v135-cut", SHA, checks, {"sanitizer"})
+        self.assertEqual(order, [("proof", "release/v135-cut", SHA), ("checks",)])
+
+    def test_proof_or_ci_alone_cannot_authorize_merge_or_tag(self):
+        green_checks = lambda: [{"name": "sanitizer", "conclusion": "SUCCESS"}]
+        proof_run = {"id": 10, "html_url": "run"}
+        with patch.object(self.release, "proof", return_value=proof_run):
+            with self.assertRaisesRegex(module.Wait, "Checks not green: sanitizer"):
+                self.release.proof_and_checks("master", SHA, lambda: [], {"sanitizer"})
+        with patch.object(self.release, "proof", side_effect=module.Wait("strict proof pending")):
+            with self.assertRaisesRegex(module.Wait, "strict proof pending"):
+                self.release.proof_and_checks("master", SHA, green_checks, {"sanitizer"})
+
+    def test_both_validation_gates_return_strict_proof(self):
+        proof_run = {"id": 10, "html_url": "run"}
+        with patch.object(self.release, "proof", return_value=proof_run) as proof:
+            result = self.release.proof_and_checks("master", SHA,
+                lambda: [{"name": "sanitizer", "conclusion": "SUCCESS"}], {"sanitizer"})
+        proof.assert_called_once_with("master", SHA)
+        self.assertIs(result, proof_run)
+
     def test_green_advisory_run_without_receipt_cannot_authorize_tag(self):
         data = {"workflow_runs": [{"id": 10, "head_sha": SHA, "event": "workflow_dispatch",
                                   "status": "completed", "conclusion": "success", "html_url": "run"}]}

@@ -278,6 +278,19 @@ class Release:
         self.state["proof"] = {"sha": sha, "run_id": run["id"], "url": run["html_url"]}
         return run
 
+    def proof_and_checks(self, branch, sha, checks, required):
+        """Start strict proof before waiting on CI; require both gates to pass."""
+        proof_wait = None
+        try:
+            run = self.proof(branch, sha)
+        except Wait as exc:
+            proof_wait = exc
+            run = None
+        require_checks(checks(), required)
+        if proof_wait:
+            raise proof_wait
+        return run
+
     def finalize_notes(self, pr, proof):
         path = self.checkout / "RELEASE_NOTES.md"
         original = path.read_text()
@@ -388,8 +401,8 @@ class Release:
             if pr["isDraft"]:
                 self.gh("pr", "ready", str(pr["number"]), "--repo", self.repo, mutate=True)
                 raise Wait("Release cut ready for its complete CI matrix")
-            require_checks(pr["statusCheckRollup"], required)
-            run = self.proof(pr["headRefName"], pr["headRefOid"])
+            run = self.proof_and_checks(pr["headRefName"], pr["headRefOid"],
+                lambda: pr["statusCheckRollup"], required)
             self.finalize_notes(pr, run)
             # GitHub enforces base protection; expected head prevents merging a changed PR.
             self.gh("pr", "merge", str(pr["number"]), "--repo", self.repo, "--squash",
@@ -404,12 +417,12 @@ class Release:
         self.require_lane_inclusion(sha, pr["headRefOid"])
         self.git("switch", "--detach", sha, mutate=True)
         self.docs_ready(sha)
-        self.master_ci(sha)
-        raw = self.api(f"commits/{sha}/check-runs?per_page=100")["check_runs"]
-        checks = [{"name": c["name"], "conclusion": (c["conclusion"] or "").upper(),
-            "startedAt": c["started_at"] or ""} for c in raw]
-        require_checks(checks, required)
-        self.proof("master", sha)
+        def master_checks():
+            self.master_ci(sha)
+            raw = self.api(f"commits/{sha}/check-runs?per_page=100")["check_runs"]
+            return [{"name": c["name"], "conclusion": (c["conclusion"] or "").upper(),
+                "startedAt": c["started_at"] or ""} for c in raw]
+        self.proof_and_checks("master", sha, master_checks, required)
         require_window(self.config, utcnow())
         self.command([self.config["python"], "scripts/release_readiness_guard.py", "notes", "--notes",
             "RELEASE_NOTES.md", "--tag", self.config["tag"], "--output", str(self.directory / "release-notes.md")],
