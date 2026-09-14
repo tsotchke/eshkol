@@ -1,0 +1,19 @@
+;; Type System Test: arrow subtyping is contravariant in the parameters, so a
+;; function that accepts only integers cannot stand in for one that may be given
+;; any Number, and a function of two parameters cannot stand in for one of one.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN]
+;; EXPECT-STDERR: argument 1 of 'use-num-fn': expected (-> Number Number), got (-> Int64 Number)
+;; EXPECT-STDERR: argument 1 of 'use-num-fn': expected (-> Number Number), got (-> Number Number Number)
+
+(define (takes-int (x : integer)) : number x)
+(define (takes-two (x : number) (y : number)) : number (+ x y))
+(define (use-num-fn (f : (-> number number))) (f 2.5))
+
+(define (never-called)
+  (use-num-fn takes-int)
+  (use-num-fn takes-two))
+
+(display (takes-two 1 2))
+(newline)

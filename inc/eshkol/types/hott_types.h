@@ -239,6 +239,11 @@ namespace BuiltinTypes {
     inline constexpr TypeId Boolean{25, Universe::U0, TYPE_FLAG_EXACT};
     inline constexpr TypeId Null{26, Universe::U0, 0};
     inline constexpr TypeId Symbol{27, Universe::U0, 0};
+    // The empty type: no value inhabits it, so it is a subtype of every type
+    // and the identity of a join. The checker gives it to a call of a
+    // recursive procedure whose result is still being inferred, so the call
+    // does not contribute to that result; it never reaches codegen.
+    inline constexpr TypeId Never{38, Universe::U0, 0};
 
     // Type constructors (U1)
     inline constexpr TypeId List{100, Universe::U1, 0};
@@ -533,8 +538,28 @@ public:
     /**
      * Check if 'sub' is a subtype of 'super'.
      * Uses cached results for performance.
+     *
+     * A function signature is a subtype of the generic procedure type
+     * (Function) and of Closure, which describe the same runtime value. One
+     * signature is a subtype of another when it accepts at least the other's
+     * arguments and returns no more than its result: parameters are compared
+     * contravariantly, the result covariantly. Here `Value` is only the top
+     * type; see isConsistentSubtype() for the gradual relation.
      */
     bool isSubtype(TypeId sub, TypeId super) const;
+
+    /**
+     * Gradual (consistent) subtyping: 'sub' may flow where 'super' is expected.
+     *
+     * The same relation as isSubtype(), except that the dynamic type `Value`
+     * is consistent with every type in both directions, at the top level and
+     * inside a function signature's parameters and result, and the generic
+     * procedure type is consistent with every signature. A Value-typed
+     * expression is statically unknown, not wrong, so it satisfies any
+     * annotation; a concrete type still has to be a subtype, so String does not
+     * satisfy Number and (-> String String) does not satisfy (-> Number Number).
+     */
+    bool isConsistentSubtype(TypeId sub, TypeId super) const;
 
     /**
      * Find the least common supertype of two types.
@@ -700,8 +725,11 @@ public:
     std::vector<TypeId> getFunctionParamTypes(TypeId id) const;
 
     /**
-     * Get a human-readable name for a function type.
-     * For example: "(Int64, Float64) -> Boolean"
+     * Get a human-readable name for a function type, in the arrow syntax the
+     * annotations use: "(-> Int64 Float64 Boolean)" takes an Int64 and a
+     * Float64 and returns a Boolean. A variadic signature marks the rest
+     * argument with "...": "(-> Int64 ... Value)".
+     * Returns "Function" if the TypeId is not a function signature.
      */
     std::string getFunctionTypeName(TypeId id) const;
 
@@ -772,6 +800,13 @@ private:
      * Uncached subtype check (walks the type graph).
      */
     bool isSubtypeUncached(TypeId sub, TypeId super) const;
+
+    /**
+     * Arrow subtyping between two signatures: contravariant in the parameters,
+     * covariant in the result. With @p consistent, components are compared by
+     * isConsistentSubtype(), otherwise by isSubtype() with Value as the top.
+     */
+    bool signatureIsSubtype(const PiType& sub, const PiType& super, bool consistent) const;
 };
 
 // ============================================================================
