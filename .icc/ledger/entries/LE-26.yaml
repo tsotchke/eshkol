@@ -2,7 +2,7 @@ id: LE-26
 bucket: LOUD-ERROR
 subtag: structural
 status: closed
-closed_at: "PENDING-SHA"
+closed_at: "df422c5a"
 closed_by: "branch fix/v135-typecheck-control-bodies"
 family: type-system/control-bodies
 title: "type checker: the subexpressions of cond, case, match, when, unless, do, guard, and/or, set!, quasiquote, dynamic-wind, call/cc, values, call-with-values, let-values, raise, with-region and every non-final begin expression were never synthesized, so a wrong argument there was silent although the same call warned at top level"
@@ -22,7 +22,7 @@ repro: >-
   a multi-expression body.
 observed_before: >-
   43 probe programs, one call per position, compiled against the unmodified
-  base (5e190db8): 30 printed no warning. The warning appeared only for top
+  base (666ccbb6): 30 printed no warning. The warning appeared only for top
   level and for positions inside if, let, let*, lambda, case-lambda, delay,
   the, with-exception-handler and a vector call. Named-let widening (LE-25)
   never saw a recursive call sitting in a cond clause, so it neither widened
@@ -86,26 +86,48 @@ evidence: >-
   call-with-values, let-values, raise, with-region, computed callee,
   derivative point), plus control_match_bound_variable, control_do_bound_variable,
   control_guard_bound_variable and control_branch_join reject/ok pairs, all in
-  the existing run_typesystem_tests.sh sweep. Corpus sweep: all 2187 .esk files
-  under tests/ and examples/ compiled compile-only with the base and the fixed
-  compiler; exit status identical for every file; type diagnostics differ in
-  55 files: the 27 fixtures above; 4 newly reported genuine diagnostics
-  (tests/error_handling/bounds_check_test.esk:18 and
-  tests/vm_parity/corpus/34_bounds_contract.esk:43, a literal -1 vector-ref
-  index inside guard, deliberate; tests/vm_parity/corpus/78_vector_scalar_arith_dispatch.esk:54,
-  a vector passed to a numeric parameter, which that file documents as a type
-  error; tests/vm/json_surface_regression.esk:46-48, json-get-in called with
-  three arguments against its two-parameter definition in lib/core/json.esk:653,
-  which the frontend already rejects at lines 12, 18 and 24 so the file exits 1
-  before and after); and 24 files where a pre-existing false positive is gone
-  (calculus-operator results in 18 AD and type test files, the Boolean-slot
-  accumulator in examples/mathematics_homotopy_colimits_grothendieck.esk:281
-  and three tests/edge_matrix/generated let-family files, three
+  the existing run_typesystem_tests.sh sweep. Corpus sweep on base 666ccbb6: all 2187 .esk files under tests/ and
+  examples/ compiled compile-only with a base and a fixed compiler built from
+  that base; type diagnostics or exit status differ in 56 files. 27 are the
+  fixtures above. 4 are newly reported genuine diagnostics:
+  tests/error_handling/bounds_check_test.esk:18 and
+  tests/vm_parity/corpus/34_bounds_contract.esk:43 (a literal -1 vector-ref
+  index inside guard, deliberate);
+  tests/vm_parity/corpus/78_vector_scalar_arith_dispatch.esk:54 (a vector
+  passed to a numeric parameter, which that file documents as a type error);
+  tests/vm/json_surface_regression.esk:46-48 (json-get-in called with three
+  arguments against its two-parameter definition in lib/core/json.esk:653;
+  the frontend already rejects the same call at lines 12, 18 and 24, so the
+  file exits 1 before and after). 23 lose a pre-existing false positive: the
+  calculus-operator result in tests/ad (11 files),
+  tests/v1_3_edge_cases/ad_input2_test.esk,
+  tests/vm_parity/corpus/hessian_capture_scalar.esk,
+  tests/collections/tensor_apply_callable_test.esk,
+  tests/features/extreme_stress_test_v2.esk and
+  tests/types/comprehensive_type_test.esk; the Boolean-slot accumulator in
+  examples/mathematics_homotopy_colimits_grothendieck.esk:281 and three
+  tests/edge_matrix/generated let-family files; and three
   qubit_linear_*_branches_ok fixtures whose cond/case/match of Qubit branches
-  now join to Qubit, and tests/autodiff/gradient_callable_arity_test.esk:67,
-  where the remaining return-annotation warning now names the body type Value
-  instead of ->). No new false positive remains.
-  CTEST-AND-PARITY-PENDING
+  now join to Qubit. 1 changes wording only:
+  tests/autodiff/gradient_callable_arity_test.esk:67 still warns that the
+  body does not match the Vector return annotation, now naming the body type
+  Value instead of ->. 1 is a harness artifact:
+  tests/control_flow/continuation_edge_test.esk exited 142 in the after run
+  because its compile hit the 180 s alarm on a cold AOT module cache (the
+  before run hit a warm one); compiled cold with fresh cache directories it
+  takes 191 s on the base and 162 s fixed, exit 0 and no type diagnostic on
+  both. No new false positive remains.
+  run_vm_parity: 338 passed, 0 failed. ctest with every target built:
+  542/543; the failure is build_fingerprint_gate, which flagged parity
+  fingerprints recorded against the pre-rebase binary and a binary older
+  than the rebased (content-identical) sources.
+  After rebuilding and re-running run_vm_parity (338 passed, 0 failed) the
+  freshness error is gone and the fresh records match the current binaries;
+  the gate still fails on the four older records, from earlier parity runs in
+  this worktree, kept in the gitignored local trace. The base worktree, with
+  a single run history, passes the same gate.
+  run_compiler_assurance.py and --verify: status PASS, exit 0.
+  gen_api_docs.py --check: up to date.
 caught_by: [direct-measurement]
 missed_by: [run_typesystem_tests, ctest, icc-smoke]
 notes: >-
