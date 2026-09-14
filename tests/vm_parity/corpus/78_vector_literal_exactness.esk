@@ -1,0 +1,21 @@
+; SW-153: a numeric #(...) literal with an exact-rational, bignum, or
+; non-numeric element stays a genuine vector with elements preserved
+; exactly. The VM's own reader never promoted #(...) to a tensor (see
+; lib/backend/vm_parser.c), so this file mainly pins that the NATIVE side
+; now agrees with what the VM already did.
+(display (vector? #(1/2 1/3))) (newline)
+(display (vector-length #(1/2 1/3))) (newline)
+(display (vector-ref #(1/2 1/3) 0)) (newline)
+(display (exact? (vector-ref #(1/2 1/3) 0))) (newline)
+(display (vector-length #(1 "two" #t))) (newline)
+(display (vector-ref #(1 "two" #t) 1)) (newline)
+(display (vector-ref #(1 "two" #t) 2)) (newline)
+(define nested-unsafe #(#(1/2 2) #(3 4)))
+(display (vector? nested-unsafe)) (newline)
+(display (vector-length nested-unsafe)) (newline)
+(display (vector-ref (vector-ref nested-unsafe 0) 0)) (newline)
+; Regression pin: a plain numeric rectangular nest is still Eshkol's
+; documented rank-2 tensor-literal spelling on native — UNCHANGED by this
+; fix. The VM has no literal-level tensor promotion, so its tensor-shape
+; still routes through runtime unpacking; both must still agree on shape.
+(display (tensor-shape #(#(1 2) #(3 4)))) (newline)

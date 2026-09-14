@@ -88,10 +88,13 @@ Function* CallApplyCodegen::getTaggedConsGetPtrFunc() {
  * in priority order:
  *  1. Variadic-reduction builtins (`+ - * /`, `min`, `max`) via applyReduction().
  *  2. `list` (returns the argument list itself) and `cons` via applyCons().
- *  3. Tensor/vector-creation builtins (`rand`, `zeros`, `reshape`, etc.) by
- *     extracting up to MAX_APPLY_ARGS elements from the list into a stack
+ *  3. Shape-only tensor-creation builtins (`rand`, `randn`, `zeros`, `ones`)
+ *     by extracting up to MAX_APPLY_ARGS elements from the list into a stack
  *     array (via a generated extraction loop) and calling
- *     apply_builtin_callback_ with the materialized args + count.
+ *     apply_builtin_callback_ with the materialized args + count. Tensor
+ *     builtins whose arguments are not all dimensions (`reshape`, `tensor`,
+ *     `linspace`, ...) are REFUSED here with a located diagnostic rather than
+ *     silently reinterpreting an operand as a dimension.
  *  4. A named module Function (direct user function) via applyUserFunction().
  *  5. A `<name>_func` symbol-table alias for a capture-free function via applyUserFunction().
  *  6. A closure or captured-procedure variable: non-Function values are
@@ -191,14 +194,42 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             return applyCons(list_int);
         }
 
-        // Handle tensor/vector creation functions via callback
-        if (apply_builtin_callback_ &&
-            (func_name == "rand" || func_name == "randn" || func_name == "randint" ||
-             func_name == "zeros" || func_name == "ones" || func_name == "full" ||
+        // Shape-only tensor CREATION builtins, dispatched through
+        // apply_builtin_callback_. That callback reads EVERY extracted
+        // argument as a dimension and allocates a fresh tensor from them, so
+        // it is correct for exactly the builtins whose whole argument list IS
+        // the shape.
+        //
+        // The list used to also name `reshape`, `transpose`, `tensor`,
+        // `make-tensor`, `arange`, `linspace`, `eye`, `diag`, `randint` and
+        // `full` -- builtins whose arguments are NOT all dimensions. For those
+        // the callback read a leading tensor operand (or a fill value, or a
+        // start/stop/step triple) as a dimension: `(apply reshape t (list 2 3))`
+        // built a rank-3 tensor whose first dimension was the OPERAND POINTER
+        // (e.g. `(5370542728 2 3)`), silently discarding the data, with no
+        // diagnostic until something walked the result. They are rejected
+        // loudly below instead.
+        const bool is_shape_only_creation =
+            (func_name == "rand" || func_name == "randn" ||
+             func_name == "zeros" || func_name == "ones");
+        const bool is_unsupported_apply_builtin =
+            (func_name == "randint" || func_name == "full" ||
              func_name == "arange" || func_name == "linspace" ||
              func_name == "eye" || func_name == "diag" ||
              func_name == "reshape" || func_name == "transpose" ||
-             func_name == "tensor" || func_name == "make-tensor")) {
+             func_name == "tensor" || func_name == "make-tensor");
+
+        if (is_unsupported_apply_builtin && !ctx_.module().getFunction(func_name)) {
+            eshkol_error_current(
+                ("apply: `%s` cannot be called through `apply` -- its arguments are not all "
+                 "dimensions, and the apply path can only materialise a shape. Call it "
+                 "directly instead; `reshape` and `transpose` accept a shape LIST as a "
+                 "single argument, so `(reshape t shape-list)` replaces "
+                 "`(apply reshape t shape-list)`."), func_name.c_str());
+            return nullptr;
+        }
+
+        if (apply_builtin_callback_ && is_shape_only_creation) {
 
             Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
             Function* cons_get_ptr = getTaggedConsGetPtrFunc();
@@ -855,6 +886,8 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
     ArrayType* args_array_type = ArrayType::get(ctx_.taggedValueType(), MAX_APPLY_ARGS);
     Value* args_array = ctx_.builder().CreateAlloca(args_array_type, nullptr, "apply_args");
     ctx_.builder().restoreIP(saved_ip);
+    ctx_.builder().CreateStore(Constant::getNullValue(args_array_type), args_array);
+
 
     // Extract arguments from list into array and count them
     BasicBlock* extract_loop = BasicBlock::Create(ctx_.context(), "apply_extract_loop", current_func);
@@ -993,104 +1026,21 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
         ctx_.builder().SetInsertPoint(closure_regular);
     }
 
-    // Load env and num_captures
-    Value* env_ptr_addr = ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr,
-        ConstantInt::get(ctx_.int64Type(), 8));
-    Value* env_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), env_ptr_addr);
-
-    // Save current block for PHI node - this may be closure_path or closure_regular
-    BasicBlock* pre_env_check_bb = ctx_.builder().GetInsertBlock();
-
-    Value* env_null = ctx_.builder().CreateICmpEQ(env_ptr,
-        ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
-    BasicBlock* env_valid_bb = BasicBlock::Create(ctx_.context(), "apply_env_valid", current_func);
-    BasicBlock* env_checked_bb = BasicBlock::Create(ctx_.context(), "apply_env_checked", current_func);
-
-    ctx_.builder().CreateCondBr(env_null, env_checked_bb, env_valid_bb);
-
-    ctx_.builder().SetInsertPoint(env_valid_bb);
-    Value* loaded_captures = ctx_.builder().CreateLoad(ctx_.int64Type(), env_ptr);
-    loaded_captures = ctx_.builder().CreateAnd(
-        loaded_captures,
-        ConstantInt::get(ctx_.int64Type(), UINT64_C(0xFFFFFFFF)),
-        "loaded_capture_count");
-    ctx_.builder().CreateBr(env_checked_bb);
-
-    ctx_.builder().SetInsertPoint(env_checked_bb);
-    PHINode* num_captures_phi = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "num_captures");
-    num_captures_phi->addIncoming(ConstantInt::get(ctx_.int64Type(), 0), pre_env_check_bb);
-    num_captures_phi->addIncoming(loaded_captures, env_valid_bb);
-
-    // Clamp captures to max
-    Value* clamped_captures = ctx_.builder().CreateSelect(
-        ctx_.builder().CreateICmpUGT(num_captures_phi,
-            ConstantInt::get(ctx_.int64Type(), MAX_APPLY_CAPTURES)),
-        ConstantInt::get(ctx_.int64Type(), MAX_APPLY_CAPTURES),
-        num_captures_phi);
-
-    // Load captures base pointer
-    Value* captures_base = ctx_.builder().CreateGEP(ctx_.int8Type(), env_ptr,
-        ConstantInt::get(ctx_.int64Type(), 8));
-    Value* captures_typed = ctx_.builder().CreateBitCast(captures_base, ctx_.ptrType());
-
-    // Dispatch based on (arg_count * (MAX_CAPTURES+1) + num_captures)
-    Value* dispatch_idx = ctx_.builder().CreateAdd(
-        ctx_.builder().CreateMul(final_count,
-            ConstantInt::get(ctx_.int64Type(), MAX_APPLY_CAPTURES + 1)),
-        clamped_captures);
-
-    BasicBlock* dispatch_default = BasicBlock::Create(ctx_.context(), "apply_dispatch_default", current_func);
-    SwitchInst* sw = ctx_.builder().CreateSwitch(dispatch_idx, dispatch_default,
-        (MAX_APPLY_ARGS + 1) * (MAX_APPLY_CAPTURES + 1));
-
-    // Note: closure_results was declared earlier (before arithmetic handling)
-
-    // Generate cases for each (arg_count, capture_count) pair
-    for (int ac = 0; ac <= MAX_APPLY_ARGS; ac++) {
-        for (int cc = 0; cc <= MAX_APPLY_CAPTURES; cc++) {
-            int case_idx = ac * (MAX_APPLY_CAPTURES + 1) + cc;
-            BasicBlock* case_bb = BasicBlock::Create(ctx_.context(),
-                "apply_" + std::to_string(ac) + "_" + std::to_string(cc), current_func);
-            sw->addCase(ConstantInt::get(ctx_.int64Type(), case_idx), case_bb);
-
-            ctx_.builder().SetInsertPoint(case_bb);
-
-            // Build args: first from array, then captures
-            std::vector<Value*> call_args;
-            for (int i = 0; i < ac; i++) {
-                Value* arg_ptr = ctx_.builder().CreateGEP(args_array_type, args_array,
-                    {ConstantInt::get(ctx_.int64Type(), 0),
-                     ConstantInt::get(ctx_.int64Type(), i)});
-                call_args.push_back(ctx_.builder().CreateLoad(ctx_.taggedValueType(), arg_ptr));
-            }
-            // MUTABLE CAPTURE FIX: Pass pointers to captures, not loaded values
-            // This matches the updated lambda signature that expects ptr types for captures
-            for (int i = 0; i < cc; i++) {
-                Value* cap_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), captures_typed,
-                    ConstantInt::get(ctx_.int64Type(), i));
-                call_args.push_back(cap_ptr);  // Pass pointer, not loaded value
-            }
-
-            // Create function type and call
-            // MUTABLE CAPTURE FIX: Capture params use pointer type, not tagged_value
-            std::vector<Type*> param_types;
-            for (int i = 0; i < ac; i++) {
-                param_types.push_back(ctx_.taggedValueType());
-            }
-            for (int i = 0; i < cc; i++) {
-                param_types.push_back(ctx_.ptrType());  // Pointer type for captures
-            }
-            FunctionType* func_type = FunctionType::get(ctx_.taggedValueType(), param_types, false);
-            Value* result = ctx_.builder().CreateCall(func_type, actual_func_ptr, call_args);
-            ctx_.builder().CreateBr(merge_bb);
-            closure_results.push_back({ctx_.builder().GetInsertBlock(), result});
-        }
-    }
-
-    ctx_.builder().SetInsertPoint(dispatch_default);
-    Value* default_closure_result = tagged_.packNull();
+    // SW-173: the ABI a closure is called with is the closure dispatcher's
+    // decision, not apply's. A variadic closure's entry point takes its fixed
+    // parameters followed by ONE REST LIST; a fixed-arity closure takes its
+    // arguments spread into separate parameters. apply hands the extracted
+    // elements to codegenClosureSpreadCall, which reads CLOSURE_FLAG_VARIADIC
+    // and the fixed-parameter count off the closure header and conses slots
+    // [fixed_params, count) into the rest list itself — so
+    // `(apply vector (list 1 2 3))` and `(apply string-append '("a" "b" "c"))`
+    // reach the variadic entry point with a proper list rather than with the
+    // first element alone. Duplicating that decision here would be a second,
+    // half-tested implementation of the closure ABI.
+    Value* closure_result = closure_spread_callback_(func_value, args_array,
+        final_count, MAX_APPLY_ARGS, callback_context_);
     ctx_.builder().CreateBr(merge_bb);
-    closure_results.push_back({dispatch_default, default_closure_result});
+    closure_results.push_back({ctx_.builder().GetInsertBlock(), closure_result});
 
     // DIRECT PATH (lambda without captures)
     ctx_.builder().SetInsertPoint(direct_path);
@@ -1162,37 +1112,10 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
         ctx_.builder().SetInsertPoint(regular_dispatch);
     }
 
-    BasicBlock* direct_dispatch_default = BasicBlock::Create(ctx_.context(),
-        "apply_direct_default", current_func);
-    SwitchInst* direct_sw = ctx_.builder().CreateSwitch(final_count, direct_dispatch_default,
-        MAX_APPLY_ARGS + 1);
-
-    for (int ac = 0; ac <= MAX_APPLY_ARGS; ac++) {
-        BasicBlock* case_bb = BasicBlock::Create(ctx_.context(),
-            "apply_direct_" + std::to_string(ac), current_func);
-        direct_sw->addCase(ConstantInt::get(ctx_.int64Type(), ac), case_bb);
-
-        ctx_.builder().SetInsertPoint(case_bb);
-
-        std::vector<Value*> call_args;
-        for (int i = 0; i < ac; i++) {
-            Value* arg_ptr = ctx_.builder().CreateGEP(args_array_type, args_array,
-                {ConstantInt::get(ctx_.int64Type(), 0),
-                 ConstantInt::get(ctx_.int64Type(), i)});
-            call_args.push_back(ctx_.builder().CreateLoad(ctx_.taggedValueType(), arg_ptr));
-        }
-
-        std::vector<Type*> param_types(ac, ctx_.taggedValueType());
-        FunctionType* func_type = FunctionType::get(ctx_.taggedValueType(), param_types, false);
-        Value* result = ctx_.builder().CreateCall(func_type, direct_func_ptr, call_args);
-        ctx_.builder().CreateBr(merge_bb);
-        direct_results.push_back({ctx_.builder().GetInsertBlock(), result});
-    }
-
-    ctx_.builder().SetInsertPoint(direct_dispatch_default);
-    Value* default_direct_result = tagged_.packNull();
+    Value* direct_result = closure_spread_callback_(func_value, args_array,
+        final_count, MAX_APPLY_ARGS, callback_context_);
     ctx_.builder().CreateBr(merge_bb);
-    direct_results.push_back({direct_dispatch_default, default_direct_result});
+    direct_results.push_back({ctx_.builder().GetInsertBlock(), direct_result});
 
     // Merge all results
     ctx_.builder().SetInsertPoint(merge_bb);
@@ -1211,94 +1134,15 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
 /**
  * @brief Call a tagged closure value with a fixed, pre-evaluated argument list.
  *
- * Simplified counterpart to applyClosure() for call sites where the
- * argument count is already known at compile time (not extracted from a
- * runtime list). Unpacks the closure pointer, loads the function pointer
- * (offset 0) and capture count (offset 8), then branches at runtime on
- * whether there are captures:
- *  - No captures: calls the function pointer directly with @p args, using a
- *    synthesized FunctionType matching `args.size()` tagged_value parameters.
- *  - Has captures: loads only the first capture slot (offset 16) and
- *    prepends it to @p args, then calls with that extended argument list.
- *    This only correctly handles the 1-capture case; closures with more
- *    than one capture would need a fuller dispatch (as applyClosure() does)
- *    but this path does not implement one.
- *
- * @param closure Tagged closure value to call.
- * @param args Pre-evaluated tagged argument values (not including captures).
- * @return The call's tagged result merged via PHINode across the
- *         no-captures/has-captures paths, or a tagged null if @p closure is null.
+ * Uses the canonical callable dispatcher for all capture counts, parameter
+ * procedures, and variadic signatures.
  */
 Value* CallApplyCodegen::closureCall(Value* closure, const std::vector<Value*>& args) {
-    // Direct closure call: extract function pointer, load captures, call with captures + args.
-    // This mirrors the closure call convention in codegenClosureCall but uses
-    // a simplified path for pre-evaluated arguments.
-
     if (!closure) {
         eshkol_error("closureCall: null closure value");
         return tagged_.packNull();
     }
-
-    // Extract closure pointer from tagged value
-    llvm::Value* closure_ptr_i64 = tagged_.unpackInt64(closure);
-    llvm::Value* closure_ptr = ctx_.builder().CreateIntToPtr(
-        closure_ptr_i64, ctx_.ptrType(), "closure_ptr");
-
-    // Load function pointer (offset 0 in closure struct)
-    llvm::Value* func_ptr_i64 = ctx_.builder().CreateLoad(
-        ctx_.int64Type(), closure_ptr, "func_ptr_i64");
-    llvm::Value* func_ptr = ctx_.builder().CreateIntToPtr(
-        func_ptr_i64, ctx_.ptrType(), "func_ptr");
-
-    // Load capture count (offset 8)
-    llvm::Value* cap_count_gep = ctx_.builder().CreateGEP(
-        ctx_.int64Type(), closure_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 1), "cap_count_gep");
-    llvm::Value* cap_count = ctx_.builder().CreateLoad(
-        ctx_.int64Type(), cap_count_gep, "cap_count");
-
-    // For the common case (0 captures), call directly with user args only.
-    // Other cases fall through to a non-capture call (captures are part of function ABI).
-    llvm::Value* has_no_captures = ctx_.builder().CreateICmpEQ(
-        cap_count, llvm::ConstantInt::get(ctx_.int64Type(), 0), "no_caps");
-
-    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-    llvm::BasicBlock* no_cap_bb = llvm::BasicBlock::Create(ctx_.context(), "closure_nocap", current_func);
-    llvm::BasicBlock* has_cap_bb = llvm::BasicBlock::Create(ctx_.context(), "closure_hascap", current_func);
-    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "closure_merge", current_func);
-
-    ctx_.builder().CreateCondBr(has_no_captures, no_cap_bb, has_cap_bb);
-
-    // No captures: call func_ptr directly with args
-    ctx_.builder().SetInsertPoint(no_cap_bb);
-    std::vector<llvm::Type*> arg_types(args.size(), ctx_.taggedValueType());
-    llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.taggedValueType(), arg_types, false);
-    llvm::Value* result_nocap = ctx_.builder().CreateCall(ft, func_ptr, args, "closure_result");
-    llvm::BasicBlock* nocap_exit = ctx_.builder().GetInsertBlock();
-    ctx_.builder().CreateBr(merge_bb);
-
-    // Has captures: load capture[0] and prepend to args (handles 1-capture case)
-    ctx_.builder().SetInsertPoint(has_cap_bb);
-    llvm::Value* captures_base = ctx_.builder().CreateGEP(
-        llvm::Type::getInt8Ty(ctx_.context()), closure_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 16), "captures_base");
-    llvm::Value* cap0 = ctx_.builder().CreateLoad(
-        ctx_.taggedValueType(), captures_base, "cap0");
-    std::vector<llvm::Value*> cap_args;
-    cap_args.push_back(cap0);
-    for (auto* arg : args) cap_args.push_back(arg);
-    std::vector<llvm::Type*> cap_arg_types(cap_args.size(), ctx_.taggedValueType());
-    llvm::FunctionType* ft_cap = llvm::FunctionType::get(ctx_.taggedValueType(), cap_arg_types, false);
-    llvm::Value* result_cap = ctx_.builder().CreateCall(ft_cap, func_ptr, cap_args, "closure_cap_result");
-    llvm::BasicBlock* cap_exit = ctx_.builder().GetInsertBlock();
-    ctx_.builder().CreateBr(merge_bb);
-
-    // Merge
-    ctx_.builder().SetInsertPoint(merge_bb);
-    llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "closure_result");
-    result->addIncoming(result_nocap, nocap_exit);
-    result->addIncoming(result_cap, cap_exit);
-    return result;
+    return closure_call_callback_(closure, args, "call-apply", callback_context_);
 }
 
 } // namespace eshkol

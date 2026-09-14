@@ -1,0 +1,51 @@
+id: LE-20
+bucket: LOUD-ERROR
+subtag: wrong-diagnostic-on-legal-code
+status: open
+title: "A named-let parameter is reported `Undefined variable` under a nested named let when a binding form there contains an inner named let that rebinds the same name"
+repro: >-
+  tests/math_acceptance/shadowed_named_let_scope_test.esk, wired
+  `WILL_FAIL` as math_acceptance_shadowed_named_let_scope. Shape:
+  `(let dfs ((e 0) (acc 1)) (if (= e n) ... (let try ((a 0)) (if (< a 2)
+  (begin (if (< (+ a e) 10) (let* ((acc1 (* acc 2)) (acc2 (let loop ((k 0)
+  (acc acc1)) (if (= k 2) acc (loop (+ k 1) (+ acc 1)))))) (dfs (+ e 1)
+  acc2))) (try (+ a 1)))))))`. JIT (`eshkol-run -r`) and AOT (`-o`) stop
+  identically. Renaming the inner loop's variable (`(s acc1)`) makes the
+  same program compile and print 176; removing the intermediate named let
+  `try` also makes it compile (the two-level shape is required); a plain
+  `let` instead of `let*` fails the same way at the init `(acc (* acc 2))`.
+observed: >-
+  `error: Undefined variable: acc` at the FIRST reference `(* acc 2)`,
+  which is lexically inside the scope of the outer named let's parameter;
+  compilation stops, nothing is produced.
+correct: >-
+  The program is legal Scheme: the inner named let's parameter `acc` is in
+  scope only inside that inner let's body, and its init expressions are
+  evaluated in the enclosing scope (R7RS 4.2.4). Expected output 176.
+root_cause: >-
+  Hypothesis (compiler stream and math stream agree): the inner named let's
+  parameter list is registered in the enclosing scope before the enclosing
+  form's own references are resolved, so the outer binding is shadowed by
+  a binding that is not yet live; the intermediate named let is what makes
+  the enclosing scope one where that early registration wins.
+impact: >-
+  Blocks the natural spelling of accumulating state sums (Turaev-Viro,
+  Yetter) where an outer search carries an accumulator and inner product
+  loops naturally reuse the name; the example routes around by renaming.
+  Any user who reuses a loop-variable name across nested loops hits it.
+fix_requires: >-
+  Resolve references in a `let`/`let*`/named-let binding form against the
+  enclosing scope before introducing the new bindings, or introduce the
+  inner named let's parameters only when entering its body.
+evidence: >-
+  .scratch/math-stream-repros/scope_shadow2.esk, scope_shadow4.esk,
+  scope_shadow6.esk (fail); scope_shadow3.esk, scope_shadow5.esk,
+  scope_shadow_named_let.esk (controls, print 176, 176, 22).
+  MATHEMATICS_STREAM_COMPILER_NOTES.md section F12 (internal).
+caught_by: [math-stream-examples]
+missed_by: [icc-correctness-chain, icc-smoke, ctest]
+notes: >-
+  Filed from the mathematics stream on 2026-09-10 while writing
+  examples/mathematics_turaev_viro_cyclotomic.esk; id assigned by the
+  compiler stream (highest ids in flight: LE-19 in #653, SW-169 in #651).
+  order.txt is left to the union at rebase.

@@ -1,0 +1,4 @@
+;; LE-05: path-literal load uses the shared resolver on the VM source and ESKB lanes.
+(load "fixtures/load_literal_helper.esk")
+(display (loaded-literal-value))
+(display "PASS: path-literal load")

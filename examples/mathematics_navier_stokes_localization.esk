@@ -1,0 +1,274 @@
+;; Navier-Stokes blowup construction -- compact forcing, whole-space
+;; breakdown, and the torus.
+;;
+;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
+;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Section 10 (compact forcing and whole-space breakdown): Proposition 10.1,
+;; Lemma 10.2, Lemma 10.3, Lemma 10.4, (10.20)-(10.23), Corollary 10.6.
+;; docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md rows 79-84 (beyond what
+;; mathematics_navier_stokes_viscosity_scaling.esk already covers for the
+;; (10.22)-(10.23) rescaling identity itself, row 83).
+;;
+;; Four independent facts, each with its own negative control.
+;;
+;; PART A (Lemma 10.2/10.3).  A smooth temporal cutoff, multiplied against a
+;; field with a genuine pole at t = 1, keeps the product smooth THROUGH t = 1
+;; at a fixed positive radius: every Taylor coefficient about t = 1 is an
+;; exact, finite rational, computed by AD (`taylor`).
+;;
+;; PART B (row 79, "c = chi_x chi_t... extend by zero outside the cutoff
+;; support").  The spatial part of the cutoff force is exactly zero outside a
+;; stated box -- compactly supported by construction, verified by direct
+;; evaluation.
+;;
+;; PART C (Corollary 10.6).  A compactly supported field, periodized onto
+;; T^3 = R^3/Z^3 by summing integer translates, is well defined: for a
+;; support radius strictly less than 1/2 the only nonzero translate inside
+;; the fundamental cell is the untranslated one, verified exactly for a
+;; rational radius, and cross-checked with `torus-average-2d`
+;; (`core.exact_linalg`, loaded via `(require stdlib)`).
+;;
+;; PART D (Proposition 10.1).  The energy identity
+;;     d/dt (1/2 sum_k u_k^2) = sum_k f_k u_k - nu sum_k u_k^2
+;; for a discrete "grid" model with f_k := d_t u_k + nu u_k (the force
+;; defined, as in the paper, to BE the residual of the constructed field, so
+;; the identity is a computed consequence, not an assumption), checked
+;; exactly by AD in t.
+;;
+;; DEFECT NOTE (new; routed around, not fixed; minimal repro under
+;; .scratch/ns_defect_conditional_derivative.esk): `derivative`,
+;; `derivative-n` and `taylor` all return 0 for a differentiand whose
+;; top-level expression is a conditional (`if`/`cond`) at an exact rational
+;; seed. Every AD call below differentiates an unguarded polynomial; guarded
+;; (genuinely compactly supported) forms are used only for direct evaluation,
+;; never as a differentiand. Also routed around: no derivative is evaluated
+;; AT an actual pole (division by exactly zero); every "before cutoff" growth
+;; claim below is a direct numeric comparison approaching, but never landing
+;; on, the singular point.
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+
+(define (dn f x k)
+  (let ((v (derivative-n f x k)))
+    (if (= v 0) 0 v)))
+
+;; ---------------------------------------------------------------------------
+;; PART A.  Smooth cutoff keeps the residual smooth through t = 1.
+;; ---------------------------------------------------------------------------
+;;
+;; The uncut field V(r,t) = r^2 / (1-t)^2 has a genuine order-2 pole at t = 1
+;; for every r. The cutoff chi(t) = (1-t)^3 (w^2-(t-1)^2)^2 vanishes to order
+;; 3 there, so the hand-simplified product
+;;     chi(t) V(r,t) = r^2 (1-t) (w^2-(t-1)^2)^2
+;; is an ordinary polynomial in t -- no division anywhere -- and its Taylor
+;; coefficients about t = 1 are checked directly by AD.
+
+(define X1 3)              ;; the fixed, positive radius
+(define cutoff-tw 1/2)     ;; temporal cutoff half-width around t = 1
+
+(define (cutoff-field r t)
+  (* r r (- 1 t)
+     (- (* cutoff-tw cutoff-tw) (* (- t 1) (- t 1)))
+     (- (* cutoff-tw cutoff-tw) (* (- t 1) (- t 1)))))
+
+(define cutoff-coeffs (taylor (lambda (tt) (cutoff-field X1 tt)) 1 4))
+(show "cutoff-field Taylor coefficients about t=1, at fixed r=X1" cutoff-coeffs)
+
+(check "every Taylor coefficient of the cutoff field through t=1 is an exact rational"
+       (let loop ((cs cutoff-coeffs))
+         (cond ((null? cs) #t)
+               ((exact? (car cs)) (loop (cdr cs)))
+               (else #f))))
+(check "the cutoff field itself is exactly zero at t = 1 (order-0 coefficient)"
+       (= 0 (list-ref cutoff-coeffs 0)))
+
+;; Contrast: the uncut field genuinely diverges as t -> 1 -- direct evaluation
+;; approaching, never landing on, the pole.
+(define (raw-field r t) (* r r (/ 1 (* (- 1 t) (- 1 t)))))
+
+(show "uncut field at r=X1, t = 9/10, 99/100, 999/1000"
+      (list (raw-field X1 9/10) (raw-field X1 99/100) (raw-field X1 999/1000)))
+
+(check "the uncut field grows without bound as t -> 1"
+       (and (> (raw-field X1 99/100) (* 50 (raw-field X1 9/10)))
+            (> (raw-field X1 999/1000) (* 50 (raw-field X1 99/100)))))
+
+;; Negative control: an UNDER-cancelling cutoff (order 1, less than the
+;; pole's order 2) leaves a genuine, still-growing singularity -- the
+;; hand-simplified product r^2 (w^2-(t-1)^2)^2 / (1-t).
+(define (undercut-field r t)
+  (let ((bump (- (* cutoff-tw cutoff-tw) (* (- t 1) (- t 1)))))
+    (/ (* r r bump bump) (- 1 t))))
+
+(show "negative control -- under-cancelling cutoff at t = 9/10, 99/100, 999/1000"
+      (list (undercut-field X1 9/10) (undercut-field X1 99/100) (undercut-field X1 999/1000)))
+
+(check "negative control -- an under-cancelling cutoff still leaks unbounded growth as t -> 1"
+       (and (> (undercut-field X1 999/1000) (* 5 (undercut-field X1 99/100)))
+            (> (undercut-field X1 99/100) (* 5 (undercut-field X1 9/10)))))
+
+;; ---------------------------------------------------------------------------
+;; PART B.  The cutoff force is compactly supported in space.
+;; ---------------------------------------------------------------------------
+
+(define (Braw t c w) (* (- (* w w) (* (- t c) (- t c))) (- (* w w) (* (- t c) (- t c)))))
+(define (Bguard t c w) (if (< (abs (- t c)) w) (Braw t c w) 0))
+
+(define force-w 3/10)
+
+(define (chi-x x y z) (* (Bguard x 0 force-w) (Bguard y 0 force-w) (Bguard z 0 force-w)))
+
+;; The full cutoff force: spatial cutoff times the (already smooth) temporal
+;; envelope of Part A, folded to unit radius.
+(define (chi-t t) (- (* cutoff-tw cutoff-tw) (* (- t 1) (- t 1))))
+(define (cutoff-force x y z t) (* (chi-x x y z) (- 1 t) (chi-t t) (chi-t t)))
+
+(check "the cutoff force is exactly zero outside the spatial box, at every sampled time"
+       (and (= 0 (cutoff-force 1 0 0 1/2)) (= 0 (cutoff-force 0 1 0 1/2))
+            (= 0 (cutoff-force 0 0 1 1/2)) (= 0 (cutoff-force 10 10 10 1/2))))
+(check "the cutoff force is nonzero at an interior spatial point, away from t=1"
+       (not (= 0 (cutoff-force 1/10 1/10 1/10 9/10))))
+(check "the cutoff force vanishes at t = 1 as well (Part A tie-in)"
+       (= 0 (cutoff-force 1/10 1/10 1/10 1)))
+
+;; Negative control: an oversized spatial cutoff is nonzero exactly where the
+;; correctly sized one is zero.
+(define oversized-force-w 6/5)
+(check "negative control -- an oversized spatial cutoff leaks outside the intended box"
+       (and (= 0 (Bguard 1 0 force-w)) (not (= 0 (Bguard 1 0 oversized-force-w)))))
+
+;; ---------------------------------------------------------------------------
+;; PART C.  Periodization on T^3 is well defined for a rational support
+;; radius strictly less than 1/2 the period.
+;; ---------------------------------------------------------------------------
+
+(require stdlib)
+
+(define cell-R 1/5)   ;; support radius; well under 1/2
+
+(define (cell-bump x y z) (* (Bguard x 1/2 cell-R) (Bguard y 1/2 cell-R) (Bguard z 1/2 cell-R)))
+
+(define shift-set (list -1 0 1))
+
+(define (periodized-with x y z R)
+  (let loopx ((xs shift-set) (acc 0))
+    (if (null? xs)
+        acc
+        (loopx (cdr xs)
+               (let loopy ((ys shift-set) (a acc))
+                 (if (null? ys)
+                     a
+                     (loopy (cdr ys)
+                            (let loopz ((zs shift-set) (b a))
+                              (if (null? zs)
+                                  b
+                                  (loopz (cdr zs)
+                                         (+ b (* (Bguard (- x (car xs)) 1/2 R)
+                                                 (Bguard (- y (car ys)) 1/2 R)
+                                                 (Bguard (- z (car zs)) 1/2 R)))))))))))))
+
+(define (periodized x y z) (periodized-with x y z cell-R))
+
+(check "periodization is well defined -- inside the cell it equals the single (untranslated) term"
+       (and (= (periodized 1/2 1/2 1/2) (cell-bump 1/2 1/2 1/2))
+            (= (periodized 3/5 2/5 1/2) (cell-bump 3/5 2/5 1/2))
+            (= (periodized 3/10 1/2 7/10) (cell-bump 3/10 1/2 7/10))))
+(check "the compactly supported field is entirely inside the period cell"
+       (and (= 0 (cell-bump 1/10 1/2 1/2)) (= 0 (cell-bump 9/10 1/2 1/2))))
+
+;; Torus-average cross-check: on a discrete (y,z) grid at fixed x = 1/2, the
+;; periodized field and the plain cell field have the same T^2 average
+;; because they agree pointwise inside the fundamental cell.
+(define (periodized-slice i j) (periodized 1/2 (/ i 4) (/ j 4)))
+(define (cell-slice i j) (cell-bump 1/2 (/ i 4) (/ j 4)))
+
+(show "torus-average-2d of the periodized field and the plain cell field (4x4 grid)"
+      (list (torus-average-2d periodized-slice 4 4) (torus-average-2d cell-slice 4 4)))
+
+(check "torus-average-2d agrees between the periodized field and the plain cell field"
+       (= (torus-average-2d periodized-slice 4 4) (torus-average-2d cell-slice 4 4)))
+
+;; Negative control: an oversized support radius (> 1/2) causes the
+;; periodized copies to alias -- a point sees contributions from more than
+;; one translate, so periodization is no longer well defined.
+(define oversized-R 3/5)
+
+(show "negative control -- oversized-radius periodized vs. single-term, at a near-edge point"
+      (list (periodized-with 19/20 1/2 1/2 oversized-R) (* (Bguard 19/20 1/2 oversized-R) (Bguard 1/2 1/2 oversized-R) (Bguard 1/2 1/2 oversized-R))))
+
+(check "negative control -- an oversized radius breaks well-definedness (aliased translates leak in)"
+       (not (= (periodized-with 19/20 1/2 1/2 oversized-R)
+               (* (Bguard 19/20 1/2 oversized-R) (Bguard 1/2 1/2 oversized-R) (Bguard 1/2 1/2 oversized-R)))))
+
+;; ---------------------------------------------------------------------------
+;; PART D.  The energy identity of Proposition 10.1, discrete model.
+;; ---------------------------------------------------------------------------
+;;
+;; A finite "grid" of decoupled oscillators u_k(t) = a_k phi(t), phi a
+;; polynomial envelope. The force is DEFINED to be the residual, as in the
+;; paper's own construction: f_k := d_t u_k + nu u_k. The energy identity
+;;     d/dt (1/2 sum_k u_k^2) = sum_k f_k u_k - nu sum_k u_k^2
+;; is then a computed consequence, checked exactly by AD in t, not assumed.
+
+(define model-nu 1/5)
+(define grid-amps (list 2 -3 5 1))
+
+(define (phi t) (* t (- 1 t)))
+(define (u-k a t) (* a (phi t)))
+(define (uprime-k a t) (dn (lambda (tt) (u-k a tt)) t 1))
+(define (f-k a t) (+ (uprime-k a t) (* model-nu (u-k a t))))
+
+(define (sum-sq-u t)
+  (let loop ((as grid-amps) (acc 0))
+    (if (null? as) acc (loop (cdr as) (+ acc (* (u-k (car as) t) (u-k (car as) t)))))))
+
+(define (KE t) (* 1/2 (sum-sq-u t)))
+(define (KE-prime t) (dn (lambda (tt) (KE tt)) t 1))
+
+(define (forcing-power t)
+  (let loop ((as grid-amps) (acc 0))
+    (if (null? as) acc (loop (cdr as) (+ acc (* (u-k (car as) t) (f-k (car as) t)))))))
+
+(define (rhs t) (- (forcing-power t) (* model-nu (sum-sq-u t))))
+
+(define t0 1/3)
+
+(show "KE'(t0) and the energy-identity RHS <f,u> - nu||u||^2, at t0"
+      (list (KE-prime t0) (rhs t0)))
+
+(check "KE'(t0) and the RHS are exact rationals"
+       (and (exact? (KE-prime t0)) (exact? (rhs t0))))
+(check "the discrete energy identity holds exactly: KE'(t) = <f,u> - nu ||u||^2"
+       (= (KE-prime t0) (rhs t0)))
+
+;; Negative control: a force that omits the viscous term does not satisfy the
+;; identity.
+(define (f-k-bad a t) (uprime-k a t))
+(define (rhs-bad t)
+  (- (let loop ((as grid-amps) (acc 0))
+       (if (null? as) acc (loop (cdr as) (+ acc (* (u-k (car as) t) (f-k-bad (car as) t))))))
+     (* model-nu (sum-sq-u t))))
+
+(show "negative control -- RHS with the viscous term dropped from the force" (rhs-bad t0))
+(check "negative control -- dropping the viscous term from the force breaks the identity"
+       (not (= (KE-prime t0) (rhs-bad t0))))
+
+(display "Navier-Stokes compact forcing, whole-space breakdown and the torus (Section 10)") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+;; The examples suite is a compile-and-run smoke gate: a program that prints a
+;; failure and exits zero still passes it.  Exit nonzero so a broken check is
+;; loud in CI.
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

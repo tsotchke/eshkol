@@ -44,9 +44,10 @@ BUILD_DIR="${BUILD_DIR:-build}"
 # Some O0 AOT control-flow tests have large generated stack frames. Raise the
 # stack limit for child test binaries where the host allows it, so the harness
 # checks generated behavior instead of the caller shell's small default stack.
-if ! ulimit -s unlimited 2>/dev/null; then
-    ulimit -s 65532 2>/dev/null || true
-fi
+# Always a finite request: an unlimited RLIMIT_STACK switches Linux to the
+# legacy mmap layout, which collides with AddressSanitizer's shadow range and
+# aborts every sanitized binary this harness launches.
+ulimit -s 524288 2>/dev/null || ulimit -s 65532 2>/dev/null || true
 
 # Ensure build directory exists
 if [ ! -d "$BUILD_DIR" ]; then

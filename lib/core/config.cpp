@@ -596,6 +596,20 @@ void eshkol_config_cleanup(eshkol_config_t* config) {
     }
 }
 
+/** True when strict AD validation is requested through ESHKOL_AD_STRICT=1.
+ *  Lives here (runtime-hosted) rather than in runtime_autodiff.cpp (runtime
+ *  core) because it reads an environment variable; runtime core sources must
+ *  stay free of hosted-only markers so they can build for
+ *  freestanding/embedded targets. */
+bool eshkol_ad_strict_enabled(void) {
+    static const bool enabled = [] {
+        const char* value = std::getenv("ESHKOL_AD_STRICT");
+        return value && value[0] && std::strcmp(value, "0") != 0 &&
+               std::strcmp(value, "false") != 0 && std::strcmp(value, "FALSE") != 0;
+    }();
+    return enabled;
+}
+
 } // extern "C"
 
 // ============================================================================

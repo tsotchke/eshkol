@@ -1,0 +1,266 @@
+;;; core.symbolic — sparse multivariate polynomials and truncated
+;;; multivariate power series over the exact tower.
+;;; Verifies ring axioms, normal-form equality, derivative/integration
+;;; rules, composition identities (exp(log(1+x))=1+x, sin^2+cos^2=1),
+;;; Laurent leading-order queries, symbolic evaluation of a quoted
+;;; expression, and negative controls (unsupported head raises, an
+;;; inexact coefficient demotes only itself, truncation order is
+;;; respected).
+;;;
+;;; Following this codebase's own testing convention (see
+;;; tests/stdlib/exact_linalg_test.esk): "random small exact inputs" are
+;;; represented by a small, deliberately varied set of FIXED fixtures
+;;; (int and rational coefficients, one and two variables) rather than a
+;;; literal PRNG, so the suite stays fully deterministic across the
+;;; JIT/AOT/VM engines this file is run under.
+(require stdlib)
+
+(define pass 0)
+(define fail 0)
+(define (check nm ok)
+  (if ok
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display nm) (newline))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display nm) (newline))))
+
+;; (raises? thunk) — #t iff calling thunk signals via (error ...).
+(define (raises? thunk)
+  (equal? 'it-raised (guard (exn (else 'it-raised)) (thunk) 'it-did-not-raise)))
+
+;; ============================================================
+;; Polynomial ring axioms (+ commutative/associative, * commutative/
+;; associative, * distributes over +, additive/multiplicative identity,
+;; additive inverse) over a handful of fixed exact fixtures.
+;; ============================================================
+
+(define px (poly-var 'x))
+(define py (poly-var 'y))
+
+;; single-variable, integer coefficients
+(define pa1 (poly (list 'x) (list (cons (list 2) 3) (cons (list 0) -1))))       ; 3x^2 - 1
+(define pb1 (poly (list 'x) (list (cons (list 1) 2) (cons (list 0) 5))))        ; 2x + 5
+(define pc1 (poly (list 'x) (list (cons (list 3) 1) (cons (list 1) -1))))       ; x^3 - x
+
+;; two-variable, rational coefficients
+(define pa2 (poly (list 'x 'y) (list (cons (list 1 0) 1/2) (cons (list 0 1) 3))))    ; x/2 + 3y
+(define pb2 (poly (list 'x 'y) (list (cons (list 1 1) 1) (cons (list 0 0) 5/4))))    ; xy + 5/4
+(define pc2 (poly (list 'y) (list (cons (list 2) 2/3))))                              ; 2y^2/3
+
+(define (check-ring-axioms tag a b c)
+  (check (string-append tag ": + commutative") (poly=? (poly+ a b) (poly+ b a)))
+  (check (string-append tag ": * commutative") (poly=? (poly* a b) (poly* b a)))
+  (check (string-append tag ": + associative") (poly=? (poly+ (poly+ a b) c) (poly+ a (poly+ b c))))
+  (check (string-append tag ": * associative") (poly=? (poly* (poly* a b) c) (poly* a (poly* b c))))
+  (check (string-append tag ": * distributes over +")
+         (poly=? (poly* a (poly+ b c)) (poly+ (poly* a b) (poly* a c))))
+  (check (string-append tag ": additive identity") (poly=? (poly+ a (poly-const 0)) a))
+  (check (string-append tag ": additive inverse is the zero poly") (poly=? (poly- a a) (poly-const 0)))
+  (check (string-append tag ": multiplicative identity") (poly=? (poly* a (poly-const 1)) a)))
+
+(check-ring-axioms "1-var int" pa1 pb1 pc1)
+(check-ring-axioms "2-var rational" pa2 pb2 pc2)
+
+;; ============================================================
+;; poly=? normal-form equality: robust to how the zero polynomial or an
+;; equivalent variable set arose.
+;; ============================================================
+
+(check "poly=?: zero from different variable sets"
+       (poly=? (poly-const 0) (poly- px px)))
+(check "poly=?: same polynomial built two different ways"
+       (poly=? (poly+ (poly* px px) (poly-const 1))
+                (poly (list 'x) (list (cons (list 2) 1) (cons (list 0) 1)))))
+(check "poly=?: distinguishes different polynomials"
+       (not (poly=? px py)))
+
+;; ============================================================
+;; poly-eval / poly-coeff / poly-degree / poly->string / poly-expt
+;; ============================================================
+
+(define p-x2p1 (poly+ (poly* px px) (poly-const 1)))
+(check "poly-eval exact at an exact point" (= (poly-eval p-x2p1 (list (cons 'x 3))) 10))
+(check "poly-eval stays exact" (exact? (poly-eval p-x2p1 (list (cons 'x 3)))))
+(check "poly-coeff reads the right monomial" (= (poly-coeff p-x2p1 (list (cons 'x 2))) 1))
+(check "poly-coeff is 0 for an absent monomial" (= (poly-coeff p-x2p1 (list (cons 'x 7))) 0))
+(check "poly-degree" (= (poly-degree p-x2p1) 2))
+(check "poly->string" (string=? (poly->string p-x2p1) "x^2 + 1"))
+(check "poly-expt matches repeated multiplication"
+       (poly=? (poly-expt px 4) (poly* (poly* px px) (poly* px px))))
+(check "poly-expt coefficient" (= (poly-coeff (poly-expt px 5) (list (cons 'x 5))) 1))
+(check "poly-scale" (poly=? (poly-scale px 3) (poly (list 'x) (list (cons (list 1) 3)))))
+
+;; ============================================================
+;; poly-deriv: power rule, sum rule, zero on an absent variable
+;; ============================================================
+
+(check "poly-deriv power rule: d/dx x^3 = 3x^2"
+       (poly=? (poly-deriv (poly-expt px 3) 'x) (poly-scale (poly* px px) 3)))
+(check "poly-deriv of a constant is 0" (poly=? (poly-deriv (poly-const 7) 'x) (poly-const 0)))
+(check "poly-deriv sum rule" (poly=? (poly-deriv (poly+ pa1 pb1) 'x) (poly+ (poly-deriv pa1 'x) (poly-deriv pb1 'x))))
+(check "poly-deriv wrt an absent variable is 0" (poly=? (poly-deriv px 'y) (poly-const 0)))
+
+;; ============================================================
+;; Truncated power series: deriv/integrate round trip, truncation,
+;; series->poly, and the ring identities lifted to series.
+;; ============================================================
+
+(define s-1px2 (series (list 'x) (list (cons (list 0) 1) (cons (list 1) 1) (cons (list 2) 1)) 6)) ; 1+x+x^2
+(define s-int (series-integrate s-1px2 'x))
+(define s-roundtrip (series-deriv s-int 'x))
+(check "series integrate-then-deriv round trip, coeff 0"
+       (= (series-coeff s-roundtrip (list (cons 'x 0))) 1))
+(check "series integrate-then-deriv round trip, coeff 1"
+       (= (series-coeff s-roundtrip (list (cons 'x 1))) 1))
+(check "series integrate-then-deriv round trip, coeff 2"
+       (= (series-coeff s-roundtrip (list (cons 'x 2))) 1))
+(check "series-integrate raises on a var^-1 term"
+       (raises? (lambda () (series-integrate (series (list 'tau) (list (cons (list -1) 1)) 4) 'tau))))
+
+(check "series-truncate drops terms above the tighter bound"
+       (= (series-coeff (series-truncate s-1px2 1) (list (cons 'x 2))) 0))
+(check "series->poly converts a Taylor series with no Laurent part"
+       (poly=? (series->poly s-1px2) (poly (list 'x) (list (cons (list 0) 1) (cons (list 1) 1) (cons (list 2) 1)))))
+(check "series->poly raises on a Laurent series"
+       (raises? (lambda () (series->poly (series (list 'tau) (list (cons (list -1) 1)) 4)))))
+
+;; ============================================================
+;; Composition identities, computed to order N and checked EXACTLY
+;; (every coefficient an exact rational, not an approximation).
+;; ============================================================
+
+(define N 10)
+(define xs (series (list 'x) (list (cons (list 1) 1)) N))          ; x, zero constant term
+(define onepx (series (list 'x) (list (cons (list 0) 1) (cons (list 1) 1)) N)) ; 1+x
+
+(define (series-coeffs-list s upto)
+  (let loop ((k 0) (acc '()))
+    (if (> k upto) (reverse acc) (loop (+ k 1) (cons (series-coeff s (list (cons 'x k))) acc)))))
+
+;; exp(log(1+x)) = 1+x to order N, exactly. series-log(f) means log(1+f)
+;; (see the module's "1+x convention"), so the argument is `xs` (= x,
+;; zero constant term), not `onepx` (= 1+x).
+(define exp-log-1px (series-exp (series-log xs)))
+(check "exp(log(1+x)) = 1+x to order N, exactly"
+       (equal? (series-coeffs-list exp-log-1px N)
+               (series-coeffs-list onepx N)))
+(check "every exp(log(1+x)) coefficient is exact"
+       (let loop ((ks (series-coeffs-list exp-log-1px N)))
+         (or (null? ks) (and (exact? (car ks)) (loop (cdr ks))))))
+
+;; sin(x)^2 + cos(x)^2 = 1 to order N, exactly.
+(define sinx (series-sin xs))
+(define cosx (series-cos xs))
+(define sin2cos2 (series+ (series* sinx sinx) (series* cosx cosx)))
+(check "sin(x)^2 + cos(x)^2 = 1 to order N, exactly"
+       (equal? (series-coeffs-list sin2cos2 N) (cons 1 (make-list N 0))))
+
+;; sqrt(1+x) squared recovers 1+x to order N-1 (multiplication drops the
+;; combined-order term at N since each factor is only known to order N).
+(define sqrt1px (series-sqrt xs))
+(define sqrt1px-sq (series* sqrt1px sqrt1px))
+(check "sqrt(1+x)^2 = 1+x to order N-1, exactly"
+       (equal? (series-coeffs-list sqrt1px-sq (- N 1)) (series-coeffs-list onepx (- N 1))))
+
+;; 1/(1+x) via series-inverse matches the geometric series (-1)^k.
+(define inv1px (series-inverse onepx))
+(check "series-inverse of 1+x is the alternating geometric series"
+       (equal? (series-coeffs-list inv1px 6) (list 1 -1 1 -1 1 -1 1)))
+(check "(1+x) * (1/(1+x)) = 1 to order N, exactly"
+       (equal? (series-coeffs-list (series* onepx inv1px) N) (cons 1 (make-list N 0))))
+
+;; ============================================================
+;; Laurent leading-order support
+;; ============================================================
+
+;; tau^-1 + 2 + 3*tau
+(define laurent (series (list 'tau) (list (cons (list -1) 1) (cons (list 0) 2) (cons (list 1) 3)) 5))
+(check "series-lowest-order finds the Laurent leading exponent" (= (series-lowest-order laurent 'tau) -1))
+(check "series-lowest-order on a var not present is #f" (not (series-lowest-order laurent 'sigma)))
+(define principal (series-singular-part laurent 'tau))
+(check "series-singular-part keeps only the negative-exponent term"
+       (and (= (series-coeff principal (list (cons 'tau -1))) 1)
+            (= (series-coeff principal (list (cons 'tau 0))) 0)
+            (= (series-coeff principal (list (cons 'tau 1))) 0)))
+(check "the coefficient of tau^-1 is a first-class query"
+       (= (series-coeff laurent (list (cons 'tau -1))) 1))
+(check "an upper truncation bound never truncates the Laurent principal part"
+       (= (series-coeff (series (list 'tau) (list (cons (list -3) 5)) 0) (list (cons 'tau -3))) 5))
+
+;; ============================================================
+;; per-variable order bound (vs. total order)
+;; ============================================================
+
+(define per-var-s
+  (series (list 'x 'y)
+          (list (cons (list 3 0) 1) (cons (list 0 3) 1) (cons (list 1 1) 1))
+          (list 2 5))) ; x-bound 2, y-bound 5
+(check "per-variable order drops x^3 (exceeds the x bound)"
+       (= (series-coeff per-var-s (list (cons 'x 3) (cons 'y 0))) 0))
+(check "per-variable order keeps y^3 (within the y bound)"
+       (= (series-coeff per-var-s (list (cons 'x 0) (cons 'y 3))) 1))
+(check "per-variable order keeps a term within both bounds"
+       (= (series-coeff per-var-s (list (cons 'x 1) (cons 'y 1))) 1))
+
+;; ============================================================
+;; AD interoperation: symbolic evaluation of a quoted expression.
+;; ============================================================
+
+(check "poly-derivative-of a polynomial expression"
+       (poly=? (poly-derivative-of '(+ (* x x) 1) 'x) p-x2p1))
+(check "poly-derivative-of with expt"
+       (poly=? (poly-derivative-of '(expt x 3) 'x) (poly-expt px 3)))
+(check "series-derivative-of sin(x), coefficient of x^3 is -1/6"
+       (= (series-coeff (series-derivative-of '(sin x) 'x 6) (list (cons 'x 3))) -1/6))
+(check "series-derivative-of matches series-inverse for 1/(1+x)"
+       (equal? (series-coeffs-list (series-derivative-of '(/ 1 (+ 1 x)) 'x N) N)
+               (series-coeffs-list inv1px N)))
+(check "series-derivative-of exp(sin(x)) has an exact coefficient at order 4"
+       (exact? (series-coeff (series-derivative-of '(exp (sin x)) 'x 4) (list (cons 'x 4)))))
+
+;; ---- negative controls -------------------------------------------
+
+(check "poly-derivative-of raises on an unsupported head"
+       (raises? (lambda () (poly-derivative-of '(foo x) 'x))))
+(check "series-derivative-of raises on an unsupported head (tan is not in the head set)"
+       (raises? (lambda () (series-derivative-of '(tan x) 'x 4))))
+(check "poly-derivative-of raises on a free symbol other than the bound variable"
+       (raises? (lambda () (poly-derivative-of '(+ x y) 'x))))
+(check "poly-derivative-of raises on a non-constant divisor"
+       (raises? (lambda () (poly-derivative-of '(/ x x) 'x))))
+(check "poly-derivative-of raises on a negative expt exponent"
+       (raises? (lambda () (poly-derivative-of '(expt x -1) 'x))))
+(check "series-log raises when the argument's constant term isn't zero"
+       (raises? (lambda () (series-log onepx))))
+(check "series-sqrt raises when the argument's constant term isn't zero"
+       (raises? (lambda () (series-sqrt onepx))))
+(check "series-exp raises when the argument's constant term isn't zero"
+       (raises? (lambda () (series-exp onepx))))
+(check "series-inverse raises on a zero constant term"
+       (raises? (lambda () (series-inverse xs))))
+(check "series-compose raises when the inner series has a nonzero constant term"
+       (raises? (lambda () (series-compose (series (list 'u) (list (cons (list 0) 1)) 4) onepx))))
+(check "series-compose raises when the outer series has more than one variable"
+       (raises? (lambda () (series-compose (series (list 'u 'v) (list (cons (list 1 0) 1)) 4) xs))))
+(check "poly-eval raises on a missing binding"
+       (raises? (lambda () (poly-eval px '()))))
+
+;; An inexact coefficient demotes only ITSELF, not the whole polynomial
+;; (R7RS contagion, the same rule core.exact_linalg documents).
+(define mixed (poly (list 'x) (list (cons (list 1) 1.0) (cons (list 0) 2))))
+(check "inexact coefficient demotes only itself: exponent-1 coeff is inexact"
+       (not (exact? (poly-coeff mixed (list (cons 'x 1))))))
+(check "inexact coefficient demotes only itself: exponent-0 coeff stays exact"
+       (exact? (poly-coeff mixed (list (cons 'x 0)))))
+
+;; Truncation order is respected by the constructor itself (a term past
+;; the bound never enters the series' term list at all).
+(define trunc-at-3 (series (list 'x) (list (cons (list 0) 1) (cons (list 5) 1)) 3))
+(check "series constructor drops a term beyond the requested order"
+       (= (series-coeff trunc-at-3 (list (cons 'x 5))) 0))
+(check "series constructor keeps a term within the requested order"
+       (= (series-coeff trunc-at-3 (list (cons 'x 0))) 1))
+
+;; ---- summary ----
+
+(newline) (display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)
+(if (> fail 0) (exit 1))

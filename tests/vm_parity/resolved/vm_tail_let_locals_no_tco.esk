@@ -1,0 +1,6 @@
+; VERIFIED RESOLVED: a tail call through a local-allocating let remains
+; bounded on the VM.
+(define (lping n acc) (if (= n 0) acc (let ((m (- n 1))) (lpong m (+ acc n)))))
+(define (lpong n acc) (if (= n 0) acc (let ((m (- n 1))) (lping m (+ acc n)))))
+(display (lping 200000 0))
+(newline)

@@ -31,6 +31,7 @@
 #endif
 #include <errno.h>
 #include <filesystem>
+#include <eshkol/backend/link_probe.h>
 
 #include <fstream>
 #include <iterator>
@@ -2356,6 +2357,8 @@ static bool g_source_parse_failed = false;
 // codegen so a genuinely missing require is fatal and nothing is written. Found
 // by the P8 escape-closure fault-injection matrix.
 static bool g_module_load_failed = false;
+/* Import aliases are semantic bindings, not generated Scheme definitions. */
+static std::map<std::string, std::string> g_import_bindings;
 
 static void print_help(int x = 0)
 {
@@ -3222,53 +3225,11 @@ static std::set<std::string> collect_defined_symbols(const std::vector<eshkol_as
     return defined;
 }
 
-static char* copy_ast_cstr(const std::string& value) {
-    char* out = new char[value.size() + 1];
-    if (out) {
-        memcpy(out, value.c_str(), value.size() + 1);
-    }
-    return out;
-}
-
-static eshkol_ast_t make_runtime_var_ast(const std::string& name,
-                                         uint32_t line,
-                                         uint32_t column) {
-    eshkol_ast_t ast = {};
-    ast.type = ESHKOL_VAR;
-    ast.line = line;
-    ast.column = column;
-    ast.variable.id = copy_ast_cstr(name);
-    ast.variable.data = nullptr;
-    return ast;
-}
-
-static eshkol_ast_t make_runtime_define_alias_ast(const std::string& alias,
-                                                  const std::string& source,
-                                                  uint32_t line,
-                                                  uint32_t column) {
-    eshkol_ast_t ast = {};
-    ast.type = ESHKOL_OP;
-    ast.line = line;
-    ast.column = column;
-    ast.operation.op = ESHKOL_DEFINE_OP;
-    ast.operation.define_op.name = copy_ast_cstr(alias);
-    ast.operation.define_op.value = new eshkol_ast_t;
-    *ast.operation.define_op.value = make_runtime_var_ast(source, line, column);
-    return ast;
-}
-
-static void append_r7rs_prefix_aliases_for_module(const eshkol_ast_t& require_ast,
-                                                  uint64_t module_index,
-                                                  const std::set<std::string>& exports,
-                                                  std::vector<eshkol_ast_t>& out) {
+static void register_r7rs_import_bindings(const eshkol_ast_t& require_ast,
+                                          uint64_t module_index,
+                                          const std::set<std::string>& exports) {
     const auto& require_op = require_ast.operation.require_op;
-    if (!require_op.import_prefixes ||
-        module_index >= require_op.num_modules ||
-        !require_op.import_prefixes[module_index] ||
-        require_op.import_prefixes[module_index][0] == '\0') {
-        return;
-    }
-
+    if (module_index >= require_op.num_modules) return;
     std::set<std::string> excepts;
     if (require_op.import_except_names &&
         require_op.num_import_except_names &&
@@ -3281,13 +3242,34 @@ static void append_r7rs_prefix_aliases_for_module(const eshkol_ast_t& require_as
         }
     }
 
-    const std::string prefix = require_op.import_prefixes[module_index];
-    for (const auto& exported : exports) {
+    std::set<std::string> selected;
+    if (require_op.import_only_names && require_op.num_import_only_names &&
+        require_op.import_only_names[module_index]) {
+        for (uint64_t i = 0; i < require_op.num_import_only_names[module_index]; ++i) {
+            const char* name = require_op.import_only_names[module_index][i];
+            if (name && exports.count(name)) selected.insert(name);
+        }
+    } else {
+        selected = exports;
+    }
+    const std::string prefix = require_op.import_prefixes &&
+        require_op.import_prefixes[module_index]
+        ? require_op.import_prefixes[module_index] : std::string();
+    for (const auto& exported : selected) {
         if (excepts.count(exported) > 0) continue;
-        out.push_back(make_runtime_define_alias_ast(prefix + exported,
-                                                    exported,
-                                                    require_ast.line,
-                                                    require_ast.column));
+        std::string imported = exported;
+        if (require_op.import_rename_from && require_op.import_rename_to &&
+            require_op.num_import_renames && require_op.import_rename_from[module_index]) {
+            for (uint64_t i = 0; i < require_op.num_import_renames[module_index]; ++i) {
+                if (require_op.import_rename_from[module_index][i] &&
+                    std::string(require_op.import_rename_from[module_index][i]) == exported) {
+                    imported = require_op.import_rename_to[module_index][i];
+                    break;
+                }
+            }
+        }
+        const std::string alias = prefix + imported;
+        if (alias != exported) g_import_bindings[alias] = exported;
     }
 }
 
@@ -3315,8 +3297,7 @@ static void append_r7rs_prefix_aliases_for_module(const eshkol_ast_t& require_as
  *   prefix import of a same-unit library.
  * @return The number of module entries left for the filesystem/precompiled path.
  */
-static uint64_t resolve_unit_libraries_in_require(eshkol_ast_t& require_ast,
-                                                  std::vector<eshkol_ast_t>& aliases)
+static uint64_t resolve_unit_libraries_in_require(eshkol_ast_t& require_ast)
 {
     auto& require_op = require_ast.operation.require_op;
     uint64_t kept = 0;
@@ -3330,7 +3311,7 @@ static uint64_t resolve_unit_libraries_in_require(eshkol_ast_t& require_ast,
             // Record the surface so a later duplicate import of the same
             // library sees the same exports a file-backed module would.
             g_symbol_table.registerModuleExports(raw_name, *unit_exports);
-            append_r7rs_prefix_aliases_for_module(require_ast, i, *unit_exports, aliases);
+            register_r7rs_import_bindings(require_ast, i, *unit_exports);
             continue;
         }
 
@@ -3363,15 +3344,13 @@ static uint64_t resolve_unit_libraries_in_require(eshkol_ast_t& require_ast,
  * happen in the order the forms were written, which is what makes a library
  * usable below its definition and unusable above it.
  */
-static void resolve_unit_libraries_in_form(eshkol_ast_t& form,
-                                           std::vector<eshkol_ast_t>& aliases)
+static void resolve_unit_libraries_in_form(eshkol_ast_t& form)
 {
     if (form.type != ESHKOL_OP) return;
 
     if (form.operation.op == ESHKOL_SEQUENCE_OP) {
         for (uint64_t i = 0; i < form.operation.sequence_op.num_expressions; i++) {
-            resolve_unit_libraries_in_form(form.operation.sequence_op.expressions[i],
-                                           aliases);
+            resolve_unit_libraries_in_form(form.operation.sequence_op.expressions[i]);
         }
         return;
     }
@@ -3380,7 +3359,7 @@ static void resolve_unit_libraries_in_form(eshkol_ast_t& form,
         return;
     }
     if (form.operation.op == ESHKOL_REQUIRE_OP) {
-        resolve_unit_libraries_in_require(form, aliases);
+        resolve_unit_libraries_in_require(form);
     }
 }
 
@@ -3826,7 +3805,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
             // have to come from the precompiled set or the search path. Their
             // prefix aliases land in `new_asts`, i.e. at the import's own
             // position, which is below the library body they name.
-            resolve_unit_libraries_in_require(ast, new_asts);
+            resolve_unit_libraries_in_require(ast);
 
             // Process each required module
             for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
@@ -3928,7 +3907,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                             }
                         }
                     }
-                    append_r7rs_prefix_aliases_for_module(ast, i, r7rs_alias_sources, required_asts);
+                    register_r7rs_import_bindings(ast, i, r7rs_alias_sources);
                     continue;
                 }
 
@@ -3992,8 +3971,8 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
 
                 // Skip if module was already loaded (detected by load_file_asts)
                 if (module_asts.empty()) {
-                    append_r7rs_prefix_aliases_for_module(
-                        ast, i, g_symbol_table.exportsFor(module_name), required_asts);
+                    register_r7rs_import_bindings(
+                        ast, i, g_symbol_table.exportsFor(module_name));
                     g_loading_modules.erase(norm_path);
                     continue;
                 }
@@ -4037,7 +4016,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                 for (auto& module_ast : module_asts) {
                     required_asts.push_back(module_ast);
                 }
-                append_r7rs_prefix_aliases_for_module(ast, i, r7rs_alias_sources, required_asts);
+                register_r7rs_import_bindings(ast, i, r7rs_alias_sources);
 
                 // Remove from loading stack (module fully processed)
                 g_loading_modules.erase(norm_path);
@@ -4062,6 +4041,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
             }
             // Don't add provide to final ASTs
         } else {
+            update_ast_references(&ast, g_import_bindings);
             new_asts.push_back(ast);
         }
     }
@@ -4187,6 +4167,8 @@ static char** intern_driver_module_name_array(const std::string& name) {
     storage.push_back({const_cast<char*>(intern_driver_string(name))});
     return storage.back().data();
 }
+
+
 
 int main(int argc, char **argv)
 {
@@ -4882,20 +4864,17 @@ int main(int argc, char **argv)
             eshkol::library_registry::planUnit(file_asts);
 
             for (auto& ast : file_asts) {
-                std::vector<eshkol_ast_t> unit_aliases;
-                resolve_unit_libraries_in_form(ast, unit_aliases);
+                resolve_unit_libraries_in_form(ast);
 
                 bool is_load = (ast.type == ESHKOL_OP &&
                     (ast.operation.op == ESHKOL_REQUIRE_OP ||
                      ast.operation.op == ESHKOL_IMPORT_OP));
 
                 // Fully satisfied by this compilation unit: the library's
-                // bindings are already among the batched forms above, so there
-                // is nothing left to load. Its prefix aliases still go into the
-                // batch, below the definitions they name.
+                // bindings are already among the batched forms above. Import
+                // modifiers are binding metadata, not generated definitions.
                 if (is_load && ast.operation.op == ESHKOL_REQUIRE_OP &&
                     ast.operation.require_op.num_modules == 0) {
-                    for (auto& alias : unit_aliases) batch.push_back(alias);
                     continue;
                 }
 
@@ -4910,12 +4889,9 @@ int main(int argc, char **argv)
                         return 1;
                     }
                 } else {
+                    update_ast_references(&ast, g_import_bindings);
                     batch.push_back(ast);
                 }
-
-                // Aliases for a same-unit library imported with a prefix, kept
-                // after the form that defined it.
-                for (auto& alias : unit_aliases) batch.push_back(alias);
             }
 
             if (!batch.empty()) {
@@ -4994,8 +4970,10 @@ int main(int argc, char **argv)
         std::string eskb_source((std::istreambuf_iterator<char>(eskb_src)),
                                 std::istreambuf_iterator<char>());
         int eskb_result = embedded_vm_profile
-                              ? eshkol_emit_eskb_embedded(eskb_source.c_str(), eskb_output_path)
-                              : eshkol_emit_eskb(eskb_source.c_str(), eskb_output_path);
+                              ? eshkol_emit_eskb_embedded_with_source_path(
+                                  eskb_source.c_str(), eskb_output_path, source_files[0])
+                              : eshkol_emit_eskb_with_source_path(
+                                  eskb_source.c_str(), eskb_output_path, source_files[0]);
         if (eskb_result != 0) {
             eshkol_error("ESKB emission failed for profile %s",
                          profile_name ? profile_name : "hosted-vm");
@@ -5164,6 +5142,11 @@ int main(int argc, char **argv)
         req_ast.operation.require_op.import_prefixes = nullptr;
         req_ast.operation.require_op.import_except_names = nullptr;
         req_ast.operation.require_op.num_import_except_names = nullptr;
+        req_ast.operation.require_op.import_only_names = nullptr;
+        req_ast.operation.require_op.num_import_only_names = nullptr;
+        req_ast.operation.require_op.import_rename_from = nullptr;
+        req_ast.operation.require_op.import_rename_to = nullptr;
+        req_ast.operation.require_op.num_import_renames = nullptr;
         req_ast.line = 0;
         req_ast.column = 0;
         asts.insert(asts.begin(), req_ast);
@@ -5506,7 +5489,8 @@ int main(int argc, char **argv)
                     size_t eskb_nread = fread(eskb_source, 1, (size_t)eskb_len, eskb_src_f);
                     eskb_source[eskb_nread] = 0;
                     fclose(eskb_src_f);
-                    int eskb_result = eshkol_emit_eskb(eskb_source, eskb_output_path);
+                    int eskb_result = eshkol_emit_eskb_with_source_path(
+                        eskb_source, eskb_output_path, source_files[0]);
                     if (eskb_result == 0) {
                         printf("[ESKB] Emitted bytecode to %s\n", eskb_output_path);
                     } else {
@@ -5948,7 +5932,7 @@ int main(int argc, char **argv)
         // LLVM's lld which has no such limits. Keep in sync with the
         // JIT link path.
 #  if defined(__aarch64__) || defined(__arm64__)
-        link_args.emplace_back("-fuse-ld=lld");
+        if (eshkol_lld_on_path()) link_args.emplace_back("-fuse-ld=lld");
 #  endif
 #endif
         } else {
@@ -5966,7 +5950,7 @@ int main(int argc, char **argv)
                 "-Wl,-soname," +
                 std::filesystem::path(shared_library_path).filename().string());
 #  if defined(__aarch64__) || defined(__arm64__)
-            link_args.emplace_back("-fuse-ld=lld");
+            if (eshkol_lld_on_path()) link_args.emplace_back("-fuse-ld=lld");
 #  endif
 #endif
         }

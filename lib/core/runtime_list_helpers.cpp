@@ -12,6 +12,8 @@
 
 #include "arena_memory.h"
 #include <eshkol/core/resource_limits.h>
+#include <eshkol/core/bignum.h>
+#include <eshkol/core/rational.h>
 
 #include <cstdint>
 #include <cstring>
@@ -259,19 +261,47 @@ static const eshkol_tensor_t* coll_as_tensor(const eshkol_tagged_value_t* v) {
     return (const eshkol_tensor_t*)(uintptr_t)v->data.ptr_val;
 }
 
-/** @brief Coerce a leaf to the double the tensor stores.
- *
- * A non-collection HEAP_PTR (bignum, rational, string, …) yields 0.0 rather
- * than its pointer bits reinterpreted as a double, matching the pre-existing
- * convention on every other tensor ingest path (P2). */
-static double coll_leaf_double(const eshkol_tagged_value_t* e) {
-    if (e->type == ESHKOL_VALUE_DOUBLE) return e->data.double_val;
-    if (e->type == ESHKOL_VALUE_HEAP_PTR) return 0.0;
-    return (double)e->data.int_val;
-}
-
 static void coll_raise(const char* message) {
     eshkol_raise(eshkol_make_exception_with_header(ESHKOL_EXCEPTION_ERROR, message));
+}
+
+/** @brief Coerce a leaf to the double the tensor stores.
+ *
+ * MS-04 / SW-166: a tensor's elements are homogeneous IEEE 754 doubles
+ * (docs/reference/tensors/creation.md: "tensor is homogeneous doubles"; no
+ * exact-element tensor exists yet, that is a later item) — so an exact
+ * bignum or rational leaf converts with the same correctly-rounded
+ * nearest-double conversion every other numeric-tower exit point uses
+ * (eshkol_bignum_to_double / eshkol_rational_to_double, the same calls
+ * extractAsDouble makes on the native codegen side and coll_fill's nested-
+ * tensor sibling already trusts for its stored double bit patterns). Before
+ * this fix a non-collection HEAP_PTR unconditionally yielded 0.0 — silently
+ * *wrong* for a nonzero exact value rather than merely imprecise:
+ * `(tensor (vector 1/2 1/3))` stored `#(0 0)` with no diagnostic (MS-04).
+ * `1/2` converts EXACTLY (0.5 is exact in binary); `1/3` converts to its
+ * nearest double, same as `(inexact 1/3)` — never to zero.
+ *
+ * Any other non-collection HEAP_PTR (string, closure, …) is not a number at
+ * all and has no double to report — raises a clean, catchable error rather
+ * than fabricating a value, consistent with coll_fill's raises elsewhere in
+ * this walker for a non-rectangular nest. */
+static double coll_leaf_double(const eshkol_tagged_value_t* e) {
+    if (e->type == ESHKOL_VALUE_DOUBLE) return e->data.double_val;
+    if (e->type == ESHKOL_VALUE_HEAP_PTR && e->data.ptr_val) {
+        const auto* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)e->data.ptr_val);
+        if (hdr) {
+            if (hdr->subtype == HEAP_SUBTYPE_BIGNUM) {
+                return eshkol_bignum_to_double(
+                    (const eshkol_bignum_t*)(uintptr_t)e->data.ptr_val);
+            }
+            if (hdr->subtype == HEAP_SUBTYPE_RATIONAL) {
+                return eshkol_rational_to_double((void*)(uintptr_t)e->data.ptr_val);
+            }
+        }
+        coll_raise("tensor: element is not a number");
+        return 0.0;  // not reached
+    }
+    return (double)e->data.int_val;
 }
 
 /**

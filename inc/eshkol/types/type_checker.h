@@ -15,6 +15,7 @@
 #include "eshkol/types/hott_types.h"
 #include "eshkol/types/dependent.h"
 #include "eshkol/eshkol.h"
+#include <eshkol/util/continuation_task.h>
 #include <vector>
 #include <map>
 #include <set>
@@ -104,6 +105,14 @@ public:
     void bind(const std::string& name, TypeId type);
     /** Look up @p name, searching from the innermost scope outward. Returns nullopt if unbound. */
     std::optional<TypeId> lookup(const std::string& name) const;
+    /** Number of active scopes; the innermost scope's index is scopeCount() - 1. */
+    size_t scopeCount() const { return scopes_.size(); }
+    /**
+     * Index (0 = global) of the innermost scope that binds @p name, i.e. the
+     * binding lookup() would return, or nullopt if unbound. Identifies WHICH
+     * binding a use resolves to, where lookup() only says what type it has.
+     */
+    std::optional<size_t> bindingScopeOf(const std::string& name) const;
 
     // Type aliases (from define-type)
     /** Register a (possibly parameterized) type alias introduced by `define-type`. */
@@ -678,20 +687,85 @@ private:
     UnsafeContext unsafe_;
     std::vector<TypeCheckResult> errors_;
 
+    // Named-let parameter widening (see synthesizeLetTask()). A named let's
+    // loop parameters are typed by the join of every value the loop carries in
+    // them -- the seed and each recursive call's argument -- not by the seed
+    // alone. One frame per named let whose body is being synthesized; a call
+    // that resolves to the frame's own loop binding records its argument types.
+    struct LoopFrame {
+        std::string name;
+        size_t scope_index;                        // scope the loop name is bound in
+        TypeId loop_type;                          // signature the body is checked against
+        std::vector<std::vector<TypeId>> args;     // per parameter: types supplied by calls
+    };
+    std::vector<LoopFrame> loop_frames_;
+
+    // Diagnostics produced while a named-let body is synthesized against a
+    // signature that may still widen are held back, and only the pass that
+    // reaches the fixpoint releases them. Depth > 0 means "inside such a pass";
+    // nested passes append to the same buffer, so an inner loop's released
+    // diagnostics stay subject to the outer loop's decision.
+    size_t speculation_depth_ = 0;
+    std::vector<std::string> deferred_diagnostics_;
+    /** Print one diagnostic line to stderr, or hold it while speculating. */
+    void emitDiagnostic(const std::string& line);
+
+    ContinuationTask<TypeCheckResult> synthesizeTask(eshkol_ast_t* expr);
+    ContinuationTask<TypeCheckResult> checkTask(eshkol_ast_t* expr, TypeId expected);
+
     // === Synthesis Helpers ===
 
     TypeCheckResult synthesizeLiteral(eshkol_ast_t* expr);
     TypeCheckResult synthesizeVariable(eshkol_ast_t* expr);
-    TypeCheckResult synthesizeOperation(eshkol_ast_t* expr);
-    TypeCheckResult synthesizeLambda(eshkol_ast_t* expr);
-    TypeCheckResult synthesizeApplication(eshkol_ast_t* expr);
-    TypeCheckResult synthesizeDefine(eshkol_ast_t* expr);
-    TypeCheckResult synthesizeLet(eshkol_ast_t* expr);
-    TypeCheckResult synthesizeIf(eshkol_ast_t* expr);
+    ContinuationTask<TypeCheckResult> synthesizeOperationTask(eshkol_ast_t* expr);
+    ContinuationTask<TypeCheckResult> synthesizeLambdaTask(eshkol_ast_t* expr);
+    ContinuationTask<TypeCheckResult> synthesizeApplicationTask(eshkol_ast_t* expr);
+    ContinuationTask<TypeCheckResult> synthesizeDefineTask(eshkol_ast_t* expr);
+    ContinuationTask<TypeCheckResult> synthesizeLetTask(eshkol_ast_t* expr);
+    ContinuationTask<TypeCheckResult> synthesizeIfTask(eshkol_ast_t* expr);
+
+    // === Control and binding forms (every evaluated subexpression is checked) ===
+
+    /** `cond`: tests as a ladder, each body in its own scope; result joins the bodies (+ Boolean without else). */
+    ContinuationTask<TypeCheckResult> synthesizeCondTask(eshkol_ast_t* expr);
+    /** `case`: the key once, each body in its own scope; result joins the bodies (+ Boolean without else). */
+    ContinuationTask<TypeCheckResult> synthesizeCaseTask(eshkol_ast_t* expr);
+    /** `when` / `unless`: test, then the body in its own scope; result joins the body with Boolean. */
+    ContinuationTask<TypeCheckResult> synthesizeWhenUnlessTask(eshkol_ast_t* expr);
+    /** `do`: each loop variable is the fixpoint join of its init and its step. */
+    ContinuationTask<TypeCheckResult> synthesizeDoTask(eshkol_ast_t* expr);
+    /** `guard`: body, then handler clauses with the condition variable bound to Value. */
+    ContinuationTask<TypeCheckResult> synthesizeGuardTask(eshkol_ast_t* expr);
+    /** `match`: scrutinee once, each clause in its own scope with its pattern variables bound. */
+    ContinuationTask<TypeCheckResult> synthesizeMatchTask(eshkol_ast_t* expr);
+    /** `and` / `or`: every operand; `and` refines later operands by earlier predicates. */
+    ContinuationTask<TypeCheckResult> synthesizeAndOrTask(eshkol_ast_t* expr);
+    /** `let-values` / `let*-values`: producers, then the body with the variables bound to Value. */
+    ContinuationTask<TypeCheckResult> synthesizeLetValuesTask(eshkol_ast_t* expr);
+    /** A clause ladder shared by cond and guard; appends one result type per clause taken. */
+    ContinuationTask<TypeCheckResult> synthesizeClauseLadderTask(eshkol_ast_t* clauses, uint64_t count,
+                                                                 std::vector<TypeId>& results,
+                                                                 bool& has_else);
+    /** One clause body: empty yields @p test_type, `=> receiver` the receiver's codomain. */
+    ContinuationTask<TypeCheckResult> synthesizeClauseBodyTask(eshkol_ast_t* body, uint64_t count,
+                                                               TypeId test_type);
+    /** Expressions run in sequence; the last one's type, @p empty_type if none. Never fails. */
+    ContinuationTask<TypeCheckResult> synthesizeSequenceTask(eshkol_ast_t* exprs, uint64_t count,
+                                                             TypeId empty_type);
+    /** The unquote escapes of a quasiquote template at nesting level @p depth. */
+    ContinuationTask<TypeCheckResult> synthesizeQuasiTemplateTask(eshkol_ast_t* node, int depth);
+    /** The predicate expressions inside a match pattern. */
+    ContinuationTask<TypeCheckResult> synthesizePatternExpressionsTask(const eshkol_pattern_t* pattern);
+    /** Bind the variables a match pattern binds, given the type of the value it matches. */
+    void bindPatternVariables(const eshkol_pattern_t* pattern, TypeId matched);
+    /** Least common supertype of branch result types; Value when any is Value or none is shared. */
+    TypeId joinBranchTypes(const std::vector<TypeId>& types) const;
+    /** Result of applying a value of type @p callee: its codomain, or Value. */
+    TypeId applicationResultOf(TypeId callee) const;
 
     // === Checking Helpers ===
 
-    TypeCheckResult checkLambda(eshkol_ast_t* expr, TypeId expected);
+    ContinuationTask<TypeCheckResult> checkLambdaTask(eshkol_ast_t* expr, TypeId expected);
 
     // === Type Operations ===
 

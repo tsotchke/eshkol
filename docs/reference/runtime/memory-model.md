@@ -155,6 +155,33 @@ The arena API lives in `lib/core/arena_memory.h` (impl in `lib/core/`).
   allocated) via `arena_create_thread_local` — zero cross-thread contention.
   `arena_merge_to_parent` publishes results back.
 
+## Native stack overflow protection
+
+Hosted native execution (JIT and AOT) applies `ESHKOL_STACK_SIZE` as a target
+for the process stack and as the ceiling named by the native stack guard. The
+default target is 512 MiB; values use the shared size grammar documented in
+[Environment variables](environment-variables.md). Every generated user
+function begins with a cheap stack-headroom check that reserves space for its
+own diagnostic. The check is stateless, so it does not add a push/pop pair and
+does not interfere with proper tail calls.
+
+If recursion reaches the reserved margin, execution ends with status 121 and
+the diagnostic `eshkol: stack overflow: recursion depth exceeded the N MiB
+stack (ESHKOL_STACK_SIZE); ...`. A large native frame can skip the cheap check
+and fault in the guard region instead. On POSIX hosts, SIGSEGV and SIGBUS are
+handled on an alternate signal stack and the fault is identified as stack
+exhaustion before termination. This is a diagnostic boundary, not recoverable
+continuation: unwinding arbitrary user frames after native stack exhaustion is
+not sound.
+
+The initial thread's Linux stack extent is determined at process launch by the
+inherited `ulimit -s`; a later `setrlimit` call cannot enlarge an already-small
+mapping. The deep-recursion hard gate therefore uses `ulimit -s 1048576` before
+testing `ESHKOL_STACK_SIZE=1G`. Parallel-map workers use
+`ESHKOL_WORKER_STACK_BYTES` instead of the process target, and each
+runtime-created worker installs its own alternate signal stack because the
+POSIX altstack is per thread.
+
 ## Regions and `with-region`
 
 Regions are lexically-scoped arenas layered on top of the allocator
@@ -601,6 +628,97 @@ throughput" fallback: the reclamation is what's traded away, never correctness.
 > JIT codegen path (so each worker can reclaim its *own* scope stack rather than
 > only committing) is deferred — it requires making the shared arena slot
 > thread-local, a broader ABI change. Correctness does not depend on it.
+
+## Per-iteration loop reclamation
+
+A self-tail loop gets a per-iteration arena scope (ESH-0214b): the loop header
+pushes a scope and every path out of the iteration ends it, so an iteration's
+transient garbage is reclaimed at the back edge and a long loop's resident size
+stays flat.
+
+The scope originally reclaimed an iteration only when NOTHING flowing into the
+next one pointed into it, and **committed** — retained the whole iteration,
+exactly as if the feature were switched off — otherwise. That fallback is the
+common case rather than the rare one: a loop that ACCUMULATES builds its
+accumulator inside the iteration, so the accumulator always points into the
+span, so such a loop retained every iteration it had ever run. It was invisible
+for a machine-word accumulator and very visible for an exact-rational one.
+
+**SW-164:** the scope now PROMOTES instead of giving up. A loop opens a LOOP
+scope once at entry (`eshkol_arena_loop_scope_begin`), outside the per-iteration
+scope. An escaping back edge deep-evacuates the loop-carried values out of
+everything above the LOOP mark — this iteration's garbage and the previous
+iteration's now-dead accumulator alike — into a scratch arena, rewinds both
+scopes, reopens the loop scope and copies the survivors back. The arena and the
+scratch arena are the two halves of a semispace, so resident size is bounded by
+the live set rather than by the iteration count. The no-escape path is
+unchanged: a plain pop, no copy.
+
+Two things bound the cost and keep it honest:
+
+- **Promotion is gated the way a copying collector gates a minor collection** —
+  only once the span has grown to a multiple of the last measured live set. A
+  loop that grows its accumulator BY ACCRETION (consing onto a list) has a span
+  that IS its live set; promoting there every iteration would copy the whole
+  structure every time and turn a linear loop quadratic, which is a worse
+  failure than the retention it would cure. Such a loop measures span ≈ live
+  once and then falls back to retention.
+- **Only values that no invisible root can be holding are moved.** Copying is
+  half of moving; the other half is rewriting every OTHER reference to the
+  original, and the evacuator can rewrite only what it reaches from the roots it
+  was given. `loopBodyIterScopeSafe` rules out references created by the loop
+  body storing into pre-existing Eshkol structure, but says nothing about the C
+  runtime's own roots — the AD tape's `nodes[]` array being the clearest, since
+  moving a node there yields a plausible wrong gradient rather than an error.
+  Rather than enumerate runtime-side roots, a list that would go stale the first
+  time one was added, promotion admits only values that cannot be held that way:
+  immediates, and the exact numeric tower's heap payloads (bignum, rational).
+  Those are pure values — immutable, carrying no observable identity, with no
+  interior pointers beyond a rational's own two bignums, which travel with it.
+  Anything else, and any loop running while a tape is recording, retains the
+  span instead of rewinding it. That is exactly the case this reclamation exists
+  for, and the trade is deliberate: a conservative answer costs memory, an
+  optimistic one costs a wrong result.
+
+  Arena-span evacuation otherwise shares one Cheney copier, one forwarding map
+  and one per-subtype interior walk with the region evacuator
+  (`EvacState::owns` selects the ownership question), so the two callers cannot
+  drift.
+
+Soundness rests on the codegen-side precondition the whole feature rests on
+(`loopBodyIterScopeSafe`): a loop body admitted here cannot leak a value into
+pre-existing structure, so the loop-carried out-values are the only roots into
+the span.
+
+That admission test is also where a loop most easily loses reclamation without
+anyone noticing, because an unrecognized callee rejects the WHOLE loop rather
+than the one expression. Two cases of that were closed with SW-164: the exact
+tower's accessors and constructor were absent from the pure-builtin list, and —
+more broadly — a `cond` CLAUSE is stored in a call node whose function slot
+holds the clause's TEST, so walking clauses as ordinary expressions asked
+whether that test was an analyzable callee, found a computed one, and rejected
+the loop. Nearly every `cond` was affected; the same loop written with nested
+`if` was not.
+
+### Giving a primitive a reclamation boundary
+
+`arena_scope_end_retaining()` ends the innermost scope RETAINING a named set of
+header-prefixed objects: they are staged out of the dying span and re-allocated
+at the rewound mark. It exists because the arena reclaims only at a scope or
+region boundary and an operation whose intermediate work dwarfs its result had
+no boundary inside it — exact-rational normalization being the case that
+forced it (see [exact arithmetic](../../breakdown/EXACT_ARITHMETIC.md)).
+
+### Where a cached constant lives
+
+`eshkol_literal_arena()` is a private arena for values cached across
+iterations, such as a hoisted compile-time constant. Nothing else allocates
+from it, no scope is ever pushed on it and it is never reset. Neither
+`get_global_arena()` nor `get_global_arena_shared()` is a substitute: those
+name the current-arena SLOT, which `with-region` hijacks — and, more subtly, a
+constant materialized lazily on a loop's first iteration is allocated above
+that loop's scope mark, so the first rewind reclaims it and the cache is left
+pointing at memory the next allocation hands out.
 
 ## Stack and depth limits
 

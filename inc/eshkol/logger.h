@@ -310,6 +310,34 @@ void eshkol_set_diagnostic_source_location(const char* file,
 void eshkol_arity_error_current(const char* msg, ...);
 
 /**
+ * @brief Emit a sourceful compiler error at the current AST span.
+ *
+ * The same location plumbing as eshkol_arity_error_current(), WITHOUT that
+ * function's arity-mismatch class marker: for a lowering that refuses a call
+ * for a reason other than its argument count (an argument shape the lowering
+ * cannot honour, a form it can only mis-compile), reporting it as an arity
+ * mismatch would file it under the wrong contract. The printf-style arguments
+ * are formatted before the diagnostic is emitted.
+ */
+void eshkol_error_current(const char* msg, ...);
+
+/**
+ * @brief Emit the CANONICAL wrong-arity diagnostic for @p name at the current
+ *        AST span.
+ *
+ * The wording lives in eshkol_format_arity_mismatch()
+ * (<eshkol/core/arity_contract.h>), which the bytecode VM's compiler uses too,
+ * so both engines refuse a short call with byte-identical text apart from the
+ * source span. Pass the PUBLIC procedure name — the spelling the programmer
+ * wrote — not the intrinsic a lowering happens to share.
+ *
+ * @param name     Public procedure name.
+ * @param expected Minimum argument count the callee requires.
+ * @param got      Argument count the call supplied.
+ */
+void eshkol_arity_error_named(const char* name, int expected, long long got);
+
+/**
  * @brief Convenience macros wrapping eshkol_printf() for each severity
  *        level; each forwards its arguments as a printf-style format
  *        string and varargs (e.g. eshkol_error("failed: %d", code)).

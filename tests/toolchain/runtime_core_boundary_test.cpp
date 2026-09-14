@@ -146,6 +146,12 @@ int main(int argc, char** argv) {
         parse_cmake_list(cmake_contents, "ESHKOL_RUNTIME_HOSTED_SRC");
     const std::string wasm_differential_script =
         read_file(source_root / "scripts" / "run_wasm_differential.sh");
+    // The WASM VM source list is shared between the differential lane and
+    // the browser-bundle build (scripts/build-wasm-repl.sh), so the runtime
+    // dependencies are asserted on the shared list, and the lane is
+    // asserted to consume that list rather than a private copy of it.
+    const std::string wasm_vm_sources =
+        read_file(source_root / "scripts" / "lib" / "wasm_vm_sources.sh");
 
     if (runtime_core_src.empty()) {
         return fail("runtime core source set is empty or missing");
@@ -239,12 +245,19 @@ int main(int argc, char** argv) {
     if (wasm_differential_script.empty()) {
         return fail("failed to read scripts/run_wasm_differential.sh");
     }
-    if (!contains_marker(wasm_differential_script, "WASM_VM_SOURCES=(") ||
+    if (wasm_vm_sources.empty()) {
+        return fail("failed to read scripts/lib/wasm_vm_sources.sh");
+    }
+    if (!contains_marker(wasm_vm_sources, "$REPO_ROOT/lib/core/unicode.cpp") ||
+        !contains_marker(wasm_vm_sources, "$REPO_ROOT/lib/core/model_io_atomic.c")) {
+        return fail("WASM VM link is missing a shared runtime dependency");
+    }
+    if (!contains_marker(wasm_differential_script, "scripts/lib/wasm_vm_sources.sh") ||
         !contains_marker(wasm_differential_script,
-                         "$REPO_ROOT/lib/core/unicode.cpp") ||
+                         "WASM_VM_SOURCES=(\"${ESHKOL_WASM_VM_SOURCES[@]}\")") ||
         !contains_marker(wasm_differential_script,
                          "\"${WASM_VM_SOURCES[@]}\"")) {
-        return fail("WASM VM link is missing the shared Unicode classifier source");
+        return fail("WASM differential lane does not link the shared VM source list");
     }
 
     const std::vector<std::string_view> forbidden_markers = {

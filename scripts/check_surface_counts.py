@@ -40,16 +40,28 @@ status contexts):
         them; registered so a claim added later is checked from day one
         rather than needing a second incident to notice it should have
         been)
+    docs/COMPILER_ROADMAP.md, docs/TEST_COVERAGE.md -- their surrounding
+        CTest/SICP/parity figures are dated measurements pinned to a past
+        cut (see the exclusion note below), but each also states an
+        "executable language coverage N/N" clause that cross-references
+        FEATURE_MATRIX.md as "the canonical surface count" -- present tense,
+        no commit pinned, and exactly the clause that drifted (1,106 and
+        1,091 respectively, both silently wrong per the 2026-08-28 audit).
+        Registered for that clause specifically.
+    docs/API_REFERENCE.md, docs/COMPLETE_LANGUAGE_SPECIFICATION.md,
+        docs/ESHKOL_LANGUAGE_GUIDE.md, docs/ESHKOL_QUICK_REFERENCE.md --
+        each stated "555+ built-in functions" (or "555+ builtins") as the
+        current count against an actual 1,042, invisibly, because none of
+        the four were registered.
 
 Deliberately NOT registered: CHANGELOG.md, RELEASE_NOTES.md, ANNOUNCEMENT.md,
-ROADMAP.md, docs/COMPILER_ROADMAP.md, docs/TESTING.md, docs/TEST_COVERAGE.md,
-press/*. Every occurrence the audit found in those files is a dated claim
-pinned to a specific past release commit ("measured on the v1.3.4-evolve
-cut", "remeasured 2026-08-25 against 4bf871a0") with its own evidence
-citation -- correcting those to today's numbers would misrepresent them as
-having been measured on a commit they were not. Only docs that assert the
-CURRENT surface/builtin count, with no commit pinned, belong in this
-registry.
+ROADMAP.md, docs/TESTING.md, press/*. Every occurrence the audit found in
+those files is a dated claim pinned to a specific past release commit
+("measured on the v1.3.4-evolve cut", "remeasured 2026-08-25 against
+4bf871a0") with its own evidence citation -- correcting those to today's
+numbers would misrepresent them as having been measured on a commit they
+were not. Only docs that assert the CURRENT surface/builtin count, with no
+commit pinned, belong in this registry.
 
 Extraction, not a stale-value blocklist: for each registered doc this gate
 runs a small set of regexes tuned to the phrasings these docs actually use
@@ -126,6 +138,19 @@ REGISTERED_DOCS = [
     "docs/reference/runtime/INDEX.md",
     "docs/reference/stdlib/INDEX.md",
     "docs/reference/tensors/INDEX.md",
+    # BI-20 (v1.3.5 docs audit, 2026-08-28): these six were the exact
+    # failure mode this gate exists to close -- each states a live surface
+    # or builtin-count claim with no commit pinned, and each had silently
+    # drifted (docs/COMPILER_ROADMAP.md said 1,106, docs/TEST_COVERAGE.md
+    # said 1,091, and all four language docs said "555+" against an actual
+    # 1,042) while `check_surface_counts.py` reported "all 10 registered
+    # docs agree" -- because none of the six were registered.
+    "docs/COMPILER_ROADMAP.md",
+    "docs/TEST_COVERAGE.md",
+    "docs/API_REFERENCE.md",
+    "docs/COMPLETE_LANGUAGE_SPECIFICATION.md",
+    "docs/ESHKOL_LANGUAGE_GUIDE.md",
+    "docs/ESHKOL_QUICK_REFERENCE.md",
 ]
 
 # Each pattern has exactly one capturing group unless noted; a pattern with

@@ -1,0 +1,17 @@
+;; Type System Test: an unrefined guard condition variable holds whatever was
+;; raised; nothing is known about it, so using it anywhere stays silent.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (handled)
+  (guard (e (#t (+ (label e) (area e 1))))
+    (raise "boom")))
+(display (guard (e (#t 0)) (handled)))
+(newline)
+
+(display (area 2 3))
+(newline)

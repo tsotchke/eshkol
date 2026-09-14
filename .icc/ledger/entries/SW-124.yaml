@@ -28,7 +28,7 @@ evidence: >-
   tests/v1_2_edge_cases/hash_table_test.esk checks the constructor shape;
   tests/vm_parity/corpus/73_hash_set_constructor_or.esk checks native
   versus VM output; tests/diagnostics/hash_set_arity pins the fatal span.
-  Verification was run against the uncommitted worktree on old-donkey.
+  Verification was run against the uncommitted worktree on a Linux CI worker.
 close_condition: >-
   Reopen if the constructor test returns a non-hash value, loses the
   fallback entry, or any engine exits 0 without the expected value.

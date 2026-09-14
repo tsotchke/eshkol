@@ -111,6 +111,36 @@ Either way, **the flat-outside-guard pattern at the top of this document
 remains the recommended default** regardless of which bug is or isn't
 fixed on a given build — it never depended on either.
 
+## Q1b: Which handler answers, and what does keeping that answer cost? (SW-58)
+
+ESH-0222 made the loop flat by draining the runtime handler chain on the back
+edge. That is sound only while the collapsed activations' guards cannot be
+observed — and they can be: R7RS keeps one LIVE guard per activation, so a
+handler that **re-raises**, or a clause body that itself **raises**, must find
+the *enclosing* activation's guard and get that activation's variables back.
+Draining sent it to whatever stood outside the loop instead, and the wrong
+handler answered, silently. That was SW-58, and it is fixed: the back edge now
+leaves the handler frames standing and attaches the departing activation's loop
+parameters to each, so the chain a program observes is exactly the reference's.
+
+For a resident loop the operational consequence is a single rule, and it is the
+one this document already recommends:
+
+- **A catch-all boundary** — `(guard (e (#t …)) …)` whose clauses cannot
+  themselves raise — is *provably* unobservable, so the compiler keeps ESH-0222's
+  single reused handler frame. Flat stack **and** flat RSS, forever. This is the
+  daemon shape, and it is what `tests/memory/resident_longrun_flat_gate.sh`
+  measures byte-for-byte across two horizons.
+- **A boundary whose handler can re-raise** gets exact semantics at the cost of
+  one small heap handler frame per *live* guard — which is the space R7RS's own
+  semantics require to exist, but in an unbounded tick loop it is unbounded
+  growth. A resident loop should not re-raise out of its own error boundary; it
+  should absorb the condition and continue. If yours needs to escalate, do it by
+  *returning* a value the caller inspects, not by raising past the boundary.
+
+Neither case costs stack: see `docs/reference/language/tail-calls.md`,
+"Self tail recursion in a `guard` body", for the mechanism and the gates.
+
 ## Q2: What per-iteration-error-handling loop structure is provably tail-optimized?
 
 In order of preference:

@@ -381,6 +381,11 @@ probe model_serialization_round_trip "tensor save/load round-trips bit-exact" \
 EOF
      "$ESHKOL_RUN" -r "$tmp" 2>&1; rc=$?; rm -f "$tmp" "$f"; exit $rc'
 
+probe eskm_v1_model_load_engine_parity \
+    "ESKM v1 all 16 producer-to-consumer engine pairings load and rewrite byte-identically" \
+    'cd "$REPO_ROOT"; "$REPO_ROOT/scripts/run_eskm_v1_model_load_parity.sh" \
+        "$ESHKOL_RUN" "$BUILD_DIR_PATH/eshkol-vm-standalone-test"'
+
 probe image_io_works "image-read returns a tensor of expected shape" \
     'tmp=$(mktemp).esk; img=$(mktemp).png;
      printf "\\x89PNG\\r\\n\\x1a\\n" > "$img";  ## just a header — image-read should error gracefully
@@ -858,7 +863,7 @@ probe eshkol-vm-large-proc 'a VM procedure calling 32 and 33 distinct top-level 
      vm="$BUILD_DIR_PATH/eshkol-vm-standalone-test";
      [ -x "$vm" ] || exit 1;
      out=$(ESHKOL_VM_NO_DISASM=1 "$vm" tests/vm/closure_upvalue_capacity_surface_regression.esk 2>&1) || exit 1;
-     [ "$(printf "%s" "$out" | grep -c "^PASS$")" -eq 3 ] || exit 1;
+     [ "$(printf "%s" "$out" | grep -c "^PASS")" -eq 3 ] || exit 1;
      printf "%s" "$out" | grep -q "^FAIL$" && exit 1;
      printf "%s" "$out" | grep -q "ERROR:" && exit 1;
      bash tests/closures/closure_upvalue_capacity_overflow_gate.sh "$ESHKOL_RUN" "$vm" "$(mktemp -d)" >/dev/null 2>&1 || exit 1;
@@ -1115,6 +1120,32 @@ EOF
        *"CURL=#(0 0 0)|DIV=0|FD=0"*) exit 0 ;;
        *) printf "%s" "$flat" | grep -o "CURL=.*FD=[0-9]*"; exit 1 ;;
      esac'
+
+# ───────────────────────────────────────────────────────────────────
+# Navier-Stokes blowup mechanization family. One probe per program
+# (examples/mathematics_navier_stokes_*.esk), matching the CTest ns_*_jit
+# names in CMakeLists.txt and the icc-target each program's own
+# ICC-EVENT lines use. Each program is itself a compile-and-run
+# executable check with an internal pass/fail ledger; exit 0 iff its own
+# "RESULT: ALL PASS" line fires, so the probe command is just running it
+# and grepping that line.
+# ───────────────────────────────────────────────────────────────────
+_ns_probe() {
+    local id="$1" file="$2"
+    probe "$id" \
+        "Navier-Stokes mechanization: examples/${file}.esk exits ALL PASS on both engines' shared JIT path" \
+        "cd \"\$REPO_ROOT\"; \"\$BUILD_DIR/eshkol-run\" -r \"examples/${file}.esk\" 2>&1 | grep -q '^RESULT: ALL PASS$'"
+}
+
+_ns_probe ns_viscosity_scaling_exact     mathematics_navier_stokes_viscosity_scaling
+_ns_probe ns_similarity_exponents_solved mathematics_navier_stokes_similarity_scales
+_ns_probe ns_leading_profile_balance     mathematics_navier_stokes_first_principles
+_ns_probe ns_covariance_two_family_solve mathematics_navier_stokes_pulse_stress
+_ns_probe ns_cone_condition_equivalence  mathematics_navier_stokes_stress_cone
+_ns_probe ns_residual_order_n_vanishes   mathematics_navier_stokes_residual_order_n
+_ns_probe ns_heat_exterior_exact         mathematics_navier_stokes_heat_exterior
+_ns_probe ns_oscillatory_zero_mode       mathematics_navier_stokes_oscillatory_realization
+_ns_probe ns_pulse_growth_crossover      mathematics_navier_stokes_pulse_growth
 
 eshkol_durable_mirror_trace "$TRACE_FILE" eshkol_smoke.jsonl
 

@@ -10,8 +10,11 @@ is completion-oracle evidence rather than advice; executable language coverage
 **1,108/1,108 (100.0%, floor PASS)**; SICP full-book gate **88/88** probes
 across all five chapters under both `-r` and AOT; reference-Scheme differential
 oracle **34/34 AGREE** against chibi-scheme 0.12.0; VM parity differential
-**188/188** over a **956-row** manifest (581 `vm-supported`, 44
-`native-only-justified`, 331 `gap`); qLLM oracle gate **10/10**; ICC readiness
+**188/188** on the release cut over a **956-row** manifest (581
+`vm-supported`, 44 `native-only-justified`, 331 `gap`); the parity-backlog
+Linux remeasurement is **194/194** over the current 956-row manifest (582
+`vm-supported`, 44 `native-only-justified`, 330 `gap`) plus its 330-row
+gap-disposition sidecar; qLLM oracle gate **10/10**; ICC readiness
 **100**, verdict `ready`. CTest, executable language coverage and the VM
 parity differential were remeasured at commit `afbaaf5b` on 2026-08-26
 (doc-truth audit findings B6/N4) and supersede the prior 183/183, 1,091/1,091

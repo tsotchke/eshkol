@@ -158,6 +158,70 @@ int eshkol_cross_entropy_forward(const void* logits_data,
     return ESHKOL_CROSS_ENTROPY_OK;
 }
 
+int eshkol_focal_loss_forward(const void* logits_data,
+                              const uint64_t* logits_shape,
+                              uint64_t logits_ndim,
+                              const void* targets_data,
+                              const uint64_t* targets_shape,
+                              uint64_t targets_ndim,
+                              int data_is_double_bits,
+                              double gamma,
+                              double* loss_out) {
+    uint64_t total = 0, rows = 0, classes = 0;
+    int dense = 0;
+    if (!isfinite(gamma) || gamma < 0.0) return ESHKOL_CROSS_ENTROPY_GAMMA_VALUE;
+    int status = ce_validate(logits_data, logits_shape, logits_ndim,
+                             targets_data, targets_shape, targets_ndim,
+                             data_is_double_bits, &total, &rows, &classes,
+                             &dense);
+    if (status != ESHKOL_CROSS_ENTROPY_OK) return status;
+
+    double loss = 0.0;
+    for (uint64_t r = 0; r < rows; ++r) {
+        double maximum = ce_read(logits_data, r * classes, data_is_double_bits);
+        for (uint64_t i = 1; i < classes; ++i) {
+            double value = ce_read(logits_data, r * classes + i, data_is_double_bits);
+            if (value > maximum) maximum = value;
+        }
+        double exp_sum = 0.0;
+        for (uint64_t i = 0; i < classes; ++i)
+            exp_sum += exp(ce_read(logits_data, r * classes + i,
+                                   data_is_double_bits) - maximum);
+        double log_sum_exp = maximum + log(exp_sum);
+
+        /* row_ce is the row's cross-entropy; p_t is the true-class
+         * probability the modulating factor is measured on. For an
+         * indexed or one-hot target these are -log p and p of the
+         * labelled class; for a general probability row they are the
+         * target-weighted mean of -log p_i and of p_i. */
+        double row_ce = 0.0;
+        double p_true = 0.0;
+        if (dense) {
+            for (uint64_t i = 0; i < classes; ++i) {
+                double weight = ce_read(targets_data, r * classes + i, data_is_double_bits);
+                double log_p = ce_read(logits_data, r * classes + i,
+                                       data_is_double_bits) - log_sum_exp;
+                row_ce -= weight * log_p;
+                p_true += weight * exp(log_p);
+            }
+        } else {
+            uint64_t index = (uint64_t)ce_read(targets_data, r, data_is_double_bits);
+            double log_p = ce_read(logits_data, r * classes + index,
+                                   data_is_double_bits) - log_sum_exp;
+            row_ce = -log_p;
+            p_true = exp(log_p);
+        }
+
+        /* gamma == 0 must be the cross-entropy identity exactly, not
+         * pow(x, 0.0) rounded: pow is exact at 0 for finite x, but this
+         * also keeps the identity when p_true is 1 and gamma is 0. */
+        double modulating = (gamma == 0.0) ? 1.0 : pow(1.0 - p_true, gamma);
+        loss += modulating * row_ce;
+    }
+    if (loss_out) *loss_out = loss / (double)rows;
+    return ESHKOL_CROSS_ENTROPY_OK;
+}
+
 int eshkol_cross_entropy_backward(const double* logits_data,
                                   const uint64_t* logits_shape,
                                   uint64_t logits_ndim,
@@ -204,6 +268,8 @@ const char* eshkol_cross_entropy_status_message(int status) {
             return "cross-entropy-loss: probability targets must be finite, non-negative, and sum to 1 per row";
         case ESHKOL_CROSS_ENTROPY_LOGITS_VALUE:
             return "cross-entropy-loss: logits must be finite";
+        case ESHKOL_CROSS_ENTROPY_GAMMA_VALUE:
+            return "focal-loss: gamma must be finite and non-negative";
         default:
             return "cross-entropy-loss: invalid targets";
     }

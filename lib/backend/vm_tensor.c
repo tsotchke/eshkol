@@ -15,6 +15,8 @@
 #define VM_TENSOR_C_INCLUDED
 
 #include "vm_numeric.h"
+#include <eshkol/backend/vm_limits.h>
+#include <eshkol/tensor_validation.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -43,6 +45,7 @@
 #define VM_TENSOR_DTYPE_F16  2
 #define VM_TENSOR_DTYPE_BF16 3
 #define VM_TENSOR_DTYPE_I8   4
+#define VM_TENSOR_DTYPE_DUAL 64  /* elements carry VmDual primal/tangent pairs */
 
 /* ── Tensor ── */
 typedef struct {
@@ -53,6 +56,7 @@ typedef struct {
     int64_t  total;        /* total number of elements */
     int      owns_data;    /* 1 = owns data (allocated), 0 = view (shared) */
     int      dtype;        /* VM_TENSOR_DTYPE_* metadata; data stays double-backed */
+    VmDual*  dual_data;    /* optional forward-mode carrier, parallel to data */
     int64_t  inline_shape[VM_TENSOR_INLINE_DIMS];
     int64_t  inline_strides[VM_TENSOR_INLINE_DIMS];
 } VmTensor;
@@ -229,19 +233,18 @@ static double vm_tensor_quantize_value(double value, int dtype) {
  *         on overflow.
  */
 static int64_t vm_tensor_compute_strides(const int64_t* shape, int n_dims, int64_t* strides) {
-    if (n_dims <= 0) return 0;
+    if (!shape || !strides || n_dims <= 0) return -1;
+    int64_t total = eshkol_tensor_shape_total(shape, n_dims);
+    if (total < 0) return -1;
+    if (total == 0) {
+        // Empty tensors have no addressable elements. Avoid overflowing a
+        // suffix product in shapes such as (0 INT64_MAX 2).
+        memset(strides, 0, (size_t)n_dims * sizeof(int64_t));
+        return 0;
+    }
     strides[n_dims - 1] = 1;
     for (int i = n_dims - 2; i >= 0; i--) {
         strides[i] = strides[i + 1] * shape[i + 1];
-    }
-    int64_t total = 1;
-    for (int i = 0; i < n_dims; i++) {
-        if (shape[i] <= 0) return 0;
-        if (total > INT64_MAX / shape[i]) {
-            fprintf(stderr, "ERROR: tensor shape overflow (dim %d = %lld)\n", i, (long long)shape[i]);
-            return -1;
-        }
-        total *= shape[i];
     }
     return total;
 }
@@ -271,6 +274,10 @@ static void vm_tensor_unravel(int64_t flat, const int64_t* shape, int n_dims, in
  *         with the given @p shape. */
 static VmTensor* vm_tensor_new(VmRegionStack* rs, const int64_t* shape, int n_dims) {
     if (n_dims <= 0) return NULL;
+    int64_t checked_total = eshkol_tensor_shape_total(shape, n_dims);
+    if (checked_total < 0 ||
+        (g_eshkol_vm_tensor_limit_active &&
+         (uint64_t)checked_total > g_eshkol_vm_max_tensor_elements)) return NULL;
 
     VmTensor* t = (VmTensor*)vm_alloc_object(rs, VM_SUBTYPE_TENSOR, sizeof(VmTensor));
     if (!t) return NULL;
@@ -279,13 +286,14 @@ static VmTensor* vm_tensor_new(VmRegionStack* rs, const int64_t* shape, int n_di
     memcpy(t->shape, shape, (size_t)n_dims * sizeof(int64_t));
     t->total = vm_tensor_compute_strides(shape, n_dims, t->strides);
 
-    if (t->total <= 0) return NULL;
+    if (t->total < 0) return NULL;
 
-    t->data = (double*)vm_alloc(rs, (size_t)t->total * sizeof(double));
+    t->data = (double*)vm_alloc(rs, (size_t)(t->total > 0 ? t->total : 1) * sizeof(double));
     if (!t->data) return NULL;
     memset(t->data, 0, (size_t)t->total * sizeof(double));
     t->owns_data = 1;
     t->dtype = VM_TENSOR_DTYPE_F64;
+    t->dual_data = NULL;
 
     return t;
 }
@@ -360,12 +368,8 @@ static VmTensor* vm_tensor_reshape(VmRegionStack* rs, const VmTensor* t,
     if (!t || new_dims <= 0) return NULL;
 
     /* Compute new total and verify it matches */
-    int64_t new_total = 1;
-    for (int i = 0; i < new_dims; i++) {
-        if (new_shape[i] <= 0) return NULL;
-        if (new_total > INT64_MAX / new_shape[i]) return NULL;
-        new_total *= new_shape[i];
-    }
+    int64_t new_total = eshkol_tensor_shape_total(new_shape, new_dims);
+    if (new_total < 0) return NULL;
     if (new_total != t->total) return NULL;
 
     VmTensor* v = (VmTensor*)vm_alloc_object(rs, VM_SUBTYPE_TENSOR, sizeof(VmTensor));
@@ -377,6 +381,7 @@ static VmTensor* vm_tensor_reshape(VmRegionStack* rs, const VmTensor* t,
     v->data = t->data;   /* shared data */
     v->owns_data = 0;
     v->dtype = t->dtype;
+    v->dual_data = t->dual_data; /* shared forward carrier, when present */
 
     return v;
 }
@@ -482,6 +487,9 @@ static VmTensor* vm_tensor_copy(VmRegionStack* rs, const VmTensor* t) {
     c->total = vm_tensor_compute_strides(t->shape, t->n_dims, c->strides);
     c->owns_data = 1;
     c->dtype = t->dtype;
+    c->dual_data = t->dual_data
+        ? (VmDual*)vm_alloc(rs, (size_t)c->total * sizeof(VmDual)) : NULL;
+    if (t->dual_data && !c->dual_data) return NULL;
 
     c->data = (double*)vm_alloc(rs, (size_t)c->total * sizeof(double));
     if (!c->data) return NULL;
@@ -502,6 +510,9 @@ static VmTensor* vm_tensor_copy(VmRegionStack* rs, const VmTensor* t) {
 
     if (is_contiguous) {
         memcpy(c->data, t->data, (size_t)c->total * sizeof(double));
+        if (c->dual_data)
+            memcpy(c->dual_data, t->dual_data,
+                   (size_t)c->total * sizeof(VmDual));
     } else {
         /* Element-wise copy for non-contiguous sources */
         int64_t* indices = vm_tensor_dim_scratch(rs, t->n_dims);
@@ -510,6 +521,7 @@ static VmTensor* vm_tensor_copy(VmRegionStack* rs, const VmTensor* t) {
             vm_tensor_unravel(i, t->shape, t->n_dims, indices);
             int64_t src_off = vm_tensor_flat_offset(t, indices, t->n_dims);
             c->data[i] = t->data[src_off];
+            if (c->dual_data) c->dual_data[i] = t->dual_data[src_off];
         }
     }
 
@@ -597,6 +609,8 @@ static VmTensor* vm_tensor_slice(VmRegionStack* rs, const VmTensor* t, int64_t i
     v->total = t->total / t->shape[0];
     v->owns_data = 0;
     v->dtype = t->dtype;
+    v->dual_data = t->dual_data
+        ? t->dual_data + index * t->strides[0] : NULL;
 
     return v;
 }

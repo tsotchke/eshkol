@@ -18,6 +18,7 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/backend/autodiff_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 #include <eshkol/backend/cpu_features.h>
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
@@ -135,7 +136,7 @@ llvm::Value* TensorCodegen::dualTensorMatmul(llvm::Value* a_struct_ptr, llvm::Va
     llvm::LLVMContext& c = ctx_.context();
     llvm::Function* fn = b.GetInsertBlock()->getParent();
     llvm::Function* arena_alloc = mem_.getArenaAllocate();
-    llvm::Value* arena_ptr = b.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     const uint64_t kTagBytes = 16;  // sizeof(eshkol_tagged_value)
 
@@ -356,10 +357,7 @@ llvm::Value* TensorCodegen::schemeVectorArithmetic(llvm::Value* vec1_tagged, llv
 
     // Consolidated pointer system: Allocate result vector with header
     // arena_allocate_vector_with_header creates: [header(8)] + [length(8)] + [elements]
-    llvm::GlobalVariable* arena_global = ctx_.globalArena();
-    if (!arena_global) return tagged_.packNull();
-
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* result_vec = ctx_.builder().CreateCall(
         mem_.getArenaAllocateVectorWithHeader(), {arena_ptr, length});
 
@@ -437,8 +435,7 @@ llvm::Value* TensorCodegen::rawTensorArithmetic(llvm::Value* arg1, llvm::Value* 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
     // Get arena pointer
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = allocationArena();
 
     // Create result tensor with header using arena
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
@@ -554,7 +551,11 @@ llvm::Value* TensorCodegen::rawTensorArithmetic(llvm::Value* arg1, llvm::Value* 
 // ===== SIMD-ACCELERATED TENSOR ARITHMETIC =====
 // Processes SIMD_WIDTH doubles at a time using vector operations
 // Width is auto-detected: 2 (NEON/SSE2), 4 (AVX), or 8 (AVX-512)
-llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Value* arg2, const std::string& operation) {
+llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Value* arg2,
+                                                   const std::string& operation,
+                                                   bool numeric_only,
+                                                   llvm::Value* numeric_view1,
+                                                   llvm::Value* numeric_view2) {
     auto& builder = ctx_.builder();
     const unsigned SIMD_WIDTH = getSIMDWidth();
     llvm::VectorType* vec_type = getSIMDVectorType();
@@ -563,8 +564,12 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
     llvm::Value* tensor1_int = tagged_.unpackInt64(arg1);
     llvm::Value* tensor2_int = tagged_.unpackInt64(arg2);
 
-    llvm::Value* tensor1_ptr = builder.CreateIntToPtr(tensor1_int, ctx_.ptrType());
-    llvm::Value* tensor2_ptr = builder.CreateIntToPtr(tensor2_int, ctx_.ptrType());
+    llvm::Value* tagged_tensor1_ptr = builder.CreateIntToPtr(tensor1_int, ctx_.ptrType());
+    llvm::Value* tagged_tensor2_ptr = builder.CreateIntToPtr(tensor2_int, ctx_.ptrType());
+    // The dense AD caller supplies explicit views whose elements fields are
+    // f64 buffers. This is the sole numeric operand accessor for this kernel.
+    llvm::Value* tensor1_ptr = numeric_view1 ? numeric_view1 : tagged_tensor1_ptr;
+    llvm::Value* tensor2_ptr = numeric_view2 ? numeric_view2 : tagged_tensor2_ptr;
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
@@ -604,8 +609,7 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
     // ===== BROADCAST PATH: shapes differ, use runtime broadcast =====
     builder.SetInsertPoint(broadcast_path);
     {
-        llvm::Value* bcast_arena = builder.CreateLoad(
-            llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+        llvm::Value* bcast_arena = allocationArena();
         llvm::Function* arena_alloc_fn = mem_.getArenaAllocate();
 
         // Get elements from both tensors
@@ -614,6 +618,36 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
         llvm::Value* t2_elems_field = builder.CreateStructGEP(tensor_type, tensor2_ptr, 2);
         llvm::Value* t2_elems = builder.CreateLoad(ctx_.ptrType(), t2_elems_field);
 
+        // One located, shape-naming refusal for BOTH places a non-broadcastable
+        // pair can be discovered on this path: the `eshkol_tensor_broadcast_shape`
+        // pre-check below (which refuses before any output buffer is allocated)
+        // and the `eshkol_broadcast_elementwise_f64` status check after it. The
+        // pre-check previously raised an unlocated, shape-less sentence
+        // ("tensor binary operation: incompatible or overflowing shapes") and,
+        // being first, it decided what every mismatched pair actually printed.
+        // Same structure and same timing as before; the diagnostic now names the
+        // operator, both shapes, and the failing source position (LE-22).
+        auto emit_shape_refusal = [&]() {
+            emitSetErrorLocation();
+            llvm::Function* shape_err_fn = ctx_.module().getFunction("eshkol_shape_error");
+            if (!shape_err_fn) {
+                llvm::FunctionType* se_ft = llvm::FunctionType::get(
+                    builder.getVoidTy(),
+                    {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type(),
+                     ctx_.ptrType(), ctx_.int64Type()},
+                    false);
+                shape_err_fn = llvm::Function::Create(
+                    se_ft, llvm::Function::ExternalLinkage,
+                    "eshkol_shape_error", &ctx_.module());
+                shape_err_fn->setDoesNotReturn();
+            }
+            const std::string shape_op_name = "tensor-" + operation;
+            builder.CreateCall(shape_err_fn, {ctx_.internCString(shape_op_name),
+                                              t1_dims_ptr, t1_ndim,
+                                              t2_dims_ptr, t2_ndim});
+            builder.CreateUnreachable();
+        };
+
         // Allocate output dims array (max 16 dims)
         llvm::Value* out_dims_buf = builder.CreateCall(arena_alloc_fn,
             {bcast_arena, llvm::ConstantInt::get(ctx_.int64Type(), 16 * sizeof(int64_t))}, "bcast_out_dims");
@@ -621,16 +655,36 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
         llvm::Value* out_ndim_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "bcast_ndim");
         llvm::Value* out_total_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, "bcast_total");
 
-        // Compute upper bound for output allocation: sum of totals * max expansion
-        llvm::Value* t1_total_field = builder.CreateStructGEP(tensor_type, tensor1_ptr, 3);
-        llvm::Value* t1_total = builder.CreateLoad(ctx_.int64Type(), t1_total_field);
-        llvm::Value* t2_total_field = builder.CreateStructGEP(tensor_type, tensor2_ptr, 3);
-        llvm::Value* t2_total = builder.CreateLoad(ctx_.int64Type(), t2_total_field);
-        llvm::Value* max_alloc = builder.CreateMul(t1_total, t2_total);
-        llvm::Value* cap = llvm::ConstantInt::get(ctx_.int64Type(), 16 * 1024 * 1024);
-        llvm::Value* use_cap = builder.CreateICmpUGT(max_alloc, cap);
-        llvm::Value* safe_alloc = builder.CreateSelect(use_cap, cap, max_alloc);
-        llvm::Value* alloc_bytes = builder.CreateMul(safe_alloc,
+        // Validate the relationship and checked output product before any
+        // output buffer is allocated.  The old path ignored the runtime
+        // failure code and consumed uninitialized metadata on incompatible
+        // shapes.
+        llvm::Function* shape_fn = ctx_.module().getFunction("eshkol_tensor_broadcast_shape");
+        if (!shape_fn) {
+            llvm::FunctionType* shape_type = llvm::FunctionType::get(
+                ctx_.int32Type(),
+                {ctx_.ptrType(), ctx_.int64Type(), ctx_.ptrType(), ctx_.int64Type(),
+                 ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false);
+            shape_fn = llvm::Function::Create(shape_type, llvm::Function::ExternalLinkage,
+                                              "eshkol_tensor_broadcast_shape", &ctx_.module());
+        }
+        llvm::Value* shape_status = builder.CreateCall(shape_fn,
+            {t1_dims_ptr, t1_ndim, t2_dims_ptr, t2_ndim,
+             out_dims_buf, out_ndim_alloca, out_total_alloca}, "bcast_shape_status");
+        llvm::Function* bcast_shape_fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* shape_ok = llvm::BasicBlock::Create(
+            ctx_.context(), "bcast_shape_ok", bcast_shape_fn);
+        llvm::BasicBlock* shape_err = llvm::BasicBlock::Create(
+            ctx_.context(), "bcast_shape_err", bcast_shape_fn);
+        builder.CreateCondBr(builder.CreateICmpEQ(
+            shape_status, llvm::ConstantInt::get(ctx_.int32Type(), 0)), shape_err, shape_ok);
+        builder.SetInsertPoint(shape_err);
+        emit_shape_refusal();
+        builder.SetInsertPoint(shape_ok);
+        emitTensorElementLimitCheck(builder.CreateLoad(ctx_.int64Type(), out_total_alloca));
+
+        llvm::Value* alloc_bytes = builder.CreateMul(
+            builder.CreateLoad(ctx_.int64Type(), out_total_alloca),
             llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
         llvm::Value* out_data_buf = builder.CreateCall(arena_alloc_fn,
             {bcast_arena, alloc_bytes}, "bcast_out_data");
@@ -653,11 +707,49 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
             bcast_fn = llvm::Function::Create(bcast_ft,
                 llvm::Function::ExternalLinkage, "eshkol_broadcast_elementwise_f64", &ctx_.module());
         }
-        builder.CreateCall(bcast_fn,
+        llvm::Value* bcast_status = builder.CreateCall(bcast_fn,
             {llvm::ConstantInt::get(ctx_.int64Type(), op_code),
              t1_elems, t1_dims_ptr, t1_ndim,
              t2_elems, t2_dims_ptr, t2_ndim,
-             out_data_buf, out_dims_buf, out_ndim_alloca, out_total_alloca});
+             out_data_buf, out_dims_buf, out_ndim_alloca, out_total_alloca},
+            "bcast_status");
+
+        // The runtime REFUSES a non-broadcastable pair (compute_broadcast_shape
+        // returns -1) and returns -1 without writing out_ndim/out_total. That
+        // verdict used to be DISCARDED: the two allocas below were then loaded
+        // uninitialized and stored into a fresh tensor's rank and element count,
+        // so `(tensor-mul (tensor 1.0 2.0 3.0) (tensor 4.0 5.0))` built a tensor
+        // claiming a garbage shape and died reading it — a fatal SIGSEGV at a
+        // stack-dependent address, with no diagnostic. A shape the runtime has
+        // already rejected must raise there and then, in the one wording that
+        // computation's refusal has.
+        {
+            llvm::Function* bcast_func = builder.GetInsertBlock()->getParent();
+            llvm::BasicBlock* bcast_bad = llvm::BasicBlock::Create(
+                ctx_.context(), "arith_bcast_shape_err", bcast_func);
+            llvm::BasicBlock* bcast_ok = llvm::BasicBlock::Create(
+                ctx_.context(), "arith_bcast_ok", bcast_func);
+            builder.CreateCondBr(
+                builder.CreateICmpNE(bcast_status,
+                                     llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+                bcast_bad, bcast_ok);
+
+            builder.SetInsertPoint(bcast_bad);
+            emit_shape_refusal();
+
+            builder.SetInsertPoint(bcast_ok);
+        }
+
+        llvm::Function* bcast_fn_owner = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* bcast_ok = llvm::BasicBlock::Create(
+            ctx_.context(), "bcast_apply_ok", bcast_fn_owner);
+        llvm::BasicBlock* bcast_err = llvm::BasicBlock::Create(
+            ctx_.context(), "bcast_apply_err", bcast_fn_owner);
+        builder.CreateCondBr(builder.CreateICmpEQ(
+            bcast_status, llvm::ConstantInt::get(ctx_.int64Type(), 0)), bcast_ok, bcast_err);
+        builder.SetInsertPoint(bcast_err);
+        emitCatchableError("tensor binary operation: broadcast failed");
+        builder.SetInsertPoint(bcast_ok);
 
         // Load actual ndim and total
         llvm::Value* bcast_ndim = builder.CreateLoad(ctx_.int64Type(), out_ndim_alloca);
@@ -676,16 +768,82 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
         builder.CreateStore(bcast_total,
             builder.CreateStructGEP(tensor_type, bcast_tensor, 3));
 
-        builder.CreateStore(tagged_.packHeapPtr(bcast_tensor), shared_result);
-        builder.CreateBr(arith_done);
+        if (autodiff_ && !numeric_only) {
+            llvm::Value* in_ad_mode = builder.CreateLoad(
+                ctx_.int1Type(), ctx_.adModeActive());
+            llvm::BasicBlock* bcast_ad = llvm::BasicBlock::Create(
+                ctx_.context(), "bcast_arith_ad", current_top_func);
+            llvm::BasicBlock* bcast_numeric = llvm::BasicBlock::Create(
+                ctx_.context(), "bcast_arith_numeric", current_top_func);
+            builder.CreateCondBr(in_ad_mode, bcast_ad, bcast_numeric);
+
+            builder.SetInsertPoint(bcast_ad);
+            int64_t scalar_op_type = 2;
+            if (operation == "sub") scalar_op_type = 3;
+            else if (operation == "mul") scalar_op_type = 4;
+            else if (operation == "div") scalar_op_type = 5;
+            llvm::FunctionCallee index_fn = ctx_.module().getOrInsertFunction(
+                "eshkol_broadcast_source_index",
+                llvm::FunctionType::get(ctx_.int64Type(),
+                    {ctx_.int64Type(), ctx_.ptrType(), ctx_.int64Type(),
+                     ctx_.ptrType(), ctx_.int64Type()}, false));
+            llvm::Value* ad_i = builder.CreateAlloca(
+                ctx_.int64Type(), nullptr, "bcast_ad_i");
+            builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), ad_i);
+            llvm::BasicBlock* ad_cond = llvm::BasicBlock::Create(
+                ctx_.context(), "bcast_ad_cond", current_top_func);
+            llvm::BasicBlock* ad_body = llvm::BasicBlock::Create(
+                ctx_.context(), "bcast_ad_body", current_top_func);
+            llvm::BasicBlock* ad_exit = llvm::BasicBlock::Create(
+                ctx_.context(), "bcast_ad_exit", current_top_func);
+            builder.CreateBr(ad_cond);
+
+            builder.SetInsertPoint(ad_cond);
+            llvm::Value* ad_index = builder.CreateLoad(ctx_.int64Type(), ad_i);
+            builder.CreateCondBr(
+                builder.CreateICmpULT(ad_index, bcast_total), ad_body, ad_exit);
+
+            builder.SetInsertPoint(ad_body);
+            llvm::Value* ai = builder.CreateCall(index_fn,
+                {ad_index, out_dims_buf, bcast_ndim, t1_dims_ptr, t1_ndim},
+                "bcast_ad_ai");
+            llvm::Value* bi = builder.CreateCall(index_fn,
+                {ad_index, out_dims_buf, bcast_ndim, t2_dims_ptr, t2_ndim},
+                "bcast_ad_bi");
+            llvm::Value* a_bits = builder.CreateLoad(ctx_.int64Type(),
+                builder.CreateGEP(ctx_.int64Type(), t1_elems, ai));
+            llvm::Value* b_bits = builder.CreateLoad(ctx_.int64Type(),
+                builder.CreateGEP(ctx_.int64Type(), t2_elems, bi));
+            llvm::Value* a_node = adNodeFromTensorElementBits(
+                a_bits, "bcast_ad_lhs");
+            llvm::Value* b_node = adNodeFromTensorElementBits(
+                b_bits, "bcast_ad_rhs");
+            llvm::Value* result_node = autodiff_->recordADNodeBinary(
+                (uint32_t)scalar_op_type, a_node, b_node);
+            builder.CreateStore(builder.CreatePtrToInt(result_node,
+                                                        ctx_.int64Type()),
+                builder.CreateGEP(ctx_.int64Type(), out_data_buf, ad_index));
+            builder.CreateStore(builder.CreateAdd(ad_index,
+                llvm::ConstantInt::get(ctx_.int64Type(), 1)), ad_i);
+            builder.CreateBr(ad_cond);
+
+            builder.SetInsertPoint(ad_exit);
+            builder.CreateBr(bcast_numeric);
+
+            builder.SetInsertPoint(bcast_numeric);
+            builder.CreateStore(tagged_.packHeapPtr(bcast_tensor), shared_result);
+            builder.CreateBr(arith_done);
+        } else {
+            builder.CreateStore(tagged_.packHeapPtr(bcast_tensor), shared_result);
+            builder.CreateBr(arith_done);
+        }
     }
 
     // ===== FAST PATH: shapes match, use SIMD =====
     builder.SetInsertPoint(fast_path);
 
     // Get arena pointer
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = allocationArena();
 
     // Create result tensor with header using arena
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
@@ -755,7 +913,7 @@ llvm::Value* TensorCodegen::rawTensorArithmeticSIMD(llvm::Value* arg1, llvm::Val
         ad_op_type = 45; // AD_NODE_MIN
     }
 
-    if (autodiff_ && ad_op_type != 0) {
+    if (autodiff_ && ad_op_type != 0 && !numeric_only) {
         llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
         llvm::BasicBlock* ad_path = llvm::BasicBlock::Create(ctx_.context(), "arith_ad_path", current_func);
         llvm::BasicBlock* numeric_path = llvm::BasicBlock::Create(ctx_.context(), "arith_numeric_path", current_func);

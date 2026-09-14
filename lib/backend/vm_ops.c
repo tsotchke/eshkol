@@ -60,16 +60,11 @@ static int vm_require_arithmetic_numbers(VM* vm, Value a, Value b,
 
 static void vm_exec_eq(VM* vm) {
     Value b = vm_pop(vm), a = vm_pop(vm);
-    /* SW-09b: generic comparison over i128 has the identical bug shape
-     * as generic arithmetic — as_number_vm() reads a heap-boxed
-     * VAL_I128 as 0.0, so e.g. (= (i128 5) (i128 5)) silently answered
-     * #t via 0.0==0.0 regardless of the real values. The dedicated
-     * `i128-*?` comparison surface (KNOWN_ISSUES.md) is unaffected. */
+    /* Generic comparison over i128 uses the shared fixed-width kernel rather
+     * than as_number_vm(), which cannot inspect the boxed 128-bit payload. */
     if (a.type == VAL_I128 || b.type == VAL_I128) {
-        vm_raise_error_msg(vm,
-            "=: i128 comparison is not supported on the VM (no i128 opcodes "
-            "are implemented in the bytecode interpreter); use i128=? or "
-            "the native backend");
+        vm_push(vm, a); vm_push(vm, b);
+        vm_dispatch_native(vm, 2112);
         return;
     }
     if (vm_either_ad_carrier(a, b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm, a) == as_number_vm(vm, b))); return; }
@@ -80,12 +75,11 @@ static void vm_exec_eq(VM* vm) {
 
 static void vm_exec_lt(VM* vm) {
     Value b = vm_pop(vm), a = vm_pop(vm);
+    if (!vm_require_arithmetic_numbers(vm, a, b, "<")) return;
     /* SW-09b: see vm_exec_eq(). */
     if (a.type == VAL_I128 || b.type == VAL_I128) {
-        vm_raise_error_msg(vm,
-            "<: i128 comparison is not supported on the VM (no i128 opcodes "
-            "are implemented in the bytecode interpreter); use i128<? or "
-            "the native backend");
+        vm_push(vm, a); vm_push(vm, b);
+        vm_dispatch_native(vm, 2113);
         return;
     }
     if (vm_either_ad_carrier(a, b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <  as_number_vm(vm, b))); return; }
@@ -96,12 +90,11 @@ static void vm_exec_lt(VM* vm) {
 
 static void vm_exec_gt(VM* vm) {
     Value b = vm_pop(vm), a = vm_pop(vm);
+    if (!vm_require_arithmetic_numbers(vm, a, b, ">")) return;
     /* SW-09b: see vm_exec_eq(). */
     if (a.type == VAL_I128 || b.type == VAL_I128) {
-        vm_raise_error_msg(vm,
-            ">: i128 comparison is not supported on the VM (no i128 opcodes "
-            "are implemented in the bytecode interpreter); use i128>? or "
-            "the native backend");
+        vm_push(vm, a); vm_push(vm, b);
+        vm_dispatch_native(vm, 2114);
         return;
     }
     if (vm_either_ad_carrier(a, b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >  as_number_vm(vm, b))); return; }
@@ -112,12 +105,11 @@ static void vm_exec_gt(VM* vm) {
 
 static void vm_exec_le(VM* vm) {
     Value b = vm_pop(vm), a = vm_pop(vm);
+    if (!vm_require_arithmetic_numbers(vm, a, b, "<=")) return;
     /* SW-09b: see vm_exec_eq(). */
     if (a.type == VAL_I128 || b.type == VAL_I128) {
-        vm_raise_error_msg(vm,
-            "<=: i128 comparison is not supported on the VM (no i128 opcodes "
-            "are implemented in the bytecode interpreter); use i128<=? or "
-            "the native backend");
+        vm_push(vm, a); vm_push(vm, b);
+        vm_dispatch_native(vm, 2115);
         return;
     }
     if (vm_either_ad_carrier(a, b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <= as_number_vm(vm, b))); return; }
@@ -128,12 +120,11 @@ static void vm_exec_le(VM* vm) {
 
 static void vm_exec_ge(VM* vm) {
     Value b = vm_pop(vm), a = vm_pop(vm);
+    if (!vm_require_arithmetic_numbers(vm, a, b, ">=")) return;
     /* SW-09b: see vm_exec_eq(). */
     if (a.type == VAL_I128 || b.type == VAL_I128) {
-        vm_raise_error_msg(vm,
-            ">=: i128 comparison is not supported on the VM (no i128 opcodes "
-            "are implemented in the bytecode interpreter); use i128>=? or "
-            "the native backend");
+        vm_push(vm, a); vm_push(vm, b);
+        vm_dispatch_native(vm, 2116);
         return;
     }
     if (vm_either_ad_carrier(a, b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >= as_number_vm(vm, b))); return; }

@@ -265,6 +265,17 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (max a . rest) (fold-left _max2 a rest))\n"
     "(define (min a . rest) (fold-left _min2 a rest))\n"
     "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
+    /* SW-173: `list`, `vector` and `string` are compiled by head symbol in
+     * CALL position (vm_compiler.c lowers `(list a b)` to a cons chain and
+     * `(vector …)` to OP_VEC_CREATE before it ever looks a binding up), so
+     * the names themselves had no VALUE — `(map list xs)` died with
+     * "undefined variable 'list'" while `(map (lambda (x) (list x)) xs)`
+     * worked. These give the bare names the honest variadic procedure the
+     * call position already implements; the head-symbol fast paths are
+     * unaffected because they are matched before any variable lookup. */
+    "(define (list . args) args)\n"
+    "(define (vector . args) (list->vector args))\n"
+    "(define (string . chars) (list->string chars))\n"
     "(define (format fmt . args) (_format-list fmt args))\n"
     /* Keep the documented seed spelling available in the VM's always-loaded
      * prelude; it delegates to the same fixed-arity srand48 builtin used by
@@ -288,6 +299,11 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "  (cond ((null? args) (_write1 value))\n"
     "        ((null? (cdr args)) (_write2 value (car args)))\n"
     "        (else (error \"write: expected one value and at most one port\"))))\n"
+    "(define _newline0 newline)\n"
+    "(define (newline . args)\n"
+    "  (cond ((null? args) (_newline0))\n"
+    "        ((null? (cdr args)) (_newline1 (car args)))\n"
+    "        (else (error \"newline: expected at most one port\"))))\n"
     "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
     "(define (make-fact . args) (_make-fact1 (if (and (not (null? args)) (null? (cdr args)) (pair? (car args))) (car args) args)))\n"
     "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n"

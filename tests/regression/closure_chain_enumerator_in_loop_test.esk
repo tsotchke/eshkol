@@ -1,0 +1,76 @@
+;; LE-17: a for-each lambda inside a named-let loop that also writes an
+;; outer vector-of-vectors, calling a recursive chain enumerator (named-let
+;; `extend`, `filter`, `append` of recursive results) whose result is
+;; discarded, used to crash native compilation. Minimized from
+;; .scratch/math-stream-repros/crash_chains_in_closure_minimal_variant.esk.
+(require stdlib)
+
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (remove-nth l i) (let loop ((l l) (k 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ k 1) (if (= k i) acc (cons (car l) acc))))))
+
+;; Recursive chain enumerator: named-let (extend) carrying the partial chain,
+;; a `filter` lambda, `append` of the recursive results. LE-17's namesake shape.
+(define (chains n-size k allowed)
+  (let extend ((k k) (partial '()))
+    (if (= k -1)
+        (list partial)
+        (let ((cands (filter (lambda (x) (and (memv x allowed) (or (null? partial) (< (car partial) x)))) (range n-size))))
+          (let loop ((cs cands) (acc '()))
+            (if (null? cs) acc
+                (loop (cdr cs) (append (extend (- k 1) (cons (car cs) partial)) acc))))))))
+
+(define (make-matrix rows cols) (let ((M (make-vector rows 0))) (let loop ((i 0)) (if (< i rows) (begin (vector-set! M i (make-vector cols 0)) (loop (+ i 1))))) M))
+(define (mat-rows A) (vector-length A))
+(define (mat-cols A) (if (= 0 (vector-length A)) 0 (vector-length (vector-ref A 0))))
+(define (mref A i j) (vector-ref (vector-ref A i) j))
+(define (mset! A i j v) (vector-set! (vector-ref A i) j v))
+;; place block B at (r0, c0) in the outer vector-of-vectors M, added
+(define (place! M r0 c0 B sign)
+  (let li ((i 0)) (if (< i (mat-rows B)) (begin (let lj ((j 0)) (if (< j (mat-cols B)) (begin (mset! M (+ r0 i) (+ c0 j) (+ (mref M (+ r0 i) (+ c0 j)) (* sign (mref B i j)))) (lj (+ j 1))))) (li (+ i 1))))))
+
+(define (intersect A B) (filter (lambda (x) (memv x B)) A))
+(define (intersect-all sets) (if (null? (cdr sets)) (car sets) (intersect-all (cons (intersect (car sets) (cadr sets)) (cddr sets)))))
+(define (subsets-of-size items k)
+  (if (= k 0) (list '())
+      (let loop ((l items) (acc '()))
+        (if (null? l) (reverse acc)
+            (loop (cdr l) (append (reverse (map (lambda (rest) (cons (car l) rest)) (subsets-of-size (cdr l) (- k 1)))) acc))))))
+(define (offsets bases) (let lo ((bs bases) (o 0) (acc '())) (if (null? bs) (reverse acc) (lo (cdr bs) (+ o (length (car bs))) (cons o acc)))))
+
+(define N-SIZE 16)
+(define U1 (range 15))
+(define U2 (range 14))
+
+;; For each (p,q,J) block, find the sibling block one Cech-degree up and
+;; place a stub row there; finding it also calls `chains` again with its
+;; result UNUSED. That dead call, made from the for-each lambda inside the
+;; named-let `loop` while M (the outer vector-of-vectors) is live across it,
+;; is what triggers the crash -- drop it and the crash vanishes.
+(define (dtm-debug cover n pmax qmax)
+  (let* ((k (length cover)) (open-of (lambda (I) (intersect-all (map (lambda (i) (list-ref cover i)) I))))
+         (blocks (lambda (deg) (let loop ((p 0) (acc '())) (if (> p (min deg pmax)) (reverse acc) (loop (+ p 1) (if (<= (- deg p) qmax) (append (reverse (map (lambda (J) (list p (- deg p) J)) (subsets-of-size (range k) (+ p 1)))) acc) acc))))))
+         (src (blocks n)) (dst (blocks (+ n 1)))
+         (dim-of (lambda (b) (length (chains N-SIZE (cadr b) (open-of (caddr b))))))
+         (src-dims (map dim-of src)) (dst-dims (map dim-of dst))
+         (src-off (offsets (map (lambda (d) (range d)) src-dims))) (dst-off (offsets (map (lambda (d) (range d)) dst-dims)))
+         (M (make-matrix (apply + dst-dims) (apply + src-dims))))
+    (let loop ((ss src) (so src-off))
+      (if (not (null? ss))
+          (let* ((b (car ss)) (p (car b)) (q (cadr b)) (J (caddr b)) (UJ (open-of J)))
+            (for-each (lambda (K)
+                        (let ((i (let find ((l K) (idx 0)) (if (memv (car l) J) (find (cdr l) (+ idx 1)) idx))))
+                          (if (equal? (remove-nth K i) J)
+                              (let ((target (let find ((ds dst) (o dst-off)) (cond ((null? ds) #f) ((equal? (car ds) (list (+ p 1) q K)) (car o)) (else (find (cdr ds) (cdr o)))))))
+                                (if target
+                                    (let* ((chJ (chains N-SIZE q UJ)) (R (make-matrix 1 1)))
+                                      (mset! R 0 0 1)
+                                      (place! M target (car so) R (if (even? i) 1 -1))))))))
+                      (subsets-of-size (range k) (+ p 2)))
+            (loop (cdr ss) (cdr so)))))
+    (list M (apply + src-dims))))
+
+(define D0 (dtm-debug (list U1 U2) 0 1 3))
+(if (and (= (mat-rows (car D0)) 210) (= (cadr D0) 29))
+    (begin (display "PASS: closure chain enumerator in for-each/named-let loop") (newline))
+    (begin (display "FAIL: expected (210 29), got ") (display (list (mat-rows (car D0)) (cadr D0))) (newline)
+           (exit 1)))

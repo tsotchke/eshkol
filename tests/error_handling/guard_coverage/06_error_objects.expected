@@ -1,0 +1,1 @@
+PASS:error-caught PASS:error-object-yes PASS:error-object-no-number PASS:error-object-no-string PASS:error-object-no-symbol PASS:error-object-no-list PASS:error-message PASS:error-irritants-empty PASS:error-object-as-test PASS:error-object-test-falls-through PASS:error-object-reraise

@@ -1,0 +1,4 @@
+{"action": "adopt", "id": "single-home-numeric-primitive", "new_baseline": 42, "old_baseline": 0, "reason": "tensor validation class closure baseline", "repo": "eshkol-issues-class", "timestamp": "2026-08-29T01:28:43Z"}
+{"action": "adopt", "id": "no-loop-invariant-conversion", "new_baseline": 250, "old_baseline": 0, "reason": "tensor validation class closure baseline", "repo": "eshkol-issues-class", "timestamp": "2026-08-29T01:28:48Z"}
+{"action": "adopt", "id": "hot-loops-are-not-scalar", "new_baseline": 63, "old_baseline": 0, "reason": "tensor validation class closure baseline", "repo": "eshkol-issues-class", "timestamp": "2026-08-29T01:28:50Z"}
+{"action": "adopt", "id": "no-threads-created-per-call", "new_baseline": 14, "old_baseline": 0, "reason": "tensor validation class closure baseline", "repo": "eshkol-issues-class", "timestamp": "2026-08-29T01:28:50Z"}

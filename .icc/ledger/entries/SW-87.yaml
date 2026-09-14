@@ -1,0 +1,29 @@
+id: SW-87
+bucket: LOUD-ERROR
+status: open
+title: 'native: the guard VARIABLE is an SSA value, not a binding, so it can be neither assigned nor captured'
+repro: '(display (guard (e (#t (set! e (list ''mutated e)) e)) (raise ''orig)))
+
+  (define captured (guard (e (#t (lambda () e))) (raise ''captured-value)))
+
+  (display (captured))'
+observed: 'Two failures from one cause, both on jit / aot-o0 / aot-o2 and neither on the VM axes, which
+  run both forms correctly: (a) `set!` on the variable is rejected - "ERROR: set!: variable ''e'' is not
+  mutable (not an alloca, global, or capture pointer)", exit 1; (b) CAPTURING it in a closure fails LLVM
+  module verification - "Failed to generate LLVM IR from batch" / "Instruction does not dominate all uses!",
+  exit 1. (b) is the worse of the two: the guard value is defined in the handler block and the capture
+  does not dominate its uses, so the failure takes the whole compilation unit down rather than just the
+  offending form. This is a native-vs-VM divergence in which the native side is the nonconforming one.'
+correct: (mutated orig) captured-value
+caught_by:
+- guard-coverage-gate
+missed_by:
+- vm-parity
+- differential
+- error-handling-suite
+repro_file: tests/error_handling/guard_coverage/found/native_guard_variable_not_a_binding.esk
+notes: 'LOUD, so not tag-blocking: it fails to compile with a precise diagnostic rather than answering
+  wrongly. codegenGuard binds the guard variable to an SSA value (symbol_table[var_name] = raised_tagged);
+  making it assignable means giving it an entry-block alloca and registering it as a mutable binding,
+  which is binding-codegen work rather than clause-reader work and is out of this branch''s scope. Measured
+  every run by 18_guard_variable_mutation.esk on the VM axes.'

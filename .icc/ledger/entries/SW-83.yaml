@@ -1,0 +1,34 @@
+id: SW-83
+bucket: SILENT-WRONG
+status: closed
+closed_at: branch test/guard-coverage-esh-0101
+closed_by: branch test/guard-coverage-esh-0101
+title: a closure created inside a guard clause pointed at unrelocated code, so calling it ran the wrong
+  function
+repro: '(define f (guard (e (#t (lambda (x) (+ x 100)))) (raise 1)))
+
+  (display (f 1))'
+observed: '1, exit 0 (want 101). Measured on vm-src at 904d5df6. A guard handler is compiled as its own
+  function and then INLINED into the parent chunk at hfunc_pc. The inliner relocated jump operands and
+  the handler''s own entry pc, but a nested `lambda` stores its entry pc in a CONSTANT that OP_CLOSURE
+  names by index: the index was remapped, the pc it points at never was. Every closure built inside a
+  guard clause therefore ran whatever happened to live at its unrelocated offset near the start of the
+  program. Both bytecode compilers carried the bug independently (lib/backend/vm_compiler.c and lib/backend/eshkol_compiler.c).'
+correct: '101'
+observed_after: 101 on vm-src and vm-eskb (verified directly at 722206be), and tests/error_handling/guard_coverage/10_guard_scoping.esk's
+  closure-captures-var check plus 02_arrow_clause.esk's lambda receiver are green on all five axes.
+fix: Relocate the mapped constant by hfunc_pc when copying an OP_CLOSURE, once per constant (a reloc_seen[]
+  bitmap keeps the += idempotent when two OP_CLOSURE instructions share one constant, which would otherwise
+  be a fresh bug of the same shape).
+evidence: tests/error_handling/guard_coverage/02_arrow_clause.esk + 10_guard_scoping.esk on the VM axes.
+caught_by:
+- guard-coverage-gate
+missed_by:
+- vm-parity
+- differential
+- error-handling-suite
+notes: 'The instructive part is how it was found. On its own the defect is SILENT - it hands back a callable
+  that runs the wrong code - and it stayed silent for as long as nothing called such a closure promptly.
+  Adding `=>` (SW-78) made it LOUD, because an arrow clause applies its receiver immediately: a lambda
+  receiver re-entered the top of the program and ran to STACK OVERFLOW. A wrong answer became a crash,
+  which is how a two-line relocation bug surfaced at all.'

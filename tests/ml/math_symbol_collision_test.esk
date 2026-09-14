@@ -1,0 +1,124 @@
+;;; A libm math symbol must never bind to something else that shares its name.
+;;;
+;;; Measured on the v1.3.5 candidate (a670a919), both halves correct alone:
+;;;
+;;;   (define t (tensor (list -2.0 1.0)))
+;;;   (display (tensor-ref (elu t 2) 0))   ; alone: -1.7293294335267746
+;;;   (display (exp -2.0))                 ; alone:  0.1353352832366127
+;;;
+;;; together:
+;;;
+;;;   [Eshkol] fatal signal: SIGSEGV (segmentation fault) at address 0x10
+;;;
+;;; The crash was in the COMPILER, not the program: llvm::CallInst::Create
+;;; called with a null FunctionType, reached from codegenMathFunction.
+;;;
+;;; Mechanism. Six activation lowerings -- elu, selu, celu, silu, mish and
+;;; softplus -- materialised `exp` by BARE MODULE NAME
+;;; (module().getFunction("exp"), else declare one). AutodiffCodegen::getMathFunc
+;;; then found that module symbol by name and returned it WITHOUT recording it
+;;; in the shared function_table, so the scalar path's `function_table["exp"]`
+;;; -- operator[] on an unordered_map -- INSERTED A NULL and handed it to
+;;; IRBuilder::CreateCall.
+;;;
+;;; `exp` was the only name exposed to this because it was the one libm entry
+;;; BuiltinFactoryCodegen never pre-declared; `log`, `tanh`, `cos`, `pow`,
+;;; `sqrt`, `floor`, `trunc` and `atan2` all had a row already, which is why
+;;; `(elu t 2)` beside `(log 2.0)` was fine. `sigmoid` was fine for the other
+;;; reason that matters here: it already obtained `exp` as the NAMESPACED
+;;; intrinsic `llvm.exp.f64`, which no module symbol can shadow.
+;;;
+;;; Order mattered and that is the tell: `(exp -2.0)` BEFORE the activation
+;;; registered the row and everything worked; the activation first and the
+;;; scalar builtin died.
+;;;
+;;; Each case below pairs a lowering that materialises a libm symbol with the
+;;; scalar builtin of the same name, in one program. On the unfixed compiler
+;;; the first six do not produce a wrong number -- they abort the compiler.
+
+(require stdlib)
+
+(define failures 0)
+
+(define (check-close name got want tol)
+  (if (< (abs (- got want)) tol)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name)
+             (display " got ") (display got)
+             (display " want ") (display want) (newline))))
+
+(display "=== MATH SYMBOL COLLISION TESTS ===") (newline)
+
+(define t (tensor (list -2.0 1.0)))
+
+;; ------------------------------------------------------------------
+;; 1. The six activations that materialised `exp`, each beside (exp x).
+;;    This is the reported repro; every one of these crashed the compiler.
+;; ------------------------------------------------------------------
+(check-close "elu beside exp: elu"   (tensor-ref (elu t 2) 0) -1.7293294335267746 1e-12)
+(check-close "elu beside exp: exp"   (exp -2.0)                0.1353352832366127 1e-12)
+
+(check-close "selu beside exp: selu" (tensor-ref (selu t) 0)  -1.520166468595695  1e-12)
+(check-close "selu beside exp: exp"  (exp 1.0)                 2.718281828459045  1e-12)
+
+(check-close "celu beside exp: celu" (tensor-ref (celu t 1.0) 0) -0.8646647167633873 1e-12)
+(check-close "celu beside exp: exp"  (exp 0.0)                 1.0                1e-12)
+
+(check-close "silu beside exp: silu" (tensor-ref (silu t) 0)  -0.2384058440442351 1e-12)
+(check-close "silu beside exp: exp"  (exp 2.0)                 7.38905609893065   1e-12)
+
+(check-close "mish beside exp: mish" (tensor-ref (mish t) 0)  -0.2525014826957091 1e-12)
+(check-close "mish beside exp: exp"  (exp -1.0)                0.36787944117144233 1e-12)
+
+(check-close "softplus beside exp: softplus" (tensor-ref (softplus t) 0) 0.1269280110429726 1e-12)
+(check-close "softplus beside exp: exp"      (exp -3.0)                  0.049787068367863944 1e-12)
+
+;; ------------------------------------------------------------------
+;; 2. The same shape for every other libm symbol a lowering materialises.
+;;    These did not crash -- the pre-declared function_table row saved them --
+;;    but they went through the identical bare-name lookup, so they gate the
+;;    class rather than the one instance.
+;; ------------------------------------------------------------------
+;; mish and softplus also materialise `log`; the loss lowerings materialise it too.
+(check-close "mish beside log: log" (log 2.0) 0.6931471805599453 1e-12)
+(check-close "cross-entropy beside log: loss"
+             (cross-entropy-loss (tensor (list 0.2 0.8)) (tensor (list 0.0 1.0)))
+             0.43748795048588573 1e-12)
+(check-close "cross-entropy beside log: log" (log 10.0) 2.302585092994046 1e-12)
+
+;; mish materialises `tanh`, and the tanh activation is its own witness.
+(check-close "tanh activation beside tanh: tensor" (tensor-ref (tanh t) 0) -0.9640275800758169 1e-12)
+(check-close "tanh activation beside tanh: scalar" (tanh 2.0) 0.9640275800758169 1e-12)
+
+;; tensor-std materialises `sqrt`.
+(check-close "tensor-std beside sqrt: std"  (tensor-std t) 1.5 1e-12)
+(check-close "tensor-std beside sqrt: sqrt" (sqrt 2.0) 1.4142135623730951 1e-12)
+
+;; The cosine LR schedule materialises `cos`; step decay materialises `pow`
+;; and `floor`; quotient on flonums materialises `trunc`.
+(check-close "cosine-annealing beside cos: lr"  (cosine-annealing-lr 0.1 0.001 500 1000) 0.0505 1e-12)
+(check-close "cosine-annealing beside cos: cos" (cos 2.0) -0.4161468365471424 1e-12)
+(check-close "step-decay beside pow/floor: lr"    (step-decay-lr 0.1 0.5 4 2) 0.025 1e-12)
+(check-close "step-decay beside pow/floor: expt"  (expt 2.0 3.0) 8.0 1e-12)
+(check-close "step-decay beside pow/floor: floor" (floor 2.7) 2.0 1e-12)
+(check-close "quotient beside truncate: quotient" (quotient 7.0 2.0) 3.0 1e-12)
+(check-close "quotient beside truncate: truncate" (truncate -2.7) -2.0 1e-12)
+
+;; The complex `angle` lowering materialises `atan2`; two-argument `atan` is
+;; the scalar builtin of the same name.
+(check-close "angle beside atan2: atan" (atan 1.0 2.0) 0.4636476090008061 1e-12)
+
+;; ------------------------------------------------------------------
+;; 3. The activations that were already correct must stay correct: their
+;;    values are the evidence that moving to the intrinsic changed no answer.
+;; ------------------------------------------------------------------
+(check-close "sigmoid unchanged"  (tensor-ref (sigmoid t) 0)  0.11920292202211755 1e-12)
+(check-close "softmax unchanged"  (tensor-ref (softmax t) 0)  0.04742587317756679 1e-12)
+(check-close "gelu unchanged"     (tensor-ref (gelu t) 0)    -0.04540230591222494 1e-12)
+(check-close "elu default alpha"  (tensor-ref (elu t) 0)     -0.8646647167633873  1e-12)
+
+(display "=== ")
+(display (if (= failures 0) "ALL TESTS PASSED" "TESTS FAILED"))
+(display " ===")
+(newline)

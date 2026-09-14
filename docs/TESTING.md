@@ -11,7 +11,7 @@ Eshkol's correctness is defended by two layers of automated tests:
    readiness oracle consumes, so a green release requires them to pass.
 
 Every root-cause fix ships with a dedicated regression gate wired into the
-readiness oracle. The v1.3.4-evolve cycle adds, among others:
+readiness oracle. The v1.3.4-evolve cycle added, among others:
 `iter_scope_partial_reclaim` (resident-loop flat RSS with persistent mutation),
 `resident_longrun_flat` (SW-57: the same claim measured at two tick horizons and
 gated on the *slope*, on the arena's exact byte counter rather than peak RSS —
@@ -20,6 +20,25 @@ see `tests/memory/resident_longrun_flat_gate.sh`),
 `parallel-map`), the 25-check gradient-through-callable suite, the Ozaki-II
 exact/fast GEMM correctness gates, `i128` native+VM parity, and the
 `31_tensor_matmul` VM-parity corpus.
+
+The v1.3.5-evolve cycle adds the assurance-gate family (every
+`scripts/check_*.py` and `scripts/gate_*.py`, each with its own `--self-test`),
+the VM region-evacuator memory gates
+(`tests/memory/vm_region_flat_rss_test.sh`,
+`tests/memory/vm_region_evac_subtype_coverage_test.sh`,
+`tests/memory/vm_region_growth_watchdog_test.sh`), the leak-detector self-test
+and leak audit (`scripts/check_leak_detection_selftest.sh`,
+`tests/memory/leak_audit_gate.sh`), the closed-enum exhaustive-dispatch gate
+(`scripts/gate_exhaustive_dispatch.py`), the AD exactness and one-pass gradient
+gates (`scripts/run_ad_exactness_gate.sh`,
+`scripts/run_one_pass_gradient_gate.sh`), the AD carrier gate
+(`scripts/gate_ad_shared_node_model.py`), the node-identity and object-ABI
+baselines (`scripts/run_node_identity_gate.py`,
+`scripts/abi_header_inventory.py`), the linear-`Qubit` engine-parity gate
+(`tests/typesystem/qubit_linearity_engine_parity_gate.sh`), the continuations
+suite (`scripts/run_continuation_tests.sh`), and the GPU correctness gate with
+its must-fail canary (`tests/gpu/gpu_correctness_gate.sh`,
+`tests/gpu/gate_canary_must_fail.esk`). Each is described below.
 
 All harnesses honor the `BUILD_DIR` environment variable (default `build/`), so
 you can point them at any built tree:
@@ -84,11 +103,13 @@ criterion vacuous.
 Eight criteria are wired as of v1.3.4-evolve. Five read CTest directly — the
 `ctest_suite_green` whole-suite roll-up plus the
 `fixed_point_exact_accumulation_gate`, `exact_input_ad_identity_gate`,
-`runtime_closure_arity_spread_gate` and `define_library_same_unit_gate` groups —
-and three read the sibling harnesses that judge the same cut:
-`vm_surface_regression_suite` (kind `vm_surface`), `vm_parity_gate` (kind
-`vm_parity`) and `event_loop_works` (kind `eshkol_smoke`). Measured on the
-current v1.3.4 tree, CTest is **183/183**; the value-position and compound-accessor regression is green.
+`runtime_closure_arity_spread_gate`, `define_library_same_unit_gate` and
+`module_load_path_engine_parity_gate` groups — and three read the sibling
+harnesses that judge the same cut: `vm_surface_regression_suite` (kind
+`vm_surface`), `vm_parity_gate` (kind `vm_parity`) and `event_loop_works`
+(kind `eshkol_smoke`). Remeasured at commit `afbaaf5b` on 2026-08-26, CTest is
+**198/198** (superseding the prior 183/183, which was correct on an earlier
+commit); the value-position and compound-accessor regression is green.
 
 ### ABI semantic inventory dependency
 
@@ -124,8 +145,10 @@ it in the script's coverage manifest.
 
 ## The five adversarial harnesses
 
-The campaign design lives in `.swarm/ADVERSARIAL_TESTING_CAMPAIGN.md`; the ICC
-oracle wiring lives in `.icc/completion-oracles.yaml`.
+The ICC oracle wiring for every pillar lives in
+`.icc/completion-oracles.yaml`; the per-harness CI census (what runs per-PR,
+what is nightly, what needs special hardware, and what is deliberately
+unwired) is `docs/design/PILLAR_CI_INVENTORY.md`.
 
 ### P1 — Multi-path differential harness + fuzzer
 
@@ -200,10 +223,13 @@ VM-supported nor consciously waived in `tests/vm_parity/PARITY.tsv`. A
 VM-vs-native differential over `tests/vm_parity/corpus/` then keeps shared
 symbols honest. Full write-up in [VM_PARITY.md](VM_PARITY.md).
 
-Measured on the current v1.3.4 tree: the differential is **184/184** and the
-manifest is **956 rows — 581 `vm-supported`, 44 `native-only-justified`, 331
-`gap`**; verified behavioral divergences remain explicit `gap` rows with
-reproducible programs under `tests/vm_parity/found/`.
+Last measured at commit `afbaaf5b` on 2026-08-26: the differential is
+**188/188** (superseding the earlier 184/184, which counted the corpus
+differential rather than the full manifest gate) and the manifest is **956
+rows — 581 `vm-supported`, 44 `native-only-justified`, 331 `gap`**; verified
+behavioral divergences remain explicit `gap` rows with reproducible programs
+under `tests/vm_parity/found/`. The corpus has grown since that commit, so the
+differential figure must be regenerated on the v1.3.5-evolve release cut.
 
 ```bash
 BUILD_DIR=build scripts/run_vm_parity.sh
@@ -226,6 +252,42 @@ executes the VM-supported corpus under Node, and byte-diffs its stdout against
 native `eshkol-run -r`, so a VM regression that only manifests in WASM is caught.
 Per-file divergences are tracked in `tests/wasm_diff/EXCLUSIONS.tsv`
 (`EXCLUDED` / `XFAIL`), an unexpected match failing the gate.
+
+### Guard coverage gate (ESH-0101)
+
+**What:** R7RS `guard` on every engine, graded against a **hand-authored
+golden** rather than against another engine. `guard` previously had two kinds
+of coverage and neither was complete: `tests/error_handling/*.esk` are
+compiled AOT and run by `scripts/run_error_handling_tests.sh`, so no `guard`
+program was ever executed under `-r` or on the VM; and the harnesses that do
+run several engines (P1 differential, P5 parity) compare the engines to *each
+other*, so a clause form both backends get wrong the same way passes by
+agreement. That blind spot is why `(test => receiver)` and the test-only
+`(test)` clause — two of the three cond-clause shapes R7RS 4.2.7 allows inside
+`guard` — were silently wrong on native *and* on the VM (`SW-78`, `SW-79`).
+
+Each case in `tests/error_handling/guard_coverage/` carries a
+`<case>.expected` golden and runs on five axes: `jit` (`-r`), `aot-o0`,
+`aot-o2` (two optimization levels, because the ESH-0102 lineage was an
+`-O1`+-only crash), `vm-src` and `vm-eskb`. `fatal/*.esk` are fail-closed
+probes: an unhandled `raise`, an unmatched guard's re-raise, and an uncaught
+`error` must each exit nonzero, print a diagnostic on stderr, and never reach
+their `MUST-NOT-PRINT` sentinel. Any `(case, axis)` pair that is not required
+is declared — with a mandatory justification — in
+`tests/error_handling/guard_coverage/ENGINES.tsv`, and the gate fails on a
+stale or unjustified row, so an engine losing a form must be written down.
+
+`guard` in **tail position** is deliberately out of scope here; that is
+`SW-58` and is pinned by `tests/tco/guard_tail_context/`.
+
+```bash
+BUILD_DIR=build scripts/run_guard_coverage.sh
+```
+
+Trace kind: `guard_coverage` (`guard_coverage_gate` is the whole-gate
+verdict), consumed by the `guard_coverage_gate` criterion in
+`.icc/completion-oracles.yaml`. Runs in CI's `pillars-fast` job, which already
+builds the three targets it needs.
 
 
 ## P8 — escape-closure pillar
@@ -272,7 +334,16 @@ would have been caught here first. Each axis names the escape it closes.
    builtin across doc mention ↔ manifest entry ↔ native registration ↔ VM
    dispatch ↔ module provide list, against a shrink-only baseline
    (`tests/escape_matrix/five_way_baseline.json`). Closes a
-   documented-but-not-registered backend-asymmetry class.
+   documented-but-not-registered backend-asymmetry class. "Native
+   registration" means any vehicle the native engine actually reaches a name
+   by — a builtin/AOT dispatch table, the parser + codegen syntax path for a
+   declared special form, the compiled-in prelude, a core/stdlib module
+   definition, or the public construct a row's `mirrors:` annotation names
+   (see `tests/coverage/README.md`) — since reading the builtin tables alone
+   reports operators as absent from an engine that runs them.
+   `five_way_surface.py --self-test` checks those resolution rules on
+   synthetic surfaces, so a weakened rule fails the axis instead of turning it
+   green by excusing everything; the axis runs it before the gate.
 7. **Fault injection** — a matrix that injects missing / unopenable / malformed
    source, a bad `(require …)`, a broken `--lib`, a bad output path, an
    undefined symbol, and a hang into the `-r` and AOT drivers, asserting a
@@ -308,17 +379,21 @@ release gates (e.g. `stress-budget`, `ad-oracle`). A release is "ready" only
 when the required oracles report their green verdicts, which is how the
 adversarial layer is enforced rather than merely available.
 
-On the v1.3.4-evolve cut the oracle reports a score of **100** with verdict
-**`ready`**. The gate figures behind it, all measured on that cut: aggregate
-suite **45/45** suites and **770** individual tests; CTest **183/183**;
-executable language coverage **1,091/1,091** (100.0%, floor PASS); SICP
-full-book **88/88** probes under both `-r` and AOT; reference-Scheme
-differential **34/34 AGREE** against chibi-scheme 0.12.0; VM parity
-differential **184/184**; qLLM oracle gate **10/10**.
+On the v1.3.4-evolve cut the oracle reported a score of **100** with verdict
+**`ready`**. The gate figures behind it: aggregate suite **46/46** suites;
+CTest **198/198**; executable language coverage **1,108/1,108** (100.0%, floor
+PASS); SICP full-book **88/88** probes under both `-r` and AOT;
+reference-Scheme differential **34/34 AGREE** against chibi-scheme 0.12.0; VM
+parity differential **188/188**; qLLM oracle gate **10/10**. CTest, coverage
+and VM parity were remeasured at commit `afbaaf5b` on 2026-08-26 (doc-truth
+audit findings B6/N4) and supersede the prior 183/183, 1,091/1,091 and 184/184
+figures. The v1.3.5-evolve roll-up is regenerated by the release battery; the
+individual-test total must come from a full suite run on that cut rather than
+being carried forward.
 
 ---
 
-## Assurance gates (v1.3.5 wave 1, #454)
+## Assurance gates (v1.3.5-evolve)
 
 ### Split silent-wrong ledger and generated API reference
 
@@ -361,6 +436,14 @@ self-testing CI gates:
   no-open-silent-wrong gate gained a self-test mode; it graded the ledger
   already but had never actually been wired into any CI workflow before
   this wave.
+- **`scripts/gen_api_docs.py --check`** fails when `docs/api/` would
+  regenerate to different content than what's committed — a stale or
+  missing generated page for a public header. It is build-free (it reads
+  headers, not compiled output), so it runs in the same `assurance-gates`
+  job as the three gates above rather than only being a `make api-docs`
+  step contributors are asked to remember. Motivating incident: four PRs
+  in the v1.3.5 wave added public headers without regenerating
+  `docs/api/`, leaving six headers with no generated page at all.
 
 Each gate's self-test feeds it deliberately-broken fixtures (malformed
 YAML, a duplicate id, a missing required field) plus one well-formed one,
@@ -385,6 +468,163 @@ oracle alongside the pre-existing `no_open_silent_wrong` criterion, added
 as `ctest` entries next to the repo's other Python-based validators, and
 run in a fast `assurance-gates` CI job (pure Python over checked-out
 files, no build step) modeled on the existing surface-manifest job.
+
+### Wave 2 (#465) and the release-machinery gates (#493, #485, #500, #503)
+
+The `assurance-gates` job has since grown well past those three. It builds
+nothing — it is pure Python over the checked-out files — which is why it is
+the one required context that runs on every PR shape, docs-only included.
+Every gate runs its own `--self-test` first (deliberately broken fixtures it
+must go red on, plus a good fixture it must go green on), so the job proves
+each gate CAN fail before it reports that nothing failed.
+
+- **`scripts/check_self_verdicts.py`** scans harness output for a
+  self-reported failure hiding behind an overall PASS verdict. In this job
+  nothing has been built, so it grades vacuously clean; the real scan runs
+  inside `scripts/run_ctest_gate.sh`, `scripts/run_icc_smoke.sh` and
+  `scripts/run_vm_parity.sh`.
+- **`scripts/check_build_fingerprint.py`** records the binary a harness
+  actually measured, so a trace cannot be credited to a build it did not come
+  from.
+- **`scripts/check_evidence_staleness.py --require-trace-dir`** runs last,
+  after the gates above have deposited fresh evidence in
+  `scripts/icc_traces/`. `--require-trace-dir` turns an empty or absent trace
+  directory into `NO_DATA` (exit 2) rather than a silent PASS.
+- **`scripts/audit_oracle_false_green.py`** enforces that no oracle target may
+  read `ready` on zero evidence. This is the gate that closed the
+  `gpu-execution` false green (#472): absent evidence now reads as unmeasured,
+  never as satisfied.
+- **`scripts/check_required_context_consistency.py --offline`** (#485)
+  certifies that every intended required status context in
+  `.icc/required-status-contexts.json` is reportable on every PR shape,
+  including a docs-only PR where the matrix jobs never instantiate. It grades
+  the committed target file, not only the live set, so a branch-protection
+  list that is temporarily narrower than intended cannot read as "nothing to
+  fix", and it reports `NO_DATA` rather than PASS when neither source is
+  readable.
+- **`scripts/check_doc_claims_residual.py`** (#493) requires every ICC
+  `doc-typed-claims` "wrong" finding to be either allowlisted in
+  `.icc/doc-claims-allowlist.yaml` or an open, maintainer-tracked DOC-DEBT
+  ledger entry — zero unexplained remainder. It is a completion-oracle
+  criterion and runs with ICC rather than in the fast job.
+- **`scripts/check_surface_counts.py`** (#492) is the drift checker for the
+  language-surface counts quoted across README, FEATURE_MATRIX, the
+  architecture model and every `docs/reference/*/INDEX.md`. It reads the
+  canonical totals from `tests/coverage/coverage_policy.json` and
+  `tests/coverage/language_surface.json` and fails on any mismatch.
+- **`scripts/check_package_manifest.py`** and
+  **`scripts/check_diagnostic_corpus.py`** check packaging-manifest and
+  diagnostic-corpus integrity.
+- **`scripts/check_ps1_encoding.py`** (#503) fails any tracked `*.ps1`/`*.psm1`
+  carrying a non-ASCII byte without a UTF-8 BOM. PowerShell 5.1 decodes a
+  BOM-less script in the system ANSI code page while pwsh 7 assumes UTF-8, so
+  a file that parses cleanly under pwsh 7 can throw a cascade of parse errors
+  on a real 5.1 host. Execution could not have caught this; reading the files'
+  own bytes can.
+- **`scripts/gate_exhaustive_dispatch.py --no-trace`** (#500) enforces that a
+  `switch` over a closed enum may not carry a `default:`. Primary enforcement
+  is the compiler (`-Werror=switch -Werror=switch-enum`, or the
+  `ESHKOL_EXHAUSTIVE_SWITCH_BEGIN` macros in
+  `inc/eshkol/exhaustive_dispatch.h`), which can only produce an absence, not
+  evidence. This gate is the half that reports: it re-derives each closed
+  enum's members from its own definition and fails on any registered dispatch
+  site that carries a `default:`, omits a member, or has had its arming
+  removed.
+- **`scripts/gate_ad_shared_node_model.py`** (#487) checks that every AD
+  operator routes through a declared, exact, source-verified carrier, by
+  re-deriving each declaration from the emitted `case` body and comparing it
+  against `.icc/ad-carrier-manifest.yaml`. It is structural, not comparative:
+  an output differential can only compare what two carriers compute, never
+  which carrier computed it.
+
+### Pillar harnesses armed in CI (#470, ADR-0010 section 2.5)
+
+Several real, fast oracle pillars ran nowhere in CI, so their readiness
+criteria could only be graded from a trace a human generated by hand. The
+`pillars-fast` job builds `eshkol-run`, the standalone VM and the stdlib, then
+runs `scripts/check_depth_coverage.py`, `scripts/run_dbsp_gate.sh`,
+`scripts/run_mono_equiv_ad_taylor_gate.sh`,
+`scripts/run_ad_validated_bounds_gate.sh` and `scripts/run_vm_parity.sh`
+inside a disk-budget guard. `pillars-readiness` then asks ICC for a readiness
+verdict over the evidence that run produced, and uploads the trace bundle
+either way. The expensive sweeps stay nightly in `pillars-nightly.yml`.
+
+### Infrastructure failure is not code failure (#475)
+
+`scripts/lib/harness_outcome.sh` gives every harness a shared outcome
+taxonomy, so a trace records whether a probe failed because the code is wrong
+or because the environment could not run it. A missing toolchain, an
+unreachable network dependency or an absent GPU now emits a distinct outcome
+rather than an indistinguishable FAIL. Pinned by
+`tests/harness/harness_outcome_taxonomy_test.sh`.
+
+### Memory and leak gates (#461, #486)
+
+- **`scripts/check_leak_detection_selftest.sh`** proves LeakSanitizer is armed
+  under the exact `ASAN_OPTIONS`/`LSAN_OPTIONS` the `linux-x64-asan-ubsan`
+  lane uses, by compiling one probe that must be reported and one that must
+  not. Before it, the suppression file could quietly grow broad enough to
+  swallow a real leak and the lane would still read clean.
+- **`tests/memory/leak_audit_gate.sh`** is the product half: an AOT compile,
+  the compiled program, the VM and the REPL all run under `detect_leaks=1`,
+  failing on any leak `.icc/lsan-suppressions.txt` does not already name and
+  justify, plus a slope check on the one retention the suppressions do hide.
+- **`tests/memory/vm_region_flat_rss_test.sh`**,
+  **`tests/memory/vm_region_evac_subtype_coverage_test.sh`** and
+  **`tests/memory/vm_region_growth_watchdog_test.sh`** gate the Stage-1 VM
+  region evacuator: a flat peak-RSS curve across a swept iteration count,
+  complete subtype coverage on the evacuation walk, and the heap-growth
+  watchdog. The coverage gate re-runs its fixture with reclamation on and off
+  and requires identical printed results, so a reclamation knob can never
+  change an answer.
+
+### Identity, ABI, type-system and AD gates
+
+- **`scripts/run_node_identity_gate.py`** with
+  `tests/coverage/NODE_IDENTITY_BASELINE.json` feeds the
+  `adr0000-s1-identity` oracle target (#476). It measures coverage at a
+  *consumer*, not at the parser, and keeps "has an identity", "has a location"
+  and "has an extent" as three separate numbers.
+- **`scripts/abi_header_inventory.py`** with `.icc/abi-header-baseline.json`
+  ratchets the layout-dependent site inventory (ADR-0012, #488).
+- **`tests/typesystem/qubit_linearity_engine_parity_gate.sh`** pins that
+  cloning a linear `Qubit` is a rejected compile on both engines, not a
+  warning (#471).
+- **`scripts/run_ad_exactness_gate.sh`** and
+  **`scripts/run_one_pass_gradient_gate.sh`** (#474) run the
+  no-finite-differences assertion together with a negative control — a
+  difference quotient deliberately planted in the gradient path — on JIT, AOT
+  and the VM, so the assertion can still go red.
+
+### Benchmarks as a gate, not a number (#469, #490)
+
+`bench/run_public_benchmarks.sh` is a public, reproducible benchmark suite on
+the exactness axes. The `bench-smoke` job runs it with `--smoke` and asserts
+only that `results.json` is well-formed, carries the expected schema, is
+marked `smoke_mode: true`, and that every axis produced data. The job is
+`continue-on-error` and named so that a hosted-runner timing is never mistaken
+for a published figure. `bench/pgo_corpus/` is wired as a Stage-1 smoke
+consumer (ADR 0007) in the nightly `pgo-corpus-smoke` job.
+
+### GPU correctness gate (#501)
+
+See [GPU_ACCELERATION.md](breakdown/GPU_ACCELERATION.md). The gate was vacuous
+before this wave; it now carries a must-fail canary
+(`tests/gpu/gate_canary_must_fail.esk`, which asserts something permanently
+false and turns the whole run red if it exits 0, fails to compile, is missing,
+or exits non-zero without a `FAIL:` marker) and a trace-contract self-test
+proving that a SKIP writes no trace record at all, so an absent GPU can never
+be credited as a pass.
+
+### Release readiness on a self-hosted runner (#502)
+
+The `release-readiness-gate` job runs on a self-hosted Linux runner carrying
+the `eshkol` label, because ICC is not installed on hosted runners and a
+hosted runner can only report the oracle unavailable, never certify it. On a
+real tag push, absence of the oracle blocks the release; it never fail-opens
+to a green publish.
+
+## CI: docs-only PRs report every required context (#455, #477, #485)
 
 ## CI: assertion-enabled Debug lane
 

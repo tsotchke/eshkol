@@ -1,0 +1,24 @@
+;; SW-93 / audit P1 counterexample: tape release must not rewind user-visible
+;; allocations made by the differentiated function.
+(define escaped #f)
+(define (f v)
+  (set! escaped (vector 111.0 222.0))
+  (* (vector-ref v 0) (vector-ref v 0)))
+
+(define g (gradient f (vector 3.0)))
+(if (= (vector-ref g 0) 6.0)
+    (display "  ok   gradient value survives tape release\n")
+    (begin (display "FAIL: gradient value\n") (exit 1)))
+;; Force the parent arena to reuse the released tape interval. The escaped
+;; vector must remain unchanged even when subsequent user allocations create
+;; allocator pressure.
+(define pressure #f)
+(let loop ((i 0))
+  (if (< i 2000)
+      (begin (set! pressure (vector i i)) (loop (+ i 1)))
+      #f))
+(if (and (= (vector-ref escaped 0) 111.0)
+         (= (vector-ref escaped 1) 222.0))
+    (display "  ok   escaped user allocation survives tape release\n")
+    (begin (display "FAIL: escaped user allocation was reclaimed\n") (exit 1)))
+(display "PASS: tape release preserves escaped user values\n")

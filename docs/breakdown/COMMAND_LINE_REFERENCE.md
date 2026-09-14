@@ -5,6 +5,26 @@
 
 ---
 
+## eshkol (Unified Front Door)
+
+`eshkol check` performs non-executing workspace analysis. It parses the named
+source, resolves its transitive module graph with the same resolver used by the
+compiler, VM, LSP, and REPL, and reports binding diagnostics. It never runs
+project code, invokes LLVM, or writes build artifacts.
+
+```text
+eshkol check [--format human|json] <input.esk>
+eshkol doc modules [--format human|json] <input.esk>
+```
+
+The JSON output uses the stable `eshkol.workspace-check.v1` schema and includes
+deterministic module IDs, dependency IDs, diagnostic text, and binding counts.
+`eshkol doc modules` is the documentation-tooling view of the same graph; its
+JSON output is byte-identical to `eshkol check --format json` for the same
+source.
+
+---
+
 ## eshkol-run (AOT Compiler)
 
 The `eshkol-run` binary is the ahead-of-time compiler and JIT execution engine. It parses Eshkol source files, generates LLVM IR, compiles to native code, and optionally links into an executable.

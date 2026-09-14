@@ -1,0 +1,179 @@
+;;; core.quoted_bignum_literals — SW-163: a QUOTED bignum or bignum-rational
+;;; literal must be the same runtime value an EVALUATED one is, on native
+;;; JIT (`eshkol-run -r`) and AOT (`eshkol-run -o ...`) alike.
+;;;
+;;; Root cause: lib/backend/llvm_codegen.cpp's codegenQuotedAST() (the
+;;; function `(quote datum)`/'datum lowers to; codegenQuasiquote() also
+;;; falls through to it for a bare atom) switches on the AST node's type but
+;;; had no case for ESHKOL_BIGNUM_LITERAL — the AST type parser.cpp gives an
+;;; integer literal too large for int64_t (digits kept as a string, built
+;;; into a real bignum heap object at codegen time; see the SAME
+;;; ESHKOL_BIGNUM_LITERAL case a few hundred lines up, in the EVALUATED
+;;; path). Falling into the `default:` arm returned a tagged NULL:
+;;;   (number->string '123456789012345678901234567890)   printed "0"
+;;;   (exact? '123456789012345678901234567890)            was #f
+;;;   (car '(123456789012345678901234567890 1))           was ()
+;;; — the reported defect, because the null-valued first element is what
+;;; `car` returns, and display/exactness on that null tagged-value collapse
+;;; to those wrong-but-plausible answers.
+;;;
+;;; A second, related gap: `n/d` (parser.cpp) desugars AT PARSE TIME to a
+;;; `(make-rational n d)` CALL_OP — the exact same AST shape a literally
+;;; written `(make-rational n d)` call has. Quoting that shape unconditionally
+;;; as list data (the pre-fix behaviour) meant `'1/3` quoted to the 3-element
+;;; list `(make-rational 1 3)` instead of the number 1/3. Fixed by
+;;; recognizing that one narrow shape — `make-rational` applied to exactly
+;;; two int64/bignum LITERAL operands, the only shape the desugar can
+;;; produce — in codegenQuotedOperation() and constructing the real rational
+;;; value via the same eshkol_rational_make_tagged() runtime entry point the
+;;; evaluated `(make-rational n d)` call already uses. This is the identical
+;;; whitelist autodiff_codegen.cpp's towerSafeExpr() applies for the same
+;;; reason (see that file for the reasoning about why the shape check must
+;;; stay this tight).
+;;;
+;;; Fixed by: lib/backend/llvm_codegen.cpp — codegenQuotedAST()
+;;; (ESHKOL_BIGNUM_LITERAL case) and codegenQuotedOperation()
+;;; (isQuotedRationalLiteralDesugar() / codegenQuotedRationalLiteral()).
+;;;
+;;; NOT covered here: quoting a bignum-magnitude rational literal on the
+;;; BYTECODE VM (`'1/123...`). The VM has its own, entirely separate quote
+;;; lowering (lib/backend/vm_parser.c compile_quote()), which already special
+;;; -cases a plain quoted bignum (SW-155) but has no equivalent case for its
+;;; own rational-literal desugar (`(exact-rational n d)`, a different name
+;;; than native's `make-rational`) — so `'1/3` still quotes to a 3-element
+;;; list on the VM today. Likewise the VM's compile_quasiquote()'s "Atom:
+;;; number" arm ignores the `is_bignum` flag entirely, so a bignum inside a
+;;; quasiquote template is a separate, still-open VM gap. Both are VM-side
+;;; (lib/backend/vm_parser.c / vm_compiler.c), outside this native-codegen
+;;; fix's scope, and are why tests/vm_parity/corpus/80_quoted_bignum_
+;;; literals.esk deliberately does not exercise quoted rationals or
+;;; quasiquote+bignum: those would fail the native/VM byte-identical
+;;; comparison for a reason unrelated to this fix.
+
+(define pass 0)
+(define fail 0)
+(define (check nm ok)
+  (if ok
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display nm) (newline))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display nm) (newline))))
+(define (check-equal nm actual expected)
+  (if (equal? actual expected)
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display nm) (newline))
+      (begin (set! fail (+ fail 1))
+             (display "FAIL: ") (display nm)
+             (display " expected ") (display expected)
+             (display " got ") (display actual) (newline))))
+
+;; ---------------------------------------------------------------------------
+;; The reported defect, verbatim.
+;; ---------------------------------------------------------------------------
+(check-equal "number->string of a quoted bignum literal"
+             (number->string '123456789012345678901234567890)
+             "123456789012345678901234567890")
+(check "quoted bignum literal is exact"
+       (exact? '123456789012345678901234567890))
+(check-equal "car of a quoted list whose first element is a bignum"
+             (car '(123456789012345678901234567890 1))
+             123456789012345678901234567890)
+(check "cdr of that same quoted list is (1), not ()"
+       (equal? (cdr '(123456789012345678901234567890 1)) (list 1)))
+
+;; ---------------------------------------------------------------------------
+;; Negative bignum, and bignum-magnitude arithmetic on a quoted operand.
+;; ---------------------------------------------------------------------------
+(check-equal "number->string of a NEGATIVE quoted bignum literal"
+             (number->string '-123456789012345678901234567890)
+             "-123456789012345678901234567890")
+(check "negative quoted bignum literal is exact"
+       (exact? '-123456789012345678901234567890))
+(check-equal "a quoted bignum participates in exact arithmetic"
+             (+ '123456789012345678901234567890 1)
+             123456789012345678901234567891)
+
+;; ---------------------------------------------------------------------------
+;; Quoted bignum-rational literal (`n/d` desugar under quote).
+;; ---------------------------------------------------------------------------
+(check "quoted bignum-denominator rational literal is exact"
+       (exact? '1/123456789012345678901234567890))
+(check-equal "quoted bignum-denominator rational literal prints exactly"
+             (number->string '1/123456789012345678901234567890)
+             "1/123456789012345678901234567890")
+(check-equal "quoted bignum-numerator rational literal prints exactly"
+             (number->string '123456789012345678901234567891/7)
+             "123456789012345678901234567891/7")
+(check-equal "quoted negative bignum-denominator rational literal"
+             (number->string '-1/123456789012345678901234567890)
+             "-1/123456789012345678901234567890")
+;; Cross-check against the already-correct EVALUATED spelling of the
+;; identical literal — quoting must not change what the datum IS.
+(check "quoted and evaluated bignum-rational literal agree"
+       (= '1/123456789012345678901234567890 1/123456789012345678901234567890))
+
+;; ---------------------------------------------------------------------------
+;; Quasiquote with a bignum literal (codegenQuasiquote falls through to
+;; codegenQuotedAST for a bare atom / any non-splice list element).
+;; ---------------------------------------------------------------------------
+(check-equal "quasiquoted bare bignum atom"
+             (number->string `123456789012345678901234567890)
+             "123456789012345678901234567890")
+(define qq-x 42)
+(check-equal "bignum literal alongside an unquote inside a quasiquote template"
+             `(123456789012345678901234567890 ,qq-x 5)
+             (list 123456789012345678901234567890 42 5))
+
+;; ---------------------------------------------------------------------------
+;; Nested quoted structures: a quoted vector literal, a vector built via the
+;; `vector` procedure around quoted data, and a quoted dotted pair — all
+;; with a bignum-magnitude element.
+;; ---------------------------------------------------------------------------
+(check "quoted vector literal with a bignum element is a vector"
+       (vector? '#(1 123456789012345678901234567890 3)))
+(check-equal "quoted vector literal's bignum element"
+             (vector-ref '#(1 123456789012345678901234567890 3) 1)
+             123456789012345678901234567890)
+(check "quoted vector literal's bignum element is exact"
+       (exact? (vector-ref '#(1 123456789012345678901234567890 3) 1)))
+(check-equal "(vector ...) procedure wrapping a quoted bignum datum"
+             (vector-ref (vector (car '(123456789012345678901234567890 1)) 2) 0)
+             123456789012345678901234567890)
+(check-equal "quoted dotted pair with a bignum cdr"
+             (cdr '(1 . 123456789012345678901234567890))
+             123456789012345678901234567890)
+(check "quoted dotted pair's bignum cdr is exact"
+       (exact? (cdr '(1 . 123456789012345678901234567890))))
+
+;; ---------------------------------------------------------------------------
+;; equal? between quoted and evaluated bignum/bignum-rational values — the
+;; task's explicit repro: a quoted numeric literal must produce the SAME
+;; runtime value an evaluated one does, not merely an equal-looking display.
+;; ---------------------------------------------------------------------------
+(check "equal? between a quoted bignum and the evaluated same bignum"
+       (equal? '123456789012345678901234567890 123456789012345678901234567890))
+(check "equal? between a quoted bignum-rational and the evaluated same rational"
+       (equal? '1/123456789012345678901234567890 1/123456789012345678901234567890))
+(check "eqv? between a quoted bignum and the evaluated same bignum"
+       (eqv? '123456789012345678901234567890 123456789012345678901234567890))
+
+;; ---------------------------------------------------------------------------
+;; Negative controls — values this fix must NOT touch.
+;; ---------------------------------------------------------------------------
+(check "small quoted int64 literal stays exact"
+       (exact? '42))
+(check-equal "small quoted int64 literal prints as a plain integer"
+             (number->string '42)
+             "42")
+(check "quoted inexact (decimal-point) literal stays inexact"
+       (not (exact? '3.14)))
+(check-equal "quoted small rational literal is unaffected"
+             (number->string '1/3)
+             "1/3")
+(check-equal "quoted list of plain small ints is unaffected"
+             '(1 2 3)
+             (list 1 2 3))
+(check "a genuine (make-rational x 3) CALL with a variable operand still quotes as list data"
+       (let ((x 5))
+         (equal? '(make-rational x 3) (list 'make-rational 'x 3))))
+
+(newline) (display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)
+(if (> fail 0) (exit 1))

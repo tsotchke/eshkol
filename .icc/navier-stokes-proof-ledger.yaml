@@ -1,0 +1,847 @@
+ledger_version: 1
+source_doc: docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md
+status_vocabulary:
+- EXACT
+- VALIDATED
+- ANALYTIC-ONLY
+rows:
+- id: ns-proof-001
+  row: 1
+  section: '2.1'
+  paper_ref: Section 3.1; Section 3.6
+  operation: Fix tau=1-t, A=1/2+h, D=1/2-h and check 0<h<1/100, h<1/6
+  gate: ns_similarity_exponents_solved
+  status: EXACT
+  programs:
+  - ns_similarity_exponents_solved
+  missing_capability: null
+- id: ns-proof-002
+  row: 2
+  section: '2.1'
+  paper_ref: (3.2); Lemma 4.1
+  operation: Eliminate eta from tau=q(1-eta^2) and verify q=q(z,tau) is single-valued
+  gate: ns_similarity_exponents_solved
+  status: EXACT
+  programs:
+  - ns_similarity_exponents_solved
+  missing_capability: null
+- id: ns-proof-003
+  row: 3
+  section: '2.1'
+  paper_ref: Section 3.1; (4.3)
+  operation: Substitute the similarity ansatz into the residual and collect powers of q
+  gate: ns_leading_profile_balance
+  status: EXACT
+  programs:
+  - ns_leading_profile_balance
+  missing_capability: null
+- id: ns-proof-004
+  row: 4
+  section: '2.1'
+  paper_ref: (3.1); (4.12)
+  operation: Evaluate the residual operator d_t u+(u.grad)u-nu Lap u+grad p at a point
+  gate: ns_viscosity_scaling_exact
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-005
+  row: 5
+  section: '2.1'
+  paper_ref: (4.7); (5.2)
+  operation: Solve d_X V0 = -Z_-A U with V0(0,eta)=0
+  gate: ns_leading_profile_balance
+  status: EXACT
+  programs:
+  - ns_leading_profile_balance
+  missing_capability: null
+- id: ns-proof-006
+  row: 6
+  section: '2.1'
+  paper_ref: Section 3.1; (4.31)
+  operation: Impose the leading radial balance and normalize the pressure at infinity
+  gate: ns_leading_profile_balance
+  status: EXACT
+  programs:
+  - ns_leading_profile_balance
+  missing_capability: null
+- id: ns-proof-007
+  row: 7
+  section: '2.1'
+  paper_ref: Section 3.1
+  operation: Derive the core extents l_r, l_z and the growth of u_theta^(0)
+  gate: ns_similarity_exponents_solved
+  status: EXACT
+  programs:
+  - ns_similarity_exponents_solved
+  missing_capability: null
+- id: ns-proof-008
+  row: 8
+  section: '2.1'
+  paper_ref: Section 3.5
+  operation: Derive E_core, D_core and verify the finite-energy integral for h<1/6
+  gate: ns_core_energy_exponents
+  status: EXACT
+  programs:
+  - ns_similarity_exponents_solved
+  missing_capability: null
+- id: ns-proof-009
+  row: 9
+  section: '2.1'
+  paper_ref: (10.22)-(10.23)
+  operation: Verify the viscosity-scaling identity for u_nu, p_nu, f_nu
+  gate: ns_viscosity_scaling_exact
+  status: EXACT
+  programs:
+  - ns_viscosity_scaling_exact
+  missing_capability: null
+- id: ns-proof-010
+  row: 10
+  section: '2.2'
+  paper_ref: Proposition 4.2; (4.12)
+  operation: Show the tangential residuals are minus cylindrical divergences of a stress pair
+  gate: ns_leading_profile_balance
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
+    build item)
+- id: ns-proof-011
+  row: 11
+  section: '2.2'
+  paper_ref: Section 3.2
+  operation: Integrate radially with the axis-regularity constant (T_r theta, T_r z)
+  gate: ns_cumulative_moment_identity
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-012
+  row: 12
+  section: '2.2'
+  paper_ref: Section 3.2; Lemma A.8
+  operation: Impose the total-moment identities forcing the stress to vanish beyond the exterior radius
+  gate: ns_cumulative_moment_identity
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-013
+  row: 13
+  section: '2.2'
+  paper_ref: (4.15)
+  operation: Form the five cumulative radial integrals M, I, J, S, C_p
+  gate: ns_cumulative_moment_identity
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-014
+  row: 14
+  section: '2.2'
+  paper_ref: Lemma 4.3; (4.16)
+  operation: Reduce Q_s, N_s to closed expressions in (M,I,J,S,Pi)
+  gate: ns_cumulative_moment_identity
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
+    build item)
+- id: ns-proof-015
+  row: 15
+  section: '2.2'
+  paper_ref: Lemma 4.4(i)
+  operation: Certify the joining rule at the joining radius X_h
+  gate: ns_cumulative_moment_identity
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-016
+  row: 16
+  section: '2.3'
+  paper_ref: (4.20)
+  operation: Form t_s, v_s, P_c, J_c from the radial shear and integrated inviscid contribution
+  gate: ns_cone_condition_equivalence
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-017
+  row: 17
+  section: '2.3'
+  paper_ref: (4.21)
+  operation: Evaluate U(P_c,J_c) and test the relaxed cone condition
+  gate: ns_cone_condition_equivalence
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-018
+  row: 18
+  section: '2.3'
+  paper_ref: Lemma 4.5; (4.22)
+  operation: Certify the cone-condition equivalence via a quadratic root computation
+  gate: ns_cone_condition_equivalence
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-019
+  row: 19
+  section: '2.3'
+  paper_ref: Lemma 4.5, second assertion
+  operation: Produce the uniform threshold P_K on a compact parameter set
+  gate: ns_cone_condition_equivalence
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in
+    place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item)
+- id: ns-proof-020
+  row: 20
+  section: '2.3'
+  paper_ref: (4.23)
+  operation: Rewrite the cone in stress coordinates, homogeneous in T0
+  gate: ns_cone_condition_equivalence
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-021
+  row: 21
+  section: '2.3'
+  paper_ref: Theorem 4.6
+  operation: Assemble the leading-profile theorem from rows 10-20 and 22-33
+  gate: ns_leading_profile_balance
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: composite of multiple rows with no single Eshkol primitive or build item; assembled
+    only once its constituent rows are mechanized
+- id: ns-proof-022
+  row: 22
+  section: '2.4'
+  paper_ref: Lemma A.1
+  operation: Certify the moment matrix B_ij is invertible for distinct exponents
+  gate: ns_moment_matrix_invertible
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
+    build item)
+- id: ns-proof-023
+  row: 23
+  section: '2.4'
+  paper_ref: (A.1)
+  operation: Quantify the loss when exponents collide (det B formula)
+  gate: ns_moment_matrix_invertible
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-024
+  row: 24
+  section: '2.4'
+  paper_ref: Lemma A.2; (A.2)-(A.3)
+  operation: Solve the quadratic moment system by contraction
+  gate: ns_moment_quadratic_solve
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-025
+  row: 25
+  section: '2.4'
+  paper_ref: Corollary A.3; (A.4)
+  operation: Normalize the five moments and split into U/E blocks with distinct powers
+  gate: ns_moment_matrix_invertible
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-026
+  row: 26
+  section: '2.4'
+  paper_ref: Proposition A.4
+  operation: Construct the reference outer profile and read off Pi(0,eta)
+  gate: ns_heat_exterior_recurrence
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-027
+  row: 27
+  section: '2.4'
+  paper_ref: Lemma A.6; (A.33)-(A.38)
+  operation: Build the heat exterior K(r,t) and verify its ODE and derivative values
+  gate: ns_heat_exterior_recurrence
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-028
+  row: 28
+  section: '2.4'
+  paper_ref: Lemma A.6, monotonicity
+  operation: Certify K_r<0 and the ratio bound on ZH'/H
+  gate: ns_heat_exterior_recurrence
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-029
+  row: 29
+  section: '2.4'
+  paper_ref: Proposition A.7
+  operation: Restore the pressure integral after replacing the power tail by the heat flow
+  gate: ns_moment_quadratic_solve
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-030
+  row: 30
+  section: '2.4'
+  paper_ref: Lemma A.8; Proposition A.10
+  operation: Under exact moment conditions conclude the leading tangential stresses vanish
+  gate: ns_cumulative_moment_identity
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in
+    place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item)
+- id: ns-proof-031
+  row: 31
+  section: '2.5'
+  paper_ref: Lemma B.1
+  operation: Establish boundedness of multiplication and the radial inverses on B_rho
+  gate: ns_axis_series_contraction
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
+    build item)
+- id: ns-proof-032
+  row: 32
+  section: '2.5'
+  paper_ref: Proposition B.2; (B.12)-(B.15)
+  operation: Solve the axis system by contraction about the comparison profile
+  gate: ns_axis_series_contraction
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
+    build item)
+- id: ns-proof-033
+  row: 33
+  section: '2.5'
+  paper_ref: Proposition B.3; Lemma B.4; Proposition B.5
+  operation: Continue the analytic axis profile to X_i inside the relaxed cone
+  gate: ns_axis_series_contraction
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-034
+  row: 34
+  section: '2.5'
+  paper_ref: Lemma B.7; Proposition B.8; Corollary B.10
+  operation: Match the five cumulative radial integrals at the joining radius
+  gate: ns_moment_quadratic_solve
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-035
+  row: 35
+  section: '2.6'
+  paper_ref: Lemma C.1; (C.1)-(C.5)
+  operation: Construct a period-one loop with prescribed mean and cone gaps
+  gate: ns_shear_loop_mean
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
+    the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
+- id: ns-proof-036
+  row: 36
+  section: '2.6'
+  paper_ref: Lemma C.1, removable singularity
+  operation: Certify the removable singularity at p_s2=0
+  gate: ns_shear_loop_mean
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-037
+  row: 37
+  section: '2.6'
+  paper_ref: Proposition C.2; (C.11)-(C.13)
+  operation: Take zero-mean periodic antiderivatives and verify the exact shears
+  gate: ns_high_frequency_shear_moments
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
+    the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
+- id: ns-proof-038
+  row: 38
+  section: '2.6'
+  paper_ref: Proposition C.2; (C.14)
+  operation: Bound the profile and moment perturbation by O(N^-1)
+  gate: ns_high_frequency_shear_moments
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in
+    place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item)
+- id: ns-proof-039
+  row: 39
+  section: '2.6'
+  paper_ref: Proposition C.2, restoration; Proposition C.3
+  operation: Restore the five radial moments on the reserved correction patch
+  gate: ns_moment_quadratic_solve
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
+    the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
+- id: ns-proof-040
+  row: 40
+  section: '2.7'
+  paper_ref: (5.1)
+  operation: Set lambda_n=2nh and write the order-n physical coefficients
+  gate: ns_order_n_coefficient_solve
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
+    build item)
+- id: ns-proof-041
+  row: 41
+  section: '2.7'
+  paper_ref: (5.2)-(5.6)
+  operation: Form the order-n coefficient system (azimuthal, axial, pressure equations)
+  gate: ns_order_n_coefficient_solve
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
+    build item)
+- id: ns-proof-042
+  row: 42
+  section: '2.7'
+  paper_ref: Section 5.1, splitting
+  operation: Certify the order-n system is linear at each positive order
+  gate: ns_order_n_coefficient_solve
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
+    build item)
+- id: ns-proof-043
+  row: 43
+  section: '2.7'
+  paper_ref: Section 5.1, regularity
+  operation: Verify Omega_k is divisible by X (axis regularity)
+  gate: ns_order_n_coefficient_solve
+  status: EXACT
+  programs:
+  - ns_leading_profile_balance
+  missing_capability: null
+- id: ns-proof-044
+  row: 44
+  section: '2.7'
+  paper_ref: Lemma 5.1
+  operation: Solve, at every positive order, uniquely on 0<=xi<=a
+  gate: ns_order_n_coefficient_solve
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
+    build item)
+- id: ns-proof-045
+  row: 45
+  section: '2.7'
+  paper_ref: Lemma 5.2
+  operation: Extend each order radially and impose the five integral conditions
+  gate: ns_moment_quadratic_solve
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-046
+  row: 46
+  section: '2.7'
+  paper_ref: Proposition 5.3
+  operation: Run the coefficient induction to a finite residual
+  gate: ns_coefficient_induction_closes
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: core.dbsp incremental knowledge-base evaluation over the closed world (GA at v1.5.0-intelligence)
+- id: ns-proof-047
+  row: 47
+  section: '2.7'
+  paper_ref: Lemma 5.4; Section 5.4
+  operation: Sum the coefficients with cutoffs, curls taken after multiplication
+  gate: ns_summation_flatness
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-048
+  row: 48
+  section: '2.7'
+  paper_ref: Proposition 5.5; (5.41)
+  operation: Conclude the smooth axisymmetric background (u_B,p_B)
+  gate: ns_coefficient_induction_closes
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: composite of multiple rows with no single Eshkol primitive or build item; assembled
+    only once its constituent rows are mechanized
+- id: ns-proof-049
+  row: 49
+  section: '2.8'
+  paper_ref: (6.1)
+  operation: Set the dyadic chart Q, epsilon, S_star, R, Z, T
+  gate: ns_torus_support_disjointness
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-050
+  row: 50
+  section: '2.8'
+  paper_ref: (6.3); (6.6)
+  operation: Introduce the auxiliary torus variable Y and the phase map
+  gate: ns_torus_support_disjointness
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
+    the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
+- id: ns-proof-051
+  row: 51
+  section: '2.8'
+  paper_ref: Lemma 6.1; (6.13)-(6.15)
+  operation: Choose color centers for disjoint auxiliary rectangles (graph coloring)
+  gate: ns_torus_support_disjointness
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-052
+  row: 52
+  section: '2.8'
+  paper_ref: Lemma 6.1, consequence
+  operation: Certify F_gamma F_gamma'=0 for distinct labels
+  gate: ns_torus_support_disjointness
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
+    the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
+- id: ns-proof-053
+  row: 53
+  section: '2.8'
+  paper_ref: (6.14)
+  operation: Bound the covering-index spread
+  gate: ns_torus_support_disjointness
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-054
+  row: 54
+  section: '2.8'
+  paper_ref: Definitions 6.4-6.5; Proposition 6.6
+  operation: Define the mean/moment coefficient classes closed under sums, products, derivatives
+  gate: ns_torus_support_disjointness
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
+    build item)
+- id: ns-proof-055
+  row: 55
+  section: '2.9'
+  paper_ref: Lemma 7.1; (7.2)-(7.3)
+  operation: Construct the phase and an orthogonal frame B
+  gate: ns_pulse_amplitude_envelope
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-056
+  row: 56
+  section: '2.9'
+  paper_ref: Proposition 7.2; Corollary 7.3; (7.5)
+  operation: Solve the projected amplitude equation for each harmonic
+  gate: ns_pulse_amplitude_envelope
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-057
+  row: 57
+  section: '2.9'
+  paper_ref: Lemma 7.4; (7.22)
+  operation: Integrate the homogeneous pulse and certify the envelope
+  gate: ns_pulse_amplitude_envelope
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-058
+  row: 58
+  section: '2.9'
+  paper_ref: Proposition 7.5; (7.27)-(7.28)
+  operation: Average the quadratic product over the auxiliary torus and the angle
+  gate: ns_covariance_two_family_solve
+  status: EXACT
+  programs:
+  - ns_covariance_two_family_solve
+  missing_capability: null
+- id: ns-proof-059
+  row: 59
+  section: '2.9'
+  paper_ref: Proposition 7.5; (7.24),(7.29)
+  operation: Solve the 2x2 system for the two pulse-family squared amplitudes
+  gate: ns_covariance_two_family_solve
+  status: EXACT
+  programs:
+  - ns_covariance_two_family_solve
+  missing_capability: null
+- id: ns-proof-060
+  row: 60
+  section: '2.9'
+  paper_ref: Proposition 7.5, Step 3
+  operation: Bound every fixed derivative of a_sigma via Faa di Bruno
+  gate: ns_covariance_two_family_solve
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-061
+  row: 61
+  section: '2.9'
+  paper_ref: (7.30)
+  operation: Sum slow boxes and bands to the leading physical stress
+  gate: ns_covariance_two_family_solve
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: composite of multiple rows with no single Eshkol primitive or build item; assembled
+    only once its constituent rows are mechanized
+- id: ns-proof-062
+  row: 62
+  section: '2.9'
+  paper_ref: Proposition 7.6; (7.31)
+  operation: Form the signed amplitude increments (first-order variation)
+  gate: ns_signed_amplitude_increment
+  status: EXACT
+  programs:
+  - ns_covariance_two_family_solve
+  missing_capability: null
+- id: ns-proof-063
+  row: 63
+  section: '2.9'
+  paper_ref: Lemma 7.7; Corollary 7.8; (7.35)
+  operation: Take exact curls of the localized vector potentials and bound the covariance remainder
+  gate: ns_covariance_two_family_solve
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
+    the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
+- id: ns-proof-064
+  row: 64
+  section: '2.10'
+  paper_ref: Proposition 8.1; (8.1)-(8.3)
+  operation: Write the conservative momentum equations for the divergence-free decomposition
+  gate: ns_five_moment_vandermonde
+  status: EXACT
+  programs:
+  - ns_five_moment_vandermonde
+  missing_capability: null
+- id: ns-proof-065
+  row: 65
+  section: '2.10'
+  paper_ref: Lemma 8.2; Proposition 8.3; (8.12)
+  operation: Build a compactly supported primitive and reconstruct pressure after each correction
+  gate: ns_five_moment_vandermonde
+  status: EXACT
+  programs:
+  - ns_five_moment_vandermonde
+  missing_capability: null
+- id: ns-proof-066
+  row: 66
+  section: '2.10'
+  paper_ref: Proposition 8.4; Corollary 8.5; (8.15)
+  operation: Identify the three compatibility defects (P, J_theta, J_z) as covariance targets
+  gate: ns_five_moment_vandermonde
+  status: EXACT
+  programs:
+  - ns_five_moment_vandermonde
+  missing_capability: null
+- id: ns-proof-067
+  row: 67
+  section: '2.10'
+  paper_ref: Lemma 8.6; (8.20)
+  operation: Invert the fast auxiliary-time derivative on zero Haar-mean functions on T^2
+  gate: ns_fast_time_inverse
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
+    the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
+- id: ns-proof-068
+  row: 68
+  section: '2.10'
+  paper_ref: Lemma 8.7; (8.24)-(8.25)
+  operation: Solve the five radial moment equations with three azimuthal and two axial bumps
+  gate: ns_five_moment_vandermonde
+  status: EXACT
+  programs:
+  - ns_five_moment_vandermonde
+  missing_capability: null
+- id: ns-proof-069
+  row: 69
+  section: '2.10'
+  paper_ref: Lemma 8.7, Step 3
+  operation: Pass from q-normalized rows to a fixed Q chart
+  gate: ns_five_moment_vandermonde
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-070
+  row: 70
+  section: '2.10'
+  paper_ref: Lemma 8.8; (8.27); Section 8.7
+  operation: Record the exact difference and certify the improved decay of the nonlinear remainder
+  gate: ns_residual_exponent_ladder
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
+    program exercises this row in v1.3.5
+- id: ns-proof-071
+  row: 71
+  section: '2.11'
+  paper_ref: Section 3.3, exact increment identity
+  operation: R(u_B+w,p_B+pi)=R(u_B,p_B)+L_uB(w,pi)+div(w o w)
+  gate: ns_viscosity_scaling_exact
+  status: EXACT
+  programs:
+  - ns_viscosity_scaling_exact
+  - ns_residual_exponent_ladder
+  missing_capability: null
+- id: ns-proof-072
+  row: 72
+  section: '2.11'
+  paper_ref: Proposition 9.1; Lemma 9.2
+  operation: Bound the residual of curl-constructed velocities and wave-mean interaction terms
+  gate: ns_residual_exponent_ladder
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in
+    place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item)
+- id: ns-proof-073
+  row: 73
+  section: '2.11'
+  paper_ref: Proposition 9.3; (9.3)
+  operation: Recompute the full residual after every operation
+  gate: ns_residual_exponent_ladder
+  status: EXACT
+  programs:
+  - ns_residual_exponent_ladder
+  missing_capability: null
+- id: ns-proof-074
+  row: 74
+  section: '2.11'
+  paper_ref: Definition 9.4; Proposition 9.5; (9.7)-(9.10)
+  operation: Initialize the temporal mean update and the five-equation correction
+  gate: ns_residual_exponent_ladder
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
+    the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
+- id: ns-proof-075
+  row: 75
+  section: '2.11'
+  paper_ref: Proposition 9.6, steps (i)-(iv)
+  operation: Run one full correction cycle
+  gate: ns_residual_exponent_ladder
+  status: EXACT
+  programs:
+  - ns_residual_exponent_ladder
+  missing_capability: null
+- id: ns-proof-076
+  row: 76
+  section: '2.11'
+  paper_ref: (9.8); (9.18)
+  operation: Certify the residual-exponent ladder sigma_j=1/5+j/10
+  gate: ns_residual_exponent_ladder
+  status: EXACT
+  programs:
+  - ns_residual_exponent_ladder
+  missing_capability: null
+- id: ns-proof-077
+  row: 77
+  section: '2.11'
+  paper_ref: Lemma 9.7; Lemma 9.8
+  operation: Certify a common domain and stage-independent derivative estimates
+  gate: ns_summation_flatness
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in
+    place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item)
+- id: ns-proof-078
+  row: 78
+  section: '2.11'
+  paper_ref: Proposition 9.9; (3.4); (9.20)
+  operation: Sum corrections with shrinking cutoffs and certify flatness
+  gate: ns_summation_flatness
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in
+    place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item)
+- id: ns-proof-079
+  row: 79
+  section: '2.12'
+  paper_ref: Section 3.5; Proposition 10.1; (3.3),(10.4)
+  operation: Localize with c=chi_x chi_t, extend by zero outside the cutoff support
+  gate: ns_localization_smooth_extension
+  status: EXACT
+  programs:
+  - ns_localization_smooth_extension
+  missing_capability: null
+- id: ns-proof-080
+  row: 80
+  section: '2.12'
+  paper_ref: Lemma 10.2; Lemma 10.3; (10.5),(10.8)-(10.9)
+  operation: Certify convergence as t->1 and realize the limits from t>1 in Cc^infty
+  gate: ns_localization_smooth_extension
+  status: EXACT
+  programs:
+  - ns_localization_smooth_extension
+  missing_capability: null
+- id: ns-proof-081
+  row: 81
+  section: '2.12'
+  paper_ref: Lemma 10.4; (10.13)
+  operation: Certify the global energy F(1)<infinity and the integrated dissipation bound
+  gate: ns_energy_dissipation_bounds
+  status: EXACT
+  programs:
+  - ns_energy_dissipation_bounds
+  missing_capability: null
+- id: ns-proof-082
+  row: 82
+  section: '2.12'
+  paper_ref: Lemma 10.5; (10.20)-(10.21)
+  operation: Verify the growth path and run the Gronwall comparison
+  gate: ns_energy_dissipation_bounds
+  status: ANALYTIC-ONLY
+  programs: []
+  missing_capability: rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in
+    place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item)
+- id: ns-proof-083
+  row: 83
+  section: '2.12'
+  paper_ref: (10.22)-(10.23)
+  operation: Rescale to arbitrary nu>0 and verify the identity term by term
+  gate: ns_viscosity_scaling_exact
+  status: EXACT
+  programs:
+  - ns_viscosity_scaling_exact
+  missing_capability: null
+- id: ns-proof-084
+  row: 84
+  section: '2.12'
+  paper_ref: Corollary 10.6
+  operation: Transport the construction to T^3=R^3/Z^3
+  gate: ns_torus_corollary_scaling
+  status: EXACT
+  programs:
+  - ns_torus_corollary_scaling
+  missing_capability: null

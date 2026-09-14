@@ -60,6 +60,14 @@ void eshkol_vm_install_limits(uint64_t max_insn, int active, int enforce,
     g_eshkol_vm_poll_interrupt = poll;
 }
 
+/* Tensor limits are opt-in; hosted entry points resolve the environment. */
+uint64_t g_eshkol_vm_max_tensor_elements = 0;
+int g_eshkol_vm_tensor_limit_active = 0;
+void eshkol_vm_install_tensor_limit(uint64_t max_elements, int active) {
+    g_eshkol_vm_max_tensor_elements = max_elements;
+    g_eshkol_vm_tensor_limit_active = active;
+}
+
 /** Periodic limit checkpoint. Returns 1 if the VM should keep running. */
 static int vm_limits_checkpoint(VM* vm, uint64_t* executed, uint64_t max_insn) {
     *executed += VM_CHECK_INTERVAL;

@@ -1,0 +1,10 @@
+{
+  "description": "A call below a builtin's DOCUMENTED MINIMUM is refused with the canonical arity sentence quoting that minimum — 'expects 2 arguments', not the opcode's three operands. Both engines derive the number from the one BUILTINS[] column (eshkol_builtin_min_arity), so the bytecode VM prints the same sentence for the same call and accepts the two-argument form that native has always accepted.",
+  "compile": "fail",
+  "diagnostics": [
+    {
+      "contains": "Arity mismatch: substring expects 2 arguments but got 1",
+      "span": {"file": "input.esk", "line": 17, "col": 11}
+    }
+  ]
+}

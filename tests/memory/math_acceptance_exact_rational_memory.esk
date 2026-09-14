@@ -1,0 +1,71 @@
+;; math_acceptance_exact_rational_memory — the acceptance shape from the
+;; mathematics stream: exact rational arithmetic in a PLAIN loop, with no
+;; region annotation and no other help, must be flat in resident size.
+;;
+;; Two things used to break that, and both are exercised here:
+;;
+;;   * a rational LITERAL operand. The reader desugars `1/2` into a
+;;     `(make-rational 1 2)` call, so a literal was a heap allocation per
+;;     evaluation rather than a constant — and, because the constructor was not
+;;     a recognized pure builtin, its presence also disqualified the whole loop
+;;     from per-iteration reclamation. An expression with a literal in it grew
+;;     while the identical expression over computed operands stayed flat.
+;;
+;;   * exact accumulation. Reducing each result ran a Euclidean GCD over the
+;;     full-width numerator and denominator, allocating an intermediate bignum
+;;     per step, and those allocations were emitted against the shared global
+;;     arena slot rather than the thread's current allocation arena — so the
+;;     loop's own per-iteration reclamation could not see them at all.
+;;
+;; The companion control (…_control.esk) runs the same loop shape over machine
+;; integers, which was always flat. The gate compares the two: this is an
+;; assertion about the ASYMMETRY between exact and inexact arithmetic, which is
+;; the defect, rather than about an absolute number on one machine.
+(define (literal-loop n)
+  (let lp ((i 0) (acc 0))
+    (if (= i n)
+        acc
+        (lp (+ i 1) (if (> (+ 1/2 (/ 1 3)) 0) acc (+ acc 1))))))
+
+(define (harmonic n)
+  (let lp ((i 1) (acc 0))
+    (if (> i n) acc (lp (+ i 1) (+ acc (/ 1 i))))))
+
+(define lit (literal-loop 1000000))
+(define h (harmonic 5000))
+
+;; 1/2 + 1/3 = 5/6 exactly, and it is > 0 every time, so the accumulator must
+;; still be 0: a wrong comparison or a corrupted literal shows up here.
+(define five-sixths (+ 1/2 (/ 1 3)))
+
+(if (and (= lit 0)
+         (= (numerator five-sixths) 5)
+         (= (denominator five-sixths) 6)
+         (= (string-length (number->string (denominator h))) 2165)
+         (= (* h (denominator h)) (numerator h)))
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL lit=") (display lit)
+           (display " five-sixths=") (display five-sixths)
+           (display " h-den-digits=")
+           (display (string-length (number->string (denominator h))))
+           (newline)))
+
+;; A cond clause whose TEST allocates. The parser stores a cond CLAUSE in a
+;; CALL_OP node whose func slot is the test, so treating clauses as ordinary
+;; expressions asked whether the test was a callee it could analyze, found a
+;; computed one, and rejected the whole loop — costing every iteration's
+;; reclamation, for any cond whose test is a call. Written with nested `if` the
+;; same loop was always flat, which is what makes this the cond path and not
+;; the allocation itself.
+(define (cond-unit k)
+  (let ((v (make-vector 64 k))) (< (vector-ref v 3) 2000000)))
+
+(define cond-loop-result
+  (let loop ((k 0))
+    (cond ((= k 200000) 'done)
+          ((cond-unit k) (loop (+ k 1)))
+          (else 'unreachable))))
+
+(if (eq? cond-loop-result 'done)
+    (begin (display "PASS-COND") (newline))
+    (begin (display "FAIL-COND ") (display cond-loop-result) (newline)))

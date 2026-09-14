@@ -1,0 +1,81 @@
+id: LE-19
+bucket: LOUD-ERROR
+subtag: structural
+status: closed
+title: "Every arithmetic runtime error named the FIRST `+ - * /` site in the module, not the failing one"
+repro: >-
+  Two live sites of one operator, where the second fails. On native codegen
+  (`-r` and AOT):
+  `(define a 2)` / `(define b 3)` / `(display (* a b))` on line 3 /
+  `(display (* a (vector 1 2)))` on line 5.
+  And the shape the defect was reported in — the first site inside a function
+  body, the failing site at top level:
+  `(define (scale x m)` / `  (* x m))` / `(display (scale 3 4))` /
+  `(define k 2)` / `(display (* k (vector 1 2)))` on line 6.
+  Constant-folded sites do not count as live; both operands must be variables.
+observed: >-
+  `outline_two_sites.esk:3:15: Type error in tensor-mul: expected tensor, got
+  integer` for a failure on line 5, and
+  `reporter_scenario.esk:2:8: …` for a failure on line 6 — line 2 being the
+  `(* x m)` inside `scale`, a function that had already returned successfully.
+  The reported column is exact, which makes the wrong line credible: a reader
+  is sent to a working expression and told it is the failing one.
+correct: >-
+  The position of the site that actually failed —
+  `outline_two_sites.esk:5:16` and `reporter_scenario.esk:6:16`.
+root_cause: >-
+  ESH-0103 out-lines the whole numeric-tower dispatch into one
+  `__eshkol_arith_{add,sub,mul,div}` helper per module, emitted at the first
+  site of the operator and CALLED by every other, to avoid an O(n^2)
+  single-function blow-up. Its error branches recorded the location with
+  `eshkol_set_error_location(file, line, col)` — from
+  ArithmeticCodegen::emitSetErrorLocation and from
+  TensorCodegen::unpackTensorOperandChecked — using
+  CodegenContext::currentSourceLine(), a COMPILE-TIME constant. Emitted once
+  into a body shared by every site, that constant is whichever site happened to
+  emit the helper. Correct only in the degenerate case of a single live site
+  per operator, which is why it survived: most small reproducers have one.
+impact: >-
+  Every runtime type error raised from `+ - * /` in every program with more
+  than one live site of that operator — the common case. The diagnostic was
+  loud, precise-looking and pointed somewhere else, which is worse than a vague
+  one: it moves the reader away from the defect. Surfaced by the LE-18 report,
+  whose author saw a vector/scalar failure attributed to a function body that
+  had already run correctly.
+fix_requires: >-
+  The location must travel with the CALL, not with the emission. The out-lined
+  helper now takes `{file, line, column}` as three extra arguments that each
+  call site fills in from its own position
+  (ArithmeticCodegen::currentSourceLocationArgs), and a
+  CodegenContext source-location OVERRIDE routes every error-location emitter
+  inside the helper body at those parameters instead of at constants. The
+  override records the owning llvm::Function so an emitter can never reference
+  an Argument of another function, and getOrEmitBinaryOutline saves and restores
+  it so one helper emitting another keeps its own. A call site that is itself
+  inside a helper forwards the enclosing helper's parameters, so the position
+  survives arbitrary nesting.
+evidence: >-
+  tests/diagnostics/arith_error_span_outlined_helper/ — a golden-corpus case
+  with three live `*` sites, the first inside a function that returns
+  successfully twice, whose expected.json pins the failing site's exact
+  file:line:col and FORBIDS the two working sites' lines from appearing in the
+  run's stderr at all. Asserting that span needed a new capability: the gate
+  discarded the RUN's stderr entirely and could only pin COMPILE-time spans, so
+  scripts/check_diagnostic_corpus.py gains `runtime_diagnostics` (contains +
+  span, matched against the runtime `file:line:col: <message>` format) and
+  `run_stderr_forbidden`, with six red/green self-test fixtures — including the
+  exact drift shape this entry records, and a fixture that rejects a runtime
+  assertion on a case that never runs.
+caught_by: [direct-measurement, user-report]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, features-suite]
+closed_at: "2132b1e5 (fix branch fix/vector-scalar-arithmetic-dispatch)"
+notes: >-
+  Not a SILENT-WRONG: no value is wrong and the program does fail. It is
+  ledgered because a diagnostic that names the wrong source position is a
+  wrong ANSWER to the question the diagnostic exists to answer, and it is
+  invisible to every gate — nothing in the tree asserted the LINE of a runtime
+  error, only its text. The Eshkol-level frame trace that would additionally
+  name the CALLER of a failing function is a separate, still-unwired substrate
+  (inc/eshkol/core/runtime.h, lib/core/runtime_frame_trace.cpp) scheduled by
+  ADR-0008 M5; this entry covers only the position of the failing operation,
+  which was wrong.

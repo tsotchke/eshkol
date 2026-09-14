@@ -62,11 +62,12 @@ void eshkol_ast_clean(eshkol_ast_t *ast)
 // ===== SYMBOLIC DIFFERENTIATION AST HELPERS =====
 // Memory management for symbolic AST nodes created during differentiation
 
-/** Allocate a zero-initialized @ref eshkol_ast_t node from the global arena. */
+/** Allocate a value-initialised @ref eshkol_ast_t node from the global arena
+ *  (zeroed payload; location from the current AST birth location). */
 eshkol_ast_t* eshkol_alloc_symbolic_ast() {
-    eshkol_ast_t* node = (eshkol_ast_t*)arena_allocate(get_global_arena(),sizeof(eshkol_ast_t));
-    memset(node, 0, sizeof(eshkol_ast_t));
-    return node;
+    // Value-initialised construction: zeroed payload, birth location.
+    return eshkol_ast_construct_array(
+        arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
 }
 
 // Helper: Create variable AST node
@@ -118,7 +119,7 @@ eshkol_ast_t* eshkol_make_binary_op_ast(const char* op,
     
     // Create arguments array
     ast->operation.call_op.variables =
-        (eshkol_ast_t*)arena_allocate(get_global_arena(),2 * sizeof(eshkol_ast_t));
+        eshkol_ast_construct_array(arena_allocate(get_global_arena(), (2) * sizeof(eshkol_ast_t)), (2));
     ast->operation.call_op.variables[0] = *left;
     ast->operation.call_op.variables[1] = *right;
     ast->operation.call_op.num_vars = 2;
@@ -141,7 +142,7 @@ eshkol_ast_t* eshkol_make_unary_call_ast(const char* func, eshkol_ast_t* arg) {
     
     ast->operation.call_op.func = eshkol_make_var_ast(func);
     ast->operation.call_op.variables =
-        (eshkol_ast_t*)arena_allocate(get_global_arena(),sizeof(eshkol_ast_t));
+        eshkol_ast_construct_array(arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
     ast->operation.call_op.variables[0] = *arg;
     ast->operation.call_op.num_vars = 1;
     
@@ -178,7 +179,7 @@ eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast) {
         }
         if (ast->operation.call_op.variables && ast->operation.call_op.num_vars > 0) {
             copy->operation.call_op.variables =
-                (eshkol_ast_t*)arena_allocate(get_global_arena(),ast->operation.call_op.num_vars * sizeof(eshkol_ast_t));
+                eshkol_ast_construct_array(arena_allocate(get_global_arena(), (ast->operation.call_op.num_vars) * sizeof(eshkol_ast_t)), (ast->operation.call_op.num_vars));
             for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
                 copy->operation.call_op.variables[i] = *eshkol_copy_ast(&ast->operation.call_op.variables[i]);
             }
@@ -626,7 +627,7 @@ eshkol_ast_t* eshkol_wrap_with_display(eshkol_ast_t* expr) {
     wrapper->operation.call_op.func = eshkol_make_var_ast("begin");
     wrapper->operation.call_op.num_vars = 2;
     wrapper->operation.call_op.variables =
-        (eshkol_ast_t*)arena_allocate(get_global_arena(),2 * sizeof(eshkol_ast_t));
+        eshkol_ast_construct_array(arena_allocate(get_global_arena(), (2) * sizeof(eshkol_ast_t)), (2));
 
     // Element 1: (display expr)
     eshkol_ast_t* display_call = eshkol_alloc_symbolic_ast();
@@ -635,7 +636,7 @@ eshkol_ast_t* eshkol_wrap_with_display(eshkol_ast_t* expr) {
     display_call->operation.call_op.func = eshkol_make_var_ast("display");
     display_call->operation.call_op.num_vars = 1;
     display_call->operation.call_op.variables =
-        (eshkol_ast_t*)arena_allocate(get_global_arena(),sizeof(eshkol_ast_t));
+        eshkol_ast_construct_array(arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
     display_call->operation.call_op.variables[0] = *expr;
 
     // Element 2: (newline)

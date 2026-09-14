@@ -72,6 +72,10 @@ struct arena {
     bool bounded;                  // ESH-0039/v1.8: if set, allocation NEVER grows
                                    // the arena (no new-block malloc); requests that
                                    // overflow the fixed capacity return NULL instead.
+    arena_t* tape_parent;          // Non-null only for a tape-owned child arena.
+    arena_t* first_tape_child;     // Tape arenas owned by this arena.
+    arena_t* next_tape_sibling;    // Next child in tape_parent's list.
+    bool is_tape_arena;            // Child arena used exclusively by one tape.
 };
 
 // Arena management functions
@@ -89,6 +93,12 @@ arena_t* arena_create_threadsafe(size_t default_block_size);  // Thread-safe var
 arena_t* arena_create_bounded(size_t capacity);
 
 void arena_destroy(arena_t* arena);
+
+// Register/unregister a tape-owned child arena. A parent region destroys any
+// still-live children before its own blocks, so region teardown cannot leave a
+// tape child behind. Explicit tape release unregisters before destroying it.
+void arena_register_tape_child(arena_t* parent, arena_t* child);
+void arena_unregister_tape_child(arena_t* child);
 
 // Thread-safety control
 void arena_lock(arena_t* arena);
@@ -126,6 +136,36 @@ void arena_reset(arena_t* arena);
 // (correctness fallback). See runtime_arena_core.cpp for full semantics.
 void arena_commit_scope(arena_t* arena);
 
+// SW-164: end the innermost scope, RETAINING the named header-prefixed objects.
+//
+// The arena reclaims only at a scope or region boundary, and a numeric
+// primitive has no boundary inside it — so an operation whose intermediate
+// work is much larger than its result (exact-rational normalization: Euclid
+// over the magnitudes allocates a quotient, a remainder and two limb buffers
+// per step, i.e. O(bit-length) dead bignums per result) retains all of that
+// scratch for the life of the arena. This primitive gives such an operation a
+// boundary: bracket it with arena_push_scope(), then end the scope with the
+// handful of objects that ARE the result, and only those survive the rewind.
+//
+// Each objects[i] is a payload pointer as returned by
+// arena_allocate_with_header() (NULL entries are ignored). An entry that lies
+// inside the dying span is copied out and objects[i] is updated to the
+// surviving copy; an entry that already lives below the scope mark is left
+// exactly as it is (no copy, pointer identity preserved). The retained objects
+// must be SELF-CONTAINED — flat payloads with no interior pointers into the
+// dying span. Where one retained object REFERENCES another (a rational header
+// holds its numerator and denominator bignums), declare the whole set in one
+// call and re-point the references from the updated objects[] afterwards: this
+// primitive never scans a payload for word-sized values that look like old
+// addresses, because a bignum limb that merely collided with a stale address
+// would then be rewritten and the number silently corrupted.
+//
+// Returns 1 when the scope was rewound, 0 when the call degenerated to a
+// commit (a concurrent pool worker on the shared arena, where scope ops are
+// commit-only) — in which case objects[] is left untouched, which is the
+// conservative direction: memory is retained, never freed while live.
+int arena_scope_end_retaining(arena_t* arena, void** objects, size_t n);
+
 // SW-74: move every block owned by @p src into @p dst's adopted-block list.
 //
 // Zero-copy ownership transfer, the native analogue of the bytecode VM's
@@ -147,13 +187,36 @@ size_t arena_adopt_blocks(arena_t* dst, arena_t* src);
 /** True if @p ptr points into memory allocated after the innermost scope
  *  mark on @p arena (i.e. it would be reclaimed if that scope were popped). */
 int arena_top_scope_contains(const arena_t* arena, const void* ptr);
+/** SW-164: the same test against an ARBITRARY scope mark rather than only the
+ *  innermost one. True if @p ptr points into memory @p arena allocated after
+ *  @p scope's mark — that is, memory that popping @p scope would reclaim. A
+ *  NULL @p scope means "anywhere in this arena" (equivalent to arena_contains),
+ *  which is what a caller staging values back out of a scratch arena wants.
+ *  @p scope must be a scope of @p arena that is still live. */
+int arena_scope_span_contains(const arena_t* arena, const arena_scope_t* scope,
+                              const void* ptr);
 /** True if @p ptr points into ANY live allocation of @p arena (any block,
  *  below that block's high-water mark). Unlike arena_top_scope_contains this
  *  is scope-independent: it answers "is this address memory this arena owns
  *  and has handed out", which is the precondition for dereferencing an
  *  integer that MIGHT be an arena pointer. */
 int arena_contains(const arena_t* arena, const void* ptr);
-void eshkol_arena_iter_scope_end(arena_t* arena, const eshkol_tagged_value_t* vals, uint64_t n);
+// SW-164: the per-iteration loop scope PROMOTES its survivors instead of
+// giving up on reclamation when one of them was allocated inside the iteration
+// (which, for any loop that accumulates, is every iteration). See the block
+// comment in runtime_arena_core.cpp for the full contract.
+//
+// eshkol_arena_loop_scope_begin opens the LOOP scope once per loop activation,
+// in the setup block that dominates the loop header. Every exit path must
+// balance it with eshkol_arena_iter_scope_finish.
+//
+// Both scope-ending calls REWRITE vals[0..n) in place when a promotion moves
+// them: the caller must use the values left behind (store them into the loop's
+// parameter slots at a back edge; return them at the loop's exit), because the
+// originals have been reclaimed.
+void eshkol_arena_loop_scope_begin(arena_t* arena);
+void eshkol_arena_iter_scope_end(arena_t* arena, eshkol_tagged_value_t* vals, uint64_t n);
+void eshkol_arena_iter_scope_finish(arena_t* arena, eshkol_tagged_value_t* vals, uint64_t n);
 
 // Per-thread arena management (v1.2)
 // Each thread gets its own arena for lock-free allocation during parallel execution.
@@ -353,6 +416,14 @@ arena_t* get_global_arena(void);
  *  Use when allocation MUST go into the shared arena (e.g. building result lists
  *  that will be returned to the main thread). */
 arena_t* get_global_arena_shared(void);
+/** SW-164: a private arena for values CACHED across iterations, such as a
+ *  hoisted compile-time constant. Nothing else allocates from it, no scope is
+ *  ever pushed on it and it is never reset, so no region pop and no loop
+ *  iteration rewind can reclaim what it holds. Neither `get_global_arena()`
+ *  nor `get_global_arena_shared()` is a substitute: those name the current-
+ *  arena slot, and a constant materialized lazily inside a loop lands above
+ *  that loop's scope mark and dies on the first rewind. */
+arena_t* eshkol_literal_arena(void);
 
 // ===== OALR Phase A: thread memory context (ADR-0001, migration Phase A) =====
 //
@@ -393,6 +464,10 @@ arena_t* eshkol_current_arena(void);
 ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity);
 void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node);
 void arena_tape_reset(ad_tape_t* tape);
+void arena_tape_release(ad_tape_t* tape);
+arena_t* arena_tape_owner(ad_tape_t* tape);
+void arena_tape_begin_backward(ad_tape_t* tape);
+void arena_tape_end_backward(ad_tape_t* tape);
 
 // Tape query functions
 ad_node_t* arena_tape_get_node(const ad_tape_t* tape, size_t index);
@@ -408,6 +483,8 @@ typedef struct {
     uint64_t reverse_passes;           // backward sweeps actually executed
     uint64_t tape_allocations;         // reverse-mode tapes allocated
     uint64_t tape_nodes;               // AD nodes appended to tapes
+    uint64_t scalar_ad_nodes;          // scalar nodes recorded on reverse tapes
+    uint64_t tensor_ad_nodes;          // tensor nodes recorded on reverse tapes
     uint64_t finite_difference_evals;  // finite-difference evaluations on any AD path
 } EshkolADCounters;
 
@@ -423,11 +500,19 @@ void eshkol_ad_count_reverse(void);
 /** Increment the finite-difference counter; invoked from emitted IR each
  *  time a finite-difference evaluation runs on an AD path. */
 void eshkol_ad_count_fd(void);
+/** Increment the scalar-node counter at a scalar recording site. */
+void eshkol_ad_count_scalar_node(void);
+/** Increment the tensor-node counter at a tensor recording site. */
+void eshkol_ad_count_tensor_node(void);
 // Individual readers (Scheme-builtin backends).
 uint64_t eshkol_ad_counter_primal_calls(void);
 uint64_t eshkol_ad_counter_reverse_passes(void);
 uint64_t eshkol_ad_counter_tape_allocations(void);
 uint64_t eshkol_ad_counter_tape_nodes(void);
+uint64_t eshkol_ad_counter_scalar_ad_nodes(void);
+uint64_t eshkol_ad_counter_tensor_ad_nodes(void);
+/** True when strict AD validation is requested through ESHKOL_AD_STRICT=1. */
+bool eshkol_ad_strict_enabled(void);
 /** Read the total count of finite-difference evaluations performed on any
  *  AD path since the last eshkol_ad_counters_reset(). */
 uint64_t eshkol_ad_counter_finite_difference_evals(void);
@@ -437,6 +522,24 @@ uint64_t eshkol_ad_counter_finite_difference_evals(void);
 //   num_variables so a single reverse sweep's per-input gradients can be read back
 //   without replaying the loss per component.
 void arena_tape_set_variables(ad_tape_t* tape, ad_node_t** vars, size_t n);
+/** Zero scalar and tensor gradients for every node currently on @p tape. */
+void arena_tape_zero_gradients(ad_tape_t* tape);
+
+/** Forward callback used by the shared one-pass value-and-gradient core. */
+typedef int (*eshkol_ad_forward_callback)(void* context, ad_tape_t* tape,
+                                          ad_node_t** output);
+/** Reverse callback used by the shared one-pass value-and-gradient core. */
+typedef int (*eshkol_ad_backward_callback)(void* context, ad_tape_t* tape,
+                                           ad_node_t* output);
+/**
+ * Run one forward callback and one reverse callback, then collect all tape
+ * variable gradients. The callbacks are the engine-specific lowering seam;
+ * the invocation and counter discipline are shared by native AD consumers.
+ */
+int eshkol_value_and_grad(void* context, ad_tape_t* tape,
+                          eshkol_ad_forward_callback forward,
+                          eshkol_ad_backward_callback backward,
+                          double* value, double* gradients, size_t gradient_count);
 //   eshkol_ad_mixed_record_count: monotonic count of reverse-over-forward mixed
 //   records. The one-pass gradient snapshots this around its single primal pass;
 //   a nonzero delta means an inner forward-mode derivative ran (per-component seed
@@ -550,12 +653,15 @@ int eshkol_region_any_handle_owned_open(void);
 // eshkol_make_continuation_state_flags(), runtime_continuations.cpp) whenever
 // the stack is non-empty at capture time — exactly the condition the VM checks
 // (`vm->heap.regions.depth > 0`) before its own heap_region_pin_all().
-// Idempotent and safe to call with no regions open.
+// Returns zero when the bounded cumulative pin budget would be exceeded; in
+// that case no newly requested region is pinned and the continuation must be
+// rejected rather than leaving a dangling snapshot. Idempotent and safe to
+// call with no regions open.
 //
 // Every OPEN region is pinned, not just the innermost: the continuation's stack
 // snapshot may hold interior pointers into any of them, and a `call/cc` nested
 // two `with-region`s deep can be re-entered after both have exited.
-void eshkol_region_pin_all(void);
+int eshkol_region_pin_all(void);
 
 // Thread-local region stack (safe for parallel-map + with-region)
 #define MAX_REGION_DEPTH 64
@@ -567,6 +673,28 @@ extern thread_local uint64_t __region_stack_depth;
 #define ESHKOL_ARENA_MAX_TAPE_DEPTH 32
 extern thread_local ad_tape_t* __ad_tape_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH];
 extern thread_local uint64_t __ad_tape_depth;
+
+/**
+ * @brief Capture / restore the complete reverse-mode AD DYNAMIC STATE.
+ *
+ * A differentiation operator turns AD mode on, publishes its tape, publishes
+ * the active seed node and lets the mixed forward/reverse recorder count what
+ * it sees; the matching "off" is emitted on the operator's NORMAL exit only.
+ * A raise out of the differentiated function skips all of it, and every one of
+ * these globals then lies to the rest of the program: tensor ops keep
+ * returning AD-node carriers where a number was asked for, and the next
+ * gradient reads a stale mixed-record count and takes the forward-over-reverse
+ * replay route, which restores the leaked mode instead of clearing it.
+ *
+ * These two functions are the single seam the exception unwinder uses, so the
+ * state stays owned by the AD translation unit that defines it.
+ */
+void eshkol_ad_state_capture(unsigned char* mode_active, uint64_t* tape_depth,
+                             void** current_tape, void** seed_node,
+                             uint64_t* mixed_record_count);
+void eshkol_ad_state_restore(unsigned char mode_active, uint64_t tape_depth,
+                             void* current_tape, void* seed_node,
+                             uint64_t mixed_record_count);
 extern thread_local uint64_t __ad_pert_level;  // ESH-0070 forward-mode perturbation level
 // ESH-0190 Taylor-tower context. These are process globals rather than TLS;
 // generated REPL modules resolve them through registerRuntimeSymbols().

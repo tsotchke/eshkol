@@ -1,0 +1,60 @@
+id: SW-161
+bucket: SILENT-WRONG
+subtag: autodiff
+family: runtime-taylor/exact-tier-static-proof
+status: closed
+closed_at: "fix/ad-exactness-is-a-runtime-property"
+closed_by: "branch fix/ad-exactness-is-a-runtime-property"
+title: "The exact tier demoted `derivative` when its POINT argument was a non-trivial expression like `(car ts)`, even though the point's runtime value was exact"
+repro: >-
+  .scratch/ns_derivative_loopvar_point_argument_repro.esk.
+  `./build/eshkol-run -r .scratch/ns_derivative_loopvar_point_argument_repro.esk -L build`:
+    (define (k2-of t) (- -1/2 (* 1 1 t)))
+    (let loop ((ts (list 0 1)))
+      (if (null? ts) 'done
+          (begin (derivative k2-of (car ts)) ... (loop (cdr ts)))))
+  vs. the same value let-bound first: `(let ((pt (car ts))) (derivative k2-of pt))`.
+  Found mechanizing examples/mathematics_navier_stokes_pulse_growth.esk.
+observed: >-
+  `(derivative k2-of (car ts))` => correct value but `(exact? …)` => `#f`.
+  `(derivative k2-of pt)` with `pt` let-bound to the identical value one line
+  earlier => `(exact? …)` => `#t`. A pure, side-effect-free re-spelling of the
+  SAME point value changed the answer's exactness.
+correct: >-
+  Both exact, and identical: `(car ts)` and a variable holding the same value
+  are observably indistinguishable to any downstream consumer, so an operator's
+  answer may not depend on which spelling was used to reach the point.
+root_cause: >-
+  `adExactTowerEligible` (lib/backend/autodiff_codegen.cpp) also ran
+  `towerSafeExpr` over the POINT expression (with `only_vars = nullptr`, so any
+  VARIABLE was accepted, but a CALL was only accepted for the .def arithmetic
+  heads or a further-resolvable top-level define) — `car` is neither, so
+  `(car ts)` failed the point check and the tier declined outright. The
+  underlying reason a point check existed at all was DOUBLE EVALUATION: the
+  chosen route (tryExactTowerRoute) evaluated the point once to decide the
+  runtime gate and, on the exact arm, handed the point AST to taylorApiCore,
+  which evaluated it AGAIN inside codegenDerivativeMonolith — safe only if the
+  point expression is side-effect-free, which `towerSafeExpr` was (over-
+  conservatively) standing in as a proof of, at the cost of rejecting any
+  point built from an ordinary accessor.
+fix: >-
+  Removed the double evaluation instead of proving purity for it. `tryExact
+  TowerRoute` now evaluates the point exactly ONCE, and threads the resulting
+  tagged value into the exact arm through a new one-shot override
+  (`exactTierPrecomputedPoint_`, consumed by codegenDerivativeMonolith's point-
+  evaluation site) instead of asking `codegen_ast_callback_` to evaluate the
+  point AST a second time. `adExactTowerEligible` no longer runs any check on
+  the point expression at all — any expression is now exactly as safe to route
+  as a bare literal or variable, because it is only ever evaluated once.
+evidence: >-
+  tests/ad/exactness_runtime_property_test.esk section 3 (the exact repro
+  shape, plus point arguments from `vector-ref`, `hash-ref`, and a function
+  return, each checked against a `derivative-n` oracle at the equivalent
+  literal point); JIT and AOT (exactness_runtime_property_runtime_smoke,
+  exactness_runtime_property_aot_smoke).
+caught_by: [examples/mathematics_navier_stokes_pulse_growth.esk authoring, 2026-09-09]
+missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
+notes: >-
+  Sibling of SW-159/SW-160 and SW-162. Landed together on
+  fix/ad-exactness-is-a-runtime-property, which sits on top of
+  fix/ad-exact-rational-and-nesting (PR #630).

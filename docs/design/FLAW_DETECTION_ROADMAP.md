@@ -87,7 +87,7 @@ All three factors matter and the project is currently weak on all three:
 | Factor | Current state | Evidence |
 |---|---|---|
 | Defect classes detectable | The correctness chain detects value and lexical disagreement only; behavioral probes do not exist | ICC correctness chain caught 0 of 62 ledgered defects |
-| Surface fraction per detector | Execution coverage 100.00%; **comparison** coverage 12.21% | `run_language_coverage.sh` vs `run_engine_parity_coverage.py` |
+| Surface fraction per detector | Execution coverage 100.00%; **comparison** coverage 12.21% when this was written, 26.65% once the VM emitted per-form markers (D-03 (i)) | `run_language_coverage.sh` vs `run_engine_parity_coverage.py` |
 | Frequency the detector runs | 14 of ~90 harnesses are reachable from any CI workflow | `.github/workflows/` grep, section D-13 |
 
 ### The doctrine this implies
@@ -244,13 +244,33 @@ barely.
 Ledger entry PR-10 records the consequence: SW-01, SW-02, SW-06 and SW-08 all live in the
 87.79% with no differential evidence at all.
 
-**Why the number is stuck where it is — and it is not corpus.** The VM emits per-construct
-coverage markers only from `vm_language_coverage_native_dispatch` and `_named_call`, i.e.
-from **builtin dispatch**. Special forms (`if`, `quote`, `let`, `cond`, `do`, `lambda`) are
-compiled inline in `lib/backend/vm_compiler.c` and emit **no marker at all**, so they can
-never earn differential credit no matter how many programs exercise them. Adding VM coverage
-markers to special forms is a prerequisite for the number to move, and is the highest-value
-follow-up named in the task #109 handoff.
+**Why the number was stuck where it was — and it was not corpus.** The VM emitted
+per-construct coverage markers only from `vm_language_coverage_native_dispatch` and
+`_named_call`, i.e. from **builtin dispatch**. Special forms (`if`, `quote`, `let`, `cond`,
+`do`, `lambda`) and the arithmetic/comparison opcode fast paths are compiled inline in
+`lib/backend/vm_compiler.c` and emitted **no marker at all**, so they could never earn
+differential credit no matter how many programs exercise them. `(display (+ 1 2))` made
+native write six coverage records and made the VM write no trace file whatsoever.
+
+**Status: prerequisite (i) has landed.** The VM compiler now emits
+`OP_LANGUAGE_COVERAGE_FORM` at the head of every compiled `(name ...)` form when tracing is
+armed; reaching it at run time is that construct's execution evidence, and the differential
+gate resolves the marker's stable head-symbol hash against the surface manifest with
+collision rejection. On `integration/astra-v135` that moved differential construct coverage
+from **194/1137 (17.06%) to 303/1137 (26.65%)** and high-risk differential coverage from
+**102/473 (21.56%) to 152/473 (32.14%)**.
+
+**What still caps the number, and it now IS corpus.** Running only native over the gate's
+default corpus, the parser records **171 of the 473 high-risk constructs (36.15%)** — a
+construct no corpus program mentions cannot earn differential credit on either engine. So
+36.15% is the arithmetic ceiling for high-risk differential coverage on today's corpus, and
+the `high_risk_differential_floor: 1.0` recorded in
+`tests/vm_parity/ENGINE_PARITY_BASELINE.json` is unreachable without corpus growth. That
+floor was never measured: `--update-baseline` writes the literal `1.0` rather than the
+observed fraction, so the sub-gate has never been green since it was added. Prerequisites
+(ii) and (iii) — the published rising schedule and the first-class
+`constructs_without_differential_evidence` number — are what convert that from an
+unattainable constant into a burn-down.
 
 **Second structural note.** Both parity probes grade **non-growth**, not correctness:
 `engine_semantic_parity` passes at `10 divergent program(s), 0 new`, and
@@ -650,7 +670,7 @@ first version: S = 1-2d, M = 3-5d, L = 6-12d, XL = a campaign.
 | D-01 | **Value-position axis.** One generated program per builtin evaluating the same call twice — call position and through a higher-order procedure — compared with `equal?` inside the program. Differential by construction: no hard-coded expectation, so it cannot pass by agreeing with a wrong answer. Extend to the VM axis, to `.esk` stdlib exports, and to `stored`/`returned`/`mapped` probes | repo gate + corpus generator | S (land) + M (extend) | `scripts/run_value_position_sweep.py` and `tests/value_position/BASELINE.json`, both on `fix/value-position-axis` |
 | D-02 | **Property-oracle family expansion.** Add families to P8 axis 4 and to the P7c `meta` generator for the classes this campaign proved dangerous: `scope` (a binding must shadow a same-named global on every route: call, HOF, AD operand, `set!` target), `order` (min/max/sort must agree with the engine's own `<` on the same operands, in both operand orders), `exact` (the defining inequalities of `floor`/`ceiling`/`truncate`/`round`, checked not tabulated), `hygiene` (the 18-cell matrix as generated properties), `adcompose` (nested-differentiation identities). Separately: **add a VM axis to the reference differential**, and **audit every normalizer** for the property it erases | corpus generator + repo gate | M per family; M for the VM axis | `scripts/p8/gen_property_oracles.py` (3 families); `scripts/gen_generative_corpus.py` `meta` family (7 properties); PR #439's tests 63/64/65 are three of these hand-written; `scripts/run_reference_differential.sh` |
 | D-02 | **Equivalence modulo inputs (EMI).** Take a program that runs green, mutate code that the observed execution never reaches (Orion) or that runs but cannot affect the printed result (Hermes), and require byte-identical output. This is the canonical answer to shared-defect blindness in the compiler-testing literature and it needs **no reference implementation and no expected value** — the original program is its own oracle. The generator this needs already exists | corpus generator | M | `scripts/gen_generative_corpus.py` (program generator) plus the per-construct coverage trace (which lines executed) already emitted by both engines |
-| D-03 | **Comparison-coverage climb.** (i) Emit VM language-coverage markers from the special-form compile paths in `vm_compiler.c` — without this the fraction is capped. (ii) Convert the floor from "do not regress" to a **published rising schedule** with a date per step. (iii) Report `constructs_without_differential_evidence` as a first-class number in the readiness output | repo gate + oracle criterion | L | `scripts/run_engine_parity_coverage.py` (floor mechanism already built); task #109 |
+| D-03 | **Comparison-coverage climb.** (i) **LANDED** — VM language-coverage markers are emitted for every compiled form (`OP_LANGUAGE_COVERAGE_FORM`), lifting differential coverage 17.06% -> 26.65% and high-risk 21.56% -> 32.14%; what caps it now is the corpus, whose native side mentions only 171 of 473 high-risk constructs. (ii) Convert the floor from "do not regress" to a **published rising schedule** with a date per step. (iii) Report `constructs_without_differential_evidence` as a first-class number in the readiness output | repo gate + oracle criterion | L | `scripts/run_engine_parity_coverage.py` (floor mechanism already built); task #109 |
 | D-04 | **Pairwise crossing coverage.** Instrument the existing per-construct coverage records to emit *co-occurrence* pairs per program, then report 2-wise interaction coverage over a declared high-risk construct set (AD operators x binding forms x higher-order builtins x numeric tower x macro forms). A generator fills the empty cells. The measurement alone is valuable before any generator exists: it turns "we have AD tests and shadowing tests" into a number | repo gate, then corpus generator | M (measure) + L (generate) | the coverage trace format already emitted by both engines (`P`/`V` records); `scripts/gen_generative_corpus.py` is the generator to extend, not to replace |
 | D-05 | **Self-verdict scanner, everywhere.** Extract the FAIL-line scan that 20 suites already carry into one shared helper, and apply it on **every** lane including VM, wasm and AOT. Any test whose stdout contains a self-reported failure is a gate failure regardless of exit status or cross-engine agreement. Plus: **re-run `tests/vm_parity/found/` inside the parity gate** and fail on a reproducer that no longer reproduces (it is either fixed — close the ledger entry — or the reproducer rotted) | repo gate | S | `scripts/run_parser_tests.sh` lines 83-88; DD-12 |
 | D-06 | **Threshold-bearing invariants.** Add an invariant kind that grades a *payload field* against a bound, and convert `INV-engine-semantic-parity` and `INV-language-surface-exercise` to it. Then add a meta-check: any invariant whose `severity` is `critical` and whose `kind` is `exercise` is itself a finding | ICC detector + `.icc/architecture-model.yaml` | M | `kind: perturbation` and `kind: key-space-equality` already exist in the model; ICC `vacuous-assertions` is the adjacent detector |
@@ -871,6 +891,7 @@ not a target.
 | Ledgered defects found by the ICC correctness chain | 0 of 62 | the `missed_by:` field of `.icc/silent-wrong-ledger.yaml`, which names `icc-correctness-chain` on 43 entries |
 | Language-surface execution coverage | 1091 / 1091 = 100.00% | `run_language_coverage.sh` |
 | Engine differential construct coverage | 136 / 1114 = 12.21% (floor 10.95%) | `run_engine_parity_coverage.py`, PR #424 |
+| Engine differential construct coverage, after D-03 (i) | 303 / 1137 = 26.65% (floor 13.35%); high-risk 152 / 473 = 32.14% against a 36.15% corpus ceiling | `run_engine_parity_coverage.py` on `integration/astra-v135` |
 | Correctness harnesses reachable from CI | 14 of ~90 | `.github/workflows/` |
 | Layout `static_assert`s in `lib/` + `inc/` | 0 | grep |
 | Freshness guards in the 4 release-critical harnesses | 0 | grep |

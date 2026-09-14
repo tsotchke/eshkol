@@ -6,6 +6,84 @@
 
 ## Resolved in v1.3.5-evolve
 
+- **The bytecode VM accepts a call that omits a documented optional argument.**
+  `(substring "hello" 1)`, `(make-vector 3)`, `(make-string 3)`,
+  `(read-line)`, `(append lst)` and `(hash-ref table key)` all ran on native and
+  were refused by the VM with `Arity mismatch: … expects N arguments but got M`.
+  The cause was structural: the `arity` column of `BUILTINS[]` is the **opcode's
+  operand count**, not the caller's obligation, and the VM's under-arity check
+  fell back to it for every row that left `min_arity` unset — 739 rows out of
+  742. The minima are now DERIVED rather than typed
+  (`scripts/gen_builtin_min_arity.py`, from the fixed-arity macro the native
+  dispatch expands, the arity guard the lowering enforces, and the declarative
+  documented signature), `scripts/check_builtin_min_arity.py` re-derives them
+  and fails the build on drift, and the operands a caller legally omits are
+  supplied at the call site as an absent marker that each native op reads as
+  "apply the documented default". Nineteen builtins carry an omissible
+  argument; all nineteen are exercised at their minimum and maximum arity by
+  `tests/vm_parity/corpus/82_builtin_optional_argument_arity.esk`. Three of
+  them are the R7RS variadic FOLDS, whose minimum is zero and whose identity
+  the omitted operand supplies — `(append)` is the empty list (R7RS 6.4),
+  `(gcd)` is 0 and `(lcm)` is 1 (6.2.6), `(bytevector-append)` is the empty
+  bytevector. Those three are derived from the code native runs rather than
+  from prose: the core-module definition `(define (append . lists) (cond
+  ((null? lists) (quote ())) …))`, and the lowering's own `num_vars == 0`
+  case. They were the worse half of the defect, because a row declared
+  variadic makes no minimum claim, so the VM's compile-time check never fired
+  for it and `(gcd)` died at RUNTIME instead, where the closure wanted both
+  operands.
+  `hash-ref` had the column filled in already and still failed — at RUNTIME,
+  where the closure arity check wanted three operands — which is why the fact
+  and the operand-supply had to land together.
+
+- **A wrong-arity call to a builtin is refused with the same sentence on every
+  engine.** Both the native LLVM backend and the bytecode VM already *refused*
+  a call like `(ceiling)`; they just said so differently. The VM printed
+  `Arity mismatch: ceiling expects 1 argument but got 0`, while native lowering
+  printed `ceil requires exactly 1 argument` — naming the LLVM intrinsic rather
+  than the procedure, and announcing no contract at all — one of roughly two
+  hundred private per-lowering sentences. The class marker and the canonical
+  wording now live in one place
+  (`inc/eshkol/core/arity_contract.h`) that both engines render, and the arity
+  NUMBER comes from the one table both engines already consulted
+  (`BUILTINS[]`), instead of a second hand-maintained copy inside
+  `llvm_codegen.cpp`. The P8 axis-3 ratchet had been reporting `ceiling`,
+  `char->integer`, `exact->inexact`, `numerator` and `tanh` as native-vs-VM
+  divergences purely on the strength of that wording.
+
+- **`(* (vector 1 2) 2)` crashed the process.** Element-wise arithmetic chose
+  its kernel from the LEFT operand only, so a vector on the left handed the
+  scalar to a kernel that reads its operand as a vector: a fatal SIGSEGV at
+  address `0xa` (`0x9` for `(+ (vector 1 2) 1)`), exit 139, no diagnostic and
+  no source location. The reverse order `(* 2 (vector 1 2))` already raised a
+  clean type error. Both operand positions are now classified before either is
+  dereferenced, so a vector or tensor against a scalar raises the same
+  catchable `Type error in tensor-mul: expected tensor, got integer` in either
+  order — the documented contract, since binary element-wise arithmetic takes
+  two operands of matching shape and scalar broadcast is spelled `tensor-scale`
+  ([tensors/operations](reference/tensors/operations.md)). The same one-sided
+  dispatch made `(* (vector 1.0 2.0) (tensor 3.0 4.0))` answer garbage with
+  exit 0; a vector and a rank-1 tensor are two spellings of one value and the
+  pair now answers the element-wise product. `(tensor-mul (vector 1.0 2.0) 2.0)`
+  crashed identically and is fixed by the same change.
+- **Element-wise arithmetic on mismatched shapes read out of bounds.** The
+  Scheme-vector kernel looped to operand 1's length over both operands' element
+  arrays, so `(* (vector 1 2 3) (vector 4 5))` answered `#(4 10 4.4e-323)` with
+  exit 0 — the last element being whatever followed the shorter operand in the
+  arena — and the reverse order silently truncated. The tensor spelling crashed,
+  because the broadcast helper's "not broadcastable" verdict was discarded and
+  the uninitialised result shape was read back. Mismatched shapes now raise a
+  catchable `Shape mismatch in <op>: shapes (3) and (2) are not
+  broadcast-compatible` at the failing site. Broadcast-compatible pairs are
+  unaffected: a length-1 operand still broadcasts, and the vector and tensor
+  spellings of one value agree.
+- **An arithmetic type error named the wrong line.** `+ - * /` share one
+  out-lined dispatch helper per module, emitted at the first site of the
+  operator, and its error branches carried that site's location as a constant —
+  so every arithmetic type error in a program was reported at a single,
+  usually unrelated, expression (commonly a function body that had already run
+  correctly). Each site now reports its own position.
+
 - **Resident-loop retention with persistent mutation.** A tail-recursive loop
   that mutates persistent state (a knowledge base, workspace, or growing list)
   on every iteration used to get no automatic per-iteration reclamation and
@@ -231,9 +309,6 @@ The HoTT type system supports dependent types for tensor shape verification at c
 
 ## Current Limitations (VM)
 
-### Top-level mutual recursion grouping
-Top-level mutual recursion requires consecutive function defines. Interleaved non-define expressions break groups, causing forward references to fail. Workaround: place all mutually recursive defines together without intervening expressions.
-
 ### Tensor nested syntax
 Resolved in v1.3.4-evolve, and the direction of the remaining asymmetry is the
 opposite of what this entry used to claim. A nested collection is now
@@ -334,6 +409,30 @@ block ordinary use.
 
 **Found during the v1.3.4-evolve correctness wave (new, honest knowns)**
 
+- **Four value divergences the optional-argument probe uncovered, none of them
+  about arity.** Probing every optional-argument builtin at its minimum and
+  maximum argument count put the two engines side by side over calls nobody had
+  compared before, and four answers differ for reasons that reproduce at FULL
+  arity too: `(hash-ref table key default)` answers the default's raw integer
+  bits on the VM (`vm_ht_ref` stores `void*`, so a symbol comes back as a
+  number) where native answers the value; `(write-string s)` answers `0` on
+  native and the unspecified value on the VM; `(make-tensor shape)` builds a
+  rank-1 tensor on native where the VM builds the requested shape; and the
+  `(bytevector …)` constructor and `current-input-port` / `current-output-port`
+  are not callable on the VM at all. Each is its own build item.
+
+- **Some documented optional parameters are not implemented on either engine.**
+  `scripts/gen_builtin_min_arity.py` reports 33 builtins whose documented
+  signature describes an optional parameter that no lowering provides —
+  `(string-pad-left s width [char])` is documented with an optional pad
+  character, and `stringPadLeft` is a `THREE_ARG_BUILTIN`, so the two-argument
+  call returns null on native rather than padding with a space. The same shape
+  covers `(fg-infer! graph)`, `(make-workspace)`, `(allow-sleep)` and the AD
+  tape wrappers. The documentation is the specification here and the engines
+  are behind it, so the table records the arity the engines actually implement
+  and the generator names every page that is ahead of them; run it to see the
+  list. Building each one up to its documented signature is the remaining work.
+
 - **The two forward AD carriers now compose (fixed, ESH-0402).** Eshkol carries
   forward-mode derivatives in two representations — the 8-jet (`derivative`,
   first order, three independent perturbations) and the heap Taylor tower
@@ -351,31 +450,15 @@ block ordinary use.
   differentiation` rather than answering. Rewrite one of the two passes as a
   first-order `derivative`, or ask for the combined order with a single
   `(derivative-n f x k)`.
-- **`i128` has no branch in the generic arithmetic opcodes.** The dedicated
-  `i128-add` / `-sub` / `-mul` / `-neg` / shift / comparison / division surface
-  is complete and bit-identical on both engines. Generic arithmetic and
-  comparison over `i128` values is not wired on **either** side — no i128
-  opcodes exist in the bytecode interpreter (that is unchanged, still
-  v1.3.5 scope for the real fix). What changed: every generic arithmetic
-  and comparison opcode on the VM (`+ - * / modulo`, unary `-`, `abs`, and
-  `= < > <= >=`, in both of `vm_run.c`'s interpreter loops — the threaded/
-  computed-goto dispatch and the switch-based fallback) now raises a
-  catchable "i128 arithmetic/comparison is not supported on the VM" error
-  instead of silently coercing an i128 operand to `0.0` and computing a
-  wrong answer (fixed as part of the skipped-flaws ledger's SW-09 entry;
-  originally only `+` was converted, the rest of the family followed in
-  the same PR before merge). Native already raised a type error for the
-  whole family before this change (LE-03) and is unaffected. Use the
-  `i128-*` operators (`i128-add`, `i128-mul`, `i128=?`, …) for i128
-  arithmetic and comparison on either engine; `i128` deliberately lives
-  off the numeric tower and never auto-promotes, so this is a missing
-  opcode branch rather than a tower-contagion question.
-- **The VM lane cannot resolve a path-literal `(load "x.esk")`.** After the
-  load-path unification (#407) the native, JIT and AOT paths share one resolver.
-  The VM lane resolves only the CWD `lib/<dotted>` form; a path literal fails
-  loudly — `WARNING undefined variable 'load'` followed by a fatal
-  `calling non-function` (ledger LE-05, open). Tracked for v1.4.0; use the
-  dotted module form on the VM in the meantime.
+- **Generic arithmetic and comparison over `i128` use the i128 domain.** On
+  both native and VM, `+ - * / modulo`, unary `-`, `abs`, and `= < > <= >=`
+  dispatch to the shared fixed-width implementation whenever either operand
+  is an i128. A fixnum is widened as the other operand; other numeric-tower
+  values remain an error. Wrapping applies to arithmetic, while division
+  follows the documented aliases: `quotient`/`truncate-quotient` and
+  `remainder`/`truncate-remainder` truncate toward zero, and
+  `modulo`/`floor-remainder` use divisor-sign floor semantics. The regression
+  is `tests/types/i128_test.esk`.
 - **`syntax-rules` templates have no referential transparency: a free
   identifier resolves at the USE site, not the macro-definition site.**
   Minimal reproducer:
@@ -402,29 +485,15 @@ block ordinary use.
   v1.4 limitation rather than a v1.3.4 fix (maintainer ruling 2026-08-13);
   tracked as SW-42 in `.icc/silent-wrong-ledger.yaml`, bucket
   DOCUMENTED-LIMITATION.
-- **Very deep non-tail recursion through a top-level `define`d function
-  lacks the early depth guard that a `lambda` gets, so it runs much deeper
-  before failing, and then fails as a signal rather than a clean diagnostic.**
-  The recursion-depth check (`eshkol_check_recursion_depth`) is emitted only
-  in the lambda-expression codegen path, not in top-level function-definition
-  codegen (`codegenFunctionDefinition`), so a self-recursive top-level
-  `define` never hits the guard's clean "maximum recursion depth exceeded"
-  message the way an equivalent `lambda` would. This is narrower than once
-  measured: the runtime's SIGILL/SIGBUS handler (ESH-0119) now catches the
-  eventual stack overflow on an alternate signal stack and prints a clear
-  "fatal signal … most likely a stack overflow" diagnostic rather than dying
-  with no output at all, and the practical depth at which that happens has
-  moved well past the ~270k frames originally filed — 1,000,000 frames of
-  plain non-tail recursion complete cleanly on the current build, and 3,000,000
-  fails loudly rather than silently. The guard-coverage gap itself is real
-  and unchanged (confirmed by reading the codegen, not by one program's
-  behavior): a `lambda`-bound self-recursive function still gets the early,
-  precise diagnostic that a top-level `define`d one does not. Wiring the
-  guard into every top-level function entry, not just lambdas, is ruled v1.3.5
-  scope (maintainer ruling 2026-08-13, filed as ESH-0101, recorded as a
-  residual of the resource-limits closure in `.icc/silent-wrong-ledger.yaml`
-  under SW-10); not a blocker for v1.3.4, since the failure mode is now loud
-  either way.
+- **Very deep non-tail recursion through a top-level `define`d function used
+  to bypass the early native-stack guard and die with a silent SIGILL.**
+  Closed by ESH-0101: every generated native user-function entry now performs
+  a stack-headroom check, and POSIX SIGSEGV/SIGBUS faults in the guard region
+  have a per-thread alternate-stack backstop. The hard gate
+  `scripts/run_stack_overflow_diagnostic.sh` covers JIT, AOT, and parallel-map
+  workers: the default stack fails with the named `ESHKOL_STACK_SIZE`
+  diagnostic, while the same 2000000-frame source completes with a 1 GiB
+  stack. `ESHKOL_MAX_STACK` remains a separate optional software depth ceiling.
 
 **Automatic differentiation**
 - **Differentiating a first-class `gradient` closure again with an enclosing
@@ -464,17 +533,15 @@ block ordinary use.
   regression `tests/ad/sweep_c_regressions_test.esk:57-69` asserts exact
   values for gradient/jacobian/hessian/divergence/laplacian over a lambda
   capturing a local parameter (conformity audit 2026-08-25, item e1).
-- **Resident training loops accumulate RSS unless each step is scoped.** The
-  automatic per-iteration nursery (ESH-0214e) reclaims *structural* mutation, not
-  the reverse-mode AD tape, so a long-running gradient/training loop is excluded
-  from automatic reclamation by design. Wrap each optimization step in an
-  explicit `(with-region ...)` to get flat RSS — the tape's node-pointer array is
-  now reclaimed with the region (#345), so a per-step `with-region` is fully flat.
-  The AD-tape reclamation clause (#345) is native-only; on the bytecode VM a
-  per-step `with-region` reclaims through the Stage-1 evacuator, which does not
-  special-case the tape (see "Region handles on the VM" above).
-  A lighter-weight tape mark/release API is planned so a bare training loop can
-  reclaim without a per-step region.
+- **Resident training loops reclaim operator tapes through a native tape
+  sub-arena.** Each generated reverse-mode pass allocates its tape header,
+  nodes, and private scratch in a dedicated child arena, then releases that
+  child after copying gradients into the parent-owned result. A bare resident
+  loop therefore no longer needs a per-step `(with-region ...)`, and release
+  cannot rewind user-visible parent allocations. Release is refused during an
+  active reverse pass. The bytecode VM keeps its existing
+  region-stack ownership: its equivalent tape allocations are reclaimed by an
+  enclosing VM region, because its arena has no independent rewind handle.
 
 **Recursion depth**
 - The stdlib list operations that used to fail on very large inputs no longer
@@ -506,10 +573,12 @@ block ordinary use.
   calls through a procedure value (and therefore mutual tail calls between
   `letrec`-bound lambdas, which internal defines become), mutual tail calls made
   from inside a named `let` loop, tail calls that forward a pointer into the
-  caller's frame, and tail calls in the body of `guard`. The last of those is
-  not an optimization gap: R7RS 7.3 keeps the handler installed for the body's
-  whole dynamic extent, so a call in a guard body is not in a tail context, and
-  making it one changes which handler answers. See
+  caller's frame, and **mutual** tail calls in the body of `guard`. The last of
+  those is not an optimization gap: R7RS 7.3 keeps the handler installed for
+  the body's whole dynamic extent, so a mutual call in a guard body is not in a
+  tail context, and making it one changes which handler answers. Self-recursive
+  tail calls in a guard body are complete, with constant stack and the exact
+  handler chain; see
   [tail-calls.md](reference/language/tail-calls.md).
 - Plain named-let TCO loops used to overflow the native stack around
   n≈300k-500k even with zero `guard`/`call/cc`/dynamic-alloca in the loop body
@@ -564,8 +633,19 @@ block ordinary use.
   (fixed, ESH-0104, ESH-0107).** Was: not fully wired. Both have green
   assertions at `tests/parser/quote_dispatch_family_test.esk:94-102` and
   `:104-113` (conformity audit 2026-08-25, item e2).
-- JIT compile of a ~10k-deep nested expression uses excessive RSS/time; AOT is
-  unaffected (ESH-0103).
+- **Deeply nested native expressions now have a bounded compile-time/RSS gate
+  (fixed, ESH-0103).** The former cliff came from inlining the complete
+  numeric-tower dispatch at every operator into one LLVM function. LLVM SROA
+  then promoted a growing set of allocas across a growing set of blocks,
+  making the optimizer's work superlinear. `ArithmeticCodegen` now emits each
+  binary dispatch once as a module-local `noinline` helper, leaving one call at
+  each expression node. The frontend no longer reports ordinary non-macro
+  descent as a macro-expansion overflow, so the deep probe reaches codegen
+  without inventing a diagnostic. `tests/perf/nested_expr_compile_time_test.sh`
+  measures native JIT and AOT at depths 1,000/4,000/16,000 and asserts both
+  time and peak-RSS ratios stay below the bounded near-linear threshold; it is
+  wired into CTest and the Linux CI lane. The same arithmetic shape is present
+  in `tests/vm_parity/corpus/72_nested_expression.esk` for VM parity.
 
 **VM parity**
 
@@ -589,19 +669,26 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   and zero-component spellings.
 - The VM implements a documented subset of the language, tracked row-by-row in
   `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 956 rows —
-  581 `vm-supported`, 44 `native-only-justified`, 331 `gap`. `op:GRADIENT` and
+  582 `vm-supported`, 44 `native-only-justified`, 330 `gap`. `op:GRADIENT` and
   `op:DERIVATIVE` moved to `vm-supported` this release (#337), and
   `op:IMPORT` / `op:PROVIDE` / `op:REQUIRE` followed with the same-unit
-  `define-library` fix (#402) — with no new waivers. The differential gate
-  (`scripts/run_vm_parity.sh`) is **188/188** on the release cut, remeasured
-  2026-08-25 against `4bf871a0` (`evidence/audit/06_vm_parity.log`; corrects
-  an earlier "140/140" figure — the corpus has grown, conformity audit item
-  e3). Separately, `tests/vm_parity/SURFACE_BASELINE.tsv` carries **323**
-  further names that native resolves and the VM does not, entirely outside
-  the 956-row ledger (`NO-ROW`, PR-02 in `.icc/silent-wrong-ledger.yaml`) —
-  see [VM_PARITY.md](VM_PARITY.md) for the full accounting (conformity audit
-  item e6/g6).
-- Of the 331 `gap` rows, 14 reference a reproducer file under
+  `define-library` fix (#402) — with no new waivers. The release-cut
+  differential gate (`scripts/run_vm_parity.sh`) was **188/188**, remeasured
+  2026-08-25 against `4bf871a0` (`evidence/audit/06_vm_parity.log`; correcting
+  an earlier "140/140" figure). The parity-backlog Linux lane remeasured it at
+  **194/194**, including the gap-canonicalization and arity-fatal checks.
+  The corresponding surface baselines were **323** at the release cut and
+  **328** on the parity-backlog lane. PR-02 separately retested the historical
+  `tests/vm_parity/SURFACE_BASELINE.tsv` surface on both engines: the VM now
+  loads the canonical stdlib on the source, REPL and ESKB paths, and the
+  retest found 0 native-resolved/VM-missing entries — the baseline is now
+  header-only, and the 956-row ledger has no remaining untracked surface
+  backlog (`NO-ROW`, PR-02 in `.icc/silent-wrong-ledger.yaml`) — see
+  [VM_PARITY.md](VM_PARITY.md) for the full accounting and closure evidence
+  (conformity audit items e6/g6).
+- Of the 330 `gap` rows, every row has a canonical disposition in
+  `tests/vm_parity/GAP_DISPOSITIONS.tsv`; rows with a historical reproducer
+  reference a live file under
   `tests/vm_parity/found/` (`awk -F'\t' '$2=="gap" && $0~/found\//' … | wc
   -l`). The active `found/` corpus now holds 18 filed-divergence/control
   fixtures. The parity gate re-ran all 39 previously filed programs on both
@@ -614,7 +701,7 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   (`4bf871a0`) with a full rebuild: `scripts/run_vm_parity.sh` passes clean
   end to end, now a **4-stage** gate (AUDIT / CORPUS on 3 axes / OOS / FATAL,
   not the 3-stage description this doc previously carried — conformity audit
-  item e5) at 188/188 (see above). No reproducible surface-audit failure
+  item e5) at 194/194 (see above). No reproducible surface-audit failure
   currently exists on this branch.
 - **The VM occurs-check does not descend into facts** — `lib/backend/vm_logic.c:350-356`
   states "Fact-internal recursion is not yet implemented," which is a
@@ -637,24 +724,105 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   differential evidence) even though the engine-parity gate reports PASS.
   Not a new finding — cross-referenced here because it was previously absent
   from this document — conformity audit item e6.
+- **`vm_geometric_manifold_dim` returns 0 unconditionally** in the *enabled*
+  configuration (`lib/backend/vm_geometric.c:712-722`) — a silent-wrong-answer
+  shape, not a loud error. Filed as a BUILD ITEM, target v1.4.0 — conformity
+  audit item e6.
+- The former differential-coverage false-green (PR-10) is now guarded by
+  `scripts/run_engine_parity_coverage.py`: its runtime event carries the
+  overall and high-risk construct fractions, and it fails when either falls
+  below the monotonic floor in `tests/vm_parity/ENGINE_PARITY_BASELINE.json`.
+  A name-resolution pass or one-engine execution pass cannot satisfy this
+  cross-engine evidence requirement.
 
 **Continuations**
 
-- **Re-entering a continuation rolls back a mutated local that is neither a
-  top-level binding nor closure-captured** (native JIT, native AOT and the
-  bytecode VM alike). With
+- **Re-entering a continuation used to roll back a mutated local that is
+  neither a top-level binding nor closure-captured** (native JIT, native AOT
+  and the bytecode VM alike). With
   `(define (f) (let ((x 0)) (call/cc (lambda (c) (set! k c))) (set! x (+ x 1)) x))`,
-  three re-entries print `1`, `1`, `1` where R7RS requires `1`, `2`, `3`:
+  three re-entries printed `1`, `1`, `1` where R7RS requires `1`, `2`, `3`:
   `let` creates one location for `x` per invocation, and `call/cc` captures
-  the control state, not the store. Exit 0, no diagnostic. This is a strictly
+  the control state, not the store. Exit 0, no diagnostic. This was a strictly
   narrower residual of two defects that were both worse — on native the same
   program used to SIGSEGV (SW-60) and on the VM it looped forever (SW-61),
-  both fixed in v1.3.5-evolve by #491. It is not made loud because every sound
-  detector for it is the same whole-function assignment analysis that would
-  fix it; assignment conversion (boxing every `set!`-assigned local so a frame
-  holds only immutable values) is the recommended next step. Tracked as SW-62
-  in `.icc/silent-wrong-ledger.yaml`, open under a maintainer waiver expiring
-  2026-12-31.
+  both fixed in v1.3.5-evolve by #491. FIXED: assignment conversion boxes
+  every `set!`-assigned local whose location an escaping continuation or a
+  frame-outliving context can still observe, so a restored frame holds only
+  immutable values. `tests/continuations/assignment_conversion.esk` pins the
+  required `1, 2, 3` transcript on all three engines. SW-62 in
+  `.icc/silent-wrong-ledger.yaml` is closed and its maintainer waiver retired.
+
+**Exceptions and tail position**
+
+- **Self tail recursion through `guard` sends a re-raise to the wrong
+  handler.** Each activation of a self-recursive procedure whose recursion
+  sits in a `guard` body should install its own nesting handler (R7RS 7.3
+  derives `guard` from `with-exception-handler` wrapping the body); Eshkol
+  collapses the chain, so a re-raise from the innermost handler escapes to the
+  outermost `guard` instead of the one immediately enclosing it. On
+  `tests/tco/guard_tail_context/04_reraise_reaches_enclosing_guard.esk` Eshkol
+  prints `outer` and exits 0 where chibi-scheme 0.12 prints `(inner 1)`; three
+  control fixtures in the same directory agree with the reference. The defect
+  costs no stack, so a depth sweep cannot see it; the fix is the heap-owned
+  `guard` continuation named in ADR-0006 section 4, not a patch. Tracked as
+  SW-58, open under a maintainer waiver expiring 2027-12-31. Distinct from the
+  tail-position question under "Recursion depth" above.
+
+**Vector calculus**
+
+- **Native `curl` faults on a list-returning vector field.** With
+  `(define (F v) (list (vector-ref v 0) (vector-ref v 1) (vector-ref v 2)))`,
+  `(curl F (vector 1.0 2.0 3.0))` prints the field's own value and then
+  faults. Spelling the components across three parameters instead makes the
+  LLVM verifier reject the module: native `curl` passes the whole point as one
+  argument where the VM spreads it into N. Two separable defects — the crash,
+  and the arity-convention divergence between engines. Loud, so not
+  tag-blocking, but it is what keeps `op:CURL` a `gap` row in
+  `tests/vm_parity/PARITY.tsv` now that the VM implementation is exact (SW-46,
+  closed by #487). Tracked as LE-12, open.
+
+**Dense tensor AD**
+
+- **ADR-0002's dense tensor AD node has never executed.** The guard admitting
+  it in the matmul lowering is an unsatisfiable conjunction, so
+  `recordADNodeTensor` has zero live callers. Every matmul under autodiff
+  therefore records one tape node per scalar multiply-accumulate, and flipping
+  the guard so the dense node is built faults on the first matmul gradient.
+  Gradients are correct; tape size scales with element count rather than
+  tensor-op count. This blocks ADR-0000 Stages 5, 7 and 8. Tracked as SW-48,
+  open.
+
+**Other tracked open items** (repros in `.icc/silent-wrong-ledger.yaml`)
+
+- **LE-02** — `hessian` over a lambda capturing its enclosing function's
+  parameter fails LLVM verification.
+- **LE-04** — `sort` argument order is reversed between engines: native takes
+  `(sort lst <)`, the VM takes `(sort < lst)`. No test covers it.
+- **IF-06** — a non-store value passed to a memory-store accessor faults.
+- **IF-07** — `void*` is not accepted as an `extern` type name; it warns and
+  silently defaults to `int64`.
+- **Parity-ratchet baselines** — PR-01, PR-03, PR-04, PR-05, PR-07, PR-08,
+  PR-09, PR-11.
+- **Doc debt** — DD-01, DD-07, DD-08, DD-10, DD-11.
+
+**Continuations**
+
+- **Re-entering a continuation used to roll back a mutated local that is
+  neither a top-level binding nor closure-captured** (native JIT, native AOT
+  and the bytecode VM alike). With
+  `(define (f) (let ((x 0)) (call/cc (lambda (c) (set! k c))) (set! x (+ x 1)) x))`,
+  three re-entries printed `1`, `1`, `1` where R7RS requires `1`, `2`, `3`:
+  `let` creates one location for `x` per invocation, and `call/cc` captures
+  the control state, not the store. Exit 0, no diagnostic. This was a strictly
+  narrower residual of two defects that were both worse — on native the same
+  program used to SIGSEGV (SW-60) and on the VM it looped forever (SW-61),
+  both fixed in v1.3.5-evolve by #491. FIXED: assignment conversion boxes
+  every `set!`-assigned local whose location an escaping continuation or a
+  frame-outliving context can still observe, so a restored frame holds only
+  immutable values. `tests/continuations/assignment_conversion.esk` pins the
+  required `1, 2, 3` transcript on all three engines. SW-62 in
+  `.icc/silent-wrong-ledger.yaml` is closed and its maintainer waiver retired.
 
 **Exceptions and tail position**
 
@@ -737,10 +905,20 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   it was filed because the classification was undocumented, not because a
   wrong value was measured.
 - **Parity-ratchet baselines** — PR-01, PR-03, PR-04, PR-05, PR-07, PR-08,
-  PR-09.
-- **Doc debt** — DD-11.
+  PR-09, PR-11.
+- **Doc debt** — DD-01, DD-07, DD-08, DD-10, DD-11.
 
 ---
+
+## Continuations
+
+- **Assignment conversion for continuation re-entry is complete.** Every local
+  targeted by `set!` is stored in an arena-backed cell, including locals that
+  no closure captures. Re-entering a continuation therefore restores control
+  without rolling back the mutable location on native JIT, native AOT, or the
+  bytecode VM. `tests/continuations/assignment_conversion.esk` pins the
+  required `1, 2, 3` transcript. This closes SW-62 in
+  `.icc/silent-wrong-ledger.yaml`.
 
 ## Roadmap (Future Releases)
 

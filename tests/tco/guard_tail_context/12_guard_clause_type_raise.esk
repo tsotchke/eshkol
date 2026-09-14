@@ -1,0 +1,11 @@
+; A type error raised while testing one guard must reach the previous live
+; guard. The inner n=0 clause test raises; the n=1 guard's test is false and
+; its catch-all answers. A spelling-only classifier incorrectly collapses it.
+(define (loop n)
+  (guard (e ((if (= n 0) (< e 0) #f) 'wrong)
+            (#t (list 'inner n)))
+    (if (= n 0)
+        (raise 'body)
+        (loop (- n 1)))))
+(display (guard (outer (#t 99)) (loop 1)))
+(newline)

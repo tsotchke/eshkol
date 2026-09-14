@@ -86,6 +86,44 @@ struct sigaction g_old_sigfpe_handler;
 void* g_altstack_mem = nullptr;
 stack_t g_altstack_prev;          // previous altstack (for restoration)
 bool g_altstack_installed = false;  // true only if WE installed the altstack
+
+/** @brief Size of one alternate signal stack, floored so the fatal handler
+ *         (which formats and writes a diagnostic) always fits. */
+size_t eshkol_altstack_size(void) {
+    size_t altsz = (size_t)SIGSTKSZ;
+    if (altsz < (size_t)MINSIGSTKSZ) altsz = (size_t)MINSIGSTKSZ;
+    if (altsz < (size_t)65536)       altsz = (size_t)65536;
+    return altsz;
+}
+
+/**
+ * @brief Owns one worker thread's alternate signal stack.
+ *
+ * ESH-0101: sigaltstack() is PER THREAD, while sigaction() is per process.
+ * The main thread got an altstack from eshkol_runtime_init_signals(), so a
+ * stack-overflow fault there could run the fatal handler and print. A
+ * parallel-map worker had none, so on a worker the same SA_ONSTACK handler
+ * had to run on the stack that had just been exhausted — which is exactly
+ * the case where it cannot — and the process died with no diagnostic. This
+ * gives every worker its own, released when the thread exits.
+ */
+struct EshkolThreadAltStack {
+    void* mem = nullptr;
+
+    ~EshkolThreadAltStack() {
+        if (mem == nullptr) {
+            return;
+        }
+        stack_t disable;
+        std::memset(&disable, 0, sizeof(disable));
+        disable.ss_flags = SS_DISABLE;
+        sigaltstack(&disable, nullptr);
+        std::free(mem);
+        mem = nullptr;
+    }
+};
+
+thread_local EshkolThreadAltStack t_thread_altstack;
 #endif
 bool g_signals_installed = false;
 
@@ -222,11 +260,11 @@ void eshkol_fatal_signal_handler(int signum, siginfo_t* info, void* /*ucontext*/
     const char* name = "unknown";
     bool likely_overflow = false;
     switch (signum) {
-        case SIGSEGV: name = "SIGSEGV (segmentation fault)"; likely_overflow = true; break;
+        case SIGSEGV: name = "SIGSEGV (segmentation fault)"; break;
 #ifdef SIGBUS
-        case SIGBUS:  name = "SIGBUS (bus error)";           likely_overflow = true; break;
+        case SIGBUS:  name = "SIGBUS (bus error)";           break;
 #endif
-        case SIGILL:  name = "SIGILL (illegal instruction)"; likely_overflow = true; break;
+        case SIGILL:  name = "SIGILL (illegal instruction)"; break;
 #ifdef SIGFPE
         case SIGFPE:  name = "SIGFPE (arithmetic exception)";                        break;
 #endif
@@ -252,15 +290,17 @@ void eshkol_fatal_signal_handler(int signum, siginfo_t* info, void* /*ucontext*/
         static const char at[] = " at address ";
         eshkol_signal_safe_write(at, sizeof(at) - 1);
         eshkol_signal_safe_write_ptr(info->si_addr);
+        likely_overflow = eshkol_stack_guard_fault_in_region(info->si_addr);
     }
 
     if (likely_overflow) {
-        // SIGSEGV/SIGBUS/SIGILL from deep recursion are almost always the
-        // native stack being exhausted. Name that explicitly so the failure is
-        // diagnosable ("recursion too deep") rather than a bare crash.
+        // Only a fault address in this thread's guard region is identified as
+        // stack exhaustion. Other SIGSEGV/SIGBUS faults retain their signal
+        // diagnostic and are not mislabeled as recursion failures.
         static const char hint[] =
-            "\n[Eshkol] this is most likely a stack overflow (recursion too deep) — "
-            "use tail recursion or reduce the recursion depth\n";
+            "\n[Eshkol] stack overflow: recursion depth exceeded the native "
+            "stack guard (ESHKOL_STACK_SIZE); use tail recursion or reduce the "
+            "recursion depth\n";
         eshkol_signal_safe_write(hint, sizeof(hint) - 1);
     } else {
         static const char nl[] = "\n";
@@ -444,9 +484,7 @@ void eshkol_runtime_init_signals(void) {
     std::memset(&existing, 0, sizeof(existing));
     if (sigaltstack(nullptr, &existing) == 0) {
         if (existing.ss_flags & SS_DISABLE) {
-            size_t altsz = (size_t)SIGSTKSZ;
-            if (altsz < (size_t)MINSIGSTKSZ) altsz = (size_t)MINSIGSTKSZ;
-            if (altsz < (size_t)65536)       altsz = (size_t)65536;
+            size_t altsz = eshkol_altstack_size();
             g_altstack_mem = std::malloc(altsz);
             if (g_altstack_mem != nullptr) {
                 stack_t ss;
@@ -505,6 +543,48 @@ void eshkol_runtime_init_signals(void) {
 
     g_signals_installed = true;
     eshkol_debug("Signal handlers installed");
+}
+
+/**
+ * @brief Give the CALLING thread an alternate signal stack (ESH-0101).
+ *
+ * Idempotent per thread and a no-op on Windows, under a sanitizer (which
+ * installs its own), and when the thread already has one. Call it at the top
+ * of every runtime-created thread that runs user code: the fatal-signal
+ * handler is registered process-wide with SA_ONSTACK, but the alternate
+ * stack it needs is per thread, so without this a stack-overflow fault on a
+ * worker kills the process with no diagnostic even though the same fault on
+ * the main thread prints one. The stack is freed when the thread exits.
+ */
+void eshkol_runtime_init_thread_signals(void) {
+#if defined(_WIN32) || defined(ESHKOL_UNDER_SANITIZER)
+    return;
+#else
+    if (t_thread_altstack.mem != nullptr) {
+        return;
+    }
+    stack_t existing;
+    std::memset(&existing, 0, sizeof(existing));
+    if (sigaltstack(nullptr, &existing) == 0 && !(existing.ss_flags & SS_DISABLE)) {
+        return;  // something already gave this thread one; leave it alone.
+    }
+
+    size_t altsz = eshkol_altstack_size();
+    void* mem = std::malloc(altsz);
+    if (mem == nullptr) {
+        return;
+    }
+    stack_t ss;
+    std::memset(&ss, 0, sizeof(ss));
+    ss.ss_sp = mem;
+    ss.ss_size = altsz;
+    ss.ss_flags = 0;
+    if (sigaltstack(&ss, nullptr) != 0) {
+        std::free(mem);
+        return;
+    }
+    t_thread_altstack.mem = mem;
+#endif
 }
 
 /**

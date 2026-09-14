@@ -1,0 +1,16 @@
+;; Type System Test: a wrong argument inside a `values` operand is reported, with the
+;; same message it gets at top level. The checker used to give this form a
+;; fixed type without synthesizing its subexpressions, so it was silent.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN]
+;; EXPECT-STDERR: argument 1 of 'area': expected Number, got String
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (never-called)
+  (values (area "wide" 3) 1))
+
+(display (area 2 3))
+(newline)

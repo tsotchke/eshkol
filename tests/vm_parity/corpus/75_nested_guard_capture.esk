@@ -1,0 +1,9 @@
+;; A nested guard handler closes over the outer lexical binding.
+(define (run)
+  (let ((x 1))
+    (guard (outer (#t (set! x (+ x 100)) x))
+      (guard (inner (#t (set! x (+ x 10)) x))
+        (raise 0)))
+    x))
+(display (run))
+(newline)

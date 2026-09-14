@@ -1,0 +1,18 @@
+;; FOUND by the ESH-0101 guard coverage gate. Ledger: SW-89.
+;; vm-eskb ONLY. vm-src and all three native axes are correct, so the two
+;; bytecode routes — the VM's own compiler and eshkol-run's ESKB emitter —
+;; disagree with each other.
+;;
+;; R7RS derives `guard` so that the handler re-enters the guard's own
+;; continuation BEFORE the clauses run. A raise escaping a dynamic-wind body
+;; must therefore run the after-thunk first, and only then the clause body.
+;;
+;; want: (clause after before)
+(define order '())
+(define r
+  (guard (e (#t (set! order (cons 'clause order)) "done"))
+    (dynamic-wind (lambda () (set! order (cons 'before order)))
+                  (lambda () (raise 'x))
+                  (lambda () (set! order (cons 'after order))))))
+(display order)
+(newline)

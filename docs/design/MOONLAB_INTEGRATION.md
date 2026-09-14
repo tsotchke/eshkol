@@ -19,9 +19,9 @@ This is a plan for the maintainer to review and decide go/no-go and scope. It
 proposes no builtin wiring and touches no source. Every design claim below
 cites the file and symbol it is grounded in, across four repositories:
 
-- Eshkol — `/Users/tyr/Desktop/eshkol` (this repo).
+- Eshkol — this repository.
 - Moonlab — `github.com/tsotchke/moonlab` (MIT; pinned at v1.2.0 as of v1.3.4-evolve).
-- quantum_rng — `/Users/tyr/Desktop/quantum_rng` (MIT, `github.com/tsotchke/quantum_rng`).
+- quantum_rng — `github.com/tsotchke/quantum_rng` (MIT).
 
 ---
 

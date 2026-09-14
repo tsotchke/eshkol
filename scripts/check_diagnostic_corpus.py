@@ -75,6 +75,21 @@ HOTT_DIAGNOSTIC_LINE_RE = re.compile(
 # actually starts with an escape sequence.
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
+# A RUNTIME diagnostic carries a span too, in a third format. The runtime
+# error formatter (lib/core/runtime_errors_hosted.cpp) prefixes the raised
+# message with "file:line:col: " and no `error:`/`warning:` severity word, so
+# `Type error in tensor-mul: expected tensor, got integer` arrives as
+# `input.esk:5:16: Type error in tensor-mul: …`. That span is a claim about
+# WHERE the program failed and is exactly as regressable as a compile-time one
+# — the out-lined `__eshkol_arith_*` dispatch helper reported every arithmetic
+# type error in a module at the FIRST site of the operator (LE-19) — but it was
+# unassertable here, because a runtime diagnostic goes to the RUN's stderr,
+# which this gate used to discard, and does not match the compile-diagnostic
+# regex. `runtime_diagnostics` in expected.json pins it (ADR-0010 gap A11).
+RUNTIME_DIAGNOSTIC_LINE_RE = re.compile(
+    r"^(?P<file>[^\s:][^:]*):(?P<line>\d+):(?P<col>\d+):\s*(?P<message>(?!error:|warning:).+)$"
+)
+
 
 def strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_RE.sub("", text)
@@ -113,6 +128,37 @@ def parse_diagnostic_lines(stderr: str) -> list[dict]:
     return parsed
 
 
+def parse_runtime_diagnostic_lines(stderr: str) -> list[dict]:
+    """Extract every `file:line:col: <message>` line from a RUN's stderr.
+
+    The severity-word formats are excluded by the regex, so a compile-style
+    diagnostic that happens to reach the same stream is not mistaken for a
+    runtime one. The runtime prints the same message more than once (a colored
+    `ERROR:` banner, the bare line, and an `Unhandled exception:` line); every
+    occurrence is parsed, and a span assertion is satisfied by any of them.
+    """
+    parsed = []
+    for raw_line in strip_ansi(stderr).splitlines():
+        stripped_line = raw_line.strip()
+        for prefix in ("ERROR:", "Unhandled exception:"):
+            if stripped_line.startswith(prefix):
+                stripped_line = stripped_line[len(prefix):].strip()
+                break
+        m = RUNTIME_DIAGNOSTIC_LINE_RE.match(stripped_line)
+        if m:
+            parsed.append(
+                {
+                    "file": m.group("file"),
+                    "line": int(m.group("line")),
+                    "col": int(m.group("col")),
+                    "severity": "runtime",
+                    "message": m.group("message"),
+                    "raw": raw_line,
+                }
+            )
+    return parsed
+
+
 def _diagnostic_matches_span(diag: dict, span: dict) -> bool:
     expected_file = span.get("file")
     if expected_file is not None:
@@ -141,6 +187,7 @@ def evaluate_case(
     ran: bool,
     run_exit: int | None,
     stdout: str,
+    run_stderr: str = "",
 ) -> tuple[bool, list[str]]:
     """Grade one corpus case. Never raises; returns (passed, reasons).
 
@@ -159,6 +206,14 @@ def evaluate_case(
                        the compiled binary after a successful compile
       stdout_contains: list of str, checked against captured stdout when run
       exit_code      : int, expected process exit code when run (default 0)
+      runtime_diagnostics
+                     : list of {contains: str, span?: {file?, line?, col?}}
+                       same contract as `diagnostics`, but matched against the
+                       RUN's stderr in the runtime format
+                       `file:line:col: <message>` — the span a runtime error
+                       reports for the failing expression (LE-19)
+      run_stderr_forbidden
+                     : list of str, must NOT appear anywhere in the run's stderr
     """
 
     reasons: list[str] = []
@@ -212,6 +267,39 @@ def evaluate_case(
             for text in expected.get("stdout_contains", []):
                 if text not in stdout:
                     reasons.append(f"stdout missing expected text: {text!r}")
+
+            clean_run_stderr = strip_ansi(run_stderr)
+            runtime_parsed = parse_runtime_diagnostic_lines(clean_run_stderr)
+            for entry in expected.get("runtime_diagnostics", []):
+                contains = entry.get("contains", "")
+                span = entry.get("span")
+                candidates = [
+                    d for d in runtime_parsed
+                    if contains in d["message"] or contains in d["raw"]
+                ]
+                if not candidates:
+                    reasons.append(
+                        f"no RUNTIME diagnostic line contains {contains!r} "
+                        f"(run stderr had {len(runtime_parsed)} parsed runtime line(s))"
+                    )
+                    continue
+                if span is not None and not any(
+                    _diagnostic_matches_span(d, span) for d in candidates
+                ):
+                    got = [(d["file"], d["line"], d["col"]) for d in candidates]
+                    reasons.append(
+                        f"RUNTIME diagnostic containing {contains!r} did not report the "
+                        f"expected span {span} — actual span(s) on matching lines: {got}"
+                    )
+
+            for forbidden in expected.get("run_stderr_forbidden", []):
+                if forbidden in clean_run_stderr:
+                    reasons.append(f"forbidden run-stderr text present: {forbidden!r}")
+    elif expected.get("runtime_diagnostics") or expected.get("run_stderr_forbidden"):
+        reasons.append(
+            "expected.json asserts runtime diagnostics but the case does not "
+            "declare compile:ok + run:true, so nothing would ever be checked"
+        )
 
     return (not reasons, reasons)
 
@@ -286,6 +374,8 @@ def check_coverage_position_pin(
             cwd=case_dir,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
             env=env,
         )
@@ -321,6 +411,8 @@ def run_case(case_dir: Path, expected: dict, eshkol_run: Path, build_dir: Path) 
             cwd=case_dir,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
         )
         compile_exit = proc.returncode
@@ -330,11 +422,16 @@ def run_case(case_dir: Path, expected: dict, eshkol_run: Path, build_dir: Path) 
         ran = False
         run_exit: int | None = None
         stdout = ""
+        run_stderr = ""
         if expected.get("compile") == "ok" and expected.get("run") and binary_exists:
-            run_proc = subprocess.run([str(out_bin)], cwd=case_dir, capture_output=True, text=True, timeout=60)
+            run_proc = subprocess.run(
+                [str(out_bin)], cwd=case_dir, capture_output=True,
+                text=True, encoding="utf-8", errors="replace", timeout=60,
+            )
             ran = True
             run_exit = run_proc.returncode
             stdout = run_proc.stdout
+            run_stderr = run_proc.stderr
 
     passed, reasons = evaluate_case(
         expected,
@@ -344,6 +441,7 @@ def run_case(case_dir: Path, expected: dict, eshkol_run: Path, build_dir: Path) 
         ran=ran,
         run_exit=run_exit,
         stdout=stdout,
+        run_stderr=run_stderr,
     )
 
     coverage_pin = expected.get("coverage_position_pin")
@@ -438,6 +536,64 @@ def self_test() -> bool:
             "forbidden_text_present",
             {"compile": "ok", "forbidden": ["Unknown function"]},
             dict(compile_exit=0, binary_exists=True, stderr="Unknown function: the\n", ran=False, run_exit=None, stdout=""),
+            False,
+        ),
+        # ---- runtime-diagnostic span (LE-19) ----
+        (
+            "runtime_span_match",
+            {"compile": "ok", "run": True, "exit_code": 1,
+             "runtime_diagnostics": [{"contains": "Type error in tensor-mul",
+                                      "span": {"file": "input.esk", "line": 5, "col": 16}}]},
+            dict(compile_exit=0, binary_exists=True, stderr="", ran=True, run_exit=1, stdout="",
+                 run_stderr="input.esk:5:16: Type error in tensor-mul: expected tensor, got integer\n"),
+            True,
+        ),
+        (
+            "runtime_span_match_through_banner_prefix",
+            # The runtime prints the same message three ways; the banner and
+            # the `Unhandled exception:` line must parse identically.
+            {"compile": "ok", "run": True, "exit_code": 1,
+             "runtime_diagnostics": [{"contains": "Type error in tensor-mul",
+                                      "span": {"file": "input.esk", "line": 5, "col": 16}}]},
+            dict(compile_exit=0, binary_exists=True, stderr="", ran=True, run_exit=1, stdout="",
+                 run_stderr="Unhandled exception: input.esk:5:16: Type error in tensor-mul: expected tensor, got integer\n"),
+            True,
+        ),
+        (
+            "runtime_span_is_drift",
+            # The LE-19 shape: the right message, reported at ANOTHER site of
+            # the same operator (the one that emitted the out-lined helper).
+            {"compile": "ok", "run": True, "exit_code": 1,
+             "runtime_diagnostics": [{"contains": "Type error in tensor-mul",
+                                      "span": {"file": "input.esk", "line": 5, "col": 16}}]},
+            dict(compile_exit=0, binary_exists=True, stderr="", ran=True, run_exit=1, stdout="",
+                 run_stderr="input.esk:3:15: Type error in tensor-mul: expected tensor, got integer\n"),
+            False,
+        ),
+        (
+            "runtime_diagnostic_absent",
+            {"compile": "ok", "run": True, "exit_code": 1,
+             "runtime_diagnostics": [{"contains": "Type error in tensor-mul"}]},
+            dict(compile_exit=0, binary_exists=True, stderr="", ran=True, run_exit=1, stdout="",
+                 run_stderr="[Eshkol] fatal signal: SIGSEGV (segmentation fault) at address 0xa\n"),
+            False,
+        ),
+        (
+            "run_stderr_forbidden_present",
+            # A crash may never come back: the pre-fix behaviour of the
+            # program this key exists for was a bare SIGSEGV.
+            {"compile": "ok", "run": True, "exit_code": 1,
+             "run_stderr_forbidden": ["fatal signal"]},
+            dict(compile_exit=0, binary_exists=True, stderr="", ran=True, run_exit=1, stdout="",
+                 run_stderr="[Eshkol] fatal signal: SIGSEGV (segmentation fault) at address 0xa\n"),
+            False,
+        ),
+        (
+            "runtime_assertion_without_a_run_is_vacuous",
+            # A runtime assertion on a case that never runs would be a check
+            # incapable of failing; the gate must reject the fixture itself.
+            {"compile": "fail", "runtime_diagnostics": [{"contains": "anything"}]},
+            dict(compile_exit=1, binary_exists=False, stderr="", ran=False, run_exit=None, stdout=""),
             False,
         ),
     ]

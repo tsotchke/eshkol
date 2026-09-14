@@ -300,6 +300,30 @@ void eshkol_backward_matmul(
     double* grad_A, double* grad_B,
     int64_t M, int64_t K, int64_t N);
 
+/** Backward pass for independent batched matrix products. */
+void eshkol_backward_batch_matmul(
+    const double* grad_out,
+    const double* saved_A, const double* saved_B,
+    double* grad_A, double* grad_B,
+    int64_t batch, int64_t M, int64_t K, int64_t N);
+
+/**
+ * @brief Dense elementwise backward pass, including NumPy-style broadcasting.
+ *
+ * The input and output shapes are row-major and aligned from the trailing
+ * dimensions.  A dimension of one is broadcast and therefore receives the
+ * sum of all corresponding output cotangents.  @p operation is 0=add,
+ * 1=sub, 2=mul, 3=div.
+ */
+void eshkol_backward_tensor_elementwise(
+    const double* grad_out,
+    const double* saved_A, const double* saved_B,
+    double* grad_A, double* grad_B,
+    const int64_t* out_shape, int64_t out_ndim,
+    const int64_t* a_shape, int64_t a_ndim,
+    const int64_t* b_shape, int64_t b_ndim,
+    int operation);
+
 /* ===== Tensor Gradient Accumulation ===== */
 
 /**
@@ -353,10 +377,24 @@ void eshkol_seed_tensor_gradient(void* ad_node_ptr);
  *   MHA:        [seq_q, seq_k, d_model, num_heads, 0, 0]
  *   PosEnc:     [total_elements, 0, 0, 0, 0, 0]
  *   Embedding:  [num_indices, d_model, vocab_size, 0, 0, 0]
+ *   Batch matmul: [batch, M, K, N, 0, 0]
  *
  * @param ad_node_ptr AD node whose backward pass should be dispatched (as eshkol_ad_node_t*, opaque here)
  */
 void eshkol_tensor_backward_dispatch(void* ad_node_ptr);
+
+/**
+ * @brief Element count of a tensor AD node: the overflow-checked product of its
+ *        shape, or 0 if the node is null, carries no tensor value, or the
+ *        product overflows.
+ *
+ * The dense tensor AD path (ADR-0002 Position A) calls this from emitted code,
+ * so a consumer such as `tensor-sum` sizes its reduction from the node it was
+ * handed instead of re-deriving a shape it does not own.
+ *
+ * @param ad_node_ptr AD node (as eshkol_ad_node_t*, opaque here)
+ */
+int64_t eshkol_ad_node_total_elements(const void* ad_node_ptr);
 
 /**
  * @brief Spell an AD node type for diagnostics, e.g. "AD_NODE_TENSOR_MATMUL".

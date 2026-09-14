@@ -1,0 +1,17 @@
+
+id: SW-116
+bucket: SILENT-WRONG
+subtag: bounds
+family: tensor/index
+status: closed
+closed_at: "fix/tensor-validation-class-closure"
+closed_by: "branch fix/tensor-validation-class-closure"
+title: "Runtime-list tensor-get allowed an invalid axis to alias an in-range offset"
+repro: "(tensor-get (make-tensor '(2 3) 0.0) '(1 -1))"
+observed: "The flattened offset for (1,-1) was 2, which is in range, so tensor-get returned another element instead of rejecting the invalid second axis."
+correct: "Every supplied axis is checked independently for 0 <= index < dimension before flattening."
+observed_after: "Native JIT and VM source/ESKB execution all return the catchable `tensor-get-axis caught` result for `(1 -1)` on a 2x3 tensor."
+evidence: "tests/vm_parity/corpus/73_tensor_contract_adversarial.esk and the native runtime-list path; full VM parity gate passed 109 checks."
+caught_by: [tensor-validation-class-closure]
+missed_by: [icc-readiness, ctest]
+

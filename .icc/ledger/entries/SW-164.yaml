@@ -1,0 +1,175 @@
+id: SW-164
+bucket: SILENT-WRONG
+status: closed
+closed_at: "fix/bignum-rational-memory-reclamation"
+title: "Exact rational arithmetic grew memory in proportion to the work it did rather than the values it kept, and a rational literal was re-allocated on every evaluation"
+repro: >-
+  `.scratch/math-stream-repros/k3_bigrat_loop.esk` (100000 multiplications of a
+  ~1200-digit exact rational BY ONE, so the value never changes and every byte
+  allocated is garbage by construction), `.scratch/math-stream-repros/h_10000.esk`
+  (the exact harmonic number H_10000), the seventeen
+  `.scratch/math-stream-repros/r_*.esk` and `r2_*.esk` probes (one exact-tower
+  expression each, inside an identical loop), and
+  `.scratch/math-stream-repros/k2_bignum_loop.esk` as the control: the same loop
+  over a bignum INTEGER, which was always flat. For the cond-clause cause,
+  `.scratch/math-stream-repros/ho6_cond_test_alloc.esk` against
+  `ho7_if_test_alloc.esk` and `ho8_and_alloc.esk` — the identical loop written
+  with nested `if` and with `and`/`or`, both of which were always flat. Committed as
+  `tests/memory/bignum_rational_flat_rss_harmonic_test.esk`,
+  `tests/memory/bignum_rational_flat_rss_mul_test.esk` and
+  `tests/memory/math_acceptance_exact_rational_memory.esk`.
+observed: >-
+  Exact-rational arithmetic in an ordinary loop grew resident memory without
+  bound, by orders of magnitude over the same loop's baseline, while the
+  identical loop over bignum INTEGERS stayed flat. Five independent causes, all
+  of which had to be closed before the asymmetry did — the fifth costing the
+  same reclamation to every loop written with `cond`, exact arithmetic or not:
+
+  (1) `bn_gcd()` (`lib/core/rational.cpp:44`) reduced each result by running
+  Euclid over the FULL-WIDTH numerator and denominator. Its step count grows
+  with the operands' digit count, and every step calls `eshkol_bignum_mod()` ->
+  `bignum_divmod_abs()` (`lib/core/bignum.cpp:164`), which bump-allocates a
+  quotient, a remainder and two limb buffers into the caller's arena. Producing
+  one reduced rational therefore allocated O(bit-length) intermediate bignums,
+  every one of them dead the moment the reduction finished. The arena reclaims
+  only at a scope or region boundary and a numeric primitive had no boundary
+  inside it, so all of it was retained for the life of the arena. Bignum
+  integers have no reduction step, hence no such scratch — the whole asymmetry.
+
+  (2) `eshkol_arena_iter_scope_end()` (`lib/core/runtime_arena_core.cpp`), the
+  per-iteration loop reclamation from ESH-0214b, reclaimed an iteration only
+  when NOTHING flowing into the next one pointed into it, and COMMITTED
+  (retained the whole iteration, as if the feature were off) otherwise. An
+  accumulator is built inside the iteration, so it always pointed into it: any
+  loop that accumulates retained every iteration it had ever run. This was
+  invisible for a machine-word accumulator and very visible for an exact one.
+
+  (3) The exact numeric tower emitted its allocations against the
+  `__global_arena` module global (`lib/backend/arithmetic_codegen.cpp:44`,
+  and the `numerator`/`denominator`/`make-rational`/`rationalize` sites in
+  `lib/backend/llvm_codegen.cpp`). That global is the shared current-arena SLOT.
+  `with-region` hijacks it, but the ESH-0214e per-iteration nursery redirects
+  the THREAD-LOCAL memory context (`eshkol_region_enter`, OALR Phase A) without
+  touching the slot — so every exact-tower allocation landed OUTSIDE the
+  nursery, in an arena the loop's per-iteration reset could not see. Wrapping
+  the identical loop body in an explicit `with-region` reclaimed all of it,
+  which is what isolated this cause from the others.
+
+  (4) The per-iteration scope's own safety analysis rejected almost every
+  `cond`. The parser stores a cond CLAUSE in a CALL_OP node whose `func` slot
+  holds the clause's TEST, not a callee, and whose variables are the clause
+  body — but the analysis walked clauses as ordinary expressions, so each one
+  reached the generic call arm, which asked "is this a callee I can analyze?",
+  found a computed callee in a test like `(unit k)`, and returned false. An
+  `else` clause failed the same way, as an unknown function named "else".
+  Because an unrecognized callee rejects the WHOLE loop, any `cond` whose test
+  is a call — very nearly every cond — silently forfeited its loop's
+  per-iteration reclamation. The same loop written with nested `if` or with
+  `and`/`or` was always flat, which is what identifies the cause as the cond
+  path rather than the allocation in the test.
+
+  (5) The reader desugars a rational literal `1/2` into a `(make-rational 1 2)`
+  call (`lib/frontend/parser.cpp`), so a literal was a fresh heap allocation on
+  every evaluation of an expression that contains it. `make-rational`,
+  `numerator` and `denominator` were also absent from the iteration scope's
+  pure-builtin list, and an unrecognized callee rejects the WHOLE loop — so one
+  rational literal in a loop body cost that loop every iteration's reclamation,
+  not merely its own result. This is why an expression with a literal operand
+  grew while the identical expression over computed operands stayed flat
+  (`r2___1_2_1_2_.esk` against `r2______x_2_____x_2__.esk`).
+correct: >-
+  Exact rational temporaries in loops and recursion are reclaimed exactly as
+  bignum-integer temporaries are: an operation allocates its RESULT, a loop
+  iteration's garbage is reclaimed at the back edge, and a literal is
+  materialized once. Values are unchanged in every case — H_5 is 137/60, H_10
+  is 7381/2520, `(+ 1/2 (/ 1 3))` is 5/6, and multiplying an exact rational by
+  one returns a value `=` to the original.
+fixed_by: >-
+  Four fixes, one per cause, all at the memory-model level rather than at any
+  individual operator:
+
+  (1) `arena_scope_end_retaining()` (`lib/core/arena_memory.h`,
+  `lib/core/runtime_arena_core.cpp`): a new arena primitive that ends the
+  innermost scope RETAINING a named set of header-prefixed objects, staging
+  them out of the dying span and re-allocating them at the rewound mark. It
+  gives a numeric primitive the reclamation boundary it never had.
+  `rat_scoped()` in `lib/core/rational.cpp` brackets every exact-rational
+  operation with it, retaining only the result rational and its numerator and
+  denominator, so an operation allocates its result and nothing else.
+
+  (2) The per-iteration loop scope now PROMOTES instead of giving up. A loop
+  opens a LOOP scope once at entry (`eshkol_arena_loop_scope_begin`), outside
+  the per-iteration scope; an escaping back edge deep-evacuates the
+  loop-carried values out of everything above the LOOP mark into a scratch
+  arena, rewinds both scopes, reopens the loop scope and copies the survivors
+  back. The arena and the scratch arena are the two halves of a semispace, so
+  resident size is bounded by the live set rather than by the iteration count.
+  Promotion is gated the way a copying collector gates a minor collection —
+  only once the span has grown to a multiple of the last measured live set —
+  so a loop that accumulates BY ACCRETION (consing onto a list, where the span
+  IS the live set) is not turned from linear into quadratic; it falls back to
+  the previous retention, which is the correct trade there.
+
+  What may be MOVED is deliberately narrow. Copying an object is half of moving
+  it; the other half is rewriting every other reference to the original, and the
+  evacuator can rewrite only what it reaches from the roots it was handed. The
+  codegen analysis rules out references the loop body creates by storing into
+  pre-existing Eshkol structure, but says nothing about the C runtime's own
+  roots — the AD tape's nodes[] array being the one that matters, since moving a
+  node there produces a plausible wrong gradient rather than an error. Rather
+  than enumerate runtime-side roots, a list that would go stale the first time
+  one was added, promotion admits only values that cannot be held that way:
+  immediates, and the exact numeric tower's heap payloads (bignum, rational).
+  Those are pure values — immutable, carrying no observable identity, with no
+  interior pointers beyond a rational's own two bignums, which travel with it.
+  Anything else, and any loop running while a tape is recording, retains the
+  span instead of rewinding it. That is precisely the case this reclamation
+  exists for; the trade is deliberate, because a conservative answer costs
+  memory and an optimistic one costs a wrong result.
+
+  The evacuator itself is the existing region evacuator with its ownership
+  question abstracted (`EvacState::owns`, `lib/core/runtime_regions.cpp`): same
+  Cheney copy, same forwarding map, same per-subtype interior walk, so the two
+  callers cannot drift the way ESH-0214d showed they can.
+
+  (3) The exact numeric tower now allocates through `eshkol_current_arena()`,
+  the same accessor every other loop temporary uses, so it shares one
+  allocation domain with them and the per-iteration nursery can see it.
+
+  (4) A rational literal with two integer operands is materialized ONCE into a
+  module-level slot. The constant is allocated from `eshkol_literal_arena()`, a
+  private arena on which no scope is ever pushed and which is never reset:
+  picking the right arena is not enough, because a constant materialized lazily
+  on a loop's first iteration is allocated above that loop's scope mark and the
+  first rewind reclaims it — which was observed, during this work, as a literal
+  whose numerator later read back as an unrelated bignum. `make-rational`,
+  `numerator`, `denominator`, `rationalize` and their siblings were added to the
+  iteration scope's pure-builtin list so their presence no longer disqualifies
+  a loop.
+
+  The cond-clause analysis now takes a clause apart structurally — test, then
+  body — instead of delegating it to the call arm, and treats `else` as the
+  keyword it is in that position.
+
+  Separately, reduction now follows Knuth TAOCP 4.5.1 (reduce first, multiply
+  second), so every GCD is taken on operands no larger than the inputs instead
+  of on the full-width product. This is what brings the exact accumulation
+  within its time budget as well as its memory budget.
+evidence: >-
+  `tests/memory/bignum_rational_flat_rss_test.sh` — five cases on both lowering
+  paths (JIT and AOT): the exact harmonic number H_40000 under a 200MB and 2s
+  ceiling, 100000 exact-rational multiplications under 300MB, and
+  `math_acceptance_exact_rational_memory` gated as a RATIO (2x, with a 64MB
+  floor) against `math_acceptance_exact_rational_memory_control.esk`, which runs
+  the identical loop shapes over machine integers. Gating the acceptance case as
+  a ratio against a live control makes it an assertion about the exact/inexact
+  ASYMMETRY, which is the defect, rather than about an absolute figure on one
+  machine. Every fixture asserts its own ANSWER as well as its shape — closed
+  forms, a lowest-terms round trip, and equality of an exact rational with
+  itself after 100000 multiplications by one — so a reclamation bug that frees
+  something live fails the gate as a wrong result rather than passing it as a
+  memory win. Negative control: the gate was run against a build of this same
+  tree with the six changed source files reverted to the branch point, and
+  failed there on peak RSS by two orders of magnitude over the ceiling.
+caught_by: [task-assigned-repro]
+missed_by: [define-loop-flat-rss-gate, region-evac-subtype-coverage, prior-exact-arithmetic-audit]

@@ -1,0 +1,307 @@
+;; tests/ad/nested_towers_matrix_test.esk
+;; ESH-0413 (ledger SW-154): differentiation passes NEST at any depth and any
+;; order, on the native engine.
+;;
+;; Before this change the nesting matrix was a table of special cases built on
+;; ONE value series plus ONE first-order companion, so it covered exactly the
+;; shapes where at most one enclosing level was live and at most first order:
+;;
+;;   (taylor (lambda (a) (derivative-n h (+ 1 a) 2)) 0 2)
+;;       -> raised "unsupported nested differentiation (both passes order >= 2)"
+;;   (derivative-n (lambda (t1)
+;;      (derivative-n (lambda (t2) (derivative-n h (+ 1 t1 t2) 2)) 0 1)) 0 1)
+;;       -> 0, SILENTLY, where the answer is 24
+;;
+;; The rule that replaces the table: every pass owns a LEVEL (its epoch), and a
+;; carrier of another level met inside this one is a COEFFICIENT of this level
+;; -- never a constant of it, never an error. Depth and per-level order are
+;; therefore unbounded, and perturbation confusion is impossible by
+;; construction: two series combine only when their level tags are equal.
+;;
+;; docs/design/AD_TAYLOR_TOWER.md section 5c and
+;; docs/guide/AUTOMATIC_DIFFERENTIATION.md section 11 are the blueprint: they
+;; state that nesting is safe. Every expected value below is exact analytic.
+;;
+;; tests/ad/nested_operator_matrix_test.esk (ESH-0412) pins the order-1 x
+;; order-1 capture matrix; this file is the ORDER and DEPTH sweep over it.
+
+(define failures 0)
+(define checks 0)
+
+(define (fail name got want)
+  (set! failures (+ failures 1))
+  (display "FAIL: ") (display name)
+  (display " got=") (display got)
+  (display " want=") (display want) (newline))
+
+(define (near? x y tol) (<= (abs (- x y)) tol))
+
+(define (check name got want)
+  (set! checks (+ checks 1))
+  (if (near? got want 1e-7)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+
+;; The three scalar forward operators, each reduced to "the k-th derivative of
+;; f at x", so the sweeps below are genuine matrices over interchangeable
+;; spellings. `derivative` is first order by definition; `derivative-n` and
+;; `taylor` cover orders 1..3.  taylor: f^(k)(x) = k! * c_k.
+(define (d1  f x) (derivative   f x))
+(define (dn1 f x) (derivative-n f x 1))
+(define (dn2 f x) (derivative-n f x 2))
+(define (dn3 f x) (derivative-n f x 3))
+(define (ty1 f x) (list-ref (taylor f x 1) 1))
+(define (ty2 f x) (* 2.0 (list-ref (taylor f x 2) 2)))
+(define (ty3 f x) (* 6.0 (list-ref (taylor f x 3) 3)))
+
+;; ===========================================================================
+;; 1. DEPTH 2, EVERY OPERATOR PAIR, EVERY ORDER PAIR.
+;;    h(a,b) = a^3 b^3, captured `a`.  d^m/da^m d^n/db^n h = A(m,a) * A(n,b)
+;;    with A(1,x)=3x^2, A(2,x)=6x, A(3,x)=6.  a=2, b=3.
+;; ===========================================================================
+(check "d2 derivative  ^1 x derivative  ^1" (d1 (lambda (a) (d1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 324.0)
+(check "d2 derivative  ^1 x derivative-n^1" (d1 (lambda (a) (dn1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 324.0)
+(check "d2 derivative  ^1 x derivative-n^2" (d1 (lambda (a) (dn2 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 216.0)
+(check "d2 derivative  ^1 x derivative-n^3" (d1 (lambda (a) (dn3 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 72.0)
+(check "d2 derivative  ^1 x taylor      ^1" (d1 (lambda (a) (ty1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 324.0)
+(check "d2 derivative  ^1 x taylor      ^2" (d1 (lambda (a) (ty2 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 216.0)
+(check "d2 derivative  ^1 x taylor      ^3" (d1 (lambda (a) (ty3 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 72.0)
+(check "d2 derivative-n^1 x derivative  ^1" (dn1 (lambda (a) (d1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 324.0)
+(check "d2 derivative-n^2 x derivative  ^1" (dn2 (lambda (a) (d1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 324.0)
+(check "d2 derivative-n^3 x derivative  ^1" (dn3 (lambda (a) (d1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 162.0)
+(check "d2 derivative-n^1 x derivative-n^1" (dn1 (lambda (a) (dn1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 324.0)
+(check "d2 derivative-n^1 x derivative-n^2" (dn1 (lambda (a) (dn2 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 216.0)
+(check "d2 derivative-n^1 x derivative-n^3" (dn1 (lambda (a) (dn3 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 72.0)
+(check "d2 derivative-n^2 x derivative-n^1" (dn2 (lambda (a) (dn1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 324.0)
+(check "d2 derivative-n^2 x derivative-n^2" (dn2 (lambda (a) (dn2 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 216.0)
+(check "d2 derivative-n^2 x derivative-n^3" (dn2 (lambda (a) (dn3 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 72.0)
+(check "d2 derivative-n^3 x derivative-n^1" (dn3 (lambda (a) (dn1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 162.0)
+(check "d2 derivative-n^3 x derivative-n^2" (dn3 (lambda (a) (dn2 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 108.0)
+(check "d2 derivative-n^3 x derivative-n^3" (dn3 (lambda (a) (dn3 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 36.0)
+(check "d2 derivative-n^1 x taylor      ^1" (dn1 (lambda (a) (ty1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 324.0)
+(check "d2 derivative-n^1 x taylor      ^2" (dn1 (lambda (a) (ty2 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 216.0)
+(check "d2 derivative-n^1 x taylor      ^3" (dn1 (lambda (a) (ty3 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 72.0)
+(check "d2 derivative-n^2 x taylor      ^1" (dn2 (lambda (a) (ty1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 324.0)
+(check "d2 derivative-n^2 x taylor      ^2" (dn2 (lambda (a) (ty2 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 216.0)
+(check "d2 derivative-n^2 x taylor      ^3" (dn2 (lambda (a) (ty3 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 72.0)
+(check "d2 derivative-n^3 x taylor      ^1" (dn3 (lambda (a) (ty1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 162.0)
+(check "d2 derivative-n^3 x taylor      ^2" (dn3 (lambda (a) (ty2 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 108.0)
+(check "d2 derivative-n^3 x taylor      ^3" (dn3 (lambda (a) (ty3 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 36.0)
+(check "d2 taylor      ^1 x derivative  ^1" (ty1 (lambda (a) (d1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 324.0)
+(check "d2 taylor      ^2 x derivative  ^1" (ty2 (lambda (a) (d1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 324.0)
+(check "d2 taylor      ^3 x derivative  ^1" (ty3 (lambda (a) (d1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 162.0)
+(check "d2 taylor      ^1 x derivative-n^1" (ty1 (lambda (a) (dn1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 324.0)
+(check "d2 taylor      ^1 x derivative-n^2" (ty1 (lambda (a) (dn2 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 216.0)
+(check "d2 taylor      ^1 x derivative-n^3" (ty1 (lambda (a) (dn3 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 72.0)
+(check "d2 taylor      ^2 x derivative-n^1" (ty2 (lambda (a) (dn1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 324.0)
+(check "d2 taylor      ^2 x derivative-n^2" (ty2 (lambda (a) (dn2 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 216.0)
+(check "d2 taylor      ^2 x derivative-n^3" (ty2 (lambda (a) (dn3 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 72.0)
+(check "d2 taylor      ^3 x derivative-n^1" (ty3 (lambda (a) (dn1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 162.0)
+(check "d2 taylor      ^3 x derivative-n^2" (ty3 (lambda (a) (dn2 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 108.0)
+(check "d2 taylor      ^3 x derivative-n^3" (ty3 (lambda (a) (dn3 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 36.0)
+(check "d2 taylor      ^1 x taylor      ^1" (ty1 (lambda (a) (ty1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 324.0)
+(check "d2 taylor      ^1 x taylor      ^2" (ty1 (lambda (a) (ty2 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 216.0)
+(check "d2 taylor      ^1 x taylor      ^3" (ty1 (lambda (a) (ty3 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 72.0)
+(check "d2 taylor      ^2 x taylor      ^1" (ty2 (lambda (a) (ty1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 324.0)
+(check "d2 taylor      ^2 x taylor      ^2" (ty2 (lambda (a) (ty2 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 216.0)
+(check "d2 taylor      ^2 x taylor      ^3" (ty2 (lambda (a) (ty3 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 72.0)
+(check "d2 taylor      ^3 x taylor      ^1" (ty3 (lambda (a) (ty1 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 162.0)
+(check "d2 taylor      ^3 x taylor      ^2" (ty3 (lambda (a) (ty2 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 108.0)
+(check "d2 taylor      ^3 x taylor      ^3" (ty3 (lambda (a) (ty3 (lambda (b) (* a a a b b b)) 3.0)) 2.0) 36.0)
+
+;; ===========================================================================
+;; 2. DEPTH 3, EVERY OPERATOR TRIPLE, ORDER 1 EACH.
+;;    h(a,b,c) = a^3 b^3 c^3 at (2, 3, 1.5); every variable is CAPTURED by the
+;;    innermost lambda, so three levels are live in the same arithmetic.
+;; ===========================================================================
+(check "d3 derivative   x derivative   x derivative  " (d1 (lambda (a) (d1 (lambda (b) (d1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative   x derivative   x derivative-n" (d1 (lambda (a) (d1 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative   x derivative   x taylor      " (d1 (lambda (a) (d1 (lambda (b) (ty1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative   x derivative-n x derivative  " (d1 (lambda (a) (dn1 (lambda (b) (d1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative   x derivative-n x derivative-n" (d1 (lambda (a) (dn1 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative   x derivative-n x taylor      " (d1 (lambda (a) (dn1 (lambda (b) (ty1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative   x taylor       x derivative  " (d1 (lambda (a) (ty1 (lambda (b) (d1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative   x taylor       x derivative-n" (d1 (lambda (a) (ty1 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative   x taylor       x taylor      " (d1 (lambda (a) (ty1 (lambda (b) (ty1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative-n x derivative   x derivative  " (dn1 (lambda (a) (d1 (lambda (b) (d1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative-n x derivative   x derivative-n" (dn1 (lambda (a) (d1 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative-n x derivative   x taylor      " (dn1 (lambda (a) (d1 (lambda (b) (ty1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative-n x derivative-n x derivative  " (dn1 (lambda (a) (dn1 (lambda (b) (d1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative-n x derivative-n x derivative-n" (dn1 (lambda (a) (dn1 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative-n x derivative-n x taylor      " (dn1 (lambda (a) (dn1 (lambda (b) (ty1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative-n x taylor       x derivative  " (dn1 (lambda (a) (ty1 (lambda (b) (d1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative-n x taylor       x derivative-n" (dn1 (lambda (a) (ty1 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 derivative-n x taylor       x taylor      " (dn1 (lambda (a) (ty1 (lambda (b) (ty1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 taylor       x derivative   x derivative  " (ty1 (lambda (a) (d1 (lambda (b) (d1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 taylor       x derivative   x derivative-n" (ty1 (lambda (a) (d1 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 taylor       x derivative   x taylor      " (ty1 (lambda (a) (d1 (lambda (b) (ty1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 taylor       x derivative-n x derivative  " (ty1 (lambda (a) (dn1 (lambda (b) (d1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 taylor       x derivative-n x derivative-n" (ty1 (lambda (a) (dn1 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 taylor       x derivative-n x taylor      " (ty1 (lambda (a) (dn1 (lambda (b) (ty1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 taylor       x taylor       x derivative  " (ty1 (lambda (a) (ty1 (lambda (b) (d1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 taylor       x taylor       x derivative-n" (ty1 (lambda (a) (ty1 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 taylor       x taylor       x taylor      " (ty1 (lambda (a) (ty1 (lambda (b) (ty1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+
+;; ===========================================================================
+;; 3. DEPTH 3, ORDER SWEEP 1..3 ON EVERY LEVEL (27 cells).
+;;    This is the block the single first-order companion could not express at
+;;    all: two or three levels live at once, each above first order.
+;; ===========================================================================
+(check "d3 orders 1/1/1" (dn1 (lambda (a) (dn1 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 orders 1/1/2" (dn1 (lambda (a) (dn1 (lambda (b) (dn2 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2916.0)
+(check "d3 orders 1/1/3" (dn1 (lambda (a) (dn1 (lambda (b) (dn3 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 1944.0)
+(check "d3 orders 1/2/1" (dn1 (lambda (a) (dn2 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 1458.0)
+(check "d3 orders 1/2/2" (dn1 (lambda (a) (dn2 (lambda (b) (dn2 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 1944.0)
+(check "d3 orders 1/2/3" (dn1 (lambda (a) (dn2 (lambda (b) (dn3 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 1296.0)
+(check "d3 orders 1/3/1" (dn1 (lambda (a) (dn3 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 486.0)
+(check "d3 orders 1/3/2" (dn1 (lambda (a) (dn3 (lambda (b) (dn2 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 648.0)
+(check "d3 orders 1/3/3" (dn1 (lambda (a) (dn3 (lambda (b) (dn3 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 432.0)
+(check "d3 orders 2/1/1" (dn2 (lambda (a) (dn1 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2187.0)
+(check "d3 orders 2/1/2" (dn2 (lambda (a) (dn1 (lambda (b) (dn2 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2916.0)
+(check "d3 orders 2/1/3" (dn2 (lambda (a) (dn1 (lambda (b) (dn3 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 1944.0)
+(check "d3 orders 2/2/1" (dn2 (lambda (a) (dn2 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 1458.0)
+(check "d3 orders 2/2/2" (dn2 (lambda (a) (dn2 (lambda (b) (dn2 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 1944.0)
+(check "d3 orders 2/2/3" (dn2 (lambda (a) (dn2 (lambda (b) (dn3 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 1296.0)
+(check "d3 orders 2/3/1" (dn2 (lambda (a) (dn3 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 486.0)
+(check "d3 orders 2/3/2" (dn2 (lambda (a) (dn3 (lambda (b) (dn2 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 648.0)
+(check "d3 orders 2/3/3" (dn2 (lambda (a) (dn3 (lambda (b) (dn3 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 432.0)
+(check "d3 orders 3/1/1" (dn3 (lambda (a) (dn1 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 1093.5)
+(check "d3 orders 3/1/2" (dn3 (lambda (a) (dn1 (lambda (b) (dn2 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 1458.0)
+(check "d3 orders 3/1/3" (dn3 (lambda (a) (dn1 (lambda (b) (dn3 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 972.0)
+(check "d3 orders 3/2/1" (dn3 (lambda (a) (dn2 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 729.0)
+(check "d3 orders 3/2/2" (dn3 (lambda (a) (dn2 (lambda (b) (dn2 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 972.0)
+(check "d3 orders 3/2/3" (dn3 (lambda (a) (dn2 (lambda (b) (dn3 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 648.0)
+(check "d3 orders 3/3/1" (dn3 (lambda (a) (dn3 (lambda (b) (dn1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 243.0)
+(check "d3 orders 3/3/2" (dn3 (lambda (a) (dn3 (lambda (b) (dn2 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 324.0)
+(check "d3 orders 3/3/3" (dn3 (lambda (a) (dn3 (lambda (b) (dn3 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 216.0)
+
+;; ===========================================================================
+;; 4. THE SAME DEPTH-3 SWEEP THROUGH `taylor` AND MIXED SPELLINGS.
+;; ===========================================================================
+(check "d3 mixed ty2/dn3/ty1" (ty2 (lambda (a) (dn3 (lambda (b) (ty1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 486.0)
+(check "d3 mixed dn3/ty2/dn2" (dn3 (lambda (a) (ty2 (lambda (b) (dn2 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 972.0)
+(check "d3 mixed ty3/ty3/ty3" (ty3 (lambda (a) (ty3 (lambda (b) (ty3 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 216.0)
+(check "d3 mixed dn2/d1/ty2" (dn2 (lambda (a) (d1 (lambda (b) (ty2 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 2916.0)
+(check "d3 mixed ty2/dn2/d1" (ty2 (lambda (a) (dn2 (lambda (b) (d1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 1458.0)
+(check "d3 mixed d1/ty3/dn3" (d1 (lambda (a) (ty3 (lambda (b) (dn3 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 432.0)
+(check "d3 mixed ty1/ty2/dn3" (ty1 (lambda (a) (ty2 (lambda (b) (dn3 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 1296.0)
+(check "d3 mixed dn3/dn3/ty1" (dn3 (lambda (a) (dn3 (lambda (b) (ty1 (lambda (cc) (* a a a b b b cc cc cc)) 1.5)) 3.0)) 2.0) 243.0)
+
+;; ===========================================================================
+;; 5. NESTING THROUGH THE EVALUATION POINT (not through a capture).
+;;    g(t) = d^2/dr^2 [r^4] at r = 1+t = 12(1+t)^2, so
+;;      d/dt   g = 24(1+t)      -> 24 at t=0
+;;      d^2/dt^2 g = 24         -> 24
+;;    and the two-variable spelling d/dt1 d/dt2 [12(1+t1+t2)^2] = 24 is the
+;;    shape that used to answer 0 SILENTLY (ledger SW-154).
+;; ===========================================================================
+(define (r4 r) (* r r r r))
+(check "point-nest d1 over dn2"  (d1  (lambda (t) (dn2 r4 (+ 1.0 t))) 0.0) 24.0)
+(check "point-nest dn1 over dn2" (dn1 (lambda (t) (dn2 r4 (+ 1.0 t))) 0.0) 24.0)
+(check "point-nest dn2 over dn2" (dn2 (lambda (t) (dn2 r4 (+ 1.0 t))) 0.0) 24.0)
+(check "point-nest ty2 over dn2" (ty2 (lambda (t) (dn2 r4 (+ 1.0 t))) 0.0) 24.0)
+(check "point-nest ty2 over ty2" (ty2 (lambda (t) (ty2 r4 (+ 1.0 t))) 0.0) 24.0)
+(check "point-nest dn3 over dn1" (dn3 (lambda (t) (dn1 r4 (+ 1.0 t))) 0.0) 24.0)
+;; SW-154 itself: two order-1 passes over an order-2 inner pass, the inner
+;; point depending on BOTH outer variables.
+(check "SW-154 d/dt1 d/dt2 [12(1+t1+t2)^2] = 24"
+       (dn1 (lambda (t1) (dn1 (lambda (t2) (dn2 r4 (+ 1.0 t1 t2))) 0.0)) 0.0) 24.0)
+(check "SW-154 depth-3 variant through taylor"
+       (ty1 (lambda (t1) (dn1 (lambda (t2) (ty2 r4 (+ 1.0 t1 t2))) 0.0)) 0.0) 24.0)
+
+;; ===========================================================================
+;; 6. EXACT SEEDS.  Same mathematics at exact points; R7RS contagion is the
+;;    only thing that may narrow, and the VALUE must not move.
+;;    a=1/3, b=1/5:  A(1,1/3)=1/3, A(2,1/3)=2, A(3,·)=6
+;;                   A(1,1/5)=3/25, A(2,1/5)=6/5, A(3,·)=6
+;; ===========================================================================
+(check "exact d2 dn1 x dn1" (dn1 (lambda (a) (dn1 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 0.04000000000000001)
+(check "exact d2 dn1 x dn2" (dn1 (lambda (a) (dn2 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 0.4)
+(check "exact d2 dn1 x dn3" (dn1 (lambda (a) (dn3 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 2.0)
+(check "exact d2 dn1 x ty2" (dn1 (lambda (a) (ty2 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 0.4)
+(check "exact d2 dn2 x dn1" (dn2 (lambda (a) (dn1 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 0.24000000000000005)
+(check "exact d2 dn2 x dn2" (dn2 (lambda (a) (dn2 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 2.4000000000000004)
+(check "exact d2 dn2 x dn3" (dn2 (lambda (a) (dn3 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 12.0)
+(check "exact d2 dn2 x ty2" (dn2 (lambda (a) (ty2 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 2.4000000000000004)
+(check "exact d2 dn3 x dn1" (dn3 (lambda (a) (dn1 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 0.7200000000000002)
+(check "exact d2 dn3 x dn2" (dn3 (lambda (a) (dn2 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 7.200000000000001)
+(check "exact d2 dn3 x dn3" (dn3 (lambda (a) (dn3 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 36.0)
+(check "exact d2 dn3 x ty2" (dn3 (lambda (a) (ty2 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 7.200000000000001)
+(check "exact d2 ty2 x dn1" (ty2 (lambda (a) (dn1 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 0.24000000000000005)
+(check "exact d2 ty2 x dn2" (ty2 (lambda (a) (dn2 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 2.4000000000000004)
+(check "exact d2 ty2 x dn3" (ty2 (lambda (a) (dn3 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 12.0)
+(check "exact d2 ty2 x ty2" (ty2 (lambda (a) (ty2 (lambda (b) (* a a a b b b)) 1/5)) 1/3) 2.4000000000000004)
+(check "exact point-nest dn2 over dn2" (dn2 (lambda (t) (dn2 r4 (+ 1 t))) 0) 24.0)
+
+;; ... and the exactness itself survives the nest: a nested level's coefficients
+;; are the same exact numeric tower every other coefficient is.
+(define (check-exact name got)
+  (set! checks (+ checks 1))
+  (if (exact? got)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got "an exact number")))
+(check-exact "exactness survives d2 dn2 x dn2"
+             (dn2 (lambda (a) (dn2 (lambda (b) (* a a a b b b)) 1/5)) 1/3))
+;; `taylor`'s coefficients too -- ty2 above multiplies by an inexact 2.0 to
+;; recover f''(x), so the exactness is read off the coefficient itself.
+(check-exact "exactness survives d2 taylor-c2 x dn3"
+             (list-ref (taylor (lambda (a) (dn3 (lambda (b) (* a a a b b b)) 1/5)) 1/3 2) 2))
+(check-exact "exactness survives d3 dn1 x dn1 x dn1"
+             (dn1 (lambda (a) (dn1 (lambda (b) (dn1 (lambda (cc) (* a b cc)) 1/7)) 1/5)) 1/3))
+
+;; ===========================================================================
+;; 7. NEGATIVE CONTROLS -- perturbation confusion must be IMPOSSIBLE.
+;;    The Siskind-Pearlmutter example: the inner pass's perturbation must not
+;;    be mistaken for the outer one. f(x) = x * (d/dy (x+y))|_{y=1} = x * 1,
+;;    so f'(1) = 1. A carrier that confused the two levels answers 2.
+;; ===========================================================================
+(check "SP confusion d1 over d1 = 1" (d1 (lambda (x) (* x (d1 (lambda (y) (+ x y)) 1.0))) 1.0) 1.0)
+(check "SP confusion d1 over dn1 = 1" (d1 (lambda (x) (* x (dn1 (lambda (y) (+ x y)) 1.0))) 1.0) 1.0)
+(check "SP confusion d1 over ty1 = 1" (d1 (lambda (x) (* x (ty1 (lambda (y) (+ x y)) 1.0))) 1.0) 1.0)
+(check "SP confusion dn1 over d1 = 1" (dn1 (lambda (x) (* x (d1 (lambda (y) (+ x y)) 1.0))) 1.0) 1.0)
+(check "SP confusion dn1 over dn1 = 1" (dn1 (lambda (x) (* x (dn1 (lambda (y) (+ x y)) 1.0))) 1.0) 1.0)
+(check "SP confusion dn1 over ty1 = 1" (dn1 (lambda (x) (* x (ty1 (lambda (y) (+ x y)) 1.0))) 1.0) 1.0)
+(check "SP confusion ty1 over d1 = 1" (ty1 (lambda (x) (* x (d1 (lambda (y) (+ x y)) 1.0))) 1.0) 1.0)
+(check "SP confusion ty1 over dn1 = 1" (ty1 (lambda (x) (* x (dn1 (lambda (y) (+ x y)) 1.0))) 1.0) 1.0)
+(check "SP confusion ty1 over ty1 = 1" (ty1 (lambda (x) (* x (ty1 (lambda (y) (+ x y)) 1.0))) 1.0) 1.0)
+;; the higher-order spellings of the same trap
+(check "SP confusion dn2 over dn1 = 0" (dn2 (lambda (x) (* x (dn1 (lambda (y) (+ x y)) 1.0))) 1.0) 0.0)
+;; x * (1 + d^2/dy^2 [x y^2]) = x * (1 + 2x) = x + 2x^2, so d/dx = 1 + 4x = 5.
+(check "SP confusion dn1 over dn2 = 5" (dn1 (lambda (x) (* x (+ 1.0 (dn2 (lambda (y) (* x y y)) 1.0)))) 1.0) 5.0)
+;; an inner pass that does not depend on the outer variable is a CONSTANT
+(define (cube y) (* y y y))
+(check "independent inner (dn3 over dn2)" (dn1 (lambda (x) (+ (* x x) (dn2 cube 3.0))) 4.0) 8.0)
+(check "independent inner (dn2 over dn3)" (dn2 (lambda (x) (+ (* x x x) (dn3 cube 3.0))) 4.0) 24.0)
+(check "independent inner (ty3 over ty2)" (ty3 (lambda (x) (+ (* x x x) (ty2 cube 3.0))) 4.0) 6.0)
+;; an inner pass that ignores its own argument contributes exactly 0
+(check "inner constant in its own argument" (dn2 (lambda (a) (dn2 (lambda (b) (* a a a)) 1.0)) 2.0) 0.0)
+;; sibling (not nested) passes over the same variable stay independent
+(check "sibling inner passes" (dn1 (lambda (a) (+ (dn2 (lambda (b) (* a b b)) 1.0) (dn1 (lambda (cc) (* a cc cc)) 2.0))) 3.0) 6.0)
+;; the un-nested spellings must not move
+(check "plain derivative-n order 3" (dn3 (lambda (x) (* x x x x)) 2.0) 48.0)
+(check "plain taylor order 3"       (ty3 (lambda (x) (* x x x x)) 2.0) 48.0)
+(check "plain derivative"           (d1  (lambda (x) (* x x x x)) 2.0) 32.0)
+
+;; ===========================================================================
+;; 8. TWO ENCLOSING 8-JET LEVELS AROUND A TOWER PASS.
+;;    `derivative`/`gradient`/`hessian` carry their perturbations in one flat
+;;    8-jet, and the tower's first-order companion series can hold exactly ONE
+;;    of them. Two at once is where the companion runs out and the enclosing
+;;    directions have to become LEVELS of their own.
+;;    d/da d/dc d^k/db^k [a b^k c] = k! at every point.
+;; ===========================================================================
+(check "2 jet levels over dn1"  (d1 (lambda (a) (d1 (lambda (cc) (dn1 (lambda (b) (* a b cc)) 1.0)) 3.0)) 2.0) 1.0)
+(check "2 jet levels over dn2"  (d1 (lambda (a) (d1 (lambda (cc) (dn2 (lambda (b) (* a b b cc)) 1.0)) 3.0)) 2.0) 2.0)
+(check "2 jet levels over dn3"  (d1 (lambda (a) (d1 (lambda (cc) (dn3 (lambda (b) (* a b b b cc)) 1.0)) 3.0)) 2.0) 6.0)
+(check "2 jet levels over ty2"  (d1 (lambda (a) (d1 (lambda (cc) (ty2 (lambda (b) (* a b b cc)) 1.0)) 3.0)) 2.0) 2.0)
+(check "2 jet levels over ty3"  (d1 (lambda (a) (d1 (lambda (cc) (ty3 (lambda (b) (* a b b b cc)) 1.0)) 3.0)) 2.0) 6.0)
+;; ... and the confusion control at the same depth: the innermost pass does not
+;; depend on the middle variable, so the middle derivative is 0.
+(check "2 jet levels, middle independent" (d1 (lambda (a) (d1 (lambda (cc) (dn2 (lambda (b) (* a b b)) 1.0)) 3.0)) 2.0) 0.0)
+
+(newline)
+(display "checks: ") (display checks) (newline)
+(if (= failures 0)
+    (begin (display "PASS: nested towers matrix") (newline) (exit 0))
+    (begin (display "TOTAL FAILURES: ") (display failures) (newline)
+           (display "FAIL: nested_towers_matrix_test") (newline) (exit 1)))

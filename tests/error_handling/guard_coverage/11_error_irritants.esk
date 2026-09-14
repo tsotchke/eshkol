@@ -1,0 +1,32 @@
+;; ESH-0101 guard coverage — `error` IRRITANTS through a guard.
+;; Split out of 06 because the VM's `error` is a fixed 1-argument native
+;; (fid 237) whose error-object-irritants stub always answers '(), a filed
+;; divergence (tests/vm_parity/found/error_object_irritants_empty.esk). Keeping
+;; the variadic-irritant checks here means that one known gap costs a narrow
+;; ENGINES.tsv waiver instead of the whole accessor surface on the VM axes.
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+;; irritants round-trip in order
+(chk "error-irritants"
+     (equal? (guard (e (#t (error-object-irritants e))) (error "msg" 1 2 3))
+             (list 1 2 3)))
+
+;; mixed-type irritants
+(chk "error-irritants-mixed"
+     (equal? (guard (e (#t (error-object-irritants e))) (error "msg" 1 "two"))
+             (list 1 "two")))
+
+;; the message is unaffected by the presence of irritants
+(chk "error-message-with-irritants"
+     (equal? (guard (e (#t (error-object-message e))) (error "the msg" 1 2))
+             "the msg"))
+
+;; irritants survive a re-raise through an enclosing guard
+(chk "error-irritants-reraise"
+     (equal? (guard (o ((error-object? o) (error-object-irritants o)))
+               (guard (i ((number? i) "num")) (error "msg" 7 8)))
+             (list 7 8)))

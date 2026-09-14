@@ -84,4 +84,21 @@
 (check "T7 delay-force flattens a deep promise chain iteratively"
        (and (= (force deep) 17) (= (force deep) 17)))
 
+;; A non-collapsible guard in a self-tail loop deliberately retains one handler
+;; per logical activation. Returning from that loop must retire only those
+;; retained handlers; an enclosing handler at the caller's now-equal frame
+;; depth must remain available for the next raise.
+(define (return-with-retained-guards n)
+  (guard (condition ((equal? condition 'never) 'wrong-handler))
+    (if (= n 0)
+        'returned
+        (return-with-retained-guards (- n 1)))))
+(define retained-return-result
+  (guard (outer (#t 'outer-caught))
+    (begin
+      (return-with-retained-guards 4)
+      (raise 'after-retained-return))))
+(check "T8 retained guard return preserves enclosing handler"
+       (equal? retained-return-result 'outer-caught))
+
 (display "=== promise VM surface complete ===") (newline)

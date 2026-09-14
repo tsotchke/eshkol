@@ -39,9 +39,9 @@ which re-derives every declaration from the source rather than believing it.
 
 | Carrier | Where | Vocabulary | Substrates |
 |---------|-------|------------|------------|
-| `ad_node_t` reverse tape | `inc/eshkol/eshkol.h`, emitted by `autodiff_codegen.cpp` | ~80 typed nodes incl. `AD_NODE_CUSTOM` | native |
+| `ad_node_t` reverse tape | `inc/eshkol/eshkol.h`, emitted by `autodiff_codegen.cpp` | 95 registered node types incl. `AD_NODE_CUSTOM` | native |
 | forward jet | `autodiff_codegen.cpp` (`seedForwardAndPush`) | e1/e2/ep slots + Taylor tower | native |
-| `VmDual {primal, tangent}` | `vm_dual.c` | 16 flat forward-dual ops | VM |
+| `VmDual {primal, tangent}` | `vm_dual.c`; dual tensor carrier in `vm_tensor.c` | 16 flat forward-dual ops plus first-order transformer tensor propagation | VM |
 | `VmHyperDual {f, f1, f2, f12}` | `vm_hyperdual.c` | second-order forward | VM |
 | `AdTape`/`AdNode` Wengert tape | `vm_autodiff.c` | 17 ops, int-indexed | **both** — the Scheme-visible `ad-*` primitives |
 
@@ -102,29 +102,105 @@ its backward rule is reachable and gradchecked *through* that producer rather
 than through a hand-built fixture. What remains is reachability from the two
 other paths, and neither is a wiring change.
 
-**Compiled Eshkol (JIT and AOT).** No compiled program can create one of these
-nodes at all. `AutodiffCodegen::recordADNodeTensor` exists and has exactly one
-call site, dead behind `kDenseTensorADNodesEnabled` in
-`lib/backend/llvm_codegen.cpp`; the block comment there records that flipping
-the flag SIGSEGVs rather than yielding a slower-but-correct gradient, for three
-independent reasons:
+**Compiled Eshkol (JIT and AOT) — COMPLETE for `matmul`, dense elementwise
+arithmetic, `tensor-sum` and `tensor-mean`.** This was, through v1.3.4, the single largest gap in the AD
+architecture: no compiled program could create one of these nodes at all.
+`AutodiffCodegen::recordADNodeTensor` existed and had exactly one call site,
+dead behind `kDenseTensorADNodesEnabled` in `lib/backend/llvm_codegen.cpp`, and
+flipping that flag SIGSEGV'd rather than yielding a slower-but-correct
+gradient, for three independent reasons:
 
 1. `recordADNodeTensor` stores NULL into `tensor_gradient`, while the reverse
-   pass *selects* the tensor backward by testing that field non-null —
-   constructor and consumer each wait for the other;
-2. the node it builds is dropped: the function goes on to return a plain
-   tagged tensor, so nothing downstream can find it;
+   pass *selected* the tensor backward by testing that field non-null —
+   constructor and consumer each waiting for the other;
+2. the node it built was dropped: the function went on to return a plain
+   tagged tensor, so nothing downstream could find it;
 3. under AD the scalarizing path leaves AD-node *pointers* in the result
    tensor's elements, which is what `tensor-sum` and friends consume, so a
    dense node would sever the chain at the next tensor op.
 
-That is ADR-0002 Position A (the dense resident tape), scheduled for v1.6. Until
-it lands, `(embedding …)` codegen emits a plain gather with no tape node, and
+All three are now closed, and the dense path is what a compiled program takes
+by default (ADR-0002 Position A, `.icc/silent-wrong-ledger.yaml` SW-48):
+
+1. **Selection.** The reverse pass recognises a tensor node by its
+   `tensor_value`, not by `tensor_gradient`. `tensor_value` is set at record
+   time and is documented as NULL for scalar nodes, so the test is decidable
+   the moment the node exists; `tensor_gradient` is still accepted as well,
+   because the qLLM bridge's C entry points seed it directly on nodes they did
+   not build here. A tensor node can therefore no longer fall into the scalar
+   dispatch and dereference the `input1`/`input2` a tensor node legitimately
+   leaves null — which is what the SIGSEGV was. A one-element tensor node whose
+   gradient arrived on the SCALAR side (`(tensor-sum …)` feeding ordinary
+   arithmetic) is bridged into its tensor gradient by
+   `eshkol_tensor_backward_dispatch` rather than silently dropped.
+2. **The node is returned.** Under AD, `matmul` returns the `AD_NODE_MATMUL`
+   node itself, tagged `CALLABLE` with the AD-node subtype the allocator
+   stamps — the same shape `extractTensorAndADNode` already read on the operand
+   side. Outside AD mode it returns the plain tensor it always returned, so
+   nothing changes for non-differentiated code.
+3. **The consumers understand it.** `tensor-sum` and `tensor-mean` reduce the
+   node's dense buffer directly and record one `AD_NODE_SUM` / `AD_NODE_MEAN`
+   node; `matmul` reuses a dense operand's node rather than re-packing it, so a
+   chain of dense ops stays one node per op. Where an operand is *not* dense —
+   the tensor of scalar AD nodes `(gradient f x)` seeds, or the result of a
+   still-scalarizing tensor op — it is bridged by an `AD_NODE_TENSOR_PACK`
+   node, whose backward is the identity scatter from the dense gradient onto
+   the scalar nodes. A pack node performs no arithmetic, so it can change the
+   *representation* of a gradient and not its value.
+
+The cost claim is measured, not asserted.
+[`tests/ad/matmul_tape_node_count_test.esk`](../../../tests/ad/matmul_tape_node_count_test.esk)
+is a shrink-only ratchet on the tape size, and
+[`scripts/run_dense_tensor_ad_gate.sh`](../../../scripts/run_dense_tensor_ad_gate.sh)
+compiles
+[`tests/ad/dense_tensor_ad_gradcheck_test.esk`](../../../tests/ad/dense_tensor_ad_gradcheck_test.esk)
+under **both** lowerings — `ESHKOL_DENSE_TENSOR_AD_NODES=1` and `=0` — and
+requires their parsed numeric gradients to agree within tolerance while the tape shrinks. The
+scalarizing lowering is retained precisely so that it can go on serving as that
+oracle; `ESHKOL_DENSE_TENSOR_AD_NODES=0` selects it, and the choice is made at
+codegen time, so the two are two emitted programs rather than one program with
+a runtime branch.
+
+#### Dense-versus-scalar routing
+
+The compiled backend's dense resident-tape route is shape-specific:
+
+| Operation and shapes | Route in AD mode | Contract |
+|---|---|---|
+| `tensor-add`, `tensor-sub`, `tensor-mul`, `tensor-div` with equal ranks and dimensions | dense | one node; both numeric operands come from the densified f64 views |
+| The same elementwise operations with broadcast-compatible shapes, including leading rank promotion | dense broadcast | one node; output is preflighted and allocated at the exact broadcast total |
+| `matmul` with operand ranks 1 or 2, matching inner dimension, and overflow-safe products | dense | one `AD_NODE_MATMUL`; 1-D contraction follows PEP-465 result shape |
+| `batch-matmul` with rank-3 operands `[batch,M,K]` and `[batch,K,N]` | dense batched | one `AD_NODE_BATCH_MATMUL`; each batch has an independent VJP |
+| `transpose` of a dense rank-2 producer | dense consumer | one `AD_NODE_TRANSPOSE`; backward swaps the two matrix axes |
+| whole-tensor `tensor-sum`, `tensor-mean`, and `tensor-max` of a dense producer | dense reduction | one tensor node; max uses the documented last-winner subgradient at ties |
+| `matmul` rank greater than 2, incompatible shapes, or overflowed products | loud error | no `AD_NODE_MATMUL` is recorded |
+| convolution, attention, norm layers, and unsupported shape-changing consumers | scalarized or loud error at the call site | not admitted to the dense node contract |
+
+Dense operand buffers, result buffers, saved operands, packed scalar slots, and
+shape arrays retained by a tensor node are allocated from
+`eshkol_ad_home_arena`, the active tape's owner arena. This lifetime boundary
+makes a region exit unable to reclaim a live dense node payload. The dense max
+tie rule is a subgradient convention, not an assertion that the ordinary
+derivative exists at a tie.
+
+**Still scalarizing for reverse mode** (unchanged, and correct — the scalar
+decomposition has always produced exact gradients; what it costs is tape size):
+`conv2d`, `attention` and the norm layers. Their first-order forward path also
+accepts a dtype-DUAL tensor produced from a Scheme vector of live duals;
+`scaled-dot-attention` and `layer-norm` preserve that carrier through the
+operation and `tensor-get` returns its tagged element. `(embedding …)`
+codegen still emits a plain gather with no tape node, so
 `(gradient (lambda (W) … (embedding idx W)))` records nothing for the lookup.
+An op that has not learned the dense representation and is handed a dense
+AD-node handle raises a catchable type error at its own call site rather than
+returning a wrong number.
 
 **The VM.** `lib/backend/vm_autodiff.c` has its own scalar `AdNode`
 representation; no `vm_*.c` file references `ad_node_t` or any `AD_NODE_*`
-constant. `frechet-mean` (native call id 817) therefore cannot record an
+constant. `VmTensor` now carries a parallel `VmDual` buffer when a first-order
+dual vector crosses the tensor boundary; the VM implements the exact
+first-order dual paths for `layer-norm` and rank-2 `scaled-dot-attention`, but
+still has no reverse tensor-node tape. `frechet-mean` (native call id 817) therefore cannot record an
 `AD_NODE_FRECHET_MEAN`, and the same chunked-storage and shared-reverse-rule
 work listed for `AD_NODE_CUSTOM` above is the prerequisite. Its forward is
 nonetheless already shared with the bridge producer —
@@ -137,6 +213,226 @@ above a residual bar, so a forward that drifted would hand the derivative means
 it rejects.
 
 ---
+
+### Build item — `AD_NODE_SQUARED_DISTANCE` has no Scheme surface and no VM path
+
+`d²(x,y)` on the space forms and their products
+(`lib/bridge/space_form_ad.cpp`, `AD_NODE_SQUARED_DISTANCE`) is a C bridge
+entry point. It records onto the native `ad_node_t` tape and is answered by the
+`native-ad-node` carrier, which `.icc/ad-carrier-manifest.yaml` declares
+`shared: false`. There is no `(squared-distance …)` builtin or native call id;
+the deliberate native-only limitation is recorded by the
+`ad-squared-distance` row in `tests/vm_parity/PARITY.tsv` so the absence of a VM
+implementation is explicit rather than inferred.
+
+Two things gate a VM path, and neither is a wiring change:
+
+1. **The VM has no `ad_node_t`.** `lib/backend/vm_autodiff.c` carries its own
+   scalar `AdNode` with a single `double saved` slot. This op keeps its factor
+   list — form, dimension, curvature and weight per factor — in
+   `saved_tensors[0]`, which has no counterpart there. The chunked-storage and
+   `void** saved` work listed for `AD_NODE_CUSTOM` above is the same
+   prerequisite.
+2. **The VM's `gradient` builds no tape at all.** It is the forward `VmDual`
+   carrier, which is scalar and cannot carry a tangent through a `VmTensor`
+   (`fork_debt.blocked_on`). A point on a manifold is a vector by construction,
+   so there is nothing for the forward carrier to seed.
+
+Until both land, adding a VM opcode for this op would mean a *second*
+implementation of the geometry answering the same name — the exact fork
+`gate_ad_shared_node_model.py` was written to size and cap. The honest
+intermediate state is the one recorded here: native only, declared as such, and
+no VM parity beyond the explicit native-only row claiming otherwise.
+
+What is worth stating alongside that, because it is the reason the op exists:
+this node deliberately does **not** inherit `ad_hyperbolic_distance`'s
+coincidence refusal. `d` has a cone point at `x == y` and refusing there is
+right. `d²` is smooth on the whole injectivity ball, with
+`grad_x d² = -2 log_x(y)` vanishing exactly at coincidence — and it cannot be
+obtained from `d` by squaring, because `2·d·grad d` is `0·(no limit)` at the
+diagonal. The two ops are kept in separate translation units with separate
+dispatch arms for that reason: a shared implementation would eventually
+propagate one op's refusal to the other, and the diagonal is not an edge case
+for a scoring function, it is every self-attention row.
+
+---
+
+## The AD node registry
+
+Every AD node type is declared **once**, in
+[`inc/eshkol/ad_node_registry.def`](../../../inc/eshkol/ad_node_registry.def), as
+an X-macro row:
+
+```c
+ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN)
+```
+
+There are **95 rows**, values `0`–`94`, dense. `VALUE` is explicit and asserted
+equal to the row's ordinal, because these values are an ABI: emitted LLVM IR
+compares `node->type` against integer literals and serialized tapes carry them.
+
+The enum (`AD_NODE_##NAME` in `inc/eshkol/eshkol.h`), the tensor backward dispatch
+table and the dispatcher's `switch` are all generated from this one file, so
+"registered" is a compile-time fact rather than an intention. Adding a node type
+means writing its row; there is no way to add one and have its gradient silently
+vanish.
+
+### The six dispositions
+
+`TENSOR_BACKWARD` says where — or whether — the node's adjoint lives.
+
+| Disposition | Rows | Meaning |
+|---|---:|---|
+| `SCALAR_ADJOINT` | 44 | the adjoint is computed by the scalar reverse sweep |
+| `BRIDGE` | 19 | an exact tensor backward, named by `BRIDGE_FN` |
+| `INLINE` | 25 | the backward is emitted inline at the recording site |
+| `UNREGISTERED` | 4 | an **explicit registered refusal** |
+| `LEAF` | 2 | a tape leaf; nothing to propagate |
+| `CUSTOM_VJP` | 1 | caller-provided vector-Jacobian product |
+| `CUSTOM_VJP` | 1 | the user supplied the vector-Jacobian product |
+
+`UNREGISTERED` is the disposition that makes this a registry rather than a table.
+It means: no exact backward exists for this node in the tensor dispatcher, and
+rather than return a plausible zero the dispatcher **aborts, naming the node
+type**. It is a declaration, not an oversight — the row had to be written.
+
+```
+AD backward dispatch: no exact backward is registered for tensor node type N
+(NAME). ad_node_registry.def declares it UNREGISTERED, which means this gap is
+known and stated, not discovered here. Refusing to return a gradient of zero for
+an operation that has one.
+```
+
+The `BRIDGE` arm carries the mirror-image guard: a row that says `BRIDGE` but
+whose named function is missing from the generated table refuses rather than
+drops the gradient — and because the table's initializer names the symbol
+directly, a `BRIDGE` row naming a function that does not exist **does not
+compile**.
+
+### Why there is no `default:`
+
+The dispatcher's `switch` has an explicit `case AD_NODE_TYPE_COUNT:` arm and no
+`default:`, and the translation unit is built with `-Werror=switch-enum`. A
+`default:` would accept any future enum member into "nothing to do", which is
+precisely how four tensor ops came to return zero gradients in silence. With the
+default removed, a member that says nothing is a compile error rather than a
+wrong number.
+
+Three independent totality checks back the registry up: a compile-time assertion
+that the coverage table spans every declared row, a startup assertion that no row
+is `NULL` (a designated-initializer table silently zero-fills any index nobody
+wrote, and a zero row reads as "walk this, I know how"), and a runtime
+out-of-range guard. A static assertion in `inc/eshkol/eshkol.h` pins
+`ESHKOL_AD_NODE_REGISTRY_ROWS == AD_NODE_TYPE_COUNT` — no gaps, no duplicates.
+
+### Node blocks
+
+| Values | Block |
+|---|---|
+| 0–11 | core arithmetic |
+| 12–18 | activations |
+| 19–28 | tensor ops (all `INLINE`) |
+| 29–32 | transformer (all `INLINE`) |
+| **33–40** | **qLLM geometric** |
+| 41–45 | additional math |
+| 46–53 | Phase-4 activations |
+| 54–66 | complete math |
+| **67–80** | **qLLM bridge tensor nodes** (all `BRIDGE`) |
+| 81 | `ATAN2` |
+| 82 | `CUSTOM` |
+
+## Exact geometric backwards
+
+The 33–40 block is the one the registry was built for: four of its node types
+reached an asserted-impossible `default:` and returned zero. The numeric band that
+default reasoned from — "tensor ops are 19–32 and 67–80" — never covered 33–40.
+
+| Value | Node | Disposition | Backward |
+|---:|---|---|---|
+| 33 | `HYPERBOLIC_DISTANCE` | `BRIDGE` | `tensor_hyperbolic_distance_backward` |
+| 34 | `POINCARE_EXP_MAP` | `BRIDGE` | `tensor_poincare_exp_map_backward` |
+| 35 | `POINCARE_LOG_MAP` | `BRIDGE` | `tensor_poincare_log_map_backward` |
+| 36 | `TANGENT_PROJECT` | `UNREGISTERED` | — |
+| 37 | `GEODESIC_ATTENTION` | `BRIDGE` | `tensor_geodesic_attention_backward` |
+| 38 | `MOBIUS_ADD` | `UNREGISTERED` | — |
+| 39 | `MOBIUS_MATMUL` | `UNREGISTERED` | — |
+| 40 | `GYROVECTOR_SPACE` | `UNREGISTERED` | — |
+
+The four exact rules live in `lib/bridge/tensor_backward.cpp`; their producers are
+`ad_hyperbolic_distance`, `ad_poincare_exp_map`, `ad_poincare_log_map` and
+`ad_geodesic_attention` in `lib/bridge/qllm_bridge.cpp`.
+
+Two of the rules are compositions this file already differentiates for the Fréchet
+mean, and they **reuse** that machinery — `FrechetGeometry::mobius_add_with_jacobians`
+and `FrechetGeometry::log_map_with_jacobians` — rather than re-deriving it: deriving
+the same Möbius Jacobian twice is how a sign error survives a gradient check on the
+other copy.
+
+The remaining four have **no producer anywhere in the tree** — the emitted scalar
+sweep reads them, nothing writes them. They stay `UNREGISTERED` so that a future
+producer which records one as a tensor node inherits the abort rather than the
+silence.
+
+### Six backwards, two different kinds
+
+The v1.3.5-evolve wave is often summarised as "six exact geometric backwards". The
+distinction is worth keeping:
+
+- **Four newly written** — the `BRIDGE` rules above (ledger SW-65), which did not
+  exist and whose nodes returned zero.
+- **Two newly reachable** — `TENSOR_EMBEDDING` (78) and `FRECHET_MEAN` (80) already
+  had exact rules, but no producer existed anywhere in the tree, so both were
+  validated only against `ad_node_t` structures the tests assembled by hand. Adding
+  `ad_tensor_embedding` and `ad_frechet_mean` made them reachable and gradchecked
+  through a real producer.
+
+### Where these rules refuse, and why that is not conservatism
+
+The Riemannian distance `d(x, y)` behaves like `|x − y|` near coincidence: at
+`x = y` it has no derivative, only a subgradient set. Any number returned there is
+invented. So each of these rules refuses rather than picking one:
+
+- **`hyperbolic-distance`** — the two points coincide, or one lies outside the
+  Poincaré ball. "It is a cone point, and every value a rule could return there is
+  invented. Refusing."
+- **`poincare-log-map`** — no finite `log_x(y)` exists at the operands. The forward
+  clamps `artanh`'s argument and returns a value anyway; "that value is fabricated,
+  and differentiating it would launder the fabrication into a gradient."
+- **`geodesic-attention`** — a query row coincides exactly with a key row. This has
+  a consequence worth stating outright: **scoring by distance makes the op
+  non-differentiable whenever `Q` and `K` are the same tensor**, which is the
+  ordinary self-attention case. The message names the row, column, batch and head.
+- **`poincare-exp-map`** — uses a series expansion below a small-tangent threshold
+  of `1e-6`, and differentiates the *mathematical* map rather than the forward's
+  `|v| < 1e-15 → return x` shortcut branch.
+
+### The Fréchet stationarity gate
+
+`FRECHET_MEAN`'s backward is implicit differentiation of the stationarity condition
+`Σᵢ wᵢ log_μ(xᵢ) = 0`. Those formulas are the derivative **at** the fixed point;
+away from it they return a plausible but wrong gradient. So the rule measures the
+residual and refuses above a bar.
+
+- Default relative tolerance `kFrechetResidualTol = 1e-9`
+  (`lib/bridge/tensor_backward.cpp`), overridable per node through `params` slot 3
+  (a non-finite or non-positive value falls back to the default).
+- The forward's own bar is `ESHKOL_FRECHET_RESID_TOL = 1e-9` with
+  `ESHKOL_FRECHET_MAX_ITERS = 256` (`inc/eshkol/backend/frechet_mean_core.h`),
+  deliberately matched, so a forward that returns successfully produces a mean the
+  derivative will accept.
+- The residual is measured in **Riemannian units**, not ambient ball coordinates —
+  scaled by the conformal factor `λ = 2/(1 − c·⟨μ,μ⟩)` and normalised by the weight
+  sum. This is not cosmetic: with the ambient scale the forward accepted means wrong
+  by `8.8e-8` and `7.6e-6` as converged, and the rule would then have differentiated
+  them and returned exactly the plausible wrong gradient the gate exists to prevent.
+- The refusal names the absolute residual, the relative residual, the tolerance, the
+  point count and the dimension, and tells you the two ways forward: tighten the
+  forward iteration, or raise `params` slot 3 deliberately.
+
+This is also why both the VM opcode and the AD producer compute the mean in **f64**.
+An fp32 mean carries `|μ − μ*| ≈ 1e-7`, so its residual sits around `1e-7` relative
+and can never satisfy a `1e-9` gate: an fp32 forward makes the exact derivative
+unavailable by construction.
 
 ## Forward mode — the 4-component jet
 
@@ -321,11 +617,16 @@ contributes its full sensitivity.
 
 ## Numeric boundary (summary)
 
-The AD engine operates on `double` and the jet/dual structs only. Bignums,
-rationals, and complex numbers do **not** carry derivatives — see
+The legacy jet fields and the tape's fast scalar fields are `double`, but exact
+integers, bignums, and rationals also have exact carriers. Taylor towers store
+tagged exact coefficients; mixed Taylor/tape nodes store authoritative
+`exact_value` and `exact_gradient` sidecars; the VM mirrors both with
+`exact_coeff`/`exact_tangent_coeff` and exact dual halves. Exact-preserving
+arithmetic (`+`, `-`, `*`, `/`, and integer powers) therefore remains exact at
+extraction. Transcendentals demote the affected carrier to the ordinary
+inexact path. Complex values still have no Wirtinger-derivative carrier. See
 [../../breakdown/AUTODIFF.md](../../breakdown/AUTODIFF.md) ("Numeric Type
-Interactions with AD") for the exact conversion behavior at the boundary.
-Convert exotic numeric inputs to `double` before entering an AD context.
+Interactions with AD") for the representation details.
 
 ---
 
@@ -347,4 +648,6 @@ the tape.
 
 - [operators.md](operators.md) — per-operator API, capture rules, nesting table
 - [support-matrix.md](support-matrix.md) — oracle matrix and open cells
+- [tape.md](tape.md) — the explicit `ad-*` tape builtins and the AD instrumentation counters
+- [`inc/eshkol/ad_node_registry.def`](../../../inc/eshkol/ad_node_registry.def) — the 95-row node registry itself
 - [../../breakdown/AUTODIFF.md](../../breakdown/AUTODIFF.md) — opcodes, tensor backward, tape internals

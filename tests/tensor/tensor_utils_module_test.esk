@@ -1,0 +1,87 @@
+;;; tensor.utils: the module's public surface, and reshape-as.
+;;;
+;;; Two silent-wrong defects, both reproduced on the v1.3.5 candidate:
+;;;
+;;;   under-export   tensor-ndim, tensor-size, is-scalar?, is-vector?,
+;;;                  is-matrix?, expand-dims, broadcast-to, tensor-take,
+;;;                  tensor-drop, tensor-head and tensor-tail were defined in
+;;;                  lib/tensor/utils.esk and documented, but absent from its
+;;;                  `provide`, so every call site got
+;;;                  "Unknown function: tensor-ndim" after a successful
+;;;                  (require tensor.utils). The module also reported
+;;;                  "Unbound variable: unsqueeze" on every load, from
+;;;                  `(define expand-dims unsqueeze)` taking a builtin as a
+;;;                  value.
+;;;
+;;;   reshape-as     (reshape-as A B) returned a tensor whose shape was
+;;;                  (<A's address> 2 3) -- e.g. (5370542728 2 3) -- because
+;;;                  the body went through `(apply reshape tensor shape)` and
+;;;                  apply's tensor path reads EVERY argument as a dimension.
+;;;                  The data was discarded; displaying the result did not
+;;;                  terminate (~3e10 elements) and printed no diagnostic.
+;;;                  `(reshape A (tensor-shape B))` was correct throughout.
+
+(require tensor.utils)
+
+(define failures 0)
+
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+
+(display "=== TENSOR.UTILS MODULE TESTS ===") (newline)
+
+(define flat (reshape (tensor (list 1.0 2.0 3.0 4.0 5.0 6.0)) 6))
+(define mat (reshape (tensor (list 0.0 0.0 0.0 0.0 0.0 0.0)) 2 3))
+
+;; ------------------------------------------------------------------
+;; reshape-as matches the template's shape AND keeps the data
+;; ------------------------------------------------------------------
+(define reshaped (reshape-as flat mat))
+
+(check "reshape-as adopts the template's shape"
+       (equal? (tensor-shape reshaped) (tensor-shape mat)))
+(check "reshape-as agrees with an explicit reshape"
+       (equal? (tensor-shape reshaped) (tensor-shape (reshape flat (tensor-shape mat)))))
+(check "reshape-as keeps element 0" (= (tensor-ref reshaped 0 0) 1.0))
+(check "reshape-as keeps element (0 2)" (= (tensor-ref reshaped 0 2) 3.0))
+(check "reshape-as keeps element (1 0)" (= (tensor-ref reshaped 1 0) 4.0))
+(check "reshape-as keeps element (1 2)" (= (tensor-ref reshaped 1 2) 6.0))
+
+;; The shape is exactly rank 2 -- the defect produced rank 3 with a pointer
+;; in the leading position, which is what made displaying it diverge.
+(check "reshape-as result has rank 2" (= (length (tensor-shape reshaped)) 2))
+(check "reshape-as leading dimension is 2" (= (car (tensor-shape reshaped)) 2))
+
+;; ------------------------------------------------------------------
+;; Every exported helper resolves and answers correctly
+;; ------------------------------------------------------------------
+(check "tensor-ndim on a matrix" (= (tensor-ndim mat) 2))
+(check "tensor-ndim on a vector" (= (tensor-ndim flat) 1))
+(check "tensor-size on a matrix" (= (tensor-size mat) 6))
+(check "tensor-size on a vector" (= (tensor-size flat) 6))
+(check "is-matrix? on a matrix" (is-matrix? mat))
+(check "is-matrix? on a vector" (not (is-matrix? flat)))
+(check "is-vector? on a vector" (is-vector? flat))
+(check "is-vector? on a matrix" (not (is-vector? mat)))
+(check "is-scalar? on a 6-element tensor" (not (is-scalar? flat)))
+(check "is-scalar? on a 1-element tensor"
+       (is-scalar? (reshape (tensor (list 7.0)) 1)))
+
+(check "broadcast-to reshapes on an equal element count"
+       (equal? (tensor-shape (broadcast-to flat (list 3 2))) (list 3 2)))
+(check "broadcast-to keeps the data"
+       (= (tensor-ref (broadcast-to flat (list 3 2)) 0 0) 1.0))
+
+;; expand-dims, squeeze-all, unsqueeze-first/last and tensor-take/drop/head/tail
+;; are covered by tests/tensor/tensor_utils_shape_helpers_test.esk: they reach
+;; the `unsqueeze`, `squeeze` and `slice` builtins, which the bytecode VM does
+;; not implement, so that file is a native-only (JIT + AOT) gate while this one
+;; runs on all three engines.
+
+(display "=== ")
+(display (if (= failures 0) "ALL TESTS PASSED" "TESTS FAILED"))
+(display " ===")
+(newline)

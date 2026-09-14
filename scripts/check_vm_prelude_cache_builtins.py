@@ -36,8 +36,6 @@ Exit:
     2  a source file is missing or neither array could be parsed — neutral
        fail (this gate refuses to pass on "I could not check")
 
-Copyright (C) tsotchke
-SPDX-License-Identifier: MIT
 """
 from __future__ import annotations
 

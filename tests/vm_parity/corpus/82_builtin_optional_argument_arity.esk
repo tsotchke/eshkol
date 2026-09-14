@@ -1,0 +1,89 @@
+; Every builtin with a DOCUMENTED OPTIONAL parameter, called at its minimum
+; documented argument count and at its full one, on both engines.
+;
+; The bytecode VM used to refuse the minimum call. `BUILTINS[].arity` is the
+; number of operands the opcode loads, not the number of arguments a caller
+; must supply, and the VM's under-arity check fell back to it for every row
+; that left `min_arity` unset — so `(substring "hello" 1)`, `(make-vector 3)`
+; and `(read-line)` compiled and ran natively and were refused by the VM with
+; "Arity mismatch: substring expects 3 arguments but got 2". The minima are now
+; derived (scripts/gen_builtin_min_arity.py) and the omitted operands are
+; supplied at the call site as ESHKOL_ABSENT_ARG, which each native op reads as
+; "apply the documented default".
+;
+; The four READERS whose minimum call takes no port are exercised as
+; DEFINITIONS that are never applied. Their contract here is acceptance — the
+; VM refused to COMPILE them — and calling one would read this harness's stdin,
+; which is a terminal.
+
+; ── substring: (substring s start [end]) ─────────────────────────────────
+(display (substring "hello" 1))       (newline)
+(display (substring "hello" 1 3))     (newline)
+
+; ── make-vector: (make-vector k [fill]) ──────────────────────────────────
+(display (make-vector 3))             (newline)
+(display (make-vector 3 7))           (newline)
+
+; ── make-string: (make-string k [char]) ──────────────────────────────────
+(display (string-length (make-string 4)))          (newline)
+(display (make-string 4 #\z))                      (newline)
+
+; ── make-bytevector: (make-bytevector k [byte]) ──────────────────────────
+(display (bytevector-length (make-bytevector 4)))  (newline)
+(display (bytevector-u8-ref (make-bytevector 4 255) 2))  (newline)
+
+; ── append: (append [lst [lst]]) — R7RS 6.4, (append) is the empty list ───
+(display (append))                     (newline)
+(display (append (list 1 2)))          (newline)
+(display (append (list 1 2) (list 3))) (newline)
+
+; ── gcd / lcm: variadic in the native lowering, so every operand may be
+;    omitted. R7RS 6.2.6 makes (gcd) 0 and (lcm) 1. These rows declare
+;    themselves variadic and made no minimum claim, so the VM's COMPILE-time
+;    check never fired for them — and the call still died at RUNTIME, where
+;    the closure wanted both operands. The omitted ones are the fold identity.
+(display (gcd))                        (newline)
+(display (gcd 12))                     (newline)
+(display (gcd 12 18))                  (newline)
+(display (lcm))                        (newline)
+(display (lcm 4))                      (newline)
+(display (lcm 4 6))                    (newline)
+
+; ── bytevector-append: (bytevector-append [bv [bv]]) ─────────────────────
+(display (bytevector-length (bytevector-append)))                       (newline)
+(display (bytevector-length (bytevector-append (make-bytevector 2 1))))  (newline)
+(display (bytevector-length
+           (bytevector-append (make-bytevector 2 1) (make-bytevector 3 2)))) (newline)
+
+; ── hash-ref: (hash-ref table key [default]) ─────────────────────────────
+(define table (make-hash-table))
+(hash-set! table 1 10)
+(display (hash-ref table 1))          (newline)
+(display (hash-ref table 1 0))        (newline)
+
+; ── make-tensor: (make-tensor shape [fill]) ──────────────────────────────
+(display (tensor-shape (make-tensor (list 2 2) 1.0)))  (newline)
+
+; ── write-string: (write-string s [port]) ────────────────────────────────
+(write-string "write-string/1")       (newline)
+(define sink (open-output-string))
+(write-string "to-port" sink)
+(display (get-output-string sink))     (newline)
+
+; ── write-u8 / write-bytevector: (write-u8 byte [port]) ──────────────────
+(write-u8 65)
+(write-bytevector (make-bytevector 1 66))
+(newline)
+
+; ── read-char / read-line: (read-char [port]) ────────────────────────────
+(display (char->integer (read-char (open-input-string "A"))))  (newline)
+(display (read-line (open-input-string "one")))                (newline)
+(display (eof-object? (read-char (open-input-string ""))))     (newline)
+
+; The minimum-arity forms of the four readers: accepted by both engines, which
+; is what compiling this file proves. Never applied — see the header.
+(define (min-arity-read-char) (read-char))
+(define (min-arity-read-line) (read-line))
+(define (min-arity-read-u8) (read-u8))
+(define (min-arity-read-bytevector) (read-bytevector 1))
+(display "readers accepted at minimum arity")                  (newline)

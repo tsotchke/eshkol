@@ -64,6 +64,8 @@ import subprocess
 import sys
 import tempfile
 
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 CATEGORIES = {"numeric", "predicate", "string_char", "list_pair", "vector",
               "hash", "higher_order"}
 
@@ -195,9 +197,10 @@ def run(cmd, timeout, env=None):
     try:
         p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            timeout=timeout, env=env)
-        return p.returncode, p.stdout.decode("utf-8", "replace"), False
+        return (p.returncode, p.stdout.decode("utf-8", "replace"),
+                p.stderr.decode("utf-8", "replace"), False)
     except subprocess.TimeoutExpired:
-        return None, "", True
+        return None, "", "", True
 
 
 import re
@@ -216,25 +219,60 @@ def parse_indexed(out):
     return res
 
 
+def diagnostic_class(stderr, stdout="", rc=0, timed_out=False):
+    """Reduce engine diagnostics to the contract class, not its wording.
+
+    Native reports a bad fixed-arity call while compiling; the VM reports the
+    same error when the closure dispatches. Their prefixes and source spans
+    necessarily differ, but both must be an arity fatal rather than a value or
+    a swallowed ``ERR``. This is the comparison boundary for PR-03.
+    """
+    if timed_out:
+        return "timeout"
+    text = (stderr + "\n" + stdout).lower()
+    if "arity mismatch" in text or "wrong number of arguments" in text:
+        return "arity"
+    if "frame overflow" in text:
+        return "frame-overflow"
+    if rc not in (0, None):
+        return "fatal"
+    return ""
+
+
 def run_native(esk, native, workdir, timeout):
     env = dict(os.environ, ESHKOL_JIT_CACHE_DIR=os.path.join(workdir, "jit"))
-    rc, out, to = run([native, "-r", esk], timeout, env)
-    return rc, parse_indexed(out), to
+    rc, out, err, to = run([native, "-r", esk], timeout, env)
+    return rc, parse_indexed(out), to, diagnostic_class(err, out, rc, to)
 
 
 def run_vm(esk, vm, native, workdir, timeout):
     eskb = esk + "b"
-    rc, _, to = run([native, "--profile", "hosted-vm", "--emit-eskb", eskb, esk],
-                    timeout)
+    rc, compile_out, compile_err, to = run(
+        [native, "--profile", "hosted-vm", "--emit-eskb", eskb, esk], timeout)
     if to or rc != 0 or not os.path.exists(eskb):
-        return "compile", {}, to
+        return "compile", {}, to, diagnostic_class(
+            compile_err, compile_out, rc, to)
     env = dict(os.environ, ESHKOL_VM_NO_DISASM="1")
-    rc, out, to = run([vm, eskb], timeout, env)
+    rc, out, err, to = run([vm, eskb], timeout, env)
     try:
         os.remove(eskb)
     except OSError:
         pass
-    return rc, parse_indexed(out), to
+    return rc, parse_indexed(out), to, diagnostic_class(err, out, rc, to)
+
+
+def run_aot(esk, native, workdir, key, timeout):
+    """Compile and execute one probe through the native AOT driver."""
+    binary = os.path.join(workdir, "aot_%s" % key.split("::")[-1])
+    rc, out, err, to = run([native, esk, "-o", binary], timeout)
+    if to or rc != 0 or not os.path.exists(binary):
+        return rc, {}, to, diagnostic_class(err, out, rc, to)
+    rc, out, err, to = run([binary], timeout)
+    try:
+        os.remove(binary)
+    except OSError:
+        pass
+    return rc, parse_indexed(out), to, diagnostic_class(err, out, rc, to)
 
 
 def diverges(nres, vres, ncrash, vcrash):
@@ -258,6 +296,19 @@ def diverges(nres, vres, ncrash, vcrash):
     return nv != vv
 
 
+def canonical_outcome(result, values, diagnostic, timed_out=False):
+    """Return the stable outcome used by the three-engine arity ratchet."""
+    if timed_out:
+        return "TIMEOUT"
+    if values.get(0) is not None:
+        return "VALUE:" + values[0]
+    if diagnostic:
+        return "FATAL:" + diagnostic
+    if result not in (0, None):
+        return "FATAL:fatal"
+    return "MISSING"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -273,6 +324,8 @@ def main():
     ap.add_argument("--trace")
     ap.add_argument("--workdir")
     ap.add_argument("--timeout", type=float, default=25.0)
+    ap.add_argument("--aot", action="store_true",
+                    help="also compile and run every probe through native AOT")
     args = ap.parse_args()
 
     d = json.load(open(args.manifest))
@@ -296,7 +349,9 @@ def main():
     if os.path.exists(args.baseline):
         baseline = set(json.load(open(args.baseline)).get("known_divergences", []))
 
-    workdir = args.workdir or tempfile.mkdtemp(prefix="p8-arity-")
+    scratch = os.path.join(REPO, ".scratch")
+    os.makedirs(scratch, exist_ok=True)
+    workdir = args.workdir or tempfile.mkdtemp(prefix="p8-arity-", dir=scratch)
     os.makedirs(os.path.join(workdir, "jit"), exist_ok=True)
 
     all_divs = []
@@ -314,8 +369,8 @@ def main():
             esk = os.path.join(workdir, "probe_%s.esk" % key.split("::")[-1])
             with open(esk, "w") as fh:
                 fh.write(src)
-            nrc, nres, nto = run_native(esk, args.native, workdir, args.timeout)
-            vrc, vres, vto = run_vm(esk, args.vm, args.native, workdir, args.timeout)
+            nrc, nres, nto, ndiag = run_native(esk, args.native, workdir, args.timeout)
+            vrc, vres, vto, vdiag = run_vm(esk, args.vm, args.native, workdir, args.timeout)
             if nto or vto:
                 # A timeout is not a parity claim — the engines were not both
                 # observed — but it must not be SILENT either. A probe slow
@@ -329,8 +384,23 @@ def main():
                 continue
             ncrash = (nrc not in (0,))
             vcrash = (vrc in ("compile",)) or (isinstance(vrc, int) and vrc not in (0,))
-            if diverges(nres, vres, ncrash, vcrash):
+            noutcome = canonical_outcome(nrc, nres, ndiag, nto)
+            voutcome = canonical_outcome(vrc, vres, vdiag, vto)
+            if noutcome != voutcome:
                 all_divs.append(key)
+            if args.aot:
+                arc, ares, ato, adiag = run_aot(
+                    esk, args.native, workdir, key, args.timeout)
+                if ato:
+                    unmeasured.append("%s[aot]" % key)
+                else:
+                    aoutcome = canonical_outcome(arc, ares, adiag, ato)
+                    # The VM comparison is already represented by `key` above.
+                    # A known native-vs-VM divergence must not manufacture a
+                    # second AOT key when AOT agrees with native JIT; the AOT
+                    # axis adds only the JIT-vs-AOT regression signal.
+                    if noutcome != aoutcome:
+                        all_divs.append("%s::aot" % key)
             counted = True
         if counted:
             tested += 1
@@ -339,16 +409,25 @@ def main():
     new_divs = [k for k in all_divs if k not in baseline]
 
     if args.update_baseline:
-        # shrink-only union: keep baseline entries still-present is caller's job;
-        # here we write exactly the observed set (run with --full to refresh).
+        # Shrink-only ratchet. A probe that was actually observed can retire a
+        # resolved key; a timeout/unmeasured probe cannot erase evidence from a
+        # prior run. This prevents an incomplete sweep from making the baseline
+        # look healthier by deleting rows it never measured.
+        measured_keys = set()
+        for e in cands:
+            for _src, key in build_programs(e["name"], e["category"], e["arity"]):
+                if not any(key == item.split("[")[0] for item in unmeasured):
+                    measured_keys.add(key)
+        retained = (baseline - measured_keys) | set(all_divs)
         with open(args.baseline, "w") as fh:
             json.dump({"_comment": "P8 axis-3 native-vs-VM known parity gaps; "
                                    "gate fails on any key NOT listed here. "
                                    "Generated by p8_arity_sweep.py --update-baseline --full.",
-                       "known_divergences": all_divs}, fh, indent=2, sort_keys=True)
+                       "known_divergences": sorted(retained)}, fh, indent=2,
+                      sort_keys=True)
             fh.write("\n")
-        print("wrote baseline (%d divergences over %d builtins) -> %s"
-              % (len(all_divs), tested, args.baseline))
+        print("wrote baseline (%d divergences over %d builtins; %d probes unmeasured) -> %s"
+              % (len(retained), tested, len(unmeasured), args.baseline))
         return 0
 
     status = "PASS" if not new_divs else "FAIL"

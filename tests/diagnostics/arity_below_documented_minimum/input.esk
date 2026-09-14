@@ -1,0 +1,18 @@
+;; Diagnostic corpus case: a call BELOW a builtin's documented minimum.
+;;
+;; `substring` is documented `(substring string start [end])` and its native
+;; lowering refuses anything shorter than two arguments — so `(substring "x")`
+;; is a wrong-arity call, and it must be refused with the canonical sentence
+;; naming the MINIMUM, not the opcode's operand count.
+;;
+;; The distinction is the whole of this fix. The bytecode VM used to refuse
+;; `(substring "hello" 1)` too, because its under-arity check read
+;; `BUILTINS[].arity` — the number of operands the opcode loads (3) — rather
+;; than the caller's obligation (2). Both engines now read the minimum from
+;; eshkol_builtin_min_arity(), so this diagnostic says "expects 2 arguments",
+;; the two-argument call compiles, and the sentence is byte-identical on the
+;; bytecode VM.
+;; See inc/eshkol/core/arity_contract.h and scripts/gen_builtin_min_arity.py.
+
+(display (substring "x"))
+(newline)

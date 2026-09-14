@@ -175,18 +175,13 @@ llvm::Value* TensorCodegen::adNodeFromTensorElementBits(llvm::Value* elem_bits, 
     llvm::BasicBlock* const_small_exit = ctx_.builder().GetInsertBlock();
 
     ctx_.builder().SetInsertPoint(check_large);
-    llvm::Value* exponent_mask = llvm::ConstantInt::get(ctx_.int64Type(), 0x7FF0000000000000ULL);
-    llvm::Value* exponent_bits = ctx_.builder().CreateAnd(elem_bits, exponent_mask);
-    llvm::Value* has_exponent = ctx_.builder().CreateICmpNE(exponent_bits,
-        llvm::ConstantInt::get(ctx_.int64Type(), 0));
-    llvm::Value* no_exponent = ctx_.builder().CreateNot(has_exponent);
-    llvm::Value* non_zero = ctx_.builder().CreateICmpNE(elem_bits,
-        llvm::ConstantInt::get(ctx_.int64Type(), 0));
-    llvm::Value* below_pointer_ceiling = ctx_.builder().CreateICmpULT(elem_bits,
-        llvm::ConstantInt::get(ctx_.int64Type(), 0x0001000000000000ULL));
-    llvm::Value* pointer_like = ctx_.builder().CreateAnd(no_exponent,
-        ctx_.builder().CreateAnd(non_zero, below_pointer_ceiling));
-    ctx_.builder().CreateCondBr(pointer_like, existing_node, const_double);
+    /* A raw IEEE-754 bit pattern is allowed to overlap the address range of
+     * tape nodes (subnormals are the sharp case).  The old exponent/range
+     * heuristic sent a genuine subnormal through existing_node and silently
+     * lost the surrounding reverse graph.  Ask the residency-first probe,
+     * which validates the candidate before reading its node tag. */
+    llvm::Value* is_node = autodiff_->emitAdNodeProbe(elem_bits, /*any type=*/-1);
+    ctx_.builder().CreateCondBr(is_node, existing_node, const_double);
 
     ctx_.builder().SetInsertPoint(const_double);
     llvm::Value* double_value = ctx_.builder().CreateBitCast(elem_bits, ctx_.doubleType());
@@ -398,23 +393,352 @@ llvm::Value* TensorCodegen::matmulSIMD(llvm::Value* ptr_a, llvm::Value* ptr_b,
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** Emit the dense elementwise lowering required by ADR-0002 §3.1.
+ *
+ * The numeric implementation remains the existing SIMD/broadcast path.  This
+ * wrapper only changes the AD representation: it exposes an AD node's dense
+ * buffer through a temporary tensor view, normalises scalarised inputs into a
+ * TENSOR_PACK node, computes the same numeric result, and records one dense
+ * node for the operation. */
+llvm::Value* TensorCodegen::emitDenseTensorArithmetic(
+    llvm::Value* arg1, llvm::Value* arg2, const std::string& operation)
+{
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+
+    struct DenseInput {
+        llvm::Value* tensor;
+        llvm::Value* node;
+    };
+
+    auto normalise = [&](llvm::Value* value, const char* name) -> DenseInput {
+        llvm::BasicBlock* callable = llvm::BasicBlock::Create(
+            ctx_.context(), std::string(name) + "_callable", fn);
+        llvm::BasicBlock* ad_block = llvm::BasicBlock::Create(
+            ctx_.context(), std::string(name) + "_ad", fn);
+        llvm::BasicBlock* plain = llvm::BasicBlock::Create(
+            ctx_.context(), std::string(name) + "_plain", fn);
+        llvm::BasicBlock* join = llvm::BasicBlock::Create(
+            ctx_.context(), std::string(name) + "_join", fn);
+
+        llvm::Value* base_type = tagged_.getBaseType(tagged_.getType(value));
+        llvm::Value* is_callable = b.CreateICmpEQ(base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+        b.CreateCondBr(is_callable, callable, plain);
+
+        b.SetInsertPoint(callable);
+        llvm::Value* is_ad = tagged_.checkCallableSubtype(
+            value, CALLABLE_SUBTYPE_AD_NODE);
+        b.CreateCondBr(is_ad, ad_block, plain);
+
+        b.SetInsertPoint(ad_block);
+        llvm::Value* node = b.CreateIntToPtr(
+            tagged_.unpackInt64(value), ctx_.ptrType());
+        llvm::Value* elems = b.CreateLoad(ctx_.ptrType(),
+            b.CreateStructGEP(ctx_.adNodeType(), node,
+                              TypeSystem::AD_NODE_TENSOR_VALUE_IDX));
+        llvm::Value* dims = b.CreateLoad(ctx_.ptrType(),
+            b.CreateStructGEP(ctx_.adNodeType(), node,
+                              TypeSystem::AD_NODE_SHAPE_IDX));
+        llvm::Value* ndim = b.CreateLoad(ctx_.int64Type(),
+            b.CreateStructGEP(ctx_.adNodeType(), node,
+                              TypeSystem::AD_NODE_NDIM_IDX));
+        llvm::FunctionCallee total_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_ad_node_total_elements",
+            llvm::FunctionType::get(ctx_.int64Type(), {ctx_.ptrType()}, false));
+        llvm::Value* total = b.CreateCall(total_fn, {node},
+                                          std::string(name) + "_total");
+        llvm::Value* arena = b.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* view = b.CreateCall(mem_.getArenaAllocateTensorWithHeader(),
+                                         {arena}, std::string(name) + "_view");
+        b.CreateStore(dims, b.CreateStructGEP(tensor_type, view, 0));
+        b.CreateStore(ndim, b.CreateStructGEP(tensor_type, view, 1));
+        b.CreateStore(elems, b.CreateStructGEP(tensor_type, view, 2));
+        b.CreateStore(total, b.CreateStructGEP(tensor_type, view, 3));
+        b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0),
+                      b.CreateStructGEP(tensor_type, view, 4));
+        llvm::BasicBlock* ad_exit = b.GetInsertBlock();
+        b.CreateBr(join);
+
+        b.SetInsertPoint(plain);
+        llvm::Value* plain_tensor = unpackTensorOperandChecked(
+            value, (std::string("tensor-") + operation).c_str());
+        llvm::BasicBlock* plain_exit = b.GetInsertBlock();
+        b.CreateBr(join);
+
+        b.SetInsertPoint(join);
+        llvm::PHINode* tensor = b.CreatePHI(ctx_.ptrType(), 2,
+                                            std::string(name) + "_tensor");
+        tensor->addIncoming(view, ad_exit);
+        tensor->addIncoming(plain_tensor, plain_exit);
+        llvm::PHINode* parent = b.CreatePHI(ctx_.ptrType(), 2,
+                                            std::string(name) + "_parent");
+        parent->addIncoming(node, ad_exit);
+        parent->addIncoming(null_ptr, plain_exit);
+        return {tensor, parent};
+    };
+
+    DenseInput a = normalise(arg1, "dense_arith_a");
+    DenseInput c = normalise(arg2, "dense_arith_b");
+
+    auto load_field = [&](llvm::Value* tensor, unsigned index) {
+        return b.CreateLoad(ctx_.ptrType(),
+            b.CreateStructGEP(tensor_type, tensor, index));
+    };
+    llvm::Value* a_elems = load_field(a.tensor, TypeSystem::TENSOR_ELEMENTS_IDX);
+    llvm::Value* c_elems = load_field(c.tensor, TypeSystem::TENSOR_ELEMENTS_IDX);
+    llvm::Value* a_total = b.CreateLoad(ctx_.int64Type(),
+        b.CreateStructGEP(tensor_type, a.tensor, TypeSystem::TENSOR_TOTAL_ELEMENTS_IDX));
+    llvm::Value* c_total = b.CreateLoad(ctx_.int64Type(),
+        b.CreateStructGEP(tensor_type, c.tensor, TypeSystem::TENSOR_TOTAL_ELEMENTS_IDX));
+    llvm::Value* a_dims = load_field(a.tensor, TypeSystem::TENSOR_DIMENSIONS_IDX);
+    llvm::Value* c_dims = load_field(c.tensor, TypeSystem::TENSOR_DIMENSIONS_IDX);
+    llvm::Value* a_ndim = b.CreateLoad(ctx_.int64Type(),
+        b.CreateStructGEP(tensor_type, a.tensor, TypeSystem::TENSOR_NUM_DIMS_IDX));
+    llvm::Value* c_ndim = b.CreateLoad(ctx_.int64Type(),
+        b.CreateStructGEP(tensor_type, c.tensor, TypeSystem::TENSOR_NUM_DIMS_IDX));
+
+    llvm::Value* a_dense = nullptr;
+    llvm::Value* c_dense = nullptr;
+    llvm::Value* a_parent = autodiff_->emitDenseTensorOperand(
+        a.node, a_elems, a_total, a_dims, a_ndim, &a_dense, "dense_arith_a_operand");
+    llvm::Value* c_parent = autodiff_->emitDenseTensorOperand(
+        c.node, c_elems, c_total, c_dims, c_ndim, &c_dense, "dense_arith_b_operand");
+    if (!a_parent || !c_parent || !a_dense || !c_dense) return tagged_.packNull();
+
+    // Build numeric-only tensor views. The arithmetic kernel receives these
+    // explicitly, so its single numeric accessor cannot fall back to the
+    // original tensor slots, which may contain scalar AD-node addresses.
+    auto numeric_view = [&](llvm::Value* source, llvm::Value* dense,
+                            const std::string& name) {
+        llvm::Value* view = b.CreateAlloca(tensor_type, nullptr, name + "_view");
+        for (unsigned i = 0; i < 5; ++i) {
+            llvm::Value* field = b.CreateStructGEP(tensor_type, source, i);
+            llvm::Type* field_type = (i == TypeSystem::TENSOR_DIMENSIONS_IDX ||
+                                      i == TypeSystem::TENSOR_ELEMENTS_IDX)
+                ? static_cast<llvm::Type*>(ctx_.ptrType())
+                : static_cast<llvm::Type*>(ctx_.int64Type());
+            llvm::Value* value = b.CreateLoad(
+                field_type, field);
+            if (i == TypeSystem::TENSOR_ELEMENTS_IDX) value = dense;
+            b.CreateStore(value, b.CreateStructGEP(tensor_type, view, i));
+        }
+        return view;
+    };
+    llvm::Value* a_numeric_view = numeric_view(a.tensor, a_dense, "dense_arith_a_numeric");
+    llvm::Value* c_numeric_view = numeric_view(c.tensor, c_dense, "dense_arith_b_numeric");
+
+    /* rawTensorArithmeticSIMD owns the established shape/broadcast rules and
+     * numeric kernel.  numeric_only prevents it from emitting its legacy
+     * scalar AD loop while this dense wrapper is active. */
+    llvm::Value* a_tagged = tagged_.packHeapPtr(a.tensor);
+    llvm::Value* c_tagged = tagged_.packHeapPtr(c.tensor);
+    llvm::Value* numeric_result = rawTensorArithmeticSIMD(
+        a_tagged, c_tagged, operation, /*numeric_only=*/true,
+        a_numeric_view, c_numeric_view);
+    llvm::Value* result_tensor = b.CreateIntToPtr(
+        tagged_.unpackInt64(numeric_result), ctx_.ptrType());
+    llvm::Value* result_elems = load_field(
+        result_tensor, TypeSystem::TENSOR_ELEMENTS_IDX);
+    llvm::Value* result_dims = load_field(
+        result_tensor, TypeSystem::TENSOR_DIMENSIONS_IDX);
+    llvm::Value* result_ndim = b.CreateLoad(ctx_.int64Type(),
+        b.CreateStructGEP(tensor_type, result_tensor, TypeSystem::TENSOR_NUM_DIMS_IDX));
+
+    llvm::Value* saved = b.CreateCall(mem_.getArenaAllocate(), {
+        allocationArena(),
+        llvm::ConstantInt::get(ctx_.int64Type(), 2 * sizeof(void*))},
+        "dense_arith_saved");
+    b.CreateStore(a_dense, b.CreateGEP(ctx_.ptrType(), saved,
+                                       llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    b.CreateStore(c_dense, b.CreateGEP(ctx_.ptrType(), saved,
+                                       llvm::ConstantInt::get(ctx_.int64Type(), 1)));
+
+    uint32_t base_id = AD_NODE_TENSOR_ADD_DENSE;
+    if (operation == "sub") base_id = AD_NODE_TENSOR_SUB_DENSE;
+    else if (operation == "mul") base_id = AD_NODE_TENSOR_MUL_DENSE;
+    else if (operation == "div") base_id = AD_NODE_TENSOR_DIV_DENSE;
+    uint32_t broadcast_id = AD_NODE_TENSOR_BROADCAST_ADD_DENSE;
+    if (operation == "sub") broadcast_id = AD_NODE_TENSOR_BROADCAST_SUB_DENSE;
+    else if (operation == "mul") broadcast_id = AD_NODE_TENSOR_BROADCAST_MUL_DENSE;
+    else if (operation == "div") broadcast_id = AD_NODE_TENSOR_BROADCAST_DIV_DENSE;
+
+    llvm::FunctionCallee shapes_equal = ctx_.module().getOrInsertFunction(
+        "eshkol_shapes_equal",
+        llvm::FunctionType::get(ctx_.int64Type(),
+            {ctx_.ptrType(), ctx_.int64Type(), ctx_.ptrType(), ctx_.int64Type()}, false));
+    llvm::Value* same_shape = b.CreateICmpNE(
+        b.CreateCall(shapes_equal, {a_dims, a_ndim, c_dims, c_ndim}),
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+
+    llvm::Value* dense_node = autodiff_->recordADNodeTensor(
+        base_id, a_parent, c_parent, nullptr, nullptr,
+        result_elems, saved, llvm::ConstantInt::get(ctx_.int64Type(), 2),
+        result_dims, result_ndim);
+    if (!dense_node) return tagged_.packNull();
+    b.CreateStore(b.CreateSelect(same_shape,
+                                 llvm::ConstantInt::get(ctx_.int32Type(), base_id),
+                                 llvm::ConstantInt::get(ctx_.int32Type(), broadcast_id)),
+                  b.CreateStructGEP(ctx_.adNodeType(), dense_node,
+                                    TypeSystem::AD_NODE_TYPE_IDX));
+
+    /* A ONE-ELEMENT dense tensor node is also a scalar, and the scalar
+     * machinery reads `value` (field 1), which recordADNodeTensor leaves 0.0
+     * because tensor nodes normally carry their result in tensor_value.  The
+     * reverse direction of this bridge already exists --
+     * eshkol_tensor_backward_dispatch turns a one-element node's scalar
+     * gradient into its tensor gradient -- and without the forward half a
+     * 1x1 dense result handed to ordinary arithmetic contributes 0 to the
+     * primal, silently: (- a b) over two one-element dense results answered
+     * 0 instead of their difference.  tensor_value is a dense f64 buffer by
+     * construction on this path, so element 0 IS the scalar. */
+    {
+        llvm::FunctionCallee total_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_ad_node_total_elements",
+            llvm::FunctionType::get(ctx_.int64Type(), {ctx_.ptrType()}, false));
+        llvm::Value* dense_total = b.CreateCall(total_fn, {dense_node},
+                                                "dense_arith_total");
+        llvm::Function* scalar_fn = b.GetInsertBlock()->getParent();
+        llvm::BasicBlock* scalar_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "dense_arith_scalar_projection", scalar_fn);
+        llvm::BasicBlock* after_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "dense_arith_after_projection", scalar_fn);
+        b.CreateCondBr(b.CreateICmpEQ(dense_total,
+                                      llvm::ConstantInt::get(ctx_.int64Type(), 1)),
+                       scalar_bb, after_bb);
+        b.SetInsertPoint(scalar_bb);
+        b.CreateStore(b.CreateLoad(ctx_.doubleType(), result_elems),
+                      b.CreateStructGEP(ctx_.adNodeType(), dense_node, 1));
+        b.CreateBr(after_bb);
+        b.SetInsertPoint(after_bb);
+    }
+    return tagged_.packPtr(dense_node, ESHKOL_VALUE_CALLABLE);
+}
+
 // Main entry point: dispatches based on type (VECTOR_PTR vs TENSOR_PTR)
 llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Value* arg2, const std::string& operation) {
     if (!arg1 || !arg2) return tagged_.packNull();
 
-    // Ensure they're tagged values so we can check type at runtime
-    if (arg1->getType() != ctx_.taggedValueType()) {
-        arg1 = tagged_.packInt64(arg1, true);
-    }
-    if (arg2->getType() != ctx_.taggedValueType()) {
-        arg2 = tagged_.packInt64(arg2, true);
+    // Ensure they're tagged values so we can check type at runtime. A raw
+    // double keeps its DOUBLE tag so the type error names the operand's real
+    // type ("got double"), not a fabricated integer.
+    auto tag_raw = [this](llvm::Value* v) -> llvm::Value* {
+        if (v->getType() == ctx_.taggedValueType()) return v;
+        if (v->getType()->isFloatingPointTy()) return tagged_.packDouble(v);
+        return tagged_.packInt64(v, true);
+    };
+    arg1 = tag_raw(arg1);
+    arg2 = tag_raw(arg2);
+
+    // LE-18: CARRIER-FIRST DISPATCH — decide on BOTH operands, never on the
+    // left one alone.
+    //
+    // This branch used to test only `isVector(arg1)`. A Scheme vector in the
+    // LEFT position therefore sent the pair straight to schemeVectorArithmetic,
+    // which reads operand 2 as `[len:i64][tagged elems...]` without checking
+    // what it is. `(* (vector 1 2) 2)` reinterpreted the integer 2 as a vector
+    // pointer and loaded its first element at 2+8 — a fatal SIGSEGV at address
+    // 0xa (0x9 for `(+ (vector 1 2) 1)`), while the other operand order
+    // `(* 2 (vector 1 2))` was type-checked and raised cleanly. The same
+    // one-sided test also let a vector×tensor pair through: the tensor was read
+    // as a Scheme vector and the operation answered garbage with exit 0.
+    //
+    // Both operand positions are now classified before anything is
+    // dereferenced. The Scheme-vector kernel runs only when BOTH operands are
+    // Scheme vectors; every other combination goes to the tensor path, where
+    // unpackTensorOperandChecked (ESH-0069) validates each operand
+    // INDEPENDENTLY — coercing a numeric vector/list to a 1-D tensor and
+    // raising the same catchable "expected tensor, got <type>" type error for a
+    // scalar in either position. That matches the documented contract: binary
+    // elementwise arithmetic takes two tensors of matching shape
+    // (docs/reference/tensors/operations.md), and scalar broadcast is a
+    // separate operator (`tensor-scale`), not an overload of `*`.
+    llvm::Value* both_vectors = ctx_.builder().CreateAnd(
+        tagged_.isVector(arg1), tagged_.isVector(arg2), "both_scheme_vectors");
+
+    /* ADR-0002 Position A: select the dense representation only for tensor
+     * operands while AD is active.  The legacy body below remains the exact
+     * scalarising fallback (and the Scheme-vector path), so this branch is a
+     * codegen-time feature choice with a runtime AD-mode guard. */
+    llvm::Value* dense_result_slot = nullptr;
+    llvm::BasicBlock* dense_join = nullptr;
+    if (autodiff_ && denseTensorADNodesEnabled()) {
+        auto& b = ctx_.builder();
+        llvm::Function* fn = b.GetInsertBlock()->getParent();
+        /* LE-18: the gate consults BOTH carriers, as the kernel choice
+         * below now does.  A vector paired with a non-vector is no longer a
+         * Scheme-vector operation, so it belongs on the tensor side of this
+         * gate — the dense representation while AD is active, the checked
+         * legacy tensor path otherwise. */
+        llvm::Value* initial_is_vector = both_vectors;
+        dense_result_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr,
+                                           "dense_arith_result");
+        llvm::BasicBlock* normal_entry = llvm::BasicBlock::Create(
+            ctx_.context(), "dense_arith_normal", fn);
+        llvm::BasicBlock* ad_gate = llvm::BasicBlock::Create(
+            ctx_.context(), "dense_arith_ad_gate", fn);
+        llvm::BasicBlock* dense_path = llvm::BasicBlock::Create(
+            ctx_.context(), "dense_arith_path", fn);
+        dense_join = llvm::BasicBlock::Create(
+            ctx_.context(), "dense_arith_join", fn);
+        b.CreateCondBr(initial_is_vector, normal_entry, ad_gate);
+
+        b.SetInsertPoint(ad_gate);
+        llvm::Value* ad_active = b.CreateLoad(ctx_.int1Type(),
+                                               ctx_.adModeActive());
+        b.CreateCondBr(ad_active, dense_path, normal_entry);
+
+        b.SetInsertPoint(dense_path);
+        b.CreateStore(emitDenseTensorArithmetic(arg1, arg2, operation),
+                      dense_result_slot);
+        b.CreateBr(dense_join);
+
+        b.SetInsertPoint(normal_entry);
     }
 
-    // Check type of first argument at RUNTIME (using consolidated type check)
-    llvm::Value* is_vector = tagged_.isVector(arg1);
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+    // …and the Scheme-vector kernel additionally requires EQUAL LENGTHS, for
+    // the same reason: schemeVectorArithmetic loops to operand 1's length over
+    // both operands' element arrays, so a shorter second operand was read out
+    // of bounds — `(* (vector 1 2 3) (vector 4 5))` answered
+    // `#(4 10 4.4e-323)`, a silent wrong answer whose last element is whatever
+    // followed the vector in the arena — and a shorter FIRST operand silently
+    // truncated the result instead of reporting anything.
+    //
+    // Unequal lengths fall through to the tensor path rather than raising here,
+    // because element-wise arithmetic BROADCASTS (NumPy-style, via
+    // compute_broadcast_shape in runtime_tensor_math.cpp): `#(2.0)` against
+    // `#(1.0 2.0 3.0)` is a legitimate, shape-compatible pair. Routing the
+    // unequal case there means one authority decides what "compatible" means
+    // and the vector spelling of a value cannot answer differently from the
+    // tensor spelling of the same value — the invariant
+    // tests/vm_parity/corpus/46_tensor_literal_spellings.esk exists to hold.
+    // A genuinely incompatible pair is refused by that computation, loudly.
+    llvm::BasicBlock* len_check = llvm::BasicBlock::Create(ctx_.context(), "vec_len_check", current_func);
+    llvm::BasicBlock* kernel_choice = llvm::BasicBlock::Create(ctx_.context(), "vec_kernel_choice", current_func);
+    llvm::BasicBlock* entry_block = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateCondBr(both_vectors, len_check, kernel_choice);
+
+    // Both are vectors: their `[len:i64]` headers are safe to read here, which
+    // is exactly why this load may not be hoisted above the type test.
+    ctx_.builder().SetInsertPoint(len_check);
+    llvm::Value* len_a = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(arg1), ctx_.ptrType()), "vec_len_a");
+    llvm::Value* len_b = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(arg2), ctx_.ptrType()), "vec_len_b");
+    llvm::Value* same_len = ctx_.builder().CreateICmpEQ(len_a, len_b, "vec_same_len");
+    llvm::BasicBlock* len_check_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(kernel_choice);
+
+    ctx_.builder().SetInsertPoint(kernel_choice);
+    llvm::PHINode* is_vector = ctx_.builder().CreatePHI(ctx_.int1Type(), 2, "use_vector_kernel");
+    is_vector->addIncoming(llvm::ConstantInt::getFalse(ctx_.context()), entry_block);
+    is_vector->addIncoming(same_len, len_check_exit);
 
     // Branch based on type
-    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* vector_path = llvm::BasicBlock::Create(ctx_.context(), "int_arith_vec_path", current_func);
     llvm::BasicBlock* tensor_path = llvm::BasicBlock::Create(ctx_.context(), "int_arith_tensor_path", current_func);
     llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(ctx_.context(), "int_arith_merge", current_func);
@@ -489,6 +813,15 @@ llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Va
             llvm::Value* t2_ptr = ctx_.builder().CreateIntToPtr(t2_int, ctx_.ptrType());
             llvm::Value* xla_result = xla_->emitElementwise(t1_ptr, t2_ptr, xla_op);
             if (xla_result) {
+                // The runtime returns null when it declines the pair (shapes
+                // that cannot broadcast, or a rank it does not handle). That
+                // null used to be packed as a heap pointer. It now takes the
+                // CPU path, which broadcasts exactly or raises a type error.
+                llvm::BasicBlock* xla_ok = llvm::BasicBlock::Create(
+                    ctx_.context(), "arith_xla_ok", current_func);
+                ctx_.builder().CreateCondBr(
+                    ctx_.builder().CreateIsNull(xla_result), simd_block, xla_ok);
+                ctx_.builder().SetInsertPoint(xla_ok);
                 llvm::Value* xla_packed = tagged_.packHeapPtr(xla_result);
                 ctx_.builder().CreateStore(xla_packed, result_alloca);
                 ctx_.builder().CreateBr(merge_block);
@@ -520,7 +853,15 @@ llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Va
 
     // === MERGE BLOCK ===
     ctx_.builder().SetInsertPoint(merge_block);
-    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca);
+    llvm::Value* normal_result = ctx_.builder().CreateLoad(
+        ctx_.taggedValueType(), result_alloca);
+    if (dense_join) {
+        ctx_.builder().CreateStore(normal_result, dense_result_slot);
+        ctx_.builder().CreateBr(dense_join);
+        ctx_.builder().SetInsertPoint(dense_join);
+        return ctx_.builder().CreateLoad(ctx_.taggedValueType(), dense_result_slot);
+    }
+    return normal_result;
 }
 
 llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
@@ -912,8 +1253,7 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     // matmul writes double bit patterns here; AD-mode matmul writes AD node
     // pointers in the same int64 element slots.
     llvm::Value* c_total = ctx_.builder().CreateMul(a_rows, b_cols);
-    llvm::Value* dot_arena_ptr = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* dot_arena_ptr = ctx_.currentArena();
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
     llvm::Value* c_tensor_ptr = ctx_.builder().CreateCall(alloc_tensor_func, {dot_arena_ptr}, "dot_tensor");
     llvm::Function* arena_alloc = mem_.getArenaAllocate();
@@ -1176,21 +1516,23 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
     llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
     if (!tensor_val) return nullptr;
 
-    // Get function to apply — supports named arithmetic/math functions
-    eshkol_ast_t* func_ast = &op->call_op.variables[1];
-    if (func_ast->type != ESHKOL_VAR) {
-        eshkol_error("tensor-apply: function argument must be a named function (e.g., sin, cos, +)");
-        return nullptr;
-    }
-
-    std::string func_name = func_ast->variable.id;
+    // Evaluate the callable expression once, before entering the element loop.
+    // This is the same value consumed by ordinary closure application: builtin
+    // wrappers, named procedures, lambdas, lexical variables and call results.
+    llvm::Value* callable = codegenAST(&op->call_op.variables[1]);
+    if (!callable || !closure_call_callback_) return nullptr;
+    llvm::Value* is_proc = ctx_.builder().CreateOr(
+        tagged_.isCallable(callable), tagged_.isTaggedSubtype(callable, ESHKOL_VALUE_HEAP_PTR, HEAP_SUBTYPE_PARAMETER));
+    emitConditionGuard(is_proc, "tensor-apply: expected a callable", "apply_callable");
+    emitConditionGuard(ctx_.builder().CreateNot(
+        tagged_.isTaggedSubtype(callable, ESHKOL_VALUE_CALLABLE, CALLABLE_SUBTYPE_AD_NODE)),
+        "tensor-apply: expected a callable", "apply_procedure");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor-apply");
 
     // Create result tensor with same dimensions using arena
-    llvm::Value* apply_arena_ptr = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* apply_arena_ptr = ctx_.currentArena();
 
     // Allocate tensor struct with header
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
@@ -1218,13 +1560,16 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
 
     // Allocate result elements array using arena
     llvm::Value* elements_size = ctx_.builder().CreateMul(total_elements,
-                                            llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+                                            llvm::ConstantInt::get(ctx_.int64Type(), sizeof(eshkol_tagged_value_t)));
     llvm::Function* arena_alloc = mem_.getArenaAllocate();
     llvm::Value* result_elements_ptr = ctx_.builder().CreateCall(arena_alloc, {apply_arena_ptr, elements_size}, "apply_elems");
     llvm::Value* typed_result_elements_ptr = ctx_.builder().CreatePointerCast(result_elements_ptr, ctx_.ptrType());
 
     llvm::Value* result_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_result_tensor_ptr, 2);
     ctx_.builder().CreateStore(typed_result_elements_ptr, result_elements_field_ptr);
+
+    llvm::Value* has_dual = ctx_.builder().CreateAlloca(ctx_.int1Type(), nullptr, "apply_has_dual");
+    ctx_.builder().CreateStore(llvm::ConstantInt::getFalse(ctx_.context()), has_dual);
 
     // Get source elements
     llvm::Value* src_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 2);
@@ -1253,39 +1598,16 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
     // Loop body: apply function to current element
     ctx_.builder().SetInsertPoint(loop_body);
 
-    // Load source element at current index
-    llvm::Value* src_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_src_elements_ptr, current_index);
-    llvm::Value* src_elem = ctx_.builder().CreateLoad(ctx_.int64Type(), src_elem_ptr);
-
-    // Apply function based on function name
-    llvm::Value* src_double = ctx_.builder().CreateBitCast(src_elem, ctx_.doubleType());
-    llvm::Value* result_double = nullptr;
-    if (func_name == "double") {
-        result_double = ctx_.builder().CreateFMul(
-            src_double, llvm::ConstantFP::get(ctx_.doubleType(), 2.0));
-    } else if (func_name == "square") {
-        result_double = ctx_.builder().CreateFMul(src_double, src_double);
-    } else if (func_name == "increment") {
-        result_double = ctx_.builder().CreateFAdd(
-            src_double, llvm::ConstantFP::get(ctx_.doubleType(), 1.0));
-    } else if (func_name == "negate") {
-        result_double = ctx_.builder().CreateFNeg(src_double);
-    } else if (func_name == "abs") {
-        llvm::Value* is_negative = ctx_.builder().CreateFCmpOLT(
-            src_double, llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
-        result_double = ctx_.builder().CreateSelect(
-            is_negative, ctx_.builder().CreateFNeg(src_double), src_double);
-    } else if (func_name == "identity") {
-        result_double = src_double;
-    } else {
-        eshkol_warn("Unknown function in tensor-apply: %s, using identity", func_name.c_str());
-        result_double = src_double;
-    }
-    llvm::Value* result_elem = ctx_.builder().CreateBitCast(result_double, ctx_.int64Type());
-
-    // Store result element at current index
-    llvm::Value* result_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_result_elements_ptr, current_index);
-    ctx_.builder().CreateStore(result_elem, result_elem_ptr);
+    llvm::Value* element = loadTensorScalar(tensor_ptr, typed_src_elements_ptr, current_index);
+    llvm::Value* mapped = closure_call_callback_(callable, {element}, "tensor-apply", callback_context_);
+    if (!mapped) return nullptr;
+    llvm::Value* mapped_type = tagged_.getBaseType(tagged_.getType(mapped));
+    llvm::Value* mapped_dual = ctx_.builder().CreateICmpEQ(mapped_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    ctx_.builder().CreateStore(ctx_.builder().CreateOr(mapped_dual,
+        ctx_.builder().CreateLoad(ctx_.int1Type(), has_dual)), has_dual);
+    ctx_.builder().CreateStore(mapped, ctx_.builder().CreateGEP(
+        ctx_.taggedValueType(), typed_result_elements_ptr, current_index));
 
     // Increment loop counter
     llvm::Value* next_index = ctx_.builder().CreateAdd(current_index, llvm::ConstantInt::get(ctx_.int64Type(), 1));
@@ -1296,6 +1618,32 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
 
     // Loop exit: continue with rest of function
     ctx_.builder().SetInsertPoint(loop_exit);
+
+    // Keep dual jets tagged. Otherwise compact the staged tagged scalars to
+    // the standard tensor slot ABI (f64 bits or reverse-mode AD node pointer).
+    llvm::BasicBlock* compact_cond = llvm::BasicBlock::Create(ctx_.context(), "apply_compact_cond", current_func);
+    llvm::BasicBlock* compact_body = llvm::BasicBlock::Create(ctx_.context(), "apply_compact_body", current_func);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "apply_done", current_func);
+    llvm::Value* dual_output = ctx_.builder().CreateLoad(ctx_.int1Type(), has_dual);
+    ctx_.builder().CreateStore(ctx_.builder().CreateSelect(dual_output,
+        llvm::ConstantInt::get(ctx_.int64Type(), TENSOR_DTYPE_DUAL),
+        llvm::ConstantInt::get(ctx_.int64Type(), 0)), result_dtype_field_ptr);
+    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), loop_counter);
+    ctx_.builder().CreateCondBr(dual_output, done, compact_cond);
+    ctx_.builder().SetInsertPoint(compact_cond);
+    llvm::Value* compact_index = ctx_.builder().CreateLoad(ctx_.int64Type(), loop_counter);
+    ctx_.builder().CreateCondBr(ctx_.builder().CreateICmpULT(compact_index, total_elements), compact_body, done);
+    ctx_.builder().SetInsertPoint(compact_body);
+    llvm::Value* scalar = ctx_.builder().CreateLoad(ctx_.taggedValueType(),
+        ctx_.builder().CreateGEP(ctx_.taggedValueType(), typed_result_elements_ptr, compact_index));
+    llvm::Value* is_node = tagged_.isTaggedSubtype(scalar, ESHKOL_VALUE_CALLABLE, CALLABLE_SUBTYPE_AD_NODE);
+    llvm::Value* bits = ctx_.builder().CreateSelect(is_node, tagged_.unpackInt64(scalar),
+        ctx_.builder().CreateBitCast(taggedNumericToDouble(ctx_, tagged_, scalar), ctx_.int64Type()));
+    ctx_.builder().CreateStore(bits, ctx_.builder().CreateGEP(ctx_.int64Type(), typed_result_elements_ptr, compact_index));
+    ctx_.builder().CreateStore(ctx_.builder().CreateAdd(compact_index,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1)), loop_counter);
+    ctx_.builder().CreateBr(compact_cond);
+    ctx_.builder().SetInsertPoint(done);
 
     return tagged_.packHeapPtr(typed_result_tensor_ptr);
 }
@@ -1343,7 +1691,7 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
     llvm::BasicBlock* svec_loop_exit = llvm::BasicBlock::Create(ctx_.context(), "svec_reduce_exit", current_func);
 
     // Initialize with initial_value as double
-    llvm::Value* svec_initial = tagged_.unpackDouble(initial_tagged);
+    llvm::Value* svec_initial = taggedNumericToDouble(ctx_, tagged_, initial_tagged);
     llvm::Value* svec_acc = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "svec_acc");
     llvm::Value* svec_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "svec_i");
     ctx_.builder().CreateStore(svec_initial, svec_acc);
@@ -1408,7 +1756,7 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
     llvm::BasicBlock* tensor_loop_body = llvm::BasicBlock::Create(ctx_.context(), "tensor_reduce_body", current_func);
     llvm::BasicBlock* tensor_loop_exit = llvm::BasicBlock::Create(ctx_.context(), "tensor_reduce_exit", current_func);
 
-    llvm::Value* tensor_initial = tagged_.unpackDouble(initial_tagged);
+    llvm::Value* tensor_initial = taggedNumericToDouble(ctx_, tagged_, initial_tagged);
     llvm::Value* tensor_acc = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "tensor_acc");
     llvm::Value* tensor_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "tensor_i");
     ctx_.builder().CreateStore(tensor_initial, tensor_acc);
@@ -1580,7 +1928,7 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
     axis_val = checkReduceAxis(axis_val, src_num_dims, "tensor-reduce");
 
     // Load arena
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Declare eshkol_xla_reduce runtime function
     auto* ptrTy = ctx_.ptrType();
@@ -1640,7 +1988,7 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
         builder.CreateCondBr(in_ad_mode, ad_block, numeric_block);
 
         builder.SetInsertPoint(ad_block);
-        llvm::Value* arena_ptr = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* arena_ptr = ctx_.currentArena();
         llvm::Function* arena_alloc = mem_.getArenaAllocate();
         llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
         llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena_ptr}, "axis_reduce_ad_tensor");
@@ -1814,7 +2162,7 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
 
         builder.SetInsertPoint(numeric_block);
 
-        llvm::Value* numeric_arena_ptr = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* numeric_arena_ptr = ctx_.currentArena();
         auto* ptrTy = ctx_.ptrType();
         auto* i64Ty = ctx_.int64Type();
         llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,
@@ -1836,7 +2184,7 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
     }
 
     // Load arena and declare runtime
-    llvm::Value* arena_ptr = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     auto* ptrTy = ctx_.ptrType();
     auto* i64Ty = ctx_.int64Type();
     llvm::FunctionType* fn_type = llvm::FunctionType::get(ptrTy,
@@ -1849,6 +2197,142 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
         "axis_reduce_result");
 
     return tagged_.packHeapPtr(result);
+}
+
+llvm::Value* TensorCodegen::emitDenseADReduce(
+    llvm::Value* src_val, int64_t reduction_op,
+    llvm::BasicBlock* merge_block, llvm::BasicBlock** out_exit,
+    const char* name)
+{
+    if (!autodiff_ || !denseTensorADNodesEnabled() || !out_exit) return nullptr;
+    *out_exit = nullptr;
+
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    std::string pfx(name);
+
+    llvm::BasicBlock* dn_callable = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_callable", fn);
+    llvm::BasicBlock* dn_probe = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_probe", fn);
+    llvm::BasicBlock* dn_red   = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_reduce", fn);
+    llvm::BasicBlock* dn_not   = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_not", fn);
+
+    // The subtype lives in the object HEADER, so it may only be read once the
+    // value is known to be CALLABLE: an int or a double operand would be
+    // unpacked as an address and the header load would fault on it. Hence
+    // control flow rather than an `and` of two eagerly evaluated conditions --
+    // the same discipline TaggedValueCodegen::isClosure follows, for the same
+    // reason.
+    llvm::Value* base_ty = tagged_.getBaseType(tagged_.getType(src_val));
+    llvm::Value* is_callable = b.CreateICmpEQ(base_ty,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    b.CreateCondBr(is_callable, dn_callable, dn_not);
+
+    b.SetInsertPoint(dn_callable);
+    llvm::Value* is_ad = tagged_.checkCallableSubtype(src_val, CALLABLE_SUBTYPE_AD_NODE);
+    b.CreateCondBr(is_ad, dn_probe, dn_not);
+
+    // A SCALAR AD node reaching a whole-tensor reduction is a type error, not a
+    // dense tensor; let it fall through to the checked unpack that says so.
+    b.SetInsertPoint(dn_probe);
+    llvm::StructType* ad_ty = ctx_.adNodeType();
+    llvm::Value* dn_node = b.CreateIntToPtr(tagged_.unpackInt64(src_val), ctx_.ptrType());
+    llvm::Value* dn_elems = b.CreateLoad(ctx_.ptrType(),
+        b.CreateStructGEP(ad_ty, dn_node, 6));
+    b.CreateCondBr(
+        b.CreateICmpNE(dn_elems, llvm::ConstantPointerNull::get(ctx_.ptrType())),
+        dn_red, dn_not);
+
+    b.SetInsertPoint(dn_red);
+    llvm::FunctionCallee total_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_node_total_elements",
+        llvm::FunctionType::get(ctx_.int64Type(), {ctx_.ptrType()}, false));
+    llvm::Value* dn_total = b.CreateCall(total_fn, {dn_node}, pfx + "_dense_total");
+
+    llvm::Value* dn_acc = b.CreateAlloca(ctx_.doubleType(), nullptr, pfx + "_dense_acc");
+    llvm::Value* dn_i = b.CreateAlloca(ctx_.int64Type(), nullptr, pfx + "_dense_i");
+    llvm::Value* initial = nullptr;
+    if (reduction_op == 2) {
+        initial = b.CreateLoad(ctx_.doubleType(), b.CreateGEP(ctx_.doubleType(), dn_elems,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    } else {
+        initial = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    }
+    b.CreateStore(initial, dn_acc);
+    b.CreateStore(reduction_op == 2
+        ? llvm::ConstantInt::get(ctx_.int64Type(), 1)
+        : llvm::ConstantInt::get(ctx_.int64Type(), 0), dn_i);
+    llvm::BasicBlock* dn_cond = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_cond", fn);
+    llvm::BasicBlock* dn_body = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_body", fn);
+    llvm::BasicBlock* dn_done = llvm::BasicBlock::Create(ctx_.context(), pfx + "_dense_done", fn);
+    b.CreateBr(dn_cond);
+
+    b.SetInsertPoint(dn_cond);
+    llvm::Value* dn_iv = b.CreateLoad(ctx_.int64Type(), dn_i);
+    b.CreateCondBr(b.CreateICmpULT(dn_iv, dn_total), dn_body, dn_done);
+
+    b.SetInsertPoint(dn_body);
+    llvm::Value* dn_e = b.CreateLoad(ctx_.doubleType(),
+        b.CreateGEP(ctx_.doubleType(), dn_elems, dn_iv));
+    llvm::Value* old = b.CreateLoad(ctx_.doubleType(), dn_acc);
+    llvm::Value* next = reduction_op == 2
+        ? b.CreateSelect(b.CreateFCmpOGE(dn_e, old), dn_e, old)
+        : b.CreateFAdd(old, dn_e);
+    b.CreateStore(next, dn_acc);
+    b.CreateStore(b.CreateAdd(dn_iv, llvm::ConstantInt::get(ctx_.int64Type(), 1)), dn_i);
+    b.CreateBr(dn_cond);
+
+    b.SetInsertPoint(dn_done);
+    llvm::Value* dn_val = b.CreateLoad(ctx_.doubleType(), dn_acc);
+    if (reduction_op == 1) {
+        // A zero-element tensor cannot be averaged; guard the divide rather
+        // than publishing a NaN into the tape.
+        llvm::Value* n_fp = b.CreateSIToFP(
+            b.CreateSelect(b.CreateICmpSGT(dn_total, llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+                           dn_total, llvm::ConstantInt::get(ctx_.int64Type(), 1)),
+            ctx_.doubleType());
+        dn_val = b.CreateFDiv(dn_val, n_fp);
+    }
+
+    // The reduction's own storage: a one-element f64 buffer (so the reverse
+    // pass recognises a tensor node) plus the shape {1} that says so.
+    llvm::Value* dn_arena = allocationArena();
+    llvm::Function* dn_alloc = mem_.getArenaAllocate();
+    llvm::Value* dn_buf = b.CreateCall(dn_alloc,
+        {dn_arena, llvm::ConstantInt::get(ctx_.int64Type(), 8)}, pfx + "_dense_buf");
+    b.CreateStore(dn_val, dn_buf);
+    llvm::Value* dn_shape = b.CreateCall(dn_alloc,
+        {dn_arena, llvm::ConstantInt::get(ctx_.int64Type(), 8)}, pfx + "_dense_shape");
+    b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), dn_shape);
+
+    llvm::Value* dn_out = autodiff_->recordADNodeTensor(
+        static_cast<uint32_t>(reduction_op == 2 ? AD_NODE_TENSOR_MAX_DENSE :
+                              (reduction_op == 1 ? AD_NODE_MEAN : AD_NODE_SUM)),
+        dn_node, nullptr, nullptr, nullptr,
+        dn_buf,
+        nullptr, llvm::ConstantInt::get(ctx_.int64Type(), 0),
+        dn_shape, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    if (!dn_out) {
+        eshkol_error("%s: failed to record the dense tensor AD node", name);
+        return nullptr;
+    }
+
+    // params[0] is the INPUT element count -- what eshkol_backward_sum /
+    // eshkol_backward_mean broadcast the scalar gradient over.
+    llvm::ArrayType* dn_params_ty = llvm::ArrayType::get(ctx_.int64Type(), 6);
+    llvm::Value* dn_params = ctx_.builder().CreateStructGEP(ad_ty, dn_out, 12);
+    ctx_.builder().CreateStore(dn_total,
+        ctx_.builder().CreateConstGEP2_32(dn_params_ty, dn_params, 0, 0));
+    // The scalar `value` field, so ordinary AD arithmetic downstream reads the
+    // number rather than the 0.0 a tensor node is initialised with.
+    ctx_.builder().CreateStore(dn_val,
+        ctx_.builder().CreateStructGEP(ad_ty, dn_out, 1));
+
+    llvm::Value* result = tagged_.packPtr(dn_out, ESHKOL_VALUE_CALLABLE);
+    *out_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge_block);
+
+    ctx_.builder().SetInsertPoint(dn_not);
+    return result;
 }
 
 llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
@@ -1877,6 +2361,13 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
     llvm::BasicBlock* scheme_vec_block = llvm::BasicBlock::Create(ctx_.context(), "sum_scheme_vec", current_func);
     llvm::BasicBlock* tensor_block = llvm::BasicBlock::Create(ctx_.context(), "sum_tensor", current_func);
     llvm::BasicBlock* sum_merge = llvm::BasicBlock::Create(ctx_.context(), "sum_merge", current_func);
+
+    // ADR-0002 Position A: an operand that is a dense tensor AD-node handle is
+    // reduced densely, in ONE tape node. Leaves the builder on the not-dense
+    // branch, so the ordinary lowering below is unchanged.
+    llvm::BasicBlock* tsum_dense_exit = nullptr;
+    llvm::Value* tsum_dense_result =
+        emitDenseADReduce(src_val, /*reduction_op=*/0, sum_merge, &tsum_dense_exit, "tensor-sum");
 
     ctx_.builder().CreateCondBr(is_scheme_vector, scheme_vec_block, tensor_block);
 
@@ -2183,6 +2674,10 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
     if (dsum_exit_block && dsum_result) {
         result_phi->addIncoming(dsum_result, dsum_exit_block);
     }
+    // ADR-0002 Position A: dense tensor AD-node operand (see above).
+    if (tsum_dense_exit && tsum_dense_result) {
+        result_phi->addIncoming(tsum_dense_result, tsum_dense_exit);
+    }
 
     return result_phi;
 }
@@ -2213,6 +2708,12 @@ llvm::Value* TensorCodegen::tensorMean(const eshkol_operations_t* op) {
     llvm::BasicBlock* scheme_vec_block = llvm::BasicBlock::Create(ctx_.context(), "mean_scheme_vec", current_func);
     llvm::BasicBlock* tensor_block = llvm::BasicBlock::Create(ctx_.context(), "mean_tensor", current_func);
     llvm::BasicBlock* mean_merge = llvm::BasicBlock::Create(ctx_.context(), "mean_merge", current_func);
+
+    // ADR-0002 Position A: see tensorSum. One AD_NODE_MEAN node for the whole
+    // reduction when the operand is a dense tensor AD-node handle.
+    llvm::BasicBlock* tmean_dense_exit = nullptr;
+    llvm::Value* tmean_dense_result =
+        emitDenseADReduce(src_val, /*reduction_op=*/1, mean_merge, &tmean_dense_exit, "tensor-mean");
 
     ctx_.builder().CreateCondBr(is_scheme_vector, scheme_vec_block, tensor_block);
 
@@ -2466,6 +2967,10 @@ llvm::Value* TensorCodegen::tensorMean(const eshkol_operations_t* op) {
     result_phi->addIncoming(tensor_tagged_result, tensor_exit_block);
     if (ad_mean_exit_block && ad_mean_tagged_result) {
         result_phi->addIncoming(ad_mean_tagged_result, ad_mean_exit_block);
+    }
+    // ADR-0002 Position A: dense tensor AD-node operand (see above).
+    if (tmean_dense_exit && tmean_dense_result) {
+        result_phi->addIncoming(tmean_dense_result, tmean_dense_exit);
     }
 
     return result_phi;

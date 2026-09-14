@@ -1,0 +1,65 @@
+id: SW-79
+bucket: SILENT-WRONG
+status: open
+title: the metric family is discontinuous at K = 0 -- the ball branch tends to 2|x-y| as K -> 0- while
+  the K = 0 branch returns |x-y| -- and the AD bridge reads the same curvature argument as a BALL PARAMETER,
+  so VM and tape disagree for every K >= 0
+waiver:
+  owner: tsotchke
+  reason: 'Both halves are CONVENTION decisions, not transcription errors, and they have to be ruled on
+    together because they change published numbers. The VM side is deliberately parked in one place so
+    the ruling is a one-line change: inc/eshkol/backend/riemannian_core.h defines the model in four named
+    places (ESHKOL_RM_LAMBDA0, ESHKOL_RM_FLAT_LAMBDA, eshkol_rm_ball_param, eshkol_rm_lambda) and nothing
+    else open-codes it. The bridge half is owned by the branch fix/ad-bridge-boundary-refusal. Meanwhile
+    the three curvature-derivative ops REFUSE at K = 0 rather than returning a one-sided derivative as
+    if it were two-sided, so the discontinuity cannot be laundered into a plausible number, and docs/reference/stdlib/geometry.md
+    states it in its own section.'
+  expires: '2026-10-31'
+mechanism: 'TWO conventions that do not line up with each other or with the documentation.
+
+  (1) K -> 0. The ball chart''s conformal factor is lambda_x = LAMBDA0/(1 - B|x|^2) with LAMBDA0 = 2 and
+  B = c -- the convention of Ganea et al., Nickel-Kiela and geoopt, and the one every in-tree call site
+  passes. Because lambda_0 = 2 for EVERY c, including in the limit, the c -> 0 limit of the ball branch
+  is flat space with the metric 4<.,.>: distance 2|x-y| and Riemannian gradient g/4. The K = 0 branch
+  instead uses lambda = 1, the canonical Euclidean metric. Both are defensible; they are not both true
+  at once, and docs/reference/stdlib/geometry.md asserted all three of "sectional curvature K", "ball
+  of radius 1/sqrt(-K)" and "canonical Euclidean at K = 0, continuously", which no single coordinate family
+  satisfies.
+
+  (2) VM vs AD BRIDGE. lib/bridge/qllm_bridge.cpp''s producers take a BALL PARAMETER c > 0 and convert
+  with c = (curvature == 0) ? 1 : |curvature|. For K < 0 that is c = -K and the two agree exactly. For
+  K = 0 the bridge silently selects the c = 1 ball, and for K > 0 it selects a ball where the VM selects
+  a sphere. The page claimed "the VM engine and the AD tape agree on what these operations mean" without
+  qualification.'
+repro: "(1) (geodesic-distance (vec2 0.9 0.0) (vec2 -0.9 0.0) K) swept through\n    K = -1e-9, K = 0.\n\
+  (2) x = 0, y = 0.5, K = 0: geodesic-distance / hyperbolic-exp-map /\n    hyperbolic-log-map on the VM\
+  \ against ad_hyperbolic_distance /\n    ad_poincare_exp_map / ad_poincare_log_map on the tape."
+observed: "(1) 3.6000000012 at K = -1e-9 and 1.8 at K = 0: a factor-of-2 jump across\n    zero, with no\
+  \ diagnostic. riemannian-grad jumps by a factor of 4 at the\n    same point.\n(2) distance     VM 0.5\
+  \   bridge 2 artanh(0.5) = 1.098612289\n    exp_0(0.5)   VM 0.5   bridge tanh(0.5)     = 0.462117157\n\
+  \    log_0(0.5)   VM 0.5   bridge artanh(0.5)   = 0.549306144"
+correct: One convention, applied by both engines and stated once. Either ESHKOL_RM_FLAT_LAMBDA becomes
+  ESHKOL_RM_LAMBDA0 -- the K <= 0 family is then real-analytic in K, geodesic-distance at K = 0 becomes
+  2|x-y| and riemannian-grad becomes g/4 -- or ESHKOL_RM_LAMBDA0 becomes 1, re-charting the ball to radius
+  2/sqrt(c) so the flat limit is canonical, which moves every published hyperbolic constant. The bridge
+  must in either case branch on the SIGN of K and refuse K >= 0 on its Poincare-only producers.
+fixed_by: 'Not fixed. Parked, with the VM side centralized so the ruling is one line and the tests parameterised
+  on it: the regression defines `flat-lambda` and `lambda0` at the top of its K = 0 section, asserts the
+  shipped values through them, AND asserts the internal consistency flat-lambda |log_x(y)| = d(x,y) at
+  K = 0, which must hold under EITHER ruling and is what catches a K = 0 branch whose distance and gradient
+  disagree about the metric they are in. The K -> 0- limit is asserted directly, so the discontinuity
+  is a measured fact in the suite rather than an inference.'
+evidence: tests/vm/geometric_riemannian_surface_regression.esk, section "The K = 0 branch and the K ->
+  0 limit". docs/reference/stdlib/geometry.md, section "The K = 0 branch", states the question, both resolutions
+  and what each costs.
+caught_by:
+- adversarial-model-audit-gpt-5.6-sol
+missed_by:
+- run_vm_surface_tests.sh (pre-fix)
+- run_vm_parity.sh
+- icc-readiness
+notes: 'Recorded as a SILENT-WRONG rather than a design note because a caller annealing curvature toward
+  zero -- which is what the three curvature-adaptation ops exist to do -- crosses the discontinuity and
+  gets a factor-of-2 jump in the objective with nothing in the output to show it. The waiver is on the
+  RULING, not on the symptom: the derivative ops already refuse at K = 0 rather than reporting a number
+  there.'

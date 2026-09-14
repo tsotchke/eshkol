@@ -608,7 +608,14 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
+      # fetch-depth: 0 (rather than the default shallow depth 1) so the
+      # infrastructure-disclosure gate below can `git log`/`git diff`
+      # <PR base sha>..<PR head sha> directly -- on a pull_request event
+      # actions/checkout fetches the full ancestry of the merge commit it
+      # checks out, which already contains both endpoints.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - name: Install PyYAML
         shell: bash
         run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
@@ -631,6 +638,9 @@ jobs:
           python3 scripts/check_package_manifest.py --self-test
           python3 scripts/check_diagnostic_corpus.py --self-test
           python3 scripts/gate_exhaustive_dispatch.py --self-test
+          python3 scripts/run_compiler_assurance.py --self-test
+          python3 scripts/gate_compiler_architecture.py --self-test
+          python3 scripts/gate_public_api_linkage.py --self-test
           python3 scripts/check_surface_counts.py --self-test
           python3 scripts/check_self_verdicts.py --self-test
           python3 scripts/check_build_fingerprint.py --self-test
@@ -640,7 +650,11 @@ jobs:
           python3 scripts/check_engine_parity_threshold.py --self-test
           python3 scripts/check_ps1_encoding.py --self-test
           python3 scripts/check_vm_prelude_cache_builtins.py --selftest
+          python3 scripts/check_ns_proof_ledger.py --self-test
           bash scripts/test_run_all_tests_failure_attribution.sh
+          bash tests/perf/nested_expr_compile_time_test.sh --self-test
+
+           python3 scripts/check_disclosure.py --self-test
 
       # B5/N2 (2026-08-26 audit): every gate below this point deliberately
       # DROPS --no-trace. This job builds nothing (pure Python over
@@ -657,6 +671,26 @@ jobs:
       # a severity:high completion-oracle criterion); letting them write to
       # the default trace dir here means the staleness check that runs last
       # has real, freshly-minted evidence to grade instead of nothing.
+      - name: Compiler-wide operation routing and canonical callable dispatch
+        run: python3 scripts/gate_compiler_architecture.py
+
+      - name: Compiler gate mutation controls and measured noise
+        if: always()
+        run: |
+          python3 scripts/run_compiler_assurance.py
+          python3 scripts/run_compiler_assurance.py --verify
+
+      - name: Preserve compiler treatment corpus
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: compiler-gate-treatment-corpus
+          path: |
+            .icc/evidence/compiler-assurance/
+            .icc/runtime-traces/compiler-assurance.jsonl
+          include-hidden-files: true
+          if-no-files-found: error
+
       - name: No open, unwaived SILENT-WRONG flaw ships
         shell: bash
         run: python3 scripts/gate_no_silent_wrong.py
@@ -680,6 +714,10 @@ jobs:
       - name: Every completion-oracle CTest and script binding resolves
         shell: bash
         run: python3 scripts/check_oracle_bindings.py --no-trace
+
+      - name: Navier-Stokes proof ledger is consistent with CTest names and the mechanization doc
+        shell: bash
+        run: python3 scripts/check_ns_proof_ledger.py --no-trace
 
       - name: No oracle target can read ready on zero evidence (F19 / A13)
         shell: bash
@@ -770,6 +808,72 @@ jobs:
         shell: bash
         run: python3 scripts/check_ps1_encoding.py
 
+      # Build-free (reads headers, not compiled output), so it belongs here
+      # rather than only in a contributor-run `make api-docs` step. Four PRs
+      # in the v1.3.5 wave added public headers without regenerating
+      # docs/api/, leaving six headers with no generated page at all.
+      - name: Generated API docs (docs/api/) are up to date with tracked headers
+        shell: bash
+        run: python3 scripts/gen_api_docs.py --check
+
+      # 2026-08-28: a squash-merge commit body is assembled out of the PR's
+      # own branch commit messages, and nothing in review treats commit prose
+      # as a reviewable surface the way a diff hunk is. This gate scans PR
+      # text and the diff for private IPv4 literals, ssh key-file references,
+      # ProxyCommand/`tailscale nc` recipes, and MAC addresses (maintainer
+      # ruling 2026-08-28: internal machine/hostnames by themselves are
+      # public-safe in this repo and are not in scope). This step optionally
+      # writes a maintainer's own private DISCLOSURE_DENYLIST secret (specific
+      # known-sensitive tokens) to a runner-local file if one is configured,
+      # then scans the actual incoming commit range. Push/merge-group events
+      # still scan commit prose and added lines even without PR title/body.
+      - name: Write private disclosure denylist (optional; if the maintainer has configured one)
+        env:
+          DISCLOSURE_DENYLIST: ${{ secrets.DISCLOSURE_DENYLIST }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${DISCLOSURE_DENYLIST:-}" ]; then
+            printf '%s' "$DISCLOSURE_DENYLIST" > "$RUNNER_TEMP/disclosure-denylist.txt"
+            echo "ESHKOL_DISCLOSURE_DENYLIST=$RUNNER_TEMP/disclosure-denylist.txt" >> "$GITHUB_ENV"
+          else
+            echo "note: DISCLOSURE_DENYLIST repository secret is not set — this optional layer stays off and the gate runs its generic patterns only. Enable it any time with: gh secret set DISCLOSURE_DENYLIST < /path/to/local/denylist.txt"
+          fi
+
+      - name: No PR commit message, PR title/body, or added diff line discloses a private infrastructure identifier
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::disclosure-gate could not resolve the PR base/head commits in this checkout (fetch-depth:0 should guarantee this) — failing closed rather than skipping a security gate."
+            exit 1
+          fi
+          printf '%s' "$PR_TITLE" > "$RUNNER_TEMP/disclosure-pr-title.txt"
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/disclosure-pr-body.txt"
+          python3 scripts/check_disclosure.py \
+            --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --pr-title-file "$RUNNER_TEMP/disclosure-pr-title.txt" \
+            --pr-body-file "$RUNNER_TEMP/disclosure-pr-body.txt"
+
+      - name: Scan incoming commits when no PR text is present
+        if: github.event_name != 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$BASE_SHA"
+          git cat-file -e "${BASE_SHA}^{commit}"
+          git cat-file -e "${HEAD_SHA}^{commit}"
+          python3 scripts/check_disclosure.py --base "$BASE_SHA" --head "$HEAD_SHA"
+
       # Runs LAST so every gate above it has already deposited its own
       # fresh eshkol_smoke evidence into scripts/icc_traces/ (the default
       # --trace-dir). --require-trace-dir turns "the directory is empty" or
@@ -811,7 +915,21 @@ jobs:
     needs: changes
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    # This has to be larger than the run_vm_parity.sh step's own budget below,
+    # or that budget is unreachable and the step is killed by the job instead.
+    # At 30 it was: the job spends ~10 minutes building and ~1 minute on the
+    # preceding gates, so run_vm_parity.sh got ~19 of its 30 minutes and the
+    # job cancelled mid-corpus.
+    #
+    # Measured, whole job: 18m11s with a 107-file parity corpus; the corpus is
+    # now 148 files and each file costs ~1.9x what it did, because
+    # run_vm_parity.sh compiles every corpus program natively and each such
+    # compile links the whole stdlib object (5.0 s/file -> 9.5 s/file; same
+    # per-program factor the Windows test lanes measured, same cause, tracked
+    # as ledger entry DD-16). That puts run_vm_parity.sh at ~23 minutes inside
+    # its unchanged 30-minute step budget, and the job at ~35 minutes.
+    # 60 covers that with headroom for hosted-runner variance.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -875,7 +993,7 @@ jobs:
         run: bash scripts/run_ad_validated_bounds_gate.sh
 
       - name: run_vm_parity.sh (the audit's own control case for this whole finding)
-        timeout-minutes: 15
+        timeout-minutes: 30
         shell: bash
         env:
           BUILD_DIR: build
@@ -888,6 +1006,25 @@ jobs:
           # than let a compile-heavy file flake this job.
           VM_PARITY_TIMEOUT: '120'
         run: bash scripts/run_vm_parity.sh
+
+      # ESH-0101. run_vm_parity.sh above is a DIFFERENTIAL: it compares the
+      # engines to each other, so a clause form both backends get wrong the
+      # same way passes by agreement. This gate compares every engine to a
+      # hand-authored R7RS golden instead, on five axes (JIT, AOT -O0, AOT
+      # -O2, vm-src, vm-eskb) — which is how the `=>` receiver clause (SW-78)
+      # and the test-only `(test)` clause (SW-79) turned out to be wrong on
+      # BOTH substrates at once. It runs in this job because it needs exactly
+      # the three targets already built above and nothing more.
+      - name: run_guard_coverage.sh (ESH-0101 — R7RS guard on every engine, vs golden)
+        timeout-minutes: 20
+        shell: bash
+        env:
+          BUILD_DIR: build
+          # Same reasoning as VM_PARITY_TIMEOUT above: a hosted runner is
+          # slower than the dev machines these budgets were measured on, and
+          # this gate compiles each case five times.
+          GUARD_COVERAGE_TIMEOUT: '120'
+        run: bash scripts/run_guard_coverage.sh
 
       - name: Disk budget guard (after; fail if net growth exceeds 8GB)
         if: always()
@@ -1209,6 +1346,65 @@ jobs:
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────
+  # rosette-oracle: drives Rosette Wire's own public front-door/eshkol
+  # adapter (github.com/RichardHoekstra/rosette-wire, Apache-2.0) against a
+  # fresh eshkol-run build, so Eshkol's standing as an independently
+  # maintained Rosette Wire backend is continuously checked rather than
+  # something only verified by hand. This is pillar P7 (external oracle):
+  # the ground truth lives entirely in a project this repo does not own.
+  # Deliberately advisory (continue-on-error) — the same reasoning as
+  # quantum-macos above: this depends on a third-party project's own SBCL
+  # toolchain and grading, so it must never become a branch-protection
+  # required context.
+  # ─────────────────────────────────────────────────────────────────────
+  rosette-oracle:
+    name: rosette-oracle (advisory)
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install toolchain (Linux)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y cmake ninja-build sbcl \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
+            libreadline-dev pkg-config libssl-dev libncurses-dev \
+            libpcre2-dev libsqlite3-dev git python3
+
+      - name: Run the Rosette Wire external-oracle gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ESHKOL_LLVM_CONFIG_EXECUTABLE="/usr/bin/llvm-config-${LLVM_MAJOR}"
+          ./scripts/run_rosette_oracle.sh || true
+
+      - name: Emit the Rosette Wire receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/lib/rosette_receipt.py \
+            --trace scripts/icc_traces/rosette.jsonl \
+            --eshkol-commit "$(git describe --tags --always)" \
+            --out receipt.json || true
+
+      - name: Upload receipt.json
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rosette-receipt
+          path: receipt.json
+          if-no-files-found: warn
+
+  # ─────────────────────────────────────────────────────────────────────
   # bench-smoke: proves bench/run_public_benchmarks.sh still RUNS and
   # produces valid JSON — a harness-correctness check, explicitly NOT the
   # full timing suite (which is far too noisy on a shared hosted runner to
@@ -1516,6 +1712,13 @@ jobs:
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
             sanitizer_flags: '-DESHKOL_ENABLE_ASAN=ON -DESHKOL_ENABLE_UBSAN=ON'
+            # Bound this lane's build parallelism; see the Build step below
+            # for the measurements. `--parallel` with no count is NOT "one
+            # job per core" for Ninja — its default is cores + 2, so on a
+            # 4-core hosted runner it starts 6 concurrent compiles, and
+            # sanitizer-instrumented compiles of this repo's backend do not
+            # fit 16 GiB six at a time.
+            build_jobs: 2
             # This is the only lane that runs under sanitizers, so it must
             # exercise the code most likely to read or write out of bounds:
             # the tensor and autodiff paths, which do their own index and
@@ -1689,6 +1892,10 @@ jobs:
       - name: Build
         if: env.LANE_ACTIVE == 'true'
         shell: bash
+        env:
+          # Empty for every lane that does not set it, which leaves the
+          # generator's own default in place. See `build_jobs` in the matrix.
+          BUILD_JOBS: ${{ matrix.build_jobs }}
         run: |
           set -euxo pipefail
           if [[ "${{ matrix.sanitizer_flags }}" == *"ESHKOL_ENABLE_ASAN=ON"* ]]; then
@@ -1699,7 +1906,77 @@ jobs:
             export ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:allocator_may_return_null=1"
             export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
           fi
-          cmake --build "${{ matrix.build_dir }}" --parallel
+          # `--parallel` with no job count hands the decision to the native
+          # build tool, and for Ninja that default is cores + 2, not cores:
+          # on a 4-core hosted runner it starts 6 concurrent compiles
+          # (`ninja --help` there reports "[default=6 on this system]").
+          # That is fine for an ordinary Release compile and not fine under
+          # sanitizers, so the sanitizer lane sets BUILD_JOBS. Measured on a
+          # container pinned to the hosted runner's shape (4 CPUs, 16 GiB,
+          # 4 GiB swap) and toolchain (Ubuntu 22.04, gcc 11.4.0, LLVM 21,
+          # CMake 3.31.6), peak RSS of one ASan+UBSan compile at -g1:
+          # lib/backend/llvm_codegen.cpp 3.93 GiB, autodiff_codegen.cpp
+          # 1.88 GiB. Two at a time stays under 8 GiB and leaves the runner
+          # agent room; six would not. (At -g rather than -g1 the first of
+          # those needed 15.92 GiB and could not be built here at any
+          # parallelism at all — see the ASan block in CMakeLists.txt.)
+          cmake --build "${{ matrix.build_dir }}" --parallel ${BUILD_JOBS}
+
+      - name: Public compiler APIs link and execute
+        if: matrix.name == 'linux-x64-lite'
+        run: ctest --test-dir "${{ matrix.build_dir }}" --output-on-failure -R '^compiler_public_api_linkage$'
+
+      - name: Compiler callable capabilities execute
+        if: matrix.name == 'linux-x64-lite'
+        run: >-
+          python3 scripts/run_compiler_assurance.py --runtime-only
+          --binary "${{ matrix.build_dir }}/eshkol-run"
+          --output .icc/evidence/compiler-capabilities
+
+      - name: Preserve compiler capability executions
+        if: always() && matrix.name == 'linux-x64-lite'
+        uses: actions/upload-artifact@v6
+        with:
+          name: compiler-capability-executions
+          path: |
+            .icc/evidence/compiler-capabilities/
+            .icc/runtime-traces/compiler-capabilities.jsonl
+          include-hidden-files: true
+          if-no-files-found: error
+
+      - name: Parser and stdlib on an 8 MiB stack
+        if: matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite'
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build "${{ matrix.build_dir }}" --target parser-stack-test --parallel 2
+          ctest --test-dir "${{ matrix.build_dir }}" --output-on-failure \
+            -R '^(parser_explicit_stack|parser_stack_compile)$'
+
+      # ESH-0103: keep the LLVM codegen path's deeply nested-expression
+      # compile-time and peak-RSS curve approximately linear. This is a
+      # bounded 1k/4k/16k ladder over both native JIT and AOT; run it once on
+      # the representative Linux x64 lite lane because the codegen contract is
+      # platform-independent and the matrix already exercises the same binary
+      # on the other native lanes.
+      - name: ESH-0103 nested-expression compile-time/RSS gate
+        if: matrix.name == 'linux-x64-lite'
+        timeout-minutes: 30
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+        run: |
+          set -euxo pipefail
+          bash tests/perf/nested_expr_compile_time_test.sh "$BUILD_DIR/eshkol-run"
+
+      - name: Atomic checkpoint save contract
+        if: matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ctest --test-dir "${{ matrix.build_dir }}" --output-on-failure \
+            -R '^(model_io_test|atomic_checkpoint_file_test|model_io_production_archive_test|generated_artifact_validator_test|runtime_core_boundary_test|atomic_checkpoint_save_test|vm_prelude_cache_is_current)$'
 
       # Catches the failure mode where a new C runtime helper
       # (eshkol_intern_symbol_lookup, region_create, …) is added on the
@@ -1961,12 +2238,27 @@ jobs:
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ${{ matrix.runner }}
     # windows-arm64-lite alone (full build+test, LLVM SDK cache-hit so no
-    # extraction) has run ~51 minutes end to end; windows-x64-cuda adds the
-    # CUDA toolkit install and GPU build/test on top. 90 minutes leaves that
-    # real baseline comfortable headroom while still making the platform's
-    # unbounded 360-minute default (what let "Install LLVM SDK" run
-    # undetected for ~6h below) unreachable.
-    timeout-minutes: 90
+    # extraction) used to run ~51-58 minutes end to end; windows-x64-cuda adds
+    # the CUDA toolkit install and GPU build/test on top. 90 minutes left that
+    # baseline comfortable headroom.
+    #
+    # It no longer does. Every test in the Windows smoke suites is an
+    # independent AOT program that links the whole pre-built stdlib object, so
+    # per-test wall time tracks that object's size: at 5.4 MB the lite lane
+    # measured ~63-78 s per test and finished in ~58 minutes; at 8.4 MB it
+    # measures ~120-131 s per test and was still inside "Run Tests" when this
+    # 90-minute budget cancelled it, with the last test having reported at
+    # 89m38s. Letting the two heavy exception/SEH-table links (see the measured
+    # table in scripts/run_all_tests.ps1) run to completion instead of aborting
+    # at the per-test guard adds a further ~6 minutes, for ~97 minutes.
+    # 150 minutes covers that with headroom for hosted-runner variance while
+    # still making the platform's unbounded 360-minute default (what let
+    # "Install LLVM SDK" run undetected for ~6h below) unreachable.
+    #
+    # This budget is a symptom, not the fix: the per-test stdlib link cost is
+    # tracked as ledger entry DD-16, and closing it should bring this number
+    # back down rather than push it up again.
+    timeout-minutes: 150
     env:
       ESHKOL_FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.ci-cache/fetchcontent
       # Which lanes this run actually needs, decided by the `changes`
@@ -2461,6 +2753,12 @@ jobs:
         shell: bash
         env:
           BUILD_DIR: build
+          # Per-program wall-clock guard for the WASM side. The guard exists to
+          # stop a runaway program from wedging the lane, not to grade speed:
+          # the deepest corpus program (a million guarded tail calls) runs
+          # several times slower under WASM than on the native VM, and on a
+          # hosted runner it crosses the 60 s default.
+          WASM_DIFF_TIMEOUT: "240"
         run: |
           set -euxo pipefail
           emcc --version

@@ -96,6 +96,33 @@ size_t parse_size_or_default(const char* str, size_t fallback) {
     return eshkol_parse_size(str, &out) ? out : fallback;
 }
 
+/* SW-165: a malformed size in the environment is a configuration error, and
+ * falling back to the default in SILENCE meant `ESHKOL_MAX_HEAP=512MBB` ran
+ * with the default ceiling and said nothing — the operator believes a bound is
+ * in force that is not. Say so, naming the variable, the value and the accepted
+ * grammar, then fall back.
+ *
+ * Reporting rather than refusing is deliberate. It is what ESHKOL_STACK_SIZE
+ * already does (runtime_stack_hosted.cpp), and the three non-size limit
+ * variables in this family fall back on a bad value too; making four of the
+ * seven fatal would leave the family answering the same mistake three different
+ * ways. The operator's actual need — knowing the bound they set is not in
+ * force — is met by the diagnostic. */
+static size_t parse_size_or_report(const char* var, const char* str,
+                                   size_t fallback) {
+    size_t out = 0;
+    if (eshkol_parse_size(str, &out)) return out;
+    fflush(stdout);
+    fprintf(stderr,
+            "eshkol: %s=\"%s\" is not a valid size and was ignored; "
+            "using the default.\n"
+            "  Expected a byte count with an optional K/M/G (or KiB/MiB/GiB) "
+            "suffix, e.g. %s=512M.\n",
+            var, str, var);
+    fflush(stderr);
+    return fallback;
+}
+
 /** Parse @p str as an unsigned 64-bit decimal integer.
  *  @param str Candidate string (may be null).
  *  @param fallback Value returned if @p str is null, empty, negative,
@@ -187,7 +214,7 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     // ESHKOL_MAX_HEAP
     const char* max_heap = std::getenv("ESHKOL_MAX_HEAP");
     if (max_heap) {
-        limits.max_heap_bytes = parse_size_or_default(max_heap, limits.max_heap_bytes);
+        limits.max_heap_bytes = parse_size_or_report("ESHKOL_MAX_HEAP", max_heap, limits.max_heap_bytes);
         limits.heap_soft_limit_bytes = (limits.max_heap_bytes * ESHKOL_HEAP_SOFT_LIMIT_PERCENT) / 100;
         limits.active_limits |= ESHKOL_LIMIT_ACTIVE_HEAP;
         eshkol_debug("Max heap from env: %zu bytes", limits.max_heap_bytes);
@@ -204,7 +231,7 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     // ESHKOL_MAX_STACK
     const char* max_stack = std::getenv("ESHKOL_MAX_STACK");
     if (max_stack) {
-        limits.max_stack_depth = parse_size_or_default(max_stack, limits.max_stack_depth);
+        limits.max_stack_depth = parse_size_or_report("ESHKOL_MAX_STACK", max_stack, limits.max_stack_depth);
         limits.active_limits |= ESHKOL_LIMIT_ACTIVE_STACK;
         eshkol_debug("Max stack from env: %zu", limits.max_stack_depth);
     }
@@ -212,7 +239,7 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     // ESHKOL_MAX_TENSOR_ELEMS
     const char* max_tensor = std::getenv("ESHKOL_MAX_TENSOR_ELEMS");
     if (max_tensor) {
-        limits.max_tensor_elements = parse_size_or_default(max_tensor, limits.max_tensor_elements);
+        limits.max_tensor_elements = parse_size_or_report("ESHKOL_MAX_TENSOR_ELEMS", max_tensor, limits.max_tensor_elements);
         limits.active_limits |= ESHKOL_LIMIT_ACTIVE_TENSOR;
         eshkol_debug("Max tensor elements from env: %zu", limits.max_tensor_elements);
     }
@@ -220,7 +247,7 @@ eshkol_resource_limits_t eshkol_init_limits_from_env(void) {
     // ESHKOL_MAX_STRING_LEN
     const char* max_string = std::getenv("ESHKOL_MAX_STRING_LEN");
     if (max_string) {
-        limits.max_string_length = parse_size_or_default(max_string, limits.max_string_length);
+        limits.max_string_length = parse_size_or_report("ESHKOL_MAX_STRING_LEN", max_string, limits.max_string_length);
         limits.active_limits |= ESHKOL_LIMIT_ACTIVE_STRING;
         eshkol_debug("Max string length from env: %zu", limits.max_string_length);
     }
@@ -272,8 +299,10 @@ void eshkol_set_limits(const eshkol_resource_limits_t* limits) {
     }
     g_soft_limit_warned.store(false, std::memory_order_relaxed);
 
-    eshkol_info("Resource limits configured: heap=%zuMB, timeout=%llums, stack=%zu",
-                g_limits.max_heap_bytes / (1024 * 1024),
+    /* SW-165: bytes, not integer MB — a sub-megabyte ceiling reported as
+     * "0MB" is a diagnostic that hides the very value it is reporting. */
+    eshkol_info("Resource limits configured: heap=%zu bytes, timeout=%llums, stack=%zu",
+                g_limits.max_heap_bytes,
                 (unsigned long long)g_limits.max_execution_time_ms,
                 g_limits.max_stack_depth);
 }
@@ -356,16 +385,35 @@ bool eshkol_parse_size(const char* str, size_t* out_bytes) {
 
 /** @brief Record a heap allocation of @p bytes against the tracked usage.
  *
- * Atomically adds @p bytes to the global heap usage counter, guarding
- * against overflow and against exceeding max_heap_bytes. On overflow or
- * hard-limit breach, records ESHKOL_LIMIT_HEAP_HARD and, if hard limits
- * are enforced, requests a runtime interrupt (ESHKOL_SHUTDOWN_MEMORY).
- * Also updates peak usage and, if usage crosses the soft-limit threshold
- * for the first time, logs a one-shot warning.
+ * SW-165: this function ACCOUNTS. It does not diagnose and it does not stop
+ * the process.
+ *
+ * It used to do both, and could do neither correctly. It is called for every
+ * arena block, so its diagnostic repeated for as long as the run continued —
+ * and it printed on the DEFAULT ceiling, which no user asked for. The
+ * interrupt it requested named ESHKOL_SHUTDOWN_MEMORY, but the only reader of
+ * that flag (eshkol_limit_poll_interrupt) acts on ESHKOL_SHUTDOWN_TIMEOUT and
+ * returns for every other reason, so nothing ever acted on it: the process
+ * printed the breach millions of times and then exited 0. A ceiling that is
+ * loud but does not bind is worse than either a silent one or an enforced
+ * one, because it trains a reader to ignore it.
+ *
+ * Enforcement now lives at the ONE site that can carry it out —
+ * create_arena_block() in runtime_arena_core.cpp, the single place the arena
+ * asks the OS for memory — which calls eshkol_limit_enforce() to report the
+ * breach once, in bytes, and exit with a nonzero status. This function's job
+ * is to keep the counter and the last-error code accurate for that decision
+ * and for diagnostics.
+ *
+ * Atomically adds @p bytes to the global heap usage counter, guarding against
+ * counter overflow and against exceeding max_heap_bytes; records
+ * ESHKOL_LIMIT_HEAP_HARD and returns false when either would happen. Also
+ * updates peak usage and, when a run that ASKED for a ceiling first crosses
+ * its soft threshold, logs a one-shot warning.
+ *
  * @param bytes Number of bytes being allocated (0 is a no-op success).
- * @return true if the allocation is within limits (or limits aren't
- *         enforced conceptually for tracking purposes), false if it would
- *         exceed the configured heap limit or overflow the counter. */
+ * @return true if the allocation is within the tracked ceiling, false if it
+ *         would exceed it or overflow the counter. */
 bool eshkol_track_allocation(size_t bytes) {
     if (bytes == 0) return true;
 
@@ -374,24 +422,15 @@ bool eshkol_track_allocation(size_t bytes) {
 
     for (;;) {
         if (bytes > SIZE_MAX - previous) {
+            /* SW-165: accounting REPORTS, it does not raise. See the note on
+             * this function's contract below. */
             g_last_error.store(ESHKOL_LIMIT_HEAP_HARD, std::memory_order_relaxed);
-            if (g_limits.enforce_hard_limits) {
-                eshkol_error("Heap accounting overflow: current=%zu, requested=%zu",
-                             previous, bytes);
-                eshkol_runtime_request_interrupt(ESHKOL_SHUTDOWN_MEMORY);
-            }
             return false;
         }
 
         current = previous + bytes;
         if (g_limits.max_heap_bytes > 0 && current > g_limits.max_heap_bytes) {
             g_last_error.store(ESHKOL_LIMIT_HEAP_HARD, std::memory_order_relaxed);
-            if (g_limits.enforce_hard_limits) {
-                eshkol_error("Heap limit exceeded: %zuMB > %zuMB",
-                             current / (1024 * 1024),
-                             g_limits.max_heap_bytes / (1024 * 1024));
-                eshkol_runtime_request_interrupt(ESHKOL_SHUTDOWN_MEMORY);
-            }
             return false;
         }
 
@@ -403,15 +442,20 @@ bool eshkol_track_allocation(size_t bytes) {
 
     update_peak(current);
 
-    // Check soft limit
+    // Check soft limit. SW-165: only a run that ASKED for a heap ceiling gets
+    // this warning. The default ceiling is an accounting reference, not a
+    // budget the user chose, and warning about it told a legitimate large
+    // computation it was doing something wrong. Reported in bytes: integer MB
+    // division rendered every sub-megabyte ceiling as "0MB".
     if (g_limits.enable_warnings &&
+        (g_limits.active_limits & ESHKOL_LIMIT_ACTIVE_HEAP) != 0 &&
         g_limits.max_heap_bytes > 0 &&
         current >= g_limits.heap_soft_limit_bytes &&
         !g_soft_limit_warned.exchange(true, std::memory_order_relaxed)) {
-        eshkol_warn("Heap usage at %zu%% of limit (%zuMB / %zuMB)",
+        eshkol_warn("Heap usage at %zu%% of the ESHKOL_MAX_HEAP ceiling "
+                    "(%zu of %zu bytes)",
                     (current * 100) / g_limits.max_heap_bytes,
-                    current / (1024 * 1024),
-                    g_limits.max_heap_bytes / (1024 * 1024));
+                    current, g_limits.max_heap_bytes);
         g_last_error.store(ESHKOL_LIMIT_HEAP_SOFT, std::memory_order_relaxed);
     }
 
@@ -827,10 +871,10 @@ void eshkol_limit_poll_interrupt(void) {
  *  last recorded limit error) via the eshkol_info logger. */
 void eshkol_print_resource_stats(void) {
     eshkol_info("=== Resource Usage Statistics ===");
-    eshkol_info("Heap: current=%zuMB, peak=%zuMB, limit=%zuMB",
-                g_heap_usage.load() / (1024 * 1024),
-                g_peak_heap_usage.load() / (1024 * 1024),
-                g_limits.max_heap_bytes / (1024 * 1024));
+    eshkol_info("Heap: current=%zu bytes, peak=%zu bytes, limit=%zu bytes",
+                g_heap_usage.load(),
+                g_peak_heap_usage.load(),
+                g_limits.max_heap_bytes);
     eshkol_info("Stack: current=%zu, limit=%zu", t_stack_depth, g_limits.max_stack_depth);
 
     if (g_timer_active.load()) {

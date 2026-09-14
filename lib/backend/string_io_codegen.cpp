@@ -495,7 +495,7 @@ llvm::Value* StringIOCodegen::stringAppend(const eshkol_operations_t* op) {
     }
 
     // Allocate new string with header using arena_allocate_string_with_header
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* new_str = ctx_.builder().CreateCall(
         ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, total_len});
 
@@ -540,8 +540,21 @@ llvm::Value* StringIOCodegen::substring(const eshkol_operations_t* op) {
     // 2-arg form warned and returned null, which surfaced as () and
     // silently corrupted callers (Noesis ESH-0180).
     const uint32_t nargs = op->call_op.num_vars;
-    if (nargs != 2 && nargs != 3) {
-        eshkol_error("substring requires 2 or 3 arguments: (substring string start [end])");
+    if (nargs < 2) {
+        // UNDER the documented minimum: the canonical sentence, rendered from
+        // the shared formatter so it is byte-identical to the one the bytecode
+        // VM's compiler prints for the same call — and quoting the MINIMUM (2),
+        // not the opcode's three operands. This is the wording the P8 axis-3
+        // ratchet compares; see inc/eshkol/core/arity_contract.h.
+        eshkol_arity_error_named("substring", 2, (long long)nargs);
+        return nullptr;
+    }
+    if (nargs > 3) {
+        // Over the maximum. The guard has something more specific to say than
+        // the canonical sentence, so it says it and eshkol_arity_error_current()
+        // prepends the class marker centrally.
+        eshkol_arity_error_current(
+            "substring requires 2 or 3 arguments: (substring string start [end])");
         return nullptr;
     }
 
@@ -656,7 +669,7 @@ llvm::Value* StringIOCodegen::substringImpl(llvm::Value* str_ptr,
     ctx_.builder().SetInsertPoint(substr_ok);
 
     // Use UTF-8 runtime helper for codepoint-based substring
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Function* utf8_substr_func = ctx_.module().getFunction("eshkol_utf8_substring");
     if (!utf8_substr_func) {
         llvm::FunctionType* substr_type = llvm::FunctionType::get(
@@ -849,7 +862,7 @@ llvm::Value* StringIOCodegen::stringToNumber(const eshkol_operations_t* op) {
     llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
     llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* result_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType());
 
     if (op->call_op.num_vars == 2) {
@@ -928,7 +941,7 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
             func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                 "eshkol_number_to_string_radix_raw", mod);
         }
-        llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* arena_ptr = ctx_.currentArena();
         llvm::Value* result_ptr = ctx_.builder().CreateCall(func, {num_i64, rad_i64, arena_ptr});
         return tagged_.packHeapPtr(result_ptr);
     }
@@ -948,7 +961,7 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
     // and downstream code (string-append memcpy, string-ref bounds, equal?
     // hashing, etc.) reads garbage from the trailing uninitialised payload.
     llvm::Value* buf_size = llvm::ConstantInt::get(ctx_.sizeType(), 64);
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* buf = ctx_.builder().CreateCall(
         ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buf_size});
 
@@ -1194,7 +1207,7 @@ llvm::Value* StringIOCodegen::makeString(const eshkol_operations_t* op) {
     // = length + 1), so we must pass the caller-visible character
     // count `len`, NOT `len + 1` — the previous code double-counted,
     // yielding header->size = len + 2 and a string-length of len + 1.
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* buf = ctx_.builder().CreateCall(
         ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, len});
 
@@ -1388,7 +1401,7 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     llvm::Function* parent_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::Function* strlen_func = ctx_.funcs().getStrlen();
     llvm::Function* memcpy_func = ctx_.funcs().getMemcpy();
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Extract string pointer
     llvm::Value* str_ptr_int = tagged_.unpackInt64(str_arg);
@@ -1712,7 +1725,7 @@ llvm::Value* StringIOCodegen::stringUpcase(const eshkol_operations_t* op) {
     llvm::Value* str_len = ctx_.builder().CreateCall(byte_len_func, {str_ptr});
 
     // Allocate new string with header — pass str_len, NOT str_len+1.
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* new_str = ctx_.builder().CreateCall(
         ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, str_len});
 
@@ -1810,7 +1823,7 @@ llvm::Value* StringIOCodegen::stringDowncase(const eshkol_operations_t* op) {
     llvm::Value* str_len = ctx_.builder().CreateCall(byte_len_func, {str_ptr});
 
     // Allocate new string with header — pass str_len, NOT str_len+1.
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* new_str = ctx_.builder().CreateCall(
         ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, str_len});
 
@@ -2044,7 +2057,7 @@ llvm::Value* StringIOCodegen::listToString(const eshkol_operations_t* op) {
     // overallocation bug exposed by the substring strlen→utf8 fix).
     ctx_.builder().SetInsertPoint(count_end);
     llvm::Value* final_count = ctx_.builder().CreateLoad(ctx_.int64Type(), count_ptr);
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* str_buf = ctx_.builder().CreateCall(
         ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, final_count});
 
@@ -2678,7 +2691,7 @@ llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
         ctx_.builder().restoreIP(saved_entry_ip);
     }
     llvm::Value* buffer = scratch_buffer;
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Call fgets
     llvm::Value* result_ptr = ctx_.builder().CreateCall(fgets_func, {
@@ -2827,7 +2840,7 @@ llvm::Value* StringIOCodegen::readString(const eshkol_operations_t* op) {
     // Allocate buffer: k+1 bytes (for null terminator)
     llvm::Value* buf_size = ctx_.builder().CreateAdd(k_val,
         llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* buffer = ctx_.builder().CreateCall(
         ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buf_size});
 
@@ -3764,7 +3777,7 @@ llvm::Value* StringIOCodegen::readBytevector(const eshkol_operations_t* op) {
 
     // Allocate bytevector: 8 (length) + k (data)
     llvm::Value* data_size = ctx_.builder().CreateAdd(k, llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* bv_ptr = ctx_.builder().CreateCall(
         ctx_.memory().getArenaAllocateWithHeader(),
         {arena_ptr, data_size,

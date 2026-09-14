@@ -111,6 +111,21 @@ extern "C" void eshkol_continuation_capture_stack(void* arena_void, void* state_
     state->saved_len = (uint64_t)len;
 }
 
+extern "C" void eshkol_continuation_capture_handlers(void* state_void) {
+    auto* state = (eshkol_continuation_state_t*)state_void;
+    if (!state) return;
+    state->handler_snapshot = eshkol_exception_handler_snapshot();
+    if (g_exception_handler_stack && !state->handler_snapshot) {
+        eshkol_error("Failed to capture continuation exception handlers");
+    }
+}
+
+extern "C" void eshkol_continuation_restore_handlers(void* state_void) {
+    auto* state = (eshkol_continuation_state_t*)state_void;
+    if (!state) return;
+    eshkol_exception_handler_restore_snapshot(state->handler_snapshot);
+}
+
 /**
  * @brief Push this frame below the region about to be restored, then restore.
  *
@@ -141,6 +156,48 @@ static void resume_trampoline(eshkol_continuation_state_t* state) {
 }
 
 /**
+ * @brief Fail closed on a bounded-resource rejection, the way the VM does.
+ *
+ * The region-pin budget is a RESOURCE POLICY, not a broken invariant: the
+ * program asked for more pinned-region retention than the runtime is willing
+ * to hold, and the honest answer is a diagnostic the program can see, handle
+ * and exit on. It is not an `abort()`. SIGABRT skips every `dynamic-wind`
+ * after-thunk and every atexit hook, cannot be caught by `guard`, produces no
+ * exit status a shell contract can express beyond 128+6, and on macOS spawns
+ * the crash reporter — for a condition the runtime detected deliberately and
+ * described in words a line earlier.
+ *
+ * It also broke engine parity outright. The bytecode VM rejects the CAPTURE:
+ * heap_region_pin_all() (lib/backend/vm_core.c) returns 0,
+ * vm_capture_continuation_dynamic_state() (lib/backend/vm_control.c) propagates
+ * it, and OP_CALLCC in lib/backend/vm_run.c sets `vm->error = 1`, so the VM
+ * exits 1 with its message. Native accepted the capture, warned, kept running,
+ * and only aborted if and when the continuation was later invoked. One
+ * fixture, two different observable behaviours. docs/reference/language/continuations.md
+ * ("The rejection is diagnostic and fail-closed") and the `region_pin_failed`
+ * contract in inc/eshkol/eshkol.h ("failing at capture is safer than allowing
+ * a later resume") both already specified the VM's behaviour; only native's
+ * implementation disagreed.
+ *
+ * So both engines now reject at capture, with a raise. An uncaught raise
+ * prints `Unhandled exception: ...` and exit(1) (eshkol_raise,
+ * lib/core/runtime_exceptions_hosted.cpp), which is what the VM's fatal path
+ * already produced; a `guard` around the capture can handle it. Does not
+ * return.
+ */
+[[noreturn]] static void eshkol_continuation_pin_budget_fail(const char* what) {
+    eshkol_exception_t* exc = eshkol_make_exception_with_header(
+        ESHKOL_EXCEPTION_ERROR,
+        "continuation region-pin budget exceeded; capture rejected to prevent "
+        "an unbounded pinned-region leak");
+    if (exc) eshkol_raise(exc);   /* does not return */
+    /* The condition object itself could not be allocated. Still fail closed,
+     * but through the ordinary exit path rather than SIGABRT. */
+    eshkol_error("%s, and the condition object could not be allocated", what);
+    exit(1);
+}
+
+/**
  * @brief Resume a captured continuation. Does not return.
  *
  * Restores the continuation's stack image when it has one, then longjmps to
@@ -152,6 +209,18 @@ extern "C" void eshkol_continuation_resume(void* state_void) {
     if (!state || !state->jmp_buf_ptr) {
         eshkol_error("Invoked a continuation with no capture point");
         abort();
+    }
+    if (state->region_pin_failed) {
+        /* Backstop only: the capture itself now raises (see
+         * eshkol_make_continuation_state_flags below), so a state carrying
+         * this flag can no longer be handed back to a program. Kept because
+         * eshkol_continuation_state_t is a published ABI struct and an
+         * out-of-tree producer could still set it — and if one does, the
+         * answer is the same diagnostic, not a process fault. */
+        eshkol_error("Invoked a continuation whose region pin was rejected; "
+                     "the bounded resource policy refuses a dangling resume");
+        eshkol_continuation_pin_budget_fail(
+            "a continuation whose region pin was rejected was invoked");
     }
     if (state->saved_stack && state->saved_len) {
         resume_trampoline(state);
@@ -190,6 +259,7 @@ extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state_flags(
     state->wind_mark = (void*)g_dynamic_wind_stack;
     state->promise_mark = eshkol_promise_eval_mark();
     state->region_mark = eshkol_region_mark();  // #341
+    state->region_pin_failed = 0;
     // SW-59: a captured continuation's stack snapshot
     // (eshkol_continuation_capture_stack(), below) may hold interior pointers
     // into any region open right now — a with-region body that calls call/cc
@@ -222,13 +292,26 @@ extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state_flags(
     const int escape_only = (flags & (uint64_t)ESHKOL_CONT_FLAG_ESCAPE_ONLY) != 0;
     if (state->region_mark > 0 &&
         (!escape_only || eshkol_region_any_handle_owned_open())) {
-        eshkol_region_pin_all();
+        if (!eshkol_region_pin_all()) {
+            // Fail closed HERE, not at some later resume. The pin was refused,
+            // so every open region will be reclaimed at its `with-region` exit
+            // while this continuation's stack image still holds interior
+            // pointers into their arenas: the continuation is already dead,
+            // and handing it back to the program as a live callable is the
+            // trap. The VM has always rejected the capture
+            // (vm_capture_continuation_dynamic_state -> vm->error = 1); native
+            // now does the same, with a raise rather than an abort.
+            state->region_pin_failed = 1;
+            eshkol_continuation_pin_budget_fail(
+                "continuation region-pin budget exceeded at capture");
+        }
     }
     // Filled in by eshkol_continuation_capture_stack() once setjmp has run.
     state->stack_lo = nullptr;
     state->stack_hi = nullptr;
     state->saved_stack = nullptr;
     state->saved_len = 0;
+    state->handler_snapshot = nullptr;
     return state;
 }
 

@@ -498,6 +498,18 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         declareUnaryMathFunc("atanh");
 
         // Exponential
+        //
+        // `exp` MUST be here. Every libm name this factory declares is claimed
+        // at module init, before any user definition or any lowering runs, so
+        // `@<name>` is unambiguously the libm declaration for the rest of the
+        // module's life and a user `(define (exp x) ...)` is auto-renamed by
+        // LLVM and resolved through function_table instead. `exp` was the one
+        // scalar math name missing from this list, so its identity was decided
+        // by whoever materialised it first: a tensor activation lowering
+        // (elu/selu/celu/silu/mish/softplus) declaring a bare `@exp` made the
+        // scalar `(exp x)` builtin crash the compiler, and a user-defined `exp`
+        // made those activations emit a call through the tagged-value ABI.
+        declareUnaryMathFunc("exp");
         declareUnaryMathFunc("exp2");
 
         // Logarithmic
@@ -516,6 +528,18 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         declareBinaryMathFunc("fmin");
         declareBinaryMathFunc("fmax");
         declareUnaryMathFunc("cbrt");   // cube root
+
+        // Directed rounding (certified enclosures, docs/reference/stdlib/
+        // certified-enclosures.md): nextafter(x, direction) is the ONLY
+        // rounding-control primitive exposed to Scheme (as the unary
+        // fl-next-up/fl-next-down builtins, direction fixed by the C double
+        // literal +INFINITY/-INFINITY at the call site). We use nextafter
+        // rather than fesetround: fesetround's dynamic FPU control-word
+        // state does not portably survive across a JIT-compiled call
+        // boundary / thread pool / SIMD lane on every target this compiler
+        // ships (ARM64, wasm), whereas nextafter is a pure function
+        // available identically on every libm.
+        declareBinaryMathFunc("nextafter");
 
         // Note: Builtin runtime function declarations (eshkol_deep_equal, eshkol_display_value,
         // eshkol_lambda_registry_*) are now created via BuiltinDeclarations after CodegenContext
@@ -594,6 +618,7 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
             ControlFlowCallbacks::typedToTaggedWrapper,
             this
         );
+        tensor_->setClosureCallCallback(ControlFlowCallbacks::closureCallWithInfoWrapper);
         eshkol_debug("Created TensorCodegen with callbacks");
 
         // Initialize AutodiffCodegen - automatic differentiation operations (needed by ArithmeticCodegen)
@@ -643,6 +668,8 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         call_apply_->setGetBuiltinPredicateCallback(ControlFlowCallbacks::getBuiltinPredicateWrapper);
         call_apply_->setApplyBuiltinCallback(ControlFlowCallbacks::applyBuiltinWrapper);
         call_apply_->setApplyForwardRefCallback(ControlFlowCallbacks::applyForwardRefWrapper);
+        call_apply_->setClosureCallbacks(ControlFlowCallbacks::closureCallWithInfoWrapper,
+                                         ControlFlowCallbacks::closureSpreadCallWrapper);
         eshkol_debug("Created CallApplyCodegen with callbacks");
 
         // Initialize MapCodegen - higher-order list mapping operations
@@ -713,6 +740,10 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         binding_->setReplMode(&eshkol::llvm_codegen_detail::replModeEnabled());
         binding_->setLambdaTracking(&eshkol::llvm_codegen_detail::lastGeneratedLambdaName(), &function_table);
         binding_->setLetrecExcludedCaptureNames(&letrec_excluded_capture_names);
+        binding_->setMutationAnalysisCallback(ControlFlowCallbacks::isVarSetWrapper);
+        binding_->setObservationAnalysisCallback(ControlFlowCallbacks::isVarObservedWrapper);
+        binding_->setContinuationEscapeAnalysisCallback(
+            ControlFlowCallbacks::continuationEscapeWrapper);
         // Set up TCO callbacks for tail call optimization
         binding_->setTCOCallbacks(ControlFlowCallbacks::isSelfTailRecursiveWrapper);
         eshkol_debug("Created BindingCodegen with callbacks and TCO support");
@@ -775,7 +806,8 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         // keep it out of freestanding object mode unless a hosted runtime is
         // available to satisfy those symbols.
         if (!freestanding_codegen_) {
-            parallel_ = std::make_unique<eshkol::ParallelCodegen>(*ctx_);
+            parallel_ = std::make_unique<eshkol::ParallelCodegen>(*ctx_,
+                ControlFlowCallbacks::closureCallWithInfoWrapper, this);
             parallel_->setCodegenASTCallback(
                 ControlFlowCallbacks::codegenASTWrapper,
                 this

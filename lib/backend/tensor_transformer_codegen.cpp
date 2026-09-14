@@ -73,8 +73,7 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
     llvm::StructType* tensor_type = ctx_.tensorType();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack Q tensor (runtime-classified operand; see ESH-0069)
     llvm::Value* q_ptr = unpackTensorOperandChecked(q_val, "scaled-dot-attention");
@@ -85,6 +84,8 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
     llvm::Value* q_ndim = builder.CreateLoad(ctx_.int64Type(), q_ndim_field);
     llvm::Value* q_elems_field = builder.CreateStructGEP(tensor_type, q_ptr, 2);
     llvm::Value* q_elems = builder.CreateLoad(ctx_.ptrType(), q_elems_field);
+    llvm::Value* k_ndim = nullptr;
+    llvm::Value* v_ndim = nullptr;
 
     // Unpack K tensor
     llvm::Value* k_ptr = unpackTensorOperandChecked(k_val, "scaled-dot-attention");
@@ -93,6 +94,8 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
     llvm::Value* k_dims_ptr = builder.CreateLoad(ctx_.ptrType(), k_dims_field);
     llvm::Value* k_elems_field = builder.CreateStructGEP(tensor_type, k_ptr, 2);
     llvm::Value* k_elems = builder.CreateLoad(ctx_.ptrType(), k_elems_field);
+    k_ndim = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateStructGEP(tensor_type, k_ptr, 1));
 
     // Unpack V tensor
     llvm::Value* v_ptr = unpackTensorOperandChecked(v_val, "scaled-dot-attention");
@@ -108,19 +111,62 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
     llvm::Value* v_dims_ptr = builder.CreateLoad(ctx_.ptrType(), v_dims_field);
     llvm::Value* v_elems_field = builder.CreateStructGEP(tensor_type, v_ptr, 2);
     llvm::Value* v_elems = builder.CreateLoad(ctx_.ptrType(), v_elems_field);
+    v_ndim = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateStructGEP(tensor_type, v_ptr, 1));
+
+    /* A forward derivative may arrive as a Scheme vector of DUAL_NUMBER
+     * values. The checked operand boundary preserves that vector as a dual
+     * tensor; keep it on an exact forward path instead of feeding its tagged
+     * elements to the reverse-mode pointer heuristic below. */
+    llvm::Value* attention_result_slot = nullptr;
+    llvm::BasicBlock* attention_dual_merge = nullptr;
+    const bool attention_has_dual_path = autodiff_ != nullptr;
+    if (attention_has_dual_path) {
+        llvm::Value* q_dual = isDualTensor(q_ptr);
+        llvm::Value* k_dual = isDualTensor(k_ptr);
+        llvm::Value* v_dual = isDualTensor(v_ptr);
+        llvm::Value* any_dual = builder.CreateOr(q_dual,
+            builder.CreateOr(k_dual, v_dual));
+        llvm::Function* attention_fn = builder.GetInsertBlock()->getParent();
+        attention_result_slot = builder.CreateAlloca(
+            ctx_.taggedValueType(), nullptr, "attention_result_slot");
+        llvm::BasicBlock* dual_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "attention_dual_tensor", attention_fn);
+        llvm::BasicBlock* numeric_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "attention_numeric_tensor", attention_fn);
+        attention_dual_merge = llvm::BasicBlock::Create(
+            ctx_.context(), "attention_dual_merge", attention_fn);
+        builder.CreateCondBr(any_dual, dual_bb, numeric_bb);
+
+        builder.SetInsertPoint(dual_bb);
+        llvm::FunctionType* dual_type = llvm::FunctionType::get(
+            ctx_.ptrType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()},
+            false);
+        llvm::FunctionCallee dual_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_tensor_scaled_dot_attention_dual", dual_type);
+        llvm::Value* mask_arg = mask_ptr_checked
+            ? mask_ptr_checked
+            : llvm::ConstantPointerNull::get(ctx_.ptrType());
+        llvm::Value* dual_result = builder.CreateCall(
+            dual_fn, {q_ptr, k_ptr, v_ptr, mask_arg}, "attention_dual_result");
+        builder.CreateStore(tagged_.packHeapPtr(dual_result), attention_result_slot);
+        builder.CreateBr(attention_dual_merge);
+
+        builder.SetInsertPoint(numeric_bb);
+    }
 
     // Rank guard: Q/K/V are (seq, d_k) or (batch, seq, d_k). Every dimension
     // read below indexes dims[1] (and dims[2] when batched), so a rank-1
     // operand would load past the end of the dimensions array.
     {
-        llvm::Value* k_ndim = builder.CreateLoad(ctx_.int64Type(),
-            builder.CreateStructGEP(tensor_type, k_ptr, 1));
-        llvm::Value* v_ndim = builder.CreateLoad(ctx_.int64Type(),
-            builder.CreateStructGEP(tensor_type, v_ptr, 1));
         const char* msg = "scaled-dot-attention: Q/K/V must be rank 2 (seq, d-k) or rank 3 (batch, seq, d-k)";
-        emitMinRankGuard(q_ndim, 2, msg, "attn_qrank");
-        emitMinRankGuard(k_ndim, 2, msg, "attn_krank");
-        emitMinRankGuard(v_ndim, 2, msg, "attn_vrank");
+        llvm::Value* q_rank_ok = builder.CreateOr(
+            builder.CreateICmpEQ(q_ndim, llvm::ConstantInt::get(ctx_.int64Type(), 2)),
+            builder.CreateICmpEQ(q_ndim, llvm::ConstantInt::get(ctx_.int64Type(), 3)));
+        emitConditionGuard(q_rank_ok, msg, "attn_qrank");
+        emitConditionGuard(builder.CreateICmpEQ(k_ndim, q_ndim), msg, "attn_krank");
+        emitConditionGuard(builder.CreateICmpEQ(v_ndim, q_ndim), msg, "attn_vrank");
     }
 
     // Determine dimensions based on 2D or 3D input
@@ -151,6 +197,45 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
 
     llvm::Value* d_v = builder.CreateLoad(ctx_.int64Type(),
         builder.CreateGEP(ctx_.int64Type(), v_dims_ptr, d_k_idx));
+    llvm::Value* k_d = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateGEP(ctx_.int64Type(), k_dims_ptr, d_k_idx));
+    llvm::Value* v_seq = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateGEP(ctx_.int64Type(), v_dims_ptr, seq_q_idx));
+    emitConditionGuard(builder.CreateICmpEQ(k_d, d_k),
+                       "scaled-dot-attention: Q and K feature widths must match",
+                       "attn_qk_width");
+    emitConditionGuard(builder.CreateICmpEQ(v_seq, seq_k),
+                       "scaled-dot-attention: K and V sequence lengths must match",
+                       "attn_kv_sequence");
+    llvm::Value* k_batch = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateGEP(ctx_.int64Type(), k_dims_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    llvm::Value* v_batch = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateGEP(ctx_.int64Type(), v_dims_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    emitConditionGuard(builder.CreateOr(builder.CreateNot(is_3d),
+        builder.CreateAnd(builder.CreateICmpEQ(k_batch, batch_size),
+                          builder.CreateICmpEQ(v_batch, batch_size))),
+        "scaled-dot-attention: Q/K/V batch dimensions must match",
+        "attn_batch");
+    if (mask_ptr_checked) {
+        llvm::Value* mask_ndim = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateStructGEP(tensor_type, mask_ptr_checked, 1));
+        llvm::Value* mask_dims = builder.CreateLoad(ctx_.ptrType(),
+            builder.CreateStructGEP(tensor_type, mask_ptr_checked, 0));
+        emitConditionGuard(builder.CreateICmpEQ(mask_ndim,
+            llvm::ConstantInt::get(ctx_.int64Type(), 2)),
+            "scaled-dot-attention: mask must have shape (seq-q, seq-k)",
+            "attn_mask_rank");
+        emitConditionGuard(builder.CreateICmpEQ(
+            builder.CreateLoad(ctx_.int64Type(), builder.CreateGEP(ctx_.int64Type(), mask_dims,
+                llvm::ConstantInt::get(ctx_.int64Type(), 0))), seq_q),
+            "scaled-dot-attention: mask shape must match Q and K", "attn_mask_q");
+        emitConditionGuard(builder.CreateICmpEQ(
+            builder.CreateLoad(ctx_.int64Type(), builder.CreateGEP(ctx_.int64Type(), mask_dims,
+                llvm::ConstantInt::get(ctx_.int64Type(), 1))), seq_k),
+            "scaled-dot-attention: mask shape must match Q and K", "attn_mask_k");
+    }
 
     // Compute sqrt(d_k) for scaling — guard against d_k == 0
     llvm::Value* d_k_double = builder.CreateSIToFP(d_k, ctx_.doubleType());
@@ -932,7 +1017,13 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
     llvm::Value* r_total_field = builder.CreateStructGEP(tensor_type, result_ptr, 3);
     builder.CreateStore(output_size, r_total_field);
 
-    return tagged_.packHeapPtr(result_ptr);
+    llvm::Value* numeric_result = tagged_.packHeapPtr(result_ptr);
+    if (!attention_has_dual_path) return numeric_result;
+    builder.CreateStore(numeric_result, attention_result_slot);
+    builder.CreateBr(attention_dual_merge);
+    builder.SetInsertPoint(attention_dual_merge);
+    return builder.CreateLoad(ctx_.taggedValueType(), attention_result_slot,
+                              "attention_result");
 }
 
 // === Track 8.2: Multi-Head Attention ===
@@ -979,8 +1070,7 @@ llvm::Value* TensorCodegen::multiHeadAttention(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Get num_heads as integer
     llvm::Value* num_heads = tagged_.unpackInt64(num_heads_val);
@@ -994,6 +1084,8 @@ llvm::Value* TensorCodegen::multiHeadAttention(const eshkol_operations_t* op) {
     llvm::Value* q_ndim = builder.CreateLoad(ctx_.int64Type(), q_ndim_field);
     llvm::Value* q_elems_field = builder.CreateStructGEP(tensor_type, q_ptr, 2);
     llvm::Value* q_elems = builder.CreateLoad(ctx_.ptrType(), q_elems_field);
+    llvm::Value* k_ndim = nullptr;
+    llvm::Value* v_ndim = nullptr;
 
     // Unpack K tensor
     llvm::Value* k_ptr = unpackTensorOperandChecked(k_val, "multi-head-attention");
@@ -1001,6 +1093,8 @@ llvm::Value* TensorCodegen::multiHeadAttention(const eshkol_operations_t* op) {
     llvm::Value* k_dims_ptr = builder.CreateLoad(ctx_.ptrType(), k_dims_field);
     llvm::Value* k_elems_field = builder.CreateStructGEP(tensor_type, k_ptr, 2);
     llvm::Value* k_elems = builder.CreateLoad(ctx_.ptrType(), k_elems_field);
+    k_ndim = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateStructGEP(tensor_type, k_ptr, 1));
 
     // Unpack V tensor
     llvm::Value* v_ptr = unpackTensorOperandChecked(v_val, "multi-head-attention");
@@ -1008,6 +1102,8 @@ llvm::Value* TensorCodegen::multiHeadAttention(const eshkol_operations_t* op) {
     llvm::Value* v_dims_ptr = builder.CreateLoad(ctx_.ptrType(), v_dims_field);
     llvm::Value* v_elems_field = builder.CreateStructGEP(tensor_type, v_ptr, 2);
     llvm::Value* v_elems = builder.CreateLoad(ctx_.ptrType(), v_elems_field);
+    v_ndim = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateStructGEP(tensor_type, v_ptr, 1));
 
     // Unpack weight matrices
     llvm::Value* wq_ptr = unpackTensorOperandChecked(wq_val, "multi-head-attention");
@@ -1036,14 +1132,13 @@ llvm::Value* TensorCodegen::multiHeadAttention(const eshkol_operations_t* op) {
 
     // Rank guard: same dims[1]/dims[2] reasoning as scaled-dot-attention.
     {
-        llvm::Value* k_ndim = builder.CreateLoad(ctx_.int64Type(),
-            builder.CreateStructGEP(tensor_type, k_ptr, 1));
-        llvm::Value* v_ndim = builder.CreateLoad(ctx_.int64Type(),
-            builder.CreateStructGEP(tensor_type, v_ptr, 1));
         const char* msg = "multi-head-attention: Q/K/V must be rank 2 (seq, d-model) or rank 3 (batch, seq, d-model)";
-        emitMinRankGuard(q_ndim, 2, msg, "mha_qrank");
-        emitMinRankGuard(k_ndim, 2, msg, "mha_krank");
-        emitMinRankGuard(v_ndim, 2, msg, "mha_vrank");
+        llvm::Value* q_rank_ok = builder.CreateOr(
+            builder.CreateICmpEQ(q_ndim, llvm::ConstantInt::get(ctx_.int64Type(), 2)),
+            builder.CreateICmpEQ(q_ndim, llvm::ConstantInt::get(ctx_.int64Type(), 3)));
+        emitConditionGuard(q_rank_ok, msg, "mha_qrank");
+        emitConditionGuard(builder.CreateICmpEQ(k_ndim, q_ndim), msg, "mha_krank");
+        emitConditionGuard(builder.CreateICmpEQ(v_ndim, q_ndim), msg, "mha_vrank");
     }
 
     // Determine dimensions
@@ -1070,6 +1165,51 @@ llvm::Value* TensorCodegen::multiHeadAttention(const eshkol_operations_t* op) {
 
     llvm::Value* seq_k = builder.CreateLoad(ctx_.int64Type(),
         builder.CreateGEP(ctx_.int64Type(), k_dims_ptr, seq_idx));
+    llvm::Value* k_model = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateGEP(ctx_.int64Type(), k_dims_ptr, dim_idx));
+    llvm::Value* v_seq = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateGEP(ctx_.int64Type(), v_dims_ptr, seq_idx));
+    emitConditionGuard(builder.CreateICmpEQ(k_model, d_model),
+                       "multi-head-attention: Q and K feature widths must match",
+                       "mha_qk_width");
+    emitConditionGuard(builder.CreateICmpEQ(v_seq, seq_k),
+                       "multi-head-attention: K and V sequence lengths must match",
+                       "mha_kv_sequence");
+    llvm::Value* k_batch = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateGEP(ctx_.int64Type(), k_dims_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    llvm::Value* v_batch = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateGEP(ctx_.int64Type(), v_dims_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    emitConditionGuard(builder.CreateOr(builder.CreateNot(is_3d),
+        builder.CreateAnd(builder.CreateICmpEQ(k_batch, batch_size),
+                          builder.CreateICmpEQ(v_batch, batch_size))),
+        "multi-head-attention: Q/K/V batch dimensions must match", "mha_batch");
+    emitConditionGuard(builder.CreateICmpSGT(num_heads,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+        "multi-head-attention: num-heads must be positive", "mha_heads_positive");
+    emitConditionGuard(builder.CreateICmpEQ(
+        builder.CreateSRem(d_model, num_heads), llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+        "multi-head-attention: model width must be divisible by num-heads", "mha_heads_divisible");
+    if (mask_val) {
+        llvm::Value* mask_ptr = unpackTensorOperandChecked(mask_val, "multi-head-attention");
+        llvm::Value* mask_ndim = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateStructGEP(tensor_type, mask_ptr, 1));
+        llvm::Value* mask_dims = builder.CreateLoad(ctx_.ptrType(),
+            builder.CreateStructGEP(tensor_type, mask_ptr, 0));
+        emitConditionGuard(builder.CreateICmpEQ(mask_ndim,
+            llvm::ConstantInt::get(ctx_.int64Type(), 2)),
+            "multi-head-attention: mask must have shape (seq-q, seq-k)",
+            "mha_mask_rank");
+        emitConditionGuard(builder.CreateICmpEQ(
+            builder.CreateLoad(ctx_.int64Type(), builder.CreateGEP(ctx_.int64Type(), mask_dims,
+                llvm::ConstantInt::get(ctx_.int64Type(), 0))), seq_q),
+            "multi-head-attention: mask shape must match Q and K", "mha_mask_q");
+        emitConditionGuard(builder.CreateICmpEQ(
+            builder.CreateLoad(ctx_.int64Type(), builder.CreateGEP(ctx_.int64Type(), mask_dims,
+                llvm::ConstantInt::get(ctx_.int64Type(), 1))), seq_k),
+            "multi-head-attention: mask shape must match Q and K", "mha_mask_k");
+    }
 
     // d_k = d_model / num_heads
     llvm::Value* d_k = builder.CreateSDiv(d_model, num_heads, "d_k");
@@ -1923,8 +2063,7 @@ llvm::Value* TensorCodegen::rotaryEmbedding(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack x tensor (runtime-classified; see ESH-0069)
     llvm::Value* x_ptr = unpackTensorOperandChecked(x_val, "rotary-embedding");
@@ -2247,8 +2386,7 @@ llvm::Value* TensorCodegen::paddingMask(const eshkol_operations_t* op) {
     llvm::Value* lengths_elems = builder.CreateLoad(ctx_.ptrType(), lengths_elems_field);
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Allocate mask: (batch, max_len)
     llvm::Value* total_size = builder.CreateMul(batch_size, max_len);
@@ -2372,8 +2510,7 @@ llvm::Value* TensorCodegen::feedForward(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack all tensors (runtime-classified operands; see ESH-0069)
     llvm::Value* x_ptr = unpackTensorOperandChecked(x_val, "feed-forward");
@@ -2725,8 +2862,7 @@ llvm::Value* TensorCodegen::dropout(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack tensors
     llvm::Value* x_ptr = unpackTensorOperandChecked(x_val, "dropout");
@@ -2739,7 +2875,7 @@ llvm::Value* TensorCodegen::dropout(const eshkol_operations_t* op) {
     llvm::Value* x_total_field = builder.CreateStructGEP(tensor_type, x_ptr, 3);
     llvm::Value* x_total = builder.CreateLoad(ctx_.int64Type(), x_total_field);
 
-    llvm::Value* rate = tagged_.unpackDouble(rate_val);
+    llvm::Value* rate = taggedNumericToDouble(ctx_, tagged_, rate_val);
     llvm::Value* training = tagged_.unpackInt64(training_val);
     llvm::Value* is_training = builder.CreateICmpNE(training,
         llvm::ConstantInt::get(ctx_.int64Type(), 0));
@@ -2866,8 +3002,7 @@ llvm::Value* TensorCodegen::embedding(const eshkol_operations_t* op) {
     llvm::Type* tensor_type = ctx_.tensorType();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack indices tensor (runtime-classified: tensor passes through, a
     // homogeneous numeric vector is coerced, anything else raises)

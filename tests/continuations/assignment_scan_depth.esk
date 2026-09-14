@@ -1,0 +1,18 @@
+;; The mutation is deliberately after more than the old VM scan window.
+(define k #f)
+(define n 0)
+(define (f)
+  (let ((x 0))
+    (call/cc (lambda (c) (set! k c)))
+    #f #f #f #f #f #f #f #f #f #f
+    #f #f #f #f #f #f #f #f #f #f
+    #f #f #f #f #f #f #f #f #f #f
+    #f #f #f #f #f #f #f #f #f #f
+    #f #f #f #f #f #f #f #f #f #f
+    #f #f #f #f #f #f #f #f #f #f
+    #f #f #f #f #f #f #f #f #f #f
+    (set! x (+ x 1))
+    x))
+(display (f)) (newline)
+(set! n (+ n 1))
+(if (< n 3) (k 'again))

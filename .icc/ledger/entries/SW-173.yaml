@@ -1,0 +1,141 @@
+id: SW-173
+bucket: SILENT-WRONG
+subtag: first-class-values
+family: codegen/variadic-builtins
+status: fixed
+closed_at: '2026-09-11'
+title: "a variadic builtin used as a first-class value disagreed with its call-position form: `(map list xs)` built improper lists, and every other variadic builtin dropped the arguments past its wrapper's fixed arity"
+repro: >-
+  .scratch/math-stream-repros/map_list_firstclass.esk, run under
+  `eshkol-run -r` and under `-O0`/`-O2` AOT:
+  (display (map list (list 1 2 3))),
+  (display (map list (list 1 2) (list 3 4))),
+  (display (length (car (map list (list 1 2))))),
+  plus (display (apply vector (list 1 2 3))),
+  (display (apply string-append (list "a" "b" "c"))) and
+  (define f string-append) (display (f "a" "b" "c")).
+  Every one compiles and, except where the improper list is later walked,
+  exits 0 with no diagnostic.
+observed_before: >-
+  Native, both -O0 and -O2 --
+  `(map list (list 1 2 3))` -> `((1 . 0) (2 . 0) (3 . 0))` where
+  `(list 1)` in call position answers `(1)`;
+  `(map list (list 1 2) (list 3 4))` -> `((1 3 . 0) (2 4 . 0))`;
+  `(length (car (map list (list 1 2))))` then raised
+  "cdr: argument is not a pair", and walking the tail printed
+  "Attempted to get pointer from non-pointer cell (type=1)" per element.
+  The same class, at other names:
+  `(map vector (list 1 2) (list 3 4))` -> `(#(1) #(2))` (second list
+  dropped); `(apply vector (list 1 2 3))` -> `#(1)`;
+  `(apply string-append (list "a" "b" "c"))` -> `8589934593` (a raw word);
+  `(apply string (list #\a #\b #\c))` -> `"a"`;
+  `(define f string-append) (f "a" "b" "c")` -> `"ab"`;
+  `(define f vector) (f 1 2 3)` -> `#(1)`;
+  `((lambda (f a b c) (f a b c)) vector 1 2 3)` -> `#(1)`.
+  On the VM the mirror-image gap was LOUD rather than silent:
+  `(map list (list 1 2))` warned "undefined variable 'list'" and then died
+  with "calling non-function", because `list`/`vector`/`string` are
+  compiled by head symbol in call position and had no value binding at all.
+  Unaffected throughout: `(map (lambda (x) (list x)) xs)`,
+  `(apply list xs)`, `(define f list) (f 7)` -- the three forms that
+  already went through a rest-list-shaped path.
+correct: >-
+  A reference to a variadic builtin is a procedure like any other and must
+  answer exactly what the same call in operator position answers, at the
+  arity the caller actually uses:
+  `(equal? (map list (list 1 2)) (list (list 1) (list 2)))` is `#t`,
+  `(apply vector (list 1 2 3))` is `#(1 2 3)`,
+  `(define f string-append) (f "a" "b" "c")` is `"abc"` -- on the JIT, on
+  AOT, and on the VM.
+root_cause: >-
+  Three sites, one class, and each of them a SECOND implementation of a
+  builtin standing beside the authoritative call-position lowering --
+  the LE-01/LE-16 failure mode.
+  (1) resolveLambdaFunction (lib/backend/llvm_codegen.cpp), the route `map`
+  uses (map_codegen passes its list count as required_arity), carried a
+  hand-written per-arity factory for `list` that built
+  `(cons a0 (cons a1 TERMINATOR))` with the terminator packed by
+  packInt64ToTaggedValue(0) -- the tagged INTEGER 0, not nil -- so every
+  list it produced was improper. Every OTHER variadic builtin had no row at
+  that site at all and fell through to a fixed-arity closure, which is why
+  `(map vector xs ys)` dropped a list.
+  (2) codegenVariable's value-position route hard-coded exactly two names,
+  `list` and `values`, as variadic closures; every other variadic builtin
+  materialised at lookupInlineBuiltin's single fixed arity, and the closure
+  ABI then passed only that many arguments.
+  (3) CallApplyCodegen::applyClosure spread the argument list into
+  `arg_count` separate parameters without ever reading
+  CLOSURE_FLAG_VARIADIC, so even a correctly-flagged variadic closure was
+  called with the wrong ABI.
+  On the VM, vm_compiler.c matches `list`/`vector` as head symbols before
+  any binding lookup, and nothing else ever bound those names, so the
+  value position had no procedure to find.
+fix: >-
+  branch fix/variadic-builtins-first-class-tail, on top of
+  fix/builtins-are-first-class-values (#651).
+  The first-class builtin table now declares which rows are VARIADIC and,
+  for each, how the builtin computes its answer from a REST LIST: Identity
+  (`list`, `values`), RestUnary (`vector` is `list->vector`, `string` is
+  `list->string`), or LeftFold over the binary form (`string-append`,
+  `min`, `max`, `gcd`, `lcm`, `vector-append`, `bytevector-append`).
+  resolveLambdaFunction wraps a variadic row at the CALL SITE's arity via
+  createInlineBuiltinWrapper -- the generator whose body IS codegenCall --
+  and the hand-written `list` factory is deleted; codegenVariable asks the
+  table instead of naming two builtins; and apply calls the closure
+  through the canonical closure dispatcher, which reads
+  CLOSURE_FLAG_VARIADIC and the fixed-parameter count off the closure
+  header and conses argument slots [fixed_params, count) into the single
+  rest list a variadic entry point expects. (The original fix branched on
+  those two header bytes inside CallApplyCodegen::applyClosure, which at
+  the time spread the extracted elements into separate parameters itself.
+  On the integrated candidate applyClosure hands its staging array to
+  codegenClosureSpreadCall instead, so the ABI decision belongs to the one
+  dispatcher that already makes it; deciding it a second time in apply is
+  the anti-pattern this entry closes. The dispatcher also covers the
+  variadic-WITH-fixed-parameters case the inline branch deliberately left
+  on the old path.) A latent cache bug surfaced and was fixed with
+  it: createInlineBuiltinWrapper keyed its wrapper symbol on the NAME only,
+  so the second arity a builtin was wrapped at silently reused the first
+  arity's function (LLVM's verifier rejects the resulting call outright);
+  the arity is now part of the symbol. On the VM the prelude gains
+  `(define (list . args) args)`,
+  `(define (vector . args) (list->vector args))` and
+  `(define (string . chars) (list->string chars))`, which give the bare
+  names the procedure the call position already implements without
+  touching the head-symbol fast paths, and vm_prelude_cache.h is
+  regenerated. No builtin acquired a second implementation: every wrapper
+  body is generated from the call-position lowering.
+evidence: >-
+  tests/core/variadic_builtins_first_class_test.esk -- 28 checks over
+  map / apply / a define-alias / a user higher-order call for `list`,
+  `vector`, `string-append`, `append`, `+` and `max` (the `max` cases put
+  the largest element LAST so a two-argument wrapper cannot pass by luck) --
+  reports 0 failures on native JIT, AOT -O0, AOT -O2 and the VM.
+  tests/vm_parity/corpus/80_variadic_builtin_first_class.esk pins
+  byte-identical native/VM output for twelve of the same calls (verified
+  by diff). The reporter's own reproducer now prints
+  `((1) (2) (3)) / ((1) (2) (3)) / (1 2) / (7) / (7 8) / ((1 3) (2 4)) / 1`.
+  ctest: variadic_builtins_first_class_runtime_smoke,
+  variadic_builtins_first_class_aot_o0_smoke,
+  variadic_builtins_first_class_vm_smoke and
+  variadic_builtin_first_class_vm_parity.
+caught_by: [math-stream-repro, direct-measurement]
+missed_by: [tests/core/builtins_first_class_test_*.esk (LE-16 -- probes each
+  builtin at ONE arity, the table's own, so a variadic row wrapped at that
+  same arity looks right), tests/core/apply_first_class_builtin_test.esk
+  (SW-169 -- its apply cases are all fixed-arity builtins),
+  tests/value_position/BASELINE.json's sweep (same single-arity shape),
+  ctest, icc-smoke, icc-readiness]
+notes: >-
+  The zero-argument case of a LeftFold row is deliberately an explicit
+  ARITY_ERROR rather than an invented value: R7RS gives some of these an
+  identity element (`(string-append)` is "", `(gcd)` is 0) and others none
+  (`(max)` is an error), and the identity is not derivable from the binary
+  lowering, so inventing one would be a new second implementation of
+  exactly the kind this entry closes. Reaching it requires
+  `(apply <variadic-builtin> '())`, which answered garbage before. apply
+  owns no rest-splitting implementation of its own: named variadic
+  functions reach it through applyUserFunction (which splits them from
+  variadic_function_info_) and closures reach it through the canonical
+  closure dispatcher, which is the single place CLOSURE_FLAG_VARIADIC is
+  read.

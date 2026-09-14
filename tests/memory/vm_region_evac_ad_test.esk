@@ -1,0 +1,34 @@
+;;; VM region/AD parity fixture for ESH-0214d.
+;;;
+;;; The VM's AD implementation does not expose the native nested
+;;; jacobian-of-gradient carrier, so this keeps the VM coverage on its
+;;; supported first-order closure path while still forcing a differentiated
+;;; computation through with-region and checking the post-region value.
+
+(define pass 0)
+(define fail 0)
+
+(define (check label condition)
+  (if condition
+      (set! pass (+ pass 1))
+      (begin (set! fail (+ fail 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (regional-cubic x)
+  (* x x x))
+
+(let loop ((i 0))
+  (if (< i 9)
+      (begin
+        (check "VM regional cubic gradient" (= (with-region 'vm-regional-cubic
+                                                  (gradient regional-cubic 2.0))
+                                                12.0))
+        (loop (+ i 1)))
+      #f))
+
+(display "vm-region-evac-ad tests: ")
+(display pass) (display " passed, ") (display fail) (display " failed")
+(newline)
+(if (= fail 0)
+    (begin (display "PASS: VM region-evac AD") (newline))
+    (begin (display "FAIL: VM region-evac AD") (newline)))

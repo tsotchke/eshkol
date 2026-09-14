@@ -61,8 +61,10 @@ requested with `--keep` or `ESHKOL_TEST_KEEP_TMPDIR`.
 Exit 0 means PASS, 1 means FAIL, and 125 means INFRA (missing executables,
 timeout, interrupted process, or filesystem failure). INFRA does not count as
 a CTest pass or skip. The existing non-Windows CTest registration boundary is
-retained; this test-contract update does not establish Windows harness support.
-Execution on macOS and other platforms must be verified separately.
+retained -- native Windows is excluded because the current native tensor-file
+implementation is disabled there -- and this test-contract update does not
+establish Windows harness support. Execution on macOS and other platforms must
+be verified separately.
 
 The runtime matrix is independent of the model matrix (#597) and atomic-save
 implementation (#600). Its offline oracle test uses the already-merged #596

@@ -1,0 +1,34 @@
+;; Baseline control for math_acceptance_exact_rational_memory: the same loop
+;; shapes over machine integers, which were flat before the fix and after it.
+;; The gate measures this run's peak RSS and requires the exact-rational run to
+;; stay within a small multiple of it, so the assertion is about the exact/
+;; inexact asymmetry rather than an absolute figure on one machine.
+(define (literal-loop n)
+  (let lp ((i 0) (acc 0))
+    (if (= i n)
+        acc
+        (lp (+ i 1) (if (> (+ 5 3) 0) acc (+ acc 1))))))
+
+(define (harmonic-ish n)
+  (let lp ((i 1) (acc 0))
+    (if (> i n) acc (lp (+ i 1) (+ acc i)))))
+
+(define lit (literal-loop 1000000))
+(define h (harmonic-ish 5000))
+
+(if (and (= lit 0) (= h 12502500))
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL lit=") (display lit) (display " h=") (display h) (newline)))
+
+;; Baseline for the cond-clause case: the same loop shape written with nested
+;; `if`, which never lost its per-iteration reclamation.
+(define (cond-unit k)
+  (let ((v (make-vector 64 k))) (< (vector-ref v 3) 2000000)))
+
+(define cond-loop-result
+  (let loop ((k 0))
+    (if (= k 200000) 'done (if (cond-unit k) (loop (+ k 1)) 'unreachable))))
+
+(if (eq? cond-loop-result 'done)
+    (begin (display "PASS-COND") (newline))
+    (begin (display "FAIL-COND ") (display cond-loop-result) (newline)))

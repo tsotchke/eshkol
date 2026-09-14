@@ -250,6 +250,18 @@ python3 scripts/test_language_coverage_gate.py
 python3 scripts/test_runtime_language_coverage.py \
     --eshkol-run "$ESHKOL_RUN" \
     --eshkol-vm "$ESHKOL_VM"
+# Instrumentation cost guard: a covered site in a loop must reach the runtime
+# hook once, not once per iteration, or instrumented corpus runs blow the
+# gate's time budget.
+python3 scripts/test_language_coverage_hook_guard.py \
+    --eshkol-run "$ESHKOL_RUN" \
+    --eshkol-vm "$ESHKOL_VM" \
+    --lib-dir "$BUILD_DIR_PATH"
+# Evidence must be reproducible: identical record sets across identical runs,
+# and no record naming a position outside its source file.
+python3 scripts/test_language_coverage_determinism.py \
+    --eshkol-run "$ESHKOL_RUN" \
+    --lib-dir "$BUILD_DIR_PATH"
 rc=0
 python3 scripts/language_coverage.py \
     "${RUNTIME_ARGS[@]}" \

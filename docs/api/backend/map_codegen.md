@@ -205,42 +205,57 @@ Map with a runtime closure over N lists in lockstep. R7RS stops at the shortest 
 
 ### `MapCodegen::mapSingleList`
 
-*Function* — line 229
+*Function* — line 231
 
 ```c
-llvm::Value* mapSingleList(llvm::Function* proc_func, llvm::Value* list);
+llvm::Value* mapSingleList(llvm::Function* proc_func, llvm::Value* list,
+ const std::vector<llvm::Value*>& closure_captures = { ... }
 ```
 
 Map over a single list with known function.
 
+**Parameters**
+
+- `closure_captures` — capture-slot pointers read from the procedure's closure object when it was reached by name (empty otherwise).
+
 ### `MapCodegen::mapMultiList`
 
-*Function* — line 234
+*Function* — line 238
 
 ```c
-llvm::Value* mapMultiList(llvm::Function* proc_func, const std::vector<llvm::Value*>& lists);
+llvm::Value* mapMultiList(llvm::Function* proc_func, const std::vector<llvm::Value*>& lists,
+ const std::vector<llvm::Value*>& closure_captures = { ... }
 ```
 
 Map over multiple lists with known function.
 
+**Parameters**
+
+- `closure_captures` — as for mapSingleList.
+
 ### `MapCodegen::loadCapturedValues`
 
-*Function* — line 239
+*Function* — line 248
 
 ```c
 void loadCapturedValues(
  llvm::Function* proc_func,
  const std::string& func_name,
  size_t first_capture_idx,
- std::vector<llvm::Value*>& args
+ std::vector<llvm::Value*>& args,
+ const std::vector<llvm::Value*>& closure_captures
  );
 ```
 
 Load captured values for a closure call.
 
+**Parameters**
+
+- `closure_captures` — capture-slot pointers from the procedure's closure object; used for every capture without a module-level cell. Captures resolved by name must belong to the function being emitted.
+
 ### `MapCodegen::getConsGetPtrFunc`
 
-*Function* — line 249
+*Function* — line 259
 
 ```c
 llvm::Function* getConsGetPtrFunc();
@@ -250,7 +265,7 @@ Get cons cell get pointer function.
 
 ### `MapCodegen::getConsSetPtrFunc`
 
-*Function* — line 254
+*Function* — line 264
 
 ```c
 llvm::Function* getConsSetPtrFunc();

@@ -1,0 +1,355 @@
+;; The internal logic of a presheaf topos, computed: for finite categories C
+;; the presheaf topos Set^{C^op} has a subobject classifier Omega (sieves),
+;; exponentials (natural transformations out of representables), an
+;; internal Heyting algebra, and Lawvere-Tierney topologies in bijection
+;; with Grothendieck topologies. Each of these is constructed as data on
+;; small categories and its defining universal property is checked by
+;; counting both sides and by exhibiting the bijection.
+;;
+;; Sources: S. Mac Lane, I. Moerdijk, "Sheaves in Geometry and Logic"
+;; (1992), I.4 (subobject classifier of a presheaf topos: Omega(C) = the
+;; set of sieves on C), I.6 (exponentials: Y^X(C) = Hom(y(C) x X, Y)),
+;; III.5 (sieves and Grothendieck topologies), V.1 (Lawvere-Tierney
+;; topologies and Theorem V.1.2, the bijection with Grothendieck
+;; topologies on a presheaf topos); P. T. Johnstone, "Sketches of an
+;; Elephant" (2002), A1.6 (subobject classifiers), A4.4 (local operators);
+;; F. W. Lawvere, "Quantifiers and sheaves" (1970).
+;;
+;; Presheaves on C are Set-valued functors on the opposite category, built
+;; here with the same arrow indices; a sieve on c is a set of arrows into c
+;; closed under precomposition, and Omega(f)(S) = f^* S. Everything is
+;; enumerated: sub-presheaves as families of subsets closed under the
+;; action, natural transformations as families of component functions
+;; filtered by naturality, Grothendieck topologies as families of sets of
+;; sieves filtered by the three axioms.
+;;
+;;   1. Omega is a presheaf on the walking arrow (2 and 3 sieves), the
+;;      pseudocircle (2, 2, 5, 5), the commutative square and BZ/2 (2), with
+;;      the maximal sieve as the global element true.
+;;   2. Subobject classifier: for presheaves X on the walking arrow and on
+;;      the pseudocircle the sub-presheaves of X and the natural
+;;      transformations X -> Omega are counted independently and agree (18
+;;      and 18, 19 and 19), the
+;;      classifying map of every sub-presheaf is natural, and its pullback
+;;      of true is the sub-presheaf again.
+;;   3. Exponentials: Y^X is constructed as a presheaf and the adjunction
+;;      Hom(Z x X, Y) = Hom(Z, Y^X) is verified by counting on the walking
+;;      arrow and on BZ/2 (where Y^X is the set of equivariant maps of the
+;;      product with the regular representation).
+;;   4. Internal Heyting algebra: meets and joins of sieves, implication
+;;      S => T = the largest sieve R with R and S contained in T, computed by
+;;      enumeration and checked against the adjunction R <= (S => T) iff
+;;      R and S <= T; Omega(1) on the walking arrow has three elements and
+;;      is not Boolean (the middle sieve has no complement); Omega on BZ/2 is
+;;      Boolean.
+;;   5. Grothendieck topologies enumerated by the axioms on the walking
+;;      arrow (4), the pseudocircle (16) and BZ/2 (2); each one yields a
+;;      Lawvere-Tierney topology j (natural, j true = true, j j = j, j
+;;      preserves meets), distinct topologies give distinct j; on the
+;;      walking arrow all 108 endomorphisms of Omega are tested against
+;;      naturality and the three axioms and exactly the 4 induced ones
+;;      survive: Theorem V.1.2 verified by exhaustion.
+;;
+;; DEFECT NOTES (routed around): as in the sibling examples; local
+;; procedures never take stdlib names (LE-22).
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (position-of item items) (let loop ((l items) (i 0)) (cond ((null? l) #f) ((equal? (car l) item) i) (else (loop (cdr l) (+ i 1))))))
+(define (dedup xs) (let loop ((l xs) (acc '())) (cond ((null? l) (reverse acc)) ((member (car l) acc) (loop (cdr l) acc)) (else (loop (cdr l) (cons (car l) acc))))))
+(define (cartesian lists) (if (null? lists) (list '()) (let ((rest (cartesian (cdr lists)))) (let loop ((xs (car lists)) (acc '())) (if (null? xs) acc (loop (cdr xs) (append (map (lambda (t) (cons (car xs) t)) rest) acc)))))))
+(define (list-index-of pred xs) (let loop ((l xs) (i 0)) (cond ((null? l) #f) ((pred (car l)) i) (else (loop (cdr l) (+ i 1))))))
+
+;; --- finite categories -------------------------------------------------------------------------------------
+;; A category: (vector nobj arrows comp ids) with arrows a vector of (vector src tgt name), comp a hash table
+;; (g . f) -> g o f keyed by (+ (* n g) f), ids a vector object -> identity arrow index. Arrows are composed
+;; as (compose C g f) = g o f, defined when tgt f = src g.
+(define (c-nobj C) (vector-ref C 0))
+(define (c-arrows C) (vector-ref C 1))
+(define (c-narr C) (vector-length (vector-ref C 1)))
+(define (a-src C a) (vector-ref (vector-ref (c-arrows C) a) 0))
+(define (a-tgt C a) (vector-ref (vector-ref (c-arrows C) a) 1))
+(define (a-name C a) (vector-ref (vector-ref (c-arrows C) a) 2))
+(define (c-id C x) (vector-ref (vector-ref C 3) x))
+(define (compose C g f) (hash-table-ref/default (vector-ref C 2) (+ (* (c-narr C) g) f) #f))
+(define (composable? C g f) (= (a-tgt C f) (a-src C g)))
+(define (hom C x y) (filter (lambda (a) (and (= x (a-src C a)) (= y (a-tgt C a)))) (range (c-narr C))))
+;; build from generators and relations: objects 0..n-1, generators (src tgt name), and a normal-form function
+;; on words (lists of generator indices, applied right to left: (g2 g1) means g2 o g1) that returns the canonical
+;; word; arrows are the distinct normal forms of all composable words up to a length bound, identities the empty word
+(define (make-category n gens normal-form max-len)
+  (let* ((ngen (length gens))
+         (gsrc (lambda (g) (car (list-ref gens g)))) (gtgt (lambda (g) (cadr (list-ref gens g))))
+         (word-src (lambda (w x) (if (null? w) x (gsrc (car (reverse w))))))
+         (word-tgt (lambda (w x) (if (null? w) x (gtgt (car w)))))
+         ;; enumerate composable words by length, keyed by (object, normal-form word)
+         (words (let loop ((len 0) (frontier (map (lambda (x) (cons x '())) (range n))) (acc '()))
+                  (if (> len max-len) acc
+                      (let* ((new (dedup (map (lambda (p) (cons (car p) (normal-form (cdr p)))) frontier)))
+                             (fresh (filter (lambda (p) (not (member p acc))) new))
+                             (next (let ext ((ps fresh) (out '()))
+                                     (if (null? ps) out
+                                         (ext (cdr ps)
+                                              (append (map (lambda (g) (cons (car (car ps)) (cons g (cdr (car ps)))))
+                                                           (filter (lambda (g) (= (gsrc g) (word-tgt (cdr (car ps)) (car (car ps))))) (range ngen)))
+                                                      out))))))
+                        (loop (+ len 1) next (append acc fresh))))))
+         (arrows (list->vector (map (lambda (p) (vector (car p) (word-tgt (cdr p) (car p)) (cdr p))) words)))
+         (narr (vector-length arrows))
+         (index (let ((t (make-hash-table))) (let loop ((i 0)) (if (< i narr) (begin (hash-table-set! t (list (a-src (vector 0 arrows) i) (vector-ref (vector-ref arrows i) 2)) i) (loop (+ i 1))))) t))
+         (comp (make-hash-table))
+         (ids (list->vector (map (lambda (x) (hash-table-ref/default index (list x '()) #f)) (range n)))))
+    (let loop-g ((g 0))
+      (if (< g narr)
+          (begin
+            (let loop-f ((f 0))
+              (if (< f narr)
+                  (begin
+                    (if (= (vector-ref (vector-ref arrows f) 1) (vector-ref (vector-ref arrows g) 0))
+                        (let* ((w (normal-form (append (vector-ref (vector-ref arrows g) 2) (vector-ref (vector-ref arrows f) 2))))
+                               (k (hash-table-ref/default index (list (vector-ref (vector-ref arrows f) 0) w) #f)))
+                          (if k (hash-table-set! comp (+ (* narr g) f) k) (error "composite outside the enumerated arrows: raise max-len"))))
+                    (loop-f (+ f 1)))))
+            (loop-g (+ g 1)))))
+    (vector n arrows comp ids)))
+(define (category-laws? C)
+  (and (all? (lambda (a) (and (= a (compose C a (c-id C (a-src C a)))) (= a (compose C (c-id C (a-tgt C a)) a)))) (range (c-narr C)))
+       (all? (lambda (h) (all? (lambda (g) (all? (lambda (f)
+               (or (not (composable? C g f)) (not (composable? C h g))
+                   (= (compose C h (compose C g f)) (compose C (compose C h g) f))))
+             (range (c-narr C)))) (range (c-narr C)))) (range (c-narr C)))))
+;; presentations
+(define (free-nf w) w)                            ;; free category: every word is its own normal form
+(define (poset-nf w) (if (null? w) '() (list (car w))))   ;; thin: any composite x -> y is THE arrow; encode by target gen
+(define walking-arrow (make-category 2 (list (list 0 1 'f)) free-nf 1))
+(define (square-nf w) (if (equal? w (list 3 1)) (list 2 0) w))   ;; d o b -> c o a (generators indexed 0..3 = a b c d)
+(define square (make-category 4 (list (list 0 1 'a) (list 0 2 'b) (list 1 3 'c) (list 2 3 'd)) square-nf 2))
+(define (poset-category n covers)                ;; thin category from a cover relation; arrows = comparable pairs
+  (let* ((leq (make-vector (* n n) #f)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! leq (+ (* n i) i) #t) (loop (+ i 1)))))
+    (for-each (lambda (c) (vector-set! leq (+ (* n (car c)) (cdr c)) #t)) covers)
+    (let outer ((k 0)) (if (< k n) (begin (let li ((i 0)) (if (< i n) (begin (let lj ((j 0)) (if (< j n) (begin (if (and (vector-ref leq (+ (* n i) k)) (vector-ref leq (+ (* n k) j))) (vector-set! leq (+ (* n i) j) #t)) (lj (+ j 1))))) (li (+ i 1))))) (outer (+ k 1)))))
+    (let* ((pairs (filter (lambda (p) (vector-ref leq (+ (* n (car p)) (cadr p)))) (cartesian (list (range n) (range n)))))
+           (arrows (list->vector (map (lambda (p) (vector (car p) (cadr p) (list (car p) (cadr p)))) pairs)))
+           (narr (vector-length arrows)) (comp (make-hash-table))
+           (idx (lambda (x y) (list-index-of (lambda (p) (and (= (car p) x) (= (cadr p) y))) pairs))))
+      (let lg ((g 0)) (if (< g narr) (begin (let lf ((f 0)) (if (< f narr) (begin (if (= (vector-ref (vector-ref arrows f) 1) (vector-ref (vector-ref arrows g) 0)) (hash-table-set! comp (+ (* narr g) f) (idx (vector-ref (vector-ref arrows f) 0) (vector-ref (vector-ref arrows g) 1)))) (lf (+ f 1))))) (lg (+ g 1)))))
+      (vector n arrows comp (list->vector (map (lambda (x) (idx x x)) (range n)))))))
+(define S (poset-category 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define S2 (poset-category 6 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3) (cons 2 4) (cons 3 4) (cons 2 5) (cons 3 5))))
+(define (z2-nf w) (if (even? (length w)) '() (list 0)))
+(define BZ2 (make-category 1 (list (list 0 0 's)) z2-nf 2))
+(define point (make-category 1 '() free-nf 0))
+;; --- functors, set-valued functors, natural transformations ------------------------------------------------------
+;; a functor C -> D: (vector obj-map arrow-map); checked on identities and all composites
+(define (functor? C D F)
+  (let ((F0 (vector-ref F 0)) (F1 (vector-ref F 1)))
+    (and (all? (lambda (a) (and (= (vector-ref F0 (a-src C a)) (a-src D (vector-ref F1 a))) (= (vector-ref F0 (a-tgt C a)) (a-tgt D (vector-ref F1 a))))) (range (c-narr C)))
+         (all? (lambda (x) (= (vector-ref F1 (c-id C x)) (c-id D (vector-ref F0 x)))) (range (c-nobj C)))
+         (all? (lambda (g) (all? (lambda (f) (or (not (composable? C g f)) (= (vector-ref F1 (compose C g f)) (compose D (vector-ref F1 g) (vector-ref F1 f))))) (range (c-narr C)))) (range (c-narr C))))))
+;; a Set-valued functor on C: (vector sets maps): sets a vector of lists (elements), maps a vector arrow -> vector
+;; (function on element indices)
+(define (sf-set X x) (vector-ref (vector-ref X 0) x))
+(define (sf-map X a) (vector-ref (vector-ref X 1) a))
+(define (sf-apply X a i) (vector-ref (sf-map X a) i))
+(define (set-functor? C X)
+  (and (all? (lambda (x) (let ((n (length (sf-set X x)))) (all? (lambda (i) (= i (sf-apply X (c-id C x) i))) (range n)))) (range (c-nobj C)))
+       (all? (lambda (g) (all? (lambda (f) (or (not (composable? C g f))
+                                              (all? (lambda (i) (= (sf-apply X (compose C g f) i) (sf-apply X g (sf-apply X f i)))) (range (length (sf-set X (a-src C f)))))))
+                              (range (c-narr C)))) (range (c-narr C)))))
+(define (natural? C X Y eta)                     ;; eta: vector object -> vector (component function on indices)
+  (all? (lambda (a) (let ((x (a-src C a)) (y (a-tgt C a)))
+                      (all? (lambda (i) (= (vector-ref (vector-ref eta y) (sf-apply X a i)) (sf-apply Y a (vector-ref (vector-ref eta x) i)))) (range (length (sf-set X x))))))
+        (range (c-narr C))))
+(define (make-set-functor C sets maps) (vector (list->vector sets) (list->vector maps)))
+(define (arrow-named C name) (list-index-of (lambda (a) (equal? (a-name C a) name)) (range (c-narr C))))
+;; a Set-functor from an alist name -> function vector; identities are filled in automatically
+(define (set-functor-by-names C sets alist)
+  (make-set-functor C sets
+                    (map (lambda (a) (let ((x (a-src C a)))
+                                       (if (= a (c-id C x)) (list->vector (range (length (list-ref sets x))))
+                                           (let ((e (assoc (a-name C a) alist))) (if e (cdr e) (error "no map for arrow"))))))
+                         (range (c-narr C)))))
+
+;; --- opposite categories and presheaves ---------------------------------------------------------------------
+(define (opposite C)
+  (let* ((n (c-narr C)) (arrows (list->vector (map (lambda (a) (vector (a-tgt C a) (a-src C a) (a-name C a))) (range n)))) (comp (make-hash-table)))
+    (let lg ((g 0)) (if (< g n) (begin (let lf ((f 0)) (if (< f n) (begin (if (composable? C f g) (hash-table-set! comp (+ (* n g) f) (compose C f g))) (lf (+ f 1))))) (lg (+ g 1)))))
+    (vector (c-nobj C) arrows comp (vector-ref C 3))))
+;; a presheaf on C = a Set-functor on (opposite C); for a: c' -> c in C the map X(a): X(c) -> X(c') is (sf-map X a)
+(define (arrows-into C c) (filter (lambda (a) (= c (a-tgt C a))) (range (c-narr C))))
+(define (subsets xs) (if (null? xs) (list '()) (let ((rest (subsets (cdr xs)))) (append rest (map (lambda (s) (cons (car xs) s)) rest)))))
+(define (sorted-ints xs) (let loop ((l xs) (acc '())) (if (null? l) acc (loop (cdr l) (let ins ((x (car l)) (ys acc)) (cond ((null? ys) (list x)) ((<= x (car ys)) (if (= x (car ys)) ys (cons x ys))) (else (cons (car ys) (ins x (cdr ys))))))))))
+(define (sieve? C c S) (all? (lambda (h) (all? (lambda (g) (or (not (composable? C h g)) (memv (compose C h g) S))) (range (c-narr C)))) S))
+(define (sieves C c) (map sorted-ints (filter (lambda (S) (sieve? C c S)) (subsets (arrows-into C c)))))
+(define (pullback-sieve C f S) (sorted-ints (filter (lambda (g) (and (composable? C f g) (memv (compose C f g) S))) (arrows-into C (a-src C f)))))
+(define (omega C)                                ;; the presheaf of sieves
+  (let ((sv (list->vector (map (lambda (c) (sieves C c)) (range (c-nobj C))))))
+    (make-set-functor (opposite C)
+                      (map (lambda (c) (vector-ref sv c)) (range (c-nobj C)))
+                      (map (lambda (a) (list->vector (map (lambda (S) (position-of (pullback-sieve C a S) (vector-ref sv (a-src C a)))) (vector-ref sv (a-tgt C a))))) (range (c-narr C))))))
+(define (maximal-sieve-index C Om c) (position-of (sorted-ints (arrows-into C c)) (sf-set Om c)))
+(define Cop-arrow (opposite walking-arrow)) (define Om-arrow (omega walking-arrow))
+(define Cop-S (opposite S)) (define Om-S (omega S))
+(define Cop-square (opposite square)) (define Om-square (omega square))
+(define Cop-BZ2 (opposite BZ2)) (define Om-BZ2 (omega BZ2))
+(show "sizes of Omega(c): walking arrow, pseudocircle, square, BZ/2" (list (map (lambda (c) (length (sf-set Om-arrow c))) (range 2)) (map (lambda (c) (length (sf-set Om-S c))) (range 4)) (map (lambda (c) (length (sf-set Om-square c))) (range 4)) (map (lambda (c) (length (sf-set Om-BZ2 c))) (range 1))))
+(check "opposite categories satisfy the category laws and Omega is a presheaf (a functor on C^op) with sieve counts (2, 3), (2, 2, 5, 5), (2, 3, 3, 6), (2)"
+       (and (all? category-laws? (list Cop-arrow Cop-S Cop-square Cop-BZ2))
+            (all? (lambda (p) (set-functor? (car p) (cdr p))) (list (cons Cop-arrow Om-arrow) (cons Cop-S Om-S) (cons Cop-square Om-square) (cons Cop-BZ2 Om-BZ2)))
+            (equal? (map (lambda (c) (length (sf-set Om-arrow c))) (range 2)) (list 2 3))
+            (equal? (map (lambda (c) (length (sf-set Om-S c))) (range 4)) (list 2 2 5 5))
+            (equal? (map (lambda (c) (length (sf-set Om-square c))) (range 4)) (list 2 3 3 6))
+            (equal? (map (lambda (c) (length (sf-set Om-BZ2 c))) (range 1)) (list 2))))
+(check "true: the maximal sieves form a global element (a natural transformation from the terminal presheaf 1 to Omega)"
+       (all? (lambda (p) (let ((C (car p)) (Om (cdr p)))
+                           (natural? (opposite C) (make-set-functor (opposite C) (map (lambda (c) (list 'pt)) (range (c-nobj C))) (map (lambda (a) (vector 0)) (range (c-narr C)))) Om
+                                     (list->vector (map (lambda (c) (vector (maximal-sieve-index C Om c))) (range (c-nobj C)))))))
+             (list (cons walking-arrow Om-arrow) (cons S Om-S) (cons square Om-square) (cons BZ2 Om-BZ2))))
+
+;; --- natural transformations by enumeration ----------------------------------------------------------------------
+(define (functions-from m n) (map list->vector (cartesian (map (lambda (i) (range n)) (range m)))))   ;; all functions {0..m-1} -> {0..n-1}
+(define (all-naturals Cop X Y)
+  (filter (lambda (eta) (natural? Cop X Y eta))
+          (map list->vector (cartesian (map (lambda (c) (functions-from (length (sf-set X c)) (length (sf-set Y c)))) (range (c-nobj Cop)))))))
+;; --- subobjects and the classifier ------------------------------------------------------------------------------------
+(define (sub-presheaves C X)                     ;; families of subsets A(c) of X(c) closed under every X(a): X(c) -> X(c')
+  (filter (lambda (A) (all? (lambda (a) (all? (lambda (x) (memv (sf-apply X a x) (list-ref A (a-src C a)))) (list-ref A (a-tgt C a)))) (range (c-narr C))))
+          (cartesian (map (lambda (c) (subsets (range (length (sf-set X c))))) (range (c-nobj C))))))
+(define (classifying-map C Om X A)               ;; chi_A(c)(x) = the sieve of arrows a into c with X(a)(x) in A(src a)
+  (list->vector (map (lambda (c) (list->vector (map (lambda (x) (position-of (sorted-ints (filter (lambda (a) (memv (sf-apply X a x) (list-ref A (a-src C a)))) (arrows-into C c))) (sf-set Om c))) (range (length (sf-set X c)))))) (range (c-nobj C)))))
+(define (pullback-of-true C Om X chi)           ;; {x : chi(x) = maximal sieve}
+  (map (lambda (c) (filter (lambda (x) (= (vector-ref (vector-ref chi c) x) (maximal-sieve-index C Om c))) (range (length (sf-set X c))))) (range (c-nobj C))))
+(define (classifier-check C Om X)
+  (let* ((subs (sub-presheaves C X)) (nats (all-naturals (opposite C) X Om))
+         (chis (map (lambda (A) (classifying-map C Om X A)) subs)))
+    (list (length subs) (length nats)
+          (all? (lambda (chi) (natural? (opposite C) X Om chi)) chis)
+          (all? (lambda (A) (equal? A (pullback-of-true C Om X (classifying-map C Om X A)))) subs)
+          (= (length subs) (length (dedup chis))))))
+;; presheaves: on the walking arrow X(1) = {u, v}, X(0) = {p, q, r} with X(f)(u) = p, X(f)(v) = q
+(define X-arrow (set-functor-by-names Cop-arrow (list (list 'p 'q 'r) (list 'u 'v)) (list (cons (list 0) (vector 0 1)))))
+;; on the pseudocircle: X(c) = X(d) = {0, 1}, X(a) = X(b) = {0}; all maps constant
+(define X-S (make-set-functor Cop-S (list (list 's) (list 't) (list 'c0 'c1) (list 'd0 'd1))
+                              (map (lambda (a) (let ((x (a-src S a)) (y (a-tgt S a))) (if (= x y) (list->vector (range (if (< x 2) 1 2))) (vector 0 0)))) (range (c-narr S)))))
+(define cc-arrow (with-region (classifier-check walking-arrow Om-arrow X-arrow)))
+(define cc-S (with-region (classifier-check S Om-S X-S)))
+(show "classifier check (sub-presheaves, Nat(X, Omega), all chi natural, pullback of true recovers A, chi injective): walking arrow, pseudocircle" (list cc-arrow cc-S))
+(check "subobject classifier: sub-presheaves of X and natural transformations X -> Omega agree in number (18 and 18 on the walking arrow; 19 and 19 on the pseudocircle), every classifying map is natural and injective on subobjects, and the pullback of true along chi_A is A"
+       (and (equal? cc-arrow (list 18 18 #t #t #t)) (equal? cc-S (list 19 19 #t #t #t))))
+
+;; --- exponentials -----------------------------------------------------------------------------------------------------
+(define (representable C c)                      ;; y(c)(c') = Hom(c', c); y(c)(a)(h) = h o a
+  (make-set-functor (opposite C) (map (lambda (c2) (hom C c2 c)) (range (c-nobj C)))
+                    (map (lambda (a) (list->vector (map (lambda (h) (position-of (compose C h a) (hom C (a-src C a) c))) (hom C (a-tgt C a) c)))) (range (c-narr C)))))
+(define (product-presheaf Cop X Y)
+  (make-set-functor Cop (map (lambda (c) (cartesian (list (range (length (sf-set X c))) (range (length (sf-set Y c)))))) (range (c-nobj Cop)))
+                    (map (lambda (a) (let ((src (a-src Cop a)) (tgt (a-tgt Cop a)))
+                                       (list->vector (map (lambda (pr) (position-of (list (sf-apply X a (car pr)) (sf-apply Y a (cadr pr))) (cartesian (list (range (length (sf-set X tgt))) (range (length (sf-set Y tgt)))))))
+                                                          (cartesian (list (range (length (sf-set X src))) (range (length (sf-set Y src)))))))))
+                         (range (c-narr Cop)))))
+(define (exponential C X Y)                      ;; Y^X(c) = Nat(y(c) x X, Y); Y^X(a)(theta) = theta o (y(a) x id)
+  (let* ((Cop (opposite C))
+         (elems (list->vector (map (lambda (c) (all-naturals Cop (product-presheaf Cop (representable C c) X) Y)) (range (c-nobj C)))))
+         (maps (map (lambda (a)
+                      (let* ((c (a-tgt C a)) (c2 (a-src C a)) (Pc (product-presheaf Cop (representable C c) X)) (Pc2 (product-presheaf Cop (representable C c2) X)))
+                        (list->vector (map (lambda (theta)
+                                             ;; theta': at c'', (h: c'' -> c2, x) -> theta_{c''}(a o h, x)
+                                             (let ((theta2 (list->vector (map (lambda (c3)
+                                                                                (list->vector (map (lambda (pr) (let* ((h (list-ref (hom C c3 c2) (car pr))) (x (cadr pr))
+                                                                                                                     (i (position-of (list (position-of (compose C a h) (hom C c3 c)) x) (sf-set Pc c3))))
+                                                                                                                (vector-ref (vector-ref theta c3) i)))
+                                                                                                   (sf-set Pc2 c3))))
+                                                                              (range (c-nobj C))))))
+                                               (position-of theta2 (vector-ref elems c2))))
+                                           (vector-ref elems c)))))
+                    (range (c-narr C)))))
+    (make-set-functor Cop (map (lambda (c) (vector-ref elems c)) (range (c-nobj C))) maps)))
+(define (adjunction-count C X Y Z)
+  (let* ((Cop (opposite C)) (E (exponential C X Y)))
+    (list (length (all-naturals Cop (product-presheaf Cop Z X) Y)) (length (all-naturals Cop Z E)) (set-functor? Cop E) (map (lambda (c) (length (sf-set E c))) (range (c-nobj C))))))
+(define Y-arrow (set-functor-by-names Cop-arrow (list (list 'y0 'y1) (list 'y2)) (list (cons (list 0) (vector 0)))))
+(define Z-arrow (set-functor-by-names Cop-arrow (list (list 'z0) (list 'z1 'z2)) (list (cons (list 0) (vector 0 0)))))
+(define adj-arrow (adjunction-count walking-arrow X-arrow Y-arrow Z-arrow))
+(show "walking arrow: |Hom(Z x X, Y)|, |Hom(Z, Y^X)|, Y^X a presheaf, sizes of Y^X" adj-arrow)
+(check "exponential adjunction on the walking arrow: Hom(Z x X, Y) and Hom(Z, Y^X) have the same number of elements and Y^X is a presheaf"
+       (and (= (car adj-arrow) (cadr adj-arrow)) (caddr adj-arrow)))
+(define X-z2 (set-functor-by-names Cop-BZ2 (list (list 'e 's)) (list (cons (list 0) (vector 1 0)))))      ;; the regular Z/2-set
+(define Y-z2 (set-functor-by-names Cop-BZ2 (list (list 'p 'q)) (list (cons (list 0) (vector 0 1)))))      ;; the trivial 2-element set
+(define adj-z2 (adjunction-count BZ2 X-z2 Y-z2 X-z2))
+(show "BZ/2: |Hom(R x R, T)|, |Hom(R, T^R)|, T^R a Z/2-set, |T^R|" adj-z2)
+(check "on BZ/2 the exponential T^R of the trivial 2-set by the regular representation has 4 elements (all maps R -> T, since y(*) x R = R x R is free) and the adjunction counts agree"
+       (and (= (car adj-z2) (cadr adj-z2)) (caddr adj-z2) (equal? (cadddr adj-z2) (list 4))))
+
+;; --- the internal Heyting algebra of Omega ------------------------------------------------------------------------------
+(define (meet S T) (sorted-ints (filter (lambda (a) (memv a T)) S)))
+(define (join S T) (sorted-ints (append S T)))
+(define (subset? S T) (all? (lambda (a) (memv a T)) S))
+(define (implies C c S T) (let ((cands (filter (lambda (R) (subset? (meet R S) T)) (sieves C c))))   ;; the largest R with R and S <= T
+                            (let loop ((l cands) (best '())) (if (null? l) best (loop (cdr l) (if (subset? best (car l)) (car l) best))))))
+(define (heyting-check C c)
+  (let ((sv (sieves C c)))
+    (and (all? (lambda (S) (all? (lambda (T) (let ((I (implies C c S T)))
+                                              (and (memv 0 (list 0)) (position-of I sv)
+                                                   (all? (lambda (R) (eq? (subset? R I) (subset? (meet R S) T))) sv))))
+                                sv)) sv)
+         (all? (lambda (S) (all? (lambda (T) (and (position-of (meet S T) sv) (position-of (join S T) sv))) sv)) sv))))
+(define (boolean? C c) (let ((top (sorted-ints (arrows-into C c)))) (all? (lambda (S) (equal? (join S (implies C c S '())) top)) (sieves C c))))
+(check "Omega(c) is a Heyting algebra at every object of the walking arrow, the pseudocircle and BZ/2 (meets, joins and implication are sieves and R <= (S => T) iff R and S <= T)"
+       (and (all? (lambda (c) (heyting-check walking-arrow c)) (range 2)) (all? (lambda (c) (heyting-check S c)) (range 4)) (heyting-check BZ2 0)))
+(check "Omega(1) on the walking arrow has three elements and is not Boolean (the sieve {f} has no complement); Omega on BZ/2 is Boolean; Omega(c) on the pseudocircle (five sieves) is not"
+       (and (= 3 (length (sieves walking-arrow 1))) (not (boolean? walking-arrow 1)) (boolean? BZ2 0) (not (boolean? S 2))))
+
+;; --- Grothendieck topologies and Lawvere-Tierney topologies -----------------------------------------------------------------
+(define (grothendieck-topology? C J)             ;; J: list over objects of lists of covering sieves
+  (and (all? (lambda (c) (member (sorted-ints (arrows-into C c)) (list-ref J c))) (range (c-nobj C)))
+       (all? (lambda (c) (all? (lambda (Sv) (all? (lambda (f) (member (pullback-sieve C f Sv) (list-ref J (a-src C f)))) (arrows-into C c))) (list-ref J c))) (range (c-nobj C)))
+       (all? (lambda (c) (all? (lambda (Sv) (all? (lambda (R) (or (member R (list-ref J c))
+                                                                 (not (all? (lambda (f) (member (pullback-sieve C f R) (list-ref J (a-src C f)))) Sv))))
+                                                 (sieves C c)))
+                              (list-ref J c)))
+             (range (c-nobj C)))))
+(define (grothendieck-topologies C) (filter (lambda (J) (grothendieck-topology? C J)) (cartesian (map (lambda (c) (subsets (sieves C c))) (range (c-nobj C))))))
+(define (lt-from-J C Om J)                       ;; j_c(S) = {f into c : f^* S in J(dom f)}
+  (list->vector (map (lambda (c) (list->vector (map (lambda (Sv) (position-of (sorted-ints (filter (lambda (f) (member (pullback-sieve C f Sv) (list-ref J (a-src C f)))) (arrows-into C c))) (sieves C c))) (sieves C c)))) (range (c-nobj C)))))
+(define (lt-topology? C Om j)
+  (and (natural? (opposite C) Om Om j)
+       (all? (lambda (c) (= (maximal-sieve-index C Om c) (vector-ref (vector-ref j c) (maximal-sieve-index C Om c)))) (range (c-nobj C)))
+       (all? (lambda (c) (all? (lambda (i) (= (vector-ref (vector-ref j c) i) (vector-ref (vector-ref j c) (vector-ref (vector-ref j c) i)))) (range (length (sf-set Om c))))) (range (c-nobj C)))
+       (all? (lambda (c) (let ((sv (sieves C c)))
+                           (all? (lambda (S) (all? (lambda (T) (= (vector-ref (vector-ref j c) (position-of (meet S T) sv))
+                                                                  (position-of (meet (list-ref sv (vector-ref (vector-ref j c) (position-of S sv))) (list-ref sv (vector-ref (vector-ref j c) (position-of T sv)))) sv)))
+                                                  sv)) sv)))
+             (range (c-nobj C)))))
+(define (lt-check C Om)
+  (let* ((Js (grothendieck-topologies C)) (js (map (lambda (J) (lt-from-J C Om J)) Js)))
+    (list (length Js) (all? (lambda (j) (lt-topology? C Om j)) js) (= (length Js) (length (dedup js))))))
+(define ltc-arrow (lt-check walking-arrow Om-arrow))
+(define ltc-S (with-region (lt-check S Om-S)))
+(define ltc-z2 (lt-check BZ2 Om-BZ2))
+(show "Grothendieck topologies (count, all give LT topologies, distinct): walking arrow, pseudocircle, BZ/2" (list ltc-arrow ltc-S ltc-z2))
+(check "every Grothendieck topology gives a Lawvere-Tierney topology, distinct topologies give distinct j, with 4 topologies on the walking arrow, 16 on the pseudocircle and 2 on BZ/2 (the trivial and the dense one)"
+       (and (equal? ltc-arrow (list 4 #t #t)) (equal? ltc-S (list 16 #t #t)) (equal? ltc-z2 (list 2 #t #t))))
+(define all-lt-arrow (with-region (filter (lambda (j) (lt-topology? walking-arrow Om-arrow j))
+                             (map list->vector (cartesian (map (lambda (c) (functions-from (length (sf-set Om-arrow c)) (length (sf-set Om-arrow c)))) (range 2)))))))
+(show "walking arrow: all natural endomorphisms of Omega satisfying the Lawvere-Tierney axioms, by exhaustion" (length all-lt-arrow))
+(check "Theorem V.1.2 by exhaustion on the walking arrow: the Lawvere-Tierney topologies (4, out of 108 endomorphisms of Omega) are exactly the ones induced by the 4 Grothendieck topologies"
+       (and (= 4 (length all-lt-arrow)) (all? (lambda (j) (member j all-lt-arrow)) (map (lambda (J) (lt-from-J walking-arrow Om-arrow J)) (grothendieck-topologies walking-arrow)))))
+
+(display "The internal logic of a presheaf topos, computed: Omega, subobjects, exponentials, the Heyting algebra, Grothendieck and Lawvere-Tierney topologies") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

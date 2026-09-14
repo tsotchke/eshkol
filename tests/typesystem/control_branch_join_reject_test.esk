@@ -1,0 +1,26 @@
+;; Type System Test: the result of a multi-branch form is the join of its
+;; branches, so a join that is provably the wrong type is reported where the
+;; value is used: String branches give String, Int64 with Float64 gives Number,
+;; an and of comparisons is Boolean, a dynamic-wind yields its thunk's type.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN]
+;; EXPECT-STDERR: argument 1 of 'area': expected Number, got String
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Number
+;; EXPECT-STDERR: argument 2 of 'area': expected Number, got Boolean
+;; EXPECT-STDERR: argument 2 of 'area': expected Number, got String
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (never-called flag n)
+  (area (cond (flag "a") (else "b")) 1))
+(define (also-never-called flag n)
+  (label (case n ((1) 1) (else 2.5))))
+(define (third flag)
+  (area 1 (and (< 1 2) (> 2 1))))
+(define (fourth)
+  (area 1 (dynamic-wind (lambda () 0) (lambda () "s") (lambda () 0))))
+
+(display (area 2 3))
+(newline)

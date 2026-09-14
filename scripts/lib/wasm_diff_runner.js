@@ -69,7 +69,9 @@ try {
 }
 
 const dir = path.dirname(modPath);
-const out = [];   // program stdout, one entry per emscripten line (newline-stripped)
+const repoRoot = path.resolve(path.dirname(srcPath), '../../..');
+const out = [];   // Emscripten's complete-line fallback
+const stdoutBytes = []; // Exact byte stream, including non-newline display output
 const err = [];   // program stderr + runner diagnostics
 let aborted = false;
 
@@ -81,6 +83,10 @@ let aborted = false;
 const moduleArgs = {
   print: (s) => out.push(s),
   printErr: (s) => err.push(s),
+  // The default Emscripten print bridge is line buffered. Eshkol's display is
+  // allowed to leave a line unterminated, so collect FS stdout bytes directly
+  // and use them in preference to the line callback below.
+  stdout: (byte) => { if (byte !== undefined && byte !== null) stdoutBytes.push(byte); },
   locateFile: (p) => path.join(dir, p),
   // Keep the runtime alive after run_program returns so we can fflush; and
   // trap abort() instead of letting it call process.exit and lose captured
@@ -93,6 +99,24 @@ const moduleArgs = {
 factory(moduleArgs).then((mod) => {
   let exitCode = 0;
   try {
+    // The differential lane exercises R7RS module imports. The product WASM
+    // image remains filesystem-free; this test-only module gets the small
+    // fixture library through MEMFS before compiling the test program.
+    const libraryDir = path.join(repoRoot, 'lib');
+    if (fs.existsSync(libraryDir) && mod.FS) {
+      const stageLibrary = (hostDir, wasmDir) => {
+        mod.FS.mkdirTree(wasmDir);
+        for (const entry of fs.readdirSync(hostDir, { withFileTypes: true })) {
+          const hostPath = path.join(hostDir, entry.name);
+          const wasmPath = `${wasmDir}/${entry.name}`;
+          if (entry.isDirectory()) stageLibrary(hostPath, wasmPath);
+          else if (entry.isFile() && entry.name.endsWith('.esk')) {
+            mod.FS.writeFile(wasmPath, fs.readFileSync(hostPath));
+          }
+        }
+      };
+      stageLibrary(libraryDir, '/lib');
+    }
     mod.ccall('run_program', null, ['string'], [source]);
   } catch (e) {
     if (e && e.name === 'ExitStatus' && typeof e.status === 'number') {
@@ -111,11 +135,13 @@ factory(moduleArgs).then((mod) => {
   // case the runtime still holds a buffered line (libc's own exit() already
   // flushes stdio via atexit, so this is normally a no-op belt-and-braces).
   try { mod.ccall('fflush', 'number', ['number'], [0]); } catch (_) { /* fflush optional */ }
-  if (out.length) process.stdout.write(out.join('\n') + '\n');
+  if (stdoutBytes.length) process.stdout.write(Buffer.from(stdoutBytes));
+  else if (out.length) process.stdout.write(out.join('\n') + '\n');
   if (err.length) process.stderr.write(err.join('\n') + '\n');
   process.exit(aborted ? 1 : exitCode);
 }).catch((e) => {
   process.stderr.write('WASM-RUNNER-FATAL: ' + (e && e.message ? e.message : String(e)) + '\n');
-  if (out.length) process.stdout.write(out.join('\n') + '\n');
+  if (stdoutBytes.length) process.stdout.write(Buffer.from(stdoutBytes));
+  else if (out.length) process.stdout.write(out.join('\n') + '\n');
   process.exit(1);
 });

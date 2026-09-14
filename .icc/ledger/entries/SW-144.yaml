@@ -1,0 +1,36 @@
+id: SW-144
+bucket: SILENT-WRONG
+subtag: autodiff
+family: ad-dynamic-state-unwind
+status: fixed
+title: the exception unwinder did not restore AD dynamic state, so a raise out of a gradient left AD MODE on
+repro: '`(guard (e (#t ''raised)) (gradient (lambda (z) (tensor-sum (matmul (reshape z 1 2 2) C22))) (vector 1.0 2.0 3.0 4.0)))`
+  - the documented rank-3 admission refusal - followed by any ordinary tensor expression. `(tensor-max (tensor-mul (reshape z 2) M2))`
+  then evaluated to `#<ad-node>` instead of `12`, and every finite-difference comparator downstream compared
+  against that carrier.'
+observed: '`#<ad-node>` from a call that asks for a number; exit 0, no diagnostic'
+correct: '`12` - AD mode is dynamic state of the differentiation operator and must not outlive it'
+root_cause: >-
+  A differentiation operator turns AD mode on, publishes its tape, publishes the active seed node and lets the
+  mixed forward/reverse recorder count; the matching "off" is emitted on the operator's NORMAL exit only. A
+  raise out of the differentiated function skips all of it. eshkol_push_exception_handler already marks the
+  dynamic-wind, promise and region state and eshkol_raise unwinds each of them before its longjmp - AD state was
+  simply not among them, even though it is dynamic state by exactly the same argument.
+fixed_by: >-
+  lib/core/runtime_autodiff.cpp adds eshkol_ad_state_capture/eshkol_ad_state_restore as the single seam over the
+  AD dynamic state the runtime owns (mode flag, tape depth, current tape, active seed node, mixed-record count);
+  inc/eshkol/eshkol.h + lib/core/runtime_exceptions_hosted.cpp mark it at guard entry and unwind it in
+  eshkol_raise beside the wind/promise/region marks.
+evidence: >-
+  The reproducer above now prints `12` after the guarded raise on JIT and AOT (it printed `#<ad-node>` before),
+  and tests/features/ultimate_math_stress.esk, whose gradient-descent section runs after sixteen other
+  numeric sections, stays 45/45. RESIDUAL, deliberately recorded rather than claimed closed: in COMPILER mode
+  `__ad_tape_stack`/`__ad_tape_depth` are MODULE-INTERNAL globals (llvm_codegen.cpp creates them with
+  InternalLinkage outside REPL mode), so the runtime cannot repair the depth an aborted pass leaves one too
+  high. popTapeContext derives the AD-mode flag from that depth, so a gradient issued AFTER a guarded raise
+  still ends with AD mode on. Closing that half requires the tape stack to have a single owner (the runtime,
+  as the REPL build already has) and is not attempted here; a mode save/restore inside the operator was tried
+  and REJECTED because it propagates a pre-existing leak instead of healing it - the unconditional clear that
+  popTapeContext performs at depth 0 is load-bearing.
+caught_by: [direct-measurement, dense_tensor_ad_gradcheck]
+missed_by: [icc-correctness-chain, icc-smoke, ctest]

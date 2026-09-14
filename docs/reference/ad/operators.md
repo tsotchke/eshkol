@@ -51,6 +51,32 @@ on the LLVM backend but raises a named diagnostic on the VM, whose forward dual
 is a scalar carrier and whose tensors hold bare doubles — every tangent would be
 dropped at construction, so it reports instead of approximating.
 
+## Native bridge primitive — squared geodesic distance
+
+The native C bridge exposes `AD_NODE_SQUARED_DISTANCE` through
+`ad_squared_distance` and `ad_product_squared_distance`. These are not Scheme
+builtins: they accept native `ad_node_t` point tensors and record a scalar
+node for the native reverse sweep. The product form sums weighted squared
+distances factorwise across Euclidean, hyperbolic, and spherical factors.
+
+The backward evaluates the log-map form directly:
+
+```
+grad_x d²(x,y) = -2 log_x(y)
+```
+
+It is differentiable at `x == y`; the forward value and both point gradients
+are exactly zero there. The spherical antipode remains a refusal because the
+log map is not defined at the cut locus. Spherical inputs are validated against
+the declared radius `R = 1/sqrt(K)` and then canonicalized for the forward;
+the coordinate backward therefore includes `R/||x||` and `R/||y||` for raw
+accepted coordinates. The shared spherical cut-locus predicate is also used by
+the VM's spherical distance/log operations, which raise a named condition at
+antipodes. The bridge is native-only and has an explicit VM-parity
+justification; it does not claim a Scheme squared-distance surface.
+See [`space_form.h`](../../../inc/eshkol/bridge/space_form.h) and the
+[support matrix](support-matrix.md).
+
 ---
 
 ## `derivative` — forward-mode scalar derivative
@@ -78,6 +104,26 @@ A **vector- or tensor-valued** function (ℝ → ℝⁿ) differentiates componen
 ```
 
 `jacobian` remains the operator for a vector-valued map of a *vector* point.
+
+Tensor-valued transformer operations preserve this forward carrier at their
+numeric boundary. A Scheme vector containing a live dual may be passed to
+`layer-norm` or to the rank-2/rank-3 `scaled-dot-attention` operation; the
+operation returns a dual tensor, and `tensor-get` returns the tagged dual
+element so the enclosing `derivative` sees its tangent. For example, the
+following returns `0.5` and is checked against a central finite difference:
+
+```scheme
+(define q (reshape #(0.0 0.0 0.0 0.0) 2 2))
+(define k (reshape #(0.0 0.0 0.0 0.0) 2 2))
+(define (attention-value x)
+  (tensor-get (scaled-dot-attention q k
+                (reshape (vector x 2.0 3.0 4.0) 2 2)) 0 0))
+(derivative attention-value 1.0)  ;; => 0.5
+```
+
+This is first-order forward support. Reverse-mode tensor gradients for these
+operations remain scalarizing. Native supports rank-2 and rank-3 attention;
+the VM supports the rank-2 form and the same layer-norm contract.
 
 Second derivative by nesting two `derivative` calls (two perturbation slots,
 exact — see architecture):
@@ -340,40 +386,55 @@ Three properties hold for every operator and every point form:
 
 ### When the exact tier defers to the jet
 
-The tower is the only exact carrier, but it is not a drop-in replacement for the
-8-jet, so the exact route is taken only where the two cannot be told apart.
-`derivative`/`gradient`/`hessian` keep the (inexact, unchanged) jet path when:
+Exactness is decided **at run time**, from the point's tag, not by a static
+proof of the differentiand's source text. `adExactTowerGate` evaluates the
+point once and routes to the same tower pass `derivative-n` runs whenever it
+is exact; the tower's own arithmetic (`+ - * /`, non-negative-integer `expt`,
+and any top-level define reached through them) keeps a value exact through
+composition by ordinary R7RS contagion, demoting to `f64` only where a value
+ITSELF turns inexact — a transcendental, or an inexact operand actually
+participating. There is deliberately no whitelist over the differentiand's
+*shape*: a composed call several frames deep, a top-level `define`d constant,
+a point built from `(car …)`/`(vector-ref …)`/`(hash-ref …)`/a loop
+variable/a function call, and a differentiand given as a lambda, a variable, a
+function-call expression that computes a closure (`(mk 3)`), a let-bound
+closure, or a composition (`(compose f g)`) are all exactly as exact as the
+same computation written out by hand — see `tests/ad/exactness_runtime_property_test.esk`.
+`derivative`/`gradient`/`hessian` keep the (inexact, unchanged) jet path only
+when:
 
-- **the body is not pure tower arithmetic** — the tower has recurrences only for
-  the primitives of `lib/core/taylor_recurrences.def`, so a body that indexes a
-  vector or branches is deferred. A body that *calls* another function is
-  accepted when that call resolves to a top-level `(define (f p…) body)` whose
-  own body is pure tower arithmetic over its parameters (a head shadowed by a
-  local binding, and a recursive head, are both rejected), so
-  `(derivative (lambda (s) (h 1/5 s)) 1/3)` with `(define (h a b) (* a b b))`
-  reaches the exact `2/15`. This is also what keeps a **nested** differentiation
-  on the jet: nesting is correct in value on every operator pairing (ESH-0412),
-  but the two passes compose through a first-order companion series of doubles,
-  so an exact seed cannot stay exact through one — the exact tier declines
-  rather than promise an exactness it would lose;
-- **the function cannot be resolved to a single-parameter body** — an unresolved
-  function may differentiate again;
+- **the function cannot be resolved to a callable at all** — an inline lambda
+  with anything but exactly one parameter is declined at compile time (the
+  tower pass has exactly one point argument); every other shape (a name, a
+  call expression, a composition, …) is resolved the same way the jet arm
+  itself resolves it, so declining here is rare in practice;
 - **a differentiation is already live at run time** — a forward pass
   (`__ad_pert_level > 0`), a tower pass, or a reverse tape, any of which means
-  the point or a capture may carry a perturbation the tower would drop.
+  the point or a capture may carry a perturbation the tower would drop. This
+  is also what keeps a **nested** differentiation correct: nesting is correct
+  in value on every operator pairing (ESH-0412), whether reached lexically or
+  through a runtime closure call, but the two passes compose through a
+  first-order companion series of doubles, so an exact seed cannot stay exact
+  through one — the exact tier declines rather than promise an exactness it
+  would lose.
 
 **Build items** (capability to add, not limitations to accept):
 `jacobian`/`laplacian`/`divergence`/`curl`/`directional-derivative` and the
 **vector-point** forms of `gradient`/`hessian` need one tower pass per component,
-because the tower is univariate; a body outside the arithmetic whitelist needs
-tower recurrences for the remaining forms; and nested tower passes need the
-epoch-tagged tower-in-tower work that would also fix `derivative-n`'s own nesting.
+because the tower is univariate, and a body outside the tower's own recurrence
+set (`lib/core/taylor_recurrences.def`) still demotes to `f64` at that operation
+for those forms; nested tower passes need the epoch-tagged tower-in-tower work
+that would also fix `derivative-n`'s own nesting.
 
-> `#(1/3)` and `(tensor 1/3)` are a separate, non-AD gap: those literal
-> constructors drop an exact rational to `0` before any AD operator sees the
-> point (`(display (tensor 1/3))` prints `#(0)`), so an exact seed cannot be
-> expressed in those two forms yet. Use `(vector 1/3)`, `(list 1/3)` or a bare
-> scalar. Tracked with the tensor-literal generality work.
+> `#(1/3)` now carries the exact rational through the literal (SW-153), the
+> same as `(vector 1/3)` and `(list 1/3)`; what still cannot express an exact
+> seed is `(tensor 1/3)`, and for a reason that is not an AD gap at all: a
+> tensor's storage is homogeneous IEEE 754 `double`, so an exact element is
+> correctly *rounded* on construction rather than carried (it is no longer
+> silently zeroed — SW-166; see
+> [../tensors/creation.md](../tensors/creation.md#exact-rationalbignum-elements-sw-166)).
+> An exact-element tensor is separately tracked. The vector-point operators
+> that would consume an exact `#(1/3)` seed are the build item above.
 
 ---
 
@@ -395,16 +456,20 @@ first-order operators:
 (gradient sqv (vector 3.0))                                       ;; => #(6)
 ```
 
-> **Nesting caveat (ESH-0078).** For a *nested* second-order gradient, the
-> inner `gradient`/`derivative` must currently receive an **inline lambda**.
-> A named function or lambda-variable as the inner differentiand silently
-> returns `0`:
+> **Nesting through a named inner function works (formerly ESH-0078).** The
+> inner `gradient`/`derivative` accepts an inline lambda, a named `define`, or
+> a lambda bound to a variable, and all three agree:
 >
 > ```scheme
 > (define (L z) (* z (* z z)))
-> (gradient (lambda (y) (gradient (lambda (z) (L z)) y)) 3.0)  ;; => 18  ✅ inline
-> (gradient (lambda (y) (gradient L y)) 3.0)                   ;; =>  0  ❌ named (ESH-0078)
+> (gradient (lambda (y) (gradient (lambda (z) (L z)) y)) 3.0)  ;; => 18  inline
+> (gradient (lambda (y) (gradient L y)) 3.0)                   ;; => 18  named
 > ```
+>
+> The *curried* route — `(define g (gradient f))` then `(jacobian g point)` —
+> is the one spelling that still refuses, loudly, with `unsupported nested
+> differentiation` (ESH-0096). Use `(hessian f point)`, which is exact. See
+> [KNOWN_ISSUES.md](../../KNOWN_ISSUES.md).
 
 ---
 
@@ -414,10 +479,10 @@ What the differentiated lambda may close over depends on the mode:
 
 | Captured value | `derivative` (forward) | `gradient`/`jacobian`/`hessian`/`divergence`/`curl`/`laplacian` (reverse) |
 |----------------|------------------------|---------------------------------------------------------------------------|
-| top-level (global) scalar | ✅ | ✅ |
-| top-level (global) vector, via `vref` | ✅ | ✅ |
-| **local** / parameter scalar | ✅ | ❌ LLVM `PtrToInt` verification failure (**ESH-0072** scalar point, **ESH-0097** vector point) |
-| `vref` of an outer **local** vector param | ✅ | ❌ same failure (**ESH-0097** `capvrefout`) |
+| top-level (global) scalar | Yes | Yes |
+| top-level (global) vector, via `vref` | Yes | Yes |
+| **local** / parameter scalar | Yes | Yes (fixed: **ESH-0072** scalar point, **ESH-0097** vector point) |
+| `vref` of an outer **local** vector param | Yes | Yes (fixed: **ESH-0097** `capvrefout`) |
 
 Verified examples:
 
@@ -425,25 +490,27 @@ Verified examples:
 ;; GLOBAL capture — works in both modes
 (define a 8.0) (define t 5.0)
 (define (loss x) (let ((d (- x t))) (* a (* d d))))
-(derivative loss 7.0)                                    ;; => 32   ✅
+(derivative loss 7.0)                                    ;; => 32
 
 (define g 1.7)
 (gradient (lambda (v) (* g (vref v 0) (vref v 0))) (vector 1.3 -0.7))
-;; => #(4.42 0)   ✅
+;; => #(4.42 0)
 
 ;; LOCAL capture under `derivative` — works (forward mode)
 (define (step a t w0) (derivative (lambda (x) (loss2 a t x)) w0))
-;; (step 8.0 5.0 7.0) => 32   ✅
+;; (step 8.0 5.0 7.0) => 32
 
-;; LOCAL capture under `gradient` — FAILS at compile time (ESH-0072 / ESH-0097)
+;; LOCAL capture under `gradient` — works (ESH-0072 / ESH-0097, fixed)
 (define (mk a) (gradient (lambda (x) (* a x x)) 3.0))
-;; ERROR: LLVM module verification failed: PtrToInt source must be pointer
-;;        %N = ptrtoint %eshkol_tagged_value %a to i64
+(mk 2.0)                                                 ;; => 12
 ```
 
-**Workaround until ESH-0072/ESH-0097 land:** lift captured scalars to
-top-level `define`s (or pass them *inside* the point vector and `vref` them),
-so the reverse-mode lambda only closes over globals.
+No workaround is needed. The reverse-mode vector path funnels a value-typed
+capture through a temp slot instead of `ptrtoint`-ing a `tagged_value` struct
+(`lib/backend/autodiff_codegen.cpp:6975-6990`, `:11381-11400`); the regression
+is `tests/ad/sweep_c_regressions_test.esk:57-69`, which asserts exact values
+for gradient, jacobian, hessian, divergence and laplacian over a lambda
+capturing a local parameter.
 
 ---
 
@@ -451,15 +518,16 @@ so the reverse-mode lambda only closes over globals.
 
 | Composition | Status | Note |
 |-------------|--------|------|
-| `derivative` of `derivative` (scalar 2nd order) | ✅ | exact, 2 perturbation slots |
-| `derivative` of a **variable-bound** derivative closure — the curried spelling `(define df (derivative f))` … `(derivative df)` | ✅ | exact to 3rd order (v1.3.4, ESH-0369). The closure returned by `(derivative f)` seeds and extracts *this* perturbation level, so it is dual-transparent and differentiates like any other function. `(derivative (derivative f))` and `(derivative (car fs))` — differentiands with no name to look up — resolve too. Every spelling of the k-th derivative of `f` agrees: `(derivative-n f x k)`, nested-lambda, curried-named, curried-unnamed. See [tests/ad/curried_higher_order_derivative_test.esk](../../../tests/ad/curried_higher_order_derivative_test.esk) |
-| `derivative-n` / `taylor` applied to a **derivative closure** — `(define df (derivative f))` then `(derivative-n df x k)` | ❌ returns 0 | The tower path seeds a heap **Taylor tower**, but the closure `(derivative f)` returns is jet-transparent, not tower-transparent: it reads the tower-tagged argument as a jet and the result carries no tower, so extraction yields 0. Making it exact needs a "differentiate a tower" runtime step (`c_k(f') = (k+1)·c_{k+1}(f)`) inside the emitted wrapper — a build item, not a limit of the mathematics. Use `(derivative-n f x k)` on the base function, or nest `derivative` — `(derivative (lambda (x) (df x)) x0)` is exact — both of which give the same value |
-| `gradient` of scalar `derivative`, scalar point | ✅ | forward-fast-path |
-| `gradient` (vector point) over inner `derivative` — **mixed reverse-over-forward** | ✅ | fixed in v1.3 (#113, ESH-0093); see [tests/ad/mixed_mode_ad_test.esk](../../../tests/ad/mixed_mode_ad_test.esk), 15/15 |
-| `gradient` of `gradient`, **scalar** point | ✅ | e.g. `L''` returns correct value |
-| `gradient` of `gradient`, **vector** point | ❌ returns zeros (**ESH-0096**) |
-| `gradient` of a **named** inner function | ❌ returns 0 (**ESH-0078**) |
-| AD inside a bounded loop (reuse) | ✅ | stable over 1000+ iterations |
+| `derivative` of `derivative` (scalar 2nd order) | Yes | exact, 2 perturbation slots |
+| `derivative` of a **variable-bound** derivative closure — the curried spelling `(define df (derivative f))` … `(derivative df)` | Yes | exact to 3rd order (v1.3.4, ESH-0369). The closure returned by `(derivative f)` seeds and extracts *this* perturbation level, so it is dual-transparent and differentiates like any other function. `(derivative (derivative f))` and `(derivative (car fs))` — differentiands with no name to look up — resolve too. Every spelling of the k-th derivative of `f` agrees: `(derivative-n f x k)`, nested-lambda, curried-named, curried-unnamed. See [tests/ad/curried_higher_order_derivative_test.esk](../../../tests/ad/curried_higher_order_derivative_test.esk) |
+| `derivative-n` / `taylor` applied to a **derivative closure** — `(define df (derivative f))` then `(derivative-n df x k)` | Yes | exact (fixed, **ESH-0402**). `(derivative df x)` and `(derivative (lambda (x) (df x)) x0)` answer exactly as well, and all three agree with `(derivative-n f x k)` on the base function. This was the closure-side view of one carrier-boundary defect, not a separate limitation. Gated by [tests/ad/ad_carrier_nesting_test.esk](../../../tests/ad/ad_carrier_nesting_test.esk) |
+| `gradient` of scalar `derivative`, scalar point | Yes | forward-fast-path |
+| `gradient` (vector point) over inner `derivative` — **mixed reverse-over-forward** | Yes | fixed in v1.3 (#113, ESH-0093); see [tests/ad/mixed_mode_ad_test.esk](../../../tests/ad/mixed_mode_ad_test.esk), 15/15 |
+| `gradient` of `gradient`, **scalar** point | Yes | e.g. `L''` returns correct value |
+| `gradient` of `gradient`, **vector** point | Yes | returns the true second derivative — `#(12)` for the 1-D case, `#(8 6)` for the 2-D one (formerly **ESH-0096**) |
+| `gradient` of a **named** inner function | Yes | returns `18`, matching the inline-lambda form (formerly **ESH-0078**) |
+| `gradient`/`jacobian` of a **curried** `gradient` closure — `(define g (gradient f))` then `(jacobian g pt)` | Refuses | raises `unsupported nested differentiation` rather than answering. A loud refusal, not a silent zero. Use `(hessian f pt)`, which is exact on the same build (**ESH-0096**) |
+| AD inside a bounded loop (reuse) | Yes | stable over 1000+ iterations |
 
 Mixed reverse-over-forward (an outer vector `gradient` over an inner
 `derivative` that depends on captured tape parameters) is the headline v1.3 AD
@@ -476,7 +544,8 @@ fix. Verified:
 
 ## See also
 
-- [architecture.md](architecture.md) — forward 4-jet, reverse tape, `__ad_pert_level`, mixed-mode recording
+- [architecture.md](architecture.md) — forward 4-jet, reverse tape, `__ad_pert_level`, mixed-mode recording, the 83-row AD node registry and the exact geometric backwards
+- [tape.md](tape.md) — the explicit `ad-*` tape builtins (record the graph yourself, run one reverse sweep) and the AD instrumentation counters
 - [support-matrix.md](support-matrix.md) — full oracle matrix, open cells, running the oracle
 - [../../breakdown/AUTODIFF.md](../../breakdown/AUTODIFF.md) — modes, node opcodes, tensor backward, numeric boundary
 - [../tensors/INDEX.md](../tensors/INDEX.md) — tensor operations that AD flows through

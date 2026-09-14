@@ -64,6 +64,50 @@ void eshkol_rational_from_bignums_tagged(
     void* arena, eshkol_bignum_t* num, eshkol_bignum_t* denom,
     eshkol_tagged_value_t* result);
 
+/* (expt base exponent) where `base` is an exact rational (tagged HEAP_PTR,
+ * HEAP_SUBTYPE_RATIONAL) and `exponent` is any tagged value.
+ *
+ * Mirrors eshkol_bignum_pow_tagged()'s contract for the one case that
+ * function deliberately excludes (a rational base is never misread as a
+ * bignum): if the exponent is an exact INT64, computes base^exponent EXACTLY
+ * via repeated squaring of the numerator and denominator bignums
+ * (eshkol_bignum_pow), inverting numerator/denominator for a negative
+ * exponent. `(expt r 0)` is the exact integer 1 for every rational `r`. If
+ * the exponent is inexact, both operands are converted to double and the
+ * result is an inexact double (R7RS exactness contagion). */
+void eshkol_rational_pow_tagged(
+    void* arena, const eshkol_tagged_value_t* base, const eshkol_tagged_value_t* exponent,
+    eshkol_tagged_value_t* result);
+
+/* MS-05 / SW-167: `(sqrt in)` for an exact, non-negative `in` (INT64,
+ * bignum, or rational HEAP_PTR -- caller has already excluded a negative
+ * exact operand, which promotes to complex at the sqrt call site instead).
+ * Returns the exact result (INT64/bignum/rational) when `in`'s numerator
+ * and denominator are each a perfect square; otherwise returns the
+ * caller-supplied `fallback_double` (already computed by the codegen, e.g.
+ * libm sqrt() on the extracted double) wrapped as an inexact tagged value.
+ * See docs/breakdown/EXACT_ARITHMETIC.md sec on sqrt/expt exactness. */
+void eshkol_exact_sqrt_tagged(
+    void* arena, const eshkol_tagged_value_t* in, double fallback_double,
+    eshkol_tagged_value_t* result);
+
+/* MS-05 / SW-167: `(expt base exponent)` where `exponent` is an exact
+ * rational HEAP_PTR with denominator q > 1 (an integer exponent, including
+ * a rational BASE with an integer exponent, is already exact via
+ * eshkol_bignum_pow_tagged / eshkol_rational_pow_tagged above -- this
+ * function is reached only for a genuinely fractional exponent). For a
+ * non-negative `base`, returns the exact rational p/q-th power when base's
+ * numerator and denominator are each a perfect q-th power (e.g.
+ * `(expt 4 1/2)` = 2, `(expt 8 2/3)` = 4, `(expt 1/27 1/3)` = 1/3);
+ * otherwise -- and for any negative base, where R7RS leaves the result
+ * without a promised exact (or even real) value in a language with no
+ * exact-complex tower -- returns the caller-supplied `fallback_double`
+ * (ordinary libm pow(), which is already NaN for a negative base with a
+ * fractional exponent) wrapped as an inexact tagged value. */
+void eshkol_exact_rational_pow_tagged(
+    void* arena, const eshkol_tagged_value_t* base, const eshkol_tagged_value_t* exponent,
+    double fallback_double, eshkol_tagged_value_t* result);
+
 /* (make-rational num den) with tagged operands: each of num/den may be an
  * INT64 or a bignum HEAP_PTR (bignum-magnitude literal). Produces an exact
  * INT64/bignum (when the reduced denominator is 1) or a rational HEAP_PTR. */

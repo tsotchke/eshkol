@@ -244,11 +244,15 @@ Taylor-tower builtins, target v1.4.1) — and on the VM `diff` is an alias of th
 numeric `derivative` rather than the symbolic form. Everything in Section 2 that
 names `taylor` or `derivative-n` runs today on the LLVM backend, AOT and JIT.
 
-### 3.2 The four example programs
+### 3.2 The nine example programs
 
 The `examples/mathematics_navier_stokes_*.esk` family lands with this document
-and exercises the four steps of Section 2 that are fully executable today. It
-follows the flat `examples/*.esk` convention, so
+and exercises the steps of Section 2 that are fully executable today, each as
+a REPRESENTATIVE REDUCTION rather than a call into the general-purpose BUILD
+ITEMS of Section 3.4 (which mostly remain PLANNED — see below): where a step's
+own BUILD ITEM is not yet shipped, the program mechanizes the same algebraic
+skeleton on a small, honestly-scoped model instead of asserting the general
+capability. It follows the flat `examples/*.esk` convention, so
 [`scripts/run_examples_tests.sh`](../../scripts/run_examples_tests.sh) discovers
 the files without further wiring, exactly as the existing AI-mathematics family
 does (`docs/AI_MATHEMATICS_EXAMPLES.md`).
@@ -259,13 +263,18 @@ does (`docs/AI_MATHEMATICS_EXAMPLES.md`).
 | `mathematics_navier_stokes_similarity_scales.esk` | 1, 2, 7, 8 | The similarity scale exponents `(A, D, ℓr, ℓz, E_core, D_core)` derived as a linear system solved exactly over rationals on the scalar exact tower, with the finite-energy condition `h < 1/6` verified exactly | IN PROGRESS | v1.3.5 | `ns_similarity_exponents_solved` |
 | `mathematics_navier_stokes_first_principles.esk` | 3, 5, 6, 43 | The leading-order profile balance obtained by collecting Taylor coefficients of the residual of the similarity ansatz, with a negative control: a deliberately wrong exponent must leave a nonzero coefficient | IN PROGRESS | v1.3.5 | `ns_leading_profile_balance` |
 | `mathematics_navier_stokes_pulse_stress.esk` | 58, 59, 62 | The pulse momentum-flux averages and the two-family stress solve: the exact angular average `1/2`, the 2x2 covariance system `y = H^{−1}T`, positivity of both squared amplitudes, and the first-order signed increment | IN PROGRESS | v1.3.5 | `ns_covariance_two_family_solve` |
+| `mathematics_navier_stokes_stress_cone.esk` | 16-20, 35-39 | Lemma 4.5's cone equivalence (4.20)-(4.23) certified by exact rational sign tests on the quadratic `Pq`, never a square root; the threshold `P_K` folded over an abstract parameter sample EXTENDED with the physical `(a, -b_s)` of the constructed base flow, so the same proven threshold mechanism (not a second, unconnected argument) places the constructed stress inside the admissible cone | IN PROGRESS | v1.3.5 | `ns_cone_condition_equivalence` |
+| `mathematics_navier_stokes_residual_order_n.esk` | 40-44 | The order-by-order linear recursion of (5.1)-(5.6), reduced to a fixed linear operator against a known lower-order forcing at a sampled similarity coordinate (not the full second-order elliptic solve near the axis, which stays a BUILD ITEM below): the formal expansion truncated at order N substituted into a model residual, with orders 0..N-1 vanishing exactly by the exact-coefficient Taylor tower (`taylor`/`derivative-n`) | IN PROGRESS | v1.3.5 | `ns_residual_order_n_vanishes` |
+| `mathematics_navier_stokes_heat_exterior.esk` | 22, 27 | The curvature-corrected radial heat equation for the azimuthal exterior solved exactly by an odd polynomial in r with a triangular linear recursion in t (closed form `L[r^n] = (n^2-1)r^{n-2}`, verified by AD); Lemma A.1's distinct-power-weight moment matrix, fully exact for a small 2x2 case, with the one transcendental-profile moment stated (not asserted) to be inexact | IN PROGRESS | v1.3.5 | `ns_heat_exterior_exact` |
+| `mathematics_navier_stokes_oscillatory_realization.esk` | 58, 59, 61 | Two pulse families as exact trigonometric polynomials on a 4-point auxiliary torus (cos/sin at k·π/2 are the exact integers `{1,0,-1,0}`/`{0,1,0,-1}`, no transcendental call); their zero angular mean and the nonzero mean momentum-flux products extracted by `torus-average`; the stacked 2x2 flux solve via `exact-solve` (`core.exact_linalg`, merged from `feat/exact-rational-linalg`) gives positive in-cone weights | IN PROGRESS | v1.3.5 | `ns_oscillatory_zero_mode` |
+| `mathematics_navier_stokes_pulse_growth.esk` | Introduction ([9]), 2.2 | The Craik-Criminale wavevector law made exact for a simple-shear background (rational, affine in t, AD-verified against the CL ODE); a representative amplification-then-damping growth-rate model whose crossover is bisected to an exact rational bracket and cross-checked against an independently RK4-integrated amplitude curve | IN PROGRESS | v1.3.5 | `ns_pulse_growth_crossover` |
 
 ### 3.3 IN PROGRESS
 
 | BUILD ITEM | What it unlocks | Version | Gate |
 |---|---|---|---|
 | `core.dbsp` GA — incremental evaluation over the closed world | Steps 46, 75: the coefficient induction and the correction cycle re-evaluate only what changed, so order `n+1` and stage `j+1` are incremental rather than full recomputations; this is also the substrate for search over ansatz families | v1.5.0-intelligence | `ns_coefficient_induction_closes` |
-| The four example programs of Section 3.2 | Steps 1, 2, 5-9, 43, 58, 59, 62, 71, 83 executable and gated in CI | v1.3.5 | `./scripts/run_examples_tests.sh` |
+| The nine example programs of Section 3.2 | Steps 1, 2, 5-9, 16-20, 22, 27, 35-44, 58, 59, 61, 62, 71, 83, plus Introduction [9]/2.2 (Craik-Criminale) executable and gated in CI | v1.3.5 | `./scripts/run_examples_tests.sh` |
 
 ### 3.4 PLANNED
 
@@ -274,7 +283,7 @@ does (`docs/AI_MATHEMATICS_EXAMPLES.md`).
 | **Symbolic multivariate polynomial and series values.** A sparse multivariate polynomial ring over `Q` and `GF(p)`, and a truncated multivariate power-series value with a coefficient norm. Verified absent today: `groebner`, `resultant`, `discriminant` and `poly-add` have zero definitions in the tree (ICC `find-symbol`); the only polynomial algebra present is SICP exercise code in `tests/sicp/ch2_polynomial_arithmetic.esk` | Steps 22 (generic), 31, 40-42, 54 | v1.4.0-connection | `ns_order_n_coefficient_solve` |
 | **Polynomial-valued duals.** The residual of a symbolic ansatz to every order: AD operators applied to a symbolic field so that `R(u, p)` returns a graded value whose coefficients can be collected and solved, rather than a number. Rests on the item above plus the shipped tower | Steps 3, 10, 14, 40-42, 44 | v1.4.0-connection | `ns_leading_profile_balance` |
 | **Torus averaging and oscillatory stress realization as builtins.** `T¹`/`T²`-valued fields, the Haar mean `⟨·⟩_Y`, the angular mean `⟨·⟩_θ`, evaluation at a phase map `Y(r,t)` with full chain-rule propagation, support-disjointness bookkeeping, and the inverse of a directional derivative on the zero-mean subspace | Steps 35, 37, 38, 50, 52, 58, 61, 63, 67 | v1.5.0-intelligence | `ns_torus_support_disjointness`, `ns_fast_time_inverse` |
-| **Exact linear algebra.** Rational and bignum Gaussian elimination, determinant and inverse over the exact scalar tower, and an exact tensor element type. Verified absent today: `lib/math.esk`'s `det`/`inv` seed inexact constants, `lib/core/linear_solve.cpp` and the BLAS entry points are f64-only, and Eshkol tensors are f64-backed (`(tensor 1/3)` prints `#(0)`). Until it lands, every exact system in Section 2 is written out directly over the scalar exact tower on Scheme vectors, which do carry exact rationals | Steps 7, 22, 24, 25, 34, 59, 68 | v1.4.0-connection | `ns_moment_matrix_invertible` |
+| **Exact linear algebra.** Rational and bignum Gaussian elimination, determinant and inverse over the exact scalar tower, and an exact tensor element type. Verified absent today: `lib/math.esk`'s `det`/`inv` seed inexact constants, `lib/core/linear_solve.cpp` and the BLAS entry points are f64-only, and Eshkol tensors are f64-backed (`(tensor 1/3)` rounds to the nearest double). Until it lands, every exact system in Section 2 is written out directly over the scalar exact tower on Scheme vectors, which do carry exact rationals | Steps 7, 22, 24, 25, 34, 59, 68 | v1.4.0-connection | `ns_moment_matrix_invertible` |
 | **Rigorous enclosures.** Directed-rounding interval arithmetic (Eshkol exposes no `nextafter`/`fesetround` today, so `lib/core/ad/interval.esk` widens by a relative epsilon instead) and a proved Taylor-model remainder in place of the current 65-point sampled derivative bound times a safety factor. This is the ROADMAP Formal Verification item that stages Lean-certifying the validated-AD Taylor models | Every row in Section 2 whose gate is an enclosure | v1.5.0-intelligence (directed rounding), v2.0-starlight (proved remainder) | `ns_certificate_external_check` |
 | **Rigorous compact-set bounds.** Supremum/infimum over a parameter box with adaptive subdivision on top of the two items above, so a compactness constant is produced rather than asserted | Steps 19, 30 (tail), 72, 77, 81 (tail) | v1.5.0-intelligence | `ns_cone_condition_equivalence` |
 | **Interval and Taylor-model tensor element types with AD.** Tensor element types whose entries are intervals or Taylor models, differentiable by the same operators — the composition of the shipped tensor towers with the shipped Taylor models, which today are separate | Steps 72, 77, 78, 80 | v1.6.0-reasoning | `ns_summation_flatness` |
@@ -290,9 +299,10 @@ itself rather than inferred:
 
 - **Exactness is scalar.** The bignum and rational tower is scalar-only. Every
   tensor is f64-backed (`lib/core/arena_memory.h`: storage is always f64 bit
-  patterns, the dtype records the logical precision), so `(tensor 1/3)` prints
-  `#(0)`. Scheme vectors and lists do carry exact rationals; exact work in
-  Section 2 uses those.
+  patterns, the dtype records the logical precision), so `(tensor 1/3)` rounds
+  to the nearest double (`#(0.3333333333333333)`) rather than carrying the
+  rational. Scheme vectors and lists do carry exact rationals — `#(1/3)`
+  included — and exact work in Section 2 uses those.
 - **AD is exact at exact scalar points, f64 at vector points.** `derivative`,
   `gradient` and `hessian` return exact rationals at an exact scalar point and
   run the same tower pass; vector points intentionally stay on the inexact

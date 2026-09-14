@@ -271,6 +271,13 @@ public:
         apply_forward_ref_callback_ = callback;
     }
 
+    using ClosureCallCallback = llvm::Value* (*)(llvm::Value*, const std::vector<llvm::Value*>&, const char*, void*);
+    using ClosureSpreadCallback = llvm::Value* (*)(llvm::Value*, llvm::Value*, llvm::Value*, int, void*);
+    void setClosureCallbacks(ClosureCallCallback call, ClosureSpreadCallback spread) {
+        closure_call_callback_ = call;
+        closure_spread_callback_ = spread;
+    }
+
 private:
     // Shared codegen state and helper modules (not owned; refs injected via
     // the constructor)
@@ -290,6 +297,8 @@ private:
 
     // Callback for AST codegen
     CodegenASTCallback codegen_ast_callback_ = nullptr;
+    ClosureCallCallback closure_call_callback_ = nullptr;
+    ClosureSpreadCallback closure_spread_callback_ = nullptr;
     void* callback_context_ = nullptr;
 
     // Cons cell operation callbacks

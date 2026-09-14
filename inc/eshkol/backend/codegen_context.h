@@ -275,6 +275,16 @@ public:
     llvm::GlobalVariable* globalArena() { return global_arena_; }
     void setGlobalArena(llvm::GlobalVariable* arena) { global_arena_ = arena; }
 
+    // Allocation sites must query the calling thread. Returning the old
+    // process-global slot here would make a nested region on one worker
+    // visible to another worker.
+    llvm::Value* currentArena() {
+        llvm::FunctionType* type = llvm::FunctionType::get(ptrType(), {}, false);
+        llvm::FunctionCallee accessor = module_.getOrInsertFunction(
+            "eshkol_current_arena", type);
+        return builder_.CreateCall(accessor, {}, "arena");
+    }
+
     /**
      * Single accessor for "the arena that allocations should currently target".
      *
@@ -368,6 +378,44 @@ public:
         eshkol_set_diagnostic_source_location(current_source_file_.c_str(),
                                                current_source_line_,
                                                current_source_column_);
+    }
+
+    // === Runtime-valued source-location override (LE-19) ===
+    // The location above is a COMPILE-TIME constant, which is correct only
+    // while the code being emitted belongs to exactly one source position.
+    // It is wrong inside a helper that is emitted ONCE per module and called
+    // from every site of an operator -- the out-lined numeric-tower dispatch
+    // `__eshkol_arith_{add,sub,mul,div}` (ESH-0103) is exactly that. Baking a
+    // constant location into its error branches makes every arithmetic type
+    // error in the program report whichever site happened to emit the helper
+    // first, so a failure at one call site was reported at another (typically
+    // the body of the first function that used the operator).
+    //
+    // While such a helper's body is being emitted, the helper's own
+    // file/line/column PARAMETERS are installed here, and the error-location
+    // emitters use them instead of constants. `owner` is the function those
+    // Values belong to: an emitter must never reference an Argument of another
+    // function, so the override is consulted only while emitting into `owner`.
+    struct SourceLocationOverride {
+        llvm::Value* file = nullptr;
+        llvm::Value* line = nullptr;
+        llvm::Value* column = nullptr;
+        llvm::Function* owner = nullptr;
+    };
+    void setSourceLocationOverride(llvm::Value* file, llvm::Value* line,
+                                   llvm::Value* column, llvm::Function* owner) {
+        source_location_override_ = {file, line, column, owner};
+    }
+    void clearSourceLocationOverride() { source_location_override_ = {}; }
+    const SourceLocationOverride& sourceLocationOverride() const {
+        return source_location_override_;
+    }
+    /** True when an override is installed AND the builder is currently
+     *  emitting into the function that owns its Values. */
+    bool sourceLocationOverrideUsable() const {
+        if (!source_location_override_.owner) return false;
+        llvm::BasicBlock* bb = builder_.GetInsertBlock();
+        return bb && bb->getParent() == source_location_override_.owner;
     }
 
     // A sub-codegen can discover a fatal source error while lowering an
@@ -505,6 +553,7 @@ private:
     std::string current_source_file_;
     uint32_t current_source_line_ = 0;
     uint32_t current_source_column_ = 0;
+    SourceLocationOverride source_location_override_;
     bool fatal_codegen_error_ = false;
 
     // Mode flags

@@ -8,9 +8,45 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 3.0
 
-# AOT compilation is bounded separately from test execution.  Windows ARM64
-# linking can legitimately take longer than the Unix-hosted default.
-$script:CompileTimeoutSec = 120
+# AOT compilation is bounded separately from test execution.  Windows linking
+# can legitimately take longer than the Unix-hosted default.
+#
+# This bound is per TEST, and on Windows it is not really a bound on the test:
+# every .esk test here is compiled into its own executable by
+# `eshkol-run -L <build dir> -o <out> <test>`, and that driver links the whole
+# pre-built stdlib object into each one (exe/eshkol-run.cpp, the
+# "Auto-linking pre-compiled stdlib" path) and re-walks the stdlib .esk source
+# tree to rebuild the precompiled-module set.  A suite of N tests pays that
+# cost N times, so per-test compile time tracks the size of stdlib.o rather
+# than the size of the test.
+#
+# Measured on the hosted runners, same lanes, same harness, comparing a master
+# CI run against the v1.3.5 candidate -- the only relevant difference being
+# stdlib.o at 5.4 MB versus 8.4 MB.  Per test, compile plus run:
+#
+#                                      5.4 MB     8.4 MB
+#   windows-arm64-lite   bitwise_ops     65 s  ->   124 s
+#                        type_predicates 63 s  ->   125 s
+#                        minimal         63 s  ->   125 s
+#                        strings_closure 63 s  ->   128 s
+#                        logging         78 s  ->   131 s
+#   windows-arm64-xla    every test      63-68 s -> none finished under 120 s
+#   windows-x64-cuda     typical test    49-56 s ->  104-135 s
+#                        ozaki_fast     115 s  ->   over the 120 s guard
+#
+# That is a ~1.9x growth factor across every Windows lane, which is what put
+# the xla and gpu suites (120 s) and two of the lite suite's tests (300 s) over
+# budget at once.  120 s no longer covers even a trivial Windows test compile
+# on either runner, so the default is 300 s: ~2.2x the worst measured by the
+# suites that use it (131 s on arm64, 135 s on x64).  The
+# windows-lite mode overrides it further below, where the measurements
+# justifying that are recorded.
+#
+# This constant is a symptom.  The fix is to stop paying the stdlib link once
+# per test -- see ledger entry DD-16, which carries the same measurements and
+# the close condition.  When that lands, this should come back down rather than
+# go up again.
+$script:CompileTimeoutSec = 300
 
 function Write-Section {
     param([string]$Text)
@@ -1686,9 +1722,32 @@ switch ($Mode) {
         # Windows verifier; hosted ARM64 validates representative portable
         # surfaces so platform regressions are caught without 2-hour jobs.
         # The ARM64 COFF link of exception-heavy AOT programs can exceed the
-        # normal 120-second compile limit.  Keep the bound, but give each
-        # Windows smoke-test compile five minutes before declaring a timeout.
-        $script:CompileTimeoutSec = 300
+        # normal 120-second compile limit.  Keep the bound, but size it to the
+        # measured cost on the hosted windows-11-arm runner rather than to a
+        # round number.
+        #
+        # Each test here is an independent AOT program that links the whole
+        # pre-built stdlib object, so per-test compile time tracks that
+        # object's size.  Measured on this lane, same runner label, per test:
+        #
+        #   stdlib.o 5.4 MB      stdlib.o 8.4 MB
+        #   bitwise_ops     65 s   ->  124 s
+        #   type_predicates 63 s   ->  125 s
+        #   minimal         63 s   ->  125 s
+        #   strings_closure 63 s   ->  128 s
+        #   logging         78 s   ->  131 s
+        #   exception_test 271 s   ->  over 300 s (timed out)
+        #   atomic_file    244 s   ->  over 300 s (timed out)
+        #
+        # A 1.9x growth factor puts the two heavy exception/SEH-table links at
+        # roughly 515 s and 464 s.  The previous 300 s was set with about 10%
+        # headroom over the then-worst 271 s, which is exactly why a stdlib
+        # growth well short of 2x broke it; 900 s is ~1.75x the projected worst
+        # and ~3.3x the last size that fully passed, so the same growth again
+        # would not silently re-break the lane.  The job-level budget in
+        # .github/workflows/ci.yml was raised alongside this.  The real fix is
+        # to stop paying the stdlib link per test: see ledger entry DD-16.
+        $script:CompileTimeoutSec = 900
         $suiteResults += Invoke-JitCacheSuite
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "features" -Title "Eshkol Windows Feature Smoke Suite" -Patterns @("tests/features/*.esk") -RuntimeErrorRegex "error:" -IncludeNames @(
             "bitwise_ops_test.esk",

@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/backend/codegen_context.h>
+#include <eshkol/backend/llvm_compat.h>
 #include <eshkol/eshkol.h>  // HEAP_SUBTYPE_SYMBOL, etc.
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -277,7 +278,7 @@ llvm::Value* CodegenContext::internStringWithHeader(const std::string& str, uint
         // Name string constant (module-local; LLVM dedups these across the
         // module naturally, so repeated references to the same symbol share
         // a single underlying `.str` global).
-        llvm::Value* name_ptr = builder_.CreateGlobalStringPtr(str, ".sym_name");
+        llvm::Value* name_ptr = eshkol::llvm_compat::createGlobalString(builder_, str, ".sym_name");
 
         // Declare the extern runtime helper.
         llvm::Type* ptr_ty = llvm::PointerType::get(context_, 0);

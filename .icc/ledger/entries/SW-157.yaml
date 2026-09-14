@@ -1,0 +1,59 @@
+id: SW-157
+bucket: SILENT-WRONG
+status: closed
+closed_at: "fix/vm-bignum-rational-reader-printer"
+title: "VM number->string collapsed a bignum-backed exact rational through a double-only coercion and printed 0"
+repro: >-
+  `(display (number->string (/ (expt 7 30) (expt 11 25))))` on the bytecode
+  VM (`./build/eshkol-vm-standalone-test`), and via `--profile hosted-vm
+  --emit-eskb` then running the compiled `.eskb`. Note `(/ (expt 7 30) (expt
+  11 25))` is built entirely at RUNTIME from int64 seeds — not a literal —
+  and was already the exact bignum-backed rational
+  `22539340290692258087863249/108347059433883722041830251` on the VM before
+  this fix (the VM's SW-18 arithmetic runtime already handles this
+  correctly; only its `number->string` path did not).
+observed: >-
+  `0`. `lib/backend/vm_native.c`'s native call 51 (`_number->string-2`, what
+  the Scheme-level `number->string` actually dispatches to via the prelude's
+  `(define (number->string n . args) (_number->string-2 n ...))`) formatted
+  its decimal-radix path as `eshkol_dtoa_shortest(buf, sizeof(buf),
+  as_number(a))`. `as_number()` (`lib/backend/vm_core.c`) is a heap-unaware
+  coercion that recognizes only `VAL_INT`/`VAL_FLOAT`/`VAL_CHAR` and silently
+  returns `0.0` for every other tag — so a `VAL_RATIONAL` or `VAL_BIGNUM`
+  argument formatted as `"0"` with exit 0 and no diagnostic. `display`
+  (`print_value_mode` in `vm_core.c`) already formatted a `VAL_RATIONAL`/
+  `VAL_BIGNUM` correctly by calling `bignum_to_string()` directly — the two
+  entry points had diverged, so `(display x)` and `(display (number->string
+  x))` disagreed for any exact rational/bignum value produced at runtime,
+  not only from a literal.
+correct: >-
+  `number->string` on a `VAL_RATIONAL` or `VAL_BIGNUM` produces the exact
+  decimal external representation, matching `display` exactly and matching
+  native. `(number->string (/ (expt 7 30) (expt 11 25)))` is
+  `"22539340290692258087863249/108347059433883722041830251"`.
+fixed_by: >-
+  New shared helper `vm_number_value_to_string(VM*, Value)` in
+  `vm_native.c`: for `VAL_RATIONAL`/`VAL_BIGNUM` it reads the heap payload
+  directly and formats through `bignum_to_string()` (the same call
+  `print_value_mode`'s display case already used — for a bignum-backed
+  rational, both halves are formatted and joined with `/`; for the int64
+  fast path, `%lld` or `%lld/%lld`), falling back to the existing
+  `vm_number_to_string(rs, as_number_vm(vm, n))` (the heap-aware coercion)
+  for every other tag so `number->string` of an int/float/char is
+  unchanged. Native call 51's decimal-radix branch and the (separately
+  dead-until-now, native calls 563/569) `_number->string`-family entry
+  points now route a `VAL_RATIONAL`/`VAL_BIGNUM` argument through this
+  helper instead of `as_number()`. The non-decimal-radix branch (hex/oct/
+  bin/base-36 `(number->string n radix)`) is unchanged — no bignum-radix
+  converter exists and none of the three task repros exercise it; flagged
+  as a follow-up, not required for this fix's scope.
+evidence: >-
+  `tests/vm/bignum_rational_literals_test.esk` (ctest
+  `bignum_rational_literals_vm_smoke`) — the task's exact repro line and a
+  companion `(number->string (expt 2 100))` (runtime bignum integer, not a
+  literal) both pass on the VM and on native (20/20 both).
+  `tests/vm_parity/corpus/79_bignum_rational_literals.esk` matches
+  byte-for-byte across native `-r`, VM source and VM ESKB via `scripts/
+  run_vm_parity.sh`.
+caught_by: [task-assigned-repro]
+missed_by: [vm-parity-ratchet, prior-exact-arithmetic-audit]

@@ -1,0 +1,76 @@
+;; Issue #551: forward-mode AD must preserve dual tensor inputs through the
+;; transformer tensor boundary.  The three original reproducers are retained
+;; verbatim below; every fixed derivative is independently checked by a
+;; central finite difference of the same plain-valued function.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name condition)
+  (if condition
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+(define (approx= a b tol) (<= (abs (- a b)) tol))
+(define (finite-difference f x h)
+  (/ (- (f (+ x h)) (f (- x h))) (* 2.0 h)))
+
+;; Original reproducer 1: generic tensor gradient.
+(define actual
+  (gradient (lambda (v)
+              (+ (* (tensor-get v 0) (tensor-get v 0))
+                 (* 3.0 (tensor-get v 1))))
+            #(2.0 5.0)))
+(display actual) (newline)
+(check "generic tensor gradient [0]" (approx= (vector-ref actual 0) 4.0 1e-9))
+(check "generic tensor gradient [1]" (approx= (vector-ref actual 1) 3.0 1e-9))
+
+;; Original reproducer 2: scaled-dot-attention derivative through V.
+(define q (reshape #(0.0 0.0 0.0 0.0) 2 2))
+(define k (reshape #(0.0 0.0 0.0 0.0) 2 2))
+(define (f x)
+  (tensor-get (scaled-dot-attention q k
+                (reshape (vector x 2.0 3.0 4.0) 2 2)) 0 0))
+(display (derivative f 1.0)) (newline)
+(define f_fd (finite-difference f 1.0 1e-5))
+(check "attention V derivative matches finite difference"
+       (approx= (derivative f 1.0) f_fd 1e-6))
+(check "attention V derivative closed form"
+       (approx= (derivative f 1.0) 0.5 1e-9))
+
+;; Adversarial attention variants: the dual is in the second V element and
+;; the query/key values are nonzero, so this also exercises nonconstant scores.
+(define q2 (reshape #(1.0 0.0 0.0 1.0) 2 2))
+(define k2 (reshape #(0.0 1.0 1.0 0.0) 2 2))
+(define (f2 x)
+  (tensor-get (scaled-dot-attention q2 k2
+                (reshape (vector 2.0 x 3.0 4.0) 2 2)) 1 0))
+(check "attention nonzero-score dual derivative matches finite difference"
+       (approx= (derivative f2 2.0)
+                (finite-difference f2 2.0 1e-5) 1e-6))
+
+;; Original reproducer 3: layer-norm derivative through a dual-bearing vector.
+(define (f_ln x)
+  (tensor-get (layer-norm (vector x 2.0 3.0) 1.0 0.0 1e-5) 0))
+(display (derivative f_ln 1.0)) (newline)
+(check "layer-norm derivative matches finite difference"
+       (approx= (derivative f_ln 1.0)
+                (finite-difference f_ln 1.0 1e-5) 1e-6))
+
+;; Adversarial layer-norm variant: the dual is not the first feature.
+(define (f_ln_second x)
+  (tensor-get (layer-norm (vector 1.0 x 3.0) 1.0 0.0 1e-5) 1))
+(check "layer-norm middle-feature derivative matches finite difference"
+       (approx= (derivative f_ln_second 2.0)
+                (finite-difference f_ln_second 2.0 1e-5) 1e-6))
+
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: issue_551_tensor_transformer_dual_test") (newline)
+           (exit 0))
+    (begin (display "FAIL: issue_551_tensor_transformer_dual_test") (newline)
+           (exit 1)))

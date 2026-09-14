@@ -1,0 +1,21 @@
+id: SW-89
+bucket: PARITY-RATCHET
+status: open
+title: vm-eskb runs a guard clause body BEFORE the dynamic-wind after-thunk, inverting the R7RS order
+repro: '(define order ''())
+
+  (guard (e (#t (set! order (cons ''clause order)) "done")) (dynamic-wind (lambda () (set! order (cons
+  ''before order))) (lambda () (raise ''x)) (lambda () (set! order (cons ''after order)))))'
+observed: order is not (clause after before) on vm-eskb. vm-src and all three native axes are correct.
+correct: (clause after before). R7RS derives `guard` so the handler re-enters the guard's own continuation
+  before the clauses run, so an escaping raise runs the after-thunk first and the clause body second.
+caught_by:
+- guard-coverage-gate
+missed_by:
+- vm-parity
+- differential
+repro_file: tests/error_handling/guard_coverage/found/vm_eskb_wind_order_vs_clause.esk
+notes: 'A three-way divergence, and the only finding here where the two BYTECODE routes disagree with
+  each other rather than with native: the VM''s own compiler is right and eshkol-run''s ESKB emitter is
+  wrong. Measured every run by 17_wind_unwind_order.esk on the four correct axes; the vm-eskb axis is
+  declared not-required with justification in ENGINES.tsv.'

@@ -1,0 +1,131 @@
+;;; core.tensor_exact_elements — MS-04 / SW-166: constructing an f64 tensor
+;;; from exact non-integer (rational or bignum-magnitude) elements never
+;;; silently stores zero.
+;;;
+;;; Before this fix, `(tensor (vector 1/2 1/3))` stored `#(0 0)` with no
+;;; diagnostic: `(tensor-ref t 0)` returned `0`, exit 0.
+;;;
+;;; docs/reference/tensors/creation.md documents a tensor's storage as
+;;; "homogeneous doubles" — there is no exact-element tensor (that is a
+;;; later item, tracked separately), so the correct behavior is the
+;;; DOCUMENTED f64 rule applied loudly and correctly: convert each exact
+;;; element with the same correctly-rounded nearest-double conversion the
+;;; rest of the numeric tower uses (eshkol_bignum_to_double /
+;;; eshkol_rational_to_double) — 1/2 converts EXACTLY (0.5 is exact in
+;;; binary), 1/3 converts to its nearest double (same as `(inexact 1/3)`) —
+;;; and never to zero for a nonzero value.
+;;;
+;;; Root cause (native): `coll_leaf_double` (lib/core/runtime_list_helpers.cpp),
+;;; the leaf-conversion helper `eshkol_tensor_from_collection` uses for the
+;;; single-collection-argument form of `(tensor X)` (`X` a vector, list, or
+;;; nest of them — this is the runtime, value-driven path a literal
+;;; `#(1/2 1/3)` does NOT take; see SW-153 / tests/core/
+;;; vector_literal_exactness_test.esk for that separate, already-fixed
+;;; compile-time path). `coll_leaf_double` special-cased every non-DOUBLE
+;;; HEAP_PTR (bignum, rational, string, ...) as a hardcoded 0.0 rather than
+;;; dispatching on the heap object's subtype.
+;;;
+;;; Root cause (VM): `vm_tensor_nested_fill`'s leaf case (lib/backend/
+;;; vm_native.c) rejected a VAL_RATIONAL/VAL_BIGNUM leaf outright (not
+;;; silent-zero, but a spurious "not rectangular" error for a value that
+;;; IS a valid scalar leaf), and native call id 410 (`make-tensor`) and 412
+;;; (`tensor-set!`) converted their fill/value operand via the heap-blind
+;;; `as_number()`, which silently reads 0.0 for VAL_RATIONAL/VAL_BIGNUM.
+;;;
+;;; Fixed by: lib/core/runtime_list_helpers.cpp (coll_leaf_double dispatches
+;;; on HEAP_SUBTYPE_BIGNUM/HEAP_SUBTYPE_RATIONAL via
+;;; eshkol_bignum_to_double/eshkol_rational_to_double, raises for any other
+;;; non-numeric heap payload); lib/backend/vm_native.c
+;;; (vm_tensor_nested_fill accepts VAL_RATIONAL/VAL_BIGNUM leaves via
+;;; as_number_vm; native ids 410/412 use as_number_vm instead of
+;;; as_number).
+;;;
+;;; `tensor` (the procedure, multi-scalar-argument form), `make-tensor`,
+;;; `tensor-set!`, and `vector->tensor` already converted exact elements
+;;; correctly on native via `extractAsDouble` (verified below as regression
+;;; pins) — this fix closes the one remaining chokepoint.
+
+(define pass 0)
+(define fail 0)
+(define (check nm ok)
+  (if ok
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display nm) (newline))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display nm) (newline))))
+
+;; ---- the reported defect, verbatim ----
+
+(define t (tensor (vector 1/2 1/3)))
+(check "(tensor-ref t 0) = 1/2 exactly, as a double" (= (tensor-ref t 0) 0.5))
+(check "(tensor-ref t 0) is nonzero" (not (= (tensor-ref t 0) 0)))
+(check "(tensor-ref t 1) is nonzero (1/3 must not read as 0)" (not (= (tensor-ref t 1) 0)))
+(check "(tensor-ref t 1) is close to 1/3" (< (abs (- (tensor-ref t 1) 0.3333333333333333)) 1e-15))
+
+;; ---- exact integer elements (pre-existing, regression pin) ----
+
+(define w (tensor (vector 3 4)))
+(check "(tensor-ref w 0) = 3" (= (tensor-ref w 0) 3))
+(check "tensor elements are always inexact doubles, even from an exact source"
+       (not (exact? (tensor-ref w 0))))
+
+;; ---- (tensor X) from a LIST, not a vector — same chokepoint, different
+;; collection kind ----
+
+(define t-list (tensor (list 1/2 1/4)))
+(check "(tensor (list 1/2 1/4)) elt 0 = 1/2" (= (tensor-ref t-list 0) 0.5))
+(check "(tensor (list 1/2 1/4)) elt 1 = 1/4" (= (tensor-ref t-list 1) 0.25))
+
+;; ---- a nested collection (rank 2) with an exact rational leaf ----
+
+(define t-nested (tensor (vector (vector 1/2 1) (vector 3 1/4))))
+(check "nested tensor shape (2 2)" (equal? (tensor-shape t-nested) (list 2 2)))
+(check "nested [0][0] = 1/2" (= (tensor-ref t-nested 0 0) 0.5))
+(check "nested [1][1] = 1/4" (= (tensor-ref t-nested 1 1) 0.25))
+
+;; ---- a bignum-magnitude exact element (exercises eshkol_bignum_to_double,
+;; not eshkol_rational_to_double) ----
+
+(define big (expt 10 25))
+(define t-big (tensor (vector big 1)))
+(check "bignum element is nonzero" (not (= (tensor-ref t-big 0) 0)))
+(check "bignum element ~= 1e25" (< (abs (- (tensor-ref t-big 0) 1e25)) 1e15))
+
+;; ---- make-tensor with an exact rational fill value ----
+
+(define filled (make-tensor (list 2 2) 1/2))
+(check "make-tensor exact fill: elt 0 = 1/2" (= (tensor-ref filled 0) 0.5))
+(check "make-tensor exact fill: elt 3 = 1/2" (= (tensor-ref filled 3) 0.5))
+
+;; ---- tensor-set! with an exact rational value ----
+
+(define ts (make-tensor (list 3) 0.0))
+(tensor-set! ts 0 1/2)
+(tensor-set! ts 1 2/3)
+(check "tensor-set! exact value: elt 0 = 1/2" (= (tensor-ref ts 0) 0.5))
+(check "tensor-set! exact value: elt 1 is nonzero" (not (= (tensor-ref ts 1) 0)))
+(check "tensor-set! exact value: elt 1 close to 2/3"
+       (< (abs (- (tensor-ref ts 1) 0.6666666666666666)) 1e-15))
+
+;; ---- regression pins: the ALREADY-correct chokepoints stay correct ----
+;;
+;; Native-only in CTest (see CMakeLists.txt): `vector->tensor` is not
+;; implemented on the VM at all (no BUILTINS-table entry) -- a pre-existing,
+;; unrelated feature gap, not a defect this fix touches. Everything above
+;; this point (the single-collection `(tensor X)` form, `make-tensor`,
+;; `tensor-set!`, and the multi-scalar-argument `(tensor e1 e2 ...)` form)
+;; is verified identically on the VM by tests/vm_parity/corpus/
+;; 80_exact_sqrt_and_expt.esk and 81_tensor_exact_elements.esk.
+
+;; `(tensor e1 e2 ...)` — the multi-scalar-argument spelling, as opposed to
+;; the single-collection spelling exercised above.
+(check "(tensor 1/2 1/3) elt 0 = 1/2 (multi-arg form)" (= (tensor-ref (tensor 1/2 1/3) 0) 0.5))
+(check "(tensor 1/2 1/3) elt 1 is nonzero (multi-arg form)"
+       (not (= (tensor-ref (tensor 1/2 1/3) 1) 0)))
+
+;; `vector->tensor`
+(check "(vector->tensor #(1/2 1/3)) elt 0 = 1/2" (= (tensor-ref (vector->tensor (vector 1/2 1/3)) 0) 0.5))
+(check "(vector->tensor #(1/2 1/3)) elt 1 is nonzero"
+       (not (= (tensor-ref (vector->tensor (vector 1/2 1/3)) 1) 0)))
+
+(newline) (display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)
+(if (> fail 0) (exit 1))

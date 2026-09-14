@@ -9,6 +9,7 @@
  */
 
 #include <eshkol/backend/system_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -40,7 +41,7 @@ static llvm::Value* runtimeCapabilityAllowed(CodegenContext& ctx, const char* ca
         ctx.int32Type(), {ctx.ptrType()}, false);
     llvm::FunctionCallee callee = ctx.module().getOrInsertFunction(
         "eshkol_capability_runtime_allows", fn_type);
-    llvm::Value* capability_name = ctx.builder().CreateGlobalStringPtr(capability);
+    llvm::Value* capability_name = eshkol::llvm_compat::createGlobalString(ctx.builder(), capability);
     llvm::Value* allowed = ctx.builder().CreateCall(callee, {capability_name});
     return ctx.builder().CreateICmpNE(
         allowed, llvm::ConstantInt::get(ctx.int32Type(), 0));
@@ -56,7 +57,7 @@ static void runtimeCapabilityDeny(CodegenContext& ctx, const char* capability) {
         ctx.voidType(), {ctx.ptrType()}, false);
     llvm::FunctionCallee callee = ctx.module().getOrInsertFunction(
         "eshkol_capability_runtime_deny", fn_type);
-    llvm::Value* capability_name = ctx.builder().CreateGlobalStringPtr(capability);
+    llvm::Value* capability_name = eshkol::llvm_compat::createGlobalString(ctx.builder(), capability);
     ctx.builder().CreateCall(callee, {capability_name});
 }
 
@@ -162,8 +163,7 @@ llvm::Value* SystemCodegen::getenv(const eshkol_operations_t* op) {
     llvm::Value* string_val;
     if (getenv_strlen_func) {
         llvm::Value* env_len = ctx_.builder().CreateCall(getenv_strlen_func, {result});
-        llvm::Value* arena_ptr = ctx_.builder().CreateLoad(
-            ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* arena_ptr = ctx_.currentArena();
         llvm::Value* env_buf = ctx_.builder().CreateCall(
             mem_.getArenaAllocateStringWithHeader(), {arena_ptr, env_len});
         ctx_.builder().CreateCall(strcpy_callee, {env_buf, result});
@@ -835,7 +835,7 @@ llvm::Value* SystemCodegen::commandLine(const eshkol_operations_t* op) {
     // (`#<unknown>`) when displaying argv. The allocator reserves the
     // +1 NUL byte itself, so we pass the bare strlen.
     llvm::Value* arg_len = ctx_.builder().CreateCall(strlen_func, {arg_ptr});
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* new_str = ctx_.builder().CreateCall(
         mem_.getArenaAllocateStringWithHeader(), {arena_ptr, arg_len});
     ctx_.builder().CreateCall(strcpy_func, {new_str, arg_ptr});
@@ -1139,7 +1139,7 @@ llvm::Value* SystemCodegen::readFile(const eshkol_operations_t* op) {
     // worked around it via `(run-argv-capture (cat path))`.
     // arena_allocate_string_with_header(arena, size) reserves size+1
     // bytes for the trailing NUL and stamps header.size = size+1.
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* buf = ctx_.builder().CreateCall(
         mem_.getArenaAllocateStringWithHeader(), {arena_ptr, size});
 
@@ -1489,7 +1489,7 @@ llvm::Value* SystemCodegen::directoryList(const eshkol_operations_t* op) {
     llvm::Value* name_len = ctx_.builder().CreateCall(strlen_func, {name_ptr});
     llvm::Value* alloc_len = ctx_.builder().CreateAdd(name_len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
 
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* new_str = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, alloc_len});
 
     llvm::Function* strcpy_func = ctx_.funcs().getStrcpy();
@@ -1531,7 +1531,7 @@ llvm::Value* SystemCodegen::currentDirectory(const eshkol_operations_t* op) {
     if (!getcwd_func) return tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context()));
 
     // Allocate buffer for path (PATH_MAX is typically 4096)
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* buf = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {
         arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), 4096)
     });
@@ -1700,6 +1700,8 @@ ZERO_ARG_BUILTIN(adResetCounters, "eshkol_builtin_ad_reset_counters")
 ZERO_ARG_BUILTIN(adPrimalCalls, "eshkol_builtin_ad_primal_calls")
 ZERO_ARG_BUILTIN(adReversePasses, "eshkol_builtin_ad_reverse_passes")
 ZERO_ARG_BUILTIN(adTapeAllocations, "eshkol_builtin_ad_tape_allocations")
+ZERO_ARG_BUILTIN(adScalarAdNodes, "eshkol_builtin_ad_scalar_ad_nodes")
+ZERO_ARG_BUILTIN(adTensorAdNodes, "eshkol_builtin_ad_tensor_ad_nodes")
 ZERO_ARG_BUILTIN(adFiniteDifferenceEvals, "eshkol_builtin_ad_finite_difference_evals")
 ZERO_ARG_BUILTIN(adNoteFiniteDifference, "eshkol_builtin_ad_note_finite_difference")
 ZERO_ARG_BUILTIN(adCounters, "eshkol_builtin_ad_counters")
@@ -1867,7 +1869,7 @@ static llvm::Value* callArenaTaggedFunc(CodegenContext& ctx, TaggedValueCodegen&
 
     llvm::IRBuilder<>& builder = ctx.builder();
     llvm::Value* result_ptr = builder.CreateAlloca(ctx.taggedValueType(), nullptr, "ce_result");
-    llvm::Value* arena = builder.CreateLoad(ctx.ptrType(), ctx.globalArena());
+    llvm::Value* arena = ctx.currentArena();
 
     std::vector<llvm::Value*> call_args;
     call_args.push_back(arena);

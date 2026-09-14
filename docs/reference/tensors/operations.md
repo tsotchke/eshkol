@@ -28,12 +28,21 @@ summarized in [Known limitations](#known-limitations).
 `tensor-reshape` and `reshape` take the shape as a **list** (`(list 2 2)` or
 `'(2 2)`).
 
+Every tensor constructor and operation validates its descriptor before reading
+or writing element storage. Dimensions must be non-negative (zero extents are
+empty tensors) and their product must fit the checked element-count and
+allocation arithmetic. Element access
+validates every supplied axis independently; an index such as `(1 -1)` is
+rejected even when its flattened offset would happen to alias an in-range
+element. Shape, rank, and broadcast contract failures raise catchable
+conditions on native and VM execution.
+
 ---
 
 ## Elementwise & unary math
 
-All binary elementwise ops require two tensors of matching shape and return a
-new tensor:
+All binary elementwise ops require two tensors with broadcast-compatible shapes
+and return a new tensor:
 
 ```scheme
 (tensor-add (tensor 1.0 2.0) (tensor 3.0 4.0))   ;; => #(4 6)
@@ -57,12 +66,43 @@ Scalar-broadcast and unary:
 (tensor-cos (tensor 0.0))                  ;; => #(1)
 ```
 
-> **`tensor-pow` takes a tensor exponent, not a scalar** — it is fully
-> element-wise:
+> **`tensor-pow` is the exception: it accepts either a tensor exponent
+> (element-wise) or a SCALAR exponent (broadcast across the base).** It
+> dispatches on the exponent's runtime type, so both spellings answer:
 >
 > ```scheme
 > (tensor-pow (tensor 2.0 3.0) (tensor 2.0 2.0))  ;; => #(4 9)
-> (tensor-pow (tensor 2.0 3.0) 2.0)               ;; ERROR: expected tensor, got integer
+> (tensor-pow (tensor 2.0 3.0) 2.0)               ;; => #(4 9)
+> ```
+>
+> `tensor-maximum` / `tensor-minimum` and the four `tensor-add`/`-sub`/`-mul`/
+> `-div` operations do NOT broadcast — a scalar operand is a type error there,
+> as above.
+
+> The generic arithmetic operators follow the same rule. `+ - * /` are
+> element-wise over vectors and tensors, and that too is a BINARY contract:
+> a vector or tensor against a scalar is a type error in **either** operand
+> order, with the same wording. A Scheme vector and a rank-1 tensor are two
+> spellings of one value, so a mixed pair is the element-wise result.
+>
+> ```scheme
+> (* #(1 2) #(3 4))                     ;; => #(3 8)
+> (* #(1.0 2.0) (tensor 3.0 4.0))       ;; => #(3 8)
+> (* #(1 2) 2)                          ;; ERROR: Type error in tensor-mul: expected tensor, got integer
+> (* 2 #(1 2))                          ;; ERROR: the same error
+> ```
+>
+> **Shapes broadcast NumPy-style**, so "matching shape" means
+> broadcast-compatible, not identical: a dimension of 1 stretches to meet the
+> other operand, and a shorter shape is right-aligned against a longer one. A
+> pair that cannot be broadcast is a catchable error naming both shapes,
+> whichever spelling it is written in.
+>
+> ```scheme
+> (* #(2.0) #(1.0 2.0 3.0))             ;; => #(2 4 6)
+> (* #(1.0 2.0 3.0) #(4.0 5.0))         ;; ERROR: Shape mismatch in tensor-mul:
+>                                       ;;        shapes (3) and (2) are not
+>                                       ;;        broadcast-compatible
 > ```
 
 ---
@@ -197,6 +237,15 @@ The pooling ops are named `max-pool2d` / `avg-pool2d` (with the `2d` suffix).
 > **`batch-norm` and `layer-norm` accept both a scalar and a per-feature
 > tensor for `gamma`/`beta`** and support the optional 5th `axis` argument.
 
+The tensor form of each parameter is rank 1 and has either one element or
+exactly the normalized feature length. Other lengths and ranks are errors;
+parameters are never wrapped modulo their length.
+
+Attention accepts only rank-2 or rank-3 Q/K/V tensors with matching ranks,
+matching Q/K feature widths, matching K/V sequence lengths, and matching batch
+sizes for rank-3 inputs. An optional mask is rank 2 with shape `(seq-q, seq-k)`.
+These relations are validated before any attention buffer is allocated.
+
 > **Operands in this group are classified by runtime value.** Every tensor
 > operand of `embedding`, `scaled-dot-attention`, `multi-head-attention`,
 > `rotary-embedding`, `padding-mask`, `feed-forward` and `softmax` accepts a
@@ -304,6 +353,9 @@ CRC-32 footer) and returns `#t`. **The argument order is `(path, tensor)`.**
 record shape, payload byte size, complete record consumption, and CRC-32 before
 materializing tensors. A missing, truncated, corrupt, or unsupported file
 returns the documented null-equivalent and emits an `ERROR` diagnostic.
+
+Saves atomically replace the destination; failures before publication preserve
+the existing file. See the [atomic checkpoint save contract](../../design/ATOMIC_CHECKPOINT_SAVES.md).
 
 > **`tensor-load` round-trips the shape.** After a save/load the shape, element
 > data, count and dtype all survive (`(tensor-shape (tensor-load …))` on a 2×2

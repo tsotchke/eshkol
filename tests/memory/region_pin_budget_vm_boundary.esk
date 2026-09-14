@@ -1,0 +1,19 @@
+;; Boundary fixture for the VM continuation region-pin budget.
+;; This creates an out-of-line VM payload at the same 64 MiB cumulative pin
+;; limit; counting only heap object headers would incorrectly accept it.
+;; The capture must be rejected on the VM exactly as it is on native — same
+;; decision point (capture, not resume) and the same diagnostic text.
+;;
+;; Driven by tests/memory/continuation_pin_budget_boundary_test.sh on the
+;; bytecode VM, and compiled natively by scripts/run_memory_tests.sh, which
+;; reads the contract line below; both engines must refuse it.
+;;; Expected: Runtime Error: continuation region-pin budget exceeded
+(define k #f)
+(define payload #f)
+(define done #f)
+(with-region
+  (set! payload (make-vector 4194304 7))
+  (call/cc (lambda (c) (set! k c) 'captured)))
+(if done
+    'complete
+    (begin (set! done #t) (k 'resume)))

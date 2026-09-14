@@ -225,22 +225,32 @@ private:
 
     /**
      * Map over a single list with known function.
+     * @param closure_captures capture-slot pointers read from the procedure's
+     *        closure object when it was reached by name (empty otherwise).
      */
-    llvm::Value* mapSingleList(llvm::Function* proc_func, llvm::Value* list);
+    llvm::Value* mapSingleList(llvm::Function* proc_func, llvm::Value* list,
+                               const std::vector<llvm::Value*>& closure_captures = {});
 
     /**
      * Map over multiple lists with known function.
+     * @param closure_captures as for mapSingleList.
      */
-    llvm::Value* mapMultiList(llvm::Function* proc_func, const std::vector<llvm::Value*>& lists);
+    llvm::Value* mapMultiList(llvm::Function* proc_func, const std::vector<llvm::Value*>& lists,
+                              const std::vector<llvm::Value*>& closure_captures = {});
 
     /**
      * Load captured values for a closure call.
+     * @param closure_captures capture-slot pointers from the procedure's
+     *        closure object; used for every capture without a module-level
+     *        cell. Captures resolved by name must belong to the function
+     *        being emitted.
      */
     void loadCapturedValues(
         llvm::Function* proc_func,
         const std::string& func_name,
         size_t first_capture_idx,
-        std::vector<llvm::Value*>& args
+        std::vector<llvm::Value*>& args,
+        const std::vector<llvm::Value*>& closure_captures
     );
 
     /**

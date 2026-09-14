@@ -316,11 +316,14 @@ static bool check_conversion(void) {
     const size_t shape[2] = { 2, 3 };
     const double src[6] = { -1.5, 0.25, 3.75, 1e-3, -2.5, 0.0 };
 
+    if (!eshkol_qllm_bridge_available()) {
+        return eshkol_to_qllm_tensor(src, shape, 2) == nullptr;
+    }
     qllm_tensor_t* t = eshkol_to_qllm_tensor(src, shape, 2);
     if (!t) { std::printf("  conversion              eshkol_to_qllm_tensor returned NULL\n"); return false; }
 
     double back[6] = { 0 };
-    size_t n = 0;
+    size_t n = 6;
     bool ok = qllm_to_eshkol_tensor(t, back, &n);
     bool exact = ok && n == 6;
     double worst = 0.0;
@@ -331,7 +334,7 @@ static bool check_conversion(void) {
     /* Values chosen to be exactly representable in float32 except 1e-3, which
      * must round-trip within float32 epsilon. */
     exact = exact && worst < 1e-9;
-    std::free(t);   /* single contiguous allocation: one free() releases it */
+    eshkol_qllm_tensor_destroy(t);
 
     std::printf("  %-22s round-trip max abs err = %.3e  %s\n",
                 "float32 conversion", worst, exact ? "PASS" : "FAIL");
@@ -349,6 +352,14 @@ static bool check_lifecycle(void) {
     if (eshkol_qllm_bridge_ready()) { std::printf("    ready() true after failed init\n"); ok = false; }
     eshkol_qllm_bridge_shutdown();   /* must be a safe no-op */
     if (eshkol_qllm_bridge_ready()) { std::printf("    ready() true after shutdown\n"); ok = false; }
+
+    if (eshkol_qllm_bridge_available()) {
+        if (!eshkol_qllm_bridge_init(nullptr) || !eshkol_qllm_bridge_ready()) {
+            std::printf("    real qLLM native registration/execution failed\n"); ok = false;
+        }
+        eshkol_qllm_bridge_shutdown();
+        if (eshkol_qllm_bridge_ready()) ok = false;
+    }
 
     std::printf("  %-22s init/ready/shutdown report honestly  %s\n",
                 "bridge lifecycle", ok ? "PASS" : "FAIL");
