@@ -11,6 +11,11 @@ on:
         required: true
         default: v1.3.5-evolve
         type: string
+      strict_readiness:
+        description: Fail the dry run unless ICC certifies this exact commit ready/100
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -27,6 +32,7 @@ env:
   # A manual dispatch is always non-publishing. Its explicit candidate label
   # lets the dry-run archives use the exact names the later tag run will use.
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}
+  STRICT_READINESS: ${{ github.event_name == 'workflow_dispatch' && inputs.strict_readiness || false }}
 
 jobs:
   unix-release-matrix:
@@ -1112,10 +1118,9 @@ jobs:
   # Event handling:
   #   push (real tag)         -> BLOCKING: any verdict but ready/100 fails the
   #                             job and, via `needs`, blocks publish-release.
-  #   workflow_dispatch (dry) -> ADVISORY: never publishes anything, so an
-  #                             unready verdict or a missing ICC is a loud
-  #                             warning, not a hard failure. This is not a
-  #                             fail-open: the dry-run ships no artifact.
+  #   workflow_dispatch (dry) -> ADVISORY by default for compatibility;
+  #                             strict_readiness=true blocks on missing ICC or
+  #                             anything other than exact-checkout ready/100.
   #
   # ICC provisioning: the ICC binary is not on stock GitHub runners. Set the
   # ICC_BIN repository variable to a provisioned ICC install (self-hosted or a
@@ -1125,6 +1130,7 @@ jobs:
   # "Release-blocking readiness".
   release-readiness-gate:
     name: release-readiness-gate
+    timeout-minutes: 360
     # ICC only exists on the maintainer's self-hosted node (see ICC_BIN
     # below) — a hosted runner can never certify this gate, only report it
     # unavailable. Labels per docs/platform/SELF_HOSTED_RUNNERS.md §2; the
@@ -1147,6 +1153,7 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          rm -f "$RUNNER_TEMP/release-readiness-receipt.json"
           ICC_BIN="${ICC_BIN_OVERRIDE:-}"
           if [[ -n "$ICC_BIN" && -x "$ICC_BIN" ]]; then
             echo "ICC_BIN=$ICC_BIN" >> "$GITHUB_ENV"
@@ -1156,7 +1163,7 @@ jobs:
           fi
           echo "ICC_AVAILABLE=false" >> "$GITHUB_ENV"
           msg="ICC_BIN='${ICC_BIN:-unset}' is not present or executable on this runner. The release cannot be certified without the readiness oracle. Provision ICC on the release runner and set the ICC_BIN repository variable — see CONTRIBUTING.md 'Release-blocking readiness'."
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "push" || "${STRICT_READINESS}" == "true" ]]; then
             echo "::error title=Release readiness gate: ICC unavailable::$msg Publication is BLOCKED (never fail-open)."
             exit 1
           fi
@@ -1253,7 +1260,7 @@ jobs:
           # Full build: run_vm_parity.sh needs the VM standalone binary, and it
           # is the canonical test_result emitter the dispatch-table invariant
           # consumes — without it architecture-verify false-FAILs.
-          cmake --build build --parallel
+          cmake --build build --parallel 4
 
           # Keep the ESKM release oracle isolated from the main product build:
           # configure fuzz support separately and build only its bounded probe.
@@ -1264,7 +1271,7 @@ jobs:
             -DESHKOL_BUILD_TESTS=ON \
             -DESHKOL_BUILD_AGENT_FFI=OFF \
             -DESHKOL_ENABLE_FUZZ=ON
-          cmake --build build-fuzz --target eskm_model_fuzz_probe --parallel
+          cmake --build build-fuzz --target eskm_model_fuzz_probe --parallel 4
 
       # B3 (2026-08-26 audit): scripts/run_language_coverage.sh hard-requires
       # a quantum-enabled runner (agent.quantum/agent.pqc are part of "100%
@@ -1292,7 +1299,7 @@ jobs:
             -DESHKOL_QUANTUM_ENABLED=ON \
             -DESHKOL_BUILD_TESTS=ON \
             -DESHKOL_BUILD_AGENT_FFI=ON
-          cmake --build build-quantum --parallel
+          cmake --build build-quantum --parallel 4
 
       # Regenerate the oracle evidence at the tagged SHA (the readiness recipe's
       # trace-emitting steps): language-surface coverage, then VM parity.
@@ -1329,13 +1336,18 @@ jobs:
       # literally "ready/100"; missing or nonnumeric scores cannot pass.
       # On a tag push an
       # unready verdict blocks publication; on a dry-run it is advisory.
-      - name: ICC readiness gate (fail unless ready/100 on tag push)
+      - name: ICC readiness gate (tag push or strict dry run requires ready/100)
+        id: readiness
         if: env.ICC_AVAILABLE == 'true'
         shell: bash
         run: |
           set -uxo pipefail
+          echo "receipt_created=false" >> "$GITHUB_OUTPUT"
           block=0
-          [[ "${GITHUB_EVENT_NAME}" == "push" ]] && block=1
+          if [[ "${GITHUB_EVENT_NAME}" == "push" || "${STRICT_READINESS}" == "true" ]]; then
+            block=1
+          fi
+          readiness_command_failed=0
 
           verdict() {
             # verdict "<message>"  -> error+exit on push, warning on dry-run
@@ -1355,6 +1367,7 @@ jobs:
 
           if ! scripts/run_v1_3_readiness.sh; then
             verdict "scripts/run_v1_3_readiness.sh reported v1.3.5-evolve is not ready."
+            readiness_command_failed=1
           fi
 
           readiness_json="$RUNNER_TEMP/release-readiness.json"
@@ -1362,6 +1375,7 @@ jobs:
               --repo "$ICC_REPO" \
               --target v1.3.5-evolve \
               --trace-dir scripts/icc_traces \
+              --trace-latest '.icc/runtime-traces-oracle-view/*architecture-model-verify-*.jsonl' \
               --format json > "$readiness_json"; then
             verdict "ICC readiness did not produce a successful result."
           fi
@@ -1377,7 +1391,30 @@ jobs:
               --workspace "$GITHUB_WORKSPACE" --sha "$GITHUB_SHA" \
               --verdict "$readiness_json"; then
             verdict "v1.3.5-evolve requires exact-checkout ready/100 evidence."
+            exit 0
           fi
+
+          if ! jq -e '(.status == "ready") and ((.score // .readiness) == 100)' \
+              "$readiness_json" >/dev/null; then
+            verdict "v1.3.5-evolve readiness is not exactly ready/100."
+            exit 0
+          fi
+          if [[ "$readiness_command_failed" == 1 ]]; then
+            echo "::warning title=Readiness receipt omitted::The readiness recipe did not complete successfully."
+            exit 0
+          fi
+
+          if ! jq -n \
+            --arg sha "$GITHUB_SHA" \
+            --argjson run_id "$GITHUB_RUN_ID" \
+            --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
+            '{schema:"eshkol.release-readiness.v1",sha:$sha,run_id:$run_id,run_attempt:$run_attempt,status:"ready",score:100,target:"v1.3.5-evolve"}' \
+            > "$RUNNER_TEMP/release-readiness-receipt.json"; then
+            rm -f "$RUNNER_TEMP/release-readiness-receipt.json"
+            verdict "Could not write the bound readiness receipt."
+            exit 0
+          fi
+          echo "receipt_created=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload readiness evidence
         if: always()
@@ -1389,6 +1426,14 @@ jobs:
             .icc/runtime-traces/
             .icc/runtime-traces-oracle-view/
           if-no-files-found: ignore
+
+      - name: Upload bound release-readiness receipt
+        if: steps.readiness.outputs.receipt_created == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-readiness-receipt-${{ github.sha }}
+          path: ${{ runner.temp }}/release-readiness-receipt.json
+          if-no-files-found: error
 
       # A hosted runner is destroyed after the job; this self-hosted node is
       # not, and this job leaves three build trees behind (build,
