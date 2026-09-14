@@ -645,13 +645,13 @@
     (else #f)))
 
 ;; Nested path access into JSON structures
-;; (json-get-in obj keys) follows nested hash-tables and lists
+;; (json-get-in obj keys [default]) follows nested hash-tables and lists
 ;; (json-get-in obj '("a" "b" 2)) follows obj["a"]["b"][2]
 ;; Keys can be strings (hash-table lookup) or integers (list index)
-;; Returns #f if any step fails
+;; Returns default if any step fails, or #f when no default is given
 
-(define (json-get-in obj keys)
-  (json-get-in-loop obj keys #f))
+(define (json-get-in obj keys . default)
+  (json-get-in-loop obj keys (if (null? default) #f (car default))))
 
 (define (json-get-in-loop obj keys default)
   (if (null? keys)

@@ -1,0 +1,11 @@
+;; Type System Test: arrow subtyping is covariant in the result. A function
+;; that returns an integer may stand in for one that returns a Number.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (gives-int (x : number)) : integer 7)
+(define (use-num-fn (f : (-> number number))) (f 2.5))
+
+(display (use-num-fn gives-int))
+(newline)

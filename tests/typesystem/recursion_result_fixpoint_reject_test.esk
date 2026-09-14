@@ -1,0 +1,31 @@
+;; Type System Test: a recursive procedure's result is inferred as the least
+;; fixpoint over its own calls, so joining a recursive call with a base case
+;; does not lose the base case's type. The first pass types the call as Never,
+;; which a join ignores; later passes check against the inferred result. Each
+;; wrong use below is reported, for a named let under `if` and under `cond`, a
+;; function define, an internal define and a non-tail recursion.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN]
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Int64 (line 20
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Int64 (line 21
+;; EXPECT-STDERR: argument 1 of 'area': expected Number, got String (line 23
+;; EXPECT-STDERR: argument 1 of 'area': expected Number, got String (line 26
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Int64 (line 28
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+(define (count-up n) (let loop ((i 0)) (if (< i n) (loop (+ i 1)) i)))
+(define (count-up-cond n) (let loop ((i 0)) (cond ((< i n) (loop (+ i 1))) (else i))))
+(define (use-count-up) (label (count-up 3)))
+(define (use-count-up-cond) (label (count-up-cond 3)))
+(define (down i) (if (> i 0) (down (- i 1)) "done"))
+(define (use-down) (area (down 3) 1))
+(define (outer)
+  (define (helper i) (if (< i 3) (helper (+ i 1)) "s"))
+  (area (helper 0) 1))
+(define (sum-list xs) (if (null? xs) 0 (+ (car xs) (sum-list (cdr xs)))))
+(define (use-sum-list) (label (sum-list (list 1 2))))
+
+(display (count-up 3))
+(newline)

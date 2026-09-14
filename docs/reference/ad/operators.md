@@ -1,7 +1,7 @@
 # Automatic Differentiation — Operator Reference
 
 Every operator, signature, accepted point type, binding form, and capture rule
-below is verified by running it on the v1.3.4 compiler. Outputs are pasted
+below is verified by running it on the v1.3.5-evolve compiler. Outputs are pasted
 exactly as printed by `eshkol-run` (JIT `-r` and AOT agree unless noted). Open
 cells are marked with their ledger id — see
 [support-matrix.md](support-matrix.md).

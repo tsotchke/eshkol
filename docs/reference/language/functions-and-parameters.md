@@ -48,10 +48,38 @@ Calls `proc` with the leading args followed by the elements of the final list.
 
 ```scheme
 (display (apply + 1 2 (list 3 4 5))) (newline)
+(display (apply + (list 1 2 3))) (newline)
 ```
 ```
 15
+6
 ```
+
+`proc` may be **any** callable value, including a builtin reached as a
+first-class value rather than in operator position:
+
+```scheme
+(display (apply vector-copy (list (vector 7 8 9)))) (newline)
+(display (apply vector (list 1 2 3))) (newline)
+```
+```
+#(7 8 9)
+#(1 2 3)
+```
+
+`apply` resolves its operator through the same first-class-value route `map`
+and a user higher-order call use, so a builtin gains a value representation
+exactly once and every call site agrees with it by construction. A name that is
+genuinely undefined fails compilation with a real diagnostic; it never
+silently answers `()`.
+
+> **Engine difference — apply's leading-args form is native-only.** The
+> bytecode VM supports the plain `(apply proc arg-list)` form. It does **not**
+> support leading arguments before the list, for any operator: under the VM,
+> `(apply + 1 2 (list 3 4 5))` raises `arity mismatch: expected 2 arguments,
+> got 4` rather than answering `15`. This is argument-list construction, a
+> different code path from operator resolution. Write `(apply + (append (list
+> 1 2) (list 3 4 5)))` for a form that runs on both engines.
 
 ## Builtins are first-class values
 
@@ -86,12 +114,66 @@ procedure with unusual behavior.
 (display if)   ; error: Undefined variable: if
 ```
 
+### A variadic builtin stays variadic as a value
+
+A builtin whose operator-position form takes any number of arguments answers
+the same way when it is reached as a value. It is not frozen at the arity of
+the call site that first materialized it, and its rest list is not silently
+truncated or terminated with the wrong tail.
+
+```scheme
+(display (map list (list 1 2 3))) (newline)
+(display (map vector (list 1 2) (list 3 4))) (newline)
+(define f string-append)
+(display (f "a" "b" "c")) (newline)
+(define g min)
+(display (g 5 2 9)) (newline)
+```
+```
+((1) (2) (3))
+(#(1 3) #(2 4))
+abc
+2
+```
+
+Identical under the bytecode VM. The first-class builtin table declares which
+rows are variadic and how each computes its answer from a rest list — identity
+for `list` and `values`, a unary builtin for `vector` (`list->vector`) and
+`string` (`list->string`), and a left fold over the binary form for
+`string-append`, `min`, `max`, `gcd`, `lcm`, `vector-append` and
+`bytevector-append` — so a variadic builtin has one answer rather than one per
+call site.
+
 Every builtin's value-position behavior is asserted mechanically —
 generated from the language-surface manifest, not hand-picked — in
 `tests/core/builtins_first_class_test_*.esk`; special forms' refusal is
 pinned by `tests/core/special_form_value_refusal_test.esk`. See LE-16 in
 `.icc/ledger/entries/LE-16.yaml` for how this was closed for the builtins
-that were still call-position-only.
+that were still call-position-only, including the 28 names left open there as
+documented gaps rather than guessed, because resolving them safely would have
+required executing an FFI/GPU/atomics side effect.
+
+## Omitting a documented optional argument
+
+A builtin's documented optional argument is a legal call on **both** engines.
+The minimum arities the VM enforces are derived from the code that runs — the
+fixed-arity macros the native dispatch expands first — rather than transcribed
+into a table, so the two engines cannot drift apart on which calls are legal.
+
+```scheme
+(display (substring "hello" 1)) (newline)
+(display (append)) (newline)
+(display (gcd)) (newline)
+(display (make-vector 3)) (newline)
+(display (string-length (make-string 3))) (newline)
+```
+```
+ello
+()
+0
+#(0 0 0)
+3
+```
 
 ## Keyword arguments (`#:name`)
 

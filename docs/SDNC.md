@@ -28,15 +28,17 @@ verifies **127/127 inline programs** (three-way self-test,
 `ctest -R sdnc_paper_weight_tests`) and **124/124 traced programs**.
 The matrix forward path agrees with the reference C interpreter on
 every byte of every step of every traced program. The artefact
-weight-implements **82 of the 83 opcodes** — every opcode but
-`OP_NATIVE_CALL`, the deliberate external boundary for host services.
+weight-implements **every opcode but one** — 82 of the paper's 83, and 83 of
+the 84 the enum now carries with the later `OP_SWAP=83` — the single exception
+being `OP_NATIVE_CALL`, the deliberate external boundary for host services.
 
-> **Numbers track master.** The counts, line references, and IDs in
-> this document are re-verified against the current `master`; the SDNC
+> **Numbers track the release.** The counts, line references, and IDs in
+> this document are re-verified against the release branch; the SDNC
 > *paper* freezes them at a tagged verification SHA (per the companion
 > framing). Where this doc and the frozen paper disagree on a count,
 > the doc is the moving reference and the paper is the historical pin.
-> This revision is verified at commit `401808ef`.
+> This revision is re-verified on the v1.3.5-evolve release branch:
+> `ctest --test-dir build -R '^sdnc_paper_weight_tests$'` passes there.
 
 ---
 
@@ -61,9 +63,13 @@ correspond opcode-for-capability.
    `OP_NATIVE_CALL=37`, the deliberate host boundary.
 
 2. **The production bytecode VM** (`lib/backend/vm_core.c`, `eshkol_vm.c`,
-   `vm_native.c`). The compiler/runtime's executable ISA: a 66-value opcode
-   enum (`OP_NOP=0 … OP_VOID=63`, plus `OP_LANGUAGE_COVERAGE` 64/65 metadata,
-   `OP_COUNT=66`) plus **720 native-call IDs spanning 20–2118** reached
+   `vm_native.c`). The compiler/runtime's executable ISA: a 72-value opcode
+   enum (`OP_NOP=0 … OP_VOID=63`, plus `OP_LANGUAGE_COVERAGE` 64/65 and
+   `OP_LANGUAGE_COVERAGE_FORM` 71 instrumentation, `OP_GLOBAL_MARK` 66, the v2
+   closure encoding 67/68, `OP_RAISE_SECONDARY` 69 and `OP_TAIL_CALL_POPN` 70;
+   `OP_COUNT=72`) plus **743 native-call IDs spanning 0–2230** — measured on
+   the v1.3.5-evolve cut as the distinct `case N:` labels in
+   `lib/backend/vm_native.c`'s dispatch — reached
    through `OP_NATIVE_CALL`. Here the same capabilities run as native calls:
    reverse-mode AD at **390–409** (+1841–1844), tensors 410–461, the
    consciousness engine 509–547, i128 2100–2118 (§12).
@@ -136,7 +142,7 @@ Concretely (constants from `lib/backend/weight_matrices.c §53-86`):
   (`OP_AD_VAR=64` through `OP_AD_COS=82`), with a later base stack op
   `OP_SWAP=83` bringing `OP_COUNT` to **84**. This is the SDNC weight-matrix
   layer's ISA; the production bytecode VM realises the same semantics as a
-  66-opcode enum plus 720 native calls (AD at 390–409), and the two layers
+  72-opcode enum plus 743 native calls (AD at 390–409), and the two layers
   correspond opcode-for-capability (§0).
 - **83 opcodes weight-implemented**: arithmetic, comparison, control
   flow, type predicates, stack housekeeping (incl. `OP_SWAP`), bounded
@@ -710,7 +716,7 @@ Noesis companion repository.
 - `lib/backend/weight_matrices.c` — the analytical weight
   constructor and verifier (7,544 lines).
 - `lib/backend/vm_core.c` — the production bytecode VM opcode enum
-  (66 values; layer 2, see §0), plus the 720-ID native-call surface.
+  (72 values; layer 2, see §0), plus the 743-ID native-call surface.
 - `lib/backend/weight_matrices.c §103-136` — the SDNC weight-matrix
   layer's 83-opcode ISA enum (`OP_COUNT=84` incl. `OP_SWAP=83`).
 - `lib/backend/qllm_backward.c` + `inc/eshkol/backend/qllm_backward.h`
@@ -725,13 +731,14 @@ Noesis companion repository.
 
 ## 12. The production VM native-call surface (layer 2)
 
-The production bytecode VM (layer 2, §0) reaches beyond its 66 opcodes
-through `OP_NATIVE_CALL`. On `master` it dispatches **720 distinct
-native-call IDs, spanning 20–2118** (`lib/backend/vm_native.c`, driven by
+The production bytecode VM (layer 2, §0) reaches beyond its 72 opcodes
+through `OP_NATIVE_CALL`. On the v1.3.5-evolve cut it dispatches **743 distinct
+native-call IDs, spanning 0–2230** (`lib/backend/vm_native.c`, driven by
 the builtin table in `eshkol_vm.c`). These are host-runtime IDs threaded
-through the single `OP_NATIVE_CALL` boundary. The map below is the verified
-current surface — earlier docs' narrower ranges (e.g. "AD 370–409",
-"consciousness 500–549") understate it.
+through the single `OP_NATIVE_CALL` boundary. The map below verifies the
+principal capability ranges — earlier docs' narrower ranges (e.g. "AD 370–409",
+"consciousness 500–549") understate them — and the complete ID set is the
+`case` labels of that dispatch.
 
 | Capability | Native-call IDs (current) | Verified behaviour |
 |---|---|---|

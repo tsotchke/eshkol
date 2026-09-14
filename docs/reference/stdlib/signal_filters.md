@@ -71,16 +71,15 @@ Direct time-domain convolution. Output length `len(a) + len(b) − 1`.
 ```
 
 ### `(fast-convolve a b)`
-FFT-based convolution, intended to be O(N log N) (zero-pads both signals to the next power of 2, multiplies spectra, inverse-transforms, takes real parts). **Currently broken — returns garbage.** See [Known issues](#known-issues); use `convolve` instead.
+FFT-based convolution, intended to be O(N log N) (zero-pads both signals to the next power of 2, multiplies spectra, inverse-transforms, takes real parts). **Currently broken — returns an all-zero vector of the right length.** See [Known issues](#known-issues); use `convolve` instead.
 
 ```scheme
 (display (fast-convolve #(1.0 2.0 3.0) #(1.0 1.0))) (newline)
 ```
 ```
-#(4966129304 -8 -8 -7.999999999999999)   ;; expected #(1 3 5 3); the leading
-                                         ;; value is uninitialised memory and
-                                         ;; differs on every run
+#(0 0 0 0)
 ```
+The correct answer is `#(1 3 5 3)`, as `convolve` gives above.
 
 ## FIR / IIR filters
 
@@ -158,9 +157,14 @@ Evaluate `H(e^{jω}) = B/A` at `n-points` frequencies from 0 to π. Returns `(ma
 
 ## Known issues
 
-### `fast-convolve` returns garbage
+### `fast-convolve` returns zeros
 
-`fast-convolve` produces completely wrong output — the first element is a huge number in the billions that **differs on every run** (it is uninitialised memory) and the remaining elements collapse to a negative constant — whereas the direct `convolve` is correct.
+`fast-convolve` produces a wrong answer — a vector of the correct length whose
+every element is zero — whereas the direct `convolve` is correct. Earlier
+releases documented this as *garbage*: the first element used to be a
+run-varying value in the billions (uninitialised memory) with the rest
+collapsing to a negative constant. It is now deterministic, which is a smaller
+failure but still a wrong answer, and it is still silent.
 
 ```scheme
 ;; repro.esk
@@ -169,11 +173,11 @@ Evaluate `H(e^{jω}) = B/A` at `n-points` frequencies from 0 to π. Returns `(ma
 (display (fast-convolve #(1.0 2.0 3.0 4.0 5.0) #(1.0 1.0 1.0))) (newline)
 ```
 ```
-#(1 3 6 9 12 9 5)                     ;; convolve — correct
-#(4430393720 -8 -8 -8 -8 -7.999999999999999 -7.999999999999999)
-                                      ;; fast-convolve — garbage; the leading
-                                      ;; value differs on every run
+#(1 3 6 9 12 9 5)
+#(0 0 0 0 0 0 0)
 ```
+The first line is `convolve`, correct; the second is `fast-convolve`, and
+`#(1 3 6 9 12 9 5)` is what it should print.
 Root cause: `fast-convolve` computes `(ifft (fft …))` inside its body, and
 because `fast-convolve` lives in the **precompiled stdlib shared library**, it
 hits the precompiled `fft`→`ifft` chaining corruption documented in

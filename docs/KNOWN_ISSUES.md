@@ -1,6 +1,6 @@
 # Known Issues — Eshkol v1.3.5-evolve
 
-**Status**: Production release
+**Status**: Refreshed release candidate; final verification pending (2026-09-14)
 
 ---
 
@@ -495,6 +495,21 @@ block ordinary use.
   diagnostic, while the same 2000000-frame source completes with a 1 GiB
   stack. `ESHKOL_MAX_STACK` remains a separate optional software depth ceiling.
 
+**Residual mechanization**
+- **The singular-order scan raises on a similarity ansatz without matching V/Pi
+  under the v1.3.5 exact-coefficient carrier.** `core.pde.ns-residual`'s
+  tau-series for an ansatz whose V and Pi profiles do not match reaches a term
+  whose exact divisor is zero, and the library raises rational division by zero
+  where the earlier carrier propagated a floating NaN through the same term.
+  The raise is honest — an exact divisor of zero has no exact quotient — but it
+  is a change of outcome, not the intended answer, and while it was uncaught it
+  ended `tests/stdlib/ns_residual_test.esk` before the file's remaining checks
+  ran. That check now pins the raise, so the rest of the file runs and the
+  jet-over-jet carrier rewrite will make the change visible when it lands. A
+  matched ansatz is unaffected, and every other check in the residual library
+  passes. Same family as SW-154: the exact path is restored by the v1.4 carrier
+  rewrite.
+
 **Automatic differentiation**
 - **Differentiating a first-class `gradient` closure again with an enclosing
   *reverse* pass is exact (fixed, ESH-0096).** With `(define g (gradient f))`,
@@ -668,21 +683,22 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   `tests/vm_parity/corpus/73_complex_display_canonical.esk` covers the unit
   and zero-component spellings.
 - The VM implements a documented subset of the language, tracked row-by-row in
-  `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 956 rows —
-  582 `vm-supported`, 44 `native-only-justified`, 330 `gap`. `op:GRADIENT` and
+  `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 961 rows —
+  604 `vm-supported`, 46 `native-only-justified`, 311 `gap`. `op:GRADIENT` and
   `op:DERIVATIVE` moved to `vm-supported` this release (#337), and
   `op:IMPORT` / `op:PROVIDE` / `op:REQUIRE` followed with the same-unit
   `define-library` fix (#402) — with no new waivers. The release-cut
-  differential gate (`scripts/run_vm_parity.sh`) was **188/188**, remeasured
-  2026-08-25 against `4bf871a0` (`evidence/audit/06_vm_parity.log`; correcting
-  an earlier "140/140" figure). The parity-backlog Linux lane remeasured it at
-  **194/194**, including the gap-canonicalization and arity-fatal checks.
+  differential gate (`scripts/run_vm_parity.sh`) was **338/338** on the
+  previous v1.3.5-evolve candidate (remeasured 2026-09-11, before the
+  September 14 refresh), including the
+  gap-canonicalization and arity-fatal checks; it supersedes the 194/194 and
+  188/188 figures and the "140/140" before them.
   The corresponding surface baselines were **323** at the release cut and
   **328** on the parity-backlog lane. PR-02 separately retested the historical
   `tests/vm_parity/SURFACE_BASELINE.tsv` surface on both engines: the VM now
   loads the canonical stdlib on the source, REPL and ESKB paths, and the
   retest found 0 native-resolved/VM-missing entries — the baseline is now
-  header-only, and the 956-row ledger has no remaining untracked surface
+  header-only, and the 961-row ledger has no remaining untracked surface
   backlog (`NO-ROW`, PR-02 in `.icc/silent-wrong-ledger.yaml`) — see
   [VM_PARITY.md](VM_PARITY.md) for the full accounting and closure evidence
   (conformity audit items e6/g6).
@@ -718,12 +734,15 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   self-labelled "kept #if 0 stub bodies for now" (superseded by
   `LogicWorkspaceCodegen`). Cheap, unambiguous cleanup; filed as a BUILD ITEM,
   no target version (mechanical debt, any release) — conformity audit item e6.
-- **89.86% of the language surface has never been differentially compared**
-  between engines, per the project's own ledger (PR-10,
-  `.icc/silent-wrong-ledger.yaml`, open: 113 of 1,114 constructs carry
-  differential evidence) even though the engine-parity gate reports PASS.
-  Not a new finding — cross-referenced here because it was previously absent
-  from this document — conformity audit item e6.
+- **71.82% of the language surface has not yet been differentially compared**
+  between engines (PR-10, `.icc/silent-wrong-ledger.yaml`, open). On the
+  v1.3.5-evolve release cut 321 of 1,139 constructs carry differential
+  evidence (28.18%), up from 113 of 1,114 (10.14%) when the ledger entry was
+  filed, and both engine-parity floors are now measured ratchets rather than
+  literals, so the figure is recorded and can only rise. Raising it is corpus
+  growth, filed for v1.4 as DD-15 (see [VM_PARITY.md](VM_PARITY.md)).
+  Cross-referenced here because it was previously absent from this document —
+  conformity audit item e6.
 - **`vm_geometric_manifold_dim` returns 0 unconditionally** in the *enabled*
   configuration (`lib/backend/vm_geometric.c:712-722`) — a silent-wrong-answer
   shape, not a loud error. Filed as a BUILD ITEM, target v1.4.0 — conformity

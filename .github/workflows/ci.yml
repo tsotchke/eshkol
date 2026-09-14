@@ -633,6 +633,7 @@ jobs:
           python3 scripts/gate_ad_shared_node_model.py --self-test
           python3 scripts/check_required_context_consistency.py --self-test
           python3 scripts/ci_change_class.py --self-test
+          python3 tests/toolchain/test_disclosure_base.py
           python3 scripts/ci_lane_plan.py --self-test
           python3 scripts/ci_equivalent_head.py --self-test
           python3 scripts/check_package_manifest.py --self-test
@@ -864,13 +865,20 @@ jobs:
       - name: Scan incoming commits when no PR text is present
         if: github.event_name != 'pull_request'
         env:
-          BASE_SHA: ${{ github.event.merge_group.base_sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.merge_group.head_sha || github.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$BASE_SHA"
-          git cat-file -e "${BASE_SHA}^{commit}"
+          BASE_SHA="$(python3 scripts/select_disclosure_base.py \
+            --event "$EVENT_NAME" --head "$HEAD_SHA" --ref "$REF" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --before "$PUSH_BEFORE" \
+            --merge-group-base "$MERGE_GROUP_BASE_SHA")"
           git cat-file -e "${HEAD_SHA}^{commit}"
           python3 scripts/check_disclosure.py --base "$BASE_SHA" --head "$HEAD_SHA"
 
@@ -1584,7 +1592,7 @@ jobs:
     needs: changes
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: ${{ matrix.job_timeout_minutes || 120 }}
     env:
       ESHKOL_FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.ci-cache/fetchcontent
       # Which lanes this run actually needs, decided by the `changes`
@@ -1607,6 +1615,8 @@ jobs:
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_all_tests.sh
+            job_timeout_minutes: 240
+            test_timeout_minutes: 180
             upload_artifact: 'true'
             artifact_name: eshkol-linux-x64
           # This is the assertion-enabled compilation axis. Keep it as a
@@ -2065,7 +2075,7 @@ jobs:
 
       - name: Run Tests
         if: env.LANE_ACTIVE == 'true'
-        timeout-minutes: 120
+        timeout-minutes: ${{ matrix.test_timeout_minutes || 120 }}
         shell: bash
         env:
           BUILD_DIR: ${{ matrix.build_dir }}
@@ -2498,6 +2508,8 @@ jobs:
             '-B', '${{ matrix.build_dir }}',
             '-DBUILD_REPL=ON',
             '-DESHKOL_BUILD_TESTS=OFF',
+            '-DESHKOL_STDLIB_TARGET_CPU=generic',
+            '-DESHKOL_STDLIB_TARGET_FEATURES=',
             '-DESHKOL_REQUIRED_LLVM_MAJOR=${{ env.LLVM_MAJOR }}',
             "-DESHKOL_HOST_CXX_COMPILER=$hostCxx",
             '-DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }}',
@@ -2601,7 +2613,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-agent-ffi', 'eshkol-windows-agent-test', 'eshkol-agent-http-test', 'eshkol-agent-sse-test', 'eshkol-agent-capabilities-test')
+          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-agent-ffi', 'eshkol-windows-agent-test', 'eshkol-agent-http-test', 'eshkol-agent-sse-test', 'eshkol-agent-capabilities-test', 'stdlib')
           if ('${{ matrix.test_mode }}' -eq 'xla') {
             $targets += 'xla_codegen_test'
           }
@@ -2613,6 +2625,20 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # -SkipConfigureBuild bypasses run_all_tests.ps1's missing-target
+          # repair. Require the precompiled stdlib before the suite so each
+          # AOT test links it instead of reprocessing the stdlib source tree.
+          foreach ($artifact in @(
+            (Join-Path '${{ matrix.build_dir }}' 'stdlib.o'),
+            (Join-Path '${{ matrix.build_dir }}' 'stdlib.bc')
+          )) {
+            if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+              throw "Required precompiled stdlib artifact is missing: $artifact"
+            }
+            if ((Get-Item -LiteralPath $artifact).Length -le 0) {
+              throw "Required precompiled stdlib artifact is empty: $artifact"
+            }
+          }
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\eshkol-test-logs" | Out-Null
           & .\scripts\run_all_tests.ps1 -BuildDir ".\${{ matrix.build_dir }}" -SkipConfigureBuild -Mode '${{ matrix.test_mode }}' *>&1 |
             Tee-Object -FilePath "$env:RUNNER_TEMP\eshkol-test-logs\${{ matrix.name }}.log"

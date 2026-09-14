@@ -16,7 +16,7 @@ For detailed component documentation, see:
 ### Frontend
 
 **Parser** - [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp)
-- S-expression parsing (recursive descent)
+- S-expression parsing (explicit continuation stack; stack use independent of nesting depth)
 - AST construction with 93 operators
 - Line/column tracking for error messages
 

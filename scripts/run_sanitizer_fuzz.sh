@@ -1002,9 +1002,12 @@ if [ "$SELF_TEST_ONLY" -eq 1 ]; then
 fi
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
-    BUILD_DIR="$BUILD_DIR_ABS" \
+    if ! BUILD_DIR="$BUILD_DIR_ABS" \
         CMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-RelWithDebInfo}" \
-        scripts/build-sanitizer.sh asan+ubsan
+        scripts/build-sanitizer.sh asan+ubsan; then
+        echo "run_sanitizer_fuzz.sh: sanitizer build failed; refusing to run a stale binary." >&2
+        exit 1
+    fi
 fi
 
 if [ ! -x "$ESHKOL_RUN" ]; then

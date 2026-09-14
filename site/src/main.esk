@@ -405,8 +405,8 @@
         (let ((sub (create-text "p" "Eshkol is R7RS Scheme compiled to native code through LLVM 21. Gradient, Jacobian and Hessian lower to machine instructions the same way + does. They stay exact through closures, recursion and control flow. There is no tracing library in between. The same gradient runs byte-identically on the bytecode VM." left)))
           (web-add-class sub "hero-sub"))
 
-        ;; Proof strip: four release-gate numbers, one canonical form each
-        (let ((proof (create-text "p" "1,091 / 1,091 executable language surface   ·   8 differential operators   ·   zero GC   ·   956 parity rows, published" left)))
+        ;; Generated surface and ledger counts; runtime behavior is measured by release gates.
+        (let ((proof (create-text "p" "1,115 declared language constructs   ·   8 differential operators   ·   zero GC   ·   961 parity rows" left)))
           (style! proof "color" "#a78bfa")
           (style! proof "fontSize" "0.82rem")
           (style! proof "fontFamily" "JetBrains Mono,monospace")
@@ -610,8 +610,8 @@
         "A tick loop that mutates persistent state used to leak about 3,366 bytes per iteration, roughly 355 MB over 100,000 ticks. A per-loop nursery region now reclaims it. The same loop sits flat at 34 MB, byte-for-byte identical to its explicit with-region twin.")
 
       (render-feature-card grid
-        "Complete executable evidence"
-        "1,091 of 1,091 declared constructs, each proven because it dispatched or executed in a passing run. Lexical name-presence earns no credit. SICP passes 88/88 under JIT and AOT, Chibi agrees 34/34, and the floor is fixed at 1,091, so the count can only grow.")
+        "Declared language surface"
+        "The generated language-surface manifest declares 1,115 constructs. Release gates measure runtime coverage on the exact release candidate.")
 
       (render-feature-card grid
         "Portable release packages"
@@ -624,7 +624,7 @@
 
       (render-feature-card grid2
         "Verified VM subset"
-        "956 parity rows, published: 581 VM-supported, 44 native-only by design, 331 gaps. Verified behavioral divergences stay explicit gap rows, each with a program that reproduces it. The ledger only moves one way, so a gap never closes quietly. The shared VM/native differential passes 184/184 across native LLVM, VM source, and emitted ESKB.")
+        "961 parity rows: 604 vm-supported, 46 native-only-justified, 311 gap. Differential gates compare each release candidate with its reference engines.")
 
       (render-feature-card grid2
         "Heterogeneous dispatch"
@@ -641,7 +641,7 @@
 
       (render-feature-card grid3
         "Permanent release oracles"
-        "Nothing here is a one-off check. CTest at 183 tests, the 45-suite aggregate at 770 tests, reference and generative differentials, WebAssembly import equality, Taylor 441/441 JIT+AOT equivalence, ICC architecture 8/8, and readiness 100 all run as repeatable release gates."))
+        "Nothing here is a one-off check. CTest, the aggregate suite, reference and generative differentials, WebAssembly import equality, Taylor JIT+AOT equivalence, and ICC architecture checks run as repeatable release gates. Readiness is evaluated only from fresh evidence on the exact release candidate."))
 
     section))
 
@@ -1233,11 +1233,11 @@
 
 (define (render-downloads-page content)
   (let ((page (create-section content)))
-    (create-page-header page "Downloads" "Install Eshkol on macOS, Linux, Windows, or build from source. v1.3.4-evolve publishes 15 platform packages plus SHA256SUMS.txt: one verified 16-file release payload.")
+    (create-page-header page "Downloads" "Install Eshkol on macOS, Linux, Windows, or build from source. v1.3.5-evolve provides 15 platform packages plus SHA256SUMS.txt in a 16-file release payload.")
 
     ;; ── Publication status ──────────────────────────────────────
-    (section-subheading page "v1.3.4-evolve Publication")
-    (let ((status (create-text "p" "Release-ready on verified master. The immutable tag and its packages appear here once publication is authorized." page)))
+    (section-subheading page "v1.3.5-evolve Publication")
+    (let ((status (create-text "p" "Checking release status and available downloads." page)))
       (web-set-attribute status "id" "release-status")
       (style! status "color" "#a1a1aa"))
     (let ((releases (create-div page)))
@@ -1389,7 +1389,7 @@
 
         ;; Welcome message
         (web-set-inner-html output
-          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.3.4-evolve</span>\n<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
+          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.3.5-evolve</span>\n<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
 
       ;; Terminal input area
       (let ((input-row (create-div terminal)))
@@ -1442,7 +1442,7 @@
     (let ((stats (create-grid-4 page)))
       (let ((s1 (create-card stats)))
         (web-add-class s1 "text-center")
-        (let ((v (create-text "div" "298KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "302KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "Site WASM" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-card stats)))

@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "v1.3.4-evolve"
+VERSION = "v1.3.5-evolve"
 
 
 def fail(message: str) -> None:

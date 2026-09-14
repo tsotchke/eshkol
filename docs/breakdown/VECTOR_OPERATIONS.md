@@ -116,12 +116,18 @@ Scheme Vector Memory Layout:
 (car v)  ; → same as (vector-ref v 0)
 ```
 
-**NOT supported on Scheme vectors**:
-- ❌ Linear algebra operations
-- ❌ Automatic differentiation
-- ❌ Element-wise arithmetic
+**Not carried out on Scheme vectors as vector operations**:
+- Linear algebra operations (`matmul`, `solve`, `det`, `inv`)
+- Element-wise arithmetic. A scalar against a Scheme vector in either operand
+  position raises a catchable type error naming the source line of the form
+  that raised it, rather than reading past the shorter operand.
 
-For numeric computation, use **tensors** instead.
+A Scheme vector *is* accepted as a differentiation **point**: `(gradient f
+(vector 2.0))` and the `hessian`/`jacobian` family classify the point by its
+runtime value, so a vector point is routed exactly like the identical literal.
+What the list above rules out is treating the vector itself as a numeric array.
+
+For numeric computation over the array, use **tensors** instead.
 
 ---
 

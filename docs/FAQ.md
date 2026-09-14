@@ -4,7 +4,8 @@
 
 ### What are the prerequisites?
 
-- **LLVM 21** (required for lite/native builds)
+- **LLVM 21** (the default pinned major for lite/native builds; the source
+  compiles against LLVM **18 through 24** — see below)
 - **CMake 3.14+** (build system)
 - **C++20 compiler** (GCC 12+, Clang 15+, or MSVC 2022)
 - **Ninja** (recommended, but Make works too)
@@ -52,9 +53,20 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
-### Can I use an older LLVM release?
+### Can I use a different LLVM release?
 
-Lite/native builds are pinned to LLVM 21. Older or intermediate LLVM releases are unsupported. The only expected exception is a separately documented bundled XLA/StableHLO toolchain when that path carries its own LLVM/MLIR stack.
+Yes, within a range. The build **pins one major** so a mixed toolchain cannot
+be assembled by accident, and that major defaults to **21**; the compiler source
+itself builds against **LLVM 18 through 24**, with the version shims in
+`inc/eshkol/backend/llvm_compat.h`. Select a different one at configure time:
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DESHKOL_REQUIRED_LLVM_MAJOR=24
+```
+
+A major outside 18-24 is unsupported. The separately documented bundled
+XLA/StableHLO toolchain is its own case: that path carries its own LLVM/MLIR
+stack.
 
 ### Do I need to install anything to try Eshkol?
 
@@ -149,4 +161,4 @@ eshkol-run program.esk -o program
 
 ### Can Eshkol run in the browser?
 
-Yes. Eshkol compiles to WebAssembly. The project website ([eshkol.ai](https://eshkol.ai)) is itself written in Eshkol — 1,650+ lines compiled to a 226,764-byte (about 221 KiB) WASM binary. A bytecode VM REPL also runs in the browser for interactive evaluation.
+Yes. Eshkol compiles to WebAssembly. The project website ([eshkol.ai](https://eshkol.ai)) is itself written in Eshkol — 1,650+ lines compiled to a 301,923-byte (about 295 KiB) WASM binary. A bytecode VM REPL also runs in the browser for interactive evaluation, and as of v1.3.5 it answers: every `repl_eval` call in the WebAssembly bundle — the site's REPL pane and every runnable code block on the docs pages — used to return with no output at all, because the REPL's auto-print rode on the `display` opcode and lost its line terminator when that opcode was corrected to match native `display` byte-for-byte. Emscripten delivers stdout to the page one complete line at a time, so an unterminated answer was buffered forever. The echo is now emitted by the session that owns the transcript, so `(display "hi")` in the browser REPL is a fragment awaiting a `(newline)`, exactly as it is under `eshkol-run -r`.

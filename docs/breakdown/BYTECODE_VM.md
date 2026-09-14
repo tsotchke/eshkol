@@ -2,7 +2,7 @@
 
 ## Overview
 
-Eshkol has a dual backend: the primary LLVM compiler generates native machine code, and a secondary bytecode VM interprets programs through a 64-opcode core instruction set. The SDNC verifier extends that core with 19 bounded reverse-mode AD opcodes, giving the paper artifact its 83-opcode canonical VM/AD ISA. The VM serves three purposes:
+Eshkol has a dual backend: the primary LLVM compiler generates native machine code, and a secondary bytecode VM interprets programs through a 72-opcode instruction set: 64 base opcodes (0–63) plus eight (64–71) for execution-coverage evidence, the top-level store boundary, the long closure encoding, the secondary raise and the popped tail call. The SDNC verifier extends the 64 base opcodes with 19 bounded reverse-mode AD opcodes, giving the paper artifact its 83-opcode canonical VM/AD ISA. The VM serves three purposes:
 
 1. **WebAssembly execution** — the browser REPL at eshkol.ai
 2. **Weight matrix compilation** — programs compile to transformer neural network weights (see [Computable Transformer](COMPUTABLE_TRANSFORMER.md))
@@ -15,7 +15,7 @@ The VM is a unity-build C system: `eshkol_vm.c` includes all modules via `#inclu
 ```
 eshkol_vm.c (hub)
  ├─ vm_core.c       — VM struct, stack, heap, value types
- ├─ vm_run.c        — 64-opcode dispatch loop (computed-goto + switch fallback)
+ ├─ vm_run.c        — 72-opcode dispatch loop (computed-goto + switch fallback)
  ├─ vm_ops.c        — comparison, pair, vector and operand-stack opcode bodies
  ├─ vm_frame.c      — upvalue access, closure construction, the return sequence
  ├─ vm_control.c    — continuation capture/resume, dynamic wind, handler stack
@@ -55,7 +55,7 @@ helpers are in `vm_error.c`, coverage hooks and public ESKB entry points are
 in `eshkol_vm.c`, and VM instance creation/destruction is in
 `vm_lifecycle.c`.
 
-## Core Instruction Set (64 Opcodes)
+## Core Instruction Set (72 Opcodes)
 
 | Opcode | Name | Description |
 |--------|------|-------------|
@@ -90,6 +90,13 @@ in `eshkol_vm.c`, and VM instance creation/destruction is in
 | 60 | PACK_REST | Pack variadic args into list |
 | 61-62 | WIND_PUSH, WIND_POP | Dynamic-wind stack |
 | 63 | VOID | Push the VM void value |
+| 64 | LANGUAGE_COVERAGE | Opt-in metadata before a native call: the builtin index whose dispatch is recorded as VM execution evidence; never emitted by normal compilation |
+| 65 | LANGUAGE_COVERAGE_CALL | Opt-in stable-hash marker before a direct Scheme call or tail call |
+| 66 | GLOBAL_MARK | Record the top-level binding count after each top-level form, the store/control boundary a continuation restore does not roll back across |
+| 67-68 | CLOSURE_LONG, CLOSURE_COUNT | Version 2 closure encoding: full constant index, then a lossless capture count, so a closure may capture more than 255 values |
+| 69 | RAISE_SECONDARY | Raise the R7RS secondary condition after a non-continuable handler returns, once that handler has been removed |
+| 70 | TAIL_CALL_POPN | Tail call that first pops a counted operand window |
+| 71 | LANGUAGE_COVERAGE_FORM | Opt-in execution marker at the head of a compiled `(name ...)` form, carrying the head symbol's stable hash; never emitted by normal compilation |
 
 The SDNC weight-matrix artifact adds canonical opcodes 64-82 for bounded
 reverse-mode AD tape construction, backward propagation, and gradient reads.

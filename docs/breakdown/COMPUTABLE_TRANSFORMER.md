@@ -530,7 +530,7 @@ architectural decision. The bibliography file
 gitignored (≈47 MB of cached PDF) but are reconstructible by re-fetching
 via the listed DOIs.
 
-⚠ unverified: the `research/` tree was not located in the current
+Note - unverified: the `research/` tree was not located in the current
 working copy (the directory does not exist at the repository root).
 The 33-paper cache and bib file are referenced by
 `VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md §10` and by the

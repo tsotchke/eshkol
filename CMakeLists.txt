@@ -12,6 +12,16 @@ set(ESHKOL_VERSION "1.3.5")
 
 project("Eshkol" VERSION ${ESHKOL_VERSION} LANGUAGES C CXX)
 
+# Python's ELF extension force-loads the static compiler, REPL, runtime and
+# agent dependency closure into a shared object. Enable PIC before creating
+# any project or FetchContent targets so every CMake-built static archive in
+# that closure inherits it. Ordinary builds retain the narrower PIC scope
+# applied to runtime and agent-FFI targets below.
+option(ESHKOL_PYTHON_BINDINGS "Build Python bindings via pybind11" OFF)
+if(ESHKOL_PYTHON_BINDINGS AND UNIX AND NOT APPLE)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 set(ESHKOL_USING_MSVC FALSE)
 if(MSVC)
     set(ESHKOL_USING_MSVC TRUE)
@@ -2671,12 +2681,12 @@ endif()
 # compiling, so POSITION_INDEPENDENT_CODE on the STATIC target would be a
 # silent no-op.
 #
-# SCOPE — deliberately these targets rather than a global
-# CMAKE_POSITION_INDEPENDENT_CODE.  Only the runtime (and the agent-FFI
-# archive, set where it is defined) is ever consumed by a `-shared` link;
-# ESHKOL_NON_RUNTIME_SRC — the LLVM backend, parser and REPL that make up the
-# rest of `eshkol-static` — is linked only into the eshkol-run/eshkol-repl
-# executables, so compiling it PIC would pay the cost with no beneficiary.
+# In ordinary builds, deliberately set PIC on only the runtime and agent-FFI
+# targets consumed by generated `-shared` outputs; the compiler, parser and
+# REPL are linked only into executables. The optional Python ELF extension
+# force-loads those archives and the static agent dependency closure too, so
+# CMAKE_POSITION_INDEPENDENT_CODE is enabled near project() above, before any
+# targets or FetchContent dependencies are created, only for that build mode.
 #
 # Accepted consequence: these objects are also members of `eshkol-static`, so
 # the compiler's own runtime half becomes PIC too.  The alternative — a second,
@@ -2753,6 +2763,7 @@ add_library(eshkol-workspace STATIC
   lib/frontend/library_registry.cpp
   lib/frontend/workspace.cpp
   lib/types/hott_types.cpp
+  lib/types/type_relation.cpp
   lib/core/ast.cpp
 )
 target_include_directories(eshkol-workspace PUBLIC
@@ -4277,6 +4288,66 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: named_closure_static_call_capture"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_ad_test.esk")
+        add_test(
+            NAME reassigned_callee_ad_subset_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_ad_test.esk"
+        )
+        set_tests_properties(reassigned_callee_ad_subset_jit PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: reassigned_callee_identity"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME reassigned_callee_ad_subset_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/reassigned_callee_ad_subset_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_ad_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/reassigned_callee_ad_subset_aot'"
+        )
+        set_tests_properties(reassigned_callee_ad_subset_aot PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "PASS: reassigned_callee_identity"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_identity_test.esk")
+        add_test(
+            NAME reassigned_callee_identity_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_identity_test.esk"
+        )
+        set_tests_properties(reassigned_callee_identity_jit PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "PASS: reassigned_callee_identity"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME reassigned_callee_identity_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/reassigned_callee_identity_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_identity_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/reassigned_callee_identity_aot'"
+        )
+        set_tests_properties(reassigned_callee_identity_aot PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: reassigned_callee_identity"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_hof_test.esk")
+        add_test(
+            NAME reassigned_callee_hof_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_hof_test.esk"
+        )
+        set_tests_properties(reassigned_callee_hof_jit PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: reassigned_callee_hof"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME reassigned_callee_hof_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/reassigned_callee_hof_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/closures/reassigned_callee_hof_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/reassigned_callee_hof_aot'"
+        )
+        set_tests_properties(reassigned_callee_hof_aot PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "PASS: reassigned_callee_hof"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     # LE-20: a named-let parameter was reported "Undefined variable" when it was
     # referenced inside a NESTED named let whose binding form contained a further
     # named let that rebound the same name. The capture analysis subtracted the
@@ -6764,6 +6835,31 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_geometry_guard_test.py)
 endif()
 
+# Release-invariant contracts are source-level checks for the architecture
+# model and the typed receipts emitted before the release architecture grade.
+# Keep them in CTest so normal developer and CI test selections exercise the
+# same contracts as the release workflow.
+if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
+    foreach(_release_invariant_test IN ITEMS
+            test_release_invariant_contracts
+            test_release_probe_receipts)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/${_release_invariant_test}.py")
+            add_test(NAME ${_release_invariant_test}
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/${_release_invariant_test}.py)
+            set_tests_properties(${_release_invariant_test} PROPERTIES
+                LABELS "toolchain;release-invariants")
+        endif()
+    endforeach()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_flat_ad_import_test.py")
+        add_test(NAME wasm_flat_ad_import_test
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_flat_ad_import_test.py)
+        set_tests_properties(wasm_flat_ad_import_test PROPERTIES
+            LABELS "toolchain;wasm;imports")
+    endif()
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_geometry_guard_runtime_test.js")
     find_program(NODE_EXECUTABLE node)
     if(NODE_EXECUTABLE)
@@ -7738,6 +7834,22 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "continuation_pin_budget_boundary_test.sh: PASS"
             FAIL_REGULAR_EXPRESSION "FAILED|FAIL:")
+    endif()
+
+    # The continuation transcript gate must fail closed when expected or
+    # actual normalization fails; empty command-substitution output must
+    # never compare equal and report a false pass.
+    if(UNIX AND EXISTS
+       "${CMAKE_CURRENT_SOURCE_DIR}/tests/continuations/normalizer_failure_test.sh")
+        add_test(
+            NAME continuation_normalizer_failure
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/continuations/normalizer_failure_test.sh"
+        )
+        set_tests_properties(continuation_normalizer_failure PROPERTIES
+            TIMEOUT 60
+            PASS_REGULAR_EXPRESSION "normalizer_failure_test.sh: PASS"
+            FAIL_REGULAR_EXPRESSION "unexpectedly passed|false PASSED")
     endif()
 
     # SW-113: the seeded drand48-compatible generator is one runtime contract,
@@ -10369,9 +10481,11 @@ if(DEFINED ESHKOL_GENERATED_INCLUDE_DIR AND TARGET eshkol-agent-ffi)
 endif()
 
 # ===== Python Bindings (pybind11) =====
-option(ESHKOL_PYTHON_BINDINGS "Build Python bindings via pybind11" OFF)
-
 if(ESHKOL_PYTHON_BINDINGS)
+    # Earlier test registration discovers only the interpreter. Modern
+    # pybind11 reuses that discovery, so request the development component
+    # explicitly to provide Python3_add_library and the matching headers.
+    find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
     find_package(pybind11 QUIET)
     if(pybind11_FOUND)
         pybind11_add_module(eshkol_py bindings/python/eshkol_module.cpp)
@@ -10442,7 +10556,9 @@ if(ESHKOL_PYTHON_BINDINGS)
                      COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
                              "${CMAKE_CURRENT_SOURCE_DIR}/tests/bindings/python_capsule_lifetime_test.py")
             set_tests_properties(python_bindings_capsule_lifetime PROPERTIES
-                ENVIRONMENT "ESHKOL_PYTHON_MODULE_DIR=$<TARGET_FILE_DIR:eshkol_py>")
+                ENVIRONMENT "ESHKOL_PYTHON_MODULE_DIR=$<TARGET_FILE_DIR:eshkol_py>"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "SKIP:|FAIL:")
         endif()
     else()
         message(STATUS "Python bindings: pybind11 not found, skipping")
@@ -10587,4 +10703,14 @@ endif()
 
 if(BUILD_TESTING)
     add_subdirectory(tests/bridge/qllm_private_abi)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_nested_diagnostics_test.py")
+    add_test(NAME ownership_nested_diagnostics
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_nested_diagnostics_test.py
+            $<TARGET_FILE:eshkol-run>)
+    set_tests_properties(ownership_nested_diagnostics PROPERTIES
+        TIMEOUT 90 LABELS "ownership;memory;regression")
 endif()

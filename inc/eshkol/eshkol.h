@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "eshkol/frontend/node_identity.h"
 
 #include "eshkol/exhaustive_dispatch.h"
 
@@ -3112,7 +3113,9 @@ extern "C" {
  * (`operation`, an eshkol_operations_t tagged by its own `op` field).
  * `inferred_hott_type` caches the type checker's result (0 = not yet
  * checked); `line`/`column` give 1-based source location for diagnostics
- * (0 = unknown).
+ * (0 = unknown). `node_id` uses the parser allocator's `eshkol_node_id_t`
+ * key type, a `uint32_t` alias, so semantic side tables use the same key
+ * without changing the public field width or layout.
  */
 typedef struct eshkol_ast {
     eshkol_type_t type;
@@ -3203,8 +3206,10 @@ typedef struct eshkol_ast {
      * deliberately an id and not a pointer: C++ construction zeroes it, but a
      * node assembled over unconstructed memory could hold garbage, and a garbage
      * NodeId is rejected by its tag and its bound and reads as unknown —
-     * never as a confident wrong location. */
-    uint32_t node_id ESHKOL_AST_BORN_ZERO;
+     * never as a confident wrong location. The field uses the allocator's
+     * eshkol_node_id_t alias (uint32_t), preserving the public field width
+     * while keeping parser and semantic-query keys type-identical. */
+    eshkol_node_id_t node_id ESHKOL_AST_BORN_ZERO;
 } eshkol_ast_t;
 
 #ifdef __cplusplus

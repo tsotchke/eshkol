@@ -501,7 +501,7 @@ quantum_step(ctx)          // Full mixing round
 ; => #(2.0 1.0 1.0) solution vector
 
 ; Verify solution
-(tensor-dot (matrix-row A 0) x)  ; => 6.0 ✓
+(tensor-dot (matrix-row A 0) x) ; => 6.0
 ```
 
 **Algorithm Complexity:**
@@ -736,25 +736,25 @@ $ eshkol-repl
 ## What v1.0 Does NOT Include
 
 **Not in v1.0:**
-- ❌ GPU/CUDA tensor operations
-- ❌ Automatic parallelization (pmap, pfold)
-- ❌ Built-in plotting/visualization
-- ❌ Units of measurement syntax
-- ❌ Fully Symbolic understanding (apart from lambdas and basic differentiation)
-- ❌ Distributed computing
-- ❌ BLAS/LAPACK integration (math.esk is pure Eshkol)
-- ❌ Sparse matrix support
-- ❌ FFT operations
+- GPU/CUDA tensor operations
+- Automatic parallelization (pmap, pfold)
+- Built-in plotting/visualization
+- Units of measurement syntax
+- Fully Symbolic understanding (apart from lambdas and basic differentiation)
+- Distributed computing
+- BLAS/LAPACK integration (math.esk is pure Eshkol)
+- Sparse matrix support
+- FFT operations
 
 **v1.0 Provides:**
-- ✅ Deterministic arena memory
-- ✅ Tensor operations (vector, matrix, N-D)
-- ✅ Automatic differentiation (8 operators)
-- ✅ Numerical algorithms (det, inv, solve, integrate, newton, power-iteration)
-- ✅ Statistical functions (variance, std, covariance)
-- ✅ Quantum RNG for stochastic methods
-- ✅ Interactive REPL for exploration
-- ✅ CSV/JSON data I/O
+- Deterministic arena memory
+- Tensor operations (vector, matrix, N-D)
+- Automatic differentiation (8 operators)
+- Numerical algorithms (det, inv, solve, integrate, newton, power-iteration)
+- Statistical functions (variance, std, covariance)
+- Quantum RNG for stochastic methods
+- Interactive REPL for exploration
+- CSV/JSON data I/O
 
 ## Comparison with Scientific Languages
 

@@ -18,6 +18,7 @@
 #include <eshkol/backend/libm_codegen.h>
 #include <eshkol/backend/link_probe.h>
 #include <eshkol/backend/closure_capture_scope.h>
+#include <eshkol/backend/static_callee_binding.h>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -1589,6 +1590,7 @@ namespace ControlFlowCallbacks {
     bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
     // Binding callback for assignment conversion of lexical locals.
     bool isVarSetWrapper(const void* ast, const char* name, void* context);
+    bool isReassignedTopLevelNameWrapper(const char* name, void* context);
     bool isVarObservedWrapper(const void* ast, const char* name, void* context);
     bool continuationEscapeWrapper(const void* ast, void* context);
     // Wrapper for getting builtin arithmetic functions (for CallApplyCodegen)
@@ -1619,6 +1621,7 @@ class EshkolLLVMCodeGen {
     friend llvm::Value* ControlFlowCallbacks::eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context);
     friend llvm::Value* ControlFlowCallbacks::detectAndPackWrapper(llvm::Value* val, void* context);
     friend bool ControlFlowCallbacks::isVarSetWrapper(const void* ast, const char* name, void* context);
+    friend bool ControlFlowCallbacks::isReassignedTopLevelNameWrapper(const char* name, void* context);
     friend bool ControlFlowCallbacks::isVarObservedWrapper(const void* ast, const char* name, void* context);
     friend bool ControlFlowCallbacks::continuationEscapeWrapper(const void* ast, void* context);
     friend llvm::Value* ControlFlowCallbacks::consCreateWrapper(llvm::Value* car, llvm::Value* cdr, void* context);
@@ -1899,6 +1902,16 @@ private:
      * definitions, which is every name in practice, keep the direct call.
      */
     std::unordered_set<std::string> redefined_toplevel_names;
+    std::unordered_set<std::string> toplevel_callee_names;
+
+    /* Names whose top-level binding is reassigned: defined more than once, or
+     * the target of a set! at top-level scope. Such a binding never gets a
+     * static `<name>_func` alias (static_callee_binding.h). Answered lazily
+     * per name from the unit's top-level forms and memoised, so only names
+     * that are actually bound to lambdas pay for the scan. */
+    const eshkol_ast_t* toplevel_asts_for_reassignment = nullptr;
+    size_t num_toplevel_asts_for_reassignment = 0;
+    std::unordered_map<std::string, bool> reassigned_toplevel_memo;
 
     // ESH-0078: Maps a defined function name to its source body AST, so an AD
     // operator applied to a NAMED function (via var) can run the same
@@ -2347,6 +2360,13 @@ public:
             const eshkol_ast_t* asts_to_use = expanded_asts.data();
             size_t num_asts_to_use = expanded_asts.size();
 
+            // Compute binding/reassignment facts against the fully expanded,
+            // flattened source tree before the type checker annotates it or
+            // codegen starts rewriting nodes. Every later fast path reads the
+            // cached facts rather than traversing ASTs whose union payloads
+            // may already have changed.
+            collectRedefinedTopLevelNames(asts_to_use, num_asts_to_use);
+
             // ESH-0214c: whole-program pre-pass, before any function body is
             // codegen'd, so codegenNamedLet's automatic per-iteration arena
             // scope reclamation (ESH-0214b) can see whether a loop's
@@ -2776,11 +2796,6 @@ public:
             // SAFE ORDER: Function declarations → Function bodies → Global variables in main()
             // Global variables (including lambdas) are processed ONLY in main function context
             // This avoids issues with processing lambdas without a function context
-
-            // Step 0: R7RS §5.3.1 — which top-level names are defined more than
-            // once?  Must run before Step 1.5 creates bindings and before Step 2
-            // compiles any body that references them.
-            collectRedefinedTopLevelNames(asts_to_use, num_asts_to_use);
 
             // Step 1: Create function declarations FIRST (including nested functions)
             for (size_t i = 0; i < num_asts_to_use; i++) {
@@ -3868,6 +3883,10 @@ private:
      */
     void collectRedefinedTopLevelNames(const eshkol_ast_t* asts, size_t num_asts) {
         redefined_toplevel_names.clear();
+        toplevel_callee_names.clear();
+        toplevel_asts_for_reassignment = asts;
+        num_toplevel_asts_for_reassignment = asts ? num_asts : 0;
+        reassigned_toplevel_memo.clear();
         if (!asts) return;
 
         std::unordered_map<std::string, unsigned> counts;
@@ -3877,6 +3896,12 @@ private:
             if (asts[i].operation.define_op.is_external) continue;
             const char* name = asts[i].operation.define_op.name;
             if (!name || !name[0]) continue;
+            const auto& def = asts[i].operation.define_op;
+            if (def.is_function ||
+                (def.value && def.value->type == ESHKOL_OP &&
+                 def.value->operation.op == ESHKOL_LAMBDA_OP)) {
+                toplevel_callee_names.insert(name);
+            }
             counts[name]++;
         }
 
@@ -3888,11 +3913,47 @@ private:
                              entry.first.c_str(), entry.second);
             }
         }
+
+        // Compute call-target mutation facts while the complete expanded AST
+        // is still intact. Later codegen mutates some AST nodes; repeatedly
+        // walking the unit from a fast path both did needless work and let a
+        // query observe a partially lowered tree. astSetsVar already carries
+        // the compiler's lexical-shadowing rules, so this caches only its
+        // answers and introduces no second binding-name analysis.
+        for (const std::string& name : toplevel_callee_names) {
+            bool reassigned = isRedefinedTopLevelName(name.c_str());
+            for (size_t i = 0; i < num_toplevel_asts_for_reassignment && !reassigned; ++i) {
+                reassigned = astSetsVar(&toplevel_asts_for_reassignment[i], name);
+            }
+            reassigned_toplevel_memo.emplace(name, reassigned);
+        }
     }
 
     bool isRedefinedTopLevelName(const char* name) const {
         return name && name[0] &&
                redefined_toplevel_names.find(name) != redefined_toplevel_names.end();
+    }
+
+    /* Is the top-level binding of `name` reassigned in this compilation
+     * unit: defined more than once, or the target of a set! anywhere at
+     * top-level scope (inside any top-level form, unless a nearer binding of
+     * the same name shadows it)? A top-level lambda binding of such a name
+     * must not be resolved statically: the lambda it was created with is not
+     * what the name denotes after the assignment. */
+    bool isReassignedTopLevelName(const char* name) {
+        if (!name || !name[0]) return false;
+        if (!g_repl_mode_enabled && toplevel_callee_names.count(name) == 0) return false;
+        if (isRedefinedTopLevelName(name)) return true;
+        auto memo_it = reassigned_toplevel_memo.find(name);
+        if (memo_it != reassigned_toplevel_memo.end()) return memo_it->second;
+        if (!g_repl_mode_enabled) return false;
+        bool reassigned = false;
+        const std::string var(name);
+        for (size_t i = 0; i < num_toplevel_asts_for_reassignment && !reassigned; i++) {
+            reassigned = astSetsVar(&toplevel_asts_for_reassignment[i], var);
+        }
+        reassigned_toplevel_memo.emplace(var, reassigned);
+        return reassigned;
     }
 
     /* Wrap a top-level LLVM function in a zero-capture arena closure and
@@ -4373,7 +4434,11 @@ private:
                     // Generate the lambda function
                     Value* lambda_func = codegenLambda(&value->operation);
 
-                    if (lambda_func && isa<Function>(lambda_func)) {
+                    // A reassigned name gets no static alias and no source
+                    // alias: neither describes the binding after the
+                    // assignment (static_callee_binding.h).
+                    if (lambda_func && isa<Function>(lambda_func) &&
+                        !isReassignedTopLevelName(var_name)) {
                         Function* actual_func = cast<Function>(lambda_func);
                         // Store the function reference for gradient/derivative resolution
                         symbol_table[std::string(var_name) + "_func"] = actual_func;
@@ -6154,7 +6219,8 @@ private:
                     // Case 1: Lambda calling lambda (make-adder pattern)
                     auto callee_it = global_symbol_table.find(func_name + "_func");
                     if (callee_it != global_symbol_table.end() && callee_it->second &&
-                        isa<Function>(callee_it->second)) {
+                        isa<Function>(callee_it->second) &&
+                        !isShadowedByLocalRuntimeBinding(func_name)) {
                         Function* callee_func = cast<Function>(callee_it->second);
                         if (callee_func) {
                             std::string callee_lambda_name = callee_func->getName().str();
@@ -6257,7 +6323,8 @@ private:
                     std::string func_key = var_name + "_func";
                     bool found_in_symbol_table = (symbol_table.find(func_key) != symbol_table.end());
                     bool found_in_global = (global_symbol_table.find(func_key) != global_symbol_table.end());
-                    if (found_in_symbol_table || found_in_global) {
+                    if ((found_in_symbol_table || found_in_global) &&
+                        !isShadowedByLocalRuntimeBinding(var_name)) {
                         // This variable is a lambda - return with LAMBDA_SEXPR type
                         co_return TypedValue(val, ESHKOL_VALUE_CALLABLE,
                                          eshkol::hott::BuiltinTypes::Function, true);
@@ -6458,19 +6525,28 @@ private:
     }
     // Phase 3B: Simplified tagged cons cell allocation - direct tagged_value storage!
     Value* codegenTaggedArenaConsCell(const TypedValue& car_val, const TypedValue& cdr_val) {
+        Value* result = codegenTaggedArenaConsCellCopying(typedValueToTaggedValue(car_val),
+                                                          typedValueToTaggedValue(cdr_val));
+        eshkol_debug("Created tagged cons cell (Phase 3B): car_type=%d, cdr_type=%d", car_val.type, cdr_val.type);
+        return result;
+    }
+
+    // Allocate a cons cell whose car and cdr are COMPLETE copies of two
+    // tagged values: type byte, flags and payload. A list builtin that moves
+    // an existing element into a new list must use this (or
+    // codegenTaggedArenaConsCellFromTaggedValue); reducing the element to its
+    // 64-bit payload first loses its type, which is how remove and split-at
+    // returned the raw bits of inexact elements.
+    Value* codegenTaggedArenaConsCellCopying(Value* car_tagged, Value* cdr_tagged) {
         Value* arena_ptr = getArenaPtr();
         if (!arena_ptr) {
             eshkol_error("Arena not initialized for tagged cons cell allocation");
             return nullptr;
         }
-        
+
         // Allocate tagged cons cell with object header (consolidated pointer format)
         Value* cons_ptr = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
-        
-        // Convert TypedValue to tagged_value
-        Value* car_tagged = typedValueToTaggedValue(car_val);
-        Value* cdr_tagged = typedValueToTaggedValue(cdr_val);
-        
+
         // Store COMPLETE tagged_value structs directly using Phase 3B helpers!
         Value* is_car = ConstantInt::get(int1_type, 0);
         Value* is_cdr = ConstantInt::get(int1_type, 1);
@@ -6496,8 +6572,6 @@ private:
         // Direct struct copy - this is the key optimization of Phase 3B!
         builder->CreateCall(getTaggedConsSetTaggedValueFunc(), {cons_ptr, is_car, car_ptr});
         builder->CreateCall(getTaggedConsSetTaggedValueFunc(), {cons_ptr, is_cdr, cdr_ptr});
-
-        eshkol_debug("Created tagged cons cell (Phase 3B): car_type=%d, cdr_type=%d", car_val.type, cdr_val.type);
 
         // Return pointer to cons cell as int64
         return builder->CreatePtrToInt(cons_ptr, int64_type);
@@ -9426,20 +9500,6 @@ private:
     
     // Simple helper to wrap tagged_value in TypedValue (for cons cell creation)
     // This avoids complex control flow by just storing the tagged_value as-is
-    TypedValue taggedValueToTypedValue(Value* tagged_val) {
-        if (!tagged_val || tagged_val->getType() != tagged_value_type) {
-            return TypedValue();
-        }
-        
-        // Simply unpack the int64 data field - we'll let runtime type checking handle it
-        // This avoids dominance issues from complex branching
-        Value* data = unpackInt64FromTaggedValue(tagged_val);
-        
-        // For cons cell creation, we just need the raw data
-        // The type is preserved in the tagged_value itself
-        return TypedValue(data, ESHKOL_VALUE_INT64, true);
-    }
-    
     // ===== POLYMORPHIC ARITHMETIC FUNCTIONS (Phase 1.3 + Phase 2 Dual Number Support) =====
     // These operate on tagged_value parameters and handle mixed types + dual numbers
     
@@ -18156,12 +18216,20 @@ private:
             !isa<Function>(local_callable_it->second)) {
             local_callable_storage_shadows_global = true;
         }
+        const bool top_level_binding_is_dynamic =
+            eshkol::staticCalleeTopLevelBindingIsDynamic(
+                &symbol_table, &global_symbol_table, current_function, func_name,
+                isReassignedTopLevelName(func_name.c_str()));
+        if (top_level_binding_is_dynamic) {
+            eshkol_debug("Static callee resolution deferred for top-level mutable binding %s",
+                         func_name.c_str());
+        }
 
         // Step 1: Check LOCAL symbol table first (for letrec/let bindings with _func)
         // SCOPED LOOKUP FIX: First try scoped version (current_func.name_func) to handle
         // nested functions with the same name in different outer functions.
         std::string func_key = func_name + "_func";
-        if (!local_callable_storage_shadows_global && current_function) {
+        if (!top_level_binding_is_dynamic && !local_callable_storage_shadows_global && current_function) {
             std::string scoped_key = current_function->getName().str() + "." + func_key;
             auto scoped_it = symbol_table.find(scoped_key);
             if (scoped_it != symbol_table.end() && scoped_it->second && isa<Function>(scoped_it->second)) {
@@ -18171,7 +18239,7 @@ private:
         }
 
         // If not found with scoped key, try unscoped
-        if (!local_callable_storage_shadows_global && !callee) {
+        if (!top_level_binding_is_dynamic && !local_callable_storage_shadows_global && !callee) {
             auto func_it = symbol_table.find(func_key);
             eshkol_debug("Looking for %s in symbol_table: %s",
                         func_key.c_str(),
@@ -18254,7 +18322,7 @@ private:
         // helper; otherwise local letrec closures such as `mul` can briefly
         // resolve to the global arithmetic helper before the closure-call
         // fallback gets a chance to load the activation-local cell.
-        if (!callee && !local_callable_storage_shadows_global) {
+        if (!callee && !top_level_binding_is_dynamic && !local_callable_storage_shadows_global) {
             auto ft_it = function_table.find(func_name);
             if (ft_it != function_table.end()) {
                 callee = ft_it->second;
@@ -18799,7 +18867,8 @@ private:
                     }
                 }
 
-                if (func_entry && isa<Function>(func_entry)) {
+                if (func_entry && isa<Function>(func_entry) &&
+                    !isShadowedByLocalRuntimeBinding(func_name)) {
                     callee = dyn_cast<Function>(func_entry);
                     eshkol_debug("Resolved closure function for %s", func_name.c_str());
                 } else {
@@ -30945,7 +31014,7 @@ private:
                 eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
                 eshkol::AstRouteGroup<AstRoute::Call,
                     ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP, ESHKOL_CASE_OP,
-                    ESHKOL_DO_OP, ESHKOL_WHEN_OP, ESHKOL_EXTERN_OP, ESHKOL_UNLESS_OP,
+                    ESHKOL_DO_OP, ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP,
                     ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP,
                     ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_KB_QUERY_PREFIX_OP,
                     ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP,
@@ -30999,7 +31068,7 @@ private:
                 eshkol::AstRouteGroup<AstRoute::CaseLambda, ESHKOL_CASE_LAMBDA_OP>{},
                 eshkol::AstRouteGroup<AstRoute::OtherOperations,
                     ESHKOL_INVALID_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP, ESHKOL_MUL_OP,
-                    ESHKOL_DIV_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
+                    ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
                     ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
                     ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP,
                     ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_LOGIC_VAR_OP,
@@ -33134,6 +33203,22 @@ private:
                     // Non-alloca capture - use the closure env slot directly
                     symbol_table[var_name] = capture_arg;
                     eshkol_debug("Lambda using closure env pointer for capture %s", var_name.c_str());
+                }
+
+                // Preserve the static-callee fact through this capture only
+                // when the outer alias was owned by the outer binding's
+                // storage. The nested LLVM argument or IntToPtr capture
+                // instruction is a new IR value for the same lexical cell;
+                // recording that representation keeps scoped AD/map/apply
+                // resolution exact while still rejecting sibling shadows.
+                auto source_storage = prev_symbols.find(var_name);
+                auto captured_storage = symbol_table.find(var_name);
+                if (source_storage != prev_symbols.end() &&
+                    captured_storage != symbol_table.end()) {
+                    eshkol::inheritStaticCalleeCapture(
+                        &symbol_table, &global_symbol_table, prev_function,
+                        lambda_func, var_name, source_storage->second,
+                        captured_storage->second);
                 }
             } else {
                 eshkol_warn("Missing capture parameter for %s", var_name.c_str());
@@ -42053,35 +42138,21 @@ private:
     
     // Helper function to resolve lambda/function from AST with arity-specific builtin handling
     /**
-     * @brief True when @p name is lexically shadowed by a runtime binding of
-     *        the current function (ESH-0070 class).
+     * @brief True when @p name denotes a runtime binding of the current
+     *        function that no static alias describes (ESH-0070 class).
      *
-     * A function parameter (llvm::Argument) or local variable (AllocaInst
-     * owned by the current function) shadows any same-named top-level
-     * function. The unscoped <name>_func entries leak into every scope
-     * (preGenerateTopLevelLambdas writes both symbol_table and
-     * global_symbol_table) and function_table is global, so static
-     * procedure resolution MUST decline when this returns true — the only
-     * resolution that agrees with lexical scope is runtime dispatch on the
-     * local value. A scoped <current>.<name>_func entry exempts the name:
-     * it proves the local binding itself is a statically-known lambda
-     * (let-bound or local define), which static resolution handles
-     * correctly via the scoped lookup.
+     * A function parameter or local storage cell shadows any same-named
+     * top-level function, and any scoped alias an earlier binding of the name
+     * left in this function. Static procedure resolution MUST decline when
+     * this returns true; the only resolution that agrees with lexical scope is
+     * runtime dispatch on the local value. The exception is a scoped alias
+     * recorded by the binding the name denotes now: that binding is a
+     * never-reassigned lambda and static resolution is exact. The rule lives
+     * in static_callee_binding.h so every static fast path applies it.
      */
     bool isShadowedByLocalRuntimeBinding(const std::string& name) {
-        if (!current_function) return false;
-        auto it = symbol_table.find(name);
-        if (it == symbol_table.end() || !it->second) return false;
-        Value* v = it->second;
-        bool is_param = isa<Argument>(v) &&
-            cast<Argument>(v)->getParent() == current_function;
-        bool is_local_alloca = isa<AllocaInst>(v) &&
-            cast<AllocaInst>(v)->getFunction() == current_function;
-        if (!is_param && !is_local_alloca) return false;
-        std::string scoped_key =
-            current_function->getName().str() + "." + name + "_func";
-        return symbol_table.find(scoped_key) == symbol_table.end() &&
-               global_symbol_table.find(scoped_key) == global_symbol_table.end();
+        return eshkol::staticCalleeHiddenByRuntimeBinding(
+            &symbol_table, &global_symbol_table, current_function, name);
     }
 
     Value* resolveLambdaFunction(const eshkol_ast_t* func_ast, size_t required_arity = 0) {
@@ -42205,6 +42276,17 @@ private:
                              "binding in '%s' — deferring to runtime dispatch",
                              func_name.c_str(),
                              current_function->getName().str().c_str());
+                return nullptr;
+            }
+
+            // A top-level value binding that can be reassigned is a runtime
+            // callee even when function_table still contains the lambda that
+            // originally initialized it. Preserve a same-named lexical lambda
+            // only when the shared storage-owner fact proves that alias is its
+            // current binding.
+            if (eshkol::staticCalleeTopLevelBindingIsDynamic(
+                    &symbol_table, &global_symbol_table, current_function, func_name,
+                    isReassignedTopLevelName(func_name.c_str()))) {
                 return nullptr;
             }
 
@@ -42947,13 +43029,10 @@ private:
         
         Value* input_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
         
-        // Extract car as tagged_value and convert to TypedValue
+        // Copy the element, complete with its type, into the prefix.
         Value* input_element_tagged = extractCarAsTaggedValue(current_val);
-        TypedValue input_element_typed = taggedValueToTypedValue(input_element_tagged);
-        
-        // Create new cons cell for prefix with type preservation
-        TypedValue cdr_null = TypedValue(ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
-        Value* new_prefix_cons = codegenTaggedArenaConsCell(input_element_typed, cdr_null);
+        Value* new_prefix_cons = codegenTaggedArenaConsCellCopying(
+            input_element_tagged, packNullToTaggedValue());
         
         // Update prefix list (similar to take)
         Value* prefix_head_val = builder->CreateLoad(int64_type, prefix_head);
@@ -43024,43 +43103,29 @@ private:
             return nullptr;
         }
 
-        // Check if first argument is a predicate (lambda or function reference)
+        // (remove pred list) removes the elements pred accepts; (remove item
+        // list) removes the elements equal to item under the comparison this
+        // entry point names (remove: equal?, remv: eqv?, remq: eq?).
+        //
+        // A predicate is called directly only when resolveLambdaFunction
+        // resolves it statically: an inline lambda, or a name whose binding is
+        // a never-reassigned lambda in scope (static_callee_binding.h). A
+        // procedure that captures variables is called through its closure
+        // value, as reduce does. Every other operand is evaluated once and
+        // dispatched on at runtime: a procedure value is called, anything else
+        // is compared.
         const eshkol_ast_t* first_arg = &op->call_op.variables[0];
-        bool is_predicate = false;
         Function* pred_func = nullptr;
-
-        if (first_arg->type == ESHKOL_OP && first_arg->operation.op == ESHKOL_LAMBDA_OP) {
-            // Inline lambda - resolve it
-            is_predicate = true;
-            Value* proc = resolveLambdaFunction(first_arg);
+        if ((first_arg->type == ESHKOL_OP && first_arg->operation.op == ESHKOL_LAMBDA_OP) ||
+            first_arg->type == ESHKOL_VAR) {
+            Value* proc = resolveLambdaFunction(first_arg, 1);
             pred_func = proc ? dyn_cast<Function>(proc) : nullptr;
-        } else if (first_arg->type == ESHKOL_VAR) {
-            // Variable - check if it's a function
-            std::string var_name = first_arg->variable.id;
-
-            // SHADOWING GUARD (ESH-0070 class): function_table and the
-            // unscoped <name>_func entries describe top-level bindings, so
-            // when the name is rebound to a runtime value in the current
-            // function (parameter or local alloca) the lookups below would
-            // substitute the shadowed global as the predicate. Decline
-            // static predicate resolution in that case: the local binding is
-            // a runtime value, and remove's element-based path compares
-            // against exactly that value — the same behavior a non-shadowed
-            // runtime argument gets today.
-            if (!isShadowedByLocalRuntimeBinding(var_name)) {
-                // Check function table first
-                auto func_it = function_table.find(var_name);
-                if (func_it != function_table.end() && func_it->second) {
-                    is_predicate = true;
-                    pred_func = func_it->second;
-                } else {
-                    // Check for lambda reference
-                    auto sym_it = symbol_table.find(var_name + "_func");
-                    if (sym_it != symbol_table.end()) {
-                        pred_func = dyn_cast<Function>(sym_it->second);
-                        is_predicate = (pred_func != nullptr);
-                    }
-                }
+            if (pred_func &&
+                (eshkol::functionHasCaptureParameters(pred_func) ||
+                 pred_func->arg_size() != 1 ||
+                 pred_func->getFunctionType()->getParamType(0) != tagged_value_type ||
+                 pred_func->getReturnType() != tagged_value_type)) {
+                pred_func = nullptr;
             }
         }
 
@@ -43068,24 +43133,24 @@ private:
         if (!list) return nullptr;
         Value* list_int = safeExtractInt64(list);
 
-        // For non-static-predicate removal, evaluate the operand ONCE.
-        // The value may still be a procedure at runtime — a function
-        // parameter, a binding that shadows a same-named top-level function
-        // (ESH-0070 class), or a closure produced by a call — and SRFI-1
-        // remove semantics require calling it as the predicate. Keep the
-        // tagged value for a runtime CALLABLE dispatch alongside the
-        // element-equality path.
-        Value* item_int = nullptr;
         Value* item_tagged = nullptr;
         Value* item_is_callable = nullptr;
-        if (!is_predicate) {
-            Value* item = codegenAST(&op->call_op.variables[0]);
+        Function* item_equal = nullptr;
+        if (!pred_func) {
+            Value* item = codegenAST(first_arg);
             if (!item) return nullptr;
             item_tagged = ensureTaggedValue(item);
-            item_int = safeExtractInt64(item_tagged);
             Value* item_base = getBaseType(getTaggedValueType(item_tagged));
             item_is_callable = builder->CreateICmpEQ(item_base,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+            const char* equivalence = comparison_type == "eq" ? "eq?"
+                                    : comparison_type == "eqv" ? "eqv?"
+                                    : "equal?";
+            item_equal = createBuiltinEqualityFunction(equivalence);
+            if (!item_equal) {
+                eshkol_error("remove: failed to materialise %s for element comparison", equivalence);
+                return nullptr;
+            }
         }
 
         Function* current_func = builder->GetInsertBlock()->getParent();
@@ -43121,27 +43186,15 @@ private:
         builder->SetInsertPoint(loop_body);
 
         Value* input_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
-
-        // Extract car as tagged_value
         Value* input_element_tagged = extractCarAsTaggedValue(current_val);
-        Value* input_element = unpackInt64FromTaggedValue(input_element_tagged);
 
-        // Determine if element should be removed
+        // Determine if element should be removed. A predicate's answer is
+        // tested with Scheme truthiness: only #f keeps the element.
         Value* is_match = nullptr;
-        if (is_predicate && pred_func) {
-            // Predicate-based removal: call predicate and check if result is truthy
+        if (pred_func) {
             Value* pred_result = builder->CreateCall(pred_func, {input_element_tagged});
-            // Check if result is truthy (non-zero, non-false)
-            Value* pred_result_int = safeExtractInt64(pred_result);
-            is_match = builder->CreateICmpNE(pred_result_int, ConstantInt::get(int64_type, 0));
+            is_match = isTruthy(ensureTaggedValue(pred_result));
         } else {
-            // Runtime dispatch (ESH-0070 class): the operand was not a
-            // statically-resolvable predicate — it may be a runtime
-            // procedure value (function parameter / shadowed binding /
-            // closure from a call) or a plain item. Branch on the tagged
-            // type: CALLABLE → call it as the predicate; anything else →
-            // element equality (eq/eqv/equal all compare the extracted
-            // value here, matching the previous behavior).
             BasicBlock* pred_call_bb = BasicBlock::Create(*context, "remove_pred_call", current_func);
             BasicBlock* item_cmp_bb = BasicBlock::Create(*context, "remove_item_cmp", current_func);
             BasicBlock* match_merge_bb = BasicBlock::Create(*context, "remove_match_merge", current_func);
@@ -43153,30 +43206,30 @@ private:
                 eshkol_error("remove: closure dispatch failed");
                 return nullptr;
             }
-            Value* rt_pred_int = safeExtractInt64(ensureTaggedValue(rt_pred_result));
-            Value* rt_pred_match = builder->CreateICmpNE(rt_pred_int, ConstantInt::get(int64_type, 0));
+            Value* rt_pred_match = isTruthy(ensureTaggedValue(rt_pred_result));
             BasicBlock* pred_call_end = builder->GetInsertBlock();
             builder->CreateBr(match_merge_bb);
 
             builder->SetInsertPoint(item_cmp_bb);
-            Value* item_cmp_match = builder->CreateICmpEQ(input_element, item_int);
+            Value* equal_result = builder->CreateCall(item_equal, {input_element_tagged, item_tagged});
+            Value* item_cmp_match = isTruthy(equal_result);
+            BasicBlock* item_cmp_end = builder->GetInsertBlock();
             builder->CreateBr(match_merge_bb);
 
             builder->SetInsertPoint(match_merge_bb);
             PHINode* match_phi = builder->CreatePHI(int1_type, 2, "remove_is_match");
             match_phi->addIncoming(rt_pred_match, pred_call_end);
-            match_phi->addIncoming(item_cmp_match, item_cmp_bb);
+            match_phi->addIncoming(item_cmp_match, item_cmp_end);
             is_match = match_phi;
         }
 
         // If it matches (predicate true or equals item), skip it; otherwise keep it
         builder->CreateCondBr(is_match, skip_element, keep_element);
-        
-        // Keep element (doesn't match item to remove)
+
+        // Keep element: copy it, complete with its type, into the result.
         builder->SetInsertPoint(keep_element);
-        TypedValue elem_typed = taggedValueToTypedValue(input_element_tagged);
-        TypedValue cdr_null = TypedValue(ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
-        Value* new_result_cons = codegenTaggedArenaConsCell(elem_typed, cdr_null);
+        Value* new_result_cons = codegenTaggedArenaConsCellCopying(
+            input_element_tagged, packNullToTaggedValue());
         
         // Update result list
         Value* head_val = builder->CreateLoad(int64_type, result_head);
@@ -45344,6 +45397,11 @@ namespace ControlFlowCallbacks {
     bool isVarSetWrapper(const void* ast, const char* name, void* context) {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         return name && codegen->astSetsVar(static_cast<const eshkol_ast_t*>(ast), name);
+    }
+
+    bool isReassignedTopLevelNameWrapper(const char* name, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return codegen->isReassignedTopLevelName(name);
     }
 
     bool isVarObservedWrapper(const void* ast, const char* name, void* context) {

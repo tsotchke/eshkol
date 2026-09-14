@@ -84,7 +84,7 @@ from check_engine_parity_threshold import exact_fraction, record_fraction  # noq
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASELINE = os.path.join(REPO, "tests", "vm_parity", "ENGINE_PARITY_BASELINE.json")
-TRACE_DIR = os.path.join(REPO, "scripts", "icc_traces")
+TRACE_DIR = os.environ.get("TRACE_DIR", os.path.join(REPO, "scripts", "icc_traces"))
 TRACE = os.path.join(TRACE_DIR, "engine_parity_coverage.jsonl")
 SURFACE = os.path.join(REPO, "tests", "coverage", "language_surface.json")
 
