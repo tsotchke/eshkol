@@ -6365,7 +6365,7 @@
         2014
       ],
       "arity": 3,
-      "min_arity": 3,
+      "min_arity": 2,
       "backends": [
         "native",
         "vm"

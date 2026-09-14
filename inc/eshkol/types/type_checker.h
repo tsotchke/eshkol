@@ -692,13 +692,42 @@ private:
     // them -- the seed and each recursive call's argument -- not by the seed
     // alone. One frame per named let whose body is being synthesized; a call
     // that resolves to the frame's own loop binding records its argument types.
+    //
+    // The same frame serves the result fixpoint of every recursive procedure
+    // (a named let, a function define, a letrec lambda): while its result is
+    // being inferred the procedure is bound with result Never, and `uses`
+    // counts the references that resolved to that binding. A pass nothing
+    // referred to cannot have depended on the guessed result.
     struct LoopFrame {
         std::string name;
         size_t scope_index;                        // scope the loop name is bound in
         TypeId loop_type;                          // signature the body is checked against
         std::vector<std::vector<TypeId>> args;     // per parameter: types supplied by calls
+        size_t uses = 0;                           // references resolving to loop_type
     };
     std::vector<LoopFrame> loop_frames_;
+
+    /** Record a reference to @p name bound at @p bound against the innermost frame of that name. */
+    void noteRecursiveUse(const std::string& name, TypeId bound);
+
+    /** Everything a speculative pass records, so a discarded pass can be undone. */
+    struct SpeculationMark {
+        size_t errors;
+        size_t deferred;
+        size_t linearity;
+        std::map<std::string, int> linear_usage;
+    };
+    SpeculationMark markSpeculation() const;
+    /** Undo what the pass since @p mark recorded. */
+    void rollbackSpeculation(const SpeculationMark& mark);
+    /** Keep the pass since @p mark, printing its held diagnostics unless an enclosing pass still decides. */
+    void releaseSpeculation(const SpeculationMark& mark);
+    /**
+     * The result type a recursive procedure's next pass is checked against:
+     * the join of the current guess with the body type, or Value once the
+     * guess stays Never (no path returns) or the pass budget is spent.
+     */
+    TypeId nextRecursionResult(TypeId current, TypeId body, size_t pass) const;
 
     // Diagnostics produced while a named-let body is synthesized against a
     // signature that may still widen are held back, and only the pass that
@@ -722,6 +751,9 @@ private:
     ContinuationTask<TypeCheckResult> synthesizeApplicationTask(eshkol_ast_t* expr);
     ContinuationTask<TypeCheckResult> synthesizeDefineTask(eshkol_ast_t* expr);
     ContinuationTask<TypeCheckResult> synthesizeLetTask(eshkol_ast_t* expr);
+    /** A letrec lambda bound under @p name: its result is the least fixpoint over its self-calls. */
+    ContinuationTask<TypeCheckResult> synthesizeRecursiveLambdaTask(const std::string& name,
+                                                                    eshkol_ast_t* expr);
     ContinuationTask<TypeCheckResult> synthesizeIfTask(eshkol_ast_t* expr);
 
     // === Control and binding forms (every evaluated subexpression is checked) ===
@@ -758,7 +790,7 @@ private:
     ContinuationTask<TypeCheckResult> synthesizePatternExpressionsTask(const eshkol_pattern_t* pattern);
     /** Bind the variables a match pattern binds, given the type of the value it matches. */
     void bindPatternVariables(const eshkol_pattern_t* pattern, TypeId matched);
-    /** Least common supertype of branch result types; Value when any is Value or none is shared. */
+    /** Least common supertype of branch result types; Value when any is Value or none is shared; Never is the identity. */
     TypeId joinBranchTypes(const std::vector<TypeId>& types) const;
     /** Result of applying a value of type @p callee: its codomain, or Value. */
     TypeId applicationResultOf(TypeId callee) const;

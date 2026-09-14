@@ -810,7 +810,7 @@ static const BuiltinDef BUILTINS[] = {
     {"condvar-wait!", 2011, 2}, {"condition-signal", 2012, 1},
     {"condvar-signal!", 2012, 1}, {"condition-broadcast", 2013, 1},
     {"condvar-broadcast!", 2013, 1},
-    {"json-get-in", 2014, 3}, {"json-stringify-pretty", 2015, 2},
+    {"json-get-in", 2014, 3, 2}, {"json-stringify-pretty", 2015, 2},
     {"json-merge", 2016, 2},
     {"compression-available", 2017, 0}, {"deflate", 2018, 1},
     {"inflate", 2019, 1}, {"gzip", 2020, 1}, {"gunzip", 2021, 1},

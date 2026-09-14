@@ -1,0 +1,116 @@
+id: LE-29
+bucket: LOUD-ERROR
+subtag: structural
+status: closed
+closed_at: "cc10ab81"
+closed_by: "branch fix/v135-typecheck-precision"
+family: type-system/precision
+title: "type checker: if claimed a concrete type over a Value branch unlike cond, recursive calls turned branch joins into Value, function signatures printed as unknown and were related to nothing, return annotations rejected Value bodies, and json-get-in had a different arity on each engine"
+repro: >-
+  (1) `(define (f flag x) (label (if flag 42 x)))` warned "expected String,
+  got Int64" while `(label (cond (flag 42) (else x)))` was silent.
+  (2) `(define (label (s : string)) (string-length s))`,
+  `(define (to-int (x : number)) : integer 42)`, then `(label to-int)`
+  warned "expected String, got unknown"; passing a (-> Number Number)
+  function to a `(p : procedure)` parameter warned "expected ->, got unknown".
+  (3) `(define (first-number (xs : list)) : number (car xs))` warned "body
+  type Value doesn't match return annotation Number".
+  (4) `(json-get-in obj keys)`, the documented call, failed to compile for
+  the VM ("Arity mismatch: json-get-in expects 3 arguments but got 2"), and
+  `(json-get-in obj keys default)` failed natively ("expects 2 arguments but
+  got 3").
+observed_before: >-
+  synthesizeIfTask() returned the concrete branch when the other was Value
+  and the then-branch when the branches shared no supertype, where cond,
+  case, when, unless, match and guard join. A function signature had no
+  node in the supertype graph: TypeEnvironment::getTypeName() printed it as
+  "unknown", isSubtype() related it to nothing but itself, so every
+  higher-order call with a declared arrow or procedure parameter warned
+  "expected unknown, got unknown". Return annotations, call arguments inside
+  signatures and checking mode used plain subtyping, so a Value body or a
+  (-> Value Value) lambda was reported. lib/core/json.esk defined
+  json-get-in with two parameters while the VM builtin required three, and
+  tests/vm/json_surface_regression.esk, a VM-only probe that also uses the
+  VM-only json-merge and json-stringify-pretty, exits 1 under the native
+  compile on both base and fix while passing 5/5 on its runner.
+correct: >-
+  An if and its cond twin have one type. A function signature prints as
+  its arrow, is a subtype of the procedure and Closure types, and relates
+  to another signature contravariantly in the parameters and covariantly in
+  the result. Value is consistent with any annotation, at the top level and
+  inside a signature, while a concrete mismatch is still reported.
+  json-get-in takes an optional default on both engines, as
+  docs/reference/stdlib/json.md now documents.
+root_cause: >-
+  lib/types/type_checker.cpp synthesizeIfTask() predated the shared
+  joinBranchTypes() rule. lib/types/hott_types.cpp kept function signatures
+  in function_type_cache_ only, outside getTypeName(), isSubtypeUncached()
+  and getSupertypeChain(). The return-annotation, argument and checkTask()
+  checks called isSubtype(), which has no notion of the dynamic type. The
+  if rule's preference for the concrete branch had been standing in for the
+  missing inference of a recursive procedure's own result, which was bound
+  as Value while its body was checked. json-get-in gained its default on
+  the VM (96ffd56e) without the stdlib or the documentation following.
+fix: >-
+  (1) synthesizeIfTask() joins its branches with joinBranchTypes(). So that
+  a recursive branch does not turn that join into Value, a recursive
+  procedure's result is inferred as the least fixpoint over its own calls,
+  for a named let, a function define without a return annotation and a
+  letrec or letrec* lambda: the procedure is bound with result Never, a new
+  empty builtin type that is below every type, the identity of a join and
+  absorbing in arithmetic, and a pass that referred to the procedure is
+  repeated, speculatively and with LE-25's rollback, against the join of
+  the guess and the body type until the body adds nothing. A procedure no
+  path returns from, or one that exceeds eight passes, gets Value.
+  (2) TypeRelation owns static subtyping and arrow variance, structural
+  consistency, consistent subtyping, compatibility evidence, join/meet,
+  castability, narrowing, widening, pair projection, and printing.
+  TypeEnvironment's legacy static-subtype, join, and print entry points are
+  facades over that module; they no longer carry separate type-form rules.
+  (3) The checker routes branch and procedure-result joins, named-let and do
+  widening, occurrence narrowing, call-argument checks, return annotations,
+  checking mode, and `the` ascriptions through TypeRelation. InferenceSlot and
+  AdoptTop make the existing loop policy explicit in the relation. Concrete
+  mismatches still report, while Value/Invalid remain gradual.
+  (4) lib/core/json.esk defines (json-get-in obj keys . default) with
+  default #f; scripts/gen_builtin_min_arity.py derives the VM row's minimum
+  2 from that definition, the VM op maps an absent default to #f, and
+  tests/coverage/language_surface.json is regenerated.
+  scripts/run_vm_surface_tests.sh now fails a probe whose compile exits
+  nonzero instead of discarding the status with `|| true`.
+observed_after: >-
+  All four probe shapes behave as stated in `correct`. Standard-library
+  compile: 0 [WARN] before and after.
+evidence: >-
+  Measured through ICC alias eshkol-v135-typecheck-precision. Receipts:
+  type-relation-final-build PASS; cpp-type-relation-final PASS (3/3 test
+  programs, including the direct relation contract and 64/64 checker cases);
+  typesystem-final PASS (126/126 fixtures); stdlib-suite PASS (26/26);
+  vm-surface-regression-suite PASS (65/65, including json_get_in_default and
+  json_surface_regression); vm-parity-suite PASS (340/340); relevant-ctest-vm-
+  stdlib PASS (1/1); compiler-assurance-ctest PASS (7/7); api-doc-sync and
+  api-public-doc-coverage PASS (68/68 header symbols and 59/59 Eshkol exports).
+  The first type-system rerun exposed the tracked Pair<Value, Value> diagnostic
+  spelling; canonical Pair printing was restored and its direct relation test
+  added before the passing 126/126 rerun.
+caught_by: [direct-measurement]
+missed_by: [run_typesystem_tests, ctest]
+notes: >-
+  Filed LOUD-ERROR by the SW-63, LE-25 and LE-26 precedent: type-checker
+  verdicts on stderr and a compile-time arity refusal, never a wrong value.
+  These are LE-26's four open findings. Making if join like cond removed the
+  diagnostic for `(label (count-up 3))` over
+  `(let loop ((i 0)) (if (< i n) (loop (+ i 1)) i))`, which the if rule had
+  reported by accident; the recursion result fixpoint restores it and
+  extends it to the cond form, which LE-26 had already left silent. The
+  The original native compile exit for json_surface_regression.esk did not
+  represent a failed VM-runner case: the fixture uses json-merge and
+  json-stringify-pretty, which exist only on the VM. run_vm_surface_tests.sh
+  compiles that fixture with --profile hosted-vm and checks the compile exit;
+  both json_surface_regression and json_get_in_default_surface_regression
+  passed on that runner. run_typesystem_tests.sh checks EXPECT-COMPILE plus
+  diagnostic patterns; its later full rerun passed all 126 fixtures. The C++
+  runner had declared a TypeRelation test path but omitted executing it; this
+  change adds that execution, and the relation contract passed. The prior
+  standalone native error therefore came from invoking the wrong substrate,
+  not a swallowed failing test.

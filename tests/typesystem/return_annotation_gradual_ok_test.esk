@@ -1,0 +1,24 @@
+;; Type System Test: a return annotation is checked by gradual consistency. A
+;; body the checker types as Value is statically unknown, not wrong, so it
+;; satisfies any annotation, as a Value argument satisfies any parameter. The
+;; checker used to require a subtype, so each definition below warned
+;; "body type Value doesn't match return annotation".
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (first-number (xs : list)) : number (car xs))
+(define first-number-lambda (lambda ((xs : list)) : number (car xs)))
+(define (make-identity) : (-> number number) (lambda (x) x))
+(define (widened flag x) : string (if flag "yes" x))
+;; `the` already treats a Value expression as believable; pinned here.
+(define (ascribed (xs : list)) (the number (car xs)))
+
+(display (first-number (list 1 2)))
+(newline)
+(display (first-number-lambda (list 3)))
+(newline)
+(display ((make-identity) 4))
+(newline)
+(display (ascribed (list 5)))
+(newline)
