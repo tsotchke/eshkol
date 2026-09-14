@@ -13124,6 +13124,58 @@ entries:
       (`(remove p (list 1.0 2.0 3.0))` with a parameter predicate prints
       (4607182418800017408)), so a capturing predicate is left on its loud
       failure rather than routed there.
+  - id: LE-28
+    bucket: SILENT-WRONG
+    subtag: semantic
+    status: closed
+    closed_at: "2ab7562be"
+    closed_by: "branch fix/v135-callee-identity"
+    family: static-callee-binding-identity
+    title: "Static callee aliases survived reassignment and same-name shadowing; dynamic remove lost tagged element and predicate results"
+    repro: >-
+      `(let ((H (lambda (Z) (* Z Z)))) (set! H (lambda (Z) (* Z Z Z)))
+      (derivative H 2.0))` returned 4 instead of 12 on native. A dynamic
+      `(remove p (list 1.0 2.0 3.0))` could return raw floating-point bits.
+    observed_before: >-
+      Direct calls read the current binding while AD/map/apply/reduce/remove
+      fast paths reused the original `<name>_func` alias. A runtime remove
+      predicate was unpacked as integer bits, and retained elements lost their
+      type tags.
+    correct: >-
+      Every static fast path uses the current binding's callable or declines to
+      runtime closure dispatch; dynamic remove uses tagged truthiness,
+      operation-specific tagged equality, and type-preserving list elements.
+    root_cause: >-
+      Static resolution trusted spelling/function-table entries without a
+      binding-storage owner. The duplicated fast paths did not share the
+      reassignment, redefinition, capture, and shadowing facts. The AST mutation
+      scanner also routed ESHKOL_EXTERN_OP signature metadata through the
+      generic call_op child layout.
+    fix: >-
+      A shared static-callee binding abstraction records the alias's LLVM
+      storage owner, refuses aliases for reassigned bindings, and carries the
+      same fact through lexical captures. Direct-call/apply/map/reduce/remove
+      and AD resolution consult the shared binding facts. The mutation scan
+      treats extern declarations as leaves; compiler architecture assurance
+      compares duplicated EshkolLLVMCodeGen layouts across translation units.
+    observed_after: >-
+      Combined reassigned-callee JIT/AOT CTest cases pass, including the full
+      60-check AD/capture/reassignment fixture and 12-check HOF fixture. The
+      focused CTest group is 6/6; the standard library object/bitcode build
+      succeeds; AD and list suites pass 61/61 and 129/129; VM parity passes
+      340/340.
+    evidence: >-
+      `tests/closures/reassigned_callee_identity_test.esk`,
+      `tests/closures/reassigned_callee_ad_test.esk`,
+      `tests/closures/reassigned_callee_hof_test.esk`, registered JIT/AOT
+      CTests, and ICC execution `reassigned_callee_full_jit_aot_final2`.
+    caught_by: [user-reported]
+    missed_by: [existing-ad-regressions, existing-list-suite, vm-parity-before-this-change]
+    notes: >-
+      The low-level cause of the dynamic-remove tag loss matched the LE-13
+      convention, but this entry is filed SILENT-WRONG because callers saw a
+      successful run with incorrect results. ADR-0015 records the shared
+      binding-fact and layout-guard decision.
   - id: LE-29
     bucket: LOUD-ERROR
     subtag: structural
