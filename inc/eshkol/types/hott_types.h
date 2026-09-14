@@ -529,41 +529,27 @@ public:
     const TypeNode* getTypeNode(TypeId id) const;
 
     /**
-     * Get type name by id.
+     * Get type name by id. Delegates to TypeRelation::print(), the one
+     * printing function for every type form.
      */
     std::string getTypeName(TypeId id) const;
 
     // ========== Subtyping ==========
 
     /**
-     * Check if 'sub' is a subtype of 'super'.
-     * Uses cached results for performance.
-     *
-     * A function signature is a subtype of the generic procedure type
-     * (Function) and of Closure, which describe the same runtime value. One
-     * signature is a subtype of another when it accepts at least the other's
-     * arguments and returns no more than its result: parameters are compared
-     * contravariantly, the result covariantly. Here `Value` is only the top
-     * type; see isConsistentSubtype() for the gradual relation.
+     * Check if 'sub' is a subtype of 'super' (static subtyping, cached).
+     * Delegates to TypeRelation::isSubtype(), which owns the rules: the
+     * nominal graph, Value as the top and Never as the bottom, sums, covariant
+     * pairs, and arrows contravariant in parameters and covariant in results.
+     * The gradual judgments (consistency, consistent subtyping, flow evidence)
+     * live only on TypeRelation.
      */
     bool isSubtype(TypeId sub, TypeId super) const;
 
     /**
-     * Gradual (consistent) subtyping: 'sub' may flow where 'super' is expected.
-     *
-     * The same relation as isSubtype(), except that the dynamic type `Value`
-     * is consistent with every type in both directions, at the top level and
-     * inside a function signature's parameters and result, and the generic
-     * procedure type is consistent with every signature. A Value-typed
-     * expression is statically unknown, not wrong, so it satisfies any
-     * annotation; a concrete type still has to be a subtype, so String does not
-     * satisfy Number and (-> String String) does not satisfy (-> Number Number).
-     */
-    bool isConsistentSubtype(TypeId sub, TypeId super) const;
-
-    /**
-     * Find the least common supertype of two types.
-     * Returns nullopt if no common supertype exists.
+     * Compatibility facade for the type join. Delegates to
+     * TypeRelation::join(), which handles sums, pairs and signatures before
+     * falling back to the registered nominal supertype graph.
      */
     std::optional<TypeId> leastCommonSupertype(TypeId a, TypeId b) const;
 
@@ -725,11 +711,9 @@ public:
     std::vector<TypeId> getFunctionParamTypes(TypeId id) const;
 
     /**
-     * Get a human-readable name for a function type, in the arrow syntax the
-     * annotations use: "(-> Int64 Float64 Boolean)" takes an Int64 and a
-     * Float64 and returns a Boolean. A variadic signature marks the rest
-     * argument with "...": "(-> Int64 ... Value)".
-     * Returns "Function" if the TypeId is not a function signature.
+     * Get a human-readable name for a function type, e.g. "(-> Int64 Float64 Boolean)".
+     * Returns "Function" if the TypeId is not a function signature. Delegates
+     * to TypeRelation::print().
      */
     std::string getFunctionTypeName(TypeId id) const;
 
@@ -776,7 +760,9 @@ public:
     bool isSumType(TypeId id) const;
 
     /**
-     * Collapse a type to its codegen-facing representation. Sum types have no
+     * Collapse a type to its codegen-facing representation. Never (the
+     * checker's type for a call whose recursive result is still being inferred)
+     * has no values and never reaches codegen; it collapses to Value. Sum types have no
      * distinct runtime representation (values are tagged), so they collapse to
      * Pair — the same TypeId a `(+ ...)` annotation resolved to before sum
      * tracking existed. Non-sum types are returned unchanged. Used when
@@ -796,17 +782,8 @@ private:
      */
     void addSubtype(TypeId supertype, TypeId subtype);
 
-    /**
-     * Uncached subtype check (walks the type graph).
-     */
-    bool isSubtypeUncached(TypeId sub, TypeId super) const;
-
-    /**
-     * Arrow subtyping between two signatures: contravariant in the parameters,
-     * covariant in the result. With @p consistent, components are compared by
-     * isConsistentSubtype(), otherwise by isSubtype() with Value as the top.
-     */
-    bool signatureIsSubtype(const PiType& sub, const PiType& super, bool consistent) const;
+    // The type relation reads the interned types above and fills the subtype cache.
+    friend class TypeRelation;
 };
 
 // ============================================================================

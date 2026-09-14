@@ -2753,6 +2753,7 @@ add_library(eshkol-workspace STATIC
   lib/frontend/library_registry.cpp
   lib/frontend/workspace.cpp
   lib/types/hott_types.cpp
+  lib/types/type_relation.cpp
   lib/core/ast.cpp
 )
 target_include_directories(eshkol-workspace PUBLIC

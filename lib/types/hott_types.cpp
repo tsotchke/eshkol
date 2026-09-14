@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/types/hott_types.h>
+#include <eshkol/types/type_relation.h>
 #include <eshkol/eshkol.h>
 #include <algorithm>
 #include <cctype>
@@ -503,277 +504,19 @@ const TypeNode* TypeEnvironment::getTypeNode(TypeId id) const {
     return (it != types_.end()) ? &it->second : nullptr;
 }
 
-/**
- * @brief Get a human-readable name for a type.
- *
- * If @p id is a tracked pair type, returns "Pair<car, cdr>" built recursively from the element
- * types; a function signature prints as its arrow, "(-> Number Number)", and the generic
- * procedure type as "Function"; otherwise returns the registered name, or "unknown" if @p id is
- * not registered.
- */
+/** @brief Print any type through the shared gradual relation module. */
 std::string TypeEnvironment::getTypeName(TypeId id) const {
-    // Check if this is a synthetic sum type
-    auto sum_members = getSumMembers(id);
-    if (sum_members) {
-        std::string result = "(+";
-        for (const auto& m : *sum_members) {
-            result += " " + getTypeName(m);
-        }
-        result += ")";
-        return result;
-    }
-    // Check if this is a tracked pair type
-    auto pair_elems = getPairElementTypes(id);
-    if (pair_elems) {
-        return "Pair<" + getTypeName(pair_elems->first) + ", " +
-               getTypeName(pair_elems->second) + ">";
-    }
-    // A function signature has no TypeNode, so it used to print as "unknown"
-    // in every diagnostic that named it. Print the signature itself.
-    if (getFunctionType(id)) {
-        return getFunctionTypeName(id);
-    }
-    // The generic procedure type is registered under the arrow constructor's
-    // spelling "->", which reads as a stray token in a sentence
-    // ("expected Number, got ->").
-    if (id == BuiltinTypes::Function) {
-        return "Function";
-    }
-    const TypeNode* node = getTypeNode(id);
-    return node ? node->name : "unknown";
+    return TypeRelation(*this).print(id);
 }
 
-/**
- * @brief Check whether @p sub is a subtype of @p super, using a cache to avoid re-walking the
- * type graph.
- *
- * On a cache miss, delegates to isSubtypeUncached() and stores the result.
- */
+/** @brief Compatibility facade; TypeRelation owns the static subtype rules. */
 bool TypeEnvironment::isSubtype(TypeId sub, TypeId super) const {
-    // Check cache
-    auto key = std::make_pair(sub.id, super.id);
-    auto it = subtype_cache_.find(key);
-    if (it != subtype_cache_.end()) {
-        return it->second;
-    }
-
-    bool result = isSubtypeUncached(sub, super);
-    subtype_cache_[key] = result;
-    return result;
+    return TypeRelation(*this).isSubtype(sub, super);
 }
 
-/**
- * @brief Compute (without using the cache) whether @p sub is a subtype of @p super.
- *
- * Handles reflexivity (a type is a subtype of itself), tracked pair types (which are treated as
- * subtypes of the generic Pair type), and otherwise walks the supertype chain from @p sub looking
- * for @p super.
- */
-bool TypeEnvironment::isSubtypeUncached(TypeId sub, TypeId super) const {
-    // Reflexivity
-    if (sub == super) return true;
-
-    // The empty type is below every type.
-    if (sub == BuiltinTypes::Never) return true;
-
-    // Sum types. `sub <: (+ A B ...)` holds when sub fits any one arm; this is
-    // the rule that lets a value of a concrete arm type (e.g. Vector) satisfy a
-    // parameter declared with an explicit sum annotation. `(+ A B ...) <: super`
-    // holds when *every* arm is a subtype of super (the sum is subsumed only by
-    // a type that covers all its cases, e.g. (+ integer real) <: number).
-    {
-        auto super_members = getSumMembers(super);
-        if (super_members) {
-            for (const auto& arm : *super_members) {
-                if (isSubtype(sub, arm)) return true;
-            }
-            // Fall through so a sum sub can still be checked arm-by-arm below,
-            // but a non-sum sub that matched no arm is not a subtype.
-        }
-        auto sub_members = getSumMembers(sub);
-        if (sub_members) {
-            for (const auto& arm : *sub_members) {
-                if (!isSubtype(arm, super)) return false;
-            }
-            return true;
-        }
-        if (super_members) {
-            return false;  // non-sum sub matched no arm of the sum super
-        }
-    }
-
-    // Procedures. A function signature has no node in the supertype graph, so
-    // the chain walk below never related it to anything: a (-> Number Number)
-    // was not a Function, and no signature was a subtype of another. The
-    // generic procedure type (Function) and Closure describe the same runtime
-    // value, a closure, so every signature is a subtype of both and each is a
-    // subtype of the other. Between two signatures the arrow rule applies.
-    {
-        const PiType* sub_pi = getFunctionType(sub);
-        const bool sub_callable = sub_pi || sub == BuiltinTypes::Function ||
-                                  sub == BuiltinTypes::Closure;
-        if (sub_callable &&
-            (super == BuiltinTypes::Function || super == BuiltinTypes::Closure)) {
-            return true;
-        }
-        const PiType* super_pi = getFunctionType(super);
-        if (sub_pi && super_pi) {
-            return signatureIsSubtype(*sub_pi, *super_pi, /*consistent=*/false);
-        }
-        if (sub_pi || super_pi) return false;
-    }
-
-    // Tracked pair types are subtypes of Pair (and Pair's supertypes)
-    if (isTrackedPairType(sub)) {
-        if (super == BuiltinTypes::Pair) return true;
-        return isSubtype(BuiltinTypes::Pair, super);
-    }
-
-    // Walk supertype chain
-    const TypeNode* node = getTypeNode(sub);
-    if (!node) return false;
-
-    while (node->supertype.has_value()) {
-        if (node->supertype.value() == super) return true;
-        node = getTypeNode(node->supertype.value());
-        if (!node) return false;
-    }
-
-    return false;
-}
-
-/**
- * @brief Arrow subtyping: @p sub can stand in for @p super.
- *
- * A function may be used where another is expected when it accepts every
- * argument the other accepts (parameters contravariant) and returns only what
- * the other may return (result covariant). The parameter lists are the fixed
- * parameters; a variadic signature accepts any number of further arguments.
- * A variadic @p sub therefore covers a @p super with at least as many
- * parameters, its extra arguments landing in the rest list, while a fixed
- * @p sub cannot stand in for a variadic @p super. With @p consistent the
- * components are compared by isConsistentSubtype(), otherwise by isSubtype()
- * with `Value` as the top type.
- */
-bool TypeEnvironment::signatureIsSubtype(const PiType& sub, const PiType& super,
-                                         bool consistent) const {
-    const auto component = [this, consistent](TypeId a, TypeId b) {
-        if (consistent) return isConsistentSubtype(a, b);
-        return b == BuiltinTypes::Value || isSubtype(a, b);
-    };
-    const size_t sub_n = sub.params.size();
-    const size_t super_n = super.params.size();
-    if (sub.is_variadic) {
-        if (sub_n > super_n) return false;
-    } else if (super.is_variadic || sub_n != super_n) {
-        return false;
-    }
-    for (size_t i = 0; i < sub_n; ++i) {
-        if (!component(super.params[i].type, sub.params[i].type)) return false;
-    }
-    return component(sub.return_type, super.return_type);
-}
-
-/**
- * @brief Gradual subtyping: whether a value of static type @p sub may flow
- * where @p super is expected.
- *
- * `Value` (and an unresolved type) is the dynamic type: statically unknown, not
- * wrong, so it is consistent with every type in both directions, including
- * inside a signature's parameters and result. The generic procedure type is a
- * function whose signature is unknown, so it is consistent with every
- * signature. Everything else must be a genuine subtype, so a concrete String
- * still fails against Number and (-> String String) against (-> Number Number).
- */
-bool TypeEnvironment::isConsistentSubtype(TypeId sub, TypeId super) const {
-    using BuiltinTypes::Value;
-    if (sub == super) return true;
-    if (sub == Value || super == Value ||
-        sub == BuiltinTypes::Invalid || super == BuiltinTypes::Invalid) {
-        return true;
-    }
-
-    // Sums, arm by arm, as in isSubtypeUncached().
-    auto super_members = getSumMembers(super);
-    if (super_members) {
-        for (const auto& arm : *super_members) {
-            if (isConsistentSubtype(sub, arm)) return true;
-        }
-    }
-    auto sub_members = getSumMembers(sub);
-    if (sub_members) {
-        for (const auto& arm : *sub_members) {
-            if (!isConsistentSubtype(arm, super)) return false;
-        }
-        return true;
-    }
-    if (super_members) return false;
-
-    const PiType* sub_pi = getFunctionType(sub);
-    const PiType* super_pi = getFunctionType(super);
-    if (sub_pi && super_pi) {
-        return signatureIsSubtype(*sub_pi, *super_pi, /*consistent=*/true);
-    }
-    const auto generic_procedure = [](TypeId t) {
-        return t == BuiltinTypes::Function || t == BuiltinTypes::Closure;
-    };
-    if ((sub_pi && generic_procedure(super)) || (super_pi && generic_procedure(sub))) {
-        return true;
-    }
-    return isSubtype(sub, super);
-}
-
-/**
- * @brief Find the least (most specific) common supertype of two types.
- *
- * Walks both types' supertype chains (via getSupertypeChain()) from most specific to most
- * general and returns the first type that appears in both. Two function signatures with the same
- * parameters join to that signature over the join of their results; other signatures meet at the
- * generic procedure type.
- *
- * @return The common supertype, or std::nullopt if none exists.
- */
+/** @brief Join any two types through the shared relation module. */
 std::optional<TypeId> TypeEnvironment::leastCommonSupertype(TypeId a, TypeId b) const {
-    // Same type
-    if (a == b) return a;
-
-    // The empty type is the identity of a join.
-    if (a == BuiltinTypes::Never) return b;
-    if (b == BuiltinTypes::Never) return a;
-
-    // Two signatures over the same parameters join to that signature returning
-    // the join of the results. Any other pair of signatures shares only the
-    // generic procedure type, which getSupertypeChain() supplies below. The
-    // PiTypes are copied: makeFunctionType() may add to the cache they live in.
-    if (getFunctionType(a) && getFunctionType(b)) {
-        const PiType pa = *getFunctionType(a);
-        const PiType pb = *getFunctionType(b);
-        bool same_params = pa.is_variadic == pb.is_variadic &&
-                           pa.params.size() == pb.params.size();
-        for (size_t i = 0; same_params && i < pa.params.size(); ++i) {
-            same_params = pa.params[i].type == pb.params[i].type;
-        }
-        if (same_params) {
-            std::vector<TypeId> params;
-            for (const auto& p : pa.params) params.push_back(p.type);
-            auto result = leastCommonSupertype(pa.return_type, pb.return_type);
-            return makeFunctionType(params, result ? *result : BuiltinTypes::Value,
-                                    pa.is_variadic);
-        }
-    }
-
-    // Get supertype chains
-    auto chain_a = getSupertypeChain(a);
-    auto chain_b = getSupertypeChain(b);
-
-    // Find first common element (going from specific to general)
-    for (const auto& t : chain_a) {
-        for (const auto& u : chain_b) {
-            if (t == u) return t;
-        }
-    }
-
-    return std::nullopt;
+    return TypeRelation(*this).join(a, b);
 }
 
 /**
@@ -1250,20 +993,7 @@ std::vector<TypeId> TypeEnvironment::getFunctionParamTypes(TypeId id) const {
  * @return "Function" if @p id is not a registered function type.
  */
 std::string TypeEnvironment::getFunctionTypeName(TypeId id) const {
-    const PiType* pi = getFunctionType(id);
-    if (!pi) {
-        return "Function";
-    }
-
-    std::string result = "(->";
-    for (const auto& param : pi->params) {
-        result += " " + getTypeName(param.type);
-    }
-    if (pi->is_variadic) {
-        result += " ...";
-    }
-    result += " " + getTypeName(pi->return_type) + ")";
-    return result;
+    return isFunctionType(id) ? TypeRelation(*this).print(id) : "Function";
 }
 
 // ============================================================================

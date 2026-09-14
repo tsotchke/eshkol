@@ -4,6 +4,7 @@
  */
 
 #include "eshkol/types/type_checker.h"
+#include "eshkol/types/type_relation.h"
 #include "../../lib/core/arena_memory.h"
 #include <cstdio>
 #include <sstream>
@@ -1031,7 +1032,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeTask(eshkol_ast_t* expr
  * types can be inferred from @p expected rather than requiring annotations.
  * All other expression kinds fall back to synthesizing @p expr's type and
  * verifying it is consistent with @p expected via
- * TypeEnvironment::isConsistentSubtype(): a Value expression is accepted, a
+ * TypeRelation::isConsistentSubtype(): a Value expression is accepted, a
  * concrete type must be a subtype.
  * @param expr The expression to check.
  * @param expected The type @p expr is expected to have.
@@ -1057,7 +1058,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::checkTask(eshkol_ast_t* expr, Typ
         co_return result;
     }
 
-    if (env_.isConsistentSubtype(result.inferred_type, expected)) {
+    if (TypeRelation(env_).isConsistentSubtype(result.inferred_type, expected)) {
         co_return TypeCheckResult::ok(expected);
     }
 
@@ -1677,7 +1678,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLambdaTask(eshkol_ast_t
     // subtype (String against Number) is still reported.
     if (lambda.return_type) {
         TypeId expected_return = resolveType(lambda.return_type);
-        if (!env_.isConsistentSubtype(body_result.inferred_type, expected_return)) {
+        if (!TypeRelation(env_).isConsistentSubtype(body_result.inferred_type, expected_return)) {
             co_return TypeCheckResult::error(
                 "Lambda body type " + env_.getTypeName(body_result.inferred_type) +
                 " doesn't match return annotation " + env_.getTypeName(expected_return));
@@ -1737,14 +1738,14 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLambdaTask(eshkol_ast_t
  *   adam, l-bfgs, conjugate-gradient, line-search, tensor-dot/norm/svd);
  *   display/newline/write, set!, begin, textual/binary I/O; and the
  *   not/and/or and `if`-as-procedure forms, with `if` computing the least
- *   common supertype of its branches via TypeEnvironment::leastCommonSupertype().
+ *   common supertype of its branches via TypeRelation::join().
  * - If the callee is not (or is no longer, having fallen through) a
  *   recognized builtin, resolves its function type by looking it up in the
  *   context (named callee) or synthesizing it (inline lambda callee). If
  *   that resolves to a function type, checks argument count against the
  *   PiType (skipped for variadic callees) and checks each argument's
  *   synthesized type against the parameter type (allowing Value on either
- *   side, and using leastCommonSupertype() for compatibility), reporting a
+ *   side, and using the relation's consistent-subtyping judgment), reporting a
  *   type issue via reportTypeIssue() for any mismatch, then returns the
  *   function's return type.
  * @return A TypeCheckResult per the builtin/generic rule above.
@@ -2911,7 +2912,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
                         // Value nested inside a signature (a lambda whose
                         // result is unknown) is not reported against a
                         // declared (-> Number Number) parameter.
-                        bool compatible = env_.isConsistentSubtype(actual, expected);
+                        bool compatible = TypeRelation(env_).isConsistentSubtype(actual, expected);
 
                         // Numeric-tower join (item 4) for DECLARED numeric
                         // parameters: `(define (scale (x : float64)) ...)` called
@@ -3126,7 +3127,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDefineTask(eshkol_ast_t
             // a Value argument satisfies any parameter; a concrete body must be
             // a subtype.
             if (value_type.success &&
-                !env_.isConsistentSubtype(value_type.inferred_type, annotated_return)) {
+                !TypeRelation(env_).isConsistentSubtype(value_type.inferred_type, annotated_return)) {
                 co_return errorAt(expr,
                     "Function '" + std::string(def.name) + "' body type " +
                     env_.getTypeName(value_type.inferred_type) +
@@ -3348,22 +3349,12 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLetTask(eshkol_ast_t* e
             for (size_t i = 0; i < params.size(); ++i) {
                 if (!binding_inferred[i]) continue;
                 for (TypeId arg : frame.args[i]) {
-                    if (arg == params[i] || arg == BuiltinTypes::Value) continue;
-                    if (env_.isSubtype(arg, params[i])) continue;
-                    auto join = env_.leastCommonSupertype(params[i], arg);
-                    TypeId next = join ? *join : BuiltinTypes::Value;
-                    // A Value join is adopted only for a Boolean slot: `#f` as
-                    // "nothing yet" beside the value found later, as in
-                    // (let loop ((best #f)) ... (loop (+ j 1) a)). That slot
-                    // carries a flag-or-value by design, and no type the checker
-                    // can represent without changing codegen describes it better.
-                    if (next == BuiltinTypes::Value &&
-                        params[i] != BuiltinTypes::Boolean && arg != BuiltinTypes::Boolean) {
-                        continue;
+                    const WidenResult result = TypeRelation(env_).widen(
+                        params[i], arg, WidenPolicy::InferenceSlot);
+                    if (result.changed) {
+                        params[i] = result.type;
+                        widened = true;
                     }
-                    if (next == params[i]) continue;
-                    params[i] = next;
-                    widened = true;
                 }
             }
 
@@ -3643,7 +3634,8 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeIfTask(eshkol_ast_t* ex
     if (!active.empty()) {
         ctx_.pushScope();
         for (const auto& n : active) {
-            ctx_.bind(n.var, n.type);
+            const TypeId current = ctx_.lookup(n.var).value_or(BuiltinTypes::Value);
+            ctx_.bind(n.var, TypeRelation(env_).narrow(current, n.type));
         }
         then_type = (co_await synthesizeTask(then_branch));
         ctx_.popScope();
@@ -3868,14 +3860,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeRecursiveLambdaTask(con
  * inferred, is the identity.
  */
 TypeId TypeChecker::joinBranchTypes(const std::vector<TypeId>& types) const {
-    if (types.empty()) return BuiltinTypes::Value;
-    TypeId acc = types.front();
-    for (size_t i = 1; i < types.size() && acc != BuiltinTypes::Value; ++i) {
-        if (types[i] == BuiltinTypes::Value) return BuiltinTypes::Value;
-        auto lcs = env_.leastCommonSupertype(acc, types[i]);
-        acc = lcs ? *lcs : BuiltinTypes::Value;
-    }
-    return acc;
+    return TypeRelation(env_).joinAll(types);
 }
 
 /** @brief The result type of applying a value of type @p callee: its codomain, or Value. */
@@ -3959,7 +3944,10 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeClauseLadderTask(
         std::vector<PredicateNarrowing> active;
         if (!is_else) active = narrowingsForBody(cl.func, cl.variables, cl.num_vars);
         ctx_.pushScope();
-        for (const auto& n : active) ctx_.bind(n.var, n.type);
+        for (const auto& n : active) {
+            const TypeId current = ctx_.lookup(n.var).value_or(BuiltinTypes::Value);
+            ctx_.bind(n.var, TypeRelation(env_).narrow(current, n.type));
+        }
         auto body = (co_await synthesizeClauseBodyTask(cl.variables, cl.num_vars, test_type));
         ctx_.popScope();
 
@@ -4073,7 +4061,10 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeWhenUnlessTask(eshkol_a
     std::vector<PredicateNarrowing> active;
     if (is_when) active = narrowingsForBody(test, body, body_count);
     ctx_.pushScope();
-    for (const auto& n : active) ctx_.bind(n.var, n.type);
+    for (const auto& n : active) {
+        const TypeId current = ctx_.lookup(n.var).value_or(BuiltinTypes::Value);
+        ctx_.bind(n.var, TypeRelation(env_).narrow(current, n.type));
+    }
     auto body_result = (co_await synthesizeSequenceTask(body, body_count, BuiltinTypes::Boolean));
     ctx_.popScope();
     ctx_.popScope();
@@ -4175,13 +4166,12 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDoTask(eshkol_ast_t* ex
 
         bool widened = false;
         for (size_t i = 0; i < names.size(); ++i) {
-            TypeId step = step_types[i];
-            if (step == types[i] || env_.isSubtype(step, types[i])) continue;
-            auto join = env_.leastCommonSupertype(types[i], step);
-            TypeId next = join ? *join : BuiltinTypes::Value;
-            if (next == types[i]) continue;
-            types[i] = next;
-            widened = true;
+            const WidenResult result = TypeRelation(env_).widen(
+                types[i], step_types[i], WidenPolicy::AdoptTop);
+            if (result.changed) {
+                types[i] = result.type;
+                widened = true;
+            }
         }
 
         if (!widened) {
@@ -4309,7 +4299,7 @@ void TypeChecker::bindPatternVariables(const eshkol_pattern_t* pattern, TypeId m
                 const eshkol_ast_t* pred = pattern->predicate.predicate;
                 if (pred && pred->type == ESHKOL_VAR && pred->variable.id) {
                     TypeId proven = narrowTypeForPredicate(pred->variable.id);
-                    if (proven.isValid() && !env_.isSubtype(matched, proven)) bound = proven;
+                    if (proven.isValid()) bound = TypeRelation(env_).narrow(matched, proven);
                 }
                 ctx_.bind(pattern->predicate.binding_name, bound);
             }
@@ -4398,7 +4388,10 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeAndOrTask(eshkol_ast_t*
             const eshkol_ast_t* later = seq.expressions + i + 1;
             const uint64_t later_count = seq.num_expressions - i - 1;
             for (const auto& n : collectPredicateNarrowings(operand)) {
-                if (!anyAssigns(later, later_count, n.var)) ctx_.bind(n.var, n.type);
+                if (!anyAssigns(later, later_count, n.var)) {
+                    const TypeId current = ctx_.lookup(n.var).value_or(BuiltinTypes::Value);
+                    ctx_.bind(n.var, TypeRelation(env_).narrow(current, n.type));
+                }
             }
         }
     }
@@ -4702,45 +4695,7 @@ void TypeChecker::addTypeMismatch(TypeId expected, TypeId actual, int line, int 
  * @return false only when no value could ever inhabit both types.
  */
 bool TypeChecker::ascriptionIsBelievable(TypeId actual, TypeId ascribed) const {
-    // An unresolved ascription or a failed synthesis carries no information.
-    if (actual == BuiltinTypes::Invalid || ascribed == BuiltinTypes::Invalid) {
-        return true;
-    }
-
-    // `Value` is the dynamic root: it says "unknown", never "wrong".
-    if (actual == BuiltinTypes::Value || ascribed == BuiltinTypes::Value) {
-        return true;
-    }
-
-    // Widening: the value already has the ascribed type.
-    if (env_.isSubtype(actual, ascribed)) return true;
-
-    // Narrowing: the programmer knows more than the checker inferred. This is
-    // the primary use of `the` and must stay unchallenged.
-    if (env_.isSubtype(ascribed, actual)) return true;
-
-    // The numeric tower is deliberately flat here — Integer, Rational, Real
-    // and Complex are siblings under Number, not a chain — so neither
-    // direction of subtyping holds between any two of them. Ascribing across
-    // the tower (`(the real 1)`, `(the float64 (+ 1 2))`) is ordinary and must
-    // not be reported; only leaving the tower entirely is a contradiction.
-    if (env_.isSubtype(actual, BuiltinTypes::Number) &&
-        env_.isSubtype(ascribed, BuiltinTypes::Number)) {
-        return true;
-    }
-
-    // Procedures. A synthesized function signature `(-> A B)` is not a node in
-    // the supertype graph, so neither direction of subtyping holds between it
-    // and the generic procedure type or the Closure family, although all three
-    // describe the same runtime closure. `((the procedure f) 7)` over a defined
-    // f is the ordinary case, and reporting it contradicted an ascription the
-    // program is entitled to make.
-    const auto callable = [this](TypeId t) {
-        return env_.isFunctionType(t) || t == BuiltinTypes::Closure;
-    };
-    if (callable(actual) && callable(ascribed)) return true;
-
-    return false;
+    return TypeRelation(env_).castable(actual, ascribed);
 }
 
 /**

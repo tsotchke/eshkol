@@ -41,9 +41,10 @@ read -r -a LLVM_SYSTEM_LIBS <<< "$($LLVM_CONFIG --system-libs)"
 # Test files
 HOTT_TYPES_TEST="$PROJECT_DIR/tests/types/hott_types_test.cpp"
 TYPE_CHECKER_TEST="$PROJECT_DIR/tests/types/type_checker_test.cpp"
+TYPE_RELATION_TEST="$PROJECT_DIR/tests/types/type_relation_test.cpp"
 
 # Source files needed
-SOURCES="$PROJECT_DIR/lib/types/hott_types.cpp $PROJECT_DIR/lib/types/type_checker.cpp $PROJECT_DIR/lib/types/dependent.cpp $PROJECT_DIR/lib/core/ast.cpp"
+SOURCES="$PROJECT_DIR/lib/types/hott_types.cpp $PROJECT_DIR/lib/types/type_relation.cpp $PROJECT_DIR/lib/types/type_checker.cpp $PROJECT_DIR/lib/types/dependent.cpp $PROJECT_DIR/lib/core/ast.cpp"
 
 # Honour the aggregate harness/CI build selection instead of silently linking
 # against a different checkout's default `build/` archive.  Accept either a
@@ -138,6 +139,19 @@ if [ -f "$TYPE_CHECKER_TEST" ]; then
     echo "--- Type Checker Test ---"
     ((TOTAL++)) || true
     if compile_and_run_test "$TYPE_CHECKER_TEST"; then
+        ((PASSED++)) || true
+    else
+        ((FAILED++)) || true
+    fi
+fi
+
+# The shared relation owns gradual consistency, arrow variance, joins/meets,
+# and widening. Keep its direct C++ contract in this same regression suite.
+if [ -f "$TYPE_RELATION_TEST" ]; then
+    echo ""
+    echo "--- Type Relation Test ---"
+    ((TOTAL++)) || true
+    if compile_and_run_test "$TYPE_RELATION_TEST"; then
         ((PASSED++)) || true
     else
         ((FAILED++)) || true
