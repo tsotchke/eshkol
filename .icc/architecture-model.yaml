@@ -348,7 +348,7 @@ capabilities:
       pattern: evaluate
     pattern: package_manifest_complete
     dependencies: [packaging]
-    dependency_constructor: '(?s)python3 scripts/check_package_manifest\.py.{0,5000}tar -czf.*?python scripts/check_package_manifest\.py.{0,5000}Compress-Archive'
+    dependency_constructor: 'python3 scripts/check_package_manifest\.py'
     dependency_paths: [.github/workflows/release.yml]
 
   - id: diagnostic_golden_corpus

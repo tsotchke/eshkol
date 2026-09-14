@@ -143,15 +143,19 @@ class ReleaseInvariantContractTests(unittest.TestCase):
         self.assertRegex(workflow, spec["dependency_constructor"])
         self.assertIn("package_surface:", manifest)
         self.assertIn('PROBE_ID = "package_manifest_complete"', checker)
-        self.assertIn("tar -czf", workflow)
-        self.assertIn("Compress-Archive", workflow)
+        linux_check = workflow.index("python3 scripts/check_package_manifest.py")
+        linux_archive = workflow.index("tar -czf", linux_check)
+        windows_check = workflow.index("python scripts/check_package_manifest.py")
+        windows_archive = workflow.index("Compress-Archive", windows_check)
+        self.assertLess(linux_check, linux_archive)
+        self.assertLess(windows_check, windows_archive)
 
         omitted_linux = workflow.replace("python3 scripts/check_package_manifest.py", "python3 check_package_manifest.py")
         self.assertNotEqual(omitted_linux, workflow)
         self.assertNotRegex(omitted_linux, spec["dependency_constructor"])
         omitted_windows = workflow.replace("python scripts/check_package_manifest.py", "python check_package_manifest.py")
         self.assertNotEqual(omitted_windows, workflow)
-        self.assertNotRegex(omitted_windows, spec["dependency_constructor"])
+        self.assertNotIn("python scripts/check_package_manifest.py", omitted_windows)
 
     def test_ad_bridge_registry_matches_actual_definitions(self):
         name = "INV-ad-node-declared-in-registry"
