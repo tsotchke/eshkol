@@ -2613,7 +2613,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-agent-ffi', 'eshkol-windows-agent-test', 'eshkol-agent-http-test', 'eshkol-agent-sse-test', 'eshkol-agent-capabilities-test')
+          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-agent-ffi', 'eshkol-windows-agent-test', 'eshkol-agent-http-test', 'eshkol-agent-sse-test', 'eshkol-agent-capabilities-test', 'stdlib')
           if ('${{ matrix.test_mode }}' -eq 'xla') {
             $targets += 'xla_codegen_test'
           }
@@ -2625,6 +2625,20 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # -SkipConfigureBuild bypasses run_all_tests.ps1's missing-target
+          # repair. Require the precompiled stdlib before the suite so each
+          # AOT test links it instead of reprocessing the stdlib source tree.
+          foreach ($artifact in @(
+            (Join-Path '${{ matrix.build_dir }}' 'stdlib.o'),
+            (Join-Path '${{ matrix.build_dir }}' 'stdlib.bc')
+          )) {
+            if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+              throw "Required precompiled stdlib artifact is missing: $artifact"
+            }
+            if ((Get-Item -LiteralPath $artifact).Length -le 0) {
+              throw "Required precompiled stdlib artifact is empty: $artifact"
+            }
+          }
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\eshkol-test-logs" | Out-Null
           & .\scripts\run_all_tests.ps1 -BuildDir ".\${{ matrix.build_dir }}" -SkipConfigureBuild -Mode '${{ matrix.test_mode }}' *>&1 |
             Tee-Object -FilePath "$env:RUNNER_TEMP\eshkol-test-logs\${{ matrix.name }}.log"
