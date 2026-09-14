@@ -171,7 +171,7 @@ eshkol_ast_t* convert_lambda(eshkol_tagged_value_t sexp) {
     // Convert parameters to AST
     eshkol_ast_t* params = nullptr;
     if (num_params > 0) {
-        params = static_cast<eshkol_ast_t*>(arena_allocate(get_global_arena(),num_params * sizeof(eshkol_ast_t)));
+        params = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (num_params) * sizeof(eshkol_ast_t)), (num_params));
         for (size_t i = 0; i < num_params; i++) {
             const char* param_name = get_symbol_name(param_sexps[i]);
             if (param_name) {
@@ -198,8 +198,7 @@ eshkol_ast_t* convert_lambda(eshkol_tagged_value_t sexp) {
         seq->type = ESHKOL_OP;
         seq->operation.op = ESHKOL_SEQUENCE_OP;
         seq->operation.sequence_op.num_expressions = body_sexps.size();
-        seq->operation.sequence_op.expressions = static_cast<eshkol_ast_t*>(
-            arena_allocate(get_global_arena(),body_sexps.size() * sizeof(eshkol_ast_t)));
+        seq->operation.sequence_op.expressions = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (body_sexps.size()) * sizeof(eshkol_ast_t)), (body_sexps.size()));
         for (size_t i = 0; i < body_sexps.size(); i++) {
             eshkol_ast_t* expr = convert_sexp(body_sexps[i]);
             if (expr) {
@@ -212,8 +211,7 @@ eshkol_ast_t* convert_lambda(eshkol_tagged_value_t sexp) {
                  * the offending form. */
                 eshkol_error("sexp_to_ast: failed to convert lambda body expression %zu/%zu",
                              i, body_sexps.size());
-                memset(&seq->operation.sequence_op.expressions[i], 0,
-                       sizeof(eshkol_ast_t));
+                eshkol_ast_construct_array(&seq->operation.sequence_op.expressions[i], 1);
                 seq->operation.sequence_op.expressions[i].type = ESHKOL_INVALID;
             }
         }
@@ -294,7 +292,7 @@ eshkol_ast_t* convert_define(eshkol_tagged_value_t sexp) {
         // Convert parameters
         eshkol_ast_t* params = nullptr;
         if (num_params > 0) {
-            params = static_cast<eshkol_ast_t*>(arena_allocate(get_global_arena(),num_params * sizeof(eshkol_ast_t)));
+            params = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (num_params) * sizeof(eshkol_ast_t)), (num_params));
             for (size_t i = 0; i < num_params; i++) {
                 const char* param_name = get_symbol_name(param_sexps[i]);
                 if (param_name) {
@@ -318,8 +316,7 @@ eshkol_ast_t* convert_define(eshkol_tagged_value_t sexp) {
             seq->type = ESHKOL_OP;
             seq->operation.op = ESHKOL_SEQUENCE_OP;
             seq->operation.sequence_op.num_expressions = body_sexps.size();
-            seq->operation.sequence_op.expressions = static_cast<eshkol_ast_t*>(
-                arena_allocate(get_global_arena(),body_sexps.size() * sizeof(eshkol_ast_t)));
+            seq->operation.sequence_op.expressions = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (body_sexps.size()) * sizeof(eshkol_ast_t)), (body_sexps.size()));
             for (size_t i = 0; i < body_sexps.size(); i++) {
                 eshkol_ast_t* expr = convert_sexp(body_sexps[i]);
                 if (expr) {
@@ -328,8 +325,7 @@ eshkol_ast_t* convert_define(eshkol_tagged_value_t sexp) {
                     /* #194 PATTERN A: uninit AST slot poisons codegen. */
                     eshkol_error("sexp_to_ast: failed to convert define body expression %zu/%zu",
                                  i, body_sexps.size());
-                    memset(&seq->operation.sequence_op.expressions[i], 0,
-                           sizeof(eshkol_ast_t));
+                    eshkol_ast_construct_array(&seq->operation.sequence_op.expressions[i], 1);
                     seq->operation.sequence_op.expressions[i].type = ESHKOL_INVALID;
                 }
             }
@@ -389,8 +385,7 @@ eshkol_ast_t* convert_if(eshkol_tagged_value_t sexp) {
 
     // Arguments: test, then, else (if present)
     int num_args = else_ast ? 3 : 2;
-    ast->operation.call_op.variables = static_cast<eshkol_ast_t*>(
-        arena_allocate(get_global_arena(),num_args * sizeof(eshkol_ast_t)));
+    ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (num_args) * sizeof(eshkol_ast_t)), (num_args));
     ast->operation.call_op.variables[0] = *test_ast;
     ast->operation.call_op.variables[1] = *then_ast;
     if (else_ast) {
@@ -417,7 +412,7 @@ eshkol_ast_t* convert_let(eshkol_tagged_value_t sexp, eshkol_op_t let_type) {
     eshkol_ast_t* bindings = nullptr;
     if (num_bindings > 0) {
         // Each binding takes 2 AST nodes (var and value)
-        bindings = static_cast<eshkol_ast_t*>(arena_allocate(get_global_arena(),num_bindings * 2 * sizeof(eshkol_ast_t)));
+        bindings = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (num_bindings * 2) * sizeof(eshkol_ast_t)), (num_bindings * 2));
         for (size_t i = 0; i < num_bindings; i++) {
             eshkol_tagged_value_t binding = binding_pairs[i];
             eshkol_tagged_value_t var = pair_car(binding);
@@ -453,8 +448,7 @@ eshkol_ast_t* convert_let(eshkol_tagged_value_t sexp, eshkol_op_t let_type) {
         seq->type = ESHKOL_OP;
         seq->operation.op = ESHKOL_SEQUENCE_OP;
         seq->operation.sequence_op.num_expressions = body_sexps.size();
-        seq->operation.sequence_op.expressions = static_cast<eshkol_ast_t*>(
-            arena_allocate(get_global_arena(),body_sexps.size() * sizeof(eshkol_ast_t)));
+        seq->operation.sequence_op.expressions = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (body_sexps.size()) * sizeof(eshkol_ast_t)), (body_sexps.size()));
         for (size_t i = 0; i < body_sexps.size(); i++) {
             eshkol_ast_t* expr = convert_sexp(body_sexps[i]);
             if (expr) {
@@ -463,8 +457,7 @@ eshkol_ast_t* convert_let(eshkol_tagged_value_t sexp, eshkol_op_t let_type) {
                 /* #194 PATTERN A: uninit AST slot poisons codegen. */
                 eshkol_error("sexp_to_ast: failed to convert let/let*/letrec body expression %zu/%zu",
                              i, body_sexps.size());
-                memset(&seq->operation.sequence_op.expressions[i], 0,
-                       sizeof(eshkol_ast_t));
+                eshkol_ast_construct_array(&seq->operation.sequence_op.expressions[i], 1);
                 seq->operation.sequence_op.expressions[i].type = ESHKOL_INVALID;
             }
         }
@@ -504,8 +497,7 @@ eshkol_ast_t* convert_quote(eshkol_tagged_value_t sexp) {
     // Convert the quoted expression to AST representation
     eshkol_ast_t* quoted_ast = convert_sexp(quoted);
     if (quoted_ast) {
-        ast->operation.call_op.variables = static_cast<eshkol_ast_t*>(
-            arena_allocate(get_global_arena(),sizeof(eshkol_ast_t)));
+        ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
         ast->operation.call_op.variables[0] = *quoted_ast;
         ast->operation.call_op.num_vars = 1;
     } else {
@@ -536,8 +528,7 @@ eshkol_ast_t* convert_begin(eshkol_tagged_value_t sexp) {
     ast->type = ESHKOL_OP;
     ast->operation.op = ESHKOL_SEQUENCE_OP;
     ast->operation.sequence_op.num_expressions = expr_sexps.size();
-    ast->operation.sequence_op.expressions = static_cast<eshkol_ast_t*>(
-        arena_allocate(get_global_arena(),expr_sexps.size() * sizeof(eshkol_ast_t)));
+    ast->operation.sequence_op.expressions = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (expr_sexps.size()) * sizeof(eshkol_ast_t)), (expr_sexps.size()));
 
     for (size_t i = 0; i < expr_sexps.size(); i++) {
         eshkol_ast_t* expr = convert_sexp(expr_sexps[i]);
@@ -584,8 +575,7 @@ eshkol_ast_t* convert_and(eshkol_tagged_value_t sexp) {
         // (and) with no arguments returns #t
         ast->operation.sequence_op.expressions = nullptr;
     } else {
-        ast->operation.sequence_op.expressions = static_cast<eshkol_ast_t*>(
-            arena_allocate(get_global_arena(),expr_sexps.size() * sizeof(eshkol_ast_t)));
+        ast->operation.sequence_op.expressions = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (expr_sexps.size()) * sizeof(eshkol_ast_t)), (expr_sexps.size()));
         for (size_t i = 0; i < expr_sexps.size(); i++) {
             eshkol_ast_t* expr = convert_sexp(expr_sexps[i]);
             if (expr) {
@@ -612,8 +602,7 @@ eshkol_ast_t* convert_or(eshkol_tagged_value_t sexp) {
         // (or) with no arguments returns #f
         ast->operation.sequence_op.expressions = nullptr;
     } else {
-        ast->operation.sequence_op.expressions = static_cast<eshkol_ast_t*>(
-            arena_allocate(get_global_arena(),expr_sexps.size() * sizeof(eshkol_ast_t)));
+        ast->operation.sequence_op.expressions = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (expr_sexps.size()) * sizeof(eshkol_ast_t)), (expr_sexps.size()));
         for (size_t i = 0; i < expr_sexps.size(); i++) {
             eshkol_ast_t* expr = convert_sexp(expr_sexps[i]);
             if (expr) {
@@ -639,8 +628,7 @@ eshkol_ast_t* convert_cond(eshkol_tagged_value_t sexp) {
     if (clause_sexps.empty()) {
         ast->operation.call_op.variables = nullptr;
     } else {
-        ast->operation.call_op.variables = static_cast<eshkol_ast_t*>(
-            arena_allocate(get_global_arena(),clause_sexps.size() * sizeof(eshkol_ast_t)));
+        ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (clause_sexps.size()) * sizeof(eshkol_ast_t)), (clause_sexps.size()));
         for (size_t i = 0; i < clause_sexps.size(); i++) {
             // Each clause is a list (test expr...)
             // We need to parse it as CALL_OP: func=test, variables=exprs
@@ -672,8 +660,7 @@ eshkol_ast_t* convert_cond(eshkol_tagged_value_t sexp) {
 
             // If it's an else clause, the test is #t
             if (is_else) {
-                clause_ast.operation.call_op.func = static_cast<eshkol_ast_t*>(
-                    arena_allocate(get_global_arena(),sizeof(eshkol_ast_t)));
+                clause_ast.operation.call_op.func = eshkol_ast_construct_array(arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
                 clause_ast.operation.call_op.func->type = ESHKOL_BOOL;
                 clause_ast.operation.call_op.func->int64_val = 1;  // true
             } else {
@@ -684,8 +671,7 @@ eshkol_ast_t* convert_cond(eshkol_tagged_value_t sexp) {
             if (body_sexps.empty()) {
                 clause_ast.operation.call_op.variables = nullptr;
             } else {
-                clause_ast.operation.call_op.variables = static_cast<eshkol_ast_t*>(
-                    arena_allocate(get_global_arena(),body_sexps.size() * sizeof(eshkol_ast_t)));
+                clause_ast.operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (body_sexps.size()) * sizeof(eshkol_ast_t)), (body_sexps.size()));
                 for (size_t j = 0; j < body_sexps.size(); j++) {
                     eshkol_ast_t* body_ast = convert_sexp(body_sexps[j]);
                     if (body_ast) {
@@ -718,8 +704,7 @@ eshkol_ast_t* convert_when(eshkol_tagged_value_t sexp) {
     ast->operation.call_op.func = nullptr;
     ast->operation.call_op.num_vars = elements.size();
 
-    ast->operation.call_op.variables = static_cast<eshkol_ast_t*>(
-        arena_allocate(get_global_arena(),elements.size() * sizeof(eshkol_ast_t)));
+    ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (elements.size()) * sizeof(eshkol_ast_t)), (elements.size()));
     for (size_t i = 0; i < elements.size(); i++) {
         eshkol_ast_t* elem = convert_sexp(elements[i]);
         if (elem) {
@@ -747,8 +732,7 @@ eshkol_ast_t* convert_unless(eshkol_tagged_value_t sexp) {
     ast->operation.call_op.func = nullptr;
     ast->operation.call_op.num_vars = elements.size();
 
-    ast->operation.call_op.variables = static_cast<eshkol_ast_t*>(
-        arena_allocate(get_global_arena(),elements.size() * sizeof(eshkol_ast_t)));
+    ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (elements.size()) * sizeof(eshkol_ast_t)), (elements.size()));
     for (size_t i = 0; i < elements.size(); i++) {
         eshkol_ast_t* elem = convert_sexp(elements[i]);
         if (elem) {
@@ -780,8 +764,7 @@ eshkol_ast_t* convert_case(eshkol_tagged_value_t sexp) {
     if (clause_sexps.empty()) {
         ast->operation.call_op.variables = nullptr;
     } else {
-        ast->operation.call_op.variables = static_cast<eshkol_ast_t*>(
-            arena_allocate(get_global_arena(),clause_sexps.size() * sizeof(eshkol_ast_t)));
+        ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (clause_sexps.size()) * sizeof(eshkol_ast_t)), (clause_sexps.size()));
 
         for (size_t i = 0; i < clause_sexps.size(); i++) {
             // Each clause is ((datum...) expr...) or (else expr...)
@@ -805,8 +788,7 @@ eshkol_ast_t* convert_case(eshkol_tagged_value_t sexp) {
                 body->operation.call_op.func = nullptr;
                 body->operation.call_op.num_vars = body_exprs.size();
                 if (body_exprs.size() > 0) {
-                    body->operation.call_op.variables = static_cast<eshkol_ast_t*>(
-                        arena_allocate(get_global_arena(),body_exprs.size() * sizeof(eshkol_ast_t)));
+                    body->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (body_exprs.size()) * sizeof(eshkol_ast_t)), (body_exprs.size()));
                     for (size_t j = 0; j < body_exprs.size(); j++) {
                         eshkol_ast_t* expr = convert_sexp(body_exprs[j]);
                         if (expr) {
@@ -827,8 +809,7 @@ eshkol_ast_t* convert_case(eshkol_tagged_value_t sexp) {
                 datums_ast->operation.call_op.func = nullptr;
                 datums_ast->operation.call_op.num_vars = datums.size();
                 if (datums.size() > 0) {
-                    datums_ast->operation.call_op.variables = static_cast<eshkol_ast_t*>(
-                        arena_allocate(get_global_arena(),datums.size() * sizeof(eshkol_ast_t)));
+                    datums_ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (datums.size()) * sizeof(eshkol_ast_t)), (datums.size()));
                     for (size_t j = 0; j < datums.size(); j++) {
                         eshkol_ast_t* datum = convert_sexp(datums[j]);
                         if (datum) {
@@ -848,8 +829,7 @@ eshkol_ast_t* convert_case(eshkol_tagged_value_t sexp) {
                 body->operation.call_op.func = nullptr;
                 body->operation.call_op.num_vars = body_exprs.size();
                 if (body_exprs.size() > 0) {
-                    body->operation.call_op.variables = static_cast<eshkol_ast_t*>(
-                        arena_allocate(get_global_arena(),body_exprs.size() * sizeof(eshkol_ast_t)));
+                    body->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (body_exprs.size()) * sizeof(eshkol_ast_t)), (body_exprs.size()));
                     for (size_t j = 0; j < body_exprs.size(); j++) {
                         eshkol_ast_t* expr = convert_sexp(body_exprs[j]);
                         if (expr) {
@@ -878,8 +858,7 @@ eshkol_ast_t* convert_quasiquote(eshkol_tagged_value_t sexp) {
     ast->operation.op = ESHKOL_QUASIQUOTE_OP;
     ast->operation.call_op.func = nullptr;
     ast->operation.call_op.num_vars = 1;
-    ast->operation.call_op.variables = static_cast<eshkol_ast_t*>(
-        arena_allocate(get_global_arena(),sizeof(eshkol_ast_t)));
+    ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
 
     // Convert the quasiquoted expression
     eshkol_ast_t* quoted_ast = convert_sexp(quoted);
@@ -899,8 +878,7 @@ eshkol_ast_t* convert_unquote(eshkol_tagged_value_t sexp) {
     ast->operation.op = ESHKOL_UNQUOTE_OP;
     ast->operation.call_op.func = nullptr;
     ast->operation.call_op.num_vars = 1;
-    ast->operation.call_op.variables = static_cast<eshkol_ast_t*>(
-        arena_allocate(get_global_arena(),sizeof(eshkol_ast_t)));
+    ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
 
     eshkol_ast_t* expr_ast = convert_sexp(expr);
     if (expr_ast) {
@@ -919,8 +897,7 @@ eshkol_ast_t* convert_unquote_splicing(eshkol_tagged_value_t sexp) {
     ast->operation.op = ESHKOL_UNQUOTE_SPLICING_OP;
     ast->operation.call_op.func = nullptr;
     ast->operation.call_op.num_vars = 1;
-    ast->operation.call_op.variables = static_cast<eshkol_ast_t*>(
-        arena_allocate(get_global_arena(),sizeof(eshkol_ast_t)));
+    ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
 
     eshkol_ast_t* expr_ast = convert_sexp(expr);
     if (expr_ast) {
@@ -950,8 +927,7 @@ eshkol_ast_t* convert_call(eshkol_tagged_value_t sexp) {
     ast->operation.call_op.num_vars = num_args;
 
     if (num_args > 0) {
-        ast->operation.call_op.variables = static_cast<eshkol_ast_t*>(
-            arena_allocate(get_global_arena(),num_args * sizeof(eshkol_ast_t)));
+        ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (num_args) * sizeof(eshkol_ast_t)), (num_args));
         for (size_t i = 0; i < num_args; i++) {
             eshkol_ast_t* arg_ast = convert_sexp(arg_sexps[i]);
             if (arg_ast) {
@@ -967,8 +943,7 @@ eshkol_ast_t* convert_call(eshkol_tagged_value_t sexp) {
                  * loops in lambda / define / let-family. */
                 eshkol_error("sexp_to_ast: failed to convert call argument %zu/%llu",
                              i, (unsigned long long)num_args);
-                memset(&ast->operation.call_op.variables[i], 0,
-                       sizeof(eshkol_ast_t));
+                eshkol_ast_construct_array(&ast->operation.call_op.variables[i], 1);
                 ast->operation.call_op.variables[i].type = ESHKOL_INVALID;
             }
         }

@@ -9,6 +9,9 @@
  */
 #include <eshkol/core/runtime.h>
 
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -21,17 +24,53 @@
 #ifdef _WIN32
 #include <process.h>
 #else
+#include <pthread.h>
 #include <unistd.h>
 #endif
 
 namespace {
 
+// Called only when a trace instance is constructed, never per hook call.
 int currentProcessId() {
 #ifdef _WIN32
     return _getpid();
 #else
     return static_cast<int>(getpid());
 #endif
+}
+
+// Fork detection without a per-call syscall.  The child handler registered
+// with pthread_atfork runs in the child before fork() returns, so the
+// generation seen by any later hook call in the child differs from the one
+// the inherited trace instance was created under.  The handler only bumps an
+// atomic, which is safe in a child of a multithreaded parent.  Native Windows
+// has no fork: a child process is a fresh image whose first hook constructs
+// its own trace, so the generation never changes there.
+std::atomic<uint64_t> g_fork_generation{0};
+
+#ifndef _WIN32
+void markForkedChild() {
+    g_fork_generation.fetch_add(1, std::memory_order_relaxed);
+}
+#endif
+
+void registerForkHandlerOnce() {
+#ifndef _WIN32
+    static std::once_flag registered;
+    std::call_once(registered, [] {
+        pthread_atfork(nullptr, nullptr, markForkedChild);
+    });
+#endif
+}
+
+// Test-only instrumentation of the instrumentation: how many times generated
+// code or the VM entered an execution hook.  Generated code guards every
+// site, so this stays bounded by the number of distinct sites no matter how
+// many times a loop runs; the regression test asserts exactly that.
+std::atomic<uint64_t> g_exec_hook_entries{0};
+
+void countExecHookEntry() {
+    g_exec_hook_entries.fetch_add(1, std::memory_order_relaxed);
 }
 
 struct ExecutionSite {
@@ -135,18 +174,40 @@ struct CoverageTrace {
 CoverageTrace& trace() {
     // A fork inherits C++ stream buffers and mutex state. Sharing the parent's
     // buffered stream lets parent/child records interleave and can deadlock if
-    // another thread held the mutex at fork time. Detect the changed PID
-    // before touching the inherited object and give the child its own stream.
+    // another thread held the mutex at fork time. Detect the fork (through the
+    // pthread_atfork generation, not a getpid() syscall per call) before
+    // touching the inherited object and give the child its own stream.
     // The holder deletes the active process instance at normal exit so its
     // final partial batch is flushed; the inherited parent instance is
     // intentionally left untouched in the child.
     struct ProcessTraceHolder {
-        CoverageTrace* active = new CoverageTrace();
+        uint64_t generation;
+        CoverageTrace* active;
 
-        ~ProcessTraceHolder() { delete active; }
+        ProcessTraceHolder() {
+            registerForkHandlerOnce();
+            generation = g_fork_generation.load(std::memory_order_relaxed);
+            active = new CoverageTrace();
+        }
+
+        ~ProcessTraceHolder() {
+            const char* stats =
+                std::getenv("ESHKOL_LANGUAGE_COVERAGE_HOOK_STATS");
+            if (stats && *stats) {
+                std::fprintf(stderr,
+                             "eshkol-language-coverage: exec-hook-entries=%llu\n",
+                             static_cast<unsigned long long>(
+                                 g_exec_hook_entries.load()));
+                std::fflush(stderr);
+            }
+            delete active;
+        }
 
         CoverageTrace& get() {
-            if (active->process_id != currentProcessId()) {
+            const uint64_t current =
+                g_fork_generation.load(std::memory_order_relaxed);
+            if (current != generation) {
+                generation = current;
                 active = new CoverageTrace();
             }
             return *active;
@@ -217,6 +278,7 @@ extern "C" void eshkol_language_coverage_exec_op(const char* source,
                                                   uint32_t line,
                                                   uint32_t column,
                                                   uint32_t operation) {
+    countExecHookEntry();
     CoverageTrace& sink = trace();
     if (!sink.enabled || !CoverageTrace::knownSource(source)) return;
     if (!firstExecutionAtSite({source, nullptr, line, column, operation, 'O'})) {
@@ -232,6 +294,7 @@ extern "C" void eshkol_language_coverage_exec_call(const char* source,
                                                     uint32_t line,
                                                     uint32_t column,
                                                     const char* name) {
+    countExecHookEntry();
     CoverageTrace& sink = trace();
     if (!sink.enabled) return;
     if (!firstExecutionAtSite({source, name, line, column, 0, 'C'})) return;
@@ -245,6 +308,7 @@ extern "C" void eshkol_language_coverage_exec_call(const char* source,
 
 extern "C" void eshkol_language_coverage_vm_dispatch(const char* name,
                                                         uint32_t native_id) {
+    countExecHookEntry();
     CoverageTrace& sink = trace();
     if (!sink.enabled || !name || !*name) return;
     if (!firstExecutionAtSite({"<vm>", name, 0, 0, native_id, 'V'})) return;
@@ -255,6 +319,7 @@ extern "C" void eshkol_language_coverage_vm_dispatch(const char* name,
 }
 
 extern "C" void eshkol_language_coverage_vm_call_hash(uint32_t name_hash) {
+    countExecHookEntry();
     CoverageTrace& sink = trace();
     if (!sink.enabled) return;
     const char* marker = "@call";
@@ -265,6 +330,7 @@ extern "C" void eshkol_language_coverage_vm_call_hash(uint32_t name_hash) {
 }
 
 extern "C" void eshkol_language_coverage_vm_form_hash(uint32_t name_hash) {
+    countExecHookEntry();
     CoverageTrace& sink = trace();
     if (!sink.enabled) return;
     const char* marker = "@form";

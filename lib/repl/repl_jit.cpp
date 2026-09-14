@@ -1170,6 +1170,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_runtime_set_current_error_fp);
     ADD_SYMBOL(eshkol_language_coverage_exec_op);
     ADD_SYMBOL(eshkol_language_coverage_exec_call);
+    ADD_SYMBOL(eshkol_language_coverage_flush);
     ADD_SYMBOL(eshkol_check_forward_ref);
     ADD_SYMBOL(eshkol_repl_forward_ref_stub_addr);
     ADD_SYMBOL(eshkol_repl_variadic_fixed_params);

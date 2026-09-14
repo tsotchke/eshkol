@@ -32,6 +32,9 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdint.h>
+#ifndef ESHKOL_VM_WASM
+#include <stdatomic.h>
+#endif
 #include <limits.h>
 #include <time.h>
 #ifndef ESHKOL_VM_WASM
@@ -1160,6 +1163,35 @@ static int vm_builtin_count(void) {
     return count;
 }
 
+#ifndef ESHKOL_VM_WASM
+/* First-sighting guards for the VM coverage markers, the VM counterpart of
+ * the per-site guard byte the native backend emits.  The runtime records a
+ * marker only the first time it sees it, so a marker inside a hot loop used
+ * to pay a runtime call, a PID check and a hash-set insert per iteration.
+ *
+ * Each table is direct-mapped and keyed by exactly the value that identifies
+ * the record (builtin row, or the 31-bit head-symbol hash), so a slot that
+ * already holds the key proves the runtime has seen that record.  A colliding
+ * key only overwrites the slot and costs a later redundant runtime call; it
+ * can never suppress a record.  Loads and stores are relaxed atomics: parallel
+ * workers share these tables, and a race again costs at most a redundant call
+ * because the runtime still deduplicates. */
+enum { VM_LANGUAGE_COVERAGE_SEEN_SLOTS = 4096 };
+static _Atomic uint32_t vm_language_coverage_seen_native[VM_LANGUAGE_COVERAGE_SEEN_SLOTS];
+static _Atomic uint32_t vm_language_coverage_seen_call[VM_LANGUAGE_COVERAGE_SEEN_SLOTS];
+static _Atomic uint32_t vm_language_coverage_seen_form[VM_LANGUAGE_COVERAGE_SEEN_SLOTS];
+
+static int vm_language_coverage_first_sighting(_Atomic uint32_t* slots,
+                                               uint32_t key) {
+    const uint32_t tag = key + 1u; /* keys are < 2^31; 0 marks an empty slot */
+    const uint32_t slot =
+        (key ^ (key >> 12) ^ (key >> 24)) & (VM_LANGUAGE_COVERAGE_SEEN_SLOTS - 1);
+    if (atomic_load_explicit(&slots[slot], memory_order_relaxed) == tag) return 0;
+    atomic_store_explicit(&slots[slot], tag, memory_order_relaxed);
+    return 1;
+}
+#endif
+
 static void vm_language_coverage_native_dispatch(VM* vm, int native_id) {
 #ifndef ESHKOL_VM_WASM
     if (!vm || vm->pc < 2 || vm->pc > vm->code_len) return;
@@ -1167,6 +1199,10 @@ static void vm_language_coverage_native_dispatch(VM* vm, int native_id) {
     if (marker.op != OP_LANGUAGE_COVERAGE || marker.operand < 0) return;
 
     const int builtin_index = marker.operand;
+    if (!vm_language_coverage_first_sighting(vm_language_coverage_seen_native,
+                                             (uint32_t)builtin_index)) {
+        return;
+    }
     const int builtin_count = vm_builtin_count();
     if (builtin_index >= builtin_count) return;
 
@@ -1185,6 +1221,10 @@ static void vm_language_coverage_native_dispatch(VM* vm, int native_id) {
 static void vm_language_coverage_form(int name_hash) {
 #ifndef ESHKOL_VM_WASM
     if (name_hash <= 0) return;
+    if (!vm_language_coverage_first_sighting(vm_language_coverage_seen_form,
+                                             (uint32_t)name_hash)) {
+        return;
+    }
     eshkol_language_coverage_vm_form_hash((uint32_t)name_hash);
 #else
     (void)name_hash;
@@ -1199,6 +1239,10 @@ static void vm_language_coverage_named_call(VM* vm, Value func) {
     if (marker.op != OP_LANGUAGE_COVERAGE_CALL || marker.operand < 0 ||
         vm->language_coverage_call_pc != vm->pc - 1 ||
         vm->language_coverage_call_hash != (uint32_t)marker.operand) {
+        return;
+    }
+    if (!vm_language_coverage_first_sighting(vm_language_coverage_seen_call,
+                                             (uint32_t)marker.operand)) {
         return;
     }
     eshkol_language_coverage_vm_call_hash((uint32_t)marker.operand);

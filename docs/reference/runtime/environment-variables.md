@@ -301,6 +301,7 @@ undocumented.
 | `ESHKOL_PHASE_TIME` | Print per-phase wall-clock timings from `eshkol-run`. | off |
 | `ESHKOL_NODE_IDENTITY_STATS` | Print `eshkol-node-identity: allocated=N queried=N resolved=N located=N extent=N` at process exit. Read by `scripts/run_node_identity_gate.py` (ADR-0000 Stage 1). | off |
 | `ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR` | Directory for executable language-coverage traces. Setting it changes which execution path `eshkol-run` takes, which is the divergence the `module_load_path_engine_parity_gate` pins. | unset |
+| `ESHKOL_LANGUAGE_COVERAGE_HOOK_STATS` | Print `eshkol-language-coverage: exec-hook-entries=N` at process exit: how many times generated code or the VM entered a language-coverage execution hook. Each instrumented site and VM marker is guarded to enter once, so N is bounded by the number of distinct sites, not by iteration counts. Read by `scripts/test_language_coverage_hook_guard.py`. | off |
 | `ESHKOL_DEBUG_DL` | REPL/JIT dynamic-loader debug output. | off |
 | `ESHKOL_INTERNAL_CACHE_BUILD` | Set and cleared by `eshkol-run` around its own internal cache build; not intended to be set by hand. | unset |
 | `ESHKOL_LINSOLVE_FORCE_DGESV` | Force `linear-solve` onto the LAPACK `dgesv` path instead of the mixed-precision solver. | off |

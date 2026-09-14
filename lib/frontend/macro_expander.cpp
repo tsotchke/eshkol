@@ -165,6 +165,10 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
     // We track seen macro names per expansion chain to detect cycles.
     static thread_local int expansion_depth = 0;
     struct DepthGuard { DepthGuard() { ++expansion_depth; } ~DepthGuard() { --expansion_depth; } } depth_guard;
+    // Nodes the expander creates for this form (as opposed to copies of
+    // template nodes, which keep the template's own location) are born with
+    // the location of the form being expanded.
+    EshkolAstBirthLocationScope birth_location(ast.line, ast.column);
     if (expansion_depth > 1000) {
         // A deeply nested ordinary call is AST traversal, not macro
         // expansion. Reporting it as a macro-depth failure made a pure
