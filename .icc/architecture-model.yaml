@@ -348,7 +348,22 @@ capabilities:
       pattern: evaluate
     pattern: package_manifest_complete
     dependencies: [packaging]
-    dependency_constructor: 'python3 scripts/check_package_manifest\.py'
+    dependency_constructor: '(?m)^\s*python3 scripts/check_package_manifest.py[\s\S]{0,3000}?tar -czf'
+    dependency_paths: [.github/workflows/release.yml]
+
+  - id: package_surface_manifest_windows
+    feature: >
+      Windows release staging validates the package-surface manifest before
+      Compress-Archive creates the release ZIP.
+    entry_points:
+      - {path: scripts/check_package_manifest.py, symbol: evaluate}
+    arming:
+      kind: symbol
+      path: scripts/check_package_manifest.py
+      pattern: evaluate
+    pattern: package_manifest_complete
+    dependencies: [packaging]
+    dependency_constructor: '(?m)^\s*python scripts/check_package_manifest.py[\s\S]{0,3000}?Compress-Archive'
     dependency_paths: [.github/workflows/release.yml]
 
   - id: diagnostic_golden_corpus
@@ -862,6 +877,18 @@ invariants:
       capability binds both the check's emitted receipt and the release
       workflow's verifier invocation.
     capability: package_surface_manifest
+
+  - id: INV-package-manifest-enforced-windows
+    kind: dependency-presence
+    incident: packaging-manifest-gap
+    severity: high
+    fidelity: grep
+    description: >
+      The Windows release workflow validates the staged package against
+      .icc/package-manifest.yaml before Compress-Archive creates the ZIP. A
+      missing verifier or a moved check after archive creation leaves the
+      packaging lane unenforced and fails this invariant.
+    capability: package_surface_manifest_windows
 
   - id: INV-diagnostic-corpus-no-drift
     kind: dependency-presence

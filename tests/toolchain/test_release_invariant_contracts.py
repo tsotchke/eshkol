@@ -133,9 +133,12 @@ class ReleaseInvariantContractTests(unittest.TestCase):
 
     def test_package_manifest_spec_requires_receipt_and_release_verification_call(self):
         spec = capability("package_surface_manifest")
+        windows_spec = capability("package_surface_manifest_windows")
         self.assertEqual(spec["arming"]["kind"], "symbol")
         self.assertEqual(spec["arming"]["path"], "scripts/check_package_manifest.py")
         self.assertEqual(spec["arming"]["pattern"], "evaluate")
+        self.assertEqual(windows_spec["arming"]["kind"], "symbol")
+        self.assertEqual(windows_spec["arming"]["path"], "scripts/check_package_manifest.py")
         self.assertEqual(spec["pattern"], "package_manifest_complete")
         workflow_path = ".github/workflows/release.yml"
         manifest_path = ".icc/package-manifest.yaml"
@@ -151,6 +154,13 @@ class ReleaseInvariantContractTests(unittest.TestCase):
         windows_archive = workflow.index("Compress-Archive", windows_check)
         self.assertLess(linux_check, linux_archive)
         self.assertLess(windows_check, windows_archive)
+        self.assertRegex(workflow, spec["dependency_constructor"])
+        self.assertRegex(workflow, windows_spec["dependency_constructor"])
+        windows_invariant = next(
+            i for i in MODEL["invariants"]
+            if i["id"] == "INV-package-manifest-enforced-windows"
+        )
+        self.assertEqual(windows_invariant["capability"], "package_surface_manifest_windows")
 
         omitted_linux = workflow.replace("python3 scripts/check_package_manifest.py", "python3 check_package_manifest.py")
         self.assertNotEqual(omitted_linux, workflow)
@@ -158,6 +168,7 @@ class ReleaseInvariantContractTests(unittest.TestCase):
         omitted_windows = workflow.replace("python scripts/check_package_manifest.py", "python check_package_manifest.py")
         self.assertNotEqual(omitted_windows, workflow)
         self.assertNotIn("python scripts/check_package_manifest.py", omitted_windows)
+        self.assertNotRegex(omitted_windows, windows_spec["dependency_constructor"])
 
     def test_ad_bridge_registry_matches_actual_definitions(self):
         name = "INV-ad-node-declared-in-registry"
