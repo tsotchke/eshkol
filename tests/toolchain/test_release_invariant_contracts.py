@@ -132,20 +132,17 @@ class ReleaseInvariantContractTests(unittest.TestCase):
         self.assertNotRegex(no_smoke_probe, spec["pattern"])
 
     def test_package_manifest_spec_requires_receipt_and_release_verification_call(self):
-        spec = capability("package_surface_manifest")
-        windows_spec = capability("package_surface_manifest_windows")
-        self.assertEqual(spec["arming"]["kind"], "symbol")
-        self.assertEqual(spec["arming"]["path"], "scripts/check_package_manifest.py")
-        self.assertEqual(spec["arming"]["pattern"], "evaluate")
-        self.assertEqual(windows_spec["arming"]["kind"], "symbol")
-        self.assertEqual(windows_spec["arming"]["path"], "scripts/check_package_manifest.py")
-        self.assertEqual(spec["pattern"], "package_manifest_complete")
+        name = "INV-package-manifest-enforced"
+        invariant = next(i for i in MODEL["invariants"] if i["id"] == name)
+        self.assertEqual(invariant["kind"], "key-space-equality")
+        self.assertEqual(invariant["severity"], "high")
+        self.assertEqual(len(invariant["sites"]), 2)
         workflow_path = ".github/workflows/release.yml"
         manifest_path = ".icc/package-manifest.yaml"
         workflow = text(workflow_path)
         manifest = text(manifest_path)
         checker = text("scripts/check_package_manifest.py")
-        self.assertRegex(workflow, spec["dependency_constructor"])
+        self.assertTrue(grade(name))
         self.assertIn("package_surface:", manifest)
         self.assertIn('PROBE_ID = "package_manifest_complete"', checker)
         linux_check = workflow.index("python3 scripts/check_package_manifest.py")
@@ -154,21 +151,29 @@ class ReleaseInvariantContractTests(unittest.TestCase):
         windows_archive = workflow.index("Compress-Archive", windows_check)
         self.assertLess(linux_check, linux_archive)
         self.assertLess(windows_check, windows_archive)
-        self.assertRegex(workflow, spec["dependency_constructor"])
-        self.assertRegex(workflow, windows_spec["dependency_constructor"])
-        windows_invariant = next(
-            i for i in MODEL["invariants"]
-            if i["id"] == "INV-package-manifest-enforced-windows"
-        )
-        self.assertEqual(windows_invariant["capability"], "package_surface_manifest_windows")
+        linux_site, windows_site = invariant["sites"]
+        self.assertRegex(workflow, linux_site["key_pattern"])
+        self.assertRegex(workflow, windows_site["key_pattern"])
 
         omitted_linux = workflow.replace("python3 scripts/check_package_manifest.py", "python3 check_package_manifest.py")
         self.assertNotEqual(omitted_linux, workflow)
-        self.assertNotRegex(omitted_linux, spec["dependency_constructor"])
+        self.assertFalse(grade(name, {workflow_path: omitted_linux}))
         omitted_windows = workflow.replace("python scripts/check_package_manifest.py", "python check_package_manifest.py")
         self.assertNotEqual(omitted_windows, workflow)
-        self.assertNotIn("python scripts/check_package_manifest.py", omitted_windows)
-        self.assertNotRegex(omitted_windows, windows_spec["dependency_constructor"])
+        self.assertFalse(grade(name, {workflow_path: omitted_windows}))
+
+        late_linux = omitted_linux.replace(
+            "tar -czf \"$RUNNER_TEMP/$archive_root.tar.gz\" -C \"$RUNNER_TEMP\" \"$archive_root\"",
+            "tar -czf \"$RUNNER_TEMP/$archive_root.tar.gz\" -C \"$RUNNER_TEMP\" \"$archive_root\"\n          python3 scripts/check_package_manifest.py",
+        )
+        self.assertNotEqual(late_linux, omitted_linux)
+        self.assertFalse(grade(name, {workflow_path: late_linux}))
+        late_windows = omitted_windows.replace(
+            "Compress-Archive -Path $pkgDir -DestinationPath $archivePath -CompressionLevel Optimal",
+            "Compress-Archive -Path $pkgDir -DestinationPath $archivePath -CompressionLevel Optimal\n          python scripts/check_package_manifest.py",
+        )
+        self.assertNotEqual(late_windows, omitted_windows)
+        self.assertFalse(grade(name, {workflow_path: late_windows}))
 
     def test_ad_bridge_registry_matches_actual_definitions(self):
         name = "INV-ad-node-declared-in-registry"

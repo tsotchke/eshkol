@@ -335,37 +335,6 @@ capabilities:
     dependency_paths: [lib/quantum/quantum_rng_wrapper.c]
 
   # ── ADR-0010 assurance-gap closures (A10/A11/A12) ─────────────────────
-  - id: package_surface_manifest
-    feature: >
-      Declared package_surface manifest (ADR-0010 gap A10) is the single
-      source of truth for what a release archive must contain, checked
-      against a staged package directory before it is tar'd/zipped.
-    entry_points:
-      - {path: scripts/check_package_manifest.py, symbol: evaluate}
-    arming:
-      kind: symbol
-      path: scripts/check_package_manifest.py
-      pattern: evaluate
-    pattern: package_manifest_complete
-    dependencies: [packaging]
-    dependency_constructor: '(?m)^\s*python3 scripts/check_package_manifest.py[\s\S]{0,3000}?tar -czf'
-    dependency_paths: [.github/workflows/release.yml]
-
-  - id: package_surface_manifest_windows
-    feature: >
-      Windows release staging validates the package-surface manifest before
-      Compress-Archive creates the release ZIP.
-    entry_points:
-      - {path: scripts/check_package_manifest.py, symbol: evaluate}
-    arming:
-      kind: symbol
-      path: scripts/check_package_manifest.py
-      pattern: evaluate
-    pattern: package_manifest_complete
-    dependencies: [packaging]
-    dependency_constructor: '(?m)^\s*python scripts/check_package_manifest.py[\s\S]{0,3000}?Compress-Archive'
-    dependency_paths: [.github/workflows/release.yml]
-
   - id: diagnostic_golden_corpus
     feature: >
       Diagnostic golden-corpus (ADR-0010 gap A11, type_diagnostic category):
@@ -860,11 +829,9 @@ invariants:
   #       runtime_event criterion in .icc/completion-oracles.yaml (the
   #       established home for check_*.py gates — see check_ledger_
   #       integrity.py / check_oracle_schema.py / gate_no_silent_wrong.py,
-  #       none of which have an architecture-model.yaml invariant either);
-  #       these three are dependency-presence invariants recording that each
-  #       capability's declared source of truth exists on disk.
+  #       none of which have an architecture-model.yaml invariant either).
   - id: INV-package-manifest-enforced
-    kind: dependency-presence
+    kind: key-space-equality
     incident: packaging-manifest-gap
     severity: high
     fidelity: grep
@@ -872,23 +839,19 @@ invariants:
       A release archive's staged contents (binaries, static libraries,
       stdlib artifacts, the full lib/**/*.esk source mirror, docs) are
       checked against a single declared manifest (.icc/package-manifest.yaml)
-      before the archive is tar'd/zipped, so a packaging-step refactor that
-      silently drops a required file fails CI instead of shipping. The
-      capability binds both the check's emitted receipt and the release
-      workflow's verifier invocation.
-    capability: package_surface_manifest
-
-  - id: INV-package-manifest-enforced-windows
-    kind: dependency-presence
-    incident: packaging-manifest-gap
-    severity: high
-    fidelity: grep
-    description: >
-      The Windows release workflow validates the staged package against
-      .icc/package-manifest.yaml before Compress-Archive creates the ZIP. A
-      missing verifier or a moved check after archive creation leaves the
-      packaging lane unenforced and fails this invariant.
-    capability: package_surface_manifest_windows
+      before either platform creates its archive, so a missing or late check
+      fails. The release workflow must have matching manifest-check commands
+      for Linux and Windows, each before its archiver; either absent key or a
+      check moved after packaging makes the key spaces unequal. Runtime
+      PASS/FAIL for staged contents remains the `package_manifest_complete`
+      completion-oracle criterion.
+    sites:
+      - id: linux-package-check-before-tar
+        path: .github/workflows/release.yml
+        key_pattern: '(?m)^\s*python3 (scripts/check_package_manifest.py)(?=[\s\S]{0,3000}?tar -czf)'
+      - id: windows-package-check-before-zip
+        path: .github/workflows/release.yml
+        key_pattern: '(?m)^\s*python (scripts/check_package_manifest.py)(?=[\s\S]{0,3000}?Compress-Archive)'
 
   - id: INV-diagnostic-corpus-no-drift
     kind: dependency-presence
