@@ -15,6 +15,7 @@
 #include <eshkol/backend/llvm_compat.h>
 #include <eshkol/backend/libm_codegen.h>
 #include <eshkol/backend/binding_codegen.h>
+#include <eshkol/backend/closure_capture_scope.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -3762,204 +3763,14 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
     // Build arguments for derivative lambda call
     std::vector<Value*> deriv_call_args = {x_dual_tagged};
 
-    // CLOSURE FIX: Load captures from STORAGE
-    FunctionType* deriv_func_type = func_ptr->getFunctionType();
-    if (deriv_func_type->getNumParams() > 1) {
-        size_t num_captures = deriv_func_type->getNumParams() - 1;
-        std::string lambda_name = func_ptr->getName().str();
-
-        // REPL MODE: Get capture names from registry instead of parameter names
-        // (LLVM external declarations may have empty parameter names)
-        std::vector<std::string> capture_names;
-        if ((repl_mode_enabled_ && *repl_mode_enabled_)) {
-            std::lock_guard<std::mutex> lock(*repl_mutex_);
-            auto captures_it = repl_lambda_captures_->find(lambda_name);
-            if (captures_it != repl_lambda_captures_->end()) {
-                capture_names = captures_it->second;
-            }
-        }
-
-        for (size_t i = 0; i < num_captures; i++) {
-            std::string var_name;
-            if (i < capture_names.size()) {
-                var_name = capture_names[i];
-            } else {
-                // Fallback to LLVM parameter names (for non-REPL mode)
-                auto arg_it = func_ptr->arg_begin();
-                std::advance(arg_it, i + 1);  // Skip first parameter
-                if (arg_it != func_ptr->arg_end()) {
-                    var_name = arg_it->getName().str();
-                    if (var_name.find("captured_") == 0) {
-                        var_name = var_name.substr(9);
-                    }
-                }
-            }
-
-            std::string capture_key = lambda_name + "_capture_" + var_name;
-
-            // First try local symbol tables with capture_key
-            auto it = global_symbol_table_->find(capture_key);
-            bool found_in_global = (it != global_symbol_table_->end());
-            if (!found_in_global) {
-                it = symbol_table_->find(capture_key);
-            }
-
-            bool found = found_in_global ? (it != global_symbol_table_->end()) : (it != symbol_table_->end());
-
-            // INNER FUNCTION FIX: If capture_key not found, try plain variable name
-            // This handles lambdas inside functions where captures are function parameters
-            // (not stored as GlobalVariables with _capture_ keys)
-            // Also handles top-level global variables that are captured by lambdas
-            //
-            // ESH-0070 SCOPING INVARIANT (see resolveGradientCaptures, and the
-            // "Try local symbol table first" loop in llvm_codegen.cpp's nested-
-            // function capture emission): the raw-name lookup MUST prefer the
-            // LOCAL symbol table, because it has to resolve the SAME storage the
-            // lambda's own free-variable capture resolved. codegenLambda searches
-            // local-then-global, so a parameter/let binding lexically shadows a
-            // same-named top-level global there; searching global-first here
-            // silently picks the shadowed global instead.
-            //
-            // Task #114: this is what miscompiled core.ad.guw. `taylor-propagate`
-            // is `(define (taylor-propagate f xs v K) (taylor (lambda (t) (f (guw-line-point xs v t))) 0.0 K))`,
-            // so the tower lambda captures the PARAMETERS `f`/`xs`/`v`. A user
-            // program that merely defines a top-level `(define xs (vector ...))`
-            // made this lookup find `@eshkol_g_xs` and pack its ADDRESS as the
-            // capture, so the callee read the global's storage cell as if it were
-            // the base-point vector — `vector-ref: index out of bounds`. Every
-            // documented core.ad.guw example uses `xs` as the base-point name,
-            // which is why the AD guide carried an ESHKOL_JIT_CACHE=0 workaround
-            // (the `-r` persistent run cache compiles AOT, where all top-level
-            // globals are pre-registered; the in-process JIT happened not to have
-            // the colliding global installed yet, so it silently did the right
-            // thing and the divergence looked like a cache defect).
-            if (!found) {
-                it = symbol_table_->find(var_name);
-                found = (it != symbol_table_->end());
-                if (!found) {
-                    it = global_symbol_table_->find(var_name);
-                    found = (it != global_symbol_table_->end());
-                    found_in_global = found;
-                }
-                if (found) {
-                    eshkol_debug("Derivative: found capture '%s' via plain variable name", var_name.c_str());
-                }
-            }
-
-            // REPL MODE: Try creating external declaration for capture global
-            if (!found && (repl_mode_enabled_ && *repl_mode_enabled_)) {
-                std::lock_guard<std::mutex> lock(*repl_mutex_);
-                auto sym_it = repl_symbol_addresses_->find(capture_key);
-                if (sym_it != repl_symbol_addresses_->end()) {
-                    // Create external declaration for capture global
-                    GlobalVariable* capture_global = ctx_.module().getGlobalVariable(capture_key);
-                    if (!capture_global) {
-                        capture_global = new GlobalVariable(
-                            ctx_.module(),
-                            ctx_.taggedValueType(),
-                            false,
-                            GlobalValue::ExternalLinkage,
-                            nullptr,
-                            capture_key
-                        );
-                    }
-                    // MUTABLE CAPTURE FIX: Pack pointer in closure format
-                    // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@global)}
-                    Value* deriv_global_ptr_int = ctx_.builder().CreatePtrToInt(capture_global, ctx_.int64Type());
-                    Value* deriv_packed_capture = tagged_.packInt64(deriv_global_ptr_int, true);
-                    Value* deriv_capture_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "deriv_capture_storage");
-                    ctx_.builder().CreateStore(deriv_packed_capture, deriv_capture_storage);
-                    deriv_call_args.push_back(deriv_capture_storage);
-                    continue;
-                }
-            }
-
-            if (found && it->second) {
-                Value* storage = it->second;
-                // ESH-0070/ESH-0117: a free variable can already be bound, in
-                // THIS scope, to a pointer that points DIRECTLY at the slot
-                // holding its tagged value — the exact single-load convention
-                // the differentiand's callee expects. Two shapes carry that
-                // convention:
-                //   - "<var>_cap": a named-let/TCO loop's own captured-from-
-                //     enclosing-scope forward (see llvm_codegen.cpp
-                //     codegenNamedLet), binding a free variable used inside the
-                //     loop body to a pointer Argument named "<var>_cap" (#224).
-                //   - "captured_<var>": a TRANSITIVE capture through a nested
-                //     `derivative` — the free variable is itself a capture of
-                //     the enclosing (middle) lambda, so `storage` is that
-                //     lambda's own `captured_<var>` parameter (ESH-0117).
-                // Forwarding either as-is lets the innermost lambda read the
-                // capture with the SAME convention it was stored with.
-                // Re-wrapping it (ptrtoint+packInt64 below) double-indirects —
-                // the callee's single load then reads a pointer-as-value →
-                // garbage. This mirrors resolveGradientCaptures/jacobian's
-                // shared resolver (search "_cap") for a named-let loop that
-                // captures an OUTER variable inside a derivative-n/taylor
-                // differentiand, whose "<var>_cap" pointer this check used to
-                // miss (only "captured_<var>" was recognized here), producing
-                // garbage values (e.g. `(vector-ref p 0)` = 0 in a
-                // gradient-over-derivative-of-derivative, or a captured
-                // named-let free variable read as ~1e29 in derivative-n).
-                if (auto* arg = llvm::dyn_cast<llvm::Argument>(storage)) {
-                    if (arg->getType()->isPointerTy() &&
-                        (arg->getName() == (var_name + "_cap") ||
-                         arg->getName() == ("captured_" + var_name))) {
-                        deriv_call_args.push_back(storage);
-                        continue;
-                    }
-                }
-                // MUTABLE CAPTURE FIX: Pack pointer in closure format
-                // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
-                //
-                // AD-1 follow-up: when `storage` is a function-parameter Argument
-                // with tagged_value type (struct, not pointer) — the case
-                // exposed by tests/neural/nn_working.esk's `compute-loss-gradient`
-                // capturing `input`/`target`/`b` from outer parameters — the
-                // unconditional PtrToInt fails LLVM verification with "PtrToInt
-                // source must be pointer".  Mirror the case-split that the
-                // recently-disabled new-style derivative() body had: pack the
-                // pointer when storage is one, otherwise pass the value-typed
-                // tagged_value through a fresh alloca temp slot so the lambda's
-                // single-load body sees the value directly.
-                if (isTcoLoopAlloca(storage)) {
-                    // ESH-0221: `storage` is a TCO loop-carried parameter's
-                    // alloca — pointer-typed like any AllocaInst, but the
-                    // callee treats it as a VALUE capture (single load), not
-                    // a mutable-variable pointer to re-dereference. Load the
-                    // CURRENT iteration's value and funnel it through a
-                    // value-typed temp slot, exactly like the non-pointer
-                    // branch below — packing its ADDRESS instead (the
-                    // fallthrough this guard prevents) made the callee read
-                    // the alloca's raw address bit-pattern as the captured
-                    // double.
-                    Value* deriv_tco_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), storage);
-                    Value* deriv_temp_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "deriv_capture_tco_val");
-                    ctx_.builder().CreateStore(deriv_tco_val, deriv_temp_storage);
-                    deriv_call_args.push_back(deriv_temp_storage);
-                } else if (storage->getType()->isPointerTy()) {
-                    Value* deriv_storage_ptr_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
-                    Value* deriv_packed_storage = tagged_.packInt64(deriv_storage_ptr_int, true);
-                    Value* deriv_temp_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "deriv_capture_storage");
-                    ctx_.builder().CreateStore(deriv_packed_storage, deriv_temp_storage);
-                    deriv_call_args.push_back(deriv_temp_storage);
-                } else {
-                    // Value-typed capture (e.g. function-parameter Argument with
-                    // tagged_value struct type).  Funnel through a temp slot —
-                    // the lambda body's single `load tagged_value` will read
-                    // the value directly.
-                    Value* deriv_temp_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "deriv_capture_value");
-                    ctx_.builder().CreateStore(storage, deriv_temp_storage);
-                    deriv_call_args.push_back(deriv_temp_storage);
-                }
-            } else {
-                // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
-                deriv_call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
-                eshkol_warn("Derivative: capture '%s' not found, using null pointer", var_name.c_str());
-            }
-        }
+    // Supply the differentiand's captured variables. See
+    // appendDifferentiandCaptures: a NAMED differentiand's captures are read
+    // from its closure object, never re-resolved by name at this site.
+    if (!appendDifferentiandCaptures(op->derivative_op.function, func_ptr, 1,
+                                     deriv_call_args, "derivative")) {
+        return nullptr;
     }
-    
+
     // Call function with dual number input and captures
     // The function will automatically use dual arithmetic, propagating derivatives
     Value* result_tagged = ctx_.builder().CreateCall(func_ptr, deriv_call_args);
@@ -4727,6 +4538,21 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
     // Register the gradient function
     (*function_table_)[grad_func_name] = grad_func;
     (*nested_function_captures_)[grad_func_name] = {"f"};  // 1 capture
+
+    // A statically resolved differentiand that closes over variables cannot be
+    // wrapped as a capture-free closure below: the wrapper would call it with
+    // no capture arguments and it would read its captures from garbage. Its
+    // closure value already carries both the environment and the input arity
+    // the exact runtime-closure gradient dispatches on, so use that.
+    if (!closure_val && func) {
+        if (functionHasCaptureParameters(llvm::dyn_cast<llvm::Function>(func))) {
+            closure_val = resolveDifferentiandClosure(op->gradient_op.function, "gradient");
+            if (!closure_val) {
+                eshkol_error("Failed to resolve the closure for higher-order gradient");
+                return nullptr;
+            }
+        }
+    }
 
     // Create closure capturing the original function
     if (!closure_val && func) {
@@ -6330,7 +6156,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
                 getTaylorEpochFunc(ctx_), {exact_seed_slot});
             towerCtxPush(ConstantInt::get(ctx_.int32Type(), 1));
             std::vector<Value*> exact_args = {exact_seed};
-            resolveGradientCaptures(func_ptr, exact_args, "fwd-exact-tower");
+            resolveGradientCaptures(func_ptr, exact_args, "fwd-exact-tower", op->gradient_op.function);
             Value* exact_call = ctx_.builder().CreateCall(func_ptr, exact_args);
             towerCtxPop();
             ctx_.builder().CreateStore(exact_call, exact_result_slot);
@@ -6350,7 +6176,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
             Value* fwd_level = nullptr;
             Value* fwd_seed = seedForwardAndPush(vector_val, &fwd_level);
             std::vector<Value*> fwd_args = {fwd_seed};
-            resolveGradientCaptures(func_ptr, fwd_args, "fwd-jet");
+            resolveGradientCaptures(func_ptr, fwd_args, "fwd-jet", op->gradient_op.function);
             Value* fwd_call = ctx_.builder().CreateCall(func_ptr, fwd_args);
             Value* fwd_res = popAndExtractForward(fwd_call, fwd_level);
             ctx_.builder().CreateStore(fwd_res, grad_result_slot);
@@ -6966,7 +6792,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     }
 
     // Resolve captures via unified helper
-    resolveGradientCaptures(func_ptr, svec_call_args, "svec");
+    resolveGradientCaptures(func_ptr, svec_call_args, "svec", op->gradient_op.function);
 
     // ESH-0093: push the perturbation level around the call (the callee body
     // runs one forward level deeper) and pop it right after — the same
@@ -7554,7 +7380,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     }
 
     // Resolve captures via unified helper
-    resolveGradientCaptures(func_ptr, scalar_args, "scalar");
+    resolveGradientCaptures(func_ptr, scalar_args, "scalar", op->gradient_op.function);
 
     // NESTED GRADIENT FIX: Save ctx_.outerAdNodeStorage() before calling function
     // Nested gradients will overwrite it, so we save and restore to support n-dimensional derivatives
@@ -7644,154 +7470,13 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         grad_call_args.push_back(ad_tensor_tagged);
     }
 
-    if (grad_func_type->getNumParams() > grad_call_args.size()) {
-        size_t num_captures = grad_func_type->getNumParams() - grad_call_args.size();
-        std::string lambda_name = func_ptr->getName().str();
-
-        // REPL MODE: Get capture names from registry instead of parameter names
-        std::vector<std::string> capture_names;
-        if ((repl_mode_enabled_ && *repl_mode_enabled_)) {
-            std::lock_guard<std::mutex> lock(*repl_mutex_);
-            auto captures_it = repl_lambda_captures_->find(lambda_name);
-            if (captures_it != repl_lambda_captures_->end()) {
-                capture_names = captures_it->second;
-            }
-        }
-
-        for (size_t i = 0; i < num_captures; i++) {
-            std::string var_name;
-            if (i < capture_names.size()) {
-                var_name = capture_names[i];
-            } else {
-                // Fallback to LLVM parameter names (for non-REPL mode)
-                auto arg_it = func_ptr->arg_begin();
-                std::advance(arg_it, i + 1);  // Skip first parameter
-                if (arg_it != func_ptr->arg_end()) {
-                    var_name = arg_it->getName().str();
-                    if (var_name.find("captured_") == 0) {
-                        var_name = var_name.substr(9);
-                    }
-                }
-            }
-
-            std::string capture_key = lambda_name + "_capture_" + var_name;
-
-            // First try capture-specific key in symbol tables
-            auto it = global_symbol_table_->find(capture_key);
-            bool found_in_global = (it != global_symbol_table_->end());
-            if (!found_in_global) {
-                it = symbol_table_->find(capture_key);
-            }
-
-            bool found = found_in_global ? (it != global_symbol_table_->end()) : (it != symbol_table_->end());
-
-            // FALLBACK: Try raw variable name, LOCAL first (ESH-0070 / task #114).
-            // The lambda's own capture emission resolves free variables
-            // local-then-global, so a parameter or let binding lexically shadows a
-            // same-named top-level global; this reconstruction must agree with it
-            // or it forwards the wrong storage in the wrong ABI. See the long note
-            // in codegenDerivativeMonolith.
-            if (!found) {
-                it = symbol_table_->find(var_name);
-                found = (it != symbol_table_->end());
-                if (!found) {
-                    it = global_symbol_table_->find(var_name);
-                    found = (it != global_symbol_table_->end());
-                    found_in_global = found;
-                }
-                if (found) {
-                    eshkol_debug("Gradient: found capture '%s' via raw variable name", var_name.c_str());
-                }
-            }
-
-            // REPL MODE: Try creating external declaration for capture global
-            if (!found && (repl_mode_enabled_ && *repl_mode_enabled_)) {
-                std::lock_guard<std::mutex> lock(*repl_mutex_);
-                auto sym_it = repl_symbol_addresses_->find(capture_key);
-                if (sym_it != repl_symbol_addresses_->end()) {
-                    // Create external declaration for capture global
-                    GlobalVariable* capture_global = ctx_.module().getGlobalVariable(capture_key);
-                    if (!capture_global) {
-                        capture_global = new GlobalVariable(
-                            ctx_.module(),
-                            ctx_.taggedValueType(),
-                            false,
-                            GlobalValue::ExternalLinkage,
-                            nullptr,
-                            capture_key
-                        );
-                    }
-                    // MUTABLE CAPTURE FIX: Create storage containing packed pointer
-                    // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@global)}
-                    // Then lambda loads from slot, unpacks data field to get @global
-                    Value* global_ptr_int = ctx_.builder().CreatePtrToInt(capture_global, ctx_.int64Type());
-                    Value* packed_capture = tagged_.packInt64(global_ptr_int, true);
-                    Value* capture_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_capture_storage");
-                    ctx_.builder().CreateStore(packed_capture, capture_storage);
-                    grad_call_args.push_back(capture_storage);
-                    continue;
-                }
-            }
-
-            if (found && it->second) {
-                Value* storage = it->second;
-                // ESH-0072/0097: this reverse-mode vector path is emitted even
-                // when the run-time input is a scheme vector (the svec forward
-                // path actually executes), so its capture code must still verify.
-                // A lambda that captures a LOCAL function parameter resolves
-                // `storage` to the parameter's Argument, which is a tagged_value
-                // STRUCT, not a pointer — ptrtoint on it is invalid IR. Mirror
-                // resolveGradientCaptures: a named-let carry pointer ("<var>_cap")
-                // is forwarded as-is; a value-typed capture is funneled through a
-                // temp slot; only a genuine pointer storage is packed via ptrtoint.
-                if (auto* arg = llvm::dyn_cast<llvm::Argument>(storage)) {
-                    if (arg->getType()->isPointerTy() &&
-                        (arg->getName() == (var_name + "_cap") ||
-                         arg->getName() == ("captured_" + var_name))) {
-                        // #296: transitive capture — the free variable is the
-                        // enclosing function's own `captured_<var>` slot,
-                        // already in the callee's single-load convention.
-                        // Packing its ADDRESS below handed the differentiated
-                        // lambda the slot address as its value; a custom-VJP
-                        // callee (vqe-energy) unpacked it as the Hamiltonian
-                        // handle and the gradient silently zeroed.
-                        grad_call_args.push_back(storage);
-                        continue;
-                    }
-                }
-                if (!storage->getType()->isPointerTy()) {
-                    Value* val_temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap_val");
-                    ctx_.builder().CreateStore(storage, val_temp);
-                    grad_call_args.push_back(val_temp);
-                    continue;
-                }
-                if (isTcoLoopAlloca(storage)) {
-                    // ESH-0221: see isTcoLoopAlloca's doc comment. `storage`
-                    // is a TCO loop-carried parameter's alloca — the callee
-                    // expects a single-load VALUE capture, not the mutable-
-                    // variable pointer-marker built below.
-                    Value* grad_tco_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), storage);
-                    Value* val_temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap_tco_val");
-                    ctx_.builder().CreateStore(grad_tco_val, val_temp);
-                    grad_call_args.push_back(val_temp);
-                    continue;
-                }
-                // MUTABLE CAPTURE FIX: Create storage containing packed pointer
-                // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
-                // Then lambda loads from slot, unpacks data field to get @storage
-                Value* storage_ptr_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
-                Value* packed_storage = tagged_.packInt64(storage_ptr_int, true);
-                Value* capture_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_capture_storage");
-                ctx_.builder().CreateStore(packed_storage, capture_storage);
-                grad_call_args.push_back(capture_storage);
-            } else {
-                // MUTABLE CAPTURE FIX: Push null pointer instead of packed zero
-                grad_call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
-                eshkol_warn("Gradient: capture '%s' not found, using null pointer", var_name.c_str());
-            }
-        }
+    // Supply the differentiand's captured variables (appendDifferentiandCaptures).
+    if (grad_func_type->getNumParams() > grad_call_args.size() &&
+        !appendDifferentiandCaptures(op->gradient_op.function, func_ptr,
+                                     grad_call_args.size(), grad_call_args, "gradient")) {
+        return nullptr;
     }
-    
+
     // NESTED GRADIENT FIX: Save ctx_.outerAdNodeStorage() before calling function
     // Nested gradients will overwrite it, so we save and restore to support n-dimensional derivatives
     Value* saved_outer_ad_node_vector = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.outerAdNodeStorage());
@@ -8771,7 +8456,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
         } else {
             test_call_args.push_back(vector_tagged);
         }
-        std::vector<Value*> jac_test_captures = loadCapturesForAutodiff(func_ptr, "Jacobian test call");
+        std::vector<Value*> jac_test_captures = loadCapturesForAutodiff(func_ptr, "Jacobian test call", op->jacobian_op.function);
         test_call_args.insert(test_call_args.end(), jac_test_captures.begin(), jac_test_captures.end());
         test_output_tagged = ctx_.builder().CreateCall(func_ptr, test_call_args);
     } else {
@@ -9121,7 +8806,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
         } else {
             jac_call_args.push_back(jac_ad_tensor_tagged);
         }
-        std::vector<Value*> jac_captures = loadCapturesForAutodiff(func_ptr, "Jacobian AD call");
+        std::vector<Value*> jac_captures = loadCapturesForAutodiff(func_ptr, "Jacobian AD call", op->jacobian_op.function);
         jac_call_args.insert(jac_call_args.end(), jac_captures.begin(), jac_captures.end());
         jac_output_tagged = ctx_.builder().CreateCall(func_ptr, jac_call_args);
     } else {
@@ -10909,7 +10594,7 @@ llvm::Value* AutodiffCodegen::hessianJetPath(const eshkol_operations_t* op) {
                 // now does too. The call is a no-op when the callee has no
                 // captures, so the non-capturing scalar Hessian is unchanged.
                 std::vector<Value*> scalar_hess_args{x_jet};
-                resolveGradientCaptures(scalar_func_ptr, scalar_hess_args, "hessian-scalar");
+                resolveGradientCaptures(scalar_func_ptr, scalar_hess_args, "hessian-scalar", op->hessian_op.function);
                 fres = ctx_.builder().CreateCall(scalar_func_ptr, scalar_hess_args);
             } else {
                 fres = closure_call_callback_(hessian_closure_val, {x_jet}, "hessian-scalar", callback_context_);
@@ -11025,7 +10710,7 @@ llvm::Value* AutodiffCodegen::hessianJetPath(const eshkol_operations_t* op) {
                     Value* d2 = (p == j) ? one : zerod;
                     args.push_back(packDualToTagged(makeDual4(ctx_, base[p], d1, d2, zerod)));
                 }
-                resolveGradientCaptures(func_ptr, args, "hessian-ad");
+                resolveGradientCaptures(func_ptr, args, "hessian-ad", op->hessian_op.function);
                 Value* r = ctx_.builder().CreateCall(func_ptr, args);
                 Value* rd = safeUnpackDualFromTagged(r);
                 return dualField(ctx_, rd, 3);   // mixed second-order term
@@ -11397,7 +11082,7 @@ llvm::Value* AutodiffCodegen::hessianJetPath(const eshkol_operations_t* op) {
     Value* hff_out;
     if (func_ptr) {
         std::vector<Value*> hff_args = {hff_vec_tagged};
-        std::vector<Value*> hff_caps = loadCapturesForAutodiff(func_ptr, "Hessian forward-over-forward");
+        std::vector<Value*> hff_caps = loadCapturesForAutodiff(func_ptr, "Hessian forward-over-forward", op->hessian_op.function);
         hff_args.insert(hff_args.end(), hff_caps.begin(), hff_caps.end());
         hff_out = ctx_.builder().CreateCall(func_ptr, hff_args);
     } else {
@@ -12445,27 +12130,19 @@ llvm::Value* AutodiffCodegen::directionalDerivative(const eshkol_operations_t* o
 // ═══════════════════════════════════════════════════════════════════════════
 
 std::vector<llvm::Value*> AutodiffCodegen::loadCapturesForAutodiff(
-    llvm::Function* func_ptr, const std::string& context_name) {
-    using namespace llvm;
+    llvm::Function* func_ptr, const std::string& context_name,
+    const eshkol_ast_t* func_ast) {
+    std::vector<llvm::Value*> capture_args;
 
-    std::vector<Value*> capture_args;
-
-    FunctionType* func_type = func_ptr->getFunctionType();
+    llvm::FunctionType* func_type = func_ptr->getFunctionType();
     if (func_type->getNumParams() <= 1) {
         return capture_args; // No captures
     }
 
     // Respect user arity: for `(define (f x y z) ...)` all three params
-    // are user arguments, not captures. Previously this assumed every
-    // param after the first was a capture and spammed
-    // `capture 'y' not found, using null pointer` for any multi-arg
-    // user function passed to hessian / jacobian. Look up the arity
-    // table (strip REPL __rv<n> suffix as elsewhere) and return empty
-    // when all params are user-provided. Callers that genuinely need
-    // hessian/jacobian of a multi-arg-no-captures function still need
-    // to unpack the input tensor into scalar args — that's the caller
-    // side, not this helper — but we shouldn't manufacture spurious
-    // null captures in the meantime.
+    // are user arguments, not captures. Look up the arity table (strip the
+    // REPL __rv<n> suffix as elsewhere) and return empty when every parameter
+    // is user-provided, instead of manufacturing null captures.
     std::string lambda_name = func_ptr->getName().str();
     if (function_arity_table_) {
         std::string arity_key = lambda_name;
@@ -12484,185 +12161,114 @@ std::vector<llvm::Value*> AutodiffCodegen::loadCapturesForAutodiff(
         }
     }
 
-    size_t num_captures = func_type->getNumParams() - 1;
-
-    // REPL MODE: Get capture names from registry instead of parameter names
-    std::vector<std::string> capture_names;
-    if (repl_mode_enabled_ && *repl_mode_enabled_) {
-        std::lock_guard<std::mutex> lock(*repl_mutex_);
-        auto captures_it = repl_lambda_captures_->find(lambda_name);
-        if (captures_it != repl_lambda_captures_->end()) {
-            capture_names = captures_it->second;
-        }
-    }
-
-    for (size_t i = 0; i < num_captures; i++) {
-        std::string var_name;
-        if (i < capture_names.size()) {
-            var_name = capture_names[i];
-        } else {
-            auto arg_it = func_ptr->arg_begin();
-            std::advance(arg_it, i + 1);
-            if (arg_it != func_ptr->arg_end()) {
-                var_name = arg_it->getName().str();
-                if (var_name.find("captured_") == 0) {
-                    var_name = var_name.substr(9);
-                }
-            }
-        }
-
-        std::string capture_key = lambda_name + "_capture_" + var_name;
-
-        // First try capture-specific key in symbol tables
-        auto it = global_symbol_table_->find(capture_key);
-        bool found_in_global = (it != global_symbol_table_->end());
-        if (!found_in_global) {
-            it = symbol_table_->find(capture_key);
-        }
-
-        bool found = found_in_global ? (it != global_symbol_table_->end()) : (it != symbol_table_->end());
-
-        // FALLBACK: Try raw variable name, LOCAL first (ESH-0070 / task #114).
-        // Must agree with codegenLambda's own local-then-global free-variable
-        // resolution; see the long note in codegenDerivativeMonolith.
-        if (!found) {
-            it = symbol_table_->find(var_name);
-            found = (it != symbol_table_->end());
-            if (!found) {
-                it = global_symbol_table_->find(var_name);
-                found = (it != global_symbol_table_->end());
-                found_in_global = found;
-            }
-            if (found) {
-                eshkol_debug("%s: found capture '%s' via raw variable name", context_name.c_str(), var_name.c_str());
-            }
-        }
-
-        // REPL MODE: Try creating external declaration for capture global
-        if (!found && repl_mode_enabled_ && *repl_mode_enabled_) {
-            std::lock_guard<std::mutex> lock(*repl_mutex_);
-            auto sym_it = repl_symbol_addresses_->find(capture_key);
-            if (sym_it != repl_symbol_addresses_->end()) {
-                GlobalVariable* capture_global = ctx_.module().getGlobalVariable(capture_key);
-                if (!capture_global) {
-                    capture_global = new GlobalVariable(
-                        ctx_.module(),
-                        ctx_.taggedValueType(),
-                        false,
-                        GlobalValue::ExternalLinkage,
-                        nullptr,
-                        capture_key
-                    );
-                }
-                Value* helper_global_ptr_int = ctx_.builder().CreatePtrToInt(capture_global, ctx_.int64Type());
-                Value* helper_packed_capture = tagged_.packInt64(helper_global_ptr_int, true);
-                Value* helper_capture_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "autodiff_capture_storage");
-                ctx_.builder().CreateStore(helper_packed_capture, helper_capture_storage);
-                capture_args.push_back(helper_capture_storage);
-                continue;
-            }
-        }
-
-        if (found && it->second) {
-            Value* storage = it->second;
-            // ESH-0072/0097: a lambda capturing a LOCAL function parameter
-            // resolves `storage` to that parameter's Argument (a tagged_value
-            // STRUCT, not a pointer) — ptrtoint on it is invalid IR and broke
-            // jacobian/hessian/divergence/curl/laplacian of such a lambda.
-            // A named-let carry pointer ("<var>_cap") forwards as-is; a
-            // value-typed capture funnels through a temp slot; only a genuine
-            // pointer storage is packed via ptrtoint. Mirrors
-            // resolveGradientCaptures.
-            if (auto* arg = llvm::dyn_cast<llvm::Argument>(storage)) {
-                if (arg->getType()->isPointerTy() &&
-                    (arg->getName() == (var_name + "_cap") ||
-                     arg->getName() == ("captured_" + var_name))) {
-                    // #296: when the free variable is itself a capture of the
-                    // ENCLOSING function (a transitive capture), `storage` is
-                    // that function's own `captured_<var>` slot. Forward it
-                    // as-is — re-wrapping it in the pointer-marker below hands
-                    // the callee the slot's ADDRESS as its value.
-                    capture_args.push_back(storage);
-                    continue;
-                }
-            }
-            if (!storage->getType()->isPointerTy()) {
-                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-                IRBuilder<> entry_builder(&current_func->getEntryBlock(),
-                                          current_func->getEntryBlock().begin());
-                AllocaInst* val_temp = entry_builder.CreateAlloca(
-                    ctx_.taggedValueType(), nullptr, var_name + "_autodiff_capture_val");
-                ctx_.builder().CreateStore(storage, val_temp);
-                capture_args.push_back(val_temp);
-                continue;
-            }
-            if (isTcoLoopAlloca(storage)) {
-                // ESH-0221: see isTcoLoopAlloca's doc comment. `storage` is a
-                // TCO loop-carried parameter's alloca — the callee expects a
-                // single-load VALUE capture, not the mutable-variable
-                // pointer-marker built below (jacobian/hessian/divergence/
-                // curl/laplacian all share this capture resolver).
-                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-                IRBuilder<> entry_builder(&current_func->getEntryBlock(),
-                                          current_func->getEntryBlock().begin());
-                AllocaInst* val_temp = entry_builder.CreateAlloca(
-                    ctx_.taggedValueType(), nullptr, var_name + "_autodiff_capture_tco_val");
-                Value* tco_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), storage);
-                ctx_.builder().CreateStore(tco_val, val_temp);
-                capture_args.push_back(val_temp);
-                continue;
-            }
-            Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-            IRBuilder<> entry_builder(&current_func->getEntryBlock(),
-                                      current_func->getEntryBlock().begin());
-            AllocaInst* temp_alloca = entry_builder.CreateAlloca(
-                ctx_.taggedValueType(), nullptr, var_name + "_autodiff_capture_storage");
-
-            Value* ptr_as_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
-            Value* packed_ptr = tagged_.packInt64(ptr_as_int, true);
-            ctx_.builder().CreateStore(packed_ptr, temp_alloca);
-
-            capture_args.push_back(temp_alloca);
-        } else {
-            capture_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
-            eshkol_warn("%s: capture '%s' not found, using null pointer", context_name.c_str(), var_name.c_str());
-        }
-    }
-
+    appendDifferentiandCaptures(func_ast, func_ptr, 1, capture_args, context_name);
     return capture_args;
 }
 
 /**
  * @brief Append closure-capture arguments to a gradient/AD call so the callee gets its free variables.
  *
- * When the target lambda's LLVM signature has more parameters than the caller
- * has supplied, the surplus are captured free variables. For each one this
- * resolves the capture name (from the REPL capture registry or the mangled
- * argument name), then looks up its storage using capture-key (global then
- * local) followed by raw-name (local-first so a named-let carry pointer wins
- * over a shadowed global), and pushes the storage pointer onto call_args (or a
- * null pointer with a warning if unresolved).
+ * The parameters of @p func_ptr beyond the arguments already in @p call_args
+ * are its capture parameters; appendDifferentiandCaptures() supplies them.
  *
  * @param func_ptr The callee lambda whose captures must be supplied.
  * @param call_args In/out argument list, extended in place with capture pointers.
  * @param context_label Label used in diagnostic messages.
+ * @param func_ast The differentiand expression the callee was resolved from.
  */
 void AutodiffCodegen::resolveGradientCaptures(
     llvm::Function* func_ptr,
     std::vector<llvm::Value*>& call_args,
-    const std::string& context_label) {
+    const std::string& context_label,
+    const eshkol_ast_t* func_ast) {
+    if (func_ptr->getFunctionType()->getNumParams() <= call_args.size()) return;
+    appendDifferentiandCaptures(func_ast, func_ptr, call_args.size(), call_args,
+                                "gradient (" + context_label + ")");
+}
+
+/**
+ * @brief Capture-pointer arguments read from a named differentiand's closure object.
+ *
+ * Evaluates @p func_ast (a reference to a closure) at the current insert point
+ * and returns pointers to the capture slots of the closure's environment, in
+ * the callee's capture-parameter order (closure_capture_scope.h). Returns an
+ * empty vector when the expression does not evaluate to a tagged closure
+ * value, e.g. a local define whose captures live in module-level cells.
+ */
+std::vector<llvm::Value*> AutodiffCodegen::differentiandEnvironmentCaptures(
+    const eshkol_ast_t* func_ast, llvm::Function* func_ptr,
+    size_t first_capture_param) {
     using namespace llvm;
+    if (!func_ast || !func_ptr || !codegen_ast_callback_) return {};
+    Value* v = codegen_ast_callback_(func_ast, callback_context_);
+    if (!v) return {};
+    if (v->getType()->isPointerTy() && !isa<Function>(v)) {
+        v = ctx_.builder().CreateLoad(ctx_.taggedValueType(), v, "differentiand_value");
+    }
+    if (v->getType() != ctx_.taggedValueType()) return {};
+    Value* closure_ptr = ctx_.builder().CreateIntToPtr(
+        tagged_.unpackInt64(v), ctx_.ptrType(), "differentiand_closure");
+    return emitClosureCaptureArguments(ctx_.builder(), ctx_.taggedValueType(),
+                                       closure_ptr, func_ptr, first_capture_param);
+}
 
-    FunctionType* func_type = func_ptr->getFunctionType();
-    size_t total_llvm_params = func_type->getNumParams();
-    size_t args_provided = call_args.size();
-
-    if (total_llvm_params <= args_provided) return;
-
-    size_t num_captures = total_llvm_params - args_provided;
+/**
+ * @brief Append the capture arguments of a statically resolved differentiand.
+ *
+ * Every AD operator that calls a differentiand's llvm::Function directly
+ * (derivative, derivative-n, taylor, gradient, jacobian, hessian, and through
+ * them divergence, curl, laplacian and the directional derivative) must pass
+ * one pointer per capture parameter. This is the single place that decides
+ * where each pointer comes from, in this order:
+ *
+ *   1. A module-level cell registered under `<lambda>_capture_<var>` (a local
+ *      define's captures).
+ *   2. For a NAMED differentiand (anything but an inline lambda), the capture
+ *      slot of the closure object the name evaluates to. The closure is the
+ *      only authority on what it captured: re-resolving the free variable's
+ *      NAME here finds whatever that name means at the AD call site, which
+ *      may be an argument of an enclosing function (invalid IR) or a binding
+ *      that shadows the captured one (a wrong value).
+ *   3. For an inline lambda, which was just created at this site, the free
+ *      variable's name resolves to the same binding the lambda captured:
+ *      local table first, then global (ESH-0070 / task #114), then the REPL
+ *      capture registry.
+ *
+ * A resolved value must belong to the function being emitted
+ * (valueUsableInFunction). One that belongs to an enclosing function is
+ * reached through the current function's own capture parameter when it has
+ * one; otherwise this reports the variable, the owning function and the
+ * source location, marks the module as failed, and returns false, instead of
+ * emitting IR that refers to another function.
+ *
+ * The chosen storage is then passed in the callee's single-load convention:
+ * a `<var>_cap` / `captured_<var>` pointer forwards as-is (ESH-0070,
+ * ESH-0117, #296); a value-typed binding is copied into an entry-block slot;
+ * a TCO loop alloca's current value is copied (ESH-0221); any other pointer
+ * storage is packed as a mutable-capture pointer marker.
+ *
+ * @param func_ast the differentiand expression @p func_ptr was resolved from.
+ * @param func_ptr the callee.
+ * @param first_capture_param index of the callee's first capture parameter.
+ * @param out argument vector the capture pointers are appended to.
+ * @param what operator name used in diagnostics.
+ * @return false if a capture could not be supplied from the current function.
+ */
+bool AutodiffCodegen::appendDifferentiandCaptures(
+    const eshkol_ast_t* func_ast, llvm::Function* func_ptr,
+    size_t first_capture_param, std::vector<llvm::Value*>& out,
+    const std::string& what) {
+    using namespace llvm;
+    if (!func_ptr) return true;
+    size_t total_params = func_ptr->getFunctionType()->getNumParams();
+    if (total_params <= first_capture_param) return true;
+    size_t num_captures = total_params - first_capture_param;
     std::string lambda_name = func_ptr->getName().str();
+    BasicBlock* insert_bb = ctx_.builder().GetInsertBlock();
+    Function* current_func = insert_bb ? insert_bb->getParent() : nullptr;
 
-    // REPL MODE: Get capture names from registry
+    // REPL MODE: capture names come from the registry (an external
+    // declaration may carry no parameter names).
     std::vector<std::string> capture_names;
     if (repl_mode_enabled_ && *repl_mode_enabled_) {
         std::lock_guard<std::mutex> lock(*repl_mutex_);
@@ -12672,131 +12278,140 @@ void AutodiffCodegen::resolveGradientCaptures(
         }
     }
 
-    for (size_t ci = 0; ci < num_captures; ci++) {
+    const bool named_differentiand =
+        func_ast && !(func_ast->type == ESHKOL_OP &&
+                      func_ast->operation.op == ESHKOL_LAMBDA_OP);
+    std::vector<Value*> environment_captures;
+    bool environment_evaluated = false;
+
+    auto find_in = [](std::unordered_map<std::string, Value*>* table,
+                      const std::string& key) -> Value* {
+        if (!table) return nullptr;
+        auto it = table->find(key);
+        return (it != table->end()) ? it->second : nullptr;
+    };
+    auto entry_slot = [&](const std::string& name) -> Value* {
+        if (!current_func) {
+            return ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, name);
+        }
+        IRBuilder<> entry_builder(&current_func->getEntryBlock(),
+                                  current_func->getEntryBlock().begin());
+        return entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, name);
+    };
+
+    bool ok = true;
+    for (size_t ci = 0; ci < num_captures; ++ci) {
+        size_t param_index = first_capture_param + ci;
         std::string var_name;
         if (ci < capture_names.size()) {
             var_name = capture_names[ci];
         } else {
-            auto arg_it = func_ptr->arg_begin();
-            std::advance(arg_it, args_provided + ci);
-            if (arg_it != func_ptr->arg_end()) {
-                var_name = arg_it->getName().str();
-                if (var_name.find("captured_") == 0) var_name = var_name.substr(9);
+            var_name = func_ptr->getArg(param_index)->getName().str();
+            if (var_name.rfind("captured_", 0) == 0) var_name = var_name.substr(9);
+        }
+        const std::string capture_key = lambda_name + "_capture_" + var_name;
+
+        // 1. Module-level capture cell of a local define.
+        Value* storage = find_in(global_symbol_table_, capture_key);
+        if (!storage) storage = find_in(symbol_table_, capture_key);
+        if (storage && !valueUsableInFunction(storage, current_func)) storage = nullptr;
+
+        // 2. A named differentiand's captures are its closure's.
+        if (!storage && named_differentiand) {
+            if (!environment_evaluated) {
+                environment_evaluated = true;
+                environment_captures = differentiandEnvironmentCaptures(
+                    func_ast, func_ptr, first_capture_param);
+            }
+            if (ci < environment_captures.size()) {
+                out.push_back(environment_captures[ci]);
+                continue;
             }
         }
 
-        std::string capture_key = lambda_name + "_capture_" + var_name;
-
-        // Search order: capture key (global → local), then raw name LOCAL → global.
-        // ESH-0070: the raw-name LOOKUP MUST prefer the LOCAL symbol table so it
-        // resolves the SAME storage the lambda itself captured. Inside a named-let
-        // loop the free var `a` is bound locally to the carry pointer `%a_cap`
-        // (which lexically shadows the top-level global `@a`); the lambda captured
-        // that local pointer. The old global-first order found `@a` instead, so
-        // the gradient handed the lambda a capture in the wrong (packed) ABI.
-        Value* storage = nullptr;
-        auto it = global_symbol_table_->find(capture_key);
-        if (it != global_symbol_table_->end() && it->second) {
-            storage = it->second;
-        } else {
-            it = symbol_table_->find(capture_key);
-            if (it != symbol_table_->end() && it->second) {
-                storage = it->second;
-            } else {
-                it = symbol_table_->find(var_name);
-                if (it != symbol_table_->end() && it->second) {
-                    storage = it->second;
-                } else {
-                    it = global_symbol_table_->find(var_name);
-                    if (it != global_symbol_table_->end() && it->second) {
-                        storage = it->second;
-                    }
-                }
-            }
+        // 3. The free variable's name, local first (ESH-0070 / task #114).
+        if (!storage) {
+            storage = find_in(symbol_table_, var_name);
+            if (!storage) storage = find_in(global_symbol_table_, var_name);
         }
 
-        // REPL MODE: Try creating external declaration for capture global
+        // REPL MODE: an external declaration for a capture global.
         if (!storage && repl_mode_enabled_ && *repl_mode_enabled_) {
             std::lock_guard<std::mutex> lock(*repl_mutex_);
-            auto sym_it = repl_symbol_addresses_->find(capture_key);
-            if (sym_it != repl_symbol_addresses_->end()) {
+            if (repl_symbol_addresses_->find(capture_key) != repl_symbol_addresses_->end()) {
                 GlobalVariable* capture_global = ctx_.module().getGlobalVariable(capture_key);
                 if (!capture_global) {
                     capture_global = new GlobalVariable(
                         ctx_.module(), ctx_.taggedValueType(), false,
                         GlobalValue::ExternalLinkage, nullptr, capture_key);
                 }
-                Value* global_ptr_int = ctx_.builder().CreatePtrToInt(capture_global, ctx_.int64Type());
-                Value* packed = tagged_.packInt64(global_ptr_int, true);
-                Value* temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap");
-                ctx_.builder().CreateStore(packed, temp);
-                call_args.push_back(temp);
+                Value* ptr_int = ctx_.builder().CreatePtrToInt(capture_global, ctx_.int64Type());
+                Value* slot = entry_slot(var_name + "_ad_capture_storage");
+                ctx_.builder().CreateStore(tagged_.packInt64(ptr_int, true), slot);
+                out.push_back(slot);
                 continue;
             }
         }
 
-        if (storage) {
-            // ESH-0070: named-let loop carries (#224) bind a free variable to a
-            // pointer Argument named "<var>_cap" (see llvm_codegen.cpp
-            // codegenNamedLet). A lambda compiled inside that loop captures the
-            // variable through that direct pointer, so its `captured_<var>` param
-            // is loaded DIRECTLY (single indirection). Passing the usual
-            // {INT64, ptrtoint(storage)} double-indirection slot here made the
-            // lambda read the *address* as the value → garbage gradients that
-            // compounded each loop iteration (the Noesis named-let blow-up).
-            // When storage IS that carry pointer, forward it as-is.
-            if (auto* arg = llvm::dyn_cast<llvm::Argument>(storage)) {
-                if (arg->getType()->isPointerTy() &&
-                    (arg->getName() == (var_name + "_cap") ||
-                     arg->getName() == ("captured_" + var_name))) {
-                    // #296: a TRANSITIVE capture — the free variable is itself
-                    // a capture of the enclosing function, so `storage` is that
-                    // function's own pointer-typed `captured_<var>` slot,
-                    // already in the callee's expected single-load convention.
-                    // Forward it as-is. The default pointer-marker packing
-                    // below would hand the differentiated lambda the slot's
-                    // ADDRESS as its value: a custom-VJP callee (vqe-energy)
-                    // then unpacked that address as its Hamiltonian handle,
-                    // its AD-prepare failed, and the gradient silently zeroed
-                    // (issue #296).
-                    call_args.push_back(storage);
-                    continue;
-                }
-            }
-            if (!storage->getType()->isPointerTy()) {
-                // Value-typed capture (e.g. a function passed as a tagged_value
-                // parameter and captured by the gradient's lambda, as in
-                // (lambda (y) (gradient f y))). PtrToInt on a struct is invalid;
-                // funnel the value through a temp slot so the lambda's single
-                // `load captured_<var>` reads it directly. Mirrors the
-                // derivative() capture handling (ESH-0070).
-                Value* val_temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap_val");
-                ctx_.builder().CreateStore(storage, val_temp);
-                call_args.push_back(val_temp);
-                continue;
-            }
-            if (isTcoLoopAlloca(storage)) {
-                // ESH-0221: see isTcoLoopAlloca's doc comment. `storage` is a
-                // TCO loop-carried parameter's alloca — the callee expects a
-                // single-load VALUE capture, not the mutable-variable
-                // pointer-marker built below.
-                Value* tco_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), storage);
-                Value* val_temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap_tco_val");
-                ctx_.builder().CreateStore(tco_val, val_temp);
-                call_args.push_back(val_temp);
-                continue;
-            }
-            Value* ptr_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
-            Value* packed = tagged_.packInt64(ptr_int, true);
-            Value* temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap");
-            ctx_.builder().CreateStore(packed, temp);
-            call_args.push_back(temp);
-        } else {
-            call_args.push_back(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
-            eshkol_warn("Gradient (%s): capture '%s' not found, using null pointer",
-                        context_label.c_str(), var_name.c_str());
+        if (!storage) {
+            out.push_back(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
+            eshkol_warn("%s: capture '%s' not found, using null pointer",
+                        what.c_str(), var_name.c_str());
+            continue;
         }
+
+        // Scope rule: the value must belong to the function being emitted.
+        if (!valueUsableInFunction(storage, current_func)) {
+            Value* own = currentFunctionCapturePointer(current_func, var_name);
+            if (!own) {
+                eshkol_error("%s: captured variable '%s' of '%s' resolved to a value "
+                             "of function '%s' while emitting '%s'%s; it is not "
+                             "reachable from the function being emitted",
+                             what.c_str(), var_name.c_str(), lambda_name.c_str(),
+                             valueOwnerName(storage).c_str(),
+                             current_func ? current_func->getName().str().c_str() : "<none>",
+                             captureDiagnosticLocation(func_ast).c_str());
+                ctx_.markFatalCodegenError();
+                out.push_back(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
+                ok = false;
+                continue;
+            }
+            storage = own;
+        }
+
+        // A named-let forward ("<var>_cap") or a transitive closure capture
+        // ("captured_<var>") already points at the slot in the callee's
+        // single-load convention: forward it (ESH-0070, ESH-0117, #296).
+        if (auto* arg = dyn_cast<Argument>(storage)) {
+            if (arg->getType()->isPointerTy() &&
+                (arg->getName() == (var_name + "_cap") ||
+                 arg->getName() == ("captured_" + var_name))) {
+                out.push_back(storage);
+                continue;
+            }
+        }
+        if (!storage->getType()->isPointerTy()) {
+            // A value-typed binding (e.g. a tagged_value parameter).
+            Value* slot = entry_slot(var_name + "_ad_capture_value");
+            ctx_.builder().CreateStore(storage, slot);
+            out.push_back(slot);
+            continue;
+        }
+        if (isTcoLoopAlloca(storage)) {
+            // ESH-0221: a TCO loop-carried parameter is captured by value.
+            Value* current = ctx_.builder().CreateLoad(ctx_.taggedValueType(), storage);
+            Value* slot = entry_slot(var_name + "_ad_capture_tco_value");
+            ctx_.builder().CreateStore(current, slot);
+            out.push_back(slot);
+            continue;
+        }
+        // Mutable storage: pass a pointer marker {INT64, ptrtoint(storage)}.
+        Value* ptr_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
+        Value* slot = entry_slot(var_name + "_ad_capture_storage");
+        ctx_.builder().CreateStore(tagged_.packInt64(ptr_int, true), slot);
+        out.push_back(slot);
     }
+    return ok;
 }
 
 /**
