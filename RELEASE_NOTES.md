@@ -1,7 +1,7 @@
 # Eshkol v1.3.5-evolve — Release Notes
 
-**Candidate date:** September 11, 2026.
-**Status:** release candidate; final verification and publication are pending.
+**Planned release date:** Monday, September 14, 2026, after 09:00 America/Montreal.
+**Status:** refreshed release candidate; final verification and publication are pending. Callee-identity, type-precision, and ICC-invariant hardening remain open. The September 11 measurements below were taken on the previous candidate and do not establish readiness for this refresh.
 
 Feed the compiler a source file sixteen thousand parentheses deep, on a thread
 with an eight-megabyte stack, and it compiles it. That is not a metaphor for
@@ -542,11 +542,12 @@ known limitations are in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 
 ## Final verification
 
-- Final source commit: `970e8758` on the integrated candidate, carried to master by the candidate's merge; this cut adds release-facing files only, so the verified sources are the shipped sources.
-- Measured on a Release build of the final source commit with this cut applied: CTest 541 of 541 registered tests pass; VM parity 338 of 338 corpus programs agree across native JIT, native AOT and the bytecode VM; the engine-parity differential covers 321 of 1,139 constructs (28.18%) and 155 of 473 high-risk constructs (32.77%), over 287 corpus programs with five dispositioned divergences, none new and none regressed.
-- Language surface: 1,052 builtins and 1,115 constructs, every construct backed by execution evidence.
-- Release-package checks: the site names all 15 platform packages and SHA256SUMS.txt, and the publication loader is present.
-- Hosted CI and ICC `v1.3.5-evolve` readiness: the release workflow runs the platform matrix and regenerates the full evidence battery on the tagged commit, and publishes only on a ready verdict; the traces are attached to the publishing run as the `release-readiness-evidence` artifact.
+Final verification is pending on the refreshed candidate. The September 11
+results recorded for the previous cut were measured before the merge from
+`origin/master` and are historical evidence for that earlier source state only.
+The refreshed candidate has not yet rerun the platform matrix, CTest, VM and
+engine parity, language-coverage evidence, package checks, or ICC readiness.
+Do not infer a readiness score or publication approval from the earlier run.
 
 ---
 

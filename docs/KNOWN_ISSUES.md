@@ -1,6 +1,6 @@
 # Known Issues — Eshkol v1.3.5-evolve
 
-**Status**: Production release
+**Status**: Refreshed release candidate; final verification pending (2026-09-14)
 
 ---
 
@@ -688,8 +688,9 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   `op:DERIVATIVE` moved to `vm-supported` this release (#337), and
   `op:IMPORT` / `op:PROVIDE` / `op:REQUIRE` followed with the same-unit
   `define-library` fix (#402) — with no new waivers. The release-cut
-  differential gate (`scripts/run_vm_parity.sh`) is **338/338**, remeasured on
-  the v1.3.5-evolve release cut on 2026-09-11, including the
+  differential gate (`scripts/run_vm_parity.sh`) was **338/338** on the
+  previous v1.3.5-evolve candidate (remeasured 2026-09-11, before the
+  September 14 refresh), including the
   gap-canonicalization and arity-fatal checks; it supersedes the 194/194 and
   188/188 figures and the "140/140" before them.
   The corresponding surface baselines were **323** at the release cut and

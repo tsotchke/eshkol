@@ -8217,7 +8217,7 @@ entries:
       therefore use only the `(apply f arg-list)` form throughout.
   - id: DD-14
     bucket: DOC-DEBT
-    status: open
+    status: closed
     title: "CMakeLists.txt:1352's pjrt_client.cpp comment cites a file that lives only on unmerged feat/xla-* branches"
     evidence: >-
       CMakeLists.txt:1352 (inside the XLA-enabled include_directories block; drifted from 1304 as later content
@@ -8244,7 +8244,17 @@ entries:
       the moment the PJRT client lane merges; deleting it now would strip the rationale for a real build-config
       decision that already needs to be correct for the pending merge.
     resolution: >-
-      Not yet resolved. Filed as an open DOC-DEBT item rather than corrected in place or allowlisted, because
+      Resolved on fix/v135-parity-floor-exact by making the comments accurate for the current tree instead of
+      waiting for the PJRT client lane to merge. The claim had drifted again, to CMakeLists.txt:1379 (claim_id
+      eb66ac1163da6d62), so the recorded residual id 94fa917d39f6856d had gone stale and the residual gate
+      reported the claim as unexplained. The XLA include-path comment, the STABLEHLO_INCLUDE_DIRS note and the
+      PJRT smoke-test comment no longer name lib/backend/xla/pjrt_client.cpp or
+      inc/eshkol/backend/xla/pjrt_client.h as files in this tree. They state the rule in terms of what exists:
+      the deps/pjrt include path is guarded by ESHKOL_XLA_ENABLED, the same condition under which the LIB_SRC
+      glob compiles lib/backend/xla/ into eshkol-static and ESHKOL_XLA_RUNTIME_SRC selects
+      lib/backend/xla/xla_runtime.cpp. The rationale for the include path is kept. An icc doc-typed-claims
+      re-run on that branch reports no wrong claim in CMakeLists.txt. The original disposition, now superseded,
+      follows. Filed as an open DOC-DEBT item rather than corrected in place or allowlisted, because
       neither disposition fits: it is not a detector misattribution (the citation is exactly what the comment
       means), and it is not a stale historical fact (it describes forward-looking, real, in-flight work, not
       a past state) -- it is a genuine doc/tree mismatch that will self-resolve when one of the feat/xla-*
@@ -8252,6 +8262,8 @@ entries:
       the comment rewritten. Tracked via `residual_claim_ids` below so the doc-typed-claims-residual gate
       treats it as an accounted-for wrong claim until then.
     residual_claim_ids: [94fa917d39f6856d]
+    closed_at: "fix/v135-parity-floor-exact"
+    closed_by: "branch fix/v135-parity-floor-exact"
     caught_by: [doc-typed-claims-residual-v135]
     opened_at: "51defcf7 (integration/astra-v135)"
     notes: >-
@@ -12769,3 +12781,346 @@ entries:
       second claimant. `exp` was a latent hole for as long as the libm block was
       hand-maintained and one entry was missing from it; the fix does not add the
       missing entry alone, it removes the reliance on the name.
+  - id: LE-25
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: closed
+    closed_at: "c0e09fb7"
+    closed_by: "branch fix/typecheck-named-let-seed-widening"
+    family: type-system/named-let
+    title: "type checker: a named-let loop parameter was frozen to its seed's synthesized type, so a correct accumulator warned on its recursive call (five warnings compiling the standard library, a sixth in core.ad.sparse_guw)"
+    repro: >-
+      `ESHKOL_PATH=$PWD/lib ./build/eshkol-run --shared-lib -c -o out lib/stdlib.esk`,
+      or the minimal shape
+      `(define (f full k tdom) (let tloop ((m (+ k 1)) (acc (cons 0.0 0.0)))
+      (if (<= m (* 2 k)) (tloop (+ m 1) (interval-add acc ...)) acc)))`.
+      The five standard-library sites are lib/core/ad/rigorous_interval.esk
+      (ia-ipow), lib/core/ad/rigorous_taylor_models.esk (ia-horner-local and the
+      remainder tail) and lib/core/ad/taylor_models.esk (tm-poly-range and the
+      remainder tail): each seeds an accumulator with a literal pair and feeds it
+      back the result of an interval operation.
+    observed_before: >-
+      Compiling the standard library printed
+      "[WARN] Type warning: argument 2 of 'loop': expected Pair<Value, Value>, got Pair (line 355:37)",
+      "argument 2 of 'loop': expected Pair<Number, Number>, got Pair<Value, Value> (line 131:25)",
+      "argument 2 of 'tloop': expected Pair<Number, Number>, got Pair<Value, Value> (line 203:33)",
+      "argument 2 of 'loop': expected Pair<Value, Value>, got Pair (line 184:18)",
+      "argument 2 of 'tloop': expected Pair<Float64, Float64>, got Pair (line 251:28)"
+      and "HoTT: 5 type warnings detected". Every program was correct: an interval
+      is a pair of numbers throughout. The Windows test harness surfaces
+      standard-library compile warnings, so
+      tests/typesystem/no_false_positive_test.esk (EXPECT-NO-STDERR: [WARN])
+      failed the windows-arm64-lite lane.
+    correct: >-
+      No warning. A loop parameter holds the seed on the first iteration and the
+      recursive call's argument on every later one, so its type is their join.
+    root_cause: >-
+      synthesizeLetTask() in lib/types/type_checker.cpp pre-bound the loop name as
+      makeFunctionType(binding_types, Value), where binding_types were synthesized
+      from the INITIALISERS, and re-bound it with the same types after the body.
+      Each parameter was therefore frozen to its seed's precise type
+      (Pair<Float64, Float64> from (cons 0.0 0.0)), and the call-site check,
+      which accepts an argument only when isSubtype(actual, expected), rejected the
+      wider value the loop actually carries. Tracked pair types are nominal and
+      only Pair<A,B> <: Pair holds, so the wider Pair never fit. The numeric-tower
+      exception at the call site had patched exactly this defect for numbers only.
+    fix: >-
+      A named let's inferred parameters are typed by the least common supertype of
+      the seed and every argument supplied at a call to that loop, computed to a
+      fixpoint over the body. Calls are attributed to the loop by binding identity
+      (scope index and bound type), so a shadowing inner binding of the same name
+      is not counted. Each pass is speculative: its diagnostics, recorded errors,
+      linearity count and linear-usage counters are rolled back if it widened a
+      parameter, and the pass that widens nothing is the real check. Widening
+      stops at informative joins: a join that reaches the dynamic top type Value
+      (Pair with String, Int64 with String) is not adopted, so an incompatible
+      recursive argument is still reported. Annotated and linear bindings are
+      contracts and are never widened. Termination: a parameter moves strictly up
+      its finite supertype chain.
+    observed_after: >-
+      Standard-library compile: zero [WARN] lines. run_typesystem_tests.sh:
+      62/62 (59/61 before; the two failures before were the new fixtures,
+      expected). Type diagnostics and exit status of every tests/typesystem and
+      tests/types fixture are byte-identical before and after except the two
+      fixtures written for this change. Negative checks still report:
+      pair accumulator fed a string "argument 2 of 'loop': expected
+      Pair<Float64, Float64>, got String"; numeric accumulator fed a string
+      "argument 2 of 'loop': expected Int64, got String"; non-loop call
+      "argument 1 of 'area': expected Number, got String"; a loop widened at one
+      call site and fed a string at another now reports "expected Pair, got
+      String" (before it reported that line against Pair<Float64, Float64> plus a
+      false positive on the legitimate site).
+    evidence: >-
+      tests/typesystem/named_let_accumulator_widening_test.esk (the five shapes;
+      five warnings before, none after),
+      named_let_pair_accumulator_string_reject_test.esk,
+      named_let_numeric_accumulator_string_reject_test.esk,
+      named_let_widened_then_string_reject_test.esk,
+      plain_call_incompatible_argument_reject_test.esk and
+      declared_numeric_param_join_test.esk, all in the existing
+      scripts/run_typesystem_tests.sh sweep. Corpus sweep: all 2134 .esk files under tests/ and examples/ compiled compile-only before and after, type diagnostics and exit status compared per file; the only differences are the new fixtures, a sixth false positive of this defect removed (lib/core/ad/sparse_guw.esk:371, "argument 2 of 'nloop': expected Pair<List, Value>, got Pair<List, Pair<List, Pair<List, Value>>>", reached from tests/ad/sparse_tensors_test.esk), and two tests/ml exit codes explained by the before binary predating the LE-24 codegen fix. No file that reported a genuine type warning or error before stopped reporting it. ctest with every target built: 540/541; the one failure, build_fingerprint_gate, flags stale records left in the gitignored local trace scripts/icc_traces/build_fingerprint.jsonl by an earlier run_vm_parity against a binary since relinked with identical sha256, the fresh records match, and the same gate fails the same way on a build of the unmodified base. run_vm_parity: 338/338 on the final binaries.
+    caught_by: [windows-arm64-lite, direct-measurement]
+    missed_by: [run_typesystem_tests, ctest, icc-smoke]
+    notes: >-
+      Filed LOUD-ERROR by the SW-63 precedent: a type-checker verdict printed on
+      stderr, never a wrong value. Two findings recorded, not fixed here.
+      (1) Gradual consistency: the call-site check uses strict subtyping and only
+      skips when either side is exactly Value; it is not componentwise. Under
+      consistency all five would also have been accepted (Pair<Value, Value> is
+      consistent with Pair<Number, Number>; bare Pair with any Pair<A,B>), but that
+      is not the root: the argument really is wider than the seed. The lattice
+      gap underneath is that bare Pair and Pair<Value, Value> are distinct nominal
+      ids with only Pair<Value, Value> <: Pair, and tracked pairs are not
+      covariant. (2) cond, case, match, when, unless, do and guard return Value
+      without synthesizing their bodies, so an application argument inside them
+      is never checked: a named-let fed a string from a cond clause is silent
+      before and after this change.
+      The numeric-tower exception is subsumed for inferred named-let
+      accumulators (removing it changed no fixture, no suite result and no
+      stdlib warning) but still carries declared numeric parameters of ordinary
+      functions, so it stays, with its comment corrected and
+      declared_numeric_param_join_test.esk pinning it.
+  - id: LE-26
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: closed
+    closed_at: "df422c5a"
+    closed_by: "branch fix/v135-typecheck-control-bodies"
+    family: type-system/control-bodies
+    title: "type checker: the subexpressions of cond, case, match, when, unless, do, guard, and/or, set!, quasiquote, dynamic-wind, call/cc, values, call-with-values, let-values, raise, with-region and every non-final begin expression were never synthesized, so a wrong argument there was silent although the same call warned at top level"
+    repro: >-
+      `(define (area (w : number) (h : number)) (* w h))` then
+      `(define (f flag) (cond (flag (area "wide" 3)) (else 0)))`, compiled with
+      `eshkol-run --emit-object`. At top level `(area "wide" 3)` reports
+      "argument 1 of 'area': expected Number, got String"; inside the cond clause
+      it reported nothing. The same holds for a clause test, a case key, a match
+      scrutinee or pattern predicate, a when/unless test or body, a do init, test,
+      body, step or result, a guard body or handler, an and/or operand, a set!
+      value, a quasiquote escape, the before/thunk/after of dynamic-wind (and so a
+      parameterize body), a call/cc procedure, a values operand, a
+      call-with-values producer or consumer, a let-values producer or body, a
+      raise operand, a with-region body, a computed callee, a tensor element, a
+      calculus operator's point, and every expression but the last of a begin or
+      a multi-expression body.
+    observed_before: >-
+      43 probe programs, one call per position, compiled against the unmodified
+      base (666ccbb6): 30 printed no warning. The warning appeared only for top
+      level and for positions inside if, let, let*, lambda, case-lambda, delay,
+      the, with-exception-handler and a vector call. Named-let widening (LE-25)
+      never saw a recursive call sitting in a cond clause, so it neither widened
+      nor checked it.
+    correct: >-
+      Every evaluated subexpression is checked in the scope it runs in, and a
+      wrong argument reports the same message wherever it sits.
+    root_cause: >-
+      TypeChecker::synthesizeOperationTask() in lib/types/type_checker.cpp
+      returned a fixed builtin type for these forms without synthesizing any
+      operand (Value for the control, continuation, multiple-values, quoting and
+      region forms; Boolean for and/or; Null for set!), and the sequence rule
+      synthesized only the last expression. A computed callee other than an
+      inline lambda was never synthesized either.
+    fix: >-
+      Every form whose subexpressions are evaluated synthesizes them with the
+      typing rule of the form. Clause tests are expressions; each branch body runs
+      in its own scope, so backward inference inside one branch cannot narrow an
+      enclosing function's parameter, and cond/when/and bodies see their test's
+      predicate refinements; linear-usage counters take the maximum over exclusive
+      branches. A multi-branch form's result is the join of its branch types plus
+      the value it yields when no branch runs (Boolean for cond, case, when and
+      unless; nothing for match, which raises, and guard, which re-raises). A
+      failing branch contributes Value instead of failing the form. Match pattern
+      variables are the scrutinee's type at top level, the proven type under a
+      narrowing predicate, and Value inside cons/list/or patterns; a guard
+      condition variable is Value; let-values variables are Value. A do loop
+      variable is the fixpoint join of its init and step, checked speculatively
+      with the LE-25 rollback; unlike a named let it adopts a Value join, because
+      a step is not itself an argument check. and yields the join of Boolean with
+      its last operand, or the join of all operands. dynamic-wind and
+      call-with-values yield their thunk's or consumer's codomain; with-region and
+      borrow yield their body's type.
+      Descending exposed four checker imprecisions, fixed at the rule:
+      (1) a calculus operator given an evaluation point was typed Function, so
+      (approx= (derivative f 2.0) 12.0 1e-6) warned "expected Number, got ->";
+      it is now Value with a point and Function without;
+      (2) cdr of an argument not known to be a pair or list was typed List, so a
+      parser's (value . next-index) tail warned "expected Number, got List" in
+      lib/core/memory_store.esk:200 and :207; it is now Value;
+      (3) ascriptionIsBelievable() judged a function signature and the procedure
+      or Closure type disjoint, so ((the procedure f) 7) warned; callable types
+      are now mutually believable;
+      (4) LE-25's named-let widening refused every join that reaches Value, so a
+      `#f` "nothing yet" accumulator fed a number, (let loop-j ((best #f)) ...
+      (loop-j (+ j 1) a i j)), warned "expected Boolean, got Number" in 19
+      examples/mathematics programs and one tests/math_acceptance program; a
+      Boolean slot now adopts the Value join, while Int64 or Pair fed a String is
+      still reported.
+    observed_after: >-
+      All 43 probes print exactly the top-level message. Standard-library compile
+      (`eshkol-run --shared-lib -c lib/stdlib.esk`): 0 [WARN] before, 0 after.
+      run_typesystem_tests.sh: 62/62 on the base tree; the base compiler on the
+      new tree fails 27/114 (the 26 new reject fixtures, and
+      control_branch_join_ok_test.esk, whose `(label (or "a" "b"))` the base typed
+      Boolean); the fixed compiler passes 114/114.
+    evidence: >-
+      tests/typesystem/control_*_reject_test.esk and control_*_ok_test.esk, one
+      pair per form (cond, case, match, when, unless, do, guard, and, or, begin,
+      set!, quasiquote, dynamic-wind, parameterize, call/cc, values,
+      call-with-values, let-values, raise, with-region, computed callee,
+      derivative point), plus control_match_bound_variable, control_do_bound_variable,
+      control_guard_bound_variable and control_branch_join reject/ok pairs, all in
+      the existing run_typesystem_tests.sh sweep. Corpus sweep on base 666ccbb6: all 2187 .esk files under tests/ and
+      examples/ compiled compile-only with a base and a fixed compiler built from
+      that base; type diagnostics or exit status differ in 56 files. 27 are the
+      fixtures above. 4 are newly reported genuine diagnostics:
+      tests/error_handling/bounds_check_test.esk:18 and
+      tests/vm_parity/corpus/34_bounds_contract.esk:43 (a literal -1 vector-ref
+      index inside guard, deliberate);
+      tests/vm_parity/corpus/78_vector_scalar_arith_dispatch.esk:54 (a vector
+      passed to a numeric parameter, which that file documents as a type error);
+      tests/vm/json_surface_regression.esk:46-48 (json-get-in called with three
+      arguments against its two-parameter definition in lib/core/json.esk:653;
+      the frontend already rejects the same call at lines 12, 18 and 24, so the
+      file exits 1 before and after). 23 lose a pre-existing false positive: the
+      calculus-operator result in tests/ad (11 files),
+      tests/v1_3_edge_cases/ad_input2_test.esk,
+      tests/vm_parity/corpus/hessian_capture_scalar.esk,
+      tests/collections/tensor_apply_callable_test.esk,
+      tests/features/extreme_stress_test_v2.esk and
+      tests/types/comprehensive_type_test.esk; the Boolean-slot accumulator in
+      examples/mathematics_homotopy_colimits_grothendieck.esk:281 and three
+      tests/edge_matrix/generated let-family files; and three
+      qubit_linear_*_branches_ok fixtures whose cond/case/match of Qubit branches
+      now join to Qubit. 1 changes wording only:
+      tests/autodiff/gradient_callable_arity_test.esk:67 still warns that the
+      body does not match the Vector return annotation, now naming the body type
+      Value instead of ->. 1 is a harness artifact:
+      tests/control_flow/continuation_edge_test.esk exited 142 in the after run
+      because its compile hit the 180 s alarm on a cold AOT module cache (the
+      before run hit a warm one); compiled cold with fresh cache directories it
+      takes 191 s on the base and 162 s fixed, exit 0 and no type diagnostic on
+      both. No new false positive remains.
+      run_vm_parity: 338 passed, 0 failed. ctest with every target built:
+      542/543; the failure is build_fingerprint_gate, which flagged parity
+      fingerprints recorded against the pre-rebase binary and a binary older
+      than the rebased (content-identical) sources.
+      After rebuilding and re-running run_vm_parity (338 passed, 0 failed) the
+      freshness error is gone and the fresh records match the current binaries;
+      the gate still fails on the four older records, from earlier parity runs in
+      this worktree, kept in the gitignored local trace. The base worktree, with
+      a single run history, passes the same gate.
+      run_compiler_assurance.py and --verify: status PASS, exit 0.
+      gen_api_docs.py --check: up to date.
+    caught_by: [direct-measurement]
+    missed_by: [run_typesystem_tests, ctest, icc-smoke]
+    notes: >-
+      Filed LOUD-ERROR by the SW-63 and LE-25 precedent: a type-checker verdict on
+      stderr, never a wrong value. Found while closing LE-25, which recorded it as
+      an open finding. Findings recorded, not fixed here:
+      (1) synthesizeIfTask() prefers the concrete branch when the other is Value
+      and returns the then-branch type when the join fails, which claims more than
+      the branches show; the new multi-branch rules use the plain join, so `if`
+      and an equivalent cond can differ in result type.
+      (2) A function signature type is not a node in the supertype graph, so
+      isSubtype(signature, Function) is false and such a type prints as "unknown";
+      only the ascription rule is corrected here.
+      (3) A define's return-annotation check reports a body of type Value against
+      the annotation (gradient_callable_arity_test.esk:67), where gradual typing
+      would accept it.
+  - id: LE-27
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: closed
+    closed_at: "00be2055"
+    closed_by: "branch fix/v135-ad-closure-capture"
+    family: ad-named-differentiand-capture
+    title: "native: differentiating a let-bound capturing closure inside a nested lambda failed LLVM module verification (\"Referring to an argument in another function!\"), and under a shadowing binding returned a wrong derivative"
+    repro: >-
+      `(define (outer h) (let ((H (lambda (Z) (* Z Z h)))) ((lambda (Z)
+      (derivative-n H Z 1)) 1.0))) (display (outer 0.1))` under
+      `eshkol-run -r` or compiled with `eshkol-run -o`. The same failure occurs
+      when the nested lambda is passed to map or for-each, under let or let*,
+      with derivative, derivative-n, taylor, gradient, jacobian, hessian,
+      divergence, curl, laplacian and directional-derivative, and when the
+      closure captures a set!-mutated variable ("Referring to an instruction in
+      another function!"). The closure computed correctly when it was top-level,
+      a function parameter, capture-free, or wrapped as `(lambda (x) (H x))`.
+      Two related shapes were silently wrong: `((lambda (h) (derivative H h)) 1.0)`
+      printed 2 and `(let ((h 5.0)) (derivative H 1.0))` printed a garbage
+      double such as 12315480352, both where 0.2 is correct. Found alongside:
+      `((gradient H) 1.0)` crashed with SIGSEGV; `(map H l)` inside a nested
+      lambda failed verification the same way; `reduce` with any capturing
+      procedure failed verification ("Incorrect number of arguments passed to
+      called function!").
+    observed_before: >-
+      `ERROR: LLVM module verification failed: Referring to an argument in
+      another function!` naming `store %eshkol_tagged_value %h, ptr
+      %deriv_capture_value`, then `Failed to generate LLVM IR`, on the JIT and
+      AOT routes. Shadowing shapes: 2 and 12315480352 where 0.2 is correct.
+      Curried gradient: fatal signal SIGSEGV.
+    correct: >-
+      0.2 for every shape above; the values pinned in the guarding tests.
+    root_cause: >-
+      Every AD operator that calls a statically resolved differentiand's
+      llvm::Function directly has to pass the function's capture arguments. Four
+      copies of that code in lib/backend/autodiff_codegen.cpp (the derivative
+      monolith shared by derivative/derivative-n/taylor, the gradient reverse
+      path, resolveGradientCaptures and loadCapturesForAutodiff, which serve
+      gradient, jacobian and hessian and through them divergence, curl,
+      laplacian and the directional derivative) rebuilt the captures by looking
+      up each captured variable's NAME in the symbol tables at the AD call site.
+      For a differentiand reached by name, that name is only meaningful where
+      the closure was created. Inside a separately emitted nested lambda the
+      table still mapped `h` to the enclosing function's llvm::Argument (the
+      nested lambda never captured `h`; it captured `H`), so the store referred
+      to another function. Under a binding that shadows `h`, the lookup found
+      the shadowing binding. MapCodegen::loadCapturedValues had the same by-name
+      lookup. gradientHigherOrder wrapped a capturing static function in a
+      capture-free closure, and codegenReduce called a capturing function with
+      no capture arguments.
+    fix: >-
+      One resolver, AutodiffCodegen::appendDifferentiandCaptures, replaces the
+      four copies. A named differentiand's captures are read from the closure
+      object the name evaluates to (emitClosureCaptureArguments in
+      inc/eshkol/backend/closure_capture_scope.h, which follows the closure-call
+      ABI, including the environment-pointer ABI for more than 64 captures); an
+      inline lambda's are still resolved by name at the site that created it.
+      Structural safeguard: every resolved capture value must belong to the
+      function being emitted (valueUsableInFunction); a value owned by an
+      enclosing function is reached through the current function's own capture
+      pointer, and otherwise code generation fails with the variable name, the
+      owning function, the function being emitted and the source location
+      instead of emitting cross-function IR. map reads a named procedure's
+      captures from its closure and applies the same scope check; the curried
+      gradient uses the closure value of a capturing differentiand; reduce
+      dispatches on the closure value of a capturing procedure.
+    observed_after: >-
+      The fifteen reported reproducers print the correct values under the JIT
+      and AOT routes; the shadowing shapes print 0.2; the curried gradient prints
+      0.2; map and reduce inside nested lambdas print the expected lists and
+      sums.
+    evidence: >-
+      tests/ad/named_differentiand_closure_capture_test.esk (40 checks: every
+      reported failing and passing shape, three captured parameters, two lambda
+      levels, a captured mutable variable, both shadowing shapes, derivative-n
+      orders 2 and 3, taylor, scalar hessian, scalar and vector gradient,
+      directional derivative, laplacian, divergence, curried derivative and
+      gradient) and tests/closures/named_closure_static_call_capture_test.esk
+      (8 checks), each registered as cached JIT, uncached JIT and AOT CTest
+      variants; both fail to compile on the unmodified base and pass after the
+      fix. tests/vm_parity/corpus/84_named_closure_derivative_capture.esk prints
+      identical output natively and on the VM.
+    caught_by: [user-reported]
+    missed_by: [ad_capture_global_shadow_test, inline_differentiand_loop_capture_test, vm-parity]
+    notes: >-
+      Filed LOUD-ERROR by the LE-21 precedent (a module verification failure).
+      The shadowing shapes were silent. Two defects found during the audit are
+      not fixed here and remain open: (1) a differentiand variable reassigned
+      with set! to a different lambda is still differentiated as the lambda it
+      was first bound to, because static procedure resolution ignores the
+      assignment (`(let ((H (lambda (Z) (* Z Z h)))) (set! H (lambda (Z) (* Z h)))
+      (derivative H 1.0))` prints 0.2 where 0.1 is correct; calling `(H 1.0)`
+      is correct); (2) `remove` with a procedure predicate that is not statically
+      resolved returns raw double bits for inexact elements
+      (`(remove p (list 1.0 2.0 3.0))` with a parameter predicate prints
+      (4607182418800017408)), so a capturing predicate is left on its loud
+      failure rather than routed there.

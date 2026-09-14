@@ -1,23 +1,22 @@
 # Eshkol v1.3.5-evolve Test Coverage
 
 **Version**: v1.3.5-evolve
-**Last Updated**: 2026-09-11
-**Status**: orchestrated suites at 100% pass rate on the verified release gates
+**Last Updated**: 2026-09-14
+**Status**: previous-candidate verification snapshot; the refreshed release candidate is pending remeasurement
 
-**Release gates**: aggregate suite **46/46
-suites**; CTest **541/541**; the value-position and compound-accessor regression is green, and this result as of the release
-is completion-oracle evidence rather than advice; executable language coverage
-**1,115/1,115 (100.0%, floor PASS)**; SICP full-book gate **88/88** probes
+**Previous-candidate snapshot (2026-09-11; not evidence for the refreshed candidate)**: aggregate suite **46/46
+suites**; CTest **541/541**; the value-position and compound-accessor regression was green; executable language coverage
+**1,115/1,115**; SICP full-book gate **88/88** probes
 across all five chapters under both `-r` and AOT; reference-Scheme differential
 oracle **34/34 AGREE** against chibi-scheme 0.12.0; VM parity differential
-**338/338** on the v1.3.5-evolve release cut over a **961-row** manifest (604
+**338/338** on the previous v1.3.5-evolve candidate over a **961-row** manifest (604
 `vm-supported`, 46 `native-only-justified`, 311 `gap`) plus its
 gap-disposition sidecar, superseding the earlier 188/188 and 194/194 figures,
-which were correct over the smaller corpus they were measured on; qLLM oracle gate **10/10**; ICC readiness
-**100**, verdict `ready`. CTest, executable language coverage and the VM
-parity differential were remeasured on the v1.3.5-evolve release cut on
-2026-09-11 and supersede every earlier figure, each of which was correct on
-the commit it was measured on but had drifted as the suite grew. See [TESTING.md](TESTING.md) for how each gate is run and
+which were correct over the smaller corpus they were measured on; qLLM oracle gate **10/10**. CTest, executable language coverage and the VM
+parity differential were remeasured on the previous v1.3.5-evolve candidate on
+2026-09-11 and supersede earlier figures for that candidate. ICC readiness is
+not asserted for the refreshed source; rerun every gate before making a release
+claim. See [TESTING.md](TESTING.md) for how each gate is run and
 [VM_PARITY.md](VM_PARITY.md) for the parity contract.
 
 **Additional verification**: `scripts/run_all_tests.sh` passes every suite and

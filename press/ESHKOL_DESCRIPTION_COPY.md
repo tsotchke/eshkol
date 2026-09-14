@@ -482,15 +482,12 @@ Each item below cites the file or measurement that grounds the claim.
   that exercises the gates themselves under a dirty worktree, a stale binary, a
   model-server outage, disk pressure, and an actually failing gate. Every
   trace-emitting harness now has a shared PASS/FAIL/INFRA/SKIP vocabulary, so an
-  infrastructure timeout cannot publish itself as a code defect. Release gates,
-  measured on the v1.3.5-evolve release cut: the aggregate suite 46/46 suites;
-  CTest 541/541; executable language coverage 1,115/1,115 (100.0%, floor PASS);
-  SICP full-book gate 88/88 probes across all five chapters under both `-r` and
-  AOT; reference-Scheme differential oracle 34/34 AGREE against chibi-scheme
-  0.12.0; VM parity differential 338/338 over a 961-row manifest (604
-  `vm-supported`, 46 `native-only-justified`, 311 `gap`); qLLM oracle gate
-  10/10; ICC readiness 100, verdict `ready`.
-  <!-- source: RELEASE_NOTES.md §Final verification; docs/TEST_COVERAGE.md -->
+  infrastructure timeout cannot publish itself as a code defect. The September
+  11 verification figures belong to the previous v1.3.5-evolve candidate. The
+  September 14 refresh is awaiting open callee-identity, type-precision and
+  ICC-invariant hardening, followed by a fresh exact-head evidence battery; no
+  readiness score is claimed for it.
+  <!-- source: RELEASE_NOTES.md; docs/TEST_COVERAGE.md -->
   See *docs/TESTING.md*.
 
 - **Binary Lambda Calculus (`core.blc`).** A pure-Eshkol implementation of John

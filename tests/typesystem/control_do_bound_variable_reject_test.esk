@@ -1,0 +1,20 @@
+;; Type System Test: a do loop variable is the join of its init and its step,
+;; computed to a fixpoint. i stays Int64; x starts Int64 and its step produces
+;; Float64, so it is Number; neither is a String.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN]
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Int64
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Number
+;; EXPECT-NO-STDERR: expected String, got Float64
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (never-called)
+  (do ((i 0 (+ i 1))) ((= i 3) 0) (label i)))
+(define (also-never-called)
+  (do ((x 1 (* x 0.5))) ((< x 0.1) 0) (label x)))
+
+(display (area 2 3))
+(newline)

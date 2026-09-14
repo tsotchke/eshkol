@@ -1,0 +1,20 @@
+;; Type System Test: joins the checker cannot justify as a wrong type stay
+;; silent: numeric branches join to Number, a cond or when with no taken
+;; branch may yield #f, and a Value branch makes the whole join Value.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (numeric flag) (area (cond (flag 1) (else 2.5)) 2))
+(define (maybe-string flag) (label (cond (flag "a"))))
+(define (maybe-number flag) (area (when flag 1) 2))
+(define (unknown flag v) (label (match v ((? number? n) n) (other other))))
+(define (either flag) (label (or "a" "b")))
+(display (numeric #t))
+(newline)
+
+(display (area 2 3))
+(newline)

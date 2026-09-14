@@ -48,6 +48,61 @@ static thread_local const char* g_parse_source = NULL;
  * eshkol_reset_parse_line_counter() at the start of a fresh file. */
 static thread_local uint32_t g_stream_line = 1;
 static thread_local uint32_t g_stream_column = 1;
+/* Set by eshkol_reset_parse_line_counter(): the next stream parsed starts at
+ * line 1, column 1, whatever position that stream had recorded. */
+static thread_local bool g_stream_reset_pending = false;
+
+/* The cumulative position belongs to the STREAM, not to the thread. It used
+ * to live only in g_stream_line/g_stream_column, so parsing a second stream
+ * part-way through the first (the AOT driver walks a required module's
+ * requires while still reading that module) reset or advanced the first
+ * stream's count: its remaining forms were numbered from the nested file's
+ * last line, giving locations past the end of the file they name. Each
+ * stream now records its own position in ios_base storage, which a fresh
+ * stream reads as unset (line 1) and which dies with the stream, and the
+ * globals are bound to that stream only for the duration of one call. */
+namespace {
+int stream_line_slot() {
+    static const int slot = std::ios_base::xalloc();
+    return slot;
+}
+int stream_column_slot() {
+    static const int slot = std::ios_base::xalloc();
+    return slot;
+}
+
+class StreamPositionBinding {
+public:
+    explicit StreamPositionBinding(std::istream& stream)
+        : stream_(stream),
+          saved_line_(g_stream_line),
+          saved_column_(g_stream_column) {
+        if (g_stream_reset_pending) {
+            g_stream_reset_pending = false;
+            g_stream_line = 1;
+            g_stream_column = 1;
+        } else {
+            const long line = stream_.iword(stream_line_slot());
+            const long column = stream_.iword(stream_column_slot());
+            g_stream_line = line > 0 ? static_cast<uint32_t>(line) : 1;
+            g_stream_column = column > 0 ? static_cast<uint32_t>(column) : 1;
+        }
+    }
+    ~StreamPositionBinding() {
+        stream_.iword(stream_line_slot()) = static_cast<long>(g_stream_line);
+        stream_.iword(stream_column_slot()) = static_cast<long>(g_stream_column);
+        g_stream_line = saved_line_;
+        g_stream_column = saved_column_;
+    }
+    StreamPositionBinding(const StreamPositionBinding&) = delete;
+    StreamPositionBinding& operator=(const StreamPositionBinding&) = delete;
+
+private:
+    std::istream& stream_;
+    uint32_t saved_line_;
+    uint32_t saved_column_;
+};
+}  // namespace
 static thread_local bool g_parse_had_error = false;
 
 /* Feature names supplied by the driver's -D NAME[=VALUE] options. */
@@ -1638,7 +1693,7 @@ static ParserTask<eshkol_ast_t> parse_atom(const Token& token) {
                     for (size_t j = i; j < s.size(); j++) {
                         if (s[j] < '0' || s[j] > '9') return false;
                     }
-                    memset(node, 0, sizeof(*node));
+                    *node = eshkol_ast_t{};
                     stamp_node(*node, token.line, token.column);
                     *is_zero = false;
                     try {
@@ -4960,6 +5015,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
     const Token head_token = token;
     // Set source location from first token in the list
     stamp_node(ast, token.line, token.column);
+    // Nodes synthesised while lowering this form (internal-define letrec*,
+    // body sequences, named-let/do/case/record-type expansions, ...) are
+    // born with the form's own location, the same one stamped above.
+    EshkolAstBirthLocationScope birth_location(token.line, token.column);
     
     // Empty list (ESH-0217).
     //
@@ -11132,6 +11191,11 @@ static ParserTask<eshkol_ast_t> parse_expression(SchemeTokenizer& tokenizer) {
     }
 
     Token token = tokenizer.nextToken();
+    // Every node born while parsing this expression (atoms, quote and
+    // vector shorthands, and anything they desugar into) inherits the
+    // expression's own location unless it is stamped with a more precise
+    // one. parse_list narrows this to the head token of a list form.
+    EshkolAstBirthLocationScope birth_location(token.line, token.column);
 
     switch (token.type) {
         case TOKEN_LPAREN:
@@ -11299,6 +11363,7 @@ static ParserTask<eshkol_ast_t> parse_expression(SchemeTokenizer& tokenizer) {
  */
 eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
 {
+    StreamPositionBinding stream_position(in_stream);
     std::string input;
     bool in_quote = false;
     bool in_bar_symbol = false;  // inside an R7RS 7.1.1 |...| vertical-line symbol
@@ -11542,13 +11607,14 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
  * @c g_stream_column) used by eshkol_parse_next_ast_from_stream() for error
  * reporting.
  *
- * Must be called before parsing a new file/stream from its start; otherwise
- * line numbers reported for the new stream would continue accumulating from
- * wherever a previous stream left off.
+ * The next stream parsed starts at line 1, column 1. A stream that was never
+ * parsed already starts there, and each stream keeps its own position, so
+ * this is needed only to restart a stream that has already been read from.
  */
 extern "C" void eshkol_reset_parse_line_counter(void) {
     g_stream_line = 1;
     g_stream_column = 1;
+    g_stream_reset_pending = true;
 }
 
 /* Interned source-file table backing eshkol_ast_t::source_file_id.

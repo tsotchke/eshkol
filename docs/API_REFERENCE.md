@@ -1,7 +1,7 @@
 # Eshkol v1.3.5 API Reference
 
 **Version**: 1.3.5
-**Last Updated**: 2026-09-11
+**Last Updated**: 2026-09-14
 **Audience**: Scientific Computing & AI Systems Programming
 
 This reference documents Eshkol's language surface and implementation contracts.

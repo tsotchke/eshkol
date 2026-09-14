@@ -1,0 +1,22 @@
+;; Type System Test: a wrong argument inside a `do` loop's init, test, body, step and result is reported, with the
+;; same message it gets at top level. The checker used to give this form a
+;; fixed type without synthesizing its subexpressions, so it was silent.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN]
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Int64
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Char
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Float64
+;; EXPECT-STDERR: argument 1 of 'area': expected Number, got String
+;; EXPECT-STDERR: argument 2 of 'area': expected Number, got String
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (never-called)
+  (do ((i (label 42) (area 5 "tall")))
+      ((label #\a) (label 2.5))
+    (area "wide" 3)))
+
+(display (area 2 3))
+(newline)

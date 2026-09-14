@@ -7,11 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.5-evolve] - 2026-09-11
+## [1.3.5-evolve] - 2026-09-14
 
-Release verification is pending; see `RELEASE_NOTES.md` for the final-battery
-placeholder. The entries below record integrated source changes, not a claim
-that the candidate has passed its release gates.
+Planned release date: Monday, September 14, 2026, after 09:00
+America/Montreal. The refreshed candidate still has open callee-identity,
+type-precision and ICC-invariant hardening, and its final verification is
+pending. The entries below record integrated source changes, not a claim that
+the candidate has passed its release gates.
 
 ### Added
 

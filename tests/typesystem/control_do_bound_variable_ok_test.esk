@@ -1,0 +1,24 @@
+;; Type System Test: a do variable whose step widens it past its init's type is
+;; not held to the init's type, and one whose step joins to the dynamic top
+;; (Int64 init, String step) is Value, so neither use below warns.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (halve-until-small)
+  (do ((x 1 (* x 0.5))) ((< x 0.1) x) (area x 2)))
+(define (alternate n)
+  (do ((i 0 (+ i 1))
+       (v 0 (if (even? i) "text" 1)))
+      ((= i n) v)
+    (if (string? v) (label v) (area v 1))))
+(display (halve-until-small))
+(newline)
+(display (alternate 3))
+(newline)
+
+(display (area 2 3))
+(newline)

@@ -12,9 +12,11 @@ Eshkol is a Scheme-based programming language that unifies functional programmin
 
 **v1.3.5-evolve** — compiler and VM correctness, exact and nested AD,
 validated tensor/checkpoint operations, and stronger release verification.
-The [release notes](RELEASE_NOTES.md) describe the integrated changes, migration
-requirements, and pending final verification. Production TPU training belongs
-to the separate accelerator milestone.
+The refreshed candidate is planned for Monday, September 14, 2026, after 09:00
+America/Montreal; final verification remains pending. The
+[release notes](RELEASE_NOTES.md) describe the integrated changes and migration
+requirements. Production TPU training belongs to the separate accelerator
+milestone.
 
 **[Full documentation index](docs/README.md)** — every guide, reference, and design doc in one place.
 
@@ -1102,7 +1104,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: aggregate suite 46/46 suites; CTest 541/541 (remeasured on the v1.3.5-evolve release cut, 2026-09-11, Release with `-DESHKOL_BUILD_TESTS=ON`; supersedes the 198/198 figure of commit `afbaaf5b`); executable language coverage 1,115/1,115 (100.0%, floor PASS); VM parity differential 338/338 over a 961-row manifest (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`), remeasured on the release cut on 2026-09-11 and superseding the 188/188 figure of commit `afbaaf5b` and the 183/183, 1,091/1,091 and 184/184 figures before it
+- **Testing**: the previous candidate verification (2026-09-11, before the September 14 refresh) reported aggregate suite 46/46, CTest 541/541, language surface 1,115 constructs and VM parity 338/338 over a 961-row manifest (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`). These historical results must be rerun on the refreshed candidate; they do not establish its readiness.
 - **Platform**: macOS x64/ARM64, Linux x64/ARM64, and Windows x64/ARM64. CUDA 12.4 packages target Linux x64/ARM64 and Windows x64; Windows ARM64 CUDA is not advertised.
 
 ---

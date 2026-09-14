@@ -46,40 +46,21 @@ parity gates.
 
 ---
 
-## Current status (verified 2026-09-11)
+## Current status (refreshed 2026-09-14)
 
-**Branch**: `master`
+**Branch**: release-cut refresh derived from `origin/release/v135-cut-final`
+and incorporating `origin/master` at `0c0436d5`.
 **Last shipped release**: v1.3.4-evolve (2026-08-19, commit `694c3179`).
-**Current cut**: v1.3.5-evolve, cut 2026-09-11 on final source commit
-`0f33675a` — release candidate, publication pending the release workflow's
-readiness gate on the tagged commit.
-**Status**: v1.3.5-evolve is a consolidation release: a parser with no
-recursion budget, dense tensor autodiff executing end to end, `tensor-apply`
-calling the callable rather than a builtin name, multi-shot re-entrant
-continuations on every engine, VM region reclamation, certified enclosures,
-validated ESKM v1 model I/O, enforced linear typing, and exact AD proven
-structurally rather than differentially, on top of the v1.3.4
-resident-correctness and consumer-hardening waves. Release gates:
-aggregate suite 46/46 suites, CTest **541/541** (remeasured on the v1.3.5-evolve release cut,
-2026-09-11; supersedes the 198/198 figure of `afbaaf5b` and the stale 183/183
-and 190/190 figures before it), executable language coverage
-**1,115/1,115** (100.0%) — the canonical surface count, see
-[FEATURE_MATRIX.md](FEATURE_MATRIX.md) (corrects the stale 1,091/1,091
-figure, conformity audit item b2/d3), SICP 88/88, reference differential
-34/34 AGREE vs chibi-scheme 0.12.0. **VM parity**: the differential gate
-(`scripts/run_vm_parity.sh`) is 338/338 (remeasured on the v1.3.5-evolve
-release cut on 2026-09-11; supersedes the 188/188 figure and the "184/184"
-corpus-differential count before it); the full manifest
-(`tests/vm_parity/PARITY.tsv`) is 961 rows — 604 `vm-supported`, 46
-`native-only-justified`, 311 `gap`; PR-02 retired the historical
-`tests/vm_parity/SURFACE_BASELINE.tsv` backlog (323 entries probed, 0
-native-resolved/VM-missing; see [VM_PARITY.md](VM_PARITY.md)); citing only
-the differential count alone
-substitutes one narrow metric for the full parity picture — corrected
-2026-08-25, conformity audit item b2. ICC readiness 100 (`ready`) — the
-audit found this reproducible only via a full local pillar-script run, not
-as a repository-enforced gate (see ADR-0010's own diagnosis of that
-anti-pattern); not re-litigated here as it is outside this doc's scope.
+**Current cut**: v1.3.5-evolve, refreshed for a planned release on Monday,
+September 14, 2026, after 09:00 America/Montreal.
+**Status**: release candidate; callee-identity, type-precision and
+ICC-invariant hardening remain open. The final verification battery has not
+been run on the refreshed source. Results recorded for the September 11
+candidate are historical and do not establish readiness for this candidate.
+The canonical surface inventory currently contains 1,052 builtins and 1,115
+constructs; execution coverage, CTest, VM parity, engine parity, package checks
+and ICC readiness must all be remeasured at the final source head. See
+[FEATURE_MATRIX.md](FEATURE_MATRIX.md) and [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 
 The v1.2.x record below is retained as the history of that milestone.
 
@@ -146,7 +127,7 @@ Verification snapshot:
 |---|---|---|---|
 | v1.2.x | scale | May 2026 | Model I/O + Noesis M0 closeout |
 | v1.3.0-evolve through v1.3.4-evolve | evolve | Jul-Aug 2026 — **SHIPPED** (v1.3.4-evolve tagged 2026-08-19, commit `694c3179`) | R7RS polish + dev-experience + stdlib surface — **plus the full arbitrary-order Taylor-tower AD matrix (P0–P12) on the LLVM backend, 34/34 R7RS conformance, and permanent adversarial-testing infrastructure, all delivered ahead of the original plan** |
-| v1.3.5-evolve | evolve | cut 2026-09-11 — **RELEASE CANDIDATE** | Consolidation: parser with no recursion budget, dense tensor autodiff, VM region reclamation, multi-shot continuations, certified enclosures, validated ESKM v1 |
+| v1.3.5-evolve | evolve | refreshed 2026-09-14 — **VERIFICATION PENDING** | Consolidation: parser with no recursion budget, dense tensor autodiff, VM region reclamation, multi-shot continuations, certified enclosures, validated ESKM v1 |
 | v1.4.0 | connection | 2026-10-15 | Networking + concurrency + linear types |
 | v1.4.1 | ABI | 2026-11-06 | OALR ABI v2 Phase B + object-ABI migration |
 | v1.5.0 | intelligence | 2026-12-05 | The full neuro-symbolic logic system |

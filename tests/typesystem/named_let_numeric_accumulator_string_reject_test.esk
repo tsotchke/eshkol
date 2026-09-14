@@ -1,0 +1,17 @@
+;; Type System Test: a numeric named-let accumulator fed a STRING on the
+;; recursive call is still reported in gradual (default) mode. Widening a loop
+;; parameter to its join with the recursive arguments stops at informative
+;; types; Int64 and String join only at the dynamic top, so nothing widens.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN]
+;; EXPECT-STDERR: argument 2 of 'loop': expected Int64, got String
+
+(define (bad-count n)
+  (let loop ((i 0) (acc 0))
+    (if (>= i n)
+        acc
+        (loop (+ i 1) "seven"))))
+
+(display (bad-count 0))
+(newline)

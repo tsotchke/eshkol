@@ -1,0 +1,18 @@
+;; Type System Test: a guard condition variable is Value, and a predicate test
+;; in a handler clause refines it in that clause's body: (number? e) makes it a
+;; Number there.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN]
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Number
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (never-called)
+  (guard (e ((number? e) (label e))
+            (else 0))
+    (raise 1)))
+
+(display (area 2 3))
+(newline)

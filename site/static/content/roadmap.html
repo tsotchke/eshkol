@@ -750,18 +750,18 @@ rank).</li>
 </ul>
 <hr />
 <h2
-id="v1.3.5-evolve-the-consolidation-release-cut-2026-09-11---release-candidate">v1.3.5-evolve
-— the consolidation release (cut 2026-09-11) - RELEASE CANDIDATE</h2>
-<p>The cut is complete and the final verification battery is green on
-the final source commit (<code>0f33675a</code>); publication follows
-when the release workflow’s readiness gate passes on the tagged commit.
-Gate figures for this cut: <strong>CTest 541/541</strong>, <strong>VM
-parity 338/338</strong> over a <strong>961-row</strong> manifest (604
-<code>vm-supported</code>, 46 <code>native-only-justified</code>, 311
-<code>gap</code>), language surface <strong>1,052 builtins / 1,115
-constructs</strong> at 100% execution-backed coverage, and engine-parity
-differential floors of <strong>321 of 1,139 constructs (28.18%)</strong>
-and <strong>155 of 473 high-risk constructs (32.77%)</strong>. See <a
+id="v1.3.5-evolve-the-consolidation-release-refreshed-2026-09-14---release-candidate">v1.3.5-evolve
+— the consolidation release (refreshed 2026-09-14) - RELEASE
+CANDIDATE</h2>
+<p>Planned release date: Monday, September 14, 2026, after 09:00
+America/Montreal. The candidate is being refreshed from
+<code>origin/master</code> (<code>0c0436d5</code>). Callee-identity,
+type-precision and ICC-invariant hardening remain open, and the final
+verification battery has not been run on this refreshed source. The
+September 11 results recorded for the earlier candidate are historical;
+they do not establish readiness for this refresh. Do not publish or
+claim a readiness score until the hardening work and exact-head release
+checks are complete. See <a
 href="RELEASE_NOTES.md">RELEASE_NOTES.md</a>.</p>
 <p><strong>Flagship: the parser has no recursion budget —
 SHIPPED.</strong> Recursive descent is replaced by an explicit
@@ -1550,23 +1550,22 @@ qLLM oracle gate 10/10; ICC readiness 100, verdict
 </tr>
 <tr>
 <td><strong>v1.3.5-evolve</strong></td>
-<td>cut 2026-09-11</td>
+<td>planned 2026-09-14 after 09:00 Montreal</td>
 <td>Consolidation</td>
-<td><strong>RELEASE CANDIDATE.</strong> A parser with no recursion
-budget (16,000 levels on an 8 MiB stack, explicit continuation stack
-through parse, type check and codegen); dense tensor autodiff executing
-end to end (SW-48); <code>tensor-apply</code> calling the callable
-rather than a builtin name, gated across four engines; the bytecode VM
-reclaiming memory under <code>with-region</code> (VM OALR Stage-1
-evacuator, #461); multi-shot continuations on all three engines (#491);
-certified enclosures; one constant-curvature geometry implementation
-(#498, #499); validated ESKM v1 model I/O with atomic publication;
-compiler assurance measured against deliberate mutations; the exact
-tower and <code>core.exact_linalg</code>; every callable builtin
-first-class on both engines; EREPL v1; LLVM 18-24. Gates: CTest 541/541;
-VM parity 338/338 over a 961-row manifest (604/46/311); language surface
-1,052 builtins / 1,115 constructs at 100% execution-backed coverage;
-engine-parity floors 28.18% and 32.77%</td>
+<td><strong>REFRESHED RELEASE CANDIDATE; VERIFICATION PENDING.</strong>
+A parser with no recursion budget (16,000 levels on an 8 MiB stack,
+explicit continuation stack through parse, type check and codegen);
+dense tensor autodiff executing end to end (SW-48);
+<code>tensor-apply</code> calling the callable rather than a builtin
+name; the bytecode VM reclaiming memory under <code>with-region</code>
+(VM OALR Stage-1 evacuator, #461); multi-shot continuations on all three
+engines (#491); certified enclosures; one constant-curvature geometry
+implementation (#498, #499); validated ESKM v1 model I/O with atomic
+publication; compiler assurance measured against deliberate mutations;
+the exact tower and <code>core.exact_linalg</code>; every callable
+builtin first-class on both engines; EREPL v1; LLVM 18-24. The September
+11 CTest, parity and coverage results refer to the previous candidate
+and must be rerun on this refreshed source.</td>
 </tr>
 <tr>
 <td><strong>v1.4.0-connection</strong></td>
@@ -1892,18 +1891,19 @@ Build integrations - Share use cases</p>
 <p>See <a href="CONTRIBUTING.md">CONTRIBUTING.md</a> for detailed
 contribution guidelines.</p>
 <hr />
-<p><em>Last Updated: 2026-09-11 (v1.3.5-evolve release cut — the v1.3.5
-section rewritten against what the cut actually contains, its follow-up
-queue added, SW-48 recorded COMPLETE, and the ladder re-staged per the
-2026-09-10 ruling: v1.4.0 at 2026-10-15, v1.5.0 at 2026-12-05, v1.4.5 as
-a parallel track, the DBSP spine threaded v1.5 to v2.0. Previously
-2026-08-28, v1.3.5-evolve release documentation audit — carried items
-named, ADR-0000 attainment remeasured against the tree, ADR-0012 staged
-migration added to v1.4.1. Previously 2026-08-25, v1.3.5 documentation
-wave — re-dated ladder, six standing workstreams, distributed computing
-promoted to W6; plus the 2026-08-25 conformity-audit resolution pass
-layered on top — ADR-0000 cross-reference, engine-qualified AD/parity
-claims, remeasured gate numbers)</em></p>
+<p><em>Last Updated: 2026-09-14 (v1.3.5-evolve refreshed release
+candidate — the v1.3.5 section rewritten against what the cut actually
+contains, its follow-up queue added, SW-48 recorded COMPLETE, and the
+ladder re-staged per the 2026-09-10 ruling: v1.4.0 at 2026-10-15, v1.5.0
+at 2026-12-05, v1.4.5 as a parallel track, the DBSP spine threaded v1.5
+to v2.0. Previously 2026-08-28, v1.3.5-evolve release documentation
+audit — carried items named, ADR-0000 attainment remeasured against the
+tree, ADR-0012 staged migration added to v1.4.1. Previously 2026-08-25,
+v1.3.5 documentation wave — re-dated ladder, six standing workstreams,
+distributed computing promoted to W6; plus the 2026-08-25
+conformity-audit resolution pass layered on top — ADR-0000
+cross-reference, engine-qualified AD/parity claims, remeasured gate
+numbers)</em></p>
 <p><em>The arbitrary-order automatic-differentiation (Taylor-tower)
 campaign — phases P0–P12, spanning core high-order AD, exact-coefficient
 and tensor-valued towers, GUW multivariate recovery, differentiable
@@ -1917,11 +1917,12 @@ href="docs/AD_CAMPAIGN.md"><code>docs/AD_CAMPAIGN.md</code></a>.</em></p>
 <p><em>Eshkol v1.1-accelerate is complete with 47/47 roadmap items
 delivered plus the v1.1.12 and v1.1.13 additions (production VM, web
 platform, browser AD, Windows ARM64, mobile site). The v1.3 line runs
-through v1.3.5-evolve, cut 2026-09-11 and awaiting its tag. The roadmap
-progresses through data &amp; deployment (v1.2-scale), language maturity
-(v1.3-evolve), consolidation (v1.3.5), networking &amp; resources
-(v1.4.0-connection), the ABI release (v1.4.1), neuro-symbolic
-intelligence (v1.5.0-intelligence), symbolic reasoning
+through v1.3.5-evolve, whose refreshed candidate is dated 2026-09-14 and
+awaits hardening and exact-head verification before any release claim.
+The roadmap progresses through data &amp; deployment (v1.2-scale),
+language maturity (v1.3-evolve), consolidation (v1.3.5), networking
+&amp; resources (v1.4.0-connection), the ABI release (v1.4.1),
+neuro-symbolic intelligence (v1.5.0-intelligence), symbolic reasoning
 (v1.6.0-reasoning), program synthesis (v1.7.0-synthesis), platform &amp;
 hardware (v1.8.0-platform), advanced type theory (v1.9.0-types), and
 quantum computing with formal verification (v2.0-starlight) — with a

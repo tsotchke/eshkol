@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/backend/map_codegen.h>
+#include <eshkol/backend/closure_capture_scope.h>
 #include <eshkol/backend/llvm_compat.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -340,6 +341,42 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
         return nullptr;
     }
 
+    // A NAMED procedure that closes over variables: its captures are the
+    // closure object's, read from its environment (closure_capture_scope.h).
+    // Re-resolving the free variables by name at this call site finds
+    // whatever those names mean HERE, which can be an argument of an
+    // enclosing function or a binding that shadows the captured one.
+    // Evaluated once, before the loop, so the slots dominate every iteration.
+    std::vector<Value*> closure_captures;
+    {
+        const eshkol_ast_t& proc_ast = op->call_op.variables[0];
+        size_t first_capture = num_lists;
+        bool indirect = proc_func->getName().starts_with("indirect_call_");
+        if (!indirect && proc_ast.type == ESHKOL_VAR && codegen_ast_callback_ &&
+            proc_func->getFunctionType()->getNumParams() > first_capture &&
+            functionHasCaptureParameters(proc_func)) {
+            std::string first_name = proc_func->getArg(first_capture)->getName().str();
+            if (first_name.rfind("captured_", 0) == 0) first_name = first_name.substr(9);
+            const std::string cell_key =
+                proc_func->getName().str() + "_capture_" + first_name;
+            // A local define keeps its captures in module-level cells instead.
+            bool module_cells = global_symbol_table_ && global_symbol_table_->count(cell_key);
+            if (!module_cells) {
+                Value* v = codegen_ast_callback_(&proc_ast, callback_context_);
+                if (v && v->getType()->isPointerTy() && !isa<Function>(v)) {
+                    v = ctx_.builder().CreateLoad(ctx_.taggedValueType(), v, "map_proc_value");
+                }
+                if (v && v->getType() == ctx_.taggedValueType()) {
+                    Value* closure_ptr = ctx_.builder().CreateIntToPtr(
+                        tagged_.unpackInt64(v), ctx_.ptrType(), "map_proc_closure");
+                    closure_captures = emitClosureCaptureArguments(
+                        ctx_.builder(), ctx_.taggedValueType(), closure_ptr, proc_func,
+                        first_capture);
+                }
+            }
+        }
+    }
+
     // Single-list map: (map proc list)
     if (op->call_op.num_vars == 2) {
         if (!codegen_ast_callback_) {
@@ -351,7 +388,7 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
             if (pop_function_context_) pop_function_context_(callback_context_);
             return nullptr;
         }
-        Value* result = mapSingleList(proc_func, list);
+        Value* result = mapSingleList(proc_func, list, closure_captures);
         if (pop_function_context_) pop_function_context_(callback_context_);
         return result;
     }
@@ -373,7 +410,7 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
         return nullptr;
     }
 
-    Value* result = mapMultiList(proc_func, lists);
+    Value* result = mapMultiList(proc_func, lists, closure_captures);
     if (pop_function_context_) pop_function_context_(callback_context_);
     return result;
 }
@@ -607,7 +644,8 @@ void MapCodegen::loadCapturedValues(
     Function* proc_func,
     const std::string& func_name,
     size_t first_capture_idx,
-    std::vector<Value*>& args
+    std::vector<Value*>& args,
+    const std::vector<Value*>& closure_captures
 ) {
     FunctionType* proc_type = proc_func->getFunctionType();
     size_t expected_params = proc_type->getNumParams();
@@ -696,6 +734,9 @@ void MapCodegen::loadCapturedValues(
             } else {
                 args.push_back(storage);
             }
+        } else if (i < closure_captures.size()) {
+            // The procedure was reached by name: its closure's capture slot.
+            args.push_back(closure_captures[i]);
         } else {
             // Fall back to looking up the original variable name in current scope
             Value* var_storage = nullptr;
@@ -704,6 +745,29 @@ void MapCodegen::loadCapturedValues(
                 if (var_it != symbol_table_->end() && var_it->second) {
                     var_storage = var_it->second;
                 }
+            }
+
+            // Scope rule (closure_capture_scope.h): a name can still map to an
+            // argument or instruction of an ENCLOSING function while a nested
+            // body is emitted. The current function reaches such a variable
+            // only through its own capture pointer; without one, report the
+            // variable instead of emitting IR that refers to another function.
+            Function* scope_fn = ctx_.builder().GetInsertBlock()->getParent();
+            if (var_storage && !valueUsableInFunction(var_storage, scope_fn)) {
+                Value* own = currentFunctionCapturePointer(scope_fn, var_name);
+                if (!own) {
+                    eshkol_error("map: captured variable '%s' of '%s' resolved to a value of "
+                                 "function '%s' while emitting '%s'; it is not reachable "
+                                 "from the function being emitted",
+                                 var_name.c_str(), lambda_name.c_str(),
+                                 valueOwnerName(var_storage).c_str(),
+                                 scope_fn->getName().str().c_str());
+                    ctx_.markFatalCodegenError();
+                    args.push_back(ConstantPointerNull::get(ctx_.ptrType()));
+                    continue;
+                }
+                args.push_back(own);
+                continue;
             }
 
             if (var_storage) {
@@ -794,7 +858,8 @@ void MapCodegen::loadCapturedValues(
  *         arguments, unexpected list type, or a missing required callback
  *         (cons_get_ptr/cons_set_ptr/create_cons_callback_/extract_car_callback_).
  */
-Value* MapCodegen::mapSingleList(Function* proc_func, Value* list) {
+Value* MapCodegen::mapSingleList(Function* proc_func, Value* list,
+                                 const std::vector<Value*>& closure_captures) {
     if (!proc_func || !list) return nullptr;
 
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
@@ -869,7 +934,8 @@ Value* MapCodegen::mapSingleList(Function* proc_func, Value* list) {
 
     // Load captured values
     size_t first_capture_idx = is_indirect_call ? 2 : 1;
-    loadCapturedValues(proc_func, func_name, first_capture_idx, proc_args);
+    loadCapturedValues(proc_func, func_name, first_capture_idx, proc_args,
+                       is_indirect_call ? std::vector<Value*>{} : closure_captures);
 
     // REPL HOT RELOAD: when the procedure is a top-level user function in REPL
     // mode, its LLVM symbol carries a `__rv<N>` version suffix. Calling that
@@ -1011,7 +1077,8 @@ Value* MapCodegen::mapSingleList(Function* proc_func, Value* list) {
  *         arguments, unexpected list type, or a missing required callback
  *         (cons_get_ptr/cons_set_ptr/create_cons_callback_/extract_car_callback_).
  */
-Value* MapCodegen::mapMultiList(Function* proc_func, const std::vector<Value*>& lists) {
+Value* MapCodegen::mapMultiList(Function* proc_func, const std::vector<Value*>& lists,
+                                const std::vector<Value*>& closure_captures) {
     if (!proc_func || lists.empty()) return nullptr;
 
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
@@ -1085,7 +1152,7 @@ Value* MapCodegen::mapMultiList(Function* proc_func, const std::vector<Value*>& 
 
     // Load captured values
     std::string func_name = proc_func->getName().str();
-    loadCapturedValues(proc_func, func_name, lists.size(), proc_args);
+    loadCapturedValues(proc_func, func_name, lists.size(), proc_args, closure_captures);
 
     eshkol_debug("MultiMap: About to call %s function with %zu arguments",
                 func_name.c_str(), proc_args.size());

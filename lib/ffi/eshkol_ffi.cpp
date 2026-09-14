@@ -116,8 +116,7 @@ extern "C" eshkol_ffi_context_t* eshkol_ffi_init(void) {
 
     /* Preserve the old FFI behavior of preloading stdlib, but do it through
      * the bridge so this translation unit has no direct ReplJITContext symbols. */
-    eshkol_ast_t stdlib_ast;
-    std::memset(&stdlib_ast, 0, sizeof(stdlib_ast));
+    eshkol_ast_t stdlib_ast{};
     try {
         std::istringstream stdlib_stream("(require stdlib)");
         stdlib_ast = eshkol_parse_next_ast_from_stream(stdlib_stream);
