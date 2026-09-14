@@ -49,7 +49,7 @@ This directory indexes Eshkol's architecture documentation.
 
 ### Release Invariant Contracts
 
-**[Release invariant contracts](../design/adr/0013-release-invariant-contracts.md)** — keeps parser identity, OALR deep-walk dispatch, generated flat-AD WASM imports, and pre-grade release receipts aligned through executable contracts.
+**[Release invariant contracts](../design/adr/0014-release-invariant-contracts.md)** — keeps parser identity, OALR deep-walk dispatch, generated flat-AD WASM imports, and pre-grade release receipts aligned through executable contracts.
 
 ### TensorCore Integration
 

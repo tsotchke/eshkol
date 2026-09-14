@@ -1,4 +1,4 @@
-# ADR 0013 — Release invariant contracts are measured before grading
+# ADR 0014 — Release invariant contracts are measured before grading
 
 - Status: Accepted
 - Date: 2026-09-14
