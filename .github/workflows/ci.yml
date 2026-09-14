@@ -633,6 +633,7 @@ jobs:
           python3 scripts/gate_ad_shared_node_model.py --self-test
           python3 scripts/check_required_context_consistency.py --self-test
           python3 scripts/ci_change_class.py --self-test
+          python3 tests/toolchain/test_disclosure_base.py
           python3 scripts/ci_lane_plan.py --self-test
           python3 scripts/ci_equivalent_head.py --self-test
           python3 scripts/check_package_manifest.py --self-test
@@ -864,13 +865,20 @@ jobs:
       - name: Scan incoming commits when no PR text is present
         if: github.event_name != 'pull_request'
         env:
-          BASE_SHA: ${{ github.event.merge_group.base_sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.merge_group.head_sha || github.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$BASE_SHA"
-          git cat-file -e "${BASE_SHA}^{commit}"
+          BASE_SHA="$(python3 scripts/select_disclosure_base.py \
+            --event "$EVENT_NAME" --head "$HEAD_SHA" --ref "$REF" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --before "$PUSH_BEFORE" \
+            --merge-group-base "$MERGE_GROUP_BASE_SHA")"
           git cat-file -e "${HEAD_SHA}^{commit}"
           python3 scripts/check_disclosure.py --base "$BASE_SHA" --head "$HEAD_SHA"
 
