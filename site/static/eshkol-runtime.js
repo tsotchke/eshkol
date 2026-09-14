@@ -920,10 +920,19 @@ class EshkolRuntime {
                 // ESH_AD_NEST_NONE (0) keeps the lite lane on the unchanged
                 // non-nested seeding, exactly as the sibling stubs degrade.
                 eshkol_ad_nested_seed:          () => 0,
-                // ESH-0413 tower-context depth mirror (runtime_taylor.c): the
-                // browser build has no tower path at all, so both are no-ops.
-                eshkol_ad_tower_enter:          () => {},
-                eshkol_ad_tower_leave:          () => {},
+                // BEGIN GENERATED FLAT-AD IMPORTS
+                // Browser WASM has no Taylor tower lane. Keep the base lane's established
+                // flat behavior: extraction declines the tower and enter/leave do nothing.
+                eshkol_ad_tower_carry_result: () => 0,
+                eshkol_ad_jet_extract_tower: () => 0,
+                // Captured nested differentiation is explicitly unsupported in this lane.
+                // Throwing is required so unsupported semantics cannot silently look valid.
+                eshkol_ad_nested_capture_unsupported: () => {
+                    throw new Error('Nested autodiff through captured values is unsupported in the browser WASM runtime');
+                },
+                eshkol_ad_tower_enter: () => {},
+                eshkol_ad_tower_leave: () => {},
+                // END GENERATED FLAT-AD IMPORTS
                 eshkol_ad_nested_extract:       () => {},
                 eshkol_ad_nested_unsupported:   () => {},
                 eshkol_ad_curried_gradient_unsupported: () => {},

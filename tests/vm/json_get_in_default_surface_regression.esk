@@ -1,0 +1,30 @@
+;; Standalone VM regression: json-get-in's default is optional.
+;;
+;; docs/reference/stdlib/json.md documents (json-get-in obj keys [default]).
+;; The VM's builtin declared the default as a required third operand, so the
+;; documented two-argument call was refused at compile time with
+;; "Arity mismatch: json-get-in expects 3 arguments but got 2".
+
+(display "=== json-get-in optional default (VM) ===") (newline)
+
+(define obj
+  (list (cons "usage" (list (cons "input_tokens" 12)))
+        (cons "items" (list "alpha" "beta"))))
+
+(display "T1 two-arg call finds a nested value: ")
+(display (if (equal? (json-get-in obj (list "usage" "input_tokens")) 12) "PASS" "FAIL"))
+(newline)
+
+(display "T2 two-arg call on a missing path is #f: ")
+(display (if (eq? (json-get-in obj (list "usage" "cache_tokens")) #f) "PASS" "FAIL"))
+(newline)
+
+(display "T3 two-arg call indexes a list: ")
+(display (if (equal? (json-get-in obj (list "items" 1)) "beta") "PASS" "FAIL"))
+(newline)
+
+(display "T4 three-arg call returns the default on a missing path: ")
+(display (if (equal? (json-get-in obj (list "items" 5) "missing") "missing") "PASS" "FAIL"))
+(newline)
+
+(display "=== json-get-in optional default complete ===") (newline)

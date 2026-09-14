@@ -239,6 +239,11 @@ namespace BuiltinTypes {
     inline constexpr TypeId Boolean{25, Universe::U0, TYPE_FLAG_EXACT};
     inline constexpr TypeId Null{26, Universe::U0, 0};
     inline constexpr TypeId Symbol{27, Universe::U0, 0};
+    // The empty type: no value inhabits it, so it is a subtype of every type
+    // and the identity of a join. The checker gives it to a call of a
+    // recursive procedure whose result is still being inferred, so the call
+    // does not contribute to that result; it never reaches codegen.
+    inline constexpr TypeId Never{38, Universe::U0, 0};
 
     // Type constructors (U1)
     inline constexpr TypeId List{100, Universe::U1, 0};
@@ -524,21 +529,27 @@ public:
     const TypeNode* getTypeNode(TypeId id) const;
 
     /**
-     * Get type name by id.
+     * Get type name by id. Delegates to TypeRelation::print(), the one
+     * printing function for every type form.
      */
     std::string getTypeName(TypeId id) const;
 
     // ========== Subtyping ==========
 
     /**
-     * Check if 'sub' is a subtype of 'super'.
-     * Uses cached results for performance.
+     * Check if 'sub' is a subtype of 'super' (static subtyping, cached).
+     * Delegates to TypeRelation::isSubtype(), which owns the rules: the
+     * nominal graph, Value as the top and Never as the bottom, sums, covariant
+     * pairs, and arrows contravariant in parameters and covariant in results.
+     * The gradual judgments (consistency, consistent subtyping, flow evidence)
+     * live only on TypeRelation.
      */
     bool isSubtype(TypeId sub, TypeId super) const;
 
     /**
-     * Find the least common supertype of two types.
-     * Returns nullopt if no common supertype exists.
+     * Compatibility facade for the type join. Delegates to
+     * TypeRelation::join(), which handles sums, pairs and signatures before
+     * falling back to the registered nominal supertype graph.
      */
     std::optional<TypeId> leastCommonSupertype(TypeId a, TypeId b) const;
 
@@ -700,8 +711,9 @@ public:
     std::vector<TypeId> getFunctionParamTypes(TypeId id) const;
 
     /**
-     * Get a human-readable name for a function type.
-     * For example: "(Int64, Float64) -> Boolean"
+     * Get a human-readable name for a function type, e.g. "(-> Int64 Float64 Boolean)".
+     * Returns "Function" if the TypeId is not a function signature. Delegates
+     * to TypeRelation::print().
      */
     std::string getFunctionTypeName(TypeId id) const;
 
@@ -748,7 +760,9 @@ public:
     bool isSumType(TypeId id) const;
 
     /**
-     * Collapse a type to its codegen-facing representation. Sum types have no
+     * Collapse a type to its codegen-facing representation. Never (the
+     * checker's type for a call whose recursive result is still being inferred)
+     * has no values and never reaches codegen; it collapses to Value. Sum types have no
      * distinct runtime representation (values are tagged), so they collapse to
      * Pair — the same TypeId a `(+ ...)` annotation resolved to before sum
      * tracking existed. Non-sum types are returned unchanged. Used when
@@ -768,10 +782,8 @@ private:
      */
     void addSubtype(TypeId supertype, TypeId subtype);
 
-    /**
-     * Uncached subtype check (walks the type graph).
-     */
-    bool isSubtypeUncached(TypeId sub, TypeId super) const;
+    // The type relation reads the interned types above and fills the subtype cache.
+    friend class TypeRelation;
 };
 
 // ============================================================================

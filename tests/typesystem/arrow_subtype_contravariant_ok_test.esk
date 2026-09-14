@@ -1,0 +1,12 @@
+;; Type System Test: arrow subtyping is contravariant in the parameters. A
+;; function that accepts any Number may stand in for one that is only ever
+;; given integers.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (takes-number (x : number)) : number (* x 2))
+(define (use-int-fn (f : (-> integer number))) (f 21))
+
+(display (use-int-fn takes-number))
+(newline)

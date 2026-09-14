@@ -13890,8 +13890,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 2014: { /* json-get-in(obj, path, default) → value */
+    case 2014: { /* json-get-in(obj, path [, default]) → value; default #f */
         Value default_val = vm_pop(vm), path_val = vm_pop(vm), obj_val = vm_pop(vm);
+        if (vm_native_absent(default_val)) default_val = BOOL_VAL(0);
         vm_push(vm, vm_json_get_in_value(vm, obj_val, path_val, default_val));
         break;
     }

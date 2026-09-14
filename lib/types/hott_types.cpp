@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/types/hott_types.h>
+#include <eshkol/types/type_relation.h>
 #include <eshkol/eshkol.h>
 #include <algorithm>
 #include <cctype>
@@ -179,6 +180,8 @@ void TypeEnvironment::initializeBuiltinTypes() {
                         RuntimeRep::Int64, Value);
     registerBuiltinType(Symbol.id, "Symbol", Universe::U0, 0,
                         RuntimeRep::Pointer, Value);
+    // Bottom: uninhabited, below every type. No source spelling.
+    registerBuiltinType(Never.id, "Never", Universe::U0, 0, RuntimeRep::Erased);
 
     // ===== Type constructors (U1) =====
     auto list_id = registerTypeFamily(List.id, "List", Universe::U1, {"a"},
@@ -501,132 +504,19 @@ const TypeNode* TypeEnvironment::getTypeNode(TypeId id) const {
     return (it != types_.end()) ? &it->second : nullptr;
 }
 
-/**
- * @brief Get a human-readable name for a type.
- *
- * If @p id is a tracked pair type, returns "Pair<car, cdr>" built recursively from the element
- * types; otherwise returns the registered name, or "unknown" if @p id is not registered.
- */
+/** @brief Print any type through the shared gradual relation module. */
 std::string TypeEnvironment::getTypeName(TypeId id) const {
-    // Check if this is a synthetic sum type
-    auto sum_members = getSumMembers(id);
-    if (sum_members) {
-        std::string result = "(+";
-        for (const auto& m : *sum_members) {
-            result += " " + getTypeName(m);
-        }
-        result += ")";
-        return result;
-    }
-    // Check if this is a tracked pair type
-    auto pair_elems = getPairElementTypes(id);
-    if (pair_elems) {
-        return "Pair<" + getTypeName(pair_elems->first) + ", " +
-               getTypeName(pair_elems->second) + ">";
-    }
-    const TypeNode* node = getTypeNode(id);
-    return node ? node->name : "unknown";
+    return TypeRelation(*this).print(id);
 }
 
-/**
- * @brief Check whether @p sub is a subtype of @p super, using a cache to avoid re-walking the
- * type graph.
- *
- * On a cache miss, delegates to isSubtypeUncached() and stores the result.
- */
+/** @brief Compatibility facade; TypeRelation owns the static subtype rules. */
 bool TypeEnvironment::isSubtype(TypeId sub, TypeId super) const {
-    // Check cache
-    auto key = std::make_pair(sub.id, super.id);
-    auto it = subtype_cache_.find(key);
-    if (it != subtype_cache_.end()) {
-        return it->second;
-    }
-
-    bool result = isSubtypeUncached(sub, super);
-    subtype_cache_[key] = result;
-    return result;
+    return TypeRelation(*this).isSubtype(sub, super);
 }
 
-/**
- * @brief Compute (without using the cache) whether @p sub is a subtype of @p super.
- *
- * Handles reflexivity (a type is a subtype of itself), tracked pair types (which are treated as
- * subtypes of the generic Pair type), and otherwise walks the supertype chain from @p sub looking
- * for @p super.
- */
-bool TypeEnvironment::isSubtypeUncached(TypeId sub, TypeId super) const {
-    // Reflexivity
-    if (sub == super) return true;
-
-    // Sum types. `sub <: (+ A B ...)` holds when sub fits any one arm; this is
-    // the rule that lets a value of a concrete arm type (e.g. Vector) satisfy a
-    // parameter declared with an explicit sum annotation. `(+ A B ...) <: super`
-    // holds when *every* arm is a subtype of super (the sum is subsumed only by
-    // a type that covers all its cases, e.g. (+ integer real) <: number).
-    {
-        auto super_members = getSumMembers(super);
-        if (super_members) {
-            for (const auto& arm : *super_members) {
-                if (isSubtype(sub, arm)) return true;
-            }
-            // Fall through so a sum sub can still be checked arm-by-arm below,
-            // but a non-sum sub that matched no arm is not a subtype.
-        }
-        auto sub_members = getSumMembers(sub);
-        if (sub_members) {
-            for (const auto& arm : *sub_members) {
-                if (!isSubtype(arm, super)) return false;
-            }
-            return true;
-        }
-        if (super_members) {
-            return false;  // non-sum sub matched no arm of the sum super
-        }
-    }
-
-    // Tracked pair types are subtypes of Pair (and Pair's supertypes)
-    if (isTrackedPairType(sub)) {
-        if (super == BuiltinTypes::Pair) return true;
-        return isSubtype(BuiltinTypes::Pair, super);
-    }
-
-    // Walk supertype chain
-    const TypeNode* node = getTypeNode(sub);
-    if (!node) return false;
-
-    while (node->supertype.has_value()) {
-        if (node->supertype.value() == super) return true;
-        node = getTypeNode(node->supertype.value());
-        if (!node) return false;
-    }
-
-    return false;
-}
-
-/**
- * @brief Find the least (most specific) common supertype of two types.
- *
- * Walks both types' supertype chains (via getSupertypeChain()) from most specific to most
- * general and returns the first type that appears in both.
- *
- * @return The common supertype, or std::nullopt if none exists.
- */
+/** @brief Join any two types through the shared relation module. */
 std::optional<TypeId> TypeEnvironment::leastCommonSupertype(TypeId a, TypeId b) const {
-    // Same type
-    if (a == b) return a;
-
-    // Get supertype chains
-    auto chain_a = getSupertypeChain(a);
-    auto chain_b = getSupertypeChain(b);
-
-    // Find first common element (going from specific to general)
-    for (const auto& t : chain_a) {
-        for (const auto& u : chain_b) {
-            if (t == u) return t;
-        }
-    }
-
-    return std::nullopt;
+    return TypeRelation(*this).join(a, b);
 }
 
 /**
@@ -642,6 +532,12 @@ std::vector<TypeId> TypeEnvironment::getSupertypeChain(TypeId type) const {
     if (isTrackedPairType(type)) {
         auto pair_chain = getSupertypeChain(BuiltinTypes::Pair);
         chain.insert(chain.end(), pair_chain.begin(), pair_chain.end());
+        return chain;
+    }
+
+    // A function signature sits directly under the generic procedure type.
+    if (getFunctionType(type)) {
+        chain.push_back(BuiltinTypes::Function);
         return chain;
     }
 
@@ -666,6 +562,12 @@ TypeId TypeEnvironment::promoteForArithmetic(TypeId a, TypeId b) const {
 
     // Same type, no promotion needed
     if (a == b) return a;
+
+    // An operation on an operand that never produces a value never produces
+    // one either. (The checker types a recursive call whose result is still
+    // being inferred as Never, so `(+ (car xs) (sum (cdr xs)))` must not turn
+    // that call into a concrete result of its own.)
+    if (a == Never || b == Never) return Never;
 
     // If one operand is Value (top type), use the other operand's type
     // This handles cases like (+ (car lst) 5) where car returns Value
@@ -1086,31 +988,12 @@ std::vector<TypeId> TypeEnvironment::getFunctionParamTypes(TypeId id) const {
 }
 
 /**
- * @brief Build a human-readable name for a function type, e.g. "(Int64, Float64) -> Boolean".
+ * @brief Build a human-readable name for a function type in annotation syntax, e.g.
+ * "(-> Int64 Float64 Boolean)"; a variadic signature marks its rest argument with "...".
  * @return "Function" if @p id is not a registered function type.
  */
 std::string TypeEnvironment::getFunctionTypeName(TypeId id) const {
-    const PiType* pi = getFunctionType(id);
-    if (!pi) {
-        return "Function";
-    }
-
-    std::string result;
-    if (pi->params.size() == 1) {
-        result = getTypeName(pi->params[0].type);
-    } else {
-        result = "(";
-        for (size_t i = 0; i < pi->params.size(); i++) {
-            if (i > 0) result += ", ";
-            result += getTypeName(pi->params[i].type);
-        }
-        result += ")";
-    }
-
-    result += " -> ";
-    result += getTypeName(pi->return_type);
-
-    return result;
+    return isFunctionType(id) ? TypeRelation(*this).print(id) : "Function";
 }
 
 // ============================================================================

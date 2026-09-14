@@ -111,15 +111,20 @@ Index into a parsed array (list) — thin wrapper over `list-ref`.
 20
 ```
 
-### `(json-get-in obj keys)`
+### `(json-get-in obj keys [default])`
 Follow a path of keys into nested objects/arrays. String keys index
-hash-tables; integer keys index lists. Returns `#f` if any step fails.
+hash-tables; integer keys index lists. Returns `default` if any step fails,
+or `#f` when no default is given.
 
 ```scheme
 (display (json-get-in (json-parse "{\"a\":{\"b\":[1,2,3]}}") '("a" "b" 2))) (newline)
+(display (json-get-in (json-parse "{\"a\":{}}") '("a" "b"))) (newline)
+(display (json-get-in (json-parse "{\"a\":{}}") '("a" "b") 0)) (newline)
 ```
 ```
 3
+#f
+0
 ```
 
 ## Serialization
