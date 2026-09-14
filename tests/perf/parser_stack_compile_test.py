@@ -51,6 +51,7 @@ def bounded_stack_executable(source, destination):
 
 def main():
     compiler = Path(sys.argv[1]).resolve()
+    runtime_dir = compiler.parent
     root = Path(__file__).resolve().parents[2]
     scratch = root / ".scratch"
     scratch.mkdir(exist_ok=True)
@@ -59,7 +60,9 @@ def main():
         compiler = bounded_stack_executable(compiler, work / "compiler-8m")
         # A private directory alone still permits -r to build an AOT cache
         # entry. Disable that shortcut so this case exercises ORC in process.
-        env = dict(os.environ, ESHKOL_JIT_CACHE="0",
+        # The Darwin stack-limited copy is outside the build directory. Keep
+        # its runtime paired with the original compiler, not a system install.
+        env = dict(os.environ, ESHKOL_LIB_DIR=str(runtime_dir), ESHKOL_JIT_CACHE="0",
                    ESHKOL_JIT_CACHE_DIR=str(work / "jit-cache"))
         commands = [
             ("stdlib", [str(compiler), "--shared-lib", "-c", "-o",
