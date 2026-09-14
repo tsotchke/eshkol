@@ -12880,3 +12880,149 @@ entries:
       stdlib warning) but still carries declared numeric parameters of ordinary
       functions, so it stays, with its comment corrected and
       declared_numeric_param_join_test.esk pinning it.
+  - id: LE-26
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: closed
+    closed_at: "df422c5a"
+    closed_by: "branch fix/v135-typecheck-control-bodies"
+    family: type-system/control-bodies
+    title: "type checker: the subexpressions of cond, case, match, when, unless, do, guard, and/or, set!, quasiquote, dynamic-wind, call/cc, values, call-with-values, let-values, raise, with-region and every non-final begin expression were never synthesized, so a wrong argument there was silent although the same call warned at top level"
+    repro: >-
+      `(define (area (w : number) (h : number)) (* w h))` then
+      `(define (f flag) (cond (flag (area "wide" 3)) (else 0)))`, compiled with
+      `eshkol-run --emit-object`. At top level `(area "wide" 3)` reports
+      "argument 1 of 'area': expected Number, got String"; inside the cond clause
+      it reported nothing. The same holds for a clause test, a case key, a match
+      scrutinee or pattern predicate, a when/unless test or body, a do init, test,
+      body, step or result, a guard body or handler, an and/or operand, a set!
+      value, a quasiquote escape, the before/thunk/after of dynamic-wind (and so a
+      parameterize body), a call/cc procedure, a values operand, a
+      call-with-values producer or consumer, a let-values producer or body, a
+      raise operand, a with-region body, a computed callee, a tensor element, a
+      calculus operator's point, and every expression but the last of a begin or
+      a multi-expression body.
+    observed_before: >-
+      43 probe programs, one call per position, compiled against the unmodified
+      base (666ccbb6): 30 printed no warning. The warning appeared only for top
+      level and for positions inside if, let, let*, lambda, case-lambda, delay,
+      the, with-exception-handler and a vector call. Named-let widening (LE-25)
+      never saw a recursive call sitting in a cond clause, so it neither widened
+      nor checked it.
+    correct: >-
+      Every evaluated subexpression is checked in the scope it runs in, and a
+      wrong argument reports the same message wherever it sits.
+    root_cause: >-
+      TypeChecker::synthesizeOperationTask() in lib/types/type_checker.cpp
+      returned a fixed builtin type for these forms without synthesizing any
+      operand (Value for the control, continuation, multiple-values, quoting and
+      region forms; Boolean for and/or; Null for set!), and the sequence rule
+      synthesized only the last expression. A computed callee other than an
+      inline lambda was never synthesized either.
+    fix: >-
+      Every form whose subexpressions are evaluated synthesizes them with the
+      typing rule of the form. Clause tests are expressions; each branch body runs
+      in its own scope, so backward inference inside one branch cannot narrow an
+      enclosing function's parameter, and cond/when/and bodies see their test's
+      predicate refinements; linear-usage counters take the maximum over exclusive
+      branches. A multi-branch form's result is the join of its branch types plus
+      the value it yields when no branch runs (Boolean for cond, case, when and
+      unless; nothing for match, which raises, and guard, which re-raises). A
+      failing branch contributes Value instead of failing the form. Match pattern
+      variables are the scrutinee's type at top level, the proven type under a
+      narrowing predicate, and Value inside cons/list/or patterns; a guard
+      condition variable is Value; let-values variables are Value. A do loop
+      variable is the fixpoint join of its init and step, checked speculatively
+      with the LE-25 rollback; unlike a named let it adopts a Value join, because
+      a step is not itself an argument check. and yields the join of Boolean with
+      its last operand, or the join of all operands. dynamic-wind and
+      call-with-values yield their thunk's or consumer's codomain; with-region and
+      borrow yield their body's type.
+      Descending exposed four checker imprecisions, fixed at the rule:
+      (1) a calculus operator given an evaluation point was typed Function, so
+      (approx= (derivative f 2.0) 12.0 1e-6) warned "expected Number, got ->";
+      it is now Value with a point and Function without;
+      (2) cdr of an argument not known to be a pair or list was typed List, so a
+      parser's (value . next-index) tail warned "expected Number, got List" in
+      lib/core/memory_store.esk:200 and :207; it is now Value;
+      (3) ascriptionIsBelievable() judged a function signature and the procedure
+      or Closure type disjoint, so ((the procedure f) 7) warned; callable types
+      are now mutually believable;
+      (4) LE-25's named-let widening refused every join that reaches Value, so a
+      `#f` "nothing yet" accumulator fed a number, (let loop-j ((best #f)) ...
+      (loop-j (+ j 1) a i j)), warned "expected Boolean, got Number" in 19
+      examples/mathematics programs and one tests/math_acceptance program; a
+      Boolean slot now adopts the Value join, while Int64 or Pair fed a String is
+      still reported.
+    observed_after: >-
+      All 43 probes print exactly the top-level message. Standard-library compile
+      (`eshkol-run --shared-lib -c lib/stdlib.esk`): 0 [WARN] before, 0 after.
+      run_typesystem_tests.sh: 62/62 on the base tree; the base compiler on the
+      new tree fails 27/114 (the 26 new reject fixtures, and
+      control_branch_join_ok_test.esk, whose `(label (or "a" "b"))` the base typed
+      Boolean); the fixed compiler passes 114/114.
+    evidence: >-
+      tests/typesystem/control_*_reject_test.esk and control_*_ok_test.esk, one
+      pair per form (cond, case, match, when, unless, do, guard, and, or, begin,
+      set!, quasiquote, dynamic-wind, parameterize, call/cc, values,
+      call-with-values, let-values, raise, with-region, computed callee,
+      derivative point), plus control_match_bound_variable, control_do_bound_variable,
+      control_guard_bound_variable and control_branch_join reject/ok pairs, all in
+      the existing run_typesystem_tests.sh sweep. Corpus sweep on base 666ccbb6: all 2187 .esk files under tests/ and
+      examples/ compiled compile-only with a base and a fixed compiler built from
+      that base; type diagnostics or exit status differ in 56 files. 27 are the
+      fixtures above. 4 are newly reported genuine diagnostics:
+      tests/error_handling/bounds_check_test.esk:18 and
+      tests/vm_parity/corpus/34_bounds_contract.esk:43 (a literal -1 vector-ref
+      index inside guard, deliberate);
+      tests/vm_parity/corpus/78_vector_scalar_arith_dispatch.esk:54 (a vector
+      passed to a numeric parameter, which that file documents as a type error);
+      tests/vm/json_surface_regression.esk:46-48 (json-get-in called with three
+      arguments against its two-parameter definition in lib/core/json.esk:653;
+      the frontend already rejects the same call at lines 12, 18 and 24, so the
+      file exits 1 before and after). 23 lose a pre-existing false positive: the
+      calculus-operator result in tests/ad (11 files),
+      tests/v1_3_edge_cases/ad_input2_test.esk,
+      tests/vm_parity/corpus/hessian_capture_scalar.esk,
+      tests/collections/tensor_apply_callable_test.esk,
+      tests/features/extreme_stress_test_v2.esk and
+      tests/types/comprehensive_type_test.esk; the Boolean-slot accumulator in
+      examples/mathematics_homotopy_colimits_grothendieck.esk:281 and three
+      tests/edge_matrix/generated let-family files; and three
+      qubit_linear_*_branches_ok fixtures whose cond/case/match of Qubit branches
+      now join to Qubit. 1 changes wording only:
+      tests/autodiff/gradient_callable_arity_test.esk:67 still warns that the
+      body does not match the Vector return annotation, now naming the body type
+      Value instead of ->. 1 is a harness artifact:
+      tests/control_flow/continuation_edge_test.esk exited 142 in the after run
+      because its compile hit the 180 s alarm on a cold AOT module cache (the
+      before run hit a warm one); compiled cold with fresh cache directories it
+      takes 191 s on the base and 162 s fixed, exit 0 and no type diagnostic on
+      both. No new false positive remains.
+      run_vm_parity: 338 passed, 0 failed. ctest with every target built:
+      542/543; the failure is build_fingerprint_gate, which flagged parity
+      fingerprints recorded against the pre-rebase binary and a binary older
+      than the rebased (content-identical) sources.
+      After rebuilding and re-running run_vm_parity (338 passed, 0 failed) the
+      freshness error is gone and the fresh records match the current binaries;
+      the gate still fails on the four older records, from earlier parity runs in
+      this worktree, kept in the gitignored local trace. The base worktree, with
+      a single run history, passes the same gate.
+      run_compiler_assurance.py and --verify: status PASS, exit 0.
+      gen_api_docs.py --check: up to date.
+    caught_by: [direct-measurement]
+    missed_by: [run_typesystem_tests, ctest, icc-smoke]
+    notes: >-
+      Filed LOUD-ERROR by the SW-63 and LE-25 precedent: a type-checker verdict on
+      stderr, never a wrong value. Found while closing LE-25, which recorded it as
+      an open finding. Findings recorded, not fixed here:
+      (1) synthesizeIfTask() prefers the concrete branch when the other is Value
+      and returns the then-branch type when the join fails, which claims more than
+      the branches show; the new multi-branch rules use the plain join, so `if`
+      and an equivalent cond can differ in result type.
+      (2) A function signature type is not a node in the supertype graph, so
+      isSubtype(signature, Function) is false and such a type prints as "unknown";
+      only the ascription rule is corrected here.
+      (3) A define's return-annotation check reports a body of type Value against
+      the annotation (gradient_callable_arity_test.esk:67), where gradual typing
+      would accept it.

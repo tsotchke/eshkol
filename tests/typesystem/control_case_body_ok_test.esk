@@ -1,0 +1,19 @@
+;; Type System Test: well-typed code inside a `case` key and clause body stays silent now that
+;; the checker synthesizes it (no false positive from descending into it).
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (pick n)
+  (case n
+    ((1 2) (area n 2))
+    ((3) => (lambda (k) (area k k)))
+    (else (label "other"))))
+(display (pick 1))
+(newline)
+
+(display (area 2 3))
+(newline)

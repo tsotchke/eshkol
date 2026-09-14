@@ -1,0 +1,20 @@
+;; Type System Test: a wrong argument inside `dynamic-wind`'s before, thunk and after is reported, with the
+;; same message it gets at top level. The checker used to give this form a
+;; fixed type without synthesizing its subexpressions, so it was silent.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN]
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Int64
+;; EXPECT-STDERR: argument 1 of 'area': expected Number, got String
+;; EXPECT-STDERR: argument 2 of 'area': expected Number, got String
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (never-called)
+  (dynamic-wind (lambda () (label 42))
+                (lambda () (area "wide" 3))
+                (lambda () (area 5 "tall"))))
+
+(display (area 2 3))
+(newline)

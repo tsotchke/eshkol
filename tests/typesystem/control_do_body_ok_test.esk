@@ -1,0 +1,18 @@
+;; Type System Test: well-typed code inside a `do` loop's init, test, body, step and result stays silent now that
+;; the checker synthesizes it (no false positive from descending into it).
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (sum-areas n)
+  (do ((i 0 (+ i 1))
+       (acc 0.0 (+ acc (area i 2))))
+      ((= i n) acc)))
+(display (sum-areas 3))
+(newline)
+
+(display (area 2 3))
+(newline)
