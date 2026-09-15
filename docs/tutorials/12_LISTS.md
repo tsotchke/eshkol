@@ -39,8 +39,8 @@ built in, from basic cons/car/cdr to sorting and partitioning.
 
 (reverse '(1 2 3))           ;; => (3 2 1)
 (append '(1 2) '(3 4))       ;; => (1 2 3 4)
-(take 3 '(a b c d e))        ;; => (a b c)
-(drop 2 '(a b c d e))        ;; => (c d e)
+(take '(a b c d e) 3)        ;; => (a b c)
+(drop '(a b c d e) 2)        ;; => (c d e)
 (list-copy '(1 2 3))         ;; => (1 2 3) (fresh copy)
 (filter even? '(1 2 3 4 5))  ;; => (2 4)
 (partition even? '(1 2 3 4 5))
@@ -93,13 +93,13 @@ built in, from basic cons/car/cdr to sorting and partitioning.
 ```scheme
 (require core.list.sort)
 
-(sort < '(3 1 4 1 5 9 2 6))
+(sort '(3 1 4 1 5 9 2 6) <)
 ;; => (1 1 2 3 4 5 6 9)
 
-(sort > '(3 1 4 1 5 9 2 6))
+(sort '(3 1 4 1 5 9 2 6) >)
 ;; => (9 6 5 4 3 2 1 1)
 
-(sort string<? '("banana" "apple" "cherry"))
+(sort '("banana" "apple" "cherry") string<?)
 ;; => ("apple" "banana" "cherry")
 ```
 
