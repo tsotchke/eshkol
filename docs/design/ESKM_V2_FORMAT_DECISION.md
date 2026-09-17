@@ -1,6 +1,6 @@
 # ESKM v2 format decision: an extensible metadata envelope
 
-- **Status:** Proposed; no v2 writer or reader is authorized by this document
+- **Status:** Proposed; an internal test-only preflight prototype is staged below; public v2 reader/writer integration remains gated
 - **Date:** 2026-09-06
 - **Technical review updated:** 2026-09-07
 - **Author:** Gabriel “Gabe” Kahen
@@ -28,9 +28,10 @@ is smaller: establish a byte-level v2 envelope that can carry advisory metadata
 and can distinguish skippable extensions from features that change tensor
 meaning.
 
-This is a design decision, not an implementation change. Existing public save
-APIs continue to emit v1. Implementation begins only after this byte layout is
-reviewed.
+This remains a proposed design decision. Existing public save APIs continue to
+emit v1. The test-only preparatory work described below exercises the proposal
+without accepting it; public v2 integration begins only after byte-level review
+and the applicable implementation gates are satisfied.
 
 ## Decision
 
@@ -268,8 +269,9 @@ count must be at most `file_size - 28` before conversion to a host-sized offset.
 Zero extensions and zero records are allowed independently.
 
 Core tensor limits and aggregate memory accounting remain GK-SER-02
-prerequisites. Before a v2 parser ships, the normative reference must tabulate
-each backend's numeric record/name/rank/dimension/element and peak-memory limits,
+prerequisites. Before a v2 parser enters a public reader, the normative reference
+must tabulate each backend's numeric record/name/rank/dimension/element and
+peak-memory limits,
 including the input buffer, validation scratch, and materialized objects, and
 the parser must enforce them before the corresponding allocation. The file cap
 alone is not a peak-memory bound. This proposal does not invent or expand those
@@ -279,7 +281,9 @@ A file may be wire-valid but rejected as unsupported-resource when it exceeds
 these caps or a backend's documented materialization limits. Cross-engine
 acceptance is required within the common supported profile; resource refusals
 outside it must be explicit. Numeric cap tables and boundary evidence must ship
-with the parser, not be deferred until the final implementation PR.
+with public reader integration, not be deferred until the final implementation
+PR. The preparatory parser below has its own explicit scratch-memory and
+provisional admission limits; it does not satisfy backend admission gates.
 
 CRC-32 detects accidental corruption only. It is not authentication and must
 not be presented as protection against a malicious writer.
@@ -287,8 +291,10 @@ not be presented as protection against a malicious writer.
 ## Decision lifecycle
 
 Maintainer byte-level review advances this document from **Proposed** to
-**Accepted** and authorizes implementation. Acceptance of the decision does not
-claim that v2 exists. The status advances to **Implemented** only after the
+**Accepted** and authorizes the implementation slices below. The limited
+test-only preparation described next does not require or establish that status
+change. Acceptance of the decision does not claim that v2 exists. The status
+advances to **Implemented** only after the
 gates below pass and the normative `docs/reference/tensors/eskm-v2.md` ships.
 
 The decision review must explicitly settle the header offsets and CRC example,
@@ -301,6 +307,31 @@ separate review prerequisite for the writer slice.
 
 Until then, GK-SER-05 has completed its design slice but not its implementation
 or roadmap acceptance.
+
+### Internal test-only preparation while Proposed
+
+The private C17 preflight validator in `lib/core/eskm_v2_preflight.c` makes the
+proposed grammar executable before maintainer acceptance. It is compiled into
+private test targets only, with no public loading/saving dispatch, installed
+header, tensor construction, or filesystem I/O. Its
+[experimental internal reference](../reference/tensors/eskm-v2.md) describes
+that prototype, not an accepted public v2 contract.
+
+Given an immutable caller-owned buffer, explicit limits, and caller-owned
+workspace, it either validates the entire container and returns ranges/counts,
+or clears the result and returns a deterministic error and byte offset. It
+allocates no heap memory. Annotation-key spans occupy a fixed 16 KiB workspace;
+all other state is fixed-size. The parser applies the provisional caps above,
+which callers may lower but cannot raise. Zero is an actual zero limit.
+
+This preparation covers the wire-level part of GK-SER-05a and supplies bounded
+fixtures and standalone C/C++ tests. It does **not** complete GK-SER-05a,
+authorize public v2 I/O, claim four-engine compatibility, or approve backend
+resource policies. Structural validation cannot establish that a backend can
+materialize a tensor. File admission before buffering, numeric backend caps,
+aggregate peak-memory accounting, and transactional materialization cleanup
+remain prerequisites for public reader integration. Review may still change
+this prototype's wire contract, interface, limits, and fixtures.
 
 ## Required implementation gates
 

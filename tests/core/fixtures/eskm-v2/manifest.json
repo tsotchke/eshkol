@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "format": "ESKM",
+  "format_version": 2,
+  "status": "experimental proposal; no public v2 producer",
+  "provenance": {
+    "kind": "independent specification construction",
+    "specification": "docs/design/ESKM_V2_FORMAT_DECISION.md",
+    "base_commit": "0901264ccef7bfad307a1965188bf7658e68cc32",
+    "encoding": "Python standard-library struct.pack little-endian integers; no runtime serializer",
+    "checksum": "Python standard-library zlib.crc32 (CRC-32/ISO-HDLC)",
+    "reconstruction": "scripts/check_eskm_v2_fixtures.py reconstructs exact bytes from this metadata"
+  },
+  "fixtures": [
+    {
+      "file": "empty.eskm",
+      "size": 28,
+      "sha256": "9527d55beb9404d80f43bf26ba019a51f9d65f7885244073f1289d1817aeb060",
+      "expected": {
+        "status": "ok",
+        "required_features": 0,
+        "crc32": "c3e87005",
+        "extensions": [],
+        "records": []
+      }
+    },
+    {
+      "file": "raw-bits.eskm",
+      "size": 104,
+      "sha256": "70ba16c541f37025e4f887bd058ba442736bb383715278d3865244d456e6e954",
+      "expected": {
+        "status": "ok",
+        "required_features": 0,
+        "crc32": "5d88d42a",
+        "extensions": [],
+        "records": [
+          {
+            "name_hex": "7700ff",
+            "dimensions": [
+              2,
+              3
+            ],
+            "dtype": 0,
+            "elements_hex": [
+              "0000000000000000",
+              "8000000000000000",
+              "3ff0000000000000",
+              "7ff0000000000000",
+              "fff0000000000000",
+              "7ff8000000001234"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "annotations-scalar.eskm",
+      "size": 107,
+      "sha256": "9c79c8a27425a36cf6c5d5dff630409bb52b2835de3a65c3b19725a84b006ca1",
+      "expected": {
+        "status": "ok",
+        "required_features": 0,
+        "crc32": "8e41b2eb",
+        "extensions": [
+          {
+            "type": 2147483648,
+            "payload_hex": ""
+          },
+          {
+            "type": 1,
+            "annotations": [
+              {
+                "key_hex": "ff00",
+                "value_hex": ""
+              },
+              {
+                "key_hex": "61",
+                "value_hex": "00fe"
+              },
+              {
+                "key_hex": "6100",
+                "value_hex": "ff"
+              }
+            ]
+          },
+          {
+            "type": 2147483648,
+            "payload_hex": "aa55"
+          }
+        ],
+        "records": [
+          {
+            "name_hex": "",
+            "dimensions": [],
+            "dtype": 0,
+            "elements_hex": [
+              "bff0000000000000"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
