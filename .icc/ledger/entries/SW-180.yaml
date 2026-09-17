@@ -1,0 +1,44 @@
+id: SW-180
+bucket: SILENT-WRONG
+family: ad/complex-carrier
+status: open
+needs_decision: true
+title: "a derivative taken through a complex value is silently 0: the tangent is dropped when a differentiated number enters make-rectangular or complex arithmetic"
+repro: >-
+  (1) (display (derivative (lambda (x) (real-part (make-rectangular (* x x) 0.0))) 3.0))
+  (2) (display (derivative (lambda (x) (magnitude (make-rectangular x 4.0))) 3.0))
+  (3) (require signal.filters)
+      (define (b0 c) (vector-ref (car (butterworth-lowpass 2 c)) 0))
+      (display (derivative b0 0.2))
+observed: >-
+  All three print `0`, exit 0, no diagnostic, under `eshkol-run -r`, from an
+  AOT binary and on the bytecode VM ((1) measured on the VM). For (3) the
+  central difference (b0(0.2001) - b0(0.1999)) / 0.0002 is 0.5665767907.
+  butterworth-lowpass computes its poles in complex arithmetic, so every
+  derivative with respect to a filter cutoff is 0. Derivatives through the
+  real-valued parts of the same library are correct: fir-filter and
+  apply-window give 5 and 13 where those are the exact answers.
+correct: >-
+  (1) 6, (2) 0.6, (3) 0.5665767907... Alternatively a diagnostic at the point
+  where a differentiated value enters a complex number, until a complex
+  carrier exists.
+evidence: >-
+  Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+  arm64 macOS. docs/tutorials/05_SIGNAL_PROCESSING.md Part 5 differentiates
+  filtered signal power with respect to the Butterworth cutoff;
+  scripts/doc_audit/check_doc_examples.py reports MISMATCH expected '73.81...'
+  got '0' on JIT and AOT (73.815 is the central difference).
+caught_by: [doc-example-gate]
+missed_by: [run_ad_oracle, run_ad_exactness_gate, doc_audit]
+notes: >-
+  The documentation disagrees with itself, which is why this needs a ruling
+  rather than an edit. docs/reference/ad/architecture.md ("Numeric boundary")
+  and docs/breakdown/AUTODIFF.md state that complex values have no derivative
+  carrier. docs/tutorials/05_SIGNAL_PROCESSING.md says every signal-processing
+  function composes with autodiff, docs/tutorials/06_EXACT_ARITHMETIC.md says
+  complex numbers integrate with autodiff, and docs/KNOWN_ISSUES.md lists
+  complex numbers as a first-class type with AD support. The tutorials were
+  left as the statement of intent and the example carries
+  `doc-example: known-defect SW-180`. Filed SILENT-WRONG because a wrong
+  derivative with exit 0 and no diagnostic is that bucket's definition; a
+  refusal at the boundary would make it a loud limitation.

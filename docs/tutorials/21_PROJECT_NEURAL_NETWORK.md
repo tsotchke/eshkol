@@ -24,6 +24,7 @@ Input    Output
 
 ## The Complete Program
 
+<!-- doc-example: known-defect SW-182: the network learns XOR; natively (gradient loss w1 ... b3) is taken at 0 on every step, so the weights never move -->
 ```scheme
 ;; ═══════════════════════════════════════════════════════
 ;; XOR Neural Network — trained with compiler-native AD

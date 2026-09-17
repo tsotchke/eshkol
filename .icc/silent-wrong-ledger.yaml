@@ -13311,3 +13311,206 @@ entries:
       change adds that execution, and the relation contract passed. The prior
       standalone native error therefore came from invoking the wrong substrate,
       not a swallowed failing test.
+  - id: SW-179
+    bucket: SILENT-WRONG
+    family: native/vector-set-numeric-store
+    status: open
+    needs_decision: true
+    title: "native: vector-set! of an exact integer into a `#(...)` literal stores the integer's bit pattern as a double, and reading the slot back with vector-ref crashes"
+    repro: >-
+      (1) (define v #(10 20 30))
+          (vector-set! v 0 99)
+          (display v)
+      (2) (define z #(1.5 2.5))
+          (vector-set! z 1 7)
+          (display (vector-ref z 1))
+    observed: >-
+      (1) prints `#(4.9e-322 20 30)` under `eshkol-run -r` and from an AOT binary,
+      exit 0, no diagnostic. 4.9e-322 is the 64-bit integer 99 read as an IEEE
+      double. (2) prints nothing and dies with "fatal signal: SIGSEGV
+      (segmentation fault) at address 0xffffffffffffffff" on both native engines.
+      Storing an inexact value is correct: `(vector-set! w 0 99.0)` prints
+      `#(99 20 30)`. A vector built with `(vector 10 20 30)` is correct for both.
+      The bytecode VM prints `#(99 20 30)` for (1).
+    correct: >-
+      `#(99 20 30)` and `7`. docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md,
+      "Element Access and Mutation", documents exactly program (1) with the result
+      `#(99 20 30 40 50)`, and R7RS vector-set! stores the object it is given.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+      arm64 macOS, JIT and AOT, by scripts/doc_audit/check_doc_examples.py: the
+      tutorial example fails with MISMATCH expected '#(99 20 30 40 50)' got
+      '#(4.9e-322 20 30 40 50)' on both engines.
+    caught_by: [doc-example-gate]
+    missed_by: [run_all_tests, vm_parity, doc_audit]
+    notes: >-
+      Found by executing the tutorials. The example is marked
+      `doc-example: known-defect SW-179` in the tutorial and is still executed on
+      every gate run; the gate fails the day it passes, so the marker cannot
+      outlive the defect. Not root-caused here: the `#(...)` literal is
+      tensor-backed (double storage), and the store path appears to write the
+      tagged integer payload without converting it.
+  - id: SW-180
+    bucket: SILENT-WRONG
+    family: ad/complex-carrier
+    status: open
+    needs_decision: true
+    title: "a derivative taken through a complex value is silently 0: the tangent is dropped when a differentiated number enters make-rectangular or complex arithmetic"
+    repro: >-
+      (1) (display (derivative (lambda (x) (real-part (make-rectangular (* x x) 0.0))) 3.0))
+      (2) (display (derivative (lambda (x) (magnitude (make-rectangular x 4.0))) 3.0))
+      (3) (require signal.filters)
+          (define (b0 c) (vector-ref (car (butterworth-lowpass 2 c)) 0))
+          (display (derivative b0 0.2))
+    observed: >-
+      All three print `0`, exit 0, no diagnostic, under `eshkol-run -r`, from an
+      AOT binary and on the bytecode VM ((1) measured on the VM). For (3) the
+      central difference (b0(0.2001) - b0(0.1999)) / 0.0002 is 0.5665767907.
+      butterworth-lowpass computes its poles in complex arithmetic, so every
+      derivative with respect to a filter cutoff is 0. Derivatives through the
+      real-valued parts of the same library are correct: fir-filter and
+      apply-window give 5 and 13 where those are the exact answers.
+    correct: >-
+      (1) 6, (2) 0.6, (3) 0.5665767907... Alternatively a diagnostic at the point
+      where a differentiated value enters a complex number, until a complex
+      carrier exists.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+      arm64 macOS. docs/tutorials/05_SIGNAL_PROCESSING.md Part 5 differentiates
+      filtered signal power with respect to the Butterworth cutoff;
+      scripts/doc_audit/check_doc_examples.py reports MISMATCH expected '73.81...'
+      got '0' on JIT and AOT (73.815 is the central difference).
+    caught_by: [doc-example-gate]
+    missed_by: [run_ad_oracle, run_ad_exactness_gate, doc_audit]
+    notes: >-
+      The documentation disagrees with itself, which is why this needs a ruling
+      rather than an edit. docs/reference/ad/architecture.md ("Numeric boundary")
+      and docs/breakdown/AUTODIFF.md state that complex values have no derivative
+      carrier. docs/tutorials/05_SIGNAL_PROCESSING.md says every signal-processing
+      function composes with autodiff, docs/tutorials/06_EXACT_ARITHMETIC.md says
+      complex numbers integrate with autodiff, and docs/KNOWN_ISSUES.md lists
+      complex numbers as a first-class type with AD support. The tutorials were
+      left as the statement of intent and the example carries
+      `doc-example: known-defect SW-180`. Filed SILENT-WRONG because a wrong
+      derivative with exit 0 and no diagnostic is that bucket's definition; a
+      refusal at the boundary would make it a loud limitation.
+  - id: SW-181
+    bucket: LOUD-ERROR
+    subtag: structural
+    family: ad/dense-tensor-operands
+    status: open
+    needs_decision: false
+    title: "native: tensor-dot refuses the differentiated result of matmul, so gradient of a quadratic form x . (A x) raises a type error"
+    repro: >-
+      (display (gradient (lambda (x) (tensor-dot x (matmul (eye 3) x)))
+                         #(1.0 2.0 3.0)))
+    observed: >-
+      "Type error in tensor-dot: expected tensor, got ad-node", exit 1, under
+      `eshkol-run -r` and from an AOT binary. Each half works alone:
+      (gradient (lambda (x) (tensor-dot x x)) ...) is #(2 4 6),
+      (gradient (lambda (x) (tensor-sum (matmul (eye 3) x))) ...) is #(1 1 1), and
+      (gradient (lambda (x) (tensor-dot x (tensor-scale x 2.0))) ...) is #(4 8 12).
+    correct: >-
+      #(2 4 6): the gradient of x . (I x) is 2x.
+      docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md, "Integration with
+      Autodiff", documents this program as the example of differentiable tensor
+      operations.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+      arm64 macOS, JIT and AOT, by scripts/doc_audit/check_doc_examples.py (EXIT 1
+      with the diagnostic above on both engines).
+    caught_by: [doc-example-gate]
+    missed_by: [run_ad_oracle, run_dense_tensor_ad_gate, doc_audit]
+    notes: >-
+      Loud on the native engines, so LOUD-ERROR. The example carries
+      `doc-example: known-defect SW-181`. tensor-dot accepts a dense AD node for
+      its first operand and for a tensor-scale result, so the missing case looks
+      like the matmul result's carrier kind rather than tensor-dot as a whole.
+  - id: SW-182
+    bucket: SILENT-WRONG
+    family: ad/gradient-scalar-point-arguments
+    status: open
+    needs_decision: true
+    title: "native: (gradient f a b ...) with the point given as separate scalar arguments differentiates at 0 unless every argument is a literal, so a gradient-descent loop written that way never moves off its first gradient"
+    repro: >-
+      (define (loss a b) (+ (* (- a 3.0) (- a 3.0)) (* (- b 1.0) (- b 1.0))))
+      (define p 0.6) (define q 0.2)
+      (display (gradient loss 0.6 0.2))
+      (display (gradient loss p q))
+      (display (gradient loss (+ p 0.0) (+ q 0.0)))
+      (display (gradient loss (list p q)))
+    observed: >-
+      `#(-4.8 -1.6)`, `#(-6 -2)`, `#(-6 -2)`, `#(-4.8 -1.6)` under `eshkol-run -r`
+      and from an AOT binary, exit 0, no diagnostic. #(-6 -2) is the gradient at
+      (0, 0): a point argument that is a variable, a parameter or any other
+      non-literal expression is read as 0. The literal form and the documented
+      `(list ...)` point form are correct. The bytecode VM answers #(-4.8 -1.6)
+      for all four.
+      In a loop the defect compounds: 100 steps of
+      (train (- a (* lr (vector-ref g 0))) (- b (* lr (vector-ref g 1))) ...)
+      from (0, 0) with lr 0.1 end at (60.0 20.0) natively, 100 times the first
+      step, and at (3.0 1.0) on the VM.
+    correct: >-
+      #(-4.8 -1.6) for every form, or a compile-time refusal of the scalar-argument
+      form if only literals are meant to be accepted.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+      arm64 macOS, JIT and AOT. Three tutorial programs are written this way and
+      none of them works natively:
+      docs/tutorials/21_PROJECT_NEURAL_NETWORK.md trains XOR for 5000 epochs and
+      prints 0.5485 / 0.5653 / 0.5265 / 0.5448 with a final loss of
+      1.0108004956021113, which is exactly the loss at the initial weights; the
+      VM prints 0.0079 / 0.9909 / 0.9924 / 0.0070 and a loss of 0.000252.
+      docs/tutorials/24_PROJECT_OPTIMISATION.md problem 1 reports the Rosenbrock
+      minimum at (19.99, 0) with f = 16000360.99 against (0.9944, 0.9888) and
+      f = 3.14e-05 on the VM; problem 3 is written the same way.
+      scripts/doc_audit/check_doc_examples.py reports all three.
+    caught_by: [doc-example-gate]
+    missed_by: [run_ad_oracle, run_ad_exactness_gate, run_dense_tensor_ad_gate, doc_audit]
+    notes: >-
+      docs/reference/ad/operators.md ("Accepted point types") lists vector, tensor,
+      `#(...)`, scalar and `(list ...)` points and does not list separate scalar
+      arguments, but the compiler accepts them and is right for literals, and
+      docs/tutorials/24_PROJECT_OPTIMISATION.md teaches the form by name
+      ("In Eshkol: `(gradient f x y)` -- that's it"). The three examples carry
+      `doc-example: known-defect SW-182`. Tutorial 24 problem 3 also reaches
+      SW-183.
+  - id: SW-183
+    bucket: LOUD-ERROR
+    subtag: structural
+    family: ad/closure-capture-through-map
+    status: open
+    needs_decision: false
+    title: "a derivative through `map` with a lambda that captures the differentiated variable is 0, with `Invalid type for int64 storage value: 6` on stderr and exit status 0"
+    repro: >-
+      (define (f a) (fold-left + 0.0 (map (lambda (x) (* a x)) '(1.0 2.0 3.0))))
+      (display (derivative f 2.0))
+    observed: >-
+      Prints `0` after three lines of "ERROR: Invalid type for int64 storage
+      value: 6" on stderr, exit 0, under `eshkol-run -r` and from an AOT binary.
+      The same sum written as a named-let loop over the list prints 6, and
+      (fold-left + 0.0 (list (* a 1.0) (* a 2.0))) prints 3, so the loss is in the
+      list `map` builds from the capturing lambda, not in fold-left.
+    correct: >-
+      6.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+      arm64 macOS. Two tutorial programs compute their loss with this
+      map-then-fold shape. docs/tutorials/26_PROJECT_SELF_IMPROVING.md maps an
+      internal `define` that captures the three coefficients: under
+      `eshkol-run -r` it writes the diagnostic on every step, reports
+      "Learned coefficients: 1 0 0" and leaves the loss at 13.16, while the AOT
+      binary of the same file is correct (loss 0.0112), so that capture shape
+      fails on the JIT only. docs/tutorials/24_PROJECT_OPTIMISATION.md problem 3
+      maps a lambda over its data: natively it writes 75000 of these diagnostics in
+      5000 steps, reports "Fitted: 0x^2 + 0x + 0" with MSE 491.11 and exits 0,
+      where an independent gradient-descent computation gives
+      0.828x^2 + 0.900x + 1.026 with MSE 0.0183.
+    caught_by: [doc-example-gate]
+    missed_by: [run_ad_oracle, doc_audit]
+    notes: >-
+      Filed LOUD-ERROR because a diagnostic is printed, although the exit status
+      is 0 and the value is wrong; scripts/doc_audit/check_doc_examples.py fails
+      an example that writes an error diagnostic for that reason. Tutorial 26
+      carries `doc-example: known-defect SW-183`; tutorial 24 problem 3 carries
+      SW-182, the first defect it reaches.
