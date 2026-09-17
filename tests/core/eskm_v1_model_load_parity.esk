@@ -1,4 +1,5 @@
-;; ESKM v1 producer/consumer compatibility over the backend-common subset.
+;; Historical ESKM v1 fixtures: every engine preserves metadata and exact bytes.
+;; The shell oracle compares whole files, including signed zero and NaN bits.
 
 (define failures 0)
 
@@ -17,22 +18,18 @@
   (let ((dtype (tensor-dtype tensor)))
     (or (equal? dtype 'f64) (equal? dtype "f64"))))
 
-(define engine (or (getenv "ESKM_PARITY_ENGINE") "jit"))
-(define native-engine?
-  (or (string=? engine "jit") (string=? engine "aot")))
+(define control (or (getenv "ESKM_PARITY_CONTROL") ""))
 
-(define (check-tensor base tensor shape length values)
+(define (check-tensor base tensor shape length payload-check)
   (check (label base " is a tensor") (tensor? tensor))
   (if (tensor? tensor)
       (begin
         (check (label base " rank/dimensions")
                (equal? (tensor-shape tensor) shape))
         (check (label base " dtype") (f64-dtype? tensor))
-        (if native-engine?
-            (check (label base " element count")
-                   (= (tensor-length tensor) length))
-            #t)
-        (check (label base " payload values") (values tensor)))
+        (check (label base " element count")
+               (= (vector-length (tensor-data tensor)) length))
+        (check (label base " payload values") (payload-check tensor)))
       #f))
 
 (define (check-matrix-model base path rewrite-path)
@@ -59,36 +56,92 @@
                  (model-save rewrite-path loaded)))
         (fail (label base " list structure")))))
 
-(define (single-record label-text loaded shape length values)
+(define (single-record label-text loaded shape length payload-check)
   (if (and (pair? loaded) (null? (cdr loaded)))
       (let* ((entry (car loaded))
              (name (car entry))
              (tensor (cdr entry)))
         (check (label label-text " empty name") (equal? name ""))
-        (check-tensor label-text tensor shape length values))
+        (check-tensor label-text tensor shape length payload-check))
       (fail (label label-text " list structure"))))
 
-(define (check-accepted-fixtures)
-  (let ((ordinary (model-load "ordinary-2x3.eskm")))
-    (single-record
-      "ordinary-2x3" ordinary '(2 3) 6
-      (lambda (tensor)
-        (and (= (tensor-ref tensor 0) 1.0)
-             (= (tensor-ref tensor 1) -2.5)
-             (= (tensor-ref tensor 2) 0.0))))
-    (check "ordinary-2x3 exact rewrite"
-           (and (pair? ordinary)
-                (model-save "rewrite-ordinary-2x3.eskm" ordinary))))
+(define (scalar-values tensor)
+  (= (vector-ref (tensor-data tensor) 0)
+     (if (string=? control "payload") 42.0 42.5)))
 
-  (let ((rank8 (model-load "rank8.eskm")))
-    (single-record
-      "rank8" rank8 '(1 1 1 1 1 1 1 1) 1
-      (lambda (tensor) (= (tensor-ref tensor 0) 3.141592653589793)))
-    (check "rank8 exact rewrite"
-           (and (pair? rank8) (model-save "rewrite-rank8.eskm" rank8))))
+(define (empty-values tensor)
+  (= (vector-length (tensor-data tensor)) 0))
 
+(define (ordinary-values tensor)
+  (let ((data (tensor-data tensor)))
+    (and (= (vector-ref data 0) 1.0)
+         (= (vector-ref data 1) -2.5)
+         (= (vector-ref data 2) 0.0))))
+
+(define (rank8-values tensor)
+  (= (vector-ref (tensor-data tensor) 0) 3.141592653589793))
+
+(define (large-values tensor)
+  (let ((data (tensor-data tensor)))
+    (let loop ((i 0))
+      (if (= i 1024) #t
+          (if (= (vector-ref data i) (- (* i 0.125) 64.0))
+              (loop (+ i 1))
+              #f)))))
+
+(define (check-single stem prefix rewrite-prefix shape count payload-check)
+  (let* ((path (string-append prefix stem ".eskm"))
+         (loaded (model-load path)))
+    (single-record (string-append prefix stem) loaded shape count payload-check)
+    (check (label path " exact rewrite")
+           (and (pair? loaded)
+                (model-save (string-append rewrite-prefix stem ".eskm") loaded)))))
+
+(define (check-six prefix rewrite-prefix)
+  (check-single "scalar" prefix rewrite-prefix
+                (if (string=? control "metadata") '(1) '()) 1 scalar-values)
+  (check-single "empty-0x3" prefix rewrite-prefix '(0 3) 0 empty-values)
+  (check-single "ordinary-2x3" prefix rewrite-prefix '(2 3) 6 ordinary-values)
+  (check-single "rank8" prefix rewrite-prefix '(1 1 1 1 1 1 1 1) 1 rank8-values)
+  (check-single "large-32x32" prefix rewrite-prefix '(32 32) 1024 large-values)
   (check-matrix-model
-    "historical multi-tensor" "multi-tensor.eskm" "rewrite-multi-tensor.eskm"))
+    (string-append prefix "multi-tensor")
+    (string-append prefix "multi-tensor.eskm")
+    (string-append rewrite-prefix "multi-tensor.eskm")))
+
+(define (check-public-tensor stem shape count payload-check)
+  (let ((tensor (tensor-load (string-append stem ".eskm"))))
+    (check-tensor (string-append "tensor " stem) tensor shape count payload-check)
+    (if (tensor? tensor)
+        (check (label stem " tensor rewrite")
+               (tensor-save (string-append "tensor-rewrite-" stem ".eskm") tensor))
+        #f)))
+
+(define (load-in-function path)
+  (model-load path))
+
+(define (load-in-region path)
+  (with-region 'checkpoint (model-load path)))
+
+(define (check-lifetime scope loader stem shape count payload-check)
+  (let ((loaded (loader (string-append stem ".eskm"))))
+    ;; Reuse temporary region storage before observing the escaped model.
+    (with-region 'churn (make-vector 4096 123.0))
+    (single-record (string-append scope " " stem) loaded shape count payload-check)
+    (check (label stem " lifetime rewrite")
+           (and (pair? loaded)
+                (model-save (string-append scope "-rewrite-" stem ".eskm") loaded)))))
+
+(define (check-observation-and-lifetime)
+  (check-public-tensor "scalar" '() 1 scalar-values)
+  (check-public-tensor "empty-0x3" '(0 3) 0 empty-values)
+  (check-public-tensor "ordinary-2x3" '(2 3) 6 ordinary-values)
+  (check-public-tensor "rank8" '(1 1 1 1 1 1 1 1) 1 rank8-values)
+  (check-public-tensor "large-32x32" '(32 32) 1024 large-values)
+  (check-lifetime "function" load-in-function "scalar" '() 1 scalar-values)
+  (check-lifetime "function" load-in-function "empty-0x3" '(0 3) 0 empty-values)
+  (check-lifetime "region" load-in-region "scalar" '() 1 scalar-values)
+  (check-lifetime "region" load-in-region "empty-0x3" '(0 3) 0 empty-values))
 
 (define (expect-rejection path)
   (check (label "reject " path) (null? (model-load path))))
@@ -106,7 +159,8 @@
           (list
             (cons "weights" (tensor 2 5.0 6.0))
             (cons "bias" (tensor 1 7.0)))))
-    (check "producer model-save" (model-save "producer.eskm" model))))
+    (check "producer model-save" (model-save "producer.eskm" model)))
+  (check-six "" "produce-"))
 
 (define (consume)
   (check-matrix-model
@@ -119,7 +173,12 @@
   (check-matrix-model
     "producer vm-bytecode" "producer-vm-bytecode.eskm"
     "rewrite-producer-vm-bytecode.eskm")
-  (check-accepted-fixtures)
+  (check-six "" "rewrite-")
+  (check-six "producer-jit-" "rewrite-producer-jit-")
+  (check-six "producer-aot-" "rewrite-producer-aot-")
+  (check-six "producer-vm-source-" "rewrite-producer-vm-source-")
+  (check-six "producer-vm-bytecode-" "rewrite-producer-vm-bytecode-")
+  (check-observation-and-lifetime)
   (check-malformed-fixtures))
 
 (define mode (or (getenv "ESKM_PARITY_MODE") "consume"))

@@ -6,7 +6,8 @@ enum FixtureKind {
     FIXTURE_TRAILING_BYTE,
     FIXTURE_TRUNCATED_SECOND_RECORD,
     FIXTURE_SCALAR_SECOND_RECORD,
-    FIXTURE_EMPTY_SECOND_RECORD
+    FIXTURE_EMPTY_SECOND_RECORD,
+    FIXTURE_EMPTY_RANK9_SECOND_RECORD
 };
 
 static int write_record(VmModelWriter* writer, const char* name, double value) {
@@ -40,15 +41,17 @@ static int write_fixture(const char* path, enum FixtureKind kind) {
         ok = ok && vm_model_write_u32(&writer, 8u, 1) &&
              vm_model_write_u8(&writer, 'x', 1);
     } else {
-        /* Valid ESKM shapes that the current VM tensor constructor rejects. */
+        /* Positive scalar/empty cases, including arena-backed dimensions. */
+        const unsigned int rank = kind == FIXTURE_SCALAR_SECOND_RECORD ? 0u :
+                                  kind == FIXTURE_EMPTY_SECOND_RECORD ? 2u : 9u;
         ok = ok && vm_model_write_u32(&writer, 0u, 1) &&
-             vm_model_write_u32(&writer, kind == FIXTURE_SCALAR_SECOND_RECORD ? 0u : 1u, 1);
-        if (kind == FIXTURE_EMPTY_SECOND_RECORD) {
-            ok = ok && vm_model_write_u64(&writer, 0u, 1);
+             vm_model_write_u32(&writer, rank, 1);
+        for (unsigned int i = 0; i < rank; i++) {
+            ok = ok && vm_model_write_u64(&writer, i == 0 ? 0u : i == rank - 1 ? 3u : 1u, 1);
         }
         ok = ok && vm_model_write_u8(&writer, 0u, 1);
         if (kind == FIXTURE_SCALAR_SECOND_RECORD) {
-            ok = ok && vm_model_write_u64(&writer, 0u, 1);
+            ok = ok && vm_model_write_u64(&writer, UINT64_C(0x4045400000000000), 1);
         }
     }
     ok = ok && vm_model_write_u32(&writer, writer.crc, 0);
@@ -99,6 +102,87 @@ static int duplicate_model_preserves_order(VM* vm, const char* path) {
     return list.type == VAL_NIL;
 }
 
+static int same_checkpoint(const char* first, const char* second) {
+    unsigned char *a = NULL, *b = NULL;
+    size_t a_size = 0, b_size = 0;
+    int ok = vm_model_load_bytes(first, &a, &a_size) &&
+             vm_model_load_bytes(second, &b, &b_size) &&
+             a_size == b_size && memcmp(a, b, a_size) == 0;
+    free(a);
+    free(b);
+    return ok;
+}
+
+static Value load_model_out_of_region(VM* vm, const char* path) {
+    if (!heap_region_push(&vm->heap, "checkpoint-loader", 256)) return NIL_VAL;
+    Value path_value;
+    if (vm_model_make_string_value(vm, path, (int)strlen(path), &path_value)) {
+        vm_push(vm, path_value);
+        vm_model_model_load(vm);
+    } else {
+        vm_push(vm, NIL_VAL);
+    }
+    /* The returned list is a stack root, as at an ordinary with-region exit. */
+    vm_region_evacuate_pop(vm);
+    return vm_pop(vm);
+}
+
+static int special_model_preserves_representation(VM* vm, const char* path,
+                                                  const char* rewritten,
+                                                  enum FixtureKind kind) {
+    Value list = load_model_out_of_region(vm, path);
+    if (list.type != VAL_PAIR || vm->heap.regions.depth != 0) return 0;
+    Value entry = vm->heap.objects[list.as.ptr]->cons.car;
+    if (entry.type != VAL_PAIR) return 0;
+    VmTensor* first = vm_model_value_tensor(vm, vm->heap.objects[entry.as.ptr]->cons.cdr);
+    if (!first || first->total != 1 || first->data[0] != 1.0) return 0;
+    Value rest = vm->heap.objects[list.as.ptr]->cons.cdr;
+    if (rest.type != VAL_PAIR) return 0;
+    HeapObject* last = vm->heap.objects[rest.as.ptr];
+    if (last->cons.cdr.type != VAL_NIL || last->cons.car.type != VAL_PAIR) return 0;
+    HeapObject* pair = vm->heap.objects[last->cons.car.as.ptr];
+    int name_len = -1;
+    if (!vm_model_string_ptr(vm, pair->cons.car, &name_len) || name_len != 0) return 0;
+    VmTensor* tensor = vm_model_value_tensor(vm, pair->cons.cdr);
+    if (!tensor || !tensor->data || tensor->owns_data != 1 ||
+        tensor->dtype != VM_TENSOR_DTYPE_F64 || tensor->dual_data != NULL ||
+        ((VmObjectHeader*)tensor - 1)->subtype != VM_SUBTYPE_TENSOR) return 0;
+    const int rank = kind == FIXTURE_SCALAR_SECOND_RECORD ? 0 :
+                     kind == FIXTURE_EMPTY_SECOND_RECORD ? 2 : 9;
+    if (tensor->n_dims != rank || tensor->total != (rank == 0 ? 1 : 0)) return 0;
+    if (rank <= VM_TENSOR_INLINE_DIMS) {
+        if (tensor->shape != tensor->inline_shape ||
+            tensor->strides != tensor->inline_strides) return 0;
+    } else if (tensor->shape == tensor->inline_shape ||
+               tensor->strides == tensor->inline_strides) return 0;
+    for (int i = 0; i < rank; i++) {
+        if (tensor->shape[i] != (i == 0 ? 0 : i == rank - 1 ? 3 : 1) ||
+            tensor->strides[i] != (i == rank - 1 ? 1 : 3)) return 0;
+    }
+    if (rank == 0) {
+        for (int i = 0; i < VM_TENSOR_INLINE_DIMS; i++) {
+            if (tensor->inline_shape[i] != 0 || tensor->inline_strides[i] != 0) return 0;
+        }
+        const char* observations[] = {
+            "tensor-shape", "tensor-data", "tensor->vector", "tensor-length"
+        };
+        for (size_t i = 0; i < sizeof(observations) / sizeof(observations[0]); i++) {
+            if (vm_tensor_operand(vm, pair->cons.cdr, observations[i]) != tensor) return 0;
+        }
+        /* Observing a valid scalar does not admit it to general algebra. */
+        if (eshkol_tensor_metadata_valid(tensor->shape, 0, tensor->data, 1) ||
+            eshkol_tensor_operand_metadata_valid(tensor->shape, 0, tensor->data, 1,
+                                                 "tensor-scale")) return 0;
+    }
+    uint64_t bits = 0;
+    memcpy(&bits, tensor->data, sizeof(bits));
+    if (bits != (rank == 0 ? UINT64_C(0x4045400000000000) : 0)) return 0;
+    Value output_path;
+    return vm_model_make_string_value(vm, rewritten, (int)strlen(rewritten), &output_path) &&
+           vm_model_save_model_file(vm, output_path, list) &&
+           same_checkpoint(path, rewritten);
+}
+
 static int expect_case(int condition, const char* label) {
     if (condition) return 1;
     fprintf(stderr, "FAIL: %s\n", label);
@@ -112,9 +196,11 @@ int main(void) {
     char valid_path[128];
     char trailing_path[128];
     char truncated_path[128];
+    char rewritten_path[128];
     snprintf(valid_path, sizeof(valid_path), ".vm-model-valid-%p.eskm", (void*)vm);
     snprintf(trailing_path, sizeof(trailing_path), ".vm-model-trailing-%p.eskm", (void*)vm);
     snprintf(truncated_path, sizeof(truncated_path), ".vm-model-truncated-%p.eskm", (void*)vm);
+    snprintf(rewritten_path, sizeof(rewritten_path), ".vm-model-rewritten-%p.eskm", (void*)vm);
 
     int ok = expect_case(write_fixture(valid_path, FIXTURE_VALID_DUPLICATES),
                          "could not write duplicate-name fixture");
@@ -131,15 +217,22 @@ int main(void) {
     ok &= expect_case(duplicate_model_preserves_order(vm, valid_path),
                       "duplicate-name records lost order or payloads");
     ok &= expect_case(write_fixture(truncated_path, FIXTURE_SCALAR_SECOND_RECORD) &&
-                      reject_without_heap_growth(vm, truncated_path, 1),
-                      "model-load materialized before an unsupported scalar record");
+                      special_model_preserves_representation(vm, truncated_path, rewritten_path,
+                                                             FIXTURE_SCALAR_SECOND_RECORD),
+                      "scalar model lost representation, lifetime, or exact bytes");
     ok &= expect_case(write_fixture(truncated_path, FIXTURE_EMPTY_SECOND_RECORD) &&
-                      reject_without_heap_growth(vm, truncated_path, 1),
-                      "model-load materialized before an unsupported empty record");
+                      special_model_preserves_representation(vm, truncated_path, rewritten_path,
+                                                             FIXTURE_EMPTY_SECOND_RECORD),
+                      "empty model lost representation, lifetime, or exact bytes");
+    ok &= expect_case(write_fixture(truncated_path, FIXTURE_EMPTY_RANK9_SECOND_RECORD) &&
+                      special_model_preserves_representation(vm, truncated_path, rewritten_path,
+                                                             FIXTURE_EMPTY_RANK9_SECOND_RECORD),
+                      "rank-9 empty model lost arena dimensions, lifetime, or exact bytes");
 
     remove(valid_path);
     remove(trailing_path);
     remove(truncated_path);
+    remove(rewritten_path);
     vm_free(vm);
     if (!ok) {
         return 1;
