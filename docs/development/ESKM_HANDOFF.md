@@ -13,7 +13,7 @@ historical evidence below.
 | GK-SER-03 / GK-SER-04 | #597/#600 closed as carried into [#612](https://github.com/tsotchke/eshkol/pull/612), merged 2026-09-14 UTC (`0c0436d5`) | Scalar/empty parity now verified locally; platform evidence and any stronger durability contract remain |
 | Public tensor parity | #615 merged; [#620](https://github.com/tsotchke/eshkol/pull/620) (`a1157d42`) adapts the gate to ESKM dispatch and supersedes #617 | Prepared adapter adds all five single-record fixtures through each engine |
 | GK-SER-05 | #613 merged as a **Proposed** v2 decision (`26bd0c0a`) | Byte-level/cap acceptance, then implementation and compatibility evidence |
-| Scalar/empty VM adapter | #614 merged as a **Proposed** design (`c78d73c6`) | Implementation and local evidence prepared for review; no PR filed or maintainer acceptance recorded |
+| Scalar/empty VM adapter | #614 merged as a **Proposed** design (`c78d73c6`) | Implementation and local evidence prepared for review; maintainer acceptance pending |
 | Handoff | #616 merged (`57c84092`); its September 8 evidence is preserved below | Keep current results distinct from historical packet-head results |
 
 Both native and VM public `tensor-save`/`tensor-load` use ESKM v1 after #555.
@@ -64,8 +64,16 @@ bash scripts/run_eskm_v1_model_load_parity.sh build/eshkol-run build/eshkol-vm-s
 bash scripts/run_eskm_v1_model_load_parity.sh --self-test build/eshkol-run build/eshkol-vm-standalone-test
 ```
 
-Native macOS/Windows, WASM execution, the full repository test suite and fresh
-sanitizer/resource campaigns are **NOT RUN**. No packet or design is marked
+Review follow-up: native `tensor-length` assertions are restored in the
+four-engine fixture gate and both matrix runs pass. The browser VM bundle was
+regenerated with the repository-pinned Emscripten 4.0.22 recipe; its 9/9 REPL
+transcript cases, 3/3 math/AD/tensor smoke cases, and site-release verifier pass.
+The attempted browser checkpoint-I/O probe reaches the documented unsupported
+`eshkol_capability_require` stub, so this supplies no WASM checkpoint parity
+claim. The published bundle-size statistic matches the regenerated artifact.
+
+Native macOS/Windows, the full repository test suite and fresh sanitizer/resource
+campaigns are **NOT RUN**. No packet or design is marked
 maintainer-accepted merely because local tests pass.
 
 ## Historical handoff — 2026-09-08

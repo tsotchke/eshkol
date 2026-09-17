@@ -19,6 +19,9 @@
     (or (equal? dtype 'f64) (equal? dtype "f64"))))
 
 (define control (or (getenv "ESKM_PARITY_CONTROL") ""))
+(define engine (or (getenv "ESKM_PARITY_ENGINE") "jit"))
+(define native-engine?
+  (or (string=? engine "jit") (string=? engine "aot")))
 
 (define (check-tensor base tensor shape length payload-check)
   (check (label base " is a tensor") (tensor? tensor))
@@ -29,6 +32,10 @@
         (check (label base " dtype") (f64-dtype? tensor))
         (check (label base " element count")
                (= (vector-length (tensor-data tensor)) length))
+        (if native-engine?
+            (check (label base " native tensor-length")
+                   (= (tensor-length tensor) length))
+            #t)
         (check (label base " payload values") (payload-check tensor)))
       #f))
 

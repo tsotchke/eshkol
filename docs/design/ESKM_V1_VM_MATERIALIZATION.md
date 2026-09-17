@@ -35,6 +35,10 @@ The I/O-local adapter now admits those records only after whole-file validation:
   evacuation path. The general constructors, object layout, public signatures,
   and v1 wire format are unchanged.
 
+The lifetime guarantee covers ordinary function and region exit. Transferring
+rank-zero tensors across VM worker heaps is outside this slice: the existing
+worker-copy path still relies on the positive-rank tensor constructor.
+
 The focused C test checks representation and exact rewrites after actual VM
 region evacuation, including rank-9 empty dimensions stored outside the inline
 arrays. The registered model parity gate covers all six historical valid
