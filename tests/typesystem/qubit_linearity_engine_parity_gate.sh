@@ -40,18 +40,24 @@ fi
 mkdir -p "$WORKDIR" || { echo "FAIL: cannot create $WORKDIR"; exit 1; }
 rm -f "$WORKDIR"/*.esk "$WORKDIR"/*.eskb 2>/dev/null
 
+# shellcheck source=../../scripts/lib/checked_write.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts/lib" && pwd)/checked_write.sh"
+
 CLONE="$WORKDIR/clone.esk"
 LEGAL="$WORKDIR/legal.esk"
 
-cat > "$CLONE" <<'EOF'
+CLONE_TMP="$(eshkol_install_tmp "$CLONE")" || exit $?
+cat > "$CLONE_TMP" <<'EOF'
 (define (h (q : Qubit)) : Qubit q)
 (define (bad-clone (q : Qubit))
   (cons q q))
 (display "THIS MUST NEVER RUN")
 (newline)
 EOF
+eshkol_install_checked "$CLONE_TMP" "$CLONE" || exit $?
 
-cat > "$LEGAL" <<'EOF'
+LEGAL_TMP="$(eshkol_install_tmp "$LEGAL")" || exit $?
+cat > "$LEGAL_TMP" <<'EOF'
 (define (h (q : Qubit)) : Qubit q)
 (define (z (q : Qubit)) : Qubit q)
 (define (pick (b : Bool) (q : Qubit)) : Qubit
@@ -60,6 +66,7 @@ cat > "$LEGAL" <<'EOF'
 (display "LEGAL-LINEAR-PROGRAM-RAN")
 (newline)
 EOF
+eshkol_install_checked "$LEGAL_TMP" "$LEGAL" || exit $?
 
 FAILED=0
 fail() { echo "FAIL: $1"; FAILED=1; }

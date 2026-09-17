@@ -21,6 +21,8 @@ if [ ! -r "$ESHKOL_TEST_LIB" ]; then
     exit 2
 fi
 source "$ESHKOL_TEST_LIB"
+# shellcheck source=lib/checked_write.sh
+. "$(dirname "$ESHKOL_TEST_LIB")/checked_write.sh"
 eshkol_test_isolation_init "control-flow"
 
 # Colors for output
@@ -81,6 +83,7 @@ for test_file in tests/control_flow/*.esk; do
     eshkol_test_reset_bin
     # Compile and run the test
     if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
+        eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
         if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
             # Check for failures in output
             # A failure marker anywhere in the output fails the test — the old
@@ -114,7 +117,7 @@ echo -e "${RED}Failed:         $FAIL${NC}"
 echo ""
 
 # Clean up
-rm -f "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_BIN"
+eshkol_checked_rm "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_BIN"
 
 # Exit with appropriate code
 if [ $FAIL -eq 0 ]; then

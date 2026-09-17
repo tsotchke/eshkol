@@ -118,6 +118,8 @@ TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
 # Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
 . "$REPO_ROOT/scripts/lib/evidence_paths.sh"
 eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
+# shellcheck source=../../scripts/lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 TRACE_FILE="$TRACE_DIR/leak_audit_gate.jsonl"
 PROBE_ID="leak_audit_gate"
 
@@ -225,6 +227,7 @@ leak:libc++.1.dylib
 leak:CoreGraphics
 EOF
     EFFECTIVE_SUPPRESSIONS="$SCRATCH/merged-suppressions.txt"
+    eshkol_require_output_file_path "$EFFECTIVE_SUPPRESSIONS"
     cat "$SUPPRESSIONS" "$SCRATCH/darwin-noise.txt" > "$EFFECTIVE_SUPPRESSIONS"
 fi
 
@@ -232,6 +235,7 @@ emit_event() {
     local status="$1" snippet="$2"
     [ "$NO_TRACE" -eq 1 ] && return
     mkdir -p "$TRACE_DIR"
+    eshkol_require_output_file_path "$TRACE_FILE"
     python3 -c '
 import json, sys
 print(json.dumps({"kind": "eshkol_smoke", "name": sys.argv[1],

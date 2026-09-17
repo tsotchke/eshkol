@@ -75,6 +75,8 @@ fi
 # Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
 . "$REPO_ROOT/scripts/lib/evidence_paths.sh"
 eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
+# shellcheck source=lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 TRACE_FILE="$TRACE_DIR/guard_coverage.jsonl"
 mkdir -p "$TRACE_DIR"
 : "${TRACE_FILE:?TRACE_FILE must be set}"
@@ -114,6 +116,7 @@ json_escape() {
 }
 
 emit_event() { # name value snippet
+    eshkol_require_output_file_path "$TRACE_FILE"
     printf '{"kind":"guard_coverage","name":"%s","value":"%s","snippet":"%s","confidence":0.95}\n' \
         "$(json_escape "$1")" "$(json_escape "$2")" "$(json_escape "$3")" >> "$TRACE_FILE"
 }
@@ -167,6 +170,7 @@ mkdir -p "$ESHKOL_JIT_CACHE_DIR"
 # Pay the cold stdlib compile once, outside every timed window (identical
 # reasoning to run_vm_parity.sh's warm-up; see F13 in that script).
 WARM_FILE="$WORK/_warmup.esk"
+eshkol_require_output_file_path "$WARM_FILE"
 printf '(display 1)\n(newline)\n' > "$WARM_FILE"
 echo "== warm-up: priming \$ESHKOL_JIT_CACHE_DIR (budget ${WARMUP_TIMEOUT}s) =="
 if eshkol_outcome_guarded "$WARMUP_TIMEOUT" "$ESHKOL_RUN" -r "$WARM_FILE" \

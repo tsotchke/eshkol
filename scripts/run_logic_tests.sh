@@ -18,6 +18,8 @@ if [ ! -r "$ESHKOL_TEST_LIB" ]; then
     exit 2
 fi
 source "$ESHKOL_TEST_LIB"
+# shellcheck source=lib/checked_write.sh
+. "$(dirname "$ESHKOL_TEST_LIB")/checked_write.sh"
 eshkol_test_isolation_init "logic"
 
 # Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
@@ -39,6 +41,7 @@ for test in tests/logic/*.esk; do
     if $ESHKOL "$test" -o "$ESHKOL_TEST_BIN" 2>/dev/null; then
         # Run. A zero exit status is not a pass — the output was captured all
         # along but never inspected, so printed FAIL lines were scored PASS.
+        eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
         if "$ESHKOL_TEST_BIN" >"$ESHKOL_TEST_OUT" 2>&1; then
             if eshkol_test_output_has_failure "$ESHKOL_TEST_OUT" 'error:'; then
                 echo "FAIL (assertion)"

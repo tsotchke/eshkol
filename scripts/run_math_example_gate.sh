@@ -29,8 +29,11 @@ TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
 # Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
 . "$REPO_ROOT/scripts/lib/evidence_paths.sh"
 eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
+# shellcheck source=lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 TRACE_FILE="$TRACE_DIR/$EVENT_NAME.jsonl"
 mkdir -p "$TRACE_DIR"
+eshkol_require_output_file_path "$TRACE_FILE"
 : > "$TRACE_FILE"
 if [ ! -f "$PROGRAM" ]; then
     echo "run_math_example_gate.sh: $PROGRAM not found" >&2
@@ -95,10 +98,12 @@ fi
 
 if [ "$status" -eq 0 ]; then
     snippet="$PROGRAM_NAME: JIT passed=${jpass:-?} AOT passed=${apass:-skipped}; RESULT: ALL PASS in every mode"
+    eshkol_require_output_file_path "$TRACE_FILE"
     printf '{"kind":"%s","name":"%s","value":"PASS","snippet":"%s","confidence":0.95}\n' \
         "$EVENT_KIND" "$EVENT_NAME" "$(json_escape "$snippet")" >> "$TRACE_FILE"
     echo "PASS: $EVENT_NAME ($snippet)"
 else
+    eshkol_require_output_file_path "$TRACE_FILE"
     printf '{"kind":"%s","name":"%s","value":"FAIL","snippet":"see gate output","confidence":0.95}\n' \
         "$EVENT_KIND" "$EVENT_NAME" >> "$TRACE_FILE"
 fi

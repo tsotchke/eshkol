@@ -48,6 +48,8 @@ if [ ! -r "$ESHKOL_TEST_LIB" ]; then
     exit 2
 fi
 source "$ESHKOL_TEST_LIB"
+# shellcheck source=lib/checked_write.sh
+. "$(dirname "$ESHKOL_TEST_LIB")/checked_write.sh"
 eshkol_test_isolation_init "typesystem"
 
 # Colors for output
@@ -271,7 +273,7 @@ else
             done <<< "$type_names"
         } > "$coverage_src"
 
-        rm -f "$TEST_BIN"
+        eshkol_checked_rm "$TEST_BIN"
         coverage_exit=0
         ./$BUILD_DIR/eshkol-run "$coverage_src" -L./"$BUILD_DIR" --strict-types \
             -o "$TEST_BIN" > /dev/null 2>"$TEST_ERR" || coverage_exit=$?
@@ -337,7 +339,7 @@ fi
 echo ""
 
 # Clean up
-rm -f "$ESHKOL_TEST_COMPILE_LOG" "$ESHKOL_TEST_BIN"
+eshkol_checked_rm "$ESHKOL_TEST_COMPILE_LOG" "$ESHKOL_TEST_BIN"
 
 if [ $FAIL -eq 0 ]; then
     echo -e "${GREEN}All tests passed!${NC}"

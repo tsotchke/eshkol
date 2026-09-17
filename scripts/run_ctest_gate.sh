@@ -63,6 +63,8 @@ export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/harness_outcome.sh"
+# shellcheck source=lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/ctest_gate.jsonl"
 mkdir -p "$TRACE_DIR"
@@ -151,9 +153,10 @@ if ctest --test-dir "$BUILD_DIR" --output-junit "$JUNIT" -N >/dev/null 2>&1; the
     HAVE_JUNIT=1
 else
     HAVE_JUNIT=0
-    rm -f "$JUNIT"
+    eshkol_checked_rm "$JUNIT"
 fi
 
+eshkol_require_output_file_path "$RUN_LOG"
 if [ "$HAVE_JUNIT" -eq 1 ]; then
     ctest --test-dir "$BUILD_DIR" --output-on-failure --output-junit "$JUNIT" \
         ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} >"$RUN_LOG" 2>&1
@@ -170,6 +173,7 @@ echo
 # One "<name>\t<PASS|FAIL>\t<detail>" line per test on stdout.
 RESULTS="$RUN_DIR/ctest-results.tsv"
 if [ "$HAVE_JUNIT" -eq 1 ] && [ -s "$JUNIT" ]; then
+    eshkol_require_output_file_path "$RESULTS"
     python3 - "$JUNIT" > "$RESULTS" <<'PY'
 import re, sys, xml.etree.ElementTree as ET
 root = ET.parse(sys.argv[1]).getroot()
@@ -216,6 +220,7 @@ else
     # literally "Timeout" — recognize it explicitly rather than folding it
     # into the FAIL bucket with every other non-"Passed" word (see the
     # JUnit branch above for why: a timeout is INFRA, not a code verdict).
+    eshkol_require_output_file_path "$RESULTS"
     perl -ne '
         if (m{^\s*\d+/\d+\s+Test\s+#\d+:\s+(\S+)\s+\.+\s*(\**)\s*(\w[\w ]*?)\s+([\d.]+)\s+sec}) {
             my ($n, $verdict, $secs) = ($1, $3, $4);
@@ -261,7 +266,7 @@ if [ "$TOTAL" -eq 0 ]; then
     emit_event "ctest_suite_green" FAIL "ctest produced no parseable test verdicts"
     emit_test_result "ctest::suite" FAIL "no parseable test verdicts"
     echo "ctest gate: FAIL — no test verdicts parsed from the run" >&2
-    rm -f "$RESULTS"
+    eshkol_checked_rm "$RESULTS"
     exit 1
 fi
 
@@ -375,7 +380,7 @@ if [ "$FAILED" -eq 0 ] && [ "$GROUP_FAILURES" -eq 0 ] && [ "$SELF_VERDICT_FAILUR
         echo
         echo "Trace written: $TRACE_FILE"
         echo "ctest gate: PASS ($SUMMARY)"
-        rm -f "$RESULTS"
+        eshkol_checked_rm "$RESULTS"
         exit 0
     elif [ "$INFRA" -gt 0 ]; then
         SUMMARY="$SUMMARY; $INFRA infra (no verdict, not counted as failure)"
@@ -385,7 +390,7 @@ if [ "$FAILED" -eq 0 ] && [ "$GROUP_FAILURES" -eq 0 ] && [ "$SELF_VERDICT_FAILUR
         echo "Trace written: $TRACE_FILE"
         echo "ctest gate: PASS ($SUMMARY)"
         echo "WARNING: $INFRA ctest test(s) could not obtain a verdict (per-test TIMEOUT) — re-run under less contention if this persists." >&2
-        rm -f "$RESULTS"
+        eshkol_checked_rm "$RESULTS"
         exit 0
     else
         DETAIL="$SUMMARY; every parsed testcase is PASS/INFRA but ctest itself exited $CTEST_RC with 0 INFRA to explain it — harness contradiction, not trusted"
@@ -394,7 +399,7 @@ if [ "$FAILED" -eq 0 ] && [ "$GROUP_FAILURES" -eq 0 ] && [ "$SELF_VERDICT_FAILUR
         echo
         echo "Trace written: $TRACE_FILE"
         echo "ctest gate: FAIL ($DETAIL)" >&2
-        rm -f "$RESULTS"
+        eshkol_checked_rm "$RESULTS"
         exit 1
     fi
 fi
@@ -405,5 +410,5 @@ emit_test_result "ctest::suite" FAIL "$DETAIL"
 echo
 echo "Trace written: $TRACE_FILE"
 echo "ctest gate: FAIL ($DETAIL)" >&2
-rm -f "$RESULTS"
+eshkol_checked_rm "$RESULTS"
 exit 1

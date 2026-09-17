@@ -25,6 +25,8 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+# shellcheck source=../../scripts/lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 SCRATCH_ROOT="${ESHKOL_MEMORY_SCRATCH_ROOT:-$REPO_ROOT/.scratch/memory-gates}"
 mkdir -p "$SCRATCH_ROOT"
 
@@ -65,12 +67,13 @@ if /usr/bin/time -l true > /dev/null 2>"$PROBE_LOG"; then
         TIME_MODE="bsd"
     fi
 fi
+eshkol_require_output_file_path "$PROBE_LOG"
 if [ -z "$TIME_MODE" ] && /usr/bin/time -v true >"$PROBE_LOG" 2>&1; then
     if grep -qi "Maximum resident set size" "$PROBE_LOG" 2>/dev/null; then
         TIME_MODE="gnu"
     fi
 fi
-rm -f "$PROBE_LOG"
+eshkol_checked_rm "$PROBE_LOG"
 if [ -z "$TIME_MODE" ]; then
     echo "region_mutating_loop_flat_rss_test.sh: neither \`/usr/bin/time -l\` (macOS) nor \`/usr/bin/time -v\` (Linux) reports peak RSS on this host — cannot gate." >&2
     exit 2
@@ -161,6 +164,7 @@ if [ ! -f "$HANDLER_SRC" ] || [ ! -x "$ESHKOL_VM" ]; then
     echo "FAIL: handler-tail fixture or VM executable is unavailable."
     fail=1
 else
+    eshkol_require_output_file_path "$HANDLER_COMPILE_LOG"
     ( cd "$WORK" && ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" "$HANDLER_SRC" -o "$HANDLER_BIN" ) > "$HANDLER_COMPILE_LOG" 2>&1
     HANDLER_COMPILE_RC=$?
     if [ "$HANDLER_COMPILE_RC" -ne 0 ]; then
@@ -170,11 +174,13 @@ else
     else
         chmod +x "$HANDLER_BIN"
         if [ "$TIME_MODE" = "bsd" ]; then
+            eshkol_require_output_file_path "$HANDLER_AOT_OUT"
             ( cd "$WORK" && /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
                 "$TIMEOUT_S" "$HANDLER_BIN" ) > "$HANDLER_AOT_OUT" 2> "$HANDLER_AOT_TIME"
             HANDLER_AOT_RC=$?
             HANDLER_AOT_RSS=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$HANDLER_AOT_TIME")
         else
+            eshkol_require_output_file_path "$HANDLER_AOT_OUT"
             ( cd "$WORK" && /usr/bin/time -v perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
                 "$TIMEOUT_S" "$HANDLER_BIN" ) > "$HANDLER_AOT_OUT" 2> "$HANDLER_AOT_TIME"
             HANDLER_AOT_RC=$?
@@ -191,11 +197,13 @@ else
         fi
 
         if [ "$TIME_MODE" = "bsd" ]; then
+            eshkol_require_output_file_path "$HANDLER_VM_OUT"
             ( cd "$WORK" && /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
                 "$TIMEOUT_S" env ESHKOL_VM_NO_DISASM=1 "$ESHKOL_VM" "$HANDLER_SRC" ) > "$HANDLER_VM_OUT" 2> "$HANDLER_VM_TIME"
             HANDLER_VM_RC=$?
             HANDLER_VM_RSS=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$HANDLER_VM_TIME")
         else
+            eshkol_require_output_file_path "$HANDLER_VM_OUT"
             ( cd "$WORK" && /usr/bin/time -v perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
                 "$TIMEOUT_S" env ESHKOL_VM_NO_DISASM=1 "$ESHKOL_VM" "$HANDLER_SRC" ) > "$HANDLER_VM_OUT" 2> "$HANDLER_VM_TIME"
             HANDLER_VM_RC=$?
