@@ -35,6 +35,8 @@ export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+# shellcheck source=lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 MODE="quick"; AXES="1,2,3,4,5,6,7,8"
 while [ $# -gt 0 ]; do
@@ -54,6 +56,7 @@ VM_BIN="$BUILD_DIR/eshkol-vm-standalone-test"
 
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"; mkdir -p "$TRACE_DIR"
 TRACE_FILE="$TRACE_DIR/escape_matrix.jsonl"
+eshkol_require_output_file_path "$TRACE_FILE"
 : > "$TRACE_FILE"     # fresh evidence set each run
 
 # Per-run isolation, and pin the binary under test. This suite shells out to
@@ -91,7 +94,7 @@ trap cleanup EXIT
 export ESHKOL_JIT_CACHE_DIR="$WORK/jit"; mkdir -p "$ESHKOL_JIT_CACHE_DIR"
 DISK_CAP_KB=$(( 512 * 1024 ))   # 512 MB corpus ceiling
 
-emit() { python3 -c 'import json,sys;print(json.dumps({"kind":"escape_matrix","name":sys.argv[1],"value":sys.argv[2],"snippet":sys.argv[3][:200],"confidence":0.95}))' "$1" "$2" "$3" >> "$TRACE_FILE"; }
+emit() { eshkol_require_output_file_path "$TRACE_FILE"; python3 -c 'import json,sys;print(json.dumps({"kind":"escape_matrix","name":sys.argv[1],"value":sys.argv[2],"snippet":sys.argv[3][:200],"confidence":0.95}))' "$1" "$2" "$3" >> "$TRACE_FILE"; }
 want() { case ",$AXES," in *",$1,"*) return 0;; *) return 1;; esac; }
 
 FAILS=0

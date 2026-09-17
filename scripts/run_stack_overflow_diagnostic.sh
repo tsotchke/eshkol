@@ -17,6 +17,8 @@ WORKER_TEST="$ROOT/tests/runtime/parallel_stack_overflow_diagnostic_test.esk"
 SCRATCH="$ROOT/.scratch/stack-overflow-diagnostic.$$"
 mkdir -p "$SCRATCH"
 trap 'rm -rf "$SCRATCH"' EXIT
+# shellcheck source=lib/checked_write.sh
+. "$ROOT/scripts/lib/checked_write.sh"
 
 # The initial thread's stack extent is fixed at exec time on Linux. The
 # ESHKOL_STACK_SIZE completion leg therefore requires a generous inherited
@@ -60,6 +62,7 @@ elif [ "$large_stack_kib" -lt 1048576 ]; then
     completion_frames=250000
 fi
 COMPLETION_TEST="$SCRATCH/deep_recursion_completion.esk"
+eshkol_require_output_file_path "$COMPLETION_TEST"
 sed "s/(down 2000000)/(down ${completion_frames})/; s/OK 2000000/OK ${completion_frames}/" \
     "$TEST" >"$COMPLETION_TEST"
 worker_completion_frames=300000
@@ -69,6 +72,7 @@ elif [ "$large_stack_kib" -lt 1048576 ]; then
     worker_completion_frames=200000
 fi
 WORKER_COMPLETION_TEST="$SCRATCH/parallel_stack_completion.esk"
+eshkol_require_output_file_path "$WORKER_COMPLETION_TEST"
 sed "s/300000/${worker_completion_frames}/g" "$WORKER_TEST" >"$WORKER_COMPLETION_TEST"
 
 # macOS has no timeout(1); use a perl alarm wrapper.
