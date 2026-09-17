@@ -4,7 +4,7 @@
 - **Maintainer sponsor:** Eshkol maintainers
 - **Time budget:** about 10 hours per week
 - **Cadence:** one milestone pull request every two to four weeks
-- **Last reviewed:** 2026-08-31
+- **Last reviewed:** 2026-09-17 (status refresh; acceptance remains explicit)
 - **Review again:** after 12 weeks, or whenever the maintainer changes the active work packet
 
 This is a rolling contributor plan, not a release plan. The canonical project
@@ -217,9 +217,22 @@ are acceptable when the reproducer and ownership boundary are agreed first.
 Update this table in the same pull request that starts or finishes a packet.
 Keep completed rows so the file serves as a durable handoff log.
 
-| Status | Packet | Concrete scope | Acceptance command | PR |
+| Status | Packet | Concrete scope | Acceptance gate | PR |
 |---|---|---|---|---|
-| next | GK-SER-01 | Recover the v1.2 ESKM contract and propose the golden compatibility corpus; coordinate with active issue #549 / PR #555 before touching overlapping loader code | `model_io_test` plus native/VM fixture matrix recorded in the task PR | — |
+| in progress | GK-SER-01 / GK-SER-03 | Prepare the serialization-local scalar/empty VM adapter and extend exact-byte compatibility coverage; design disposition remains open | All six valid model fixtures across four engines and 16 producer/consumer pairs; single-tensor routes and lifetime checks | Prepared implementation; maintainer review pending |
+| review | GK-SER-02 / GK-SER-06 | Loader preflight and bounded campaign landed through #555; refresh integrated evidence without relabelling historical runs | Relevant focused results recorded on the integrated source SHA; backend resource limits explicit | #555 carried #602/#601 |
+| review | GK-SER-04 | Atomic replacement landed through #612; retain process-level contract and identify remaining platform evidence | Existing atomic-save gates on identified commits; macOS/Windows and stronger durability tracked separately | #600 carried by #612 |
+| review | GK-SER-05 | V2 proposal merged; byte-level and cap acceptance still required before implementation | Accepted decision, then gates 1–9 in the v2 design | #613 (Proposed) |
+
+Status refresh baseline: `upstream/master` at `0901264c`. #596's corpus and
+contract have landed; #597's model matrix and #600's atomic saves were carried
+into #612, merged 2026-09-14 UTC. Public tensor parity was updated to ESKM by
+#620, superseding #617. The #614 adapter now has a prepared implementation and
+local four-engine compatibility evidence; maintainer acceptance is still
+pending. See the
+[current handoff](ESKM_HANDOFF.md#current-checkpoint--2026-09-17) for the merged
+register and preserved historical evidence. Packet acceptance is broader than
+merge status, so no packet is marked done by this refresh.
 
 Allowed status values are `next`, `in progress`, `review`, `done`, and
 `blocked`. A `blocked` row includes one sentence naming the decision or resource

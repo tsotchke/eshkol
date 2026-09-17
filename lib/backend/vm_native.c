@@ -1,4 +1,5 @@
 #include "../core/model_io_atomic.h"
+#include "../core/tensor_observation.h"
 
 /* Dense linear solver (lib/core/linear_solve.cpp): full-f64 Ax=b, row-major
  * f64 buffers, returns 0 on success or a nonzero catchable status code. */
@@ -5223,8 +5224,9 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
     if (v.type == VAL_TENSOR) {
         if (!is_valid_heap_ptr(vm, v.as.ptr)) return NULL;
         VmTensor* tensor = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
-        if (!tensor || !eshkol_tensor_metadata_valid(tensor->shape, tensor->n_dims,
-                                                      tensor->data, tensor->total)) {
+        if (!tensor || !eshkol_tensor_operand_metadata_valid(
+                          tensor->shape, tensor->n_dims,
+                          tensor->data, tensor->total, op_name)) {
             char msg[176];
             snprintf(msg, sizeof msg, "%s: invalid tensor metadata",
                      op_name ? op_name : "tensor-op");

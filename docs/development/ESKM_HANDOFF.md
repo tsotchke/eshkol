@@ -1,13 +1,87 @@
 # ESKM subsystem status and week 12 handoff
 
-**Tensor-dispatch update, 2026-09-09:** #555 has merged to master, carrying
-#601/#602 and unifying public native/VM tensor I/O on ESKM. The ESKT results
-below describe #615's pre-#555 baseline, not current-master compatibility.
-The replacement gate is `eskm_tensor_engine_parity` in
-`scripts/run_eskm_tensor_engine_parity.py`: the same three valid shapes and
-16 pairs, now checked against the normative ESKM single-record layout and
-CRC. Historical fixture comparisons independently check its byte oracle.
-This update does not accept the v2 or scalar/empty VM proposals.
+## Current checkpoint — 2026-09-17
+
+Source baseline: `upstream/master` at `0901264c`. This status update separates
+landed code from remaining packet acceptance; it does not rerun or relabel the
+historical evidence below.
+
+| Packet / follow-up | Landed disposition | Remaining work |
+|---|---|---|
+| GK-SER-01 | [#596](https://github.com/tsotchke/eshkol/pull/596) merged (`665e60c0`): normative v1 contract and immutable corpus | Local six-fixture matrix passes with the prepared scalar/empty adapter; maintainer acceptance pending |
+| GK-SER-02 / GK-SER-06 | [#555](https://github.com/tsotchke/eshkol/pull/555) merged (`ce747881`), carrying #602 preflight and #601 bounded campaign | Current integrated evidence and explicit backend resource limits remain separate from the archived reports |
+| GK-SER-03 / GK-SER-04 | #597/#600 closed as carried into [#612](https://github.com/tsotchke/eshkol/pull/612), merged 2026-09-14 UTC (`0c0436d5`) | Scalar/empty parity now verified locally; platform evidence and any stronger durability contract remain |
+| Public tensor parity | #615 merged; [#620](https://github.com/tsotchke/eshkol/pull/620) (`a1157d42`) adapts the gate to ESKM dispatch and supersedes #617 | Prepared adapter adds all five single-record fixtures through each engine |
+| GK-SER-05 | #613 merged as a **Proposed** v2 decision (`26bd0c0a`) | Byte-level/cap acceptance, then implementation and compatibility evidence |
+| Scalar/empty VM adapter | #614 merged as a **Proposed** design (`c78d73c6`) | Implementation and local evidence prepared for review; maintainer acceptance pending |
+| Handoff | #616 merged (`57c84092`); its September 8 evidence is preserved below | Keep current results distinct from historical packet-head results |
+
+Both native and VM public `tensor-save`/`tensor-load` use ESKM v1 after #555.
+The current public gate is `eskm_tensor_engine_parity`; the old ESKT reports
+below describe the pre-#555 baseline. The model parity runner also invokes
+`check_eskm_v1_fixtures.py`, so historical fixture integrity is already checked
+through the registered parity gate.
+
+The prepared implementation is the serialization-local scalar/empty VM
+adapter, coordinated with whole-file preflight and narrow native/VM observation
+guards. Its review must accept the representation/lifetime contract in
+[`ESKM_V1_VM_MATERIALIZATION.md`](../design/ESKM_V1_VM_MATERIALIZATION.md).
+The target is all six valid model fixtures across four engines, all 16
+producer/consumer pairs, public single-tensor routes and positive lifetime
+checks. V2 stays Proposed and is not part of that slice.
+
+### Local implementation evidence
+
+Linux x86-64, Clang 22.1.6, LLVM 21.1.8, fresh Release build from `0901264c`
+plus this change; optional BLAS, GPU, quantum and agent FFI disabled. LLVM 21
+was unpacked in the ignored build tree without changing the system toolchain.
+The original contributor checkout and its uncommitted draft were preserved.
+
+- **PASS:** the expanded model gate: six valid historical fixtures × four
+  producers × four consumers (96 pairs), plus the existing constructed-model
+  matrix. Every output is compared byte-for-byte to its golden fixture.
+- **PASS:** 20 public single-tensor cases and 16 scalar/empty function/region
+  lifetime cases across JIT, AOT, VM source and VM bytecode.
+- **PASS:** 16 negative controls, including wrong expected scalar shape and
+  payload. These alter test expectations or reuse existing valid fixtures;
+  the immutable corpus remains unchanged.
+- **PASS:** focused C representation/region tests, including rank-9 empty
+  dimensions, exact rewrites, and preservation of scalar arithmetic refusal.
+- **PASS:** focused CTest selection, 8/8: model I/O, VM preflight/representation,
+  atomic checkpoint helper, tensor operand classification, generated-artifact
+  validators, current VM prelude cache, public tensor parity and its oracle.
+- **PASS:** fixture integrity and payload-drift self-test, generated API docs,
+  public API documentation, coverage inventory, shell syntax and whitespace.
+- **Regression control:** an independently compiled VM translation unit from
+  unchanged `0901264c`, linked against the same runtime build, fails the new
+  positive producer test at both scalar and empty model loading (exit 1).
+  The changed VM passes that same test.
+
+Reproduce the primary gate and its controls:
+
+```bash
+bash scripts/run_eskm_v1_model_load_parity.sh build/eshkol-run build/eshkol-vm-standalone-test
+bash scripts/run_eskm_v1_model_load_parity.sh --self-test build/eshkol-run build/eshkol-vm-standalone-test
+```
+
+Review follow-up: native `tensor-length` assertions are restored in the
+four-engine fixture gate and both matrix runs pass. The browser VM bundle was
+regenerated with the repository-pinned Emscripten 4.0.22 recipe; its 9/9 REPL
+transcript cases, 3/3 math/AD/tensor smoke cases, and site-release verifier pass.
+The attempted browser checkpoint-I/O probe reaches the documented unsupported
+`eshkol_capability_require` stub, so this supplies no WASM checkpoint parity
+claim. The published bundle-size statistic matches the regenerated artifact.
+
+Native macOS/Windows, the full repository test suite and fresh sanitizer/resource
+campaigns are **NOT RUN**. No packet or design is marked
+maintainer-accepted merely because local tests pass.
+
+## Historical handoff — 2026-09-08
+
+All remaining sections describe the pinned September 8 snapshot, including its
+then-open PRs, blockers, ESKT dispatch and proposed sequence. The current
+checkpoint above supersedes those statuses; historical test reports and hashes
+are retained unchanged and do not establish results on `0901264c`.
 
 Snapshot: 2026-09-08 UTC. Owner: [Gabriel-Kahen](https://github.com/Gabriel-Kahen).
 This consolidates the personal serialization assignment from
@@ -267,6 +341,8 @@ changes, recompile and record the new SHA; do not relabel these results.
 
 ## Open risks and unmet roadmap acceptance
 
+Historical September 8 risks; see the current checkpoint above for disposition.
+
 1. **Review/integration:** #555 and every packet PR remain open, with inherited
    generated-document conflicts on the #555/#601/#602 stack. Independent
    passing reports do not show that a combined master build passes. Record
@@ -300,6 +376,8 @@ changes, recompile and record the new SHA; do not relabel these results.
    evidence and the next approved implementation milestone remain outstanding.
 
 ## Prioritized next six months
+
+Historical September 8 sequence; the current next slice is recorded above.
 
 Sequence around the roadmap's approximately 10-hour week and review latency;
 these are proposed priorities, not delivery promises or release assignments.

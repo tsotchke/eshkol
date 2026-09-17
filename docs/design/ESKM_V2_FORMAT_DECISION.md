@@ -3,6 +3,7 @@
 - **Status:** Proposed; no v2 writer or reader is authorized by this document
 - **Date:** 2026-09-06
 - **Technical review updated:** 2026-09-07
+- **Dependency/dispatch status refreshed:** 2026-09-17; decision remains Proposed
 - **Author:** Gabriel “Gabe” Kahen
 - **Decision owners:** Eshkol model/checkpoint maintainers
 - **Packet:** GK-SER-05
@@ -10,8 +11,13 @@
 - **Implementation prerequisites:** GK-SER-02 fail-closed all-record preflight and GK-SER-04 atomic checkpoint publication
 - **Supersedes:** none; ESKM v1 remains the default and compatibility baseline
 
-The v1 links pin the reviewed dependency while #596 is unmerged. This proposal
-does not incorporate its files or claim its runtime acceptance gates passed.
+The v1 links preserve the original review baseline. #596 has since merged
+(`665e60c0`); the current [v1 reference](../reference/tensors/eskm-v1.md) and
+[immutable corpus](../../tests/core/fixtures/eskm-v1/) include six valid fixtures.
+At `upstream/master` `0901264c`, #555 has carried the #602 preflight work and
+#612 has carried #600 atomic publication. These landed prerequisites do not
+accept this byte-level proposal or prove its implementation gates. V2 has no
+reader or writer in that baseline.
 
 ## Context
 
@@ -179,13 +185,12 @@ by those readers. Emitting v2 requires a separately reviewed opt-in API or an
 explicitly approved default-version change.
 
 Here, public save/load means the ESKM model path and ESKM single-tensor entry
-points. Update after #555 merged on 2026-09-08: native and VM language
-`tensor-save`/`tensor-load` now both dispatch to ESKM v1. The ESKT boundary
-references in the original review gates below describe the pre-#555 baseline;
-they do not require restoring legacy ESKT dispatch. This proposal makes no
-further dispatch change and remains Proposed. Test both public tensor paths
-explicitly, preserving their current ESKM v1 output unless a separate API
-decision approves a change.
+points. Since #555 merged on 2026-09-08, native and VM language
+`tensor-save`/`tensor-load` both dispatch to ESKM v1. #620 aligns the public
+tensor parity gate with that contract. This proposal makes no further dispatch
+change and remains Proposed. Test both public tensor paths explicitly,
+preserving their current ESKM v1 output unless a separate API decision approves
+a change.
 
 Public load boundaries must report unsupported versions, unknown mandatory
 features, and malformed extension lengths through a deterministic, nonempty
@@ -293,8 +298,8 @@ gates below pass and the normative `docs/reference/tensors/eskm-v2.md` ships.
 
 The decision review must explicitly settle the header offsets and CRC example,
 required-feature/optional-TLV distinction, type-1 grammar and metadata-loss
-policy, proposed admission caps, v1/ESKT compatibility boundary, and the gates
-below. Record the accepting maintainer's review link and the accepted document
+policy, proposed admission caps, v1/public-tensor compatibility boundary, and
+the gates below. Record the accepting maintainer's review link and the accepted document
 commit when changing status. Filing or merging a Proposed document alone is
 not byte-level acceptance. Public opt-in API signatures/native IDs remain a
 separate review prerequisite for the writer slice.
@@ -309,7 +314,7 @@ The implementation must prove:
 1. every accepted and rejected v1 golden fixture behaves unchanged;
 2. all available engines accept a canonical one-record v2 fixture through the
    ESKM model entry point, with the native tagged C and VM ESKM single-tensor
-   entry points also checked; native language ESKT dispatch is unchanged. The
+   entry points also checked; public tensor dispatch remains ESKM. The
    empty example above is checked only through an internal status-bearing
    container parser because NULL/NIL cannot distinguish successful emptiness
    from rejection;
@@ -323,7 +328,7 @@ The implementation must prove:
    order, rank, dimensions, dtype, element count, and raw payload bits within
    their common supported profile; any capability restriction is documented;
 7. default ESKM writers still emit byte-identical v1 unless the caller opts into
-   v2, and native language ESKT output remains unchanged;
+   v2, including both public language tensor-save routes;
 8. the normative reference and public API documentation publish the approved
    caps and error contract with the parser; bounded tests check limits just
    below, at, and above each cap, with allocation accounting proving refusals
@@ -351,7 +356,7 @@ needs a bounded valid control.
 | Slice | Focus and prerequisite | Acceptance evidence |
 |---|---|---|
 | GK-SER-05a | Internal v2 preflight parser, known type-1 validation, bounded fixtures, and normative `eskm-v2.md`; requires GK-SER-02 and approved cap tables | Gates 1, 3–5, 8 at the parser boundary; exact empty and one-record bytes/CRC; no public writer |
-| GK-SER-05b | ESKM reader integration on native and VM, annotation validation/discard behavior, and public checkpoint-error diagnostics | Gates 2–6 on the available engine axes; allocation accounting and no partial result; no ESKT dispatch changes |
+| GK-SER-05b | ESKM reader integration on native and VM, annotation validation/discard behavior, and public checkpoint-error diagnostics | Gates 2–6 on the available engine axes; allocation accounting and no partial result; public tensor dispatch remains ESKM |
 | GK-SER-05c | Explicitly reviewed opt-in v2 writer/API using GK-SER-04 publication; default ESKM writer unchanged | Gates 3, 7, 9; canonical sorted annotations, byte-identical repeated saves and v1 output, reader consumption of emitted v2 |
 | GK-SER-05d | End-to-end producer/consumer compatibility matrix | All four engines write/read each other's ESKM output; compare tensor names, order, shapes, dtype, and raw payload bits; annotations follow the approved API contract; agree on bounded rejection classes and diagnostics |
 | GK-SER-05e | Final normative reference, evidence links, and ownership status | All gates recorded PASS for supported targets on identified commits; Accepted → Implemented only with complete evidence |
