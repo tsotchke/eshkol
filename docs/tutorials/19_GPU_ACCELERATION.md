@@ -50,14 +50,20 @@ On NVIDIA GPUs, Eshkol uses cuBLAS for matrix operations with
 occupancy-aware kernel configuration:
 
 ```scheme
-;; Explicit GPU dispatch
-(define result (gpu-matmul A B))
+(define A #(#(1.0 2.0) #(3.0 4.0)))
+(define B #(#(5.0 6.0) #(7.0 8.0)))
+(define M A)
+(define logits #(1.0 2.0 3.0))
+
+;; Explicit GPU dispatch (the same calls fall back to the CPU when the
+;; build or the machine has no GPU)
+(define result (gpu-matmul A B))            ;; => #((19 22) (43 50))
 
 ;; Element-wise GPU operations
-(define scaled (gpu-elementwise * A B))
-(define reduced (gpu-reduce + M))
-(define soft (gpu-softmax logits))
-(define transposed (gpu-transpose M))
+(define scaled (gpu-elementwise * A B))     ;; => #((5 12) (21 32))
+(define reduced (gpu-reduce + M))           ;; => 10
+(define soft (gpu-softmax logits))          ;; => #(0.0900... 0.2447... 0.6652...)
+(define transposed (gpu-transpose M))       ;; => #((1 3) (2 4))
 ```
 
 `gpu-elementwise` accepts the binary operators `+`, `-`, `*`, and `/`.
@@ -79,6 +85,11 @@ Loop vectorisation is automatic — the compiler detects vectorisable
 patterns in tensor operations and emits wide instructions.
 
 ```scheme
+(define large-vector (rand 4096))
+(define a #(1.0 2.0 3.0 4.0))
+(define b #(5.0 6.0 7.0 8.0))
+(define v #(1.0 2.0 3.0 4.0))
+
 ;; These are all SIMD-vectorised on supported hardware
 (define sum (tensor-sum large-vector))
 (define product (tensor-mul a b))

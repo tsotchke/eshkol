@@ -428,6 +428,53 @@ CI runs `make api-docs-check` for every pull request. After merge,
 only when there is a diff, with concurrency protection and no attribution
 trailers. Do not use a `.gitattributes` merge driver for this directory.
 
+#### Examples in the tutorials are executed
+
+Every fenced `scheme` block under `docs/tutorials/` is run by
+`scripts/doc_audit/check_doc_examples.py` on the JIT (`eshkol-run -r`, what
+the REPL runs) and as an AOT binary, in CI and in the release evidence run.
+Run it before you push a tutorial change:
+
+```sh
+python3 scripts/doc_audit/check_doc_examples.py --eshkol-run build/eshkol-run \
+    --only docs/tutorials/12_LISTS.md
+```
+
+An example must exit 0 within its time limit without writing an error
+diagnostic, and what it prints must be what the page says:
+
+- `(take '(a b c) 2)  ;; => (a b)` on the same line, or `;; => (a b)` on the
+  line under the form, is compared with the value the build shows. The
+  annotation names a value, so `12.0` matches a printed `12`, `"abc"` matches
+  `abc`, text after the value is commentary, `0.7616...` matches a number that
+  shortens to those digits, and `~2.0` means approximately.
+- A block that starts with `> ` is a REPL transcript: the lines under each
+  input are its expected output.
+- A bare or `text` fence directly under an example is its exact stdout.
+
+A block is tried on its own and then after the page's earlier examples, so a
+later example may use an earlier definition. When an example cannot be checked,
+say so on the line above its fence; the rendered page does not change:
+
+```markdown
+<!-- doc-example: skip platform-specific: needs the browser DOM -->
+<!-- doc-example: run-only nondeterministic: prints the current time -->
+<!-- doc-example: known-defect SW-179: the documented result, and what the build does instead -->
+<!-- doc-example: file mylib.esk: the module the next example requires -->
+<!-- doc-example: output stdout: what the program above prints -->
+```
+
+`skip` and `run-only` take one of `pseudo-code`, `fragment`,
+`platform-specific`, `nondeterministic`, `interactive` or `external-resource`.
+`known-defect` names an open ledger entry: use it when the page states the
+designed behaviour and the implementation is wrong, instead of editing the page
+down to match the bug. The example is still run, and the gate fails the day it
+passes so the marker cannot outlive the defect. The number of marked examples
+per file is ratcheted in `scripts/doc_audit/example_gate_baseline.json`; after
+removing a marker, lower it with `--update-baseline`. The conventions are
+specified in the headers of `scripts/doc_audit/extract_examples.py` and
+`scripts/doc_audit/check_expected.py`.
+
 ### Silent-wrong ledger entries
 
 The aggregate `.icc/silent-wrong-ledger.yaml` is generated. Add a new ledger

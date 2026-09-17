@@ -1,0 +1,39 @@
+id: SW-179
+bucket: SILENT-WRONG
+family: native/vector-set-numeric-store
+status: open
+needs_decision: true
+title: "native: vector-set! of an exact integer into a `#(...)` literal stores the integer's bit pattern as a double, and reading the slot back with vector-ref crashes"
+repro: >-
+  (1) (define v #(10 20 30))
+      (vector-set! v 0 99)
+      (display v)
+  (2) (define z #(1.5 2.5))
+      (vector-set! z 1 7)
+      (display (vector-ref z 1))
+observed: >-
+  (1) prints `#(4.9e-322 20 30)` under `eshkol-run -r` and from an AOT binary,
+  exit 0, no diagnostic. 4.9e-322 is the 64-bit integer 99 read as an IEEE
+  double. (2) prints nothing and dies with "fatal signal: SIGSEGV
+  (segmentation fault) at address 0xffffffffffffffff" on both native engines.
+  Storing an inexact value is correct: `(vector-set! w 0 99.0)` prints
+  `#(99 20 30)`. A vector built with `(vector 10 20 30)` is correct for both.
+  The bytecode VM prints `#(99 20 30)` for (1).
+correct: >-
+  `#(99 20 30)` and `7`. docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md,
+  "Element Access and Mutation", documents exactly program (1) with the result
+  `#(99 20 30 40 50)`, and R7RS vector-set! stores the object it is given.
+evidence: >-
+  Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+  arm64 macOS, JIT and AOT, by scripts/doc_audit/check_doc_examples.py: the
+  tutorial example fails with MISMATCH expected '#(99 20 30 40 50)' got
+  '#(4.9e-322 20 30 40 50)' on both engines.
+caught_by: [doc-example-gate]
+missed_by: [run_all_tests, vm_parity, doc_audit]
+notes: >-
+  Found by executing the tutorials. The example is marked
+  `doc-example: known-defect SW-179` in the tutorial and is still executed on
+  every gate run; the gate fails the day it passes, so the marker cannot
+  outlive the defect. Not root-caused here: the `#(...)` literal is
+  tensor-backed (double storage), and the store path appears to write the
+  tagged integer payload without converting it.

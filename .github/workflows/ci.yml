@@ -647,6 +647,7 @@ jobs:
           python3 scripts/check_build_fingerprint.py --self-test
           python3 scripts/doc_audit/check_results_schema.py --self-test
           python3 scripts/doc_audit/test_harness.py
+          python3 scripts/doc_audit/check_doc_examples.py --self-test
           python3 scripts/check_test_coverage.py --self-test
           python3 scripts/check_engine_parity_threshold.py --self-test
           python3 scripts/check_ps1_encoding.py --self-test
@@ -2129,6 +2130,28 @@ jobs:
       # native and bytecode back ends keep separate FD counters — the asymmetry
       # that let one stay dead while the other worked. One Linux and one macOS
       # lane is enough to cover both platforms without paying for it six times.
+      # Every fenced example under the gated documentation scopes
+      # (scripts/doc_audit/extract_examples.py GATED_SCOPES; docs/tutorials
+      # today) is run on the JIT and as an AOT binary, and each `;; =>`
+      # annotation is compared with what the build printed. An example that
+      # cannot run carries an explicit marker in the markdown; the marked count
+      # is ratcheted in scripts/doc_audit/example_gate_baseline.json. One Linux
+      # and one macOS lane: the examples are platform-independent programs, and
+      # the two lanes cover both AOT link paths.
+      - name: Every tutorial example runs and prints what the page says
+        if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite')
+        timeout-minutes: 45
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+          ESHKOL_PATH: ${{ github.workspace }}/lib
+        run: |
+          set -euxo pipefail
+          python3 scripts/doc_audit/check_doc_examples.py \
+            --eshkol-run "$BUILD_DIR/eshkol-run" \
+            --work-dir "${{ runner.temp }}/doc-example-gate" \
+            --report "${{ runner.temp }}/doc-example-gate-report.json"
+
       - name: AD exactness gate (finite-difference counter is live; matmul tape ratchet)
         if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite')
         timeout-minutes: 25

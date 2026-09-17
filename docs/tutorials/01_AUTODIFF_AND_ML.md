@@ -226,42 +226,57 @@ Eshkol includes 555+ builtins for ML. Here are the most useful:
 ### Activation Functions
 
 ```scheme
-;; All take and return doubles or tensors
+;; sigmoid, tanh and relu take a number or a tensor
 (sigmoid 0.0)           ;; => 0.5
 (tanh 1.0)              ;; => 0.7616...
 (relu -0.5)             ;; => 0.0
 (relu 0.5)              ;; => 0.5
-(softplus 0.0)          ;; => 0.6931... (ln(2))
-(leaky-relu -0.5)       ;; => -0.005 (alpha=0.01)
-(elu -1.0)              ;; => -0.6321...
-(gelu 0.5)              ;; => 0.3457...
-(swish 1.0)             ;; => 0.7311...
+
+;; The rest are tensor operations: pass a tensor, get a tensor back
+(softplus #(0.0))       ;; => #(0.6931...) (ln(2))
+(leaky-relu #(-0.5))    ;; => #(-0.005) (alpha=0.01)
+(elu #(-1.0))           ;; => #(-0.6321...)
+(gelu #(0.5))           ;; => #(0.3457...)
+(silu #(1.0))           ;; => #(0.7311...) (also known as swish)
 ```
 
 ### Loss Functions
 
 ```scheme
+;; Losses take a prediction tensor and a target tensor and return a number
+(define predicted #(1.0 2.0 3.0))
+(define actual    #(1.5 2.0 2.0))
+
 ;; Mean squared error
-(mse-loss predicted actual)
+(mse-loss predicted actual)            ;; => 0.4166...
 
-;; Cross-entropy (for classification)
-(cross-entropy-loss predicted actual)
+;; Huber loss (robust to outliers); the optional third argument is delta
+(huber-loss predicted actual)          ;; => 0.2083...
+(huber-loss predicted actual 0.5)      ;; => 0.1666...
 
-;; Huber loss (robust to outliers)
-(huber-loss predicted actual delta)
+;; Cross-entropy (for classification): logits and a one-hot target
+(cross-entropy-loss #(2.0 1.0 0.1) #(1.0 0.0 0.0))  ;; => 0.4170...
 ```
 
 ### Optimizers
 
 ```scheme
-;; Gradient descent with momentum
-(gradient-descent params grad learning-rate)
+;; The optimizers live in ml.optimization. Each takes the function to
+;; minimise and a starting point, and returns the point it converged to.
+(require ml.optimization)
 
-;; Adam optimizer
-(adam params grad learning-rate beta1 beta2 epsilon t)
+;; f(x, y) = x^2 + y^2, minimum at the origin
+(define (quad v)
+  (+ (* (vref v 0) (vref v 0)) (* (vref v 1) (vref v 1))))
+
+;; Gradient descent: f, start, learning rate, max iterations, tolerance
+(gradient-descent quad #(5.0 5.0) 0.1 1000 1e-8)   ;; => ~#(0.0 0.0)
+
+;; Adam: f, start, learning rate
+(adam quad #(5.0 5.0) 0.1)                         ;; => ~#(0.0 0.0)
 
 ;; L-BFGS for second-order optimization
-(line-search f x direction)
+(l-bfgs quad #(5.0 5.0))                           ;; => #(0 0)
 ```
 
 These all compose with autodiff — you can differentiate through any of

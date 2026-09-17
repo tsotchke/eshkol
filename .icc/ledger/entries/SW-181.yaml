@@ -1,0 +1,32 @@
+id: SW-181
+bucket: LOUD-ERROR
+subtag: structural
+family: ad/dense-tensor-operands
+status: open
+needs_decision: false
+title: "native: tensor-dot refuses the differentiated result of matmul, so gradient of a quadratic form x . (A x) raises a type error"
+repro: >-
+  (display (gradient (lambda (x) (tensor-dot x (matmul (eye 3) x)))
+                     #(1.0 2.0 3.0)))
+observed: >-
+  "Type error in tensor-dot: expected tensor, got ad-node", exit 1, under
+  `eshkol-run -r` and from an AOT binary. Each half works alone:
+  (gradient (lambda (x) (tensor-dot x x)) ...) is #(2 4 6),
+  (gradient (lambda (x) (tensor-sum (matmul (eye 3) x))) ...) is #(1 1 1), and
+  (gradient (lambda (x) (tensor-dot x (tensor-scale x 2.0))) ...) is #(4 8 12).
+correct: >-
+  #(2 4 6): the gradient of x . (I x) is 2x.
+  docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md, "Integration with
+  Autodiff", documents this program as the example of differentiable tensor
+  operations.
+evidence: >-
+  Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+  arm64 macOS, JIT and AOT, by scripts/doc_audit/check_doc_examples.py (EXIT 1
+  with the diagnostic above on both engines).
+caught_by: [doc-example-gate]
+missed_by: [run_ad_oracle, run_dense_tensor_ad_gate, doc_audit]
+notes: >-
+  Loud on the native engines, so LOUD-ERROR. The example carries
+  `doc-example: known-defect SW-181`. tensor-dot accepts a dense AD node for
+  its first operand and for a tensor-scale result, so the missing case looks
+  like the matmul result's carrier kind rather than tensor-dot as a whole.

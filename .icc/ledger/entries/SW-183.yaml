@@ -1,0 +1,39 @@
+id: SW-183
+bucket: LOUD-ERROR
+subtag: structural
+family: ad/closure-capture-through-map
+status: open
+needs_decision: false
+title: "a derivative through `map` with a lambda that captures the differentiated variable is 0, with `Invalid type for int64 storage value: 6` on stderr and exit status 0"
+repro: >-
+  (define (f a) (fold-left + 0.0 (map (lambda (x) (* a x)) '(1.0 2.0 3.0))))
+  (display (derivative f 2.0))
+observed: >-
+  Prints `0` after three lines of "ERROR: Invalid type for int64 storage
+  value: 6" on stderr, exit 0, under `eshkol-run -r` and from an AOT binary.
+  The same sum written as a named-let loop over the list prints 6, and
+  (fold-left + 0.0 (list (* a 1.0) (* a 2.0))) prints 3, so the loss is in the
+  list `map` builds from the capturing lambda, not in fold-left.
+correct: >-
+  6.
+evidence: >-
+  Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+  arm64 macOS. Two tutorial programs compute their loss with this
+  map-then-fold shape. docs/tutorials/26_PROJECT_SELF_IMPROVING.md maps an
+  internal `define` that captures the three coefficients: under
+  `eshkol-run -r` it writes the diagnostic on every step, reports
+  "Learned coefficients: 1 0 0" and leaves the loss at 13.16, while the AOT
+  binary of the same file is correct (loss 0.0112), so that capture shape
+  fails on the JIT only. docs/tutorials/24_PROJECT_OPTIMISATION.md problem 3
+  maps a lambda over its data: natively it writes 75000 of these diagnostics in
+  5000 steps, reports "Fitted: 0x^2 + 0x + 0" with MSE 491.11 and exits 0,
+  where an independent gradient-descent computation gives
+  0.828x^2 + 0.900x + 1.026 with MSE 0.0183.
+caught_by: [doc-example-gate]
+missed_by: [run_ad_oracle, doc_audit]
+notes: >-
+  Filed LOUD-ERROR because a diagnostic is printed, although the exit status
+  is 0 and the value is wrong; scripts/doc_audit/check_doc_examples.py fails
+  an example that writes an error diagnostic for that reason. Tutorial 26
+  carries `doc-example: known-defect SW-183`; tutorial 24 problem 3 carries
+  SW-182, the first defect it reaches.

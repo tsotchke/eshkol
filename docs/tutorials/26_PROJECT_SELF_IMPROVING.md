@@ -12,6 +12,7 @@ This program starts with a bad approximation of `sin(x)` and uses
 autodiff to teach itself to be accurate. The parameters are part of the
 program — gradient descent literally rewrites them.
 
+<!-- doc-example: known-defect SW-183: the loss falls from 13.16 to 0.0112; under `eshkol-run -r` the gradient through the mapped point-error closure is 0 and the coefficients never change -->
 ```scheme
 ;; ═══════════════════════════════════════════════════════
 ;; Self-Improving Function Approximator
@@ -69,7 +70,7 @@ program — gradient descent literally rewrites them.
 (newline)
 
 ;; Train: the program improves itself
-(define params (improve 1.0 0.0 0.0 0.001 3000))
+(define params (improve 1.0 0.0 0.0 0.0005 3000))
 (define c1 (car params))
 (define c2 (cadr params))
 (define c3 (caddr params))
@@ -81,7 +82,7 @@ program — gradient descent literally rewrites them.
 (display c3) (newline)
 (display "  f(1.57) = ") (display (model c1 c2 c3 1.571)) (newline)
 (display "  sin(1.57) = ") (display (sin 1.571)) (newline)
-(display "  Loss = ") (display (loss c1 c2 c3)) (newline)
+(display "  Loss = ") (display (loss c1 c2 c3)) (newline)  ;; => Loss = 0.0112...
 (newline)
 
 ;; Show predictions at every training point

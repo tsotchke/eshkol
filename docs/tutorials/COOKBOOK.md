@@ -183,7 +183,7 @@ as a compiled program.
             (map (lambda (pair) (if (eq? (car pair) x) (list x (+ 1 (cadr pair))) pair)) acc)
             (cons (list x 1) acc))))
     '() lst))
-(frequencies '(a b a c b a))  ;; => ((a 3) (b 2) (c 1))
+(frequencies '(a b a c b a))  ;; => ((c 1) (b 2) (a 3)) (newest key first)
 ```
 
 ---

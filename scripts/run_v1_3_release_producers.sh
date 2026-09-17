@@ -85,6 +85,12 @@ ESHKOL_ROSETTE_BUILD_DIR="$BUILD_DIR_PATH" \
 TRACE_DIR="$TRACE_DIR" \
     scripts/run_rosette_oracle.sh
 
+# Every tutorial example, run on the release compiler itself (JIT and AOT).
+python3 scripts/doc_audit/check_doc_examples.py --scope tutorials \
+    --eshkol-run "$BUILD_DIR_PATH/eshkol-run" \
+    --work-dir "$REPO_ROOT/.scratch/v1-3-readiness/doc-example-gate" \
+    --trace-dir "$TRACE_DIR"
+
 # Build-free checks that own the rest of the required eshkol_smoke receipts.
 python3 scripts/check_ledger_integrity.py --trace-dir "$TRACE_DIR"
 python3 scripts/check_oracle_schema.py --trace-dir "$TRACE_DIR"

@@ -24,6 +24,7 @@ Input    Output
 
 ## The Complete Program
 
+<!-- doc-example: known-defect SW-182: the network learns XOR; natively (gradient loss w1 ... b3) is taken at 0 on every step, so the weights never move -->
 ```scheme
 ;; ═══════════════════════════════════════════════════════
 ;; XOR Neural Network — trained with compiler-native AD
@@ -105,14 +106,17 @@ Input    Output
 
 ## What You Should See
 
+<!-- doc-example: output stdout: what the complete program prints -->
 ```
 XOR Neural Network Results:
-0 XOR 0 = 0.02...  (close to 0)
-0 XOR 1 = 0.97...  (close to 1)
-1 XOR 0 = 0.97...  (close to 1)
-1 XOR 1 = 0.03...  (close to 0)
-Final loss: 0.001...
+0 XOR 0 = 0.0079...
+0 XOR 1 = 0.9909...
+1 XOR 0 = 0.9924...
+1 XOR 1 = 0.0070...
+Final loss: 0.00025...
 ```
+
+The first and last rows are close to 0, the middle two close to 1.
 
 ---
 

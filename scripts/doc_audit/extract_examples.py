@@ -14,6 +14,51 @@ klass is a first-pass classification:
 
 expects is the list of `;; =>`, `;; returns`, and `;; prints` expected-value
 annotations found inline.
+
+SCOPES
+
+`SCOPE` is the audit sweep the pass scripts in this directory read. The
+documentation example gate (`check_doc_examples.py`) reads `GATED_SCOPES`
+instead: a named set of paths in which EVERY fenced example is executed and
+its expectation compared on every build. Adding `docs/guide`, `docs/reference`
+or the README samples to the gate is one more entry in `GATED_SCOPES` plus a
+baseline refresh (`check_doc_examples.py --update-baseline`); nothing else in
+the harness names a documentation path.
+
+MARKERS
+
+An example that cannot be executed says so in the markdown, in an HTML comment
+on the line above its opening fence (blank lines between the two are allowed),
+so the rendered page is unchanged and the reason sits next to the example:
+
+    <!-- doc-example: skip <reason>: <why, in a sentence> -->
+        not executed. <reason> is one of SKIP_REASONS.
+    <!-- doc-example: run-only <reason>: <why> -->
+        executed and must exit 0, but its printed values are not compared
+        (the output depends on the machine or the moment).
+    <!-- doc-example: known-defect <LEDGER-ID>: <what the page promises> -->
+        the page states the designed behaviour and the implementation does
+        not deliver it yet. <LEDGER-ID> names an open entry under
+        .icc/ledger/entries/. The example is still executed: the day it
+        passes, the gate fails until the marker is removed.
+
+    <!-- doc-example: file <name>: <what it is> -->
+        the block is also the content of `<name>`, which later examples on
+        the page `require`, `load` or open. It is executed like any other
+        example and written next to every later example on the page. Not an
+        exclusion, so not ratcheted. On a fence of any language (```json,
+        ```text) it only provides the file.
+
+    <!-- doc-example: output stdout: <what it is> -->
+        on a bare, ```text or ```output fence: the block is what the nearest
+        scheme example above it prints, even with a heading or a rule between
+        the two. (A bare fence directly under an example needs no marker.)
+        Compared line by line under the annotation rules, so `0.0079...`
+        and `5.0` for a printed `5` are both fine.
+
+A comment that starts with `doc-example:` and does not parse is recorded with
+kind `invalid`, which the gate reports as a failure: a typo in a marker must
+never turn into an unmarked example or a silent skip.
 """
 
 import json
@@ -33,6 +78,26 @@ SCOPE = [
     "docs/guide/AUTOMATIC_DIFFERENTIATION.md",
     "docs/reference",
 ]
+
+# Named path sets whose examples are all executed by check_doc_examples.py.
+# Extend this table to put more documentation under the gate.
+GATED_SCOPES = {
+    "tutorials": ["docs/tutorials"],
+}
+
+SKIP_REASONS = (
+    "pseudo-code",        # a shape or a signature, not a program
+    "fragment",           # part of a larger program shown elsewhere on the page
+    "platform-specific",  # needs hardware, an OS or a toolchain the gate cannot assume
+    "nondeterministic",   # output differs from run to run
+    "interactive",        # reads from a terminal or waits for a user
+    "external-resource",  # needs a network service, a credential or a file the page does not create
+)
+MARKER_KINDS = ("skip", "run-only", "known-defect", "file", "output")
+MARKER_PREFIX_RE = re.compile(r"^\s*<!--\s*doc-example:")
+MARKER_RE = re.compile(
+    r"^\s*<!--\s*doc-example:\s*(skip|run-only|known-defect|file|output)\s+([A-Za-z0-9_.-]+)\s*:\s*(\S.*?)\s*-->\s*$"
+)
 
 LANGS = {"scheme", "eshkol", "lisp", "racket"}
 
@@ -61,8 +126,8 @@ def closing_fence(lines, opening_index, opening_match):
     return None
 
 
-def iter_files(root):
-    for item in SCOPE:
+def iter_files(root, scope=None):
+    for item in (SCOPE if scope is None else scope):
         p = os.path.join(root, item)
         if os.path.isdir(p):
             for dirpath, _dirnames, filenames in os.walk(p):
@@ -149,10 +214,39 @@ def classify(code, preceding):
     return "runnable"
 
 
-def main():
-    root = sys.argv[1] if len(sys.argv) > 1 else "."
+def marker_for(lines, fence_index):
+    """Return the `doc-example:` marker attached to the fence at `fence_index`.
+
+    The marker is the nearest non-blank line above the fence. `None` means the
+    example is unmarked. A `doc-example:` comment that does not parse, or that
+    names an unknown skip reason, comes back with kind `invalid`.
+    """
+    k = fence_index - 1
+    while k >= 0 and not lines[k].strip():
+        k -= 1
+    if k < 0 or not MARKER_PREFIX_RE.match(lines[k]):
+        return None
+    m = MARKER_RE.match(lines[k])
+    if not m:
+        return {"kind": "invalid", "line": k + 1, "token": "", "text": lines[k].strip(),
+                "error": "expected `<!-- doc-example: skip|run-only|known-defect|file|output <token>: <text> -->`"}
+    kind, token, text = m.group(1), m.group(2), m.group(3)
+    if kind in ("skip", "run-only") and token not in SKIP_REASONS:
+        return {"kind": "invalid", "line": k + 1, "token": token, "text": text,
+                "error": "unknown reason %r; use one of %s" % (token, ", ".join(SKIP_REASONS))}
+    if kind == "output" and token != "stdout":
+        return {"kind": "invalid", "line": k + 1, "token": token, "text": text,
+                "error": "an output marker reads `output stdout: ...`, not %r" % token}
+    if kind == "file" and (token.startswith(".") or not re.match(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*$", token)):
+        return {"kind": "invalid", "line": k + 1, "token": token, "text": text,
+                "error": "a file marker names a plain file name, not a path: %r" % token}
+    return {"kind": kind, "line": k + 1, "token": token, "text": text}
+
+
+def extract(root, scope=None):
+    """Return one record per fenced example under `scope` (default: SCOPE)."""
     out = []
-    for rel in iter_files(root):
+    for rel in iter_files(root, scope):
         path = os.path.join(root, rel)
         with open(path, encoding="utf-8") as fh:
             lines = fh.read().splitlines()
@@ -168,6 +262,17 @@ def main():
             if close is None:
                 i += 1
                 continue
+            marker = marker_for(lines, i)
+            if lang not in LANGS and marker and marker["kind"] == "file":
+                body = lines[i + 1 : close]
+                out.append({
+                    "file": rel, "start_line": i + 1, "end_line": close + 1, "lang": lang,
+                    "code": "\n".join(ln[len(indent):] if ln.startswith(indent) else ln for ln in body),
+                    "klass": "data-file", "expects": [], "marker": marker,
+                })
+            if lang in LANGS and marker and marker["kind"] == "output":
+                marker = {"kind": "invalid", "line": marker["line"], "token": "stdout", "text": marker["text"],
+                          "error": "an output marker belongs on the pasted output fence, not on an example"}
             if lang in LANGS:
                 body = lines[i + 1 : close]
                 code = "\n".join(ln[len(indent):] if ln.startswith(indent) else ln for ln in body)
@@ -186,10 +291,25 @@ def main():
                         "code": code,
                         "klass": classify(code, preceding),
                         "expects": expects,
+                        "marker": marker,
                     }
                 )
             i = close + 1
-    json.dump(out, sys.stdout, indent=1)
+    return out
+
+
+def main():
+    args = [a for a in sys.argv[1:]]
+    scope = None
+    if "--scope" in args:
+        k = args.index("--scope")
+        name = args[k + 1]
+        if name not in GATED_SCOPES:
+            raise SystemExit("unknown scope %r; known: %s" % (name, ", ".join(sorted(GATED_SCOPES))))
+        scope = GATED_SCOPES[name]
+        del args[k : k + 2]
+    root = args[0] if args else "."
+    json.dump(extract(root, scope), sys.stdout, indent=1)
 
 
 if __name__ == "__main__":

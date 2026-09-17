@@ -28,6 +28,7 @@ automatic SIMD vectorisation and optional GPU dispatch.
 
 ## Element Access and Mutation
 
+<!-- doc-example: known-defect SW-179: vector-set! of 99 shows #(99 20 30 40 50); the native engines store the integer bits and show 4.9e-322 -->
 ```scheme
 (define v #(10 20 30 40 50))
 
@@ -88,7 +89,7 @@ automatic SIMD vectorisation and optional GPU dispatch.
 (define A (reshape #(1 2 3 4) 2 2))
 (define B (reshape #(5 6 7 8) 2 2))
 (define C (matmul A B))
-(display C)  ;; => 2x2 result
+(display C)  ;; => #((19 22) (43 50))
 
 ;; Transpose
 (display (transpose A))
@@ -98,7 +99,7 @@ automatic SIMD vectorisation and optional GPU dispatch.
 (display (trace (eye 4)))     ;; => 4.0
 
 ;; Outer product
-(display (outer #(1 2) #(3 4)))  ;; => 2x2 matrix
+(display (outer #(1 2) #(3 4)))  ;; => #((3 4) (6 8))
 ```
 
 ---
@@ -109,7 +110,13 @@ When tensor sizes exceed a threshold, operations automatically dispatch
 to GPU (Metal on macOS, CUDA on Linux/Windows):
 
 ```scheme
-;; Explicit GPU dispatch
+(define A (rand 64 64))
+(define B (rand 64 64))
+(define large-vector (rand 4096))
+(define large-A (rand 256 256))
+(define large-B (rand 256 256))
+
+;; Explicit GPU dispatch (falls back to the CPU when no GPU is present)
 (define result (gpu-matmul A B))
 (define soft (gpu-softmax large-vector))
 
@@ -126,13 +133,14 @@ to GPU (Metal on macOS, CUDA on Linux/Windows):
 
 Tensor operations are differentiable:
 
+<!-- doc-example: known-defect SW-181: the gradient is #(2 4 6); the native engines raise a type error in tensor-dot -->
 ```scheme
 ;; Gradient of a function that uses tensors
 (define (quadratic-form x)
   (tensor-dot x (matmul (eye 3) x)))
 
 (display (gradient quadratic-form #(1.0 2.0 3.0)))
-;; => gradient vector
+;; => #(2.0 4.0 6.0)
 ```
 
 ---
