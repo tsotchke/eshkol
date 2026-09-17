@@ -44,7 +44,7 @@ built in, from basic cons/car/cdr to sorting and partitioning.
 (list-copy '(1 2 3))         ;; => (1 2 3) (fresh copy)
 (filter even? '(1 2 3 4 5))  ;; => (2 4)
 (partition even? '(1 2 3 4 5))
-;; => two lists: (2 4) and (1 3 5)
+;; => ((2 4) (1 3 5)) (a list of two lists: the matches, then the rest)
 ```
 
 ---

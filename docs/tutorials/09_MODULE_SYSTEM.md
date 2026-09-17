@@ -29,6 +29,7 @@ resolution and cycle detection.
 
 A module is an `.esk` file with a `provide` declaration listing its exports:
 
+<!-- doc-example: file mylib.esk: the module the next example requires -->
 ```scheme
 ;;; mylib.esk — a custom library
 

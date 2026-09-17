@@ -39,7 +39,7 @@ Bignums support all standard arithmetic:
 ```scheme
 (+ (expt 10 50) 1)       ;; exact
 (* (expt 2 128) 3)       ;; exact
-(quotient (expt 10 100) (expt 10 50))  ;; => 10^50
+(quotient (expt 10 100) (expt 10 50))  ;; => 100000000000000000000000000000000000000000000000000 (10^50)
 (gcd 1000000007 999999937)             ;; works on bignums
 ```
 
@@ -77,7 +77,7 @@ Rationals are written as `numerator/denominator` and stay exact:
 (display (* z z))        ;; => -7+24i
 
 ;; Polar form
-(define w (make-polar 2.0 1.5708))  ;; r=2, theta=pi/2
+(define w (make-polar 2.0 1.5707963267948966))  ;; r=2, theta=pi/2
 (display w)              ;; => ~0+2i
 ```
 

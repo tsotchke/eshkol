@@ -81,6 +81,7 @@ is natural.
 
 ## Expected Output
 
+<!-- doc-example: output stdout: what the program above prints -->
 ```
 === S-Expression Calculator ===
 (+ 1 2 3) = 6
