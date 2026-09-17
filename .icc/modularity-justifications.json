@@ -91,7 +91,7 @@
     ],
     "status": "temporary_legacy_boundary",
     "task_id": "adr-0002-ad-staged-dense-kernels",
-    "reason": "Both files are live surfaces of the staged-dense-kernels AD architecture tracked in docs/design/adr/0002-ad-staged-dense-kernels.md: runtime_taylor.c implements the Taylor tower and reverse-over-Taylor hooks the ADR scopes directly (eshkol_taylor_lift_ad_node, eshkol_taylor_extract_tangent), and tensor_backward.cpp holds the 13 dense backward kernels and eshkol_tensor_backward_dispatch the ADR's blocker/decision tables cite by exact line (e.g. the attention-backward Q/K adjoint gap at tensor_backward.cpp:646, the silent-drop default case at 1362-1365). The ADR's own scope list names both files as in-flight; splitting them ahead of that staged plan would fork kernel groupings the ADR has not yet decided.",
+    "reason": "Both files are a temporary boundary held stable for the staged-dense-kernels AD architecture tracked in docs/design/adr/0002-ad-staged-dense-kernels.md: runtime_taylor.c implements the Taylor tower and reverse-over-Taylor hooks the ADR scopes directly (eshkol_taylor_lift_ad_node, eshkol_taylor_extract_tangent), and tensor_backward.cpp holds the 13 dense backward kernels and eshkol_tensor_backward_dispatch the ADR's blocker/decision tables cite by exact line (e.g. the attention-backward Q/K adjoint gap at tensor_backward.cpp:646, the silent-drop default case at 1362-1365). The ADR's own scope list names both files as in-flight; splitting them ahead of that staged plan would fork kernel groupings the ADR has not yet decided.",
     "mitigation": "No split ahead of ADR-0002's staged kernel decisions. When the ADR's blockers close (strict-mode error conversion for skipped backward kernels, attention Q/K adjoint completion, the dense-kernel staging itself), extract kernel groups along the boundaries that work settles on rather than by line count."
    },
    {
@@ -100,7 +100,7 @@
     ],
     "status": "temporary_legacy_boundary",
     "task_id": "adr-0011-guest-collector-adapter",
-    "reason": "runtime_regions.cpp is the OALR region implementation docs/design/adr/0011-guest-collector-adapter.md builds directly on: eshkol_current_arena() (the one allocation seam every guest collector must route through) and eshkol_region_unwind_to() (the one teardown path shared by lexical exit, explicit close, raise, and call/cc escape) are both cited from this file by exact line. The ADR is still deciding the guest-collector adapter boundary that would determine where a split, if any, belongs.",
+    "reason": "runtime_regions.cpp is a temporary boundary held stable while docs/design/adr/0011-guest-collector-adapter.md decides the guest-collector adapter split: eshkol_current_arena() (the one allocation seam every guest collector must route through) and eshkol_region_unwind_to() (the one teardown path shared by lexical exit, explicit close, raise, and call/cc escape) are both cited from this file by exact line. The ADR is still deciding the guest-collector adapter boundary that would determine where a split, if any, belongs.",
     "mitigation": "No split ahead of ADR-0011's adapter-boundary decision. Once the guest-collector adapter contract is fixed, extract the adapter-facing seam (arena accessor, unwind path, handle protocol) behind that contract rather than splitting by line count first."
    },
    {
@@ -109,7 +109,7 @@
     ],
     "status": "temporary_legacy_boundary",
     "task_id": "adr-0012-signed-curvature-stereographic-geometry",
-    "reason": "riemannian_core.h is named directly in docs/design/adr/0012-signed-curvature-stereographic-geometry.md's decision-owner list (\"geometry core (riemannian_core.h)\"), which is actively adding the shared rho/lambda/generalized-ratio helpers and the signed stereographic forward/domain checks to this header. Splitting it before that ADR's migration lands would fork a header mid-change across the VM geometry, qLLM bridge, AD, and Moonlab integration consumers it lists as decision owners.",
+    "reason": "riemannian_core.h is a temporary boundary, named directly in docs/design/adr/0012-signed-curvature-stereographic-geometry.md's decision-owner list (\"geometry core (riemannian_core.h)\"), which is actively adding the shared rho/lambda/generalized-ratio helpers and the signed stereographic forward/domain checks to this header. Splitting it before that ADR's migration lands would fork a header mid-change across the VM geometry, qLLM bridge, AD, and Moonlab integration consumers it lists as decision owners.",
     "mitigation": "No split ahead of ADR-0012 landing. Once the signed-curvature migration and its documented consumer updates (docs/reference/stdlib/geometry.md, docs/api/backend/riemannian_core.md) are complete, split the header along the chart/metric boundary that migration establishes."
    },
    {
@@ -118,7 +118,7 @@
     ],
     "status": "accepted",
     "task_id": "sw-49-vm-prelude-cache-staleness-gate",
-    "reason": "vm_prelude_cache.h is machine-generated bytecode data, not authored source: it opens with \"Auto-generated by vm_prelude_cache.c -- DO NOT EDIT\" and its entire body is three static data tables (prelude_ops, plus the matching constant/local tables) produced by eshkol-vm-prelude-cache-gen from the compiled stdlib prelude. It has 1 symbol and 1 function by construction. CMakeLists.txt wires a staleness gate (the vm_prelude_cache generator + gate, SW-49) that fails the build if this file drifts from what the generator would produce now, so its content is already mechanically verified on every build -- a line-count threshold measuring hand-authored complexity does not apply to a generated data blob.",
+    "reason": "vm_prelude_cache.h is machine-generated bytecode data, not authored source: it opens with \"Auto-generated by vm_prelude_cache.c -- DO NOT EDIT\" and its entire body is a cohesive registry of three static data tables (prelude_ops, plus the matching constant/local tables) produced by eshkol-vm-prelude-cache-gen from the compiled stdlib prelude. It has 1 symbol and 1 function by construction. CMakeLists.txt wires a staleness gate (the vm_prelude_cache generator + gate, SW-49) that fails the build if this file drifts from what the generator would produce now, so its content is already mechanically verified on every build -- a line-count threshold measuring hand-authored complexity does not apply to a generated data blob.",
     "mitigation": "None needed: this file must stay whatever size the generator emits. If it should ever be edited by hand, that already violates the DO NOT EDIT contract and the CI staleness gate; the modularity threshold is not the relevant control here."
    },
    {
@@ -127,7 +127,7 @@
     ],
     "status": "accepted",
     "task_id": "vendored-third-party-header",
-    "reason": "pjrt_c_api.h is an unmodified, vendored third-party header (\"Copyright 2022 The OpenXLA Authors\", Apache License 2.0) defining the PJRT plugin C ABI this repo's XLA/TPU backend links against. It is not Eshkol source code and this repo does not own its structure: PJRT_STRUCT_SIZE-style ABI definitions, struct layouts and the full C API surface are upstream's design, kept as one file to match how OpenXLA ships and versions it.",
+    "reason": "pjrt_c_api.h is an unmodified, vendored third-party header (\"Copyright 2022 The OpenXLA Authors\", Apache License 2.0) defining the PJRT plugin C ABI this repo's XLA/TPU backend links against for compatibility with upstream's own versioning. It is not Eshkol source code and this repo does not own its structure: PJRT_STRUCT_SIZE-style ABI definitions, struct layouts and the full C API surface are upstream's design, kept as one file to match how OpenXLA ships and versions it.",
     "mitigation": "Do not hand-edit; refresh by re-vendoring the upstream file on a version bump (see deps/pjrt/) rather than splitting it, so future re-vendoring stays a clean file replacement instead of a merge across split fragments."
    }
   ]
