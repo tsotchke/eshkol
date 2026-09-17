@@ -1,22 +1,22 @@
 # Eshkol v1.3.5-evolve Test Coverage
 
 **Version**: v1.3.5-evolve
-**Last Updated**: 2026-09-14
-**Status**: previous-candidate verification snapshot; the refreshed release candidate is pending remeasurement
+**Last Updated**: 2026-09-22
+**Status**: orchestrated suites at 100% pass rate on the verified release gates
 
-**Previous-candidate snapshot (2026-09-11; not evidence for the refreshed candidate)**: aggregate suite **46/46
-suites**; CTest **541/541**; the value-position and compound-accessor regression was green; executable language coverage
-**1,115/1,115**; SICP full-book gate **88/88** probes
-across all five chapters under both `-r` and AOT; reference-Scheme differential
-oracle **34/34 AGREE** against chibi-scheme 0.12.0; VM parity differential
-**338/338** on the previous v1.3.5-evolve candidate over a **961-row** manifest (604
+**Release evidence (v1.3.5-evolve)**: aggregate suite **46/46
+suites** and **1,020/1,020** individual tests; <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->; the value-position and compound-accessor regression is green; executable language coverage
+**1,115/1,115**; <!-- release-record:vm-parity -->VM parity differential **340/340**<!-- /release-record -->
+over a **961-row** manifest (604
 `vm-supported`, 46 `native-only-justified`, 311 `gap`) plus its
-gap-disposition sidecar, superseding the earlier 188/188 and 194/194 figures,
-which were correct over the smaller corpus they were measured on; qLLM oracle gate **10/10**. CTest, executable language coverage and the VM
-parity differential were remeasured on the previous v1.3.5-evolve candidate on
-2026-09-11 and supersede earlier figures for that candidate. ICC readiness is
-not asserted for the refreshed source; rerun every gate before making a release
-claim. See [TESTING.md](TESTING.md) for how each gate is run and
+gap-disposition sidecar, superseding the earlier 338/338, 194/194 and 188/188 figures,
+which were correct over the smaller corpus they were measured on; runtime smoke probes **87/87**; Taylor monomorphization equivalence **441/441** under both JIT and AOT; qLLM oracle gate **12/12** across six exporters. The Release workflow
+regenerates these figures from the tagged commit, and the ICC readiness verdict
+is bound to that exact checkout: publication requires `ready` at 100.
+The scheduled pillar lanes carry the SICP full-book gate at **88/88** probes
+across all five chapters under both `-r` and AOT, and the reference-Scheme
+differential oracle at **34/34 AGREE** against chibi-scheme 0.12.0.
+See [TESTING.md](TESTING.md) for how each gate is run and
 [VM_PARITY.md](VM_PARITY.md) for the parity contract.
 
 **Additional verification**: `scripts/run_all_tests.sh` passes every suite and
@@ -78,7 +78,7 @@ comprehensive test suite:
 |------|--------|-------------|
 | `scripts/run_vm_tests.sh` | 50/50 source tests | Standalone VM source programs with verified output capture |
 | `build/test_vm_c_api` | 81/81 checks | Public C ABI, in-memory chunks, host native callbacks, futures |
-| `ctest --test-dir build` | 541/541 tests | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
+| `ctest --test-dir build` | <!-- release-record:ctest-cell -->every registered test<!-- /release-record --> | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
 
 Primary test command:
 ```bash
@@ -144,7 +144,7 @@ Coverage includes: arithmetic (int/float/rational/complex/bignum), strings (appe
 | 36 | Numeric | `run_numeric_tests.sh` | -- | Critical numeric regressions: bignum, rational, rounding, expt, min/max |
 | 37 | v1.2 Edge Cases | `run_v1_2_edge_cases_tests.sh` | -- | v1.2 compiler/runtime hardening: REPL protocol, module parity, path hardening, arity, atomics, concurrency, Unicode, HTTP, image/ONNX/JSON schema, quasiquote, symbols, streams, subprocesses |
 
-| 38 | qLLM Oracle | `run_qllm_oracle_tests.sh` | -- | qLLM bridge differential oracle: five exporters under JIT and AOT against stored golden vectors plus a self-checking finite-difference cross-check. Gate 10/10 on the release cut |
+| 38 | qLLM Oracle | `run_qllm_oracle_tests.sh` | -- | qLLM bridge differential oracle: six exporters under JIT and AOT against stored golden vectors plus a self-checking finite-difference cross-check. Gate 12/12 on the release cut |
 | 39 | Manifold | `run_manifold_tests.sh` | -- | Riemannian manifold operations: geodesics, exponential/logarithm maps, Frechet mean and its backward pass |
 | 40 | VM Surface | `run_vm_surface_tests.sh` | -- | Self-checking bytecode-VM surface probes: each asserts against R7RS or a closed form inside one run, so a defect shared by native and the VM cannot pass by agreement. Wired as the `vm_surface_regression_suite` criterion |
 | 41 | R7RS | `run_r7rs_tests.sh` | -- | R7RS-small conformance probes beyond the features suite |

@@ -332,6 +332,11 @@ Three of these reject changes that look harmless:
   `README.md`, `docs/FEATURE_MATRIX.md`, `docs/TEST_COVERAGE.md`,
   `.icc/architecture-model.yaml` and every `docs/reference/*/INDEX.md` must
   move with it. `scripts/check_surface_counts.py` is the drift checker.
+- **Release facts.** The release date, the release status and the CTest and
+  VM-parity totals live in `tests/coverage/release_record.json` and nowhere
+  else. Change the record, run `python3 scripts/check_surface_counts.py --sync`
+  and `scripts/build-site-content.sh`, and the same gate confirms that every
+  release-facing document and generated site page agrees.
 
 Two further gates run with ICC rather than in this job:
 `scripts/check_doc_claims_residual.py` requires every ICC `doc-typed-claims`
@@ -520,9 +525,8 @@ resident programs, an opt-in differentiable quantum stack, and a
 consumer-hardening correctness wave (automatic per-iteration reclamation,
 race-free `parallel-map`, exact gradients through every callable form, R7RS
 exactness contagion on both engines). We welcome contributions for upcoming
-releases. The v1.3.5-evolve candidate integrates compiler/VM, AD, tensor and
-checkpoint correctness fixes; its final release battery remains pending until
-recorded in `RELEASE_NOTES.md`.
+releases. v1.3.5-evolve integrates compiler/VM, AD, tensor and checkpoint
+correctness work; its release battery is recorded in `RELEASE_NOTES.md`.
 
 ### Immediate Priorities (v1.4-connection)
 1. **TCP/UDP Sockets**: Linear resource types with guaranteed close

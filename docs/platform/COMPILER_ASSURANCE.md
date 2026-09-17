@@ -67,12 +67,16 @@ policy, not a C++ semantic or data-flow proof: unusual indirect-call spellings
 require extending its recognizer. Its self-tests cover newly introduced source
 files and duplicate dispatcher names as well as missing cases and defaults.
 
-The current integration base fails this strict policy: 32 discovered AST
-switches have omissions and defaults, and seven direct callable consumers
-remain outside the canonical dispatcher. These findings are blocking; the gate
-has no baseline or exception list. Run the gate to obtain exact paths, line
-numbers, and missing operations. This does not label intentionally partial
-analyses as proven runtime defects; they violate the explicit-routing policy.
+The v1.3.5-evolve release passes this strict policy with zero findings: the
+gate discovers 34 AST operation switches, each exhaustive with no default, and
+exactly one callable dispatch site, `codegenClosureCall`. When the gate was
+introduced it reported 32 switches with omissions or defaults and seven direct
+callable consumers outside the canonical dispatcher; the routing work that
+followed answered all of them. Findings are blocking and the gate has no
+baseline or exception list, so the policy holds on every change. Run the gate
+to obtain exact paths and line numbers for every discovered site. An
+intentionally partial analysis is not a runtime defect, but it must still state
+its remaining cases explicitly.
 
 `gate_public_api_linkage.py` derives every `eshkol_*` function prototype from
 the umbrella public header and generates a volatile function-pointer relocation

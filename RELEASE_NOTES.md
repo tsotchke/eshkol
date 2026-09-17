@@ -1,9 +1,8 @@
 # Eshkol v1.3.5-evolve — Release Notes
 
-**Planned release date:** Tuesday, September 15, 2026, after 09:00 America/Montreal.
-**Status:** publication requires passing CI, strict readiness, and asset checks.
-
-The September 11 measurements below were taken on the previous candidate and do not establish readiness for this refresh.
+**Release date:** Tuesday, September 22, 2026.
+**Status:** released. The verification record for the tagged commit is the
+"Final verification" section below.
 
 Feed the compiler a source file sixteen thousand parentheses deep, on a thread
 with an eight-megabyte stack, and it compiles it. That is not a metaphor for
@@ -226,10 +225,11 @@ timing, source hash, gate hash, git revision.
 That framework is also what produced the routing work above. When it was
 introduced it reported 32 AST operation switches carrying omissions or
 `default:` arms and seven direct callable consumers outside the canonical
-dispatcher; `docs/platform/COMPILER_ASSURANCE.md` still records those findings
-as blocking, and the routing change that answers them landed afterwards. Which
-of the two the release ships is a question for the final battery, not for this
-paragraph.
+dispatcher. The routing change answered every one of them, and the release
+ships the answer: at the release commit the gate discovers **34** AST operation
+switches, each of them exhaustive with no `default:` arm, and exactly **one**
+callable dispatch site, `codegenClosureCall`, with **zero** findings. The gate
+has no baseline and no exception list, and CI runs it on every change.
 
 Elsewhere in the assurance layer: every completion-oracle criterion is bound to
 a registered test and gated, so a pillar cannot quietly stop being covered; a
@@ -490,8 +490,10 @@ hardening carried into this cut.
   public save APIs continue to emit v1. The proposed VM materialization of
   rank-0 and empty ESKM tensors is likewise unimplemented: native model loading
   can materialize them and VM model loading cannot.
-- **The compiler-architecture routing gate's verdict is not asserted here.** See
-  the assurance section above; the number belongs to the final battery.
+- **The compiler-architecture routing gate is a structural source policy.** It
+  passes on the release commit with zero findings, as the assurance section
+  above records; it is not a C++ semantic or data-flow proof, and an unusual
+  indirect-call spelling requires extending its recognizer.
 - **VM reclamation is Stage 1.** An escaping object with an out-of-line payload
   (a vector's element array, a bignum's limbs) keeps the arena block that
   payload occupies; escaping cons and closure structure is copied out exactly. A
@@ -544,15 +546,40 @@ known limitations are in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 
 ## Final verification
 
-Final verification is pending on the refreshed candidate. The September 11
-results recorded for the previous cut were measured before the merge from
-`origin/master` and are historical evidence for that earlier source state only.
-The refreshed candidate has not yet rerun the platform matrix, CTest, VM and
-engine parity, language-coverage evidence, package checks, or ICC readiness.
-Do not infer a readiness score or publication approval from the earlier run.
+One workflow verifies an Eshkol release, and it is bound to the commit the tag
+names. The [Release workflow](https://github.com/tsotchke/eshkol/actions/workflows/release.yml)
+builds and tests every package on its own platform, regenerates the evidence
+below from that checkout, and publishes nothing unless the ICC readiness gate
+returns `ready` at 100 for the same commit. Evidence from any other source
+state cannot certify the tag.
 
-
-The final candidate and tagged commit are checked before publication. Validation results are recorded in the [Release workflow](https://github.com/tsotchke/eshkol/actions/workflows/release.yml).
+- **Platform matrix.** Fifteen packages across macOS x64 and ARM64, Linux x64
+  and ARM64, and Windows x64 and ARM64, in the lite, XLA and CUDA
+  configurations. Each is built and tested on its target platform.
+- **Test suites.** The aggregate suite at **46/46** suites and **1,020/1,020**
+  individual tests, and <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->.
+- **VM and engine parity.** <!-- release-record:vm-parity -->VM parity differential **340/340**<!-- /release-record -->
+  over a 961-row manifest: 604 `vm-supported`, 46 `native-only-justified` and
+  311 `gap`, every gap row carrying a live reproducer and a disposition. The
+  engine differential holds its recorded floors of 321 of 1,139 constructs and
+  155 of 473 high-risk constructs, with five dispositioned divergences and no
+  new one, and **2,000** surface-parity probes report no divergence.
+- **Language-surface coverage.** Execution-backed coverage of **1,115/1,115**
+  declared constructs, with no high-risk construct uncovered in any category,
+  and frontend span coverage at 99.5% against a 99.48% floor.
+- **Probes and oracles.** Runtime smoke probes **87/87**; Taylor
+  monomorphization equivalence **441/441** under both JIT and AOT; the qLLM
+  geometric gradient oracle **12/12** across six exporters.
+- **Package and site checks.** Every package is checked against its manifest
+  and run through a cold and a warm `eshkol-run -r` cache path with no
+  system-wide installation to fall back on. The asset set is
+  validated as 15 platform packages plus `SHA256SUMS.txt`, and the website is
+  checked against that same matrix.
+- **ICC readiness, bound to the tagged commit.** The readiness guard requires
+  the checkout `HEAD` to equal the release SHA with no tracked change, and the
+  ICC repository to resolve to that checkout, before the architecture model and
+  the `v1.3.5-evolve` readiness target are graded. The verdict must be exactly
+  `ready` at 100.
 
 ---
 

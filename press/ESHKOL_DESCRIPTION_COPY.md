@@ -482,11 +482,10 @@ Each item below cites the file or measurement that grounds the claim.
   that exercises the gates themselves under a dirty worktree, a stale binary, a
   model-server outage, disk pressure, and an actually failing gate. Every
   trace-emitting harness now has a shared PASS/FAIL/INFRA/SKIP vocabulary, so an
-  infrastructure timeout cannot publish itself as a code defect. The September
-  11 verification figures belong to the previous v1.3.5-evolve candidate. The
-  September 14 refresh is awaiting open callee-identity, type-precision and
-  ICC-invariant hardening, followed by a fresh exact-head evidence battery; no
-  readiness score is claimed for it.
+  infrastructure timeout cannot publish itself as a code defect. The
+  callee-identity, type-precision and ICC-invariant hardening is integrated, and
+  the release evidence battery is regenerated from the tagged commit, with the
+  readiness verdict bound to that exact checkout.
   <!-- source: RELEASE_NOTES.md; docs/TEST_COVERAGE.md -->
   See *docs/TESTING.md*.
 
@@ -646,7 +645,7 @@ builds produce byte-identical `build/stdlib.bc` and `build/eshkol-run`
 |:---|:---|
 | Project | Eshkol |
 | Version | v1.3.5-evolve |
-| Release date | 11 September 2026 (builds on v1.3.4-evolve, 31 July 2026; v1.3.3-evolve, 16 July 2026; v1.3.2-evolve, 9 July 2026; v1.3.1-evolve and v1.3.0-evolve, 7 July 2026) |
+| Release date | 22 September 2026 (builds on v1.3.4-evolve, 19 August 2026; v1.3.3-evolve, 16 July 2026; v1.3.2-evolve, 9 July 2026; v1.3.1-evolve and v1.3.0-evolve, 7 July 2026) |
 | Implementation | C17 runtime, C++20 compiler |
 | Backend | LLVM. The source compiles against LLVM 18 through 24; a build pins one major version (21 by default, `ESHKOL_REQUIRED_LLVM_MAJOR`) and aborts on a mismatch |
 | Platforms | macOS Intel and Apple Silicon, Linux x86-64 and ARM64, Windows x86-64 and ARM64 via Visual Studio 2022 + ClangCL |

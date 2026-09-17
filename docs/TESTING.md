@@ -107,9 +107,9 @@ Eight criteria are wired as of v1.3.4-evolve. Five read CTest directly — the
 `module_load_path_engine_parity_gate` groups — and three read the sibling
 harnesses that judge the same cut: `vm_surface_regression_suite` (kind
 `vm_surface`), `vm_parity_gate` (kind `vm_parity`) and `event_loop_works`
-(kind `eshkol_smoke`). Remeasured on the previous v1.3.5-evolve candidate on
-2026-09-11 (before the September 14 refresh), CTest was **541/541** (superseding the 198/198 figure of commit
-`afbaaf5b` and the 183/183 before it, each correct on an earlier commit); the
+(kind `eshkol_smoke`). The release evidence, regenerated at the tagged commit,
+is <!-- release-record:ctest -->the full CTest suite<!-- /release-record --> (superseding the 541/541, 198/198 and 183/183 figures, each
+correct on the earlier commit it was measured on); the
 value-position and compound-accessor regression is green.
 
 ### ABI semantic inventory dependency
@@ -224,11 +224,10 @@ VM-supported nor consciously waived in `tests/vm_parity/PARITY.tsv`. A
 VM-vs-native differential over `tests/vm_parity/corpus/` then keeps shared
 symbols honest. Full write-up in [VM_PARITY.md](VM_PARITY.md).
 
-Last measured on the previous v1.3.5-evolve candidate on 2026-09-11 (not the
-refreshed candidate): the differential
-is **338/338** (superseding the 188/188 of commit `afbaaf5b` and the 184/184
-before it, which counted the corpus differential rather than the full manifest
-gate) and the manifest is **961 rows — 604 `vm-supported`, 46
+Measured at the v1.3.5-evolve release commit: the differential is
+<!-- release-record:vm-parity-figure -->**340/340**<!-- /release-record --> (superseding the 338/338 of the 2026-09-11 cut, the 188/188 of commit
+`afbaaf5b` and the 184/184 before it, which counted the corpus differential
+rather than the full manifest gate) and the manifest is **961 rows — 604 `vm-supported`, 46
 `native-only-justified`, 311 `gap`**; verified behavioral divergences remain
 explicit `gap` rows with reproducible programs under `tests/vm_parity/found/`.
 
@@ -380,11 +379,11 @@ release gates (e.g. `stress-budget`, `ad-oracle`). A release is "ready" only
 when the required oracles report their green verdicts, which is how the
 adversarial layer is enforced rather than merely available.
 
-The previous v1.3.5-evolve candidate had a reported readiness result and the
-gate figures listed in the historical snapshot in `docs/TEST_COVERAGE.md`.
-Those results do not apply to the September 14 refresh. No readiness score or
-verdict is claimed here; the full evidence battery must be regenerated on the
-exact refreshed source before release.
+For v1.3.5-evolve the Release workflow regenerates the full evidence battery
+from the tagged commit and binds the ICC readiness verdict to that exact
+checkout; publication requires `ready` at 100. The gate figures are in
+`docs/TEST_COVERAGE.md` and in the "Final verification" section of
+`RELEASE_NOTES.md`.
 
 ---
 

@@ -7,12 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.5-evolve] - 2026-09-15
+## [1.3.5-evolve] - 2026-09-22
 
-Planned release date: Tuesday, September 15, 2026, after 09:00
-America/Montreal. The callee-identity, type-precision and ICC-invariant hardening
-changes are integrated. Final release verification remains in progress; the
-entries below record source changes and do not claim the release gates passed.
+Release date: Tuesday, September 22, 2026. The callee-identity, type-precision
+and ICC-invariant hardening changes are integrated. The entries below record
+the source changes; the verification record for the tagged commit is the
+"Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 ### Added
 
@@ -2025,6 +2025,23 @@ entries below record source changes and do not claim the release gates passed.
   ships, and the generated API reference was regenerated for the builtin arity
   contract and the optional-argument surface. The machine-readable ledger
   carries the entries whose fixes this candidate ships.
+
+- **The release date, status and evidence totals have one source.**
+  `tests/coverage/release_record.json` carries the tag, the release date, the
+  status label and the CTest and VM-parity totals, and
+  `scripts/check_surface_counts.py` grades every release-facing document
+  against it: each statement of the release date is extracted and compared, a
+  stated weekday is checked against the calendar, the roadmap heading and
+  ladder rows must carry the record's status, pre-release wording is refused
+  once the record says `SHIPPED`, the anchor documents must state the date at
+  all, and every `release-record` span must equal the record's rendering. The
+  generated pages under `site/static/content/` are graded as text, so a mirror
+  that lags its Markdown source fails too. `--sync` rewrites the graded claims
+  from the record and `--require-complete` fails while a total is unrecorded;
+  the gate's self-test covers each rule red and green. The supported host
+  compilers are stated in `docs/KNOWN_ISSUES.md` and
+  `docs/platform/BUILD_NOTES.md`: GCC 13 and Clang/LLVM 21 are the verified
+  toolchains, and GCC 15 is not a supported host compiler in this release.
 
 
 ### Contributors

@@ -2,7 +2,7 @@
 
 **Status Key** (table cells): `Yes` = Production | `WIP` = In Progress | `Planned` = Planned | `No` = Not Planned | `Partial` = Partially supported
 
-This matrix lists every implemented and planned feature in the Eshkol ecosystem. Feature implementation status is separate from release-candidate verification; the September 14 refresh is awaiting its final test battery.
+This matrix lists every implemented and planned feature in the Eshkol ecosystem. Feature implementation status is recorded here; release verification is recorded separately, in the "Final verification" section of [RELEASE_NOTES.md](../RELEASE_NOTES.md), and is bound to the tagged commit.
 
 **Language surface count (canonical):** the declared language surface is
 **1,115** constructs — 1,052 builtins, 116 special forms, 113 AST ops and 16
@@ -22,7 +22,7 @@ name and with internal-only helpers excluded exactly the way
 number the coverage gate enforces: `tests/coverage/coverage_policy.json`
 `baseline_surface_total` = `tests/coverage/execution_deficit.json`
 `surface_total` = **1,115**, confirmed by regenerating
-`tests/coverage/language_surface.json` during the September 14 refresh. This
+`tests/coverage/language_surface.json` at the release commit. This
 is the figure this doc, README.md, and `.icc/architecture-model.yaml` use;
 `scripts/check_surface_counts.py` fails CI if any of them drift from the
 manifest again.
@@ -931,7 +931,7 @@ not-yet-production, and is listed above accordingly.)
 | Eshkol↔qLLM tensors | Yes | Type conversion (double↔float32) with AD integration |
 | Web Platform | Complete | WebAssembly compilation, 59 DOM bindings, browser REPL, eshkol.ai |
 | VM Dual Number AD | Complete | Forward-mode AD via dual numbers in bytecode VM |
-| VM Production | Partial (documented subset) | Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and a previous-candidate 338/338 differential result (`scripts/run_vm_parity.sh`, measured 2026-09-11 before this refresh). This result must be rerun on the refreshed source. `tests/vm_parity/PARITY.tsv` carries 311 `gap` rows out of 961, plus 328 further names in `tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger entirely (see [VM_PARITY.md](VM_PARITY.md)) — corrected from "Complete" 2026-08-25, conformity audit item d9 |
+| VM Production | Partial (documented subset) | Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the release differential (`scripts/run_vm_parity.sh`): <!-- release-record:vm-parity -->VM parity differential **340/340**<!-- /release-record -->. `tests/vm_parity/PARITY.tsv` carries 311 `gap` rows out of 961, plus 328 further names in `tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger entirely (see [VM_PARITY.md](VM_PARITY.md)) — corrected from "Complete" 2026-08-25, conformity audit item d9 |
 | KB Pattern Matching | Complete | Knowledge base queries with ?-wildcard pattern matching |
 
 ## Tensor Linear Algebra (v1.1)
@@ -1046,7 +1046,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
 
 ---
 
-**Last Updated**: 2026-09-14
+**Last Updated**: 2026-09-22
 **Document Version**: 1.3.5-evolve
 
 For detailed API documentation, see [API_REFERENCE.md](API_REFERENCE.md)

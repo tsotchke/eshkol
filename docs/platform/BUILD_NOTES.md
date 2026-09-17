@@ -1,7 +1,7 @@
 # Per-Platform Build Notes
 
-Eshkol builds with CMake (3.14+), a C17 / C++20 toolchain (GCC 11+ or Clang 14+),
-and **LLVM 21**. LLVM discovery is handled by `cmake/LLVMToolchain.cmake`
+Eshkol builds with CMake (3.14+), a C17 / C++20 toolchain (GCC 11+ or Clang 14+;
+see [Supported host compilers](#supported-host-compilers)), and **LLVM 21**. LLVM discovery is handled by `cmake/LLVMToolchain.cmake`
 (`eshkol_find_lite_llvm`), which probes Homebrew `llvm@21` prefixes and Windows
 SDK paths and validates the major version (`eshkol_validate_llvm_major` errors on
 mismatch).
@@ -12,6 +12,22 @@ Baseline build:
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
+
+## Supported host compilers
+
+Eshkol v1.3.5-evolve is built and verified with **GCC 13** and with
+**Clang/LLVM 21**. Building the compiler itself with **GCC 15 is not supported
+in this release**. Where the system default is GCC 15, pin a supported compiler
+for the whole build tree, C and C++ together:
+
+```sh
+CC=gcc-13 CXX=g++-13 cmake -B build -DCMAKE_BUILD_TYPE=Release
+# or
+CC=clang-21 CXX=clang++-21 cmake -B build -DCMAKE_BUILD_TYPE=Release
+```
+
+The host compiler builds Eshkol; it does not generate code for Eshkol programs,
+which are emitted through LLVM.
 
 ## Reliable FetchContent builds on the mesh
 

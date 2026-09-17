@@ -17,8 +17,8 @@ artefact it carries.
 |:---|:---|
 | Project | Eshkol |
 | Version | v1.3.5-evolve |
-| Builds on | v1.3.4-evolve (31 July 2026), v1.3.3-evolve (16 July 2026), v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
-| Release date | 11 September 2026 |
+| Builds on | v1.3.4-evolve (19 August 2026), v1.3.3-evolve (16 July 2026), v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
+| Release date | 22 September 2026 |
 | Licence | MIT |
 | Source | https://github.com/tsotchke/eshkol |
 | Website | https://eshkol.ai |
@@ -444,7 +444,7 @@ v1.3.5 documentation wave and carry into this release unchanged.
 | Differing-signature mutual tail calls | tail-transfer dispatcher gate, `.icc/completion-oracles.yaml` | 100,000,000 hops at 9.1 MB peak RSS |
 | Resident daemon loop, two horizons 8× apart | `tests/memory/resident_longrun_flat_gate.sh` at 200,000 and 1,600,000 ticks | transient garbage and all four persistent-mutation channels at exactly 0.000 bytes/tick, identical byte totals at both horizons |
 | Frontend span coverage at the consumer | `scripts/run_node_identity_gate.py` against `tests/coverage/NODE_IDENTITY_BASELINE.json` | monotonic floor of 99.48% |
-| qLLM oracle | `tests/qllm_oracle/` | gate 10/10 across five exporters on the JIT and AOT lanes, over 77 in-language checks |
+| qLLM oracle | `tests/qllm_oracle/` | gate 12/12 across six exporters on the JIT and AOT lanes, over 82 in-language checks |
 | Geometric bridge backwards vs. independent golden Jacobians | `tests/bridge/` | agreement to 3.7e-16 and 1.1e-14 |
 | Geometric bridge backwards vs. derivation-independent identities | conformal gradient-norm and inverse-Jacobian identities, `.icc/silent-wrong-ledger.yaml` SW-65 evidence | max relative deviation 5.0e-16 and 6.7e-16 |
 | Embedding and Fréchet-mean producers, gradchecked through real dispatch | `tests/bridge/qllm_bridge_producer_gradcheck_test.cpp` | embedding exact scatter-add, 0 mismatches; Fréchet exact Euclidean closed form, 0.0; hyperbolic finite difference 8.3e-10 over 48 partials |
