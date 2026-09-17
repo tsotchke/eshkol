@@ -18,6 +18,7 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/logger.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Constants.h>
 #include <vector>
 
@@ -2059,9 +2060,15 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
  * the HEAP_PTR base type. Each path bounds-checks `idx` against the
  * relevant length (tensor's total_elements, or the vector's length word)
  * and raises an ESHKOL_EXCEPTION_ERROR on failure; then:
- *  - Tensor path: unpacks `val` as a double and stores its bit pattern into
- *    `elements[idx]` (8 bytes).
- *  - Vector path: stores the full 16-byte tagged value into `elements[idx]`.
+ *  - Vector path (proven inline): stores the full 16-byte tagged value into
+ *    `elements[idx]` behind the region write barrier.
+ *  - Tensor path: CodegenContext::emitTensorSlotStore, the ADR-0016 slot store
+ *    boundary, which converts the value to the slot's declared representation
+ *    (a real number of any exactness becomes the tensor's dtype-reduced f64)
+ *    or raises a catchable error. The value's payload bits are never
+ *    reinterpreted (SW-179).
+ *  - Any other operand: CodegenContext::emitSequenceSlotStore, which reports
+ *    a non-sequence operand.
  *
  * @param op AST operation node; call arguments are (vector, index, value).
  * @return The (unchanged) tagged vector/tensor operand, matching R7RS
@@ -2100,64 +2107,52 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
         }
     }
 
-    // Detect tensor vs Scheme vector via header subtype (mirror vectorRef).
-    // A tensor (HEAP_SUBTYPE_TENSOR) stores homogeneous doubles in a separate
-    // elements buffer (8-byte stride), NOT inline 16-byte tagged values. Without
-    // this dispatch, vector-set! on a builtin-returned tensor scribbled a 16-byte
-    // tagged value into 8-byte slots, corrupting it (display became garbage).
+    // ADR-0016 slot store boundary. A Scheme vector (HEAP_PTR +
+    // HEAP_SUBTYPE_VECTOR) slot holds any tagged value unchanged and is stored
+    // inline. A tensor operand -- a numeric #(...) literal or a builtin-returned
+    // tensor -- is stored through emitTensorSlotStore, which converts the value
+    // to the slot's declared representation or raises. Anything else reaches
+    // the runtime boundary, which reports it.
+    if (tagged_val->getType() != ctx_.taggedValueType()) {
+        eshkol_error("vector-set!: value did not lower to a tagged value");
+        return nullptr;
+    }
     llvm::Value* vec_base_type = tagged_.getBaseType(tagged_.getType(vec_arg));
     llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(vec_base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* vset_check_subtype = llvm::BasicBlock::Create(ctx_.context(), "vset_check_subtype", current_func);
-    llvm::BasicBlock* vset_tensor = llvm::BasicBlock::Create(ctx_.context(), "vset_tensor", current_func);
+    llvm::BasicBlock* vset_boundary = llvm::BasicBlock::Create(ctx_.context(), "vset_boundary", current_func);
     llvm::BasicBlock* vset_vector = llvm::BasicBlock::Create(ctx_.context(), "vset_vector", current_func);
     llvm::BasicBlock* vset_merge = llvm::BasicBlock::Create(ctx_.context(), "vset_merge", current_func);
-    ctx_.builder().CreateCondBr(is_heap_ptr, vset_check_subtype, vset_vector);
+    // The boundary block is the error path: keep it out of the hot layout.
+    llvm::MDNode* vset_likely = llvm::MDBuilder(ctx_.context()).createBranchWeights((1U << 20) - 1, 1);
+    ctx_.builder().CreateCondBr(is_heap_ptr, vset_check_subtype, vset_boundary, vset_likely);
 
     ctx_.builder().SetInsertPoint(vset_check_subtype);
     llvm::Value* vptr_sub = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
     llvm::Value* vset_header = ctx_.builder().CreateGEP(ctx_.int8Type(), vptr_sub,
         llvm::ConstantInt::get(ctx_.int64Type(), -8));
     llvm::Value* vset_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), vset_header);
+    llvm::Value* vset_is_vector = ctx_.builder().CreateICmpEQ(vset_subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+    llvm::BasicBlock* vset_check_tensor = llvm::BasicBlock::Create(ctx_.context(), "vset_check_tensor", current_func);
+    llvm::BasicBlock* vset_tensor = llvm::BasicBlock::Create(ctx_.context(), "vset_tensor", current_func);
+    ctx_.builder().CreateCondBr(vset_is_vector, vset_vector, vset_check_tensor);
+
+    ctx_.builder().SetInsertPoint(vset_check_tensor);
     llvm::Value* vset_is_tensor = ctx_.builder().CreateICmpEQ(vset_subtype,
         llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
-    ctx_.builder().CreateCondBr(vset_is_tensor, vset_tensor, vset_vector);
+    ctx_.builder().CreateCondBr(vset_is_tensor, vset_tensor, vset_boundary, vset_likely);
 
-    // Shared bounds-failure emitter
-    auto emit_oob = [&](const char* msg) {
-        llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
-        if (!raise_func) {
-            llvm::FunctionType* raise_type = llvm::FunctionType::get(
-                ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
-            raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
-                "eshkol_raise", &ctx_.module());
-            raise_func->setDoesNotReturn();
-        }
-        llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
-        if (!make_exc_func) {
-            llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
-                {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
-            make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
-                "eshkol_make_exception_with_header", &ctx_.module());
-        }
-        llvm::Value* err_msg = ctx_.builder().CreateGlobalString(msg);
-        llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
-        llvm::Value* exception = ctx_.builder().CreateCall(make_exc_func, {exc_type, err_msg});
-        ctx_.builder().CreateCall(raise_func, {exception});
-        ctx_.builder().CreateUnreachable();
-    };
-
-    // ===== TENSOR PATH: store a double into elements_ptr[idx] (8-byte) =====
+    // ===== TENSOR PATH: linear index, bounds-checked here; the slot store
+    // itself is the boundary's tensor emitter (inline only for a DOUBLE into an
+    // f64 tensor, the runtime encoder for everything else). =====
     ctx_.builder().SetInsertPoint(vset_tensor);
     {
-        llvm::Value* tptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
-        llvm::Value* elems_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), tptr, 2);
-        llvm::Value* elems_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), elems_field);
-        llvm::Value* total_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), tptr, 3);
-        llvm::Value* total_elems = ctx_.builder().CreateLoad(ctx_.int64Type(), total_field);
-
+        llvm::Value* total_elems = ctx_.builder().CreateLoad(ctx_.int64Type(),
+            ctx_.builder().CreateStructGEP(ctx_.tensorType(), vptr_sub, 3), "vset_tensor_total");
         llvm::Value* t_oob = ctx_.builder().CreateOr(
             ctx_.builder().CreateICmpSLT(idx, llvm::ConstantInt::get(ctx_.int64Type(), 0)),
             ctx_.builder().CreateICmpSGE(idx, total_elems));
@@ -2165,16 +2160,17 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
         llvm::BasicBlock* t_fail = llvm::BasicBlock::Create(ctx_.context(), "vset_tensor_fail", current_func);
         ctx_.builder().CreateCondBr(t_oob, t_fail, t_ok);
         ctx_.builder().SetInsertPoint(t_fail);
-        emit_oob("vector-set!: index out of bounds (tensor)");
+        ctx_.emitRaise("vector-set!: index out of bounds");
         ctx_.builder().SetInsertPoint(t_ok);
-
-        // Tensors store doubles as int64 bitpatterns.
-        llvm::Value* t_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elems_ptr, idx);
-        llvm::Value* v_double = tagged_.unpackDouble(tagged_val);
-        llvm::Value* v_bits = ctx_.builder().CreateBitCast(v_double, ctx_.int64Type());
-        ctx_.builder().CreateStore(v_bits, t_elem_ptr);
+        ctx_.emitTensorSlotStore(vptr_sub, idx, tagged_val, "vector-set!");
         ctx_.builder().CreateBr(vset_merge);
     }
+
+    // ===== BOUNDARY PATH: an operand that is not a sequence (the runtime
+    // resolves legacy pointer tags and reports the rest) =====
+    ctx_.builder().SetInsertPoint(vset_boundary);
+    ctx_.emitSequenceSlotStore(vec_arg, idx, tagged_val, "vector-set!");
+    ctx_.builder().CreateBr(vset_merge);
 
     // ===== VECTOR PATH: store a 16-byte tagged value inline =====
     ctx_.builder().SetInsertPoint(vset_vector);
@@ -2188,7 +2184,7 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
         llvm::BasicBlock* v_fail = llvm::BasicBlock::Create(ctx_.context(), "vset_vec_fail", current_func);
         ctx_.builder().CreateCondBr(v_oob, v_fail, v_ok);
         ctx_.builder().SetInsertPoint(v_fail);
-        emit_oob("vector-set!: index out of bounds");
+        ctx_.emitRaise("vector-set!: index out of bounds");
         ctx_.builder().SetInsertPoint(v_ok);
 
         llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
@@ -2216,9 +2212,10 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
  * `from[start:end)` into `to[at:at+count)` using `llvm.memmove` (safe for
  * overlapping source/destination ranges, e.g. copying within the same
  * vector). `start` defaults to 0 and `end` defaults to `from`'s length.
- * Note: unlike vectorRef/vectorSet/vectorCopyNew, this path does not
- * dispatch on the tensor vs. Scheme-vector header subtype — it assumes both
- * operands are Scheme vectors with the [length][tagged elements...] layout.
+ * Both operands may be a Scheme vector or a tensor-backed `#(...)` literal:
+ * the copy runs in the runtime half of the ADR-0016 slot store boundary
+ * (eshkol_vector_copy_mutating), which validates every value against the
+ * destination's slot representation before the destination is modified.
  *
  * @param op AST operation node; call arguments are (to, at, from[, start[, end]]).
  * @return Tagged null (the operation's result is not otherwise used).
@@ -2300,53 +2297,8 @@ llvm::Value* CollectionCodegen::vectorCopy(const eshkol_operations_t* op) {
     llvm::Value* status = ctx_.builder().CreateCall(
         copy_helper, {to_ptr, at_idx, from_ptr, start, end}, "vector_copy_status");
 
-    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-    llvm::BasicBlock* copy_ok = llvm::BasicBlock::Create(
-        ctx_.context(), "vector_copy_ok", current_func);
-    llvm::BasicBlock* copy_fail = llvm::BasicBlock::Create(
-        ctx_.context(), "vector_copy_fail", current_func);
-    ctx_.builder().CreateCondBr(
-        ctx_.builder().CreateICmpEQ(
-            status, llvm::ConstantInt::get(ctx_.builder().getInt32Ty(),
-                                           ESHKOL_VECTOR_COPY_OK)),
-        copy_ok, copy_fail);
-
-    ctx_.builder().SetInsertPoint(copy_fail);
-    llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
-    if (!raise_func) {
-        llvm::FunctionType* raise_type = llvm::FunctionType::get(
-            ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
-        raise_func = llvm::Function::Create(
-            raise_type, llvm::Function::ExternalLinkage, "eshkol_raise",
-            &ctx_.module());
-        raise_func->setDoesNotReturn();
-    }
-    llvm::Function* make_exc =
-        ctx_.module().getFunction("eshkol_make_exception_with_header");
-    if (!make_exc) {
-        llvm::FunctionType* make_type = llvm::FunctionType::get(
-            ctx_.ptrType(), {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
-        make_exc = llvm::Function::Create(
-            make_type, llvm::Function::ExternalLinkage,
-            "eshkol_make_exception_with_header", &ctx_.module());
-    }
-    llvm::Value* is_bounds = ctx_.builder().CreateICmpEQ(
-        status, llvm::ConstantInt::get(ctx_.builder().getInt32Ty(),
-                                       ESHKOL_VECTOR_COPY_BOUNDS));
-    llvm::Value* bounds_msg = ctx_.builder().CreateGlobalString(
-        "vector-copy!: index out of range");
-    llvm::Value* type_msg = ctx_.builder().CreateGlobalString(
-        "vector-copy!: incompatible vector/tensor element representation");
-    llvm::Value* message = ctx_.builder().CreateSelect(
-        is_bounds, bounds_msg, type_msg, "vector_copy_error_message");
-    llvm::Value* exception = ctx_.builder().CreateCall(
-        make_exc,
-        {llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR),
-         message});
-    ctx_.builder().CreateCall(raise_func, {exception});
-    ctx_.builder().CreateUnreachable();
-
-    ctx_.builder().SetInsertPoint(copy_ok);
+    // One status vocabulary and one failure block for every slot store.
+    ctx_.emitSlotStoreStatusCheck(status, "vector-copy!");
     return tagged_.packNull();
 }
 
@@ -2768,9 +2720,12 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
 /**
  * @brief Emit IR for `(vector-fill! v val)`.
  *
- * Reads the vector's length word, then emits a loop that stores `val`
- * (a tagged value) into every element slot. Assumes the Scheme-vector
- * [length][tagged elements...] layout (no tensor-subtype dispatch).
+ * Routed through the ADR-0016 slot store boundary
+ * (CodegenContext::emitSequenceFill): the runtime resolves whether the operand
+ * is a Scheme vector or a tensor-backed `#(...)` literal, converts `val` once
+ * to the slot's declared representation, and stores it into every slot. A
+ * value with no representation in a numeric tensor slot, or an operand that
+ * is not a sequence, raises a catchable error.
  *
  * @param op AST operation node; call arguments are (v, val).
  * @return Tagged null.
@@ -2796,44 +2751,17 @@ llvm::Value* CollectionCodegen::vectorFill(const eshkol_operations_t* op) {
     llvm::Value* fill_val = typed_to_tagged_callback_(fill_typed, callback_context_);
     if (!fill_val) return nullptr;
 
-    // Extract vector pointer and length
-    llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
-    llvm::Value* length = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "vfill_len");
+    if (fill_val->getType() != ctx_.taggedValueType() ||
+        vec_arg->getType() != ctx_.taggedValueType()) {
+        eshkol_error("vector-fill!: operands did not lower to tagged values");
+        return nullptr;
+    }
 
-    // ESH-0214c region write barrier: like vector-set!, vector-fill! can store a
-    // region value into an outer vector. One barrier call suffices — every slot
-    // receives the same (possibly promoted) value.
-    if (fill_val->getType() == ctx_.taggedValueType())
-        fill_val = ctx_.emitRegionWriteBarrier(vec_ptr, fill_val);
-
-    // Get element base
-    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* elem_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
-
-    // Fill loop
-    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-    llvm::BasicBlock* loop_header = llvm::BasicBlock::Create(ctx_.context(), "vfill_header", current_func);
-    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "vfill_body", current_func);
-    llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(ctx_.context(), "vfill_exit", current_func);
-
-    ctx_.builder().CreateBr(loop_header);
-
-    ctx_.builder().SetInsertPoint(loop_header);
-    llvm::PHINode* i = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "fill_i");
-    i->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 0),
-        loop_header->getSinglePredecessor());
-    llvm::Value* done = ctx_.builder().CreateICmpUGE(i, length);
-    ctx_.builder().CreateCondBr(done, loop_exit, loop_body);
-
-    ctx_.builder().SetInsertPoint(loop_body);
-    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_typed, i);
-    ctx_.builder().CreateStore(fill_val, elem_ptr);
-    llvm::Value* next_i = ctx_.builder().CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    i->addIncoming(next_i, loop_body);
-    ctx_.builder().CreateBr(loop_header);
-
-    ctx_.builder().SetInsertPoint(loop_exit);
+    // ADR-0016 slot store boundary: the runtime resolves the operand's
+    // representation (Scheme vector or tensor-backed #(...) literal), converts
+    // the value once to the slot's declared representation, fills every slot,
+    // and runs the region write barrier for tagged destinations.
+    ctx_.emitSequenceFill(vec_arg, fill_val, "vector-fill!");
     return tagged_.packNull();
 }
 

@@ -102,6 +102,30 @@ This rule applies uniformly at every chokepoint that builds or mutates a
 tensor from a Scheme value: `tensor`, `make-tensor`, `tensor-set!`, and
 `vector->tensor`, on both the native and VM engines.
 
+### Storing into a tensor through the vector API
+
+A tensor answers `vector?`, so `vector-set!`, `vector-fill!` and `vector-copy!`
+accept one — including a numeric `#(…)` literal. They share a single store
+boundary with `tensor-set!`
+([ADR-0016](../../design/adr/0016-container-slot-store-boundary.md)): the value
+is converted to the slot's representation, or the store is refused.
+
+```scheme
+(define v #(10 20 30))
+(vector-set! v 0 99)          ;; v => #(99 20 30)
+(vector-set! v 1 1/2)         ;; v => #(99 0.5 30)     exact -> nearest double
+(vector-fill! v 7)            ;; v => #(7 7 7)
+(vector-copy! v 0 (vector 1 2)) ;; v => #(1 2 7)
+(guard (e (#t 'refused))
+  (vector-set! v 0 "x"))      ;; => refused; v is unchanged
+```
+
+A value that is not a real number has no representation in a numeric slot, so
+the store raises a catchable error before the tensor is modified — for
+`vector-copy!`, before the first element is written. `tensor-set!` on a Scheme
+vector is likewise an error rather than an update to a coerced copy. Reach for
+`vector` / `make-vector` when the container must hold anything else.
+
 ## Creating vectors
 
 ```scheme

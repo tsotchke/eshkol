@@ -200,6 +200,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0013 — One gradual type relation](design/adr/0013-gradual-type-relation.md) — centralizes static subtyping, gradual consistency, flow evidence, joins, casts, and type presentation
 - [ADR 0014 — Release invariant contracts are measured before grading](design/adr/0014-release-invariant-contracts.md)
 - [ADR 0015 — Static callee binding identity](design/adr/0015-static-callee-binding-identity.md) — makes direct-call aliases depend on the binding storage that still owns them
+- [ADR 0016 — One store boundary for every container slot](design/adr/0016-container-slot-store-boundary.md) — a value stored into a vector or tensor slot is converted to the slot's declared representation or refused; one runtime encoder behind every mutator
 
 ## Testing and Quality Gates
 

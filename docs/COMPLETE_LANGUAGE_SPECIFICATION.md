@@ -475,6 +475,18 @@ preserved exactly (an exact rational element stays exact; `exact?` on it is
 flattened tensor count (SW-153). This is why `#(1 "two" #t)`, above, is a
 vector and not an attempted tensor.
 
+Both kinds of literal are mutable through the vector API, and both obey one
+store rule: a value stored into a slot is a value of the slot's declared
+representation. A vector slot holds any value. A tensor slot holds a real
+number, so `(vector-set! v 0 99)` on `(define v #(10 20 30))` stores 99 and
+`(vector-set! v 0 1/2)` stores `0.5` — the same conversion tensor construction
+applies to each element — while a value with no real-number representation (a
+string, boolean, character, symbol, pair, vector or procedure) raises a
+catchable error and leaves the tensor unchanged. `vector-fill!`, `vector-copy!`
+and `tensor-set!` follow the same rule. A heterogeneous mutable vector is built
+with `vector`, `make-vector` or `list->vector`
+([ADR-0016](design/adr/0016-container-slot-store-boundary.md)).
+
 ### 3.3 Variable Definition and Binding
 
 #### 3.3.1 `define` - Variable Definition
