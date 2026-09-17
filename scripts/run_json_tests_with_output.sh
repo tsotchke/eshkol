@@ -20,6 +20,8 @@ if [ ! -r "$ESHKOL_TEST_LIB" ]; then
     exit 2
 fi
 source "$ESHKOL_TEST_LIB"
+# shellcheck source=lib/checked_write.sh
+. "$(dirname "$ESHKOL_TEST_LIB")/checked_write.sh"
 eshkol_test_isolation_init "json-out"
 set +e  # Don't exit on error, we want to see all failures
 
@@ -116,6 +118,7 @@ run_test_verbose() {
         # file (the combined log mixes it with the compilation transcript) and
         # scan it: these programs print their own FAIL lines and exit 0 either
         # way, so trusting the status alone certified failing assertions.
+        eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
         "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1
         RUN_EXIT=$?
         cat "$ESHKOL_TEST_OUT" >> "$output_file"

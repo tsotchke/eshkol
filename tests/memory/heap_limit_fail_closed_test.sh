@@ -40,6 +40,8 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+# shellcheck source=../../scripts/lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 
 BUILD_DIR="${BUILD_DIR:-build}"
 if [ -z "${ESHKOL_RUN:-}" ]; then
@@ -83,8 +85,10 @@ run_with() {
     tag="$1"; shift
     OUT="$WORK/$tag.out"; ERR="$WORK/$tag.err"
     if [ $# -gt 0 ] && [ -n "$1" ]; then
+        eshkol_require_output_file_path "$OUT"
         env "$@" "$BIN" > "$OUT" 2> "$ERR"
     else
+        eshkol_require_output_file_path "$OUT"
         "$BIN" > "$OUT" 2> "$ERR"
     fi
     RC=$?

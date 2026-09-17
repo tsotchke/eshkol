@@ -71,6 +71,8 @@ if [ ! -r "$ESHKOL_TEST_LIB" ]; then
     exit 2
 fi
 source "$ESHKOL_TEST_LIB"
+# shellcheck source=lib/checked_write.sh
+. "$(dirname "$ESHKOL_TEST_LIB")/checked_write.sh"
 eshkol_test_isolation_init "gpu"
 
 # Colors for output
@@ -203,6 +205,7 @@ run_gate_canary() {
     fi
 
     local canary_rc=0
+    eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
     "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1 || canary_rc=$?
 
     if [ "$canary_rc" -eq 0 ]; then
@@ -239,6 +242,7 @@ run_gate_self_test() {
         CANARY_HARD_FAIL=1
         return 0
     fi
+    eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
     if tests/gpu/gpu_correctness_gate.sh --self-test > "$ESHKOL_TEST_OUT" 2>&1; then
         echo -e "${GREEN}PASS${NC}"
     else
@@ -310,6 +314,7 @@ for test_file in tests/gpu/*.esk; do
             runtime_cmd=("$ESHKOL_TEST_BIN")
         fi
 
+        eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
         if "${runtime_cmd[@]}" > "$ESHKOL_TEST_OUT" 2>&1; then
             # Check for FAIL markers in output
             # A failure marker anywhere in the output fails the test — the old
@@ -407,7 +412,7 @@ echo ""
 # Clean up
 # CERT_LOG now lives inside $ESHKOL_TEST_TMPDIR, which the isolation trap
 # removes wholesale, so it needs no separate unlink here.
-rm -f "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_BIN" "$ESHKOL_TEST_BIN.tmp.o"
+eshkol_checked_rm "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_BIN" "$ESHKOL_TEST_BIN.tmp.o"
 
 # Exit with appropriate code. The canary is checked independently of FAIL: a
 # harness that cannot prove it can fail must not report success regardless of

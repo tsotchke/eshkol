@@ -25,6 +25,8 @@ if [ ! -r "$ESHKOL_TEST_LIB" ]; then
     exit 2
 fi
 source "$ESHKOL_TEST_LIB"
+# shellcheck source=lib/checked_write.sh
+. "$(dirname "$ESHKOL_TEST_LIB")/checked_write.sh"
 eshkol_test_isolation_init "xla"
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -92,7 +94,7 @@ cleanup_xla_binary_artifacts() {
 
 cleanup_xla_temp_artifacts() {
     cleanup_xla_binary_artifacts
-    rm -f "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_COMPILE_LOG" "$ESHKOL_TEST_TMPDIR/xla_perf.out" "$ESHKOL_TEST_TMPDIR/xla_perf_test.esk"
+    eshkol_checked_rm "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_COMPILE_LOG" "$ESHKOL_TEST_TMPDIR/xla_perf.out" "$ESHKOL_TEST_TMPDIR/xla_perf_test.esk"
 }
 
 select_timeout_command() {
@@ -223,8 +225,10 @@ else
         cleanup_xla_binary_artifacts
 
         # Try to compile
+        eshkol_require_output_file_path "$ESHKOL_TEST_COMPILE_LOG"
         if "$BUILD_DIR/eshkol-run" "$test_file" -L"$BUILD_DIR" -o "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_COMPILE_LOG" 2>&1; then
             # Compilation succeeded, try to run
+            eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
             if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
                 # Check for FAIL markers in output (from test assertions)
                 # A failure marker anywhere in the output fails the test — the old
@@ -287,6 +291,7 @@ ESKEOF
 
 printf "Testing %-45s " "performance_sanity"
 
+eshkol_require_output_file_path "$ESHKOL_TEST_COMPILE_LOG"
 if "$BUILD_DIR/eshkol-run" "$ESHKOL_TEST_TMPDIR/xla_perf_test.esk" -L"$BUILD_DIR" -o "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_COMPILE_LOG" 2>&1; then
     start_time=$(python3 -c "import time; print(int(time.time() * 1000))" 2>/dev/null || date +%s%3N)
     if TIMEOUT_CMD="$(select_timeout_command)"; then
@@ -311,7 +316,7 @@ else
     ((FAIL++)) || true
 fi
 
-rm -f "$ESHKOL_TEST_TMPDIR/xla_perf_test.esk"
+eshkol_checked_rm "$ESHKOL_TEST_TMPDIR/xla_perf_test.esk"
 
 echo ""
 

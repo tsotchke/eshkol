@@ -150,8 +150,8 @@ eshkol_require_output_file_path() { # output-path
 # did not intend).
 # eshkol_resolve_trusted_command NAME -> resolved absolute path on stdout
 #
-# A bare `command -v "$X" >/dev/null 2>&1` probe is a PATH lookup whose
-# result the caller trusts implicitly: whichever `$X` a caller's PATH
+# A bare PATH-probe of a variable-named command is a lookup whose result
+# the caller trusts implicitly: whichever candidate a caller's PATH
 # happens to resolve first is what runs next, with no explicit statement
 # that resolving it that way was an acceptable decision. This is that
 # decision made explicit, and made a little stronger than the bare probe:
