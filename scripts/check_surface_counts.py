@@ -466,7 +466,7 @@ def _release_date_claims(scope: str, record: dict) -> list[dict]:
     tag, version, date = re.escape(record["tag"]), re.escape(record["version"]), record["date"]
     claims: list[dict] = []
 
-    def add(match: re.Match, group: str | int, stated: datetime.date | None,
+    def record_claim(match: re.Match, group: str | int, stated: datetime.date | None,
             weekday: str | None, replacement: str) -> None:
         claims.append({"start": match.start(group), "end": match.end(group), "stated": stated,
                        "weekday": weekday, "replacement": replacement,
@@ -480,28 +480,28 @@ def _release_date_claims(scope: str, record: dict) -> list[dict]:
 
     # Keep-a-Changelog heading: `## [1.3.5-evolve] - 2026-09-22`
     for m in re.finditer(r"\[%s\] - (%s)" % (version, _ISO_DATE), scope):
-        add(m, 1, iso(m.group(1)), None, iso_date(date))
+        record_claim(m, 1, iso(m.group(1)), None, iso_date(date))
     # `Release date: Tuesday, September 22, 2026`, with any bold/colon layout.
     for m in re.finditer(r"[Rr]elease date\*{0,2}:?\*{0,2}\s+(?P<whole>%s)" % _LONG_DATE, scope):
-        add(m, "whole", parse_long_date(m.group("long")), m.group("weekday"),
+        record_claim(m, "whole", parse_long_date(m.group("long")), m.group("weekday"),
             f"{weekday_name(date)}, {long_date(date)}")
     # `| Release date | 22 September 2026 |`, the press-sheet fact table.
     for m in re.finditer(r"[Rr]elease date\W{1,6}%s" % _DAY_FIRST_DATE, scope):
-        add(m, "dayfirst", parse_day_first_date(m.group("dayfirst")), None,
+        record_claim(m, "dayfirst", parse_day_first_date(m.group("dayfirst")), None,
             f"{date.day} {MONTHS[date.month - 1]} {date.year}")
     # `<tag> ... shipped|released [on] <date>` with no other version in between.
     verb = r"(?:SHIPPED|[Ss]hipped|[Ss]hips|[Rr]eleased)(?:\s+on)?\s+"
     gap = r"(?:(?!v[0-9]+\.[0-9]+)[^\n]){0,200}?"
     for m in re.finditer(tag + gap + verb + r"(?P<iso>%s)" % _ISO_DATE, scope):
-        add(m, "iso", iso(m.group("iso")), None, iso_date(date))
+        record_claim(m, "iso", iso(m.group("iso")), None, iso_date(date))
     # `<tag> (2026-09-22)`, the form a "last shipped release" line uses.
     for m in re.finditer(tag + r"\*{0,2}`?\s+\((?P<iso>%s)" % _ISO_DATE, scope):
-        add(m, "iso", iso(m.group("iso")), None, iso_date(date))
+        record_claim(m, "iso", iso(m.group("iso")), None, iso_date(date))
     for m in re.finditer(tag + gap + verb + r"(?P<whole>%s)" % _LONG_DATE, scope):
         replacement = long_date(date)
         if m.group("weekday"):
             replacement = f"{weekday_name(date)}, {replacement}"
-        add(m, "whole", parse_long_date(m.group("long")), m.group("weekday"), replacement)
+        record_claim(m, "whole", parse_long_date(m.group("long")), m.group("weekday"), replacement)
     return claims
 
 
@@ -1016,9 +1016,10 @@ def self_test() -> bool:
 
     if all_ok:
         print("self-test: PASS — matching claims pass, any stale claim in any registered "
-              "doc fails, a missing registered doc fails, ctest/parity claims are graded only "
-              "when a log is supplied, and an unreadable canonical source is distinguishable "
-              "from a clean pass")
+              "doc fails, a missing registered doc fails, ctest/parity claims are graded "
+              "against a supplied log or the release record, release date, status and "
+              "record-owned spans are held to the release record and repaired by --sync, and "
+              "an unreadable canonical source is distinguishable from a clean pass")
     else:
         print("self-test: FAIL — the gate did not behave as specified", file=sys.stderr)
     return all_ok
