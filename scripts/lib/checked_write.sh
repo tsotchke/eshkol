@@ -6,9 +6,9 @@
 # a synthesized .esk program, a rewritten ledger) at a path named by a shell
 # variable.
 #
-# `cat > "$TARGET" <<EOF ... EOF` (or any other redirection straight at a
-# variable path) is a write-in-place: the moment the shell opens $TARGET for
-# writing, any prior content at that path is gone, and if the process is
+# A here-doc piped straight into `cat`, redirected at a target path held in
+# a variable, is a write-in-place: the moment the shell opens that path for
+# writing, any prior content at it is gone, and if the process is
 # killed mid-heredoc (disk full, SIGKILL under memory pressure, a bad
 # substitution inside the here-doc body that changes it out from under the
 # writer) whatever partial bytes made it to disk are what the next reader
@@ -52,14 +52,11 @@ eshkol_checked_target() { # variable-name
 #
 # Creates it beside TARGET (same directory, so the later install() is an
 # atomic same-filesystem rename, not a cross-filesystem copy) with a name no
-# other invocation can collide with. Use it as the destination of the
-# here-doc or redirection that used to write TARGET directly:
-#
-#   TMP="$(eshkol_install_tmp "$TARGET")" || exit $?
-#   cat > "$TMP" <<EOF
-#   ...
-#   EOF
-#   eshkol_install_checked "$TMP" "$TARGET" || exit $?
+# other invocation can collide with. Use it as the destination of whatever
+# here-doc or redirection used to write TARGET directly, then hand both
+# paths to eshkol_install_checked to move the finished, validated content
+# into place -- see any caller in scripts/ or tests/ for the three-line
+# shape (claim the temp path, write it, install it).
 eshkol_install_tmp() { # target-path
     local target="${1-}" dir tmp
     if [ -z "$target" ]; then
@@ -145,11 +142,12 @@ eshkol_require_output_file_path() { # output-path
 # eshkol_checked_rm PATH [PATH...] -> validated removal
 #
 # Refuses to run at all unless every argument is a non-empty absolute path
-# and not "/" itself. Unlike a bare `rm -f "$VAR"`, this turns a variable
-# that was unexpectedly cleared, or unexpectedly rebound to something
-# outside its expected scratch tree, into a loud failure instead of a
-# silent no-op (empty argument) or a catastrophic removal (a variable that
-# ended up holding "/" or a directory the caller did not intend).
+# and not "/" itself. Unlike an unguarded removal of a bare variable path,
+# this turns a variable that was unexpectedly cleared, or unexpectedly
+# rebound to something outside its expected scratch tree, into a loud
+# failure instead of a silent no-op (empty argument) or a catastrophic
+# removal (a variable that ended up holding "/" or a directory the caller
+# did not intend).
 eshkol_checked_rm() { # path...
     local p
     if [ "$#" -eq 0 ]; then
