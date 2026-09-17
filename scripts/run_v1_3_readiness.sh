@@ -27,6 +27,9 @@ if eshkol_durable_enabled; then
 else
     TRACE_DIR="${TRACE_DIR:-scripts/icc_traces}"
 fi
+# Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 ARCH_MODEL="${ARCH_MODEL:-.icc/architecture-model.yaml}"
 ARCH_TRACE_GLOB="${ARCH_TRACE_GLOB:-.icc/runtime-traces-oracle-view/*architecture-model-verify-*.jsonl}"
 if eshkol_durable_enabled; then

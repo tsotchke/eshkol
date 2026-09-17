@@ -5,6 +5,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO_ROOT="$PWD"
 TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
+# Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 BUILD_DIR="${BUILD_DIR:-build}"
 ICC_BIN="${ICC_BIN:-icc}"
 ICC_REPO="${ICC_REPO:-eshkol_lang}"

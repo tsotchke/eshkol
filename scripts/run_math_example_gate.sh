@@ -26,6 +26,9 @@ fi
 PROGRAM_NAME="$1"; EVENT_KIND="$2"; EVENT_NAME="$3"; shift 3
 PROGRAM="$REPO_ROOT/examples/$PROGRAM_NAME.esk"
 TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
+# Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 TRACE_FILE="$TRACE_DIR/$EVENT_NAME.jsonl"
 mkdir -p "$TRACE_DIR"
 : > "$TRACE_FILE"

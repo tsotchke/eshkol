@@ -75,6 +75,9 @@ REPO_ROOT="$(pwd)"
 if eshkol_durable_enabled; then
     WASM_DIFF_WORK="$(eshkol_durable_prepare_dir wasm-differential)" || exit $?
     TRACE_DIR="${TRACE_DIR:-$WASM_DIFF_WORK/traces}"
+    # Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+    . "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+    eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 else
     TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 fi

@@ -34,6 +34,9 @@ if eshkol_durable_enabled; then
 else
     TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
 fi
+# Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 export TRACE_DIR ICC_TRACE_DIR="$TRACE_DIR" ESHKOL_TRACE_DIR="$TRACE_DIR"
 TRACE_FILE="$TRACE_DIR/eshkol_smoke.jsonl"
 mkdir -p "$TRACE_DIR"

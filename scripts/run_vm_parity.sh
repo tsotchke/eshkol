@@ -58,6 +58,9 @@ REPO_ROOT="$(pwd)"
 if eshkol_durable_enabled; then
     VM_PARITY_WORK="$(eshkol_durable_prepare_dir vm-parity)" || exit $?
     TRACE_DIR="${TRACE_DIR:-$VM_PARITY_WORK/traces}"
+    # Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+    . "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+    eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 else
     TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 fi
