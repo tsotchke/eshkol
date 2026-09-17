@@ -44,6 +44,13 @@ the current tree):
     COMMAND/DEPENDS arguments are CI/test inputs (this is how
     `scripts/regenerate_vm_prelude_cache.sh`, exercised by the
     `vm_prelude_cache_is_current` ctest, is discovered).
+  * `scripts/doc_audit/extract_examples.py` -- its `GATED_SCOPES` table
+    names the documentation paths whose fenced examples CI EXECUTES
+    (scripts/doc_audit/check_doc_examples.py; `docs/tutorials` today). A
+    markdown file under one of them is a test input, not inert prose: it is
+    excluded from the `docs` class and classifies as `tests-only`, so the
+    lanes that run the example gate run for the very change that can break
+    it. The table is read with `ast.literal_eval`, never imported.
   * `tests/**` and `.icc/**` (read throughout CI's assurance gates --
     over a hundred references across `.github/workflows/*.yml` and
     `scripts/*.py`) unconditionally; `examples/**` only if some test
@@ -68,10 +75,12 @@ falls through to `full`):
   docs        Every file matches the pre-existing docs-only predicate
               (`*.md`, `docs/*`, `notes/*`, `press/*`, `.swarm/*`,
               `LICENSE` -- the exact case pattern `changes` used before
-              this script existed; semantics intentionally unchanged).
+              this script existed) and none is executed documentation
+              (see GATED_SCOPES above).
   non-build   Every file is consumed by neither the build nor CI/tests,
               and is not a workflow file.
-  tests-only  Every file is under `tests/`, or is a script CI actually
+  tests-only  Every file is under `tests/`, is executed documentation, or
+              is a script CI actually
               runs as a test (an `add_test`/`add_custom_target` COMMAND
               argument, or a workflow matrix `test_command`/`run:` step
               reference), and none is a build input or workflow file.
@@ -776,6 +785,32 @@ def check_compile_commands_consistency(deriv: BuildDerivation, compile_commands_
 
 # ───────────────────────── classification ─────────────────────────
 
+def executed_doc_scopes(repo_root: Path) -> list[str]:
+    """Documentation paths whose examples CI executes: the values of
+    `GATED_SCOPES` in scripts/doc_audit/extract_examples.py, parsed without
+    importing the module. A tree without that file gates no documentation."""
+    import ast
+
+    source = repo_root / "scripts" / "doc_audit" / "extract_examples.py"
+    try:
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "GATED_SCOPES" for t in node.targets):
+            try:
+                table = ast.literal_eval(node.value)
+            except ValueError:
+                return []
+            return sorted({str(p).strip("/") for paths in table.values() for p in paths})
+    return []
+
+
+def _is_executed_doc(path: str, scopes: list[str]) -> bool:
+    return path.endswith(".md") and any(path == s or path.startswith(s + "/") for s in scopes)
+
+
 def _is_docs_only_path(path: str) -> bool:
     import fnmatch
 
@@ -806,6 +841,8 @@ def classify(paths: list[str], repo_root: Path, compile_commands: Path | None = 
             consistency_result = {"checked": True, "path": str(compile_commands), "missing_tus": missing}
         else:
             consistency_result = {"checked": False, "reason": f"{compile_commands} not found"}
+
+    doc_scopes = executed_doc_scopes(repo_root)
 
     file_reports = []
     any_workflow = False
@@ -846,13 +883,20 @@ def classify(paths: list[str], repo_root: Path, compile_commands: Path | None = 
         if p in deriv.ci_test_inputs:
             reasons.extend(r for r in deriv.reasons.get(p, []) if r not in reasons)
 
-        is_docs = _is_docs_only_path(p)
+        is_executed_doc = _is_executed_doc(p, doc_scopes)
+        if is_executed_doc:
+            is_ci_test = True
+            reasons.append("its fenced examples are executed by the documentation example gate "
+                           "(scripts/doc_audit GATED_SCOPES)")
+
+        is_docs = _is_docs_only_path(p) and not is_executed_doc
         if is_docs:
             reasons.append("matches the docs-only predicate")
 
         is_test_runner_narrow = (
             p.startswith("tests/")
             or (p.startswith("scripts/") and p in deriv.test_runner_scripts)
+            or is_executed_doc
         )
 
         if not is_docs:
@@ -869,6 +913,7 @@ def classify(paths: list[str], repo_root: Path, compile_commands: Path | None = 
             {
                 "path": p,
                 "docs_only_predicate": is_docs,
+                "executed_documentation": is_executed_doc,
                 "build_input": is_build,
                 "ci_test_input": is_ci_test,
                 "workflow_file": is_workflow,
@@ -1020,6 +1065,9 @@ def self_test() -> bool:
         _write(fixture / "README.md", "# fixture\n")
         _write(fixture / "notes" / "scratch.md", "note\n")
         _write(fixture / "tests" / "unit" / "case.esk", "; a test fixture\n")
+        _write(fixture / "scripts" / "doc_audit" / "extract_examples.py",
+               'GATED_SCOPES = {\n    "tutorials": ["docs/tutorials"],\n}\n')
+        _write(fixture / "docs" / "tutorials" / "01_INTRO.md", "```scheme\n(display 1)\n```\n")
         _write(fixture / "unrelated" / "artwork.svg", "<svg/>\n")
         _write(fixture / ".github" / "workflows" / "ci.yml", "name: ci\non: {push: {}}\njobs: {}\n")
 
@@ -1116,6 +1164,10 @@ def self_test() -> bool:
             ("non-build: unrelated non-source file", ["unrelated/artwork.svg"], CLASS_NON_BUILD),
             ("full: a header under inc/ (never individually globbed)", ["inc/fixture/public.h"], CLASS_FULL),
             ("tests-only: a test fixture file", ["tests/unit/case.esk"], CLASS_TESTS_ONLY),
+            ("tests-only: a tutorial whose examples CI executes", ["docs/tutorials/01_INTRO.md"], CLASS_TESTS_ONLY),
+            ("docs: an image next to the executed tutorials", ["docs/tutorials/diagram.png"], CLASS_DOCS),
+            ("docs: documentation outside every gated scope", ["docs/guide/INTRO.md"], CLASS_DOCS),
+            ("tests-only: a tutorial plus a test", ["docs/tutorials/01_INTRO.md", "tests/unit/case.esk"], CLASS_TESTS_ONLY),
             ("tests-only: a scripts/ test-runner script", ["scripts/run_smoke_tests.sh"], CLASS_TESTS_ONLY),
             ("full: a workflow file", [".github/workflows/ci.yml"], CLASS_FULL),
             (
