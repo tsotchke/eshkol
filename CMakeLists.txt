@@ -7300,6 +7300,38 @@ if(ESHKOL_BUILD_TESTS)
         )
         set_tests_properties(doc_examples_results_schema_gate_selftest PROPERTIES TIMEOUT 60)
     endif()
+
+    # Documentation example gate. The self-test needs no build: it drives the
+    # real extraction, instrumentation, execution and grading code against a
+    # stand-in compiler and requires each planted fault (a raising example, a
+    # wrong value, a hang, a malformed or stale marker, a skip above the
+    # baseline) to fail. The gate itself runs every fenced example under
+    # scripts/doc_audit/extract_examples.py's GATED_SCOPES on the JIT and as
+    # an AOT binary, with a per-example time limit, and compares each `;; =>`
+    # annotation and pasted output block with what the build printed.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/doc_audit/check_doc_examples.py")
+        add_test(
+            NAME doc_example_gate_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/doc_audit/check_doc_examples.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(doc_example_gate_selftest PROPERTIES TIMEOUT 300)
+        add_test(
+            NAME doc_example_gate_tutorials
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/doc_audit/check_doc_examples.py"
+                    --scope tutorials
+                    --eshkol-run $<TARGET_FILE:eshkol-run>
+                    --work-dir "${CMAKE_BINARY_DIR}/test-work/doc-example-gate"
+                    --no-trace
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(doc_example_gate_tutorials PROPERTIES
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            TIMEOUT 3600)
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/pointer_type_surface_test.cpp")

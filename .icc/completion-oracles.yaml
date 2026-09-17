@@ -1720,6 +1720,24 @@ oracles:
         label: 'Generated docs/api/ pages match the tracked inc/eshkol headers they were harvested from (scripts/gen_api_docs.py --check)'
         action: python3 scripts/gen_api_docs.py --check
 
+      # PR #694 (an outside contributor): docs/tutorials/12_LISTS.md shipped
+      # `(take 3 lst)` and `(sort < lst)`, both of which raise when typed into
+      # the REPL. The documentation audit scripts could have found it, but
+      # they were a hand-run sweep over a file list that left the tutorials
+      # out. This probe executes every fenced example under the gated scopes
+      # (scripts/doc_audit/extract_examples.py GATED_SCOPES) on the JIT and as
+      # an AOT binary and compares each `;; =>` annotation and pasted output
+      # block with what the build printed. An example that cannot run carries
+      # an explicit marker in the markdown, and the marked count is ratcheted
+      # in scripts/doc_audit/example_gate_baseline.json.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["doc_examples_tutorials_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every example in docs/tutorials runs on the JIT and as an AOT binary within its time limit and prints what the page says; exclusions are explicit, named and ratcheted (scripts/doc_audit/check_doc_examples.py)'
+        action: python3 scripts/doc_audit/check_doc_examples.py --scope tutorials --eshkol-run build/eshkol-run
+
       # 2026-08-28: the second squash-merge-body infrastructure-hostname leak
       # in one week. GitHub assembles a squash-merge commit body out of the
       # PR's individual commit messages, so a hostname mentioned in passing
