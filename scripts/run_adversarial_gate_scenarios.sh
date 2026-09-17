@@ -66,6 +66,9 @@ SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-adversarial-scenarios.XXXXXX")"
 cleanup() { rm -rf "$SCRATCH"; }
 trap cleanup EXIT
 
+# shellcheck source=lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
+
 # macOS has no timeout(1); emulate with perl alarm (exit 124 on expiry) —
 # same idiom scripts/run_vm_parity.sh already uses for portability.
 run_guarded() { # seconds cmd...
@@ -210,7 +213,8 @@ fi
 # ── S5: a deliberately-failing gate must be visible, not swallowed ─────────
 echo "-- S5 failed gates propagate --"
 BROKEN_LEDGER="$SCRATCH/broken-ledger.yaml"
-cat > "$BROKEN_LEDGER" <<'YAML'
+BROKEN_LEDGER_TMP="$(eshkol_install_tmp "$BROKEN_LEDGER")" || exit $?
+cat > "$BROKEN_LEDGER_TMP" <<'YAML'
 schema: eshkol.silent_wrong_ledger.v1
 entries:
   - id: SW-ADVERSARIAL
@@ -218,6 +222,7 @@ entries:
       status: open
     title: "deliberately malformed indentation"
 YAML
+eshkol_install_checked "$BROKEN_LEDGER_TMP" "$BROKEN_LEDGER" || exit $?
 if python3 scripts/check_ledger_integrity.py --ledger "$BROKEN_LEDGER" --no-trace >/dev/null 2>&1; then
     # The broken fixture was graded PASS — the gate (or this harness) failed
     # to detect a real problem. That is exactly the failure mode this
