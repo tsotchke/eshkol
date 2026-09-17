@@ -148,6 +148,36 @@ eshkol_require_output_file_path() { # output-path
 # failure instead of a silent no-op (empty argument) or a catastrophic
 # removal (a variable that ended up holding "/" or a directory the caller
 # did not intend).
+# eshkol_resolve_trusted_command NAME -> resolved absolute path on stdout
+#
+# A bare `command -v "$X" >/dev/null 2>&1` probe is a PATH lookup whose
+# result the caller trusts implicitly: whichever `$X` a caller's PATH
+# happens to resolve first is what runs next, with no explicit statement
+# that resolving it that way was an acceptable decision. This is that
+# decision made explicit, and made a little stronger than the bare probe:
+# resolve through PATH, then require the result to be a regular,
+# executable file before handing it back, so a same-named directory or a
+# non-executable match earlier on PATH cannot be mistaken for the real
+# tool. Fails (prints nothing, returns 1) on an empty name or an
+# unresolvable / non-executable / non-regular match.
+eshkol_resolve_trusted_command() { # command-name
+    local name="${1-}" resolved
+    [ -n "$name" ] || return 1
+    resolved="$(command -v -- "$name" 2>/dev/null)" || return 1
+    [ -n "$resolved" ] && [ -f "$resolved" ] && [ -x "$resolved" ] || return 1
+    printf '%s\n' "$resolved"
+}
+
+# eshkol_command_available NAME -> boolean only (no path on stdout), for the
+# common case of a caller that just needs to branch on presence and will
+# invoke the bare name afterward -- the shell's own PATH lookup resolves it
+# identically at call time, so nothing is lost by not capturing the path
+# here. Built on eshkol_resolve_trusted_command so both entry points apply
+# the same trust decision.
+eshkol_command_available() { # command-name
+    eshkol_resolve_trusted_command "${1-}" >/dev/null
+}
+
 eshkol_checked_rm() { # path...
     local p
     if [ "$#" -eq 0 ]; then

@@ -121,7 +121,7 @@ done
 # read whichever of the two the host's reader understands.
 DWARF_TOOL=""
 for candidate in llvm-dwarfdump dwarfdump; do
-    if command -v "$candidate" >/dev/null 2>&1; then DWARF_TOOL="$candidate"; break; fi
+    if eshkol_command_available "$candidate"; then DWARF_TOOL="$candidate"; break; fi
 done
 # objdump can read the line table too, and exists on hosts with neither above.
 if [ -z "$DWARF_TOOL" ] && command -v objdump >/dev/null 2>&1; then

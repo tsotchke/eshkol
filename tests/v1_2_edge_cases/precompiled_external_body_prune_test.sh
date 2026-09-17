@@ -31,10 +31,14 @@ if [ ! -x "$ESHKOL_RUN" ]; then
     exit 1
 fi
 
+ROOT_FOR_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=../../scripts/lib/checked_write.sh
+. "$ROOT_FOR_LIB/scripts/lib/checked_write.sh"
+
 case "$ESHKOL_RUN" in
     /*) ;;
     */*) ESHKOL_RUN="$(cd "$(dirname "$ESHKOL_RUN")" && pwd)/$(basename "$ESHKOL_RUN")" ;;
-    *) ESHKOL_RUN="$(command -v "$ESHKOL_RUN")" ;;
+    *) ESHKOL_RUN="$(eshkol_resolve_trusted_command "$ESHKOL_RUN")" ;;
 esac
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-external-prune.XXXXXX")"

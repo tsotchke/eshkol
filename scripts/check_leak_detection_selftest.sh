@@ -78,7 +78,7 @@ int main(void) { void* p = malloc(16); (void)p; return 0; }
 PROBE_EOF
 
     for candidate in "${candidates[@]}"; do
-        command -v "$candidate" >/dev/null 2>&1 || continue
+        eshkol_command_available "$candidate" || continue
         if ! "$candidate" -fsanitize=address -g -O0 "$probe_dir/probe.c" -o "$probe_dir/probe" >/dev/null 2>&1; then
             continue
         fi

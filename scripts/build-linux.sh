@@ -38,6 +38,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/checked_write.sh
+. "$SCRIPT_DIR/lib/checked_write.sh"
 LLVM_VERSION="${LLVM_VERSION:-21}"
 
 if [ ! -r /etc/os-release ]; then
@@ -117,7 +119,7 @@ echo "build-linux.sh: ${PRETTY_NAME:-${ID:-linux}} -> family '${family}', LLVM $
 verify_llvm_major() {
     local llvm_config="$1"
     local found_major
-    if ! command -v "$llvm_config" >/dev/null 2>&1 && [ ! -x "$llvm_config" ]; then
+    if ! eshkol_command_available "$llvm_config" && [ ! -x "$llvm_config" ]; then
         return 1
     fi
     found_major="$("$llvm_config" --version | cut -d. -f1)"

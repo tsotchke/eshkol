@@ -15,9 +15,11 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# shellcheck source=../../scripts/lib/checked_write.sh
+. "$ROOT/scripts/lib/checked_write.sh"
 PYTHON3="${ESHKOL_PYTHON3:-python3}"
 
-if ! command -v "$PYTHON3" >/dev/null 2>&1; then
+if ! eshkol_command_available "$PYTHON3"; then
     echo "SKIP: $PYTHON3 not available"
     exit 0
 fi
