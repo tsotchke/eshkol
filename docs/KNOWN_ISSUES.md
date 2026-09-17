@@ -1,6 +1,6 @@
 # Known Issues — Eshkol v1.3.5-evolve
 
-**Status**: Refreshed release candidate; final verification pending (2026-09-14)
+**Status**: Production release (2026-09-22)
 
 ---
 
@@ -281,6 +281,21 @@ Type annotations are optional and informational. This preserves Scheme's explora
 
 **Hybrid arena model (global + per-thread)**
 Global arena for main thread, per-thread arenas (1 MB, lazily allocated) for parallel workers. Zero contention for parallel workloads. This is an implementation strength, not a trade-off.
+
+---
+
+## Supported Host Compilers
+
+**GCC 13 and Clang/LLVM 21 are the verified host compilers**
+Eshkol v1.3.5-evolve is built and verified with GCC 13 and with Clang/LLVM 21. Building the compiler itself with GCC 15 is not supported in this release. On a system whose default `gcc` is GCC 15, select a supported compiler for the whole build:
+
+```bash
+CC=gcc-13 CXX=g++-13 cmake -B build -DCMAKE_BUILD_TYPE=Release
+# or
+CC=clang-21 CXX=clang++-21 cmake -B build -DCMAKE_BUILD_TYPE=Release
+```
+
+This statement concerns the compiler that builds Eshkol. Programs compiled by Eshkol are emitted through LLVM and do not depend on the host compiler's code generator. Per-platform detail is in [platform/BUILD_NOTES.md](platform/BUILD_NOTES.md#supported-host-compilers).
 
 ---
 
@@ -687,12 +702,12 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   604 `vm-supported`, 46 `native-only-justified`, 311 `gap`. `op:GRADIENT` and
   `op:DERIVATIVE` moved to `vm-supported` this release (#337), and
   `op:IMPORT` / `op:PROVIDE` / `op:REQUIRE` followed with the same-unit
-  `define-library` fix (#402) — with no new waivers. The release-cut
-  differential gate (`scripts/run_vm_parity.sh`) was **338/338** on the
-  previous v1.3.5-evolve candidate (remeasured 2026-09-11, before the
-  September 14 refresh), including the
-  gap-canonicalization and arity-fatal checks; it supersedes the 194/194 and
-  188/188 figures and the "140/140" before them.
+  `define-library` fix (#402) — with no new waivers. The release
+  differential gate (`scripts/run_vm_parity.sh`) is
+  <!-- release-record:vm-parity-figure -->**340/340**<!-- /release-record --> at the
+  release commit, including the
+  gap-canonicalization and arity-fatal checks; it supersedes the 338/338,
+  194/194 and 188/188 figures and the "140/140" before them.
   The corresponding surface baselines were **323** at the release cut and
   **328** on the parity-backlog lane. PR-02 separately retested the historical
   `tests/vm_parity/SURFACE_BASELINE.tsv` surface on both engines: the VM now

@@ -359,6 +359,13 @@ the counts quoted in <code>README.md</code>,
 <code>.icc/architecture-model.yaml</code> and every
 <code>docs/reference/*/INDEX.md</code> must move with it.
 <code>scripts/check_surface_counts.py</code> is the drift checker.</li>
+<li><strong>Release facts.</strong> The release date, the release status
+and the CTest and VM-parity totals live in
+<code>tests/coverage/release_record.json</code> and nowhere else. Change
+the record, run
+<code>python3 scripts/check_surface_counts.py --sync</code> and
+<code>scripts/build-site-content.sh</code>, and the same gate confirms
+that every release-facing document and generated site page agrees.</li>
 </ul>
 <p>Two further gates run with ICC rather than in this job:
 <code>scripts/check_doc_claims_residual.py</code> requires every ICC
@@ -371,7 +378,7 @@ empty trace directory as a pass.</p>
 additionally gated by the <code>release-readiness-gate</code> job in
 <code>.github/workflows/release.yml</code>, which regenerates the oracle
 traces at the tagged SHA and runs <code>icc architecture-verify</code> +
-<code>icc readiness --target v1.3-evolve</code>.
+<code>icc readiness --target v1.3.5-evolve</code>.
 <code>publish-release</code> depends on it, so <strong>no release asset
 is published unless readiness is ready/100</strong> at the cut SHA. The
 gate requires ICC to be provisioned on the release runner via the
@@ -379,9 +386,21 @@ gate requires ICC to be provisioned on the release runner via the
 optionally <code>ICC_REPO</code> for the registered index name, default
 <code>eshkol_lang</code>). If ICC is unavailable on a real tag push the
 gate emits a loud error and blocks the release — it never fail-opens to
-a green publish. A non-publishing <code>workflow_dispatch</code> dry-run
-treats the same conditions as advisory warnings, since it ships
-nothing.</p>
+a green publish. A non-publishing <code>workflow_dispatch</code> dry run
+requires the same evidence when <code>strict_readiness=true</code>; the
+default dry run reports readiness as advisory.</p>
+<p>The runner also needs SBCL and <code>prlimit</code> for the pinned
+Rosette Wire oracle, and Python development headers matching its
+interpreter. The workflow creates an isolated environment containing
+pybind11, NumPy, and PyYAML and enables the Python binding lifetime
+test. Provision native prerequisites before dispatch; the workflow does
+not install system packages on the shared runner.</p>
+<p>The readiness recipe runs baseline coverage and VM parity, smoke
+probes, remaining evidence producers and architecture verification, then
+the final ICC verdict in separate steps. Each step uses the same
+compiler/runtime artifacts and evidence cohort, bound to the commit and
+workflow run attempt. A failed or missing earlier phase cannot be
+resumed as a completed phase.</p>
 <h2 id="development-guidelines">Development Guidelines</h2>
 <h3 id="coding-standards">Coding Standards</h3>
 <p>We follow these coding standards for consistency:</p>
@@ -538,10 +557,9 @@ programs, an opt-in differentiable quantum stack, and a
 consumer-hardening correctness wave (automatic per-iteration
 reclamation, race-free <code>parallel-map</code>, exact gradients
 through every callable form, R7RS exactness contagion on both engines).
-We welcome contributions for upcoming releases. The v1.3.5-evolve
-candidate integrates compiler/VM, AD, tensor and checkpoint correctness
-fixes; its final release battery remains pending until recorded in
-<code>RELEASE_NOTES.md</code>.</p>
+We welcome contributions for upcoming releases. v1.3.5-evolve integrates
+compiler/VM, AD, tensor and checkpoint correctness work; its release
+battery is recorded in <code>RELEASE_NOTES.md</code>.</p>
 <h3 id="immediate-priorities-v1.4-connection">Immediate Priorities
 (v1.4-connection)</h3>
 <ol type="1">

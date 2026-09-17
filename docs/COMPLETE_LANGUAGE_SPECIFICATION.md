@@ -4542,7 +4542,7 @@ Keep original name (exported via `provide`)
 **Current Version:** v1.3.5
 
 **Version History:**
-- v1.3.5-evolve - Compiler/VM semantics, nested and exact AD, validated ESKM persistence, and release-assurance integration. Final release verification is pending.
+- v1.3.5-evolve - Compiler/VM semantics, nested and exact AD, validated ESKM persistence, and release-assurance integration. Released 2026-09-22; verification is bound to the tagged commit.
 - v1.3.4-evolve - Consumer-hardening correctness wave: automatic per-iteration
   memory reclamation on the native engine that matches explicit `with-region`,
   race-free

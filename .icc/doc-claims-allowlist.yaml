@@ -32,7 +32,10 @@ pruned_from: 'v1.3.5 astra doc-typed-claims residual pass (integration/astra-v13
   2026-09-13: db85666284b594af (docs/design/adr/0006-language-conformance-modules.md:222,
   lib/backend/call_apply_codegen.cpp:1129) pruned as stale -- the file has grown back to 1,150 lines, so
   icc doc-typed-claims now grounds the claim and it no longer matches any wrong claim by id or stable key.
-  80 entries remain.'
+  80 entries remain. 2026-09-17: bcd4c6dbe5584069 (docs/DESIGN.md:252, lib/backend/eshkol_vm.c family
+  aggregate 51,092) pruned as stale -- docs/DESIGN.md no longer states that aggregate, icc doc-typed-claims
+  grounds the remaining eshkol_vm.c figure (2,850 lines), and the entry matches no wrong claim by id or by
+  stable key. 79 entries remain.'
 regenerated_at: '2026-08-28'
 regenerated_from: 'DD-01 closure (2026-08-28): icc doc-typed-claims --repo eshkol-ledger-debt --claim-limit
   20000 --finding-limit 2000 --format json at c459f292 + this fix''s own doc corrections, measured final_wrong_count=76
@@ -831,17 +834,6 @@ entries:
     this documentation wave at ...", so the current figure is stated separately and is grounded. The detector
     checks the historical 1,280 against today's 1,867. Correcting it would misrepresent a dated measurement
     as a current one. Added 2026-08-28.
-- claim_id: bcd4c6dbe5584069
-  path: docs/DESIGN.md
-  line: 252
-  claim_type: numeric
-  subject: lib/backend/eshkol_vm.c
-  value: 51092
-  disposition: DETECTOR-MISATTRIBUTION
-  reason: family-sum misattribution. The sentence gives the exact eshkol_vm.c file size and separately
-    gives the measured total for the eshkol_vm.c plus vm_*.c family; the detector binds the family aggregate
-    to the nearest named file. The aggregate is a reviewed current source measurement, while the per-file
-    value is corrected in the document itself.
 - claim_id: 3a23c0991a17476f
   path: docs/API_REFERENCE.md
   line: 7123

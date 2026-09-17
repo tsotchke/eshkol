@@ -1,0 +1,14 @@
+{
+  "schema": "eshkol.release-record.v1",
+  "_comment": "Single source of truth for the release facts that many documents restate and no generated manifest carries: the tag, the release date, the status label and the release-evidence totals. scripts/check_surface_counts.py reads this file and fails when a release-facing document states a different date, carries pre-release status wording after the status is SHIPPED, or quotes a CTest or VM-parity total that disagrees. Change a value here, run `python3 scripts/check_surface_counts.py --sync`, regenerate the site pages with scripts/build-site-content.sh, and the gate confirms nothing was missed. A null total means the figure has not been recorded yet: documents then render the claim without a number, and `--require-complete` fails until it is filled in.",
+  "tag": "v1.3.5-evolve",
+  "release_date": "2026-09-22",
+  "status": "SHIPPED",
+  "ctest_total": null,
+  "ctest_total_placeholder": "PLACEHOLDER: replace the null above with the N of ctest's own '100% tests passed ... out of N' line from the full CTest run at the release commit, then run `python3 scripts/check_surface_counts.py --sync` and `scripts/build-site-content.sh`, and delete this key.",
+  "vm_parity_total": 340,
+  "sources": {
+    "ctest_total": "ctest summary line of the full suite at the release commit (scripts/run_ctest_gate.sh)",
+    "vm_parity_total": "scripts/run_vm_parity.sh summary line at the release commit (vm_parity.jsonl, vm_parity_gate)"
+  }
+}

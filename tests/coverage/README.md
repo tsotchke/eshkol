@@ -20,6 +20,7 @@ failure — it is the next ratchet.
 | `coverage_policy.json` | monotonic ratchet | Minimum covered count/fraction and the categories that must reach zero uncovered before TOTAL-LANGUAGE completion. The floor can only increase. |
 | `coverage_run.json` | `scripts/language_coverage.py --update-committed-run` | Committed snapshot of the sidecar: covered / total, covered fraction, the nested effective policy block, and covered + uncovered names by category. **Build output by nature** — an ordinary gate run writes the sidecar to the gitignored `build/coverage/coverage_run.json` instead, so running the gate never dirties the tree. Refresh this copy deliberately (see below). |
 | `coverage_gap.md` | analysis | Human-readable gap report ranked by silent-wrong risk. |
+| `release_record.json` | release cut | The release tag, date, status label and the CTest and VM-parity totals. `scripts/check_surface_counts.py` grades every release-facing document and generated site page against it, and `--sync` rewrites their claims from it. |
 
 Collect evidence and regenerate everything:
 

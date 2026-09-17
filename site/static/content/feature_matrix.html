@@ -5,9 +5,10 @@ Production | <code>WIP</code> = In Progress | <code>Planned</code> =
 Planned | <code>No</code> = Not Planned | <code>Partial</code> =
 Partially supported</p>
 <p>This matrix lists every implemented and planned feature in the Eshkol
-ecosystem. Feature implementation status is separate from
-release-candidate verification; the September 14 refresh is awaiting its
-final test battery.</p>
+ecosystem. Feature implementation status is recorded here; release
+verification is recorded separately, in the “Final verification” section
+of <a href="../RELEASE_NOTES.md">RELEASE_NOTES.md</a>, and is bound to
+the tagged commit.</p>
 <p><strong>Language surface count (canonical):</strong> the declared
 language surface is <strong>1,115</strong> constructs — 1,052 builtins,
 116 special forms, 113 AST ops and 16 prelude entries, deduplicated by
@@ -30,8 +31,8 @@ compute the number the coverage gate enforces:
 <code>baseline_surface_total</code> =
 <code>tests/coverage/execution_deficit.json</code>
 <code>surface_total</code> = <strong>1,115</strong>, confirmed by
-regenerating <code>tests/coverage/language_surface.json</code> during
-the September 14 refresh. This is the figure this doc, README.md, and
+regenerating <code>tests/coverage/language_surface.json</code> at the
+release commit. This is the figure this doc, README.md, and
 <code>.icc/architecture-model.yaml</code> use;
 <code>scripts/check_surface_counts.py</code> fails CI if any of them
 drift from the manifest again.</p>
@@ -1440,7 +1441,7 @@ href="design/adr/0011-guest-collector-adapter.md">ADR-0011</a>)</td>
 <td>Yes</td>
 <td>LLVM 18-24 (one major pinned per build, 21 by default)</td>
 <td>39 codegen modules; <code>lib/backend/llvm_codegen.cpp</code> is
-46,980 lines</td>
+47,107 lines</td>
 </tr>
 <tr>
 <td>Native code emission</td>
@@ -4260,10 +4261,10 @@ eshkol.ai</td>
 <td>VM Production</td>
 <td>Partial (documented subset)</td>
 <td>Zero stubs, zero stdout contamination on the surface it implements,
-gated by the VM source suite, the 81/81 C-API suite, and a
-previous-candidate 338/338 differential result
-(<code>scripts/run_vm_parity.sh</code>, measured 2026-09-11 before this
-refresh). This result must be rerun on the refreshed source.
+gated by the VM source suite, the 81/81 C-API suite, and the release
+differential (<code>scripts/run_vm_parity.sh</code>):
+<!-- release-record:vm-parity -->VM parity differential
+<strong>340/340</strong><!-- /release-record -->.
 <code>tests/vm_parity/PARITY.tsv</code> carries 311 <code>gap</code>
 rows out of 961, plus 328 further names in
 <code>tests/vm_parity/SURFACE_BASELINE.tsv</code> outside that ledger
@@ -4449,7 +4450,7 @@ infrastructure) - Scheme community (language design inspiration) -
 JAX/PyTorch (AD implementation insights) - Julia (technical computing
 design patterns)</p>
 <hr />
-<p><strong>Last Updated</strong>: 2026-09-14 <strong>Document
+<p><strong>Last Updated</strong>: 2026-09-22 <strong>Document
 Version</strong>: 1.3.5-evolve</p>
 <p>For detailed API documentation, see <a
 href="API_REFERENCE.md">API_REFERENCE.md</a></p>
