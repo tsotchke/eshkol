@@ -7,6 +7,9 @@ BUILD_DIR="${BUILD_DIR:-build}"
 case "$BUILD_DIR" in /*) ;; *) BUILD_DIR="$REPO_ROOT/$BUILD_DIR" ;; esac
 ESHKOL_RUN="$BUILD_DIR/eshkol-run"
 TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
+# Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 mkdir -p "$TRACE_DIR"
 TRACE_FILE="$TRACE_DIR/release_invariant_probes.jsonl"
 : > "$TRACE_FILE"

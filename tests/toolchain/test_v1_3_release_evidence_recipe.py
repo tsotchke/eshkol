@@ -285,6 +285,95 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
             self.assertIn("ctest exited 8", result.stdout)
 
 
+    def test_every_environment_supplied_evidence_path_is_made_absolute(self):
+        """A gate that reads TRACE_DIR from its environment normalises it first.
+
+        `ctest --test-dir build --output-junit P` resolves a relative P inside
+        build/, so a relative TRACE_DIR made the release recorder look for the
+        JUnit report in one place while ctest wrote it in another, and five
+        passing required tests were graded as not executed.
+        """
+        import re
+        reads_env = re.compile(r"TRACE_DIR=.*\$\{(TRACE_DIR|ICC_TRACE_DIR):-")
+        tracked = subprocess.run(
+            ["git", "ls-files", "scripts/*.sh", "scripts/**/*.sh", "tests/*.sh", "tests/**/*.sh"],
+            cwd=ROOT, capture_output=True, text=True, check=True).stdout.split()
+        consumers = []
+        for rel in sorted(set(tracked)):
+            lines = (ROOT / rel).read_text(encoding="utf-8", errors="replace").splitlines()
+            reads = [i for i, line in enumerate(lines) if reads_env.search(line)]
+            if not reads:
+                continue
+            consumers.append(rel)
+            normalised = [i for i, line in enumerate(lines)
+                          if line.strip().startswith("eshkol_evidence_abs_var TRACE_DIR ")]
+            self.assertTrue(normalised, f"{rel}: reads TRACE_DIR from the environment without normalising it")
+            self.assertGreater(normalised[0], reads[-1], f"{rel}: normalises TRACE_DIR before its last assignment")
+            between = lines[reads[-1] + 1:normalised[0]]
+            uses = [line for line in between
+                    if "TRACE_DIR" in line and not line.strip().startswith(("#", "mkdir -p", "."))]
+            self.assertEqual(uses, [], f"{rel}: uses TRACE_DIR before it is absolute: {uses}")
+            self.assertTrue(any("scripts/lib/evidence_paths.sh" in line for line in lines[:normalised[0]]),
+                            f"{rel}: does not source scripts/lib/evidence_paths.sh")
+        self.assertGreaterEqual(len(consumers), 19, consumers)
+        self.assertIn("scripts/run_v1_3_release_producers.sh", consumers)
+        for line in self.workflow.splitlines():
+            if line.strip().startswith("TRACE_DIR:"):
+                self.assertIn("${{ github.workspace }}/", line, "release.yml passes a relative TRACE_DIR")
+
+    def test_evidence_path_helper_contract(self):
+        helper = ROOT / "scripts/lib/evidence_paths.sh"
+
+        def run(script):
+            return subprocess.run(["bash", "-c", f'. "{helper}"; {script}'],
+                                  capture_output=True, text=True)
+
+        cases = {
+            'eshkol_abs_path scripts/icc_traces /repo': "/repo/scripts/icc_traces",
+            'eshkol_abs_path ./scripts/icc_traces /repo/': "/repo/scripts/icc_traces",
+            'eshkol_abs_path /already/abs /repo': "/already/abs",
+            'T=rel/dir; eshkol_evidence_abs_var T /base; printf "%s\\n" "$T"': "/base/rel/dir",
+            'T=/abs/dir; eshkol_evidence_abs_var T /base; printf "%s\\n" "$T"': "/abs/dir",
+        }
+        for script, expected in cases.items():
+            result = run(script)
+            self.assertEqual(result.returncode, 0, script + result.stderr)
+            self.assertEqual(result.stdout.strip(), expected, script)
+        for script in ('eshkol_abs_path "" /repo', 'eshkol_abs_path rel relative-base',
+                       'T=; eshkol_evidence_abs_var T /base', 'eshkol_evidence_abs_var "bad name" /base'):
+            result = run(script)
+            self.assertNotEqual(result.returncode, 0, script)
+            self.assertEqual(result.stdout, "", script)
+
+    def test_relative_trace_dir_reaches_ctest_as_an_absolute_junit_path(self):
+        """Run the producers' own prologue with a relative TRACE_DIR and a stub ctest."""
+        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as temp:
+            stub_dir = Path(temp) / "bin"
+            stub_dir.mkdir()
+            seen = Path(temp) / "junit-argument"
+            stub = stub_dir / "ctest"
+            stub.write_text(
+                "#!/usr/bin/env bash\n"
+                "while [ $# -gt 0 ]; do\n"
+                "  if [ \"$1\" = --output-junit ]; then printf '%s' \"$2\" > \"$SEEN\"; fi\n"
+                "  shift\n"
+                "done\n", encoding="utf-8")
+            stub.chmod(0o755)
+            producers = (ROOT / "scripts/run_v1_3_release_producers.sh").read_text(encoding="utf-8")
+            start = producers.index('ctest_junit="$TRACE_DIR/v1_3_required_ctest.junit.xml"')
+            end = producers.index("python3 scripts/record_release_ctest_evidence.py")
+            prologue = producers[:producers.index(". scripts/lib/harness_outcome.sh")]
+            script = prologue + producers[start:end]
+            relative = Path(temp).relative_to(ROOT) / "traces"
+            result = subprocess.run(
+                ["bash", "-c", script, str(ROOT / "scripts/run_v1_3_release_producers.sh")],
+                cwd=ROOT, capture_output=True, text=True,
+                env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}", "SEEN": str(seen),
+                     "TRACE_DIR": str(relative), "BUILD_DIR": "build"})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(seen.read_text(), str(ROOT / relative / "v1_3_required_ctest.junit.xml"))
+
+
 if __name__ == "__main__":
     (ROOT / ".scratch").mkdir(exist_ok=True)
     unittest.main()

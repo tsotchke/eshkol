@@ -52,6 +52,9 @@ ESHKOL_RUN="$BUILD_DIR_PATH/eshkol-run"
 VM_RUN="$BUILD_DIR_PATH/eshkol-vm-standalone-test"
 
 TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
+# Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 TRACE_FILE="$TRACE_DIR/v1_4_connection.jsonl"
 mkdir -p "$TRACE_DIR"
 : > "$TRACE_FILE"

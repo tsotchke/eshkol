@@ -30,6 +30,9 @@ eshkol_test_isolation_init "xla"
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO_ROOT"
 TRACE_DIR=${ICC_TRACE_DIR:-"$REPO_ROOT/scripts/icc_traces"}
+# Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 XLA_TARGET_TRACE="$TRACE_DIR/xla_target_queries.jsonl"
 mkdir -p "$TRACE_DIR"
 : > "${XLA_TARGET_TRACE:?}"

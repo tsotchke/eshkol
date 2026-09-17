@@ -1335,7 +1335,7 @@ jobs:
         timeout-minutes: 360
         shell: bash
         env:
-          TRACE_DIR: scripts/icc_traces
+          TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
           QUANTUM_BUILD_DIR: build-quantum
         run: scripts/run_v1_3_readiness.sh --phase baseline
 
@@ -1344,7 +1344,7 @@ jobs:
         timeout-minutes: 360
         shell: bash
         env:
-          TRACE_DIR: scripts/icc_traces
+          TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
           QUANTUM_BUILD_DIR: build-quantum
         run: scripts/run_v1_3_readiness.sh --phase smoke
 
@@ -1353,7 +1353,7 @@ jobs:
         timeout-minutes: 360
         shell: bash
         env:
-          TRACE_DIR: scripts/icc_traces
+          TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
           QUANTUM_BUILD_DIR: build-quantum
         run: scripts/run_v1_3_readiness.sh --phase final-evidence
 
@@ -1373,7 +1373,7 @@ jobs:
         timeout-minutes: 360
         shell: bash
         env:
-          TRACE_DIR: scripts/icc_traces
+          TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
           QUANTUM_BUILD_DIR: build-quantum
         run: |
           set -uxo pipefail

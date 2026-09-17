@@ -27,6 +27,9 @@ DURABILITY_SRC="$REPO_ROOT/tests/memory/fixtures/memory_store_durability_test.es
 MEMORY_SRC="$REPO_ROOT/tests/memory/memory_test.esk"
 VM_MEMORY_SRC="$REPO_ROOT/tests/memory/memory_vm_parity_test.esk"
 TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
+# Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 TRACE_FILE="$TRACE_DIR/memory_store_durability.jsonl"
 
 for required in "$ESHKOL_RUN" "$VM_BIN" "$DURABILITY_SRC" "$MEMORY_SRC" "$VM_MEMORY_SRC"; do
