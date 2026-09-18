@@ -13247,8 +13247,8 @@ private:
         // Scalar activations share the numeric dispatch with the tensor names.
         // In particular, a Taylor carrier must not be handed to the tensor
         // implementation, which only understands tensor layout.
-        if (func_name == "relu") co_return codegenActivationFunction(op, true);
-        if (func_name == "sigmoid") co_return codegenActivationFunction(op, false);
+        if (func_name == "relu") co_return codegenActivationFamily(op, *findActivation("relu"));
+        if (func_name == "sigmoid") co_return codegenActivationFamily(op, *findActivation("sigmoid"));
 
         // Handle math functions with dual number support (Phase 2)
         if (func_name == "sin") co_return codegenMathFunction(op, "sin");
@@ -16921,34 +16921,9 @@ private:
             Function* cur_func = builder->GetInsertBlock()->getParent();
             int n_vecs = op->call_op.num_vars - 1;
 
-            // Per-vector element loader: yields the i-th element as a tagged
-            // value, branching on whether the source is a tensor or a vector.
-            auto loadElem = [&](Value* is_t, Value* elems, Value* base, Value* idx) -> Value* {
-                Function* f = builder->GetInsertBlock()->getParent();
-                BasicBlock* tb = BasicBlock::Create(*context, "velt_t", f);
-                BasicBlock* vb = BasicBlock::Create(*context, "velt_v", f);
-                BasicBlock* mb = BasicBlock::Create(*context, "velt_m", f);
-                builder->CreateCondBr(is_t, tb, vb);
-                builder->SetInsertPoint(tb);
-                Value* ep = builder->CreateGEP(int64_type, elems, idx);
-                Value* ei = builder->CreateLoad(int64_type, ep);
-                Value* et = packDoubleToTaggedValue(builder->CreateBitCast(ei, double_type));
-                builder->CreateBr(mb);
-                BasicBlock* tb_exit = builder->GetInsertBlock();
-                builder->SetInsertPoint(vb);
-                Value* eptr = builder->CreateGEP(tagged_value_type, base, idx);
-                Value* ev = builder->CreateLoad(tagged_value_type, eptr);
-                builder->CreateBr(mb);
-                BasicBlock* vb_exit = builder->GetInsertBlock();
-                builder->SetInsertPoint(mb);
-                PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
-                phi->addIncoming(et, tb_exit);
-                phi->addIncoming(ev, vb_exit);
-                return phi;
-            };
 
             std::vector<Value*> is_tensors(n_vecs), elems_ptrs(n_vecs),
-                                base_ptrs(n_vecs), lengths(n_vecs);
+                                base_ptrs(n_vecs), lengths(n_vecs), tagged_slots(n_vecs);
             Value* nullp = ConstantPointerNull::get(PointerType::getUnqual(*context));
             for (int a = 0; a < n_vecs; a++) {
                 Value* va = (co_await codegenASTTask(&op->call_op.variables[a + 1]));
@@ -16966,6 +16941,11 @@ private:
                 builder->SetInsertPoint(tb);
                 Value* tlen = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 3));
                 Value* telems = builder->CreateLoad(PointerType::getUnqual(*context), builder->CreateStructGEP(tensor_type, vp, 2));
+                // ADR-0020: a promoted (boxed) carrier's slots are tagged values.
+                Value* tdtype = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 4));
+                Value* t_tagged = builder->CreateOr(
+                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_BOXED)),
+                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_DUAL)));
                 builder->CreateBr(mb);
                 BasicBlock* tb_exit = builder->GetInsertBlock();
                 builder->SetInsertPoint(vb);
@@ -16980,8 +16960,12 @@ private:
                 elems_phi->addIncoming(telems, tb_exit); elems_phi->addIncoming(nullp, vb_exit);
                 PHINode* base_phi = builder->CreatePHI(PointerType::getUnqual(*context), 2);
                 base_phi->addIncoming(nullp, tb_exit); base_phi->addIncoming(vbase, vb_exit);
+                PHINode* tagged_phi = builder->CreatePHI(builder->getInt1Ty(), 2);
+                tagged_phi->addIncoming(t_tagged, tb_exit);
+                tagged_phi->addIncoming(builder->getFalse(), vb_exit);
                 is_tensors[a] = is_t; lengths[a] = len_phi;
                 elems_ptrs[a] = elems_phi; base_ptrs[a] = base_phi;
+                tagged_slots[a] = tagged_phi;
             }
 
             // Iterate to the shortest length.
@@ -17004,9 +16988,9 @@ private:
             Value* ci = builder->CreateLoad(int64_type, idx_ptr);
             std::vector<Value*> call_args;
             for (int a = 0; a < n_vecs; a++)
-                call_args.push_back(loadElem(is_tensors[a], elems_ptrs[a], base_ptrs[a], ci));
+                call_args.push_back(loadSequenceElement(is_tensors[a], tagged_slots[a], elems_ptrs[a], base_ptrs[a], ci));
             codegenClosureCall(func_val, call_args, "vector-for-each");
-            // Reload the counter — loadElem/codegenClosureCall create blocks.
+            // Reload the counter — the element load and the closure call create blocks.
             Value* ci2 = builder->CreateLoad(int64_type, idx_ptr);
             builder->CreateStore(builder->CreateAdd(ci2, ConstantInt::get(int64_type, 1)), idx_ptr);
             builder->CreateBr(cond_bb);
@@ -17032,32 +17016,9 @@ private:
             Function* cur_func = builder->GetInsertBlock()->getParent();
             int n_vecs = op->call_op.num_vars - 1;
 
-            auto loadElem = [&](Value* is_t, Value* elems, Value* base, Value* idx) -> Value* {
-                Function* f = builder->GetInsertBlock()->getParent();
-                BasicBlock* tb = BasicBlock::Create(*context, "vmelt_t", f);
-                BasicBlock* vb = BasicBlock::Create(*context, "vmelt_v", f);
-                BasicBlock* mb = BasicBlock::Create(*context, "vmelt_m", f);
-                builder->CreateCondBr(is_t, tb, vb);
-                builder->SetInsertPoint(tb);
-                Value* ep = builder->CreateGEP(int64_type, elems, idx);
-                Value* ei = builder->CreateLoad(int64_type, ep);
-                Value* et = packDoubleToTaggedValue(builder->CreateBitCast(ei, double_type));
-                builder->CreateBr(mb);
-                BasicBlock* tb_exit = builder->GetInsertBlock();
-                builder->SetInsertPoint(vb);
-                Value* eptr = builder->CreateGEP(tagged_value_type, base, idx);
-                Value* ev = builder->CreateLoad(tagged_value_type, eptr);
-                builder->CreateBr(mb);
-                BasicBlock* vb_exit = builder->GetInsertBlock();
-                builder->SetInsertPoint(mb);
-                PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
-                phi->addIncoming(et, tb_exit);
-                phi->addIncoming(ev, vb_exit);
-                return phi;
-            };
 
             std::vector<Value*> is_tensors(n_vecs), elems_ptrs(n_vecs),
-                                base_ptrs(n_vecs), lengths(n_vecs);
+                                base_ptrs(n_vecs), lengths(n_vecs), tagged_slots(n_vecs);
             Value* nullp = ConstantPointerNull::get(PointerType::getUnqual(*context));
             for (int a = 0; a < n_vecs; a++) {
                 Value* va = (co_await codegenASTTask(&op->call_op.variables[a + 1]));
@@ -17075,6 +17036,11 @@ private:
                 builder->SetInsertPoint(tb);
                 Value* tlen = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 3));
                 Value* telems = builder->CreateLoad(PointerType::getUnqual(*context), builder->CreateStructGEP(tensor_type, vp, 2));
+                // ADR-0020: a promoted (boxed) carrier's slots are tagged values.
+                Value* tdtype = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 4));
+                Value* t_tagged = builder->CreateOr(
+                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_BOXED)),
+                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_DUAL)));
                 builder->CreateBr(mb);
                 BasicBlock* tb_exit = builder->GetInsertBlock();
                 builder->SetInsertPoint(vb);
@@ -17089,8 +17055,12 @@ private:
                 elems_phi->addIncoming(telems, tb_exit); elems_phi->addIncoming(nullp, vb_exit);
                 PHINode* base_phi = builder->CreatePHI(PointerType::getUnqual(*context), 2);
                 base_phi->addIncoming(nullp, tb_exit); base_phi->addIncoming(vbase, vb_exit);
+                PHINode* tagged_phi = builder->CreatePHI(builder->getInt1Ty(), 2);
+                tagged_phi->addIncoming(t_tagged, tb_exit);
+                tagged_phi->addIncoming(builder->getFalse(), vb_exit);
                 is_tensors[a] = is_t; lengths[a] = len_phi;
                 elems_ptrs[a] = elems_phi; base_ptrs[a] = base_phi;
+                tagged_slots[a] = tagged_phi;
             }
 
             // Result length is the shortest of the inputs.
@@ -17126,10 +17096,10 @@ private:
             Value* ci = builder->CreateLoad(int64_type, idx_ptr);
             std::vector<Value*> call_args;
             for (int a = 0; a < n_vecs; a++)
-                call_args.push_back(loadElem(is_tensors[a], elems_ptrs[a], base_ptrs[a], ci));
+                call_args.push_back(loadSequenceElement(is_tensors[a], tagged_slots[a], elems_ptrs[a], base_ptrs[a], ci));
             Value* result = codegenClosureCall(func_val, call_args, "vector-map");
             Value* result_tagged = ensureTaggedValue(result);
-            // Reload the counter — loadElem/codegenClosureCall create blocks.
+            // Reload the counter — the element load and the closure call create blocks.
             Value* ci2 = builder->CreateLoad(int64_type, idx_ptr);
             Value* new_elem_ptr = builder->CreateGEP(tagged_value_type, new_elem_base, ci2);
             builder->CreateStore(result_tagged, new_elem_ptr);
@@ -17283,20 +17253,23 @@ private:
         if (func_name == "tensor-data") co_return tensor_->tensorToVector(op);  // Alias for tensor->vector
 
         // Activation functions (SIMD-accelerated)
-        if (func_name == "relu") co_return tensor_->tensorRelu(op);
-        if (func_name == "sigmoid") co_return tensor_->tensorSigmoid(op);
+        // The elementwise activation family (a number or a tensor). Each name
+        // is spelled out -- scripts/gen_language_surface.py enumerates the
+        // builtin surface from these lines -- but every one of them reaches the
+        // single lowering, codegenActivationFamily(), and its one table.
+        if (func_name == "gelu") co_return codegenActivationFamily(op, *findActivation("gelu"));
+        if (func_name == "leaky-relu") co_return codegenActivationFamily(op, *findActivation("leaky-relu"));
+        if (func_name == "silu") co_return codegenActivationFamily(op, *findActivation("silu"));
+        if (func_name == "swish") co_return codegenActivationFamily(op, *findActivation("swish"));
+        if (func_name == "elu") co_return codegenActivationFamily(op, *findActivation("elu"));
+        if (func_name == "selu") co_return codegenActivationFamily(op, *findActivation("selu"));
+        if (func_name == "mish") co_return codegenActivationFamily(op, *findActivation("mish"));
+        if (func_name == "hard-swish") co_return codegenActivationFamily(op, *findActivation("hard-swish"));
+        if (func_name == "hard-sigmoid") co_return codegenActivationFamily(op, *findActivation("hard-sigmoid"));
+        if (func_name == "softplus") co_return codegenActivationFamily(op, *findActivation("softplus"));
+        if (func_name == "celu") co_return codegenActivationFamily(op, *findActivation("celu"));
         if (func_name == "softmax") co_return tensor_->tensorSoftmax(op);
-        if (func_name == "gelu") co_return tensor_->tensorGelu(op);
-        if (func_name == "leaky-relu") co_return tensor_->tensorLeakyRelu(op);
-        if (func_name == "silu") co_return tensor_->tensorSilu(op);
-        if (func_name == "elu") co_return tensor_->tensorElu(op);
-        if (func_name == "selu") co_return tensor_->tensorSelu(op);
-        if (func_name == "mish") co_return tensor_->tensorMish(op);
-        if (func_name == "hard-swish") co_return tensor_->tensorHardSwish(op);
-        if (func_name == "hard-sigmoid") co_return tensor_->tensorHardSigmoid(op);
-        if (func_name == "softplus") co_return tensor_->tensorSoftplus(op);
         if (func_name == "dropout") co_return tensor_->tensorDropout(op);
-        if (func_name == "celu") co_return tensor_->tensorCelu(op);
 
         // Statistics operations
         if (func_name == "tensor-var") co_return tensor_->tensorVar(op);
@@ -20993,6 +20966,322 @@ private:
         result->addIncoming(tagged_dual, dual_exit);
         result->addIncoming(regular_result, regular_exit);
         return result;
+    }
+
+    // ===== ML activation family: one dispatch point =====
+    //
+    // Every activation takes a number or a tensor and returns the same kind
+    // (docs/tutorials/01_AUTODIFF_AND_ML.md, docs/API_REFERENCE.md). This table
+    // and codegenActivationFamily() are the only place an activation name is
+    // lowered. The operand is evaluated ONCE, bound to a generated name, and
+    // classified at run time:
+    //   - a tensor, or a reverse-mode node that carries a tensor, goes to the
+    //     TensorCodegen lowering, which owns tensor layout and tensor AD;
+    //   - a scalar number or scalar differentiation carrier (fixnum, flonum,
+    //     bignum, rational, dual, Taylor tower, scalar AD node) goes to the
+    //     activation's scalar definition. That definition is a composition of
+    //     the scalar primitives (+ - * / exp log tanh min max and `>` on the
+    //     primal), each of which already carries every differentiation mode,
+    //     so the activation is differentiable without a rule of its own. It is
+    //     the same formula, constants and threshold as the tensor kernel;
+    //   - anything else goes to the tensor lowering, whose operand check
+    //     coerces a numeric collection or raises a catchable type error.
+    // relu and sigmoid enter through the same table but keep their dedicated
+    // scalar lowering (codegenActivationFunction), which records dedicated AD
+    // node and Taylor operations.
+    static eshkol_ast_t* actCall(const char* fn, std::initializer_list<eshkol_ast_t*> args) {
+        eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
+        ast->type = ESHKOL_OP;
+        ast->operation.op = ESHKOL_CALL_OP;
+        ast->operation.call_op.func = eshkol_make_var_ast(fn);
+        ast->operation.call_op.num_vars = args.size();
+        ast->operation.call_op.variables = eshkol_ast_construct_array(
+            arena_allocate(get_global_arena(), args.size() * sizeof(eshkol_ast_t)), args.size());
+        size_t i = 0;
+        for (eshkol_ast_t* a : args) ast->operation.call_op.variables[i++] = *a;
+        return ast;
+    }
+    static eshkol_ast_t* actNum(double v) { return eshkol_make_double_ast(v); }
+
+    // An activation's definition as an AST over the operand x and the optional
+    // parameter p, and the TensorCodegen kernel it pairs with.
+    using ActivationFormula = eshkol_ast_t* (*)(eshkol_ast_t* x, eshkol_ast_t* p);
+    using ActivationKernel = Value* (eshkol::TensorCodegen::*)(const eshkol_operations_t*);
+    struct ActivationSpec {
+        const char* name;
+        uint64_t min_args;
+        uint64_t max_args;
+        double param_default;  // value of the optional second argument
+        ActivationKernel tensor_fn;
+        // Scalar definition; null for the activations with a dedicated scalar
+        // lowering (relu, sigmoid).
+        ActivationFormula scalar;
+        // Tensor definition used when the optional parameter is supplied and
+        // the tensor kernel has no parameter of its own (swish's beta).
+        ActivationFormula tensor_with_param;
+    };
+
+    static const ActivationSpec* findActivation(const std::string& name) {
+        // Formulas mirror lib/backend/tensor_activation_codegen.cpp exactly.
+        static const ActivationSpec table[] = {
+            {"relu", 1, 1, 0.0, &eshkol::TensorCodegen::tensorRelu, nullptr, nullptr},
+            {"sigmoid", 1, 1, 0.0, &eshkol::TensorCodegen::tensorSigmoid, nullptr, nullptr},
+            // (1/beta) * log(1 + exp(beta*x)), or x when beta*x > 20
+            {"softplus", 1, 2, 1.0, &eshkol::TensorCodegen::tensorSoftplus,
+             [](eshkol_ast_t* x, eshkol_ast_t* p) {
+                 eshkol_ast_t* bx = actCall("*", {p, x});
+                 return actCall("if", {actCall(">", {bx, actNum(20.0)}), x,
+                     actCall("*", {actCall("/", {actNum(1.0), p}),
+                                   actCall("log", {actCall("+", {actNum(1.0), actCall("exp", {bx})})})})});
+             }, nullptr},
+            // 0.5*x*(1 + tanh(sqrt(2/pi)*(x + 0.044715*x^3)))
+            {"gelu", 1, 1, 0.0, &eshkol::TensorCodegen::tensorGelu,
+             [](eshkol_ast_t* x, eshkol_ast_t*) {
+                 eshkol_ast_t* x3 = actCall("*", {actCall("*", {x, x}), x});
+                 eshkol_ast_t* inner = actCall("+", {x, actCall("*", {actNum(0.044715), x3})});
+                 eshkol_ast_t* t = actCall("tanh", {actCall("*", {actNum(0.7978845608028654), inner})});
+                 return actCall("*", {actCall("*", {actNum(0.5), x}), actCall("+", {actNum(1.0), t})});
+             }, nullptr},
+            // x if x > 0, else alpha*x (alpha 0.01)
+            {"leaky-relu", 1, 2, 0.01, &eshkol::TensorCodegen::tensorLeakyRelu,
+             [](eshkol_ast_t* x, eshkol_ast_t* p) {
+                 return actCall("if", {actCall(">", {x, actNum(0.0)}), x, actCall("*", {p, x})});
+             }, nullptr},
+            // x * sigmoid(x)
+            {"silu", 1, 1, 0.0, &eshkol::TensorCodegen::tensorSilu,
+             [](eshkol_ast_t* x, eshkol_ast_t*) { return actCall("*", {x, actCall("sigmoid", {x})}); },
+             nullptr},
+            // Swish: x * sigmoid(beta*x); beta 1 is SiLU
+            {"swish", 1, 2, 1.0, &eshkol::TensorCodegen::tensorSilu,
+             [](eshkol_ast_t* x, eshkol_ast_t* p) {
+                 return actCall("*", {x, actCall("sigmoid", {actCall("*", {p, x})})});
+             },
+             [](eshkol_ast_t* x, eshkol_ast_t* p) {
+                 eshkol_ast_t* beta = actCall("make-tensor", {actCall("list", {eshkol_make_int_ast(1)}), p});
+                 return actCall("tensor-mul", {x, actCall("sigmoid", {actCall("tensor-mul", {x, beta})})});
+             }},
+            // x if x > 0, else alpha*(exp(x) - 1) (alpha 1)
+            {"elu", 1, 2, 1.0, &eshkol::TensorCodegen::tensorElu,
+             [](eshkol_ast_t* x, eshkol_ast_t* p) {
+                 return actCall("if", {actCall(">", {x, actNum(0.0)}), x,
+                     actCall("*", {p, actCall("-", {actCall("exp", {x}), actNum(1.0)})})});
+             }, nullptr},
+            // lambda * (x if x > 0, else alpha*(exp(x) - 1))
+            {"selu", 1, 1, 0.0, &eshkol::TensorCodegen::tensorSelu,
+             [](eshkol_ast_t* x, eshkol_ast_t*) {
+                 return actCall("*", {actNum(1.0507009873554804934193349852946),
+                     actCall("if", {actCall(">", {x, actNum(0.0)}), x,
+                         actCall("*", {actNum(1.6732632423543772848170429916717),
+                                       actCall("-", {actCall("exp", {x}), actNum(1.0)})})})});
+             }, nullptr},
+            // x * tanh(log(1 + exp(x))), or x * tanh(x) when x > 20
+            {"mish", 1, 1, 0.0, &eshkol::TensorCodegen::tensorMish,
+             [](eshkol_ast_t* x, eshkol_ast_t*) {
+                 return actCall("if", {actCall(">", {x, actNum(20.0)}),
+                     actCall("*", {x, actCall("tanh", {x})}),
+                     actCall("*", {x, actCall("tanh", {actCall("log", {actCall("+", {actNum(1.0), actCall("exp", {x})})})})})});
+             }, nullptr},
+            // x * min(max(x + 3, 0), 6) / 6
+            {"hard-swish", 1, 1, 0.0, &eshkol::TensorCodegen::tensorHardSwish,
+             [](eshkol_ast_t* x, eshkol_ast_t*) {
+                 eshkol_ast_t* clamped = actCall("min", {actCall("max", {actCall("+", {x, actNum(3.0)}), actNum(0.0)}), actNum(6.0)});
+                 return actCall("/", {actCall("*", {x, clamped}), actNum(6.0)});
+             }, nullptr},
+            // min(max((x + 3) / 6, 0), 1)
+            {"hard-sigmoid", 1, 1, 0.0, &eshkol::TensorCodegen::tensorHardSigmoid,
+             [](eshkol_ast_t* x, eshkol_ast_t*) {
+                 return actCall("min", {actCall("max", {actCall("/", {actCall("+", {x, actNum(3.0)}), actNum(6.0)}), actNum(0.0)}), actNum(1.0)});
+             }, nullptr},
+            // max(0, x) + min(0, alpha*(exp(x/alpha) - 1)) (alpha 1)
+            {"celu", 1, 2, 1.0, &eshkol::TensorCodegen::tensorCelu,
+             [](eshkol_ast_t* x, eshkol_ast_t* p) {
+                 return actCall("+", {actCall("max", {actNum(0.0), x}),
+                     actCall("min", {actNum(0.0), actCall("*", {p,
+                         actCall("-", {actCall("exp", {actCall("/", {x, p})}), actNum(1.0)})})})});
+             }, nullptr},
+        };
+        for (const ActivationSpec& spec : table) {
+            if (name == spec.name) return &spec;
+        }
+        return nullptr;
+    }
+
+    // i1: the operand belongs to the scalar definition (a number or a scalar
+    // differentiation carrier). Everything else -- a tensor, a reverse-mode node
+    // that carries a tensor, or a non-number -- belongs to the tensor lowering.
+    Value* emitActivationOperandIsScalar(Value* arg) {
+        Function* fn = builder->GetInsertBlock()->getParent();
+        BasicBlock* callable_bb = BasicBlock::Create(*context, "act_callable_check", fn);
+        BasicBlock* ad_bb = BasicBlock::Create(*context, "act_ad_scalar_check", fn);
+        BasicBlock* done_bb = BasicBlock::Create(*context, "act_classified", fn);
+        Value* base = getBaseType(getTaggedValueType(arg));
+        Value* number_like = builder->CreateOr(tagged_->isNumeric(arg),
+            builder->CreateOr(
+                builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER)),
+                builder->CreateOr(isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM),
+                    builder->CreateOr(isHeapSubtype(arg, HEAP_SUBTYPE_RATIONAL),
+                                      isHeapSubtype(arg, HEAP_SUBTYPE_TAYLOR)))));
+        Value* is_callable = builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        // The subtype probes above may have split the block, and the callable
+        // subtype probe below dereferences the payload, so it may only run once
+        // the value is known to be a callable.
+        BasicBlock* entry_bb = builder->GetInsertBlock();
+        builder->CreateCondBr(is_callable, callable_bb, done_bb);
+
+        builder->SetInsertPoint(callable_bb);
+        Value* is_ad = tagged_->checkCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
+        BasicBlock* callable_exit = builder->GetInsertBlock();
+        builder->CreateCondBr(is_ad, ad_bb, done_bb);
+
+        // A reverse-mode node is scalar exactly when it carries no tensor.
+        builder->SetInsertPoint(ad_bb);
+        PointerType* ptr_ty = PointerType::getUnqual(*context);
+        Value* node = builder->CreateIntToPtr(unpackInt64FromTaggedValue(arg), ptr_ty);
+        Value* tensor_value = builder->CreateLoad(ptr_ty, builder->CreateStructGEP(ad_node_type, node, 6));
+        Value* scalar_ad = builder->CreateICmpEQ(tensor_value, ConstantPointerNull::get(ptr_ty));
+        BasicBlock* ad_exit = builder->GetInsertBlock();
+        builder->CreateBr(done_bb);
+
+        builder->SetInsertPoint(done_bb);
+        PHINode* result = builder->CreatePHI(builder->getInt1Ty(), 3, "act_is_scalar");
+        result->addIncoming(number_like, entry_bb);
+        result->addIncoming(ConstantInt::getFalse(*context), callable_exit);
+        result->addIncoming(scalar_ad, ad_exit);
+        return result;
+    }
+
+    Value* codegenActivationFamily(const eshkol_operations_t* op, const ActivationSpec& spec) {
+        const uint64_t n = op->call_op.num_vars;
+        if (n < spec.min_args || n > spec.max_args) {
+            if (spec.min_args == spec.max_args) {
+                eshkol_arity_error_current("%s requires exactly %llu argument%s", spec.name,
+                    static_cast<unsigned long long>(spec.min_args), spec.min_args == 1 ? "" : "s");
+            } else {
+                eshkol_arity_error_current("%s requires %llu to %llu arguments", spec.name,
+                    static_cast<unsigned long long>(spec.min_args),
+                    static_cast<unsigned long long>(spec.max_args));
+            }
+            return nullptr;
+        }
+        if (!spec.scalar) {
+            // relu / sigmoid: dedicated scalar lowering.
+            return codegenActivationFunction(op, std::string(spec.name) == "relu");
+        }
+        // The operand is classified at run time, never from its static type:
+        // the type checker narrows an unannotated parameter to Tensor, and
+        // trusting that reads a double's bit pattern as a tensor pointer.
+
+        // Evaluate every argument once and bind it to a generated name; both
+        // branches read the bindings, so no argument is evaluated twice.
+        Function* fn = builder->GetInsertBlock()->getParent();
+        std::vector<std::string> names;
+        names.reserve(n);  // vars[i].variable.id points into these strings
+        std::vector<eshkol_ast_t> vars(n);
+        for (uint64_t i = 0; i < n; ++i) {
+            Value* v = codegenAST(&op->call_op.variables[i]);
+            if (!v) return nullptr;
+            v = ensureTaggedValue(v);
+            IRBuilderBase::InsertPoint saved = builder->saveIP();
+            builder->SetInsertPoint(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+            AllocaInst* slot = builder->CreateAlloca(tagged_value_type, nullptr, "act_arg");
+            builder->restoreIP(saved);
+            builder->CreateStore(v, slot);
+            names.push_back(std::string("__act_arg_") + std::to_string(name_uniquifier_++));
+            symbol_table[names.back()] = slot;
+            vars[i].type = ESHKOL_VAR;
+            vars[i].variable.id = const_cast<char*>(names.back().c_str());
+            vars[i].variable.data = nullptr;
+        }
+        struct Unbind {
+            std::unordered_map<std::string, Value*>& table;
+            std::vector<std::string>& names;
+            ~Unbind() { for (auto& nm : names) table.erase(nm); }
+        } unbind{symbol_table, names};
+
+        Value* arg = builder->CreateLoad(tagged_value_type, symbol_table[names[0]]);
+        Value* is_scalar = emitActivationOperandIsScalar(arg);
+        BasicBlock* scalar_bb = BasicBlock::Create(*context, std::string(spec.name) + "_scalar", fn);
+        BasicBlock* tensor_bb = BasicBlock::Create(*context, std::string(spec.name) + "_tensor", fn);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, std::string(spec.name) + "_merge", fn);
+        builder->CreateCondBr(is_scalar, scalar_bb, tensor_bb);
+
+        eshkol_ast_t* x = eshkol_make_var_ast(names[0].c_str());
+        eshkol_ast_t* p = n > 1 ? eshkol_make_var_ast(names[1].c_str()) : actNum(spec.param_default);
+
+        builder->SetInsertPoint(tensor_bb);
+        Value* tensor_result;
+        if (n > 1 && spec.tensor_with_param) {
+            tensor_result = codegenAST(spec.tensor_with_param(x, p));
+        } else {
+            eshkol_operations_t bound = *op;
+            bound.call_op.variables = vars.data();
+            tensor_result = (tensor_.get()->*spec.tensor_fn)(&bound);
+        }
+        if (!tensor_result) return nullptr;
+        tensor_result = ensureTaggedValue(tensor_result);
+        builder->CreateBr(merge_bb);
+        BasicBlock* tensor_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(scalar_bb);
+        // An activation's value is inexact, as every tensor element and the
+        // relu/sigmoid scalar lowering are: (softplus 30) is 30.0, not the exact
+        // operand its threshold branch returns. Multiplying by 1.0 keeps every
+        // differentiation carrier intact.
+        Value* scalar_result = codegenAST(actCall("*", {actNum(1.0), spec.scalar(x, p)}));
+        if (!scalar_result) return nullptr;
+        scalar_result = ensureTaggedValue(scalar_result);
+        builder->CreateBr(merge_bb);
+        BasicBlock* scalar_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(merge_bb);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 2, std::string(spec.name) + "_result");
+        result->addIncoming(tensor_result, tensor_exit);
+        result->addIncoming(scalar_result, scalar_exit);
+        return result;
+    }
+
+    // One element loader for the multi-sequence iterators (vector-map,
+    // vector-for-each): the i-th element of a source as a tagged value. A
+    // Scheme vector slot is the value; a tensor slot is a double bit pattern,
+    // unless the carrier was promoted by a non-numeric store or is a dual
+    // tensor (ADR-0020), where the slot is already a tagged value.
+    Value* loadSequenceElement(Value* is_tensor, Value* tagged_slots,
+                               Value* elems, Value* base, Value* idx) {
+        Function* f = builder->GetInsertBlock()->getParent();
+        BasicBlock* tb = BasicBlock::Create(*context, "velt_t", f);
+        BasicBlock* boxed_bb = BasicBlock::Create(*context, "velt_boxed", f);
+        BasicBlock* numeric_bb = BasicBlock::Create(*context, "velt_numeric", f);
+        BasicBlock* vb = BasicBlock::Create(*context, "velt_v", f);
+        BasicBlock* mb = BasicBlock::Create(*context, "velt_m", f);
+        builder->CreateCondBr(is_tensor, tb, vb);
+
+        builder->SetInsertPoint(tb);
+        builder->CreateCondBr(tagged_slots, boxed_bb, numeric_bb);
+
+        builder->SetInsertPoint(boxed_bb);
+        Value* boxed = builder->CreateLoad(tagged_value_type,
+            builder->CreateGEP(tagged_value_type, elems, idx));
+        builder->CreateBr(mb);
+        BasicBlock* boxed_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(numeric_bb);
+        Value* ei = builder->CreateLoad(int64_type, builder->CreateGEP(int64_type, elems, idx));
+        Value* et = packDoubleToTaggedValue(builder->CreateBitCast(ei, double_type));
+        builder->CreateBr(mb);
+        BasicBlock* numeric_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(vb);
+        Value* ev = builder->CreateLoad(tagged_value_type,
+            builder->CreateGEP(tagged_value_type, base, idx));
+        builder->CreateBr(mb);
+        BasicBlock* vb_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(mb);
+        PHINode* phi = builder->CreatePHI(tagged_value_type, 3);
+        phi->addIncoming(boxed, boxed_exit);
+        phi->addIncoming(et, numeric_exit);
+        phi->addIncoming(ev, vb_exit);
+        return phi;
     }
 
     // Polymorphic abs - handles AD/dual, then delegates to ArithmeticCodegen::abs
@@ -43333,7 +43622,7 @@ private:
             {"rmsprop-step", {4}}, {"rotary-embedding", {3}}, {"scaled-dot-attention", {3}},
             {"selu", {1}}, {"sgd-step", {3}}, {"sigmoid", {1}},
             {"silu", {1}}, {"slice", {3}}, {"smooth-l1-loss", {2}},
-            {"softmax", {1}}, {"softplus", {1}}, {"squeeze", {1}},
+            {"softmax", {1}}, {"softplus", {1}}, {"squeeze", {1}}, {"swish", {1}},
             {"stack", {3}}, {"step-decay-lr", {4}}, {"tensor->vector", {1}},
             {"tensor-abs", {1}}, {"tensor-add", {2}}, {"tensor-argmax", {1}},
             {"tensor-argmin", {1}}, {"tensor-cholesky", {1}}, {"tensor-corrcoef", {2}},

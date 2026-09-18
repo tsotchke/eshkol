@@ -311,4 +311,4 @@ The LLVM and VM backends share the same language semantics but use independent v
 
 ---
 
-*Eshkol v1.3.5-evolve is a production compiler integrating automatic differentiation, deterministic memory management, homoiconic native code, GPU acceleration, cognitive computing primitives, and a dual backend architecture (LLVM + bytecode VM). The codebase ships with 1,052 built-in functions across a 1,115-construct declared language surface, an ASan/UBSan CI lane with a proved-armed leak detector, and 46 test sub-suites passing end-to-end.*
+*Eshkol v1.3.5-evolve is a production compiler integrating automatic differentiation, deterministic memory management, homoiconic native code, GPU acceleration, cognitive computing primitives, and a dual backend architecture (LLVM + bytecode VM). The codebase ships with 1,053 built-in functions across a 1,115-construct declared language surface, an ASan/UBSan CI lane with a proved-armed leak detector, and 46 test sub-suites passing end-to-end.*

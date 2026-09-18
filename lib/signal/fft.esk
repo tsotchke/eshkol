@@ -22,10 +22,14 @@
 (define (fft x)
   (let ((n (vector-length x)))
     (if (<= n 1)
-        ;; Base case: single element → wrap as complex
+        ;; Base case: single element → wrap as complex. Only a REAL element is
+        ;; wrapped: `number?` is also true of a complex value, and rebuilding a
+        ;; complex as the real part of a new rectangular number discards it, so
+        ;; every transform of a complex input (the second half of `ifft`, and
+        ;; therefore `fast-convolve`) came out all zeros.
         (let ((result (make-vector 1 (make-rectangular 0.0 0.0))))
           (vector-set! result 0
-            (if (number? (vref x 0))
+            (if (real? (vref x 0))
                 (make-rectangular (vref x 0) 0.0)
                 (vref x 0)))
           result)

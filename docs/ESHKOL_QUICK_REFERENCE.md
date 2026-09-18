@@ -1,6 +1,6 @@
 # Eshkol Quick Reference Card
 
-**v1.3.5** -- 1,052 built-in functions
+**v1.3.5** -- 1,053 built-in functions
 
 ## Basics
 
@@ -399,8 +399,10 @@ Everything above answers identically on the native engine and the bytecode VM.
 
 ;; Knowledge bases
 (define kb (make-kb))
-(kb-assert! kb (make-fact 'parent (list 'alice 'bob)))
-(kb-query kb 'parent)          ;; -> list of matching facts
+(kb-assert! kb (make-fact 'parent 'alice 'bob))
+(kb-query kb (make-fact 'parent 'alice ?child))
+                               ;; -> ({?child -> bob}): one substitution per matching fact
+(walk ?child (car (kb-query kb '(parent alice ?child))))  ;; -> bob
 (kb? kb)                       ;; -> #t
 (fact? f)                      ;; -> #t
 

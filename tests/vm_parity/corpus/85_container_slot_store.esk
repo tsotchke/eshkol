@@ -1,10 +1,10 @@
 ; SW-179 / ADR-0016: one store boundary for every container slot.
 ; This is the subset on which the VM and the native engines must agree. The VM
 ; materialises a numeric #(...) literal as a Scheme vector and native as a
-; tensor, so only real-number stores into a literal are compared here (both
-; display the stored number identically); the refusal of a non-number by a
-; tensor slot is pinned natively in tests/core/container_slot_store_test.esk
-; and, for a constructed tensor, at the end of this file on both engines.
+; tensor; a non-numeric store promotes the native carrier to the same general
+; boxed representation (ADR-0020), so both engines agree on every program here.
+; A tensor built by `tensor` stays numeric on both, and the refusal of a
+; non-number by a real tensor slot is checked at the end of this file.
 ; vector-fill! has no VM binding (tests/vm_parity/PARITY.tsv records the gap),
 ; so it is swept natively only.
 
@@ -69,8 +69,54 @@
 (display ct) (newline)
 (tensor-set! ct 0 9)
 (display ct) (newline)
-(display (guard (e (#t 'refused)) (vector-set! ct 0 "x") 'stored)) (newline)
+; The tensor API keeps a tensor numeric on both engines.
 (display (guard (e (#t 'refused)) (tensor-set! ct 0 "x") 'stored)) (newline)
-(display (guard (e (#t 'refused)) (vector-set! ct 0 #t) 'stored)) (newline)
 (display (guard (e (#t 'refused)) (vector-set! ct 3 1) 'stored)) (newline)
 (display ct) (newline)
+; A non-numeric store through the VECTOR api promotes the carrier natively
+; (ADR-0020); the VM has no tensor-to-vector promotion and raises instead, so
+; that case is checked per engine in tests/core/container_slot_store_test.esk
+; and tests/vm/tensor_slot_store_test.esk rather than here.
+
+; ADR-0020: a non-numeric store promotes a numeric literal's carrier; the
+; result is the heterogeneous vector the VM has all along.
+(define ps #(10 20 30))
+(vector-set! ps 0 "x")
+(display ps) (newline)
+(display (vector-ref ps 0)) (newline)
+(display (vector-ref ps 2)) (newline)
+(display (vector-length ps)) (newline)
+(display (vector? ps)) (newline)
+(display (tensor? ps)) (newline)
+(display (vector->list ps)) (newline)
+(display (vector-copy ps)) (newline)
+(display (vector-append ps (vector 1))) (newline)
+(display (vector-map (lambda (e) e) ps)) (newline)
+(vector-for-each (lambda (e) (display e) (display ",")) ps) (newline)
+
+(define pb #(1 2))
+(vector-set! pb 1 #t)
+(display pb) (newline)
+(display (vector-ref pb 1)) (newline)
+
+(define pp #(1 2))
+(vector-set! pp 0 (list 7 8))
+(display pp) (newline)
+(display (car (vector-ref pp 0))) (newline)
+
+(define pn #(1 2))
+(vector-set! pn 0 (vector 7 8))
+(display pn) (newline)
+(display (vector-ref (vector-ref pn 0) 1)) (newline)
+(vector-copy! pn 1 (vector "s"))
+(display pn) (newline)
+(vector-set! pn 1 2.5)
+(display pn) (newline)
+
+; a character and a symbol through the same boundary
+(define pc #(1 2 3))
+(vector-set! pc 1 #\a)
+(vector-set! pc 2 'sym)
+(display pc) (newline)
+(display (vector-ref pc 1)) (newline)
+(display (vector-ref pc 2)) (newline)

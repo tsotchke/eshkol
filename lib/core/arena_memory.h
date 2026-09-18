@@ -914,6 +914,10 @@ int32_t eshkol_sequence_slot_store(const eshkol_tagged_value_t* sequence,
 // Store one value at a linear index of a tensor object (payload pointer).
 int32_t eshkol_tensor_slot_store(void* tensor, int64_t index,
                                  const eshkol_tagged_value_t* value);
+// Same, for the vector API: a value the numeric carrier cannot hold promotes
+// the carrier to the boxed representation instead of being refused.
+int32_t eshkol_vector_slot_store(void* tensor, int64_t index,
+                                 const eshkol_tagged_value_t* value);
 // Store one value into every slot of a vector or tensor operand.
 int32_t eshkol_sequence_fill(const eshkol_tagged_value_t* sequence,
                              const eshkol_tagged_value_t* value);
@@ -1007,8 +1011,23 @@ typedef enum eshkol_tensor_dtype {
     // during the Hessian's forward-over-forward sweep and consumed by the
     // dual-aware matmul/tensor-sum paths so second-order terms are not dropped.
     // Well above the real precision codes so no numeric kernel misreads it.
-    ESHKOL_TENSOR_DTYPE_DUAL = 64  // elements are tagged DUAL_NUMBER values
+    ESHKOL_TENSOR_DTYPE_DUAL = 64, // elements are tagged DUAL_NUMBER values
+    // ADR-0020: a numeric `#(...)` literal materialises as a tensor, and R7RS
+    // vectors are heterogeneous, so storing a non-numeric value through the
+    // vector API promotes the carrier in place: `elements` becomes an array of
+    // 16-byte tagged values and the dtype records that. The descriptor keeps
+    // its address, so every alias sees the promotion. A promoted carrier is no
+    // longer a numeric tensor: `tensor?` answers #f for it and every tensor
+    // kernel refuses it through the operand check.
+    ESHKOL_TENSOR_DTYPE_BOXED = 65
 } eshkol_tensor_dtype_t;
+
+// True when `elements` holds 16-byte tagged values rather than f64 bit
+// patterns. Both tagged dtypes are laid out the same way; they differ only in
+// what the values are allowed to be.
+static inline int eshkol_tensor_dtype_is_tagged(uint64_t dtype) {
+    return dtype == ESHKOL_TENSOR_DTYPE_DUAL || dtype == ESHKOL_TENSOR_DTYPE_BOXED;
+}
 
 // Tensor structure for multi-dimensional arrays
 // Must match LLVM TypeSystem tensor_type layout:

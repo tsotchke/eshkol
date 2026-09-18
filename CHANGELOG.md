@@ -1334,6 +1334,48 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **Every ML activation takes a number or a tensor, from one dispatch point
+  (#705).** `relu` and `sigmoid` accepted either; `softplus`, `gelu`,
+  `leaky-relu`, `silu`, `elu`, `selu`, `mish`, `hard-swish`, `hard-sigmoid` and
+  `celu` were tensor-only and raised on a number, against the documented
+  contract. One lowering now serves the family: the operand is evaluated once
+  and classified at run time, a tensor going to the tensor kernel and a number
+  or scalar differentiation carrier to the activation's own formula over the
+  differentiable scalar primitives — the same formula, constants and stability
+  threshold the tensor kernel uses, so the two agree elementwise and the scalar
+  form differentiates in every mode with no rule of its own. The classification
+  never consults the static type, which narrows an unannotated parameter to
+  `Tensor`. `swish` joins the family as a builtin (`x * sigmoid(beta*x)`;
+  beta 1 is `silu`), taking the surface to 1,053 builtins; a user or library
+  definition of any of these names still shadows the builtin. An activation's
+  scalar value is inexact, as every tensor element is. Tutorial 01's original
+  claim and examples are restored and executed by the documentation example
+  gate. Test: `tests/ml/scalar_activations_test.esk`.
+
+- **`kb-query`'s documented result is its real one (#705).**
+  `docs/ESHKOL_QUICK_REFERENCE.md` said `kb-query` returned the matching facts;
+  `docs/API_REFERENCE.md`, the language specification and every engine return
+  one substitution per unifying fact. The quick reference is corrected, with
+  the documented pattern forms in its example. Test:
+  `tests/logic/kb_query_substitutions_test.esk` on JIT, AOT and the VM.
+
+- **A non-numeric store into a `#(...)` literal promotes the carrier instead of
+  raising, so the engines agree (ledger SW-185, ADR-0020 amendment 1).** A
+  numeric `#(...)` literal materialises as a tensor natively and as a
+  heterogeneous vector on the bytecode VM, so `(vector-set! v 0 "x")` raised
+  natively and stored on the VM. R7RS vectors hold any object, so the vector
+  API now widens the carrier in place: the descriptor gets a tagged-value
+  element buffer under a new boxed dtype -- the shape the dual-tensor carrier
+  already used -- and every alias of the vector sees the promotion. The tensor
+  API (`tensor-set!`) still keeps a tensor numeric, a promoted carrier answers
+  `tensor?` with `#f`, and every tensor kernel refuses it at the one operand
+  check. `vector-ref`, `vector->list`, `vector-copy`, `vector-append`,
+  `vector-map`, `vector-for-each`, `display`, `equal?` and region evacuation
+  all read the new representation; the two copies of the iterator element
+  loader became one. `tests/vm_parity/corpus/85_container_slot_store.esk`
+  proves native and VM agree for a string, boolean, pair, character, symbol and
+  nested vector. (#705)
+
 - **One owner for AST string payloads, one spelling for recorded source paths
   (ADR-0021).** The sanitizer build of the standard library stopped on
   LeakSanitizer: module-private renaming replaced identifiers with `new[]`
@@ -1379,6 +1421,18 @@ the source changes; the verification record for the tagged commit is the
   `tests/vm_parity/corpus/85_container_slot_store.esk`, and tutorial 11's
   element-mutation example, which now runs unmarked in the documentation
   example gate. (#701)
+- **`signal.fft` transforms complex input on every engine; `fast-convolve`
+  agrees with `convolve` (ledger SW-184).** The module's length-1 base case
+  wrapped any number as `(make-rectangular x 0.0)`, and a complex element is a
+  number, so every transform of a complex input came out all zeros. The module
+  is what the bytecode VM, the precompiled stdlib and an uncached
+  `eshkol-run -r` that requires `signal.fft` run, so on those paths
+  `(ifft (fft x))` returned zeros and so did `fast-convolve`; the native
+  builtin used by AOT and the cached run path was unaffected. The base case
+  now wraps only a real element. `fast-convolve`'s known-limitation text is
+  removed; the defect had been attributed to a shared-library code-generation
+  problem, which it was not. Test: `tests/signal/fft_complex_input_test.esk`
+  on the cached run path, the in-process JIT, AOT and the VM. (#705)
 - **Every AD operator evaluates its point, and a list cell holds any value.**
   `(gradient f a b ...)` is parsed as the vector literal `#(a b ...)` it
   stands for, so a point given as variables, parameters, loop variables or

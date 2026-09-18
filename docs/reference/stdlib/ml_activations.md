@@ -5,6 +5,15 @@
 
 Two families: **scalar** activations that operate on a single number (`relu-scalar`, `sigmoid-scalar`, `tanh-scalar`, `softplus-scalar`), and **tensor** activations/normalizers that operate on a tensor written `#(...)` (`silu`, `swish`, `mish`, `normalize-minmax`, `normalize-zscore`).
 
+> **The compiler's own activations already take either.** `relu`, `sigmoid`,
+> `softplus`, `gelu`, `leaky-relu`, `silu`, `swish`, `elu`, `selu`, `mish`,
+> `hard-swish`, `hard-sigmoid` and `celu` are builtins that accept a number or
+> a tensor and return the same kind, with no module required — see
+> [API_REFERENCE.md](../../API_REFERENCE.md#activation-functions). This module
+> keeps its own names because its definitions shadow the builtins when it is
+> required: `relu-scalar` and friends are plain Scheme, and its `silu`, `swish`
+> and `mish` take a tensor (`swish` requires its `beta`).
+
 ## Scalar activations
 
 ### `(relu-scalar x)`
@@ -135,4 +144,8 @@ see [its entry above](#mish-tensor).
 
 ### Tensor activations require tensor input
 
-Like the rest of the tensor stack, `silu`/`swish`/`normalize-*` assume a `HEAP_SUBTYPE_TENSOR` operand; passing a heterogeneous vector or non-tensor can misread memory (tracked as ESH-0069). Use `#(...)` literals.
+`silu`/`swish`/`normalize-*` **as defined in this module** assume a
+`HEAP_SUBTYPE_TENSOR` operand; passing a heterogeneous vector or a non-tensor
+can misread memory (tracked as ESH-0069). Use `#(...)` literals, or call the
+builtins of the same name without requiring this module — those classify their
+operand and raise a catchable type error instead.

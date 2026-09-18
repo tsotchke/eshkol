@@ -112,6 +112,8 @@ bool tagged_real_to_double(const eshkol_tagged_value_t& value, double* out) {
 bool tensor_slot_accepts(const eshkol_tensor_t* tensor,
                          const eshkol_tagged_value_t& value) {
     const uint8_t type = base_type(value.type);
+    // A promoted carrier holds any value, like the Scheme vector it now is.
+    if (tensor->dtype == ESHKOL_TENSOR_DTYPE_BOXED) return true;
     if (tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
         double ignored = 0.0;
         return type == ESHKOL_VALUE_DUAL_NUMBER ||
@@ -122,8 +124,41 @@ bool tensor_slot_accepts(const eshkol_tensor_t* tensor,
     return tensor->dtype == ESHKOL_TENSOR_DTYPE_F64 && is_ad_node(value, type);
 }
 
+// Promote a numeric carrier to the general boxed representation, in place.
+//
+// ADR-0020. A numeric `#(...)` literal materialises as a tensor natively while
+// the bytecode VM materialises it as a Scheme vector, and R7RS vectors are
+// heterogeneous. Rather than refuse a string where the VM accepts one, the
+// vector API widens the carrier: a fresh tagged-value buffer replaces the f64
+// buffer, every existing element is carried over as the number it was, and the
+// dtype records the new representation. The descriptor itself keeps its
+// address, so every alias of the vector sees the promotion.
+//
+// The promoted carrier is no longer a numeric tensor: `tensor?` answers #f and
+// every tensor kernel refuses it through the operand check, which is why the
+// tensor API (`tensor-set!`) refuses the store instead of promoting.
+bool promote_tensor_to_boxed(eshkol_tensor_t* tensor) {
+    if (tensor->dtype == ESHKOL_TENSOR_DTYPE_BOXED) return true;
+    if (tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) return false;
+    const uint64_t n = tensor->total_elements;
+    auto* slots = static_cast<eshkol_tagged_value_t*>(
+        arena_allocate(get_global_arena(), (size_t)n * sizeof(eshkol_tagged_value_t)));
+    if (!slots) return false;
+    const auto* numeric = reinterpret_cast<const double*>(tensor->elements);
+    for (uint64_t i = 0; i < n; ++i) slots[i] = tagged_double(numeric[i]);
+    tensor->elements = reinterpret_cast<int64_t*>(slots);
+    tensor->dtype = ESHKOL_TENSOR_DTYPE_BOXED;
+    return true;
+}
+
 void encode_tensor_slot(eshkol_tensor_t* tensor, int64_t index,
                         const eshkol_tagged_value_t& value) {
+    if (tensor->dtype == ESHKOL_TENSOR_DTYPE_BOXED) {
+        auto* slots = reinterpret_cast<eshkol_tagged_value_t*>(tensor->elements);
+        slots[index] = value;
+        eshkol_region_write_barrier_range(tensor, slots + index, 1);
+        return;
+    }
     if (tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
         auto* slots = reinterpret_cast<eshkol_tagged_value_t*>(tensor->elements);
         double numeric = 0.0;
@@ -196,9 +231,29 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
     if (dst_subtype == HEAP_SUBTYPE_TENSOR && src_subtype == HEAP_SUBTYPE_TENSOR) {
         auto* dst_tensor = reinterpret_cast<eshkol_tensor_t*>(dst);
         const auto* src_tensor = reinterpret_cast<const eshkol_tensor_t*>(src);
-        const bool dst_dual = dst_tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL;
-        const bool src_dual = src_tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL;
-        if (dst_dual != src_dual) return ESHKOL_SLOT_STORE_VALUE;
+        // A boxed source carries values a numeric destination cannot hold, so
+        // the destination is promoted first (ADR-0020).
+        if (src_tensor->dtype == ESHKOL_TENSOR_DTYPE_BOXED &&
+            dst_tensor->dtype != ESHKOL_TENSOR_DTYPE_BOXED &&
+            !promote_tensor_to_boxed(dst_tensor)) {
+            return ESHKOL_SLOT_STORE_VALUE;
+        }
+        const bool dst_tagged = eshkol_tensor_dtype_is_tagged(dst_tensor->dtype);
+        const bool src_tagged = eshkol_tensor_dtype_is_tagged(src_tensor->dtype);
+        if (dst_tagged != src_tagged) {
+            // A numeric source into a promoted destination: carry each element
+            // over as the number it is.
+            if (dst_tagged) {
+                auto* dst_values = reinterpret_cast<eshkol_tagged_value_t*>(dst_tensor->elements);
+                const auto* src_values = reinterpret_cast<const double*>(src_tensor->elements);
+                for (int64_t i = 0; i < count; ++i)
+                    dst_values[at + i] = tagged_double(src_values[start + i]);
+                eshkol_region_write_barrier_range(dst, dst_values + at, (uint64_t)count);
+                return ESHKOL_SLOT_STORE_OK;
+            }
+            return ESHKOL_SLOT_STORE_VALUE;
+        }
+        const bool dst_dual = dst_tagged;
         if (dst_dual) {
             auto* dst_values = reinterpret_cast<eshkol_tagged_value_t*>(dst_tensor->elements) + at;
             const auto* src_values =
@@ -226,7 +281,7 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
     if (dst_subtype == HEAP_SUBTYPE_VECTOR) {
         auto* dst_values = vector_elements(dst) + at;
         const auto* src_tensor = reinterpret_cast<const eshkol_tensor_t*>(src);
-        if (src_tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
+        if (eshkol_tensor_dtype_is_tagged(src_tensor->dtype)) {
             const auto* src_values =
                 reinterpret_cast<const eshkol_tagged_value_t*>(src_tensor->elements) + start;
             std::memcpy(dst_values, src_values,
@@ -252,7 +307,14 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
         return ESHKOL_SLOT_STORE_OK;
     }
     // Validate the complete source range before mutating the destination so a
-    // refused value cannot leave a partially copied tensor behind.
+    // refused value cannot leave a partially copied tensor behind; a value the
+    // numeric carrier cannot hold promotes it once (ADR-0020).
+    for (int64_t i = 0; i < count; ++i) {
+        if (!tensor_slot_accepts(dst_tensor, src_values[i])) {
+            if (!promote_tensor_to_boxed(dst_tensor)) return ESHKOL_SLOT_STORE_VALUE;
+            break;
+        }
+    }
     for (int64_t i = 0; i < count; ++i) {
         if (!tensor_slot_accepts(dst_tensor, src_values[i])) {
             return ESHKOL_SLOT_STORE_VALUE;
@@ -264,8 +326,10 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
     return ESHKOL_SLOT_STORE_OK;
 }
 
-extern "C" int32_t eshkol_tensor_slot_store(void* tensor_object, int64_t index,
-                                             const eshkol_tagged_value_t* value) {
+// promote == false is the tensor API: a tensor stays a numeric carrier, so a
+// value with no numeric representation is refused rather than widening it.
+static int32_t tensor_slot_store(void* tensor_object, int64_t index,
+                                 const eshkol_tagged_value_t* value, bool promote) {
     if (!tensor_object || !value) return ESHKOL_SLOT_STORE_NULL;
     if (subtype_of(tensor_object) != HEAP_SUBTYPE_TENSOR) {
         return ESHKOL_SLOT_STORE_CONTAINER;
@@ -273,9 +337,23 @@ extern "C" int32_t eshkol_tensor_slot_store(void* tensor_object, int64_t index,
     auto* tensor = reinterpret_cast<eshkol_tensor_t*>(tensor_object);
     const int64_t length = sequence_length(tensor_object, HEAP_SUBTYPE_TENSOR);
     if (index < 0 || index >= length) return ESHKOL_SLOT_STORE_BOUNDS;
-    if (!tensor_slot_accepts(tensor, *value)) return ESHKOL_SLOT_STORE_VALUE;
+    if (!tensor_slot_accepts(tensor, *value)) {
+        if (!promote || !promote_tensor_to_boxed(tensor)) return ESHKOL_SLOT_STORE_VALUE;
+    }
     encode_tensor_slot(tensor, index, *value);
     return ESHKOL_SLOT_STORE_OK;
+}
+
+extern "C" int32_t eshkol_tensor_slot_store(void* tensor_object, int64_t index,
+                                             const eshkol_tagged_value_t* value) {
+    return tensor_slot_store(tensor_object, index, value, /*promote=*/false);
+}
+
+// The vector API's tensor path: a value the numeric carrier cannot hold
+// promotes it (ADR-0020) instead of being refused.
+extern "C" int32_t eshkol_vector_slot_store(void* tensor_object, int64_t index,
+                                             const eshkol_tagged_value_t* value) {
+    return tensor_slot_store(tensor_object, index, value, /*promote=*/true);
 }
 
 extern "C" int32_t eshkol_sequence_slot_store(const eshkol_tagged_value_t* sequence,
@@ -286,7 +364,7 @@ extern "C" int32_t eshkol_sequence_slot_store(const eshkol_tagged_value_t* seque
     void* object = sequence_object(sequence, &subtype);
     if (!object) return ESHKOL_SLOT_STORE_CONTAINER;
     if (subtype == HEAP_SUBTYPE_TENSOR) {
-        return eshkol_tensor_slot_store(object, index, value);
+        return tensor_slot_store(object, index, value, /*promote=*/true);
     }
     const int64_t length = sequence_length(object, subtype);
     if (index < 0 || index >= length) return ESHKOL_SLOT_STORE_BOUNDS;
@@ -306,7 +384,9 @@ extern "C" int32_t eshkol_sequence_fill(const eshkol_tagged_value_t* sequence,
     if (length < 0) return ESHKOL_SLOT_STORE_BOUNDS;
     if (subtype == HEAP_SUBTYPE_TENSOR) {
         auto* tensor = reinterpret_cast<eshkol_tensor_t*>(object);
-        if (!tensor_slot_accepts(tensor, *value)) return ESHKOL_SLOT_STORE_VALUE;
+        if (!tensor_slot_accepts(tensor, *value) && !promote_tensor_to_boxed(tensor)) {
+            return ESHKOL_SLOT_STORE_VALUE;
+        }
         for (int64_t i = 0; i < length; ++i) encode_tensor_slot(tensor, i, *value);
         return ESHKOL_SLOT_STORE_OK;
     }

@@ -5,7 +5,7 @@
 This matrix lists every implemented and planned feature in the Eshkol ecosystem. Feature implementation status is recorded here; release verification is recorded separately, in the "Final verification" section of [RELEASE_NOTES.md](../RELEASE_NOTES.md), and is bound to the tagged commit.
 
 **Language surface count (canonical):** the declared language surface is
-**1,115** constructs — 1,052 builtins, 116 special forms, 113 AST ops and 16
+**1,115** constructs — 1,053 builtins, 116 special forms, 113 AST ops and 16
 prelude entries, deduplicated by name with internal-only helpers excluded.
 Older cited figures — 1,107, 1,091 and 1,106 here and in
 `docs/COMPILER_ROADMAP.md`, 1,078 in `.icc/architecture-model.yaml`,
@@ -15,7 +15,7 @@ gate has ratcheted upward since. The "1,058 in ADR-0011 §2.1" citation from
 the previous reconciliation pass was itself wrong: ADR-0011 is the
 guest-collector adapter design and contains no surface-count section — there
 is no §2.1 that states 1,058. The only correct citation for this number is
-the coverage manifest itself: `tests/coverage/language_surface.json` (1,052
+the coverage manifest itself: `tests/coverage/language_surface.json` (1,053
 builtins + 116 special forms + 113 AST ops + 16 prelude), deduplicated by
 name and with internal-only helpers excluded exactly the way
 `scripts/language_coverage.py` already deduplicates it to compute the
@@ -491,7 +491,7 @@ manifest again.
 | Debugger | Planned | Interactive debugging | Planned |
 | Profiler | Planned | Performance analysis | Planned |
 | **Documentation** |
-| API Reference | Yes | Complete | 1,052 builtins across a 1,115-construct declared surface (canonical count, see below) |
+| API Reference | Yes | Complete | 1,053 builtins across a 1,115-construct declared surface (canonical count, see below) |
 | Quickstart Guide | Yes | Tutorial | 15-minute intro |
 | Architecture Guide | Yes | Internals | System design |
 | Type System Guide | Yes | HoTT types | Dependent types |
@@ -847,7 +847,7 @@ are not yet scheduled to a specific release.
 
 ### Production-Ready (v1.1)
 
-- Core language (116 special forms, 1,052 builtins — 1,115-construct canonical surface, see "Language surface count" below)
+- Core language (116 special forms, 1,053 builtins — 1,115-construct canonical surface, see "Language surface count" below)
 - Automatic differentiation (3 modes)
 - Tensor operations (30+ functions)
 - List processing (50+ operations)

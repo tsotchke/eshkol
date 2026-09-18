@@ -127,7 +127,8 @@ void CodegenContext::emitSequenceSlotStore(llvm::Value* sequence_tagged,
 }
 
 void CodegenContext::emitTensorSlotStore(llvm::Value* tensor_ptr, llvm::Value* index,
-                                         llvm::Value* tagged_value, const char* who) {
+                                         llvm::Value* tagged_value, const char* who,
+                                         bool promote_on_non_numeric) {
     llvm::Function* fn = builder_.GetInsertBlock()->getParent();
     llvm::BasicBlock* inline_bb = llvm::BasicBlock::Create(context_, "tslot_inline", fn);
     llvm::BasicBlock* runtime_bb = llvm::BasicBlock::Create(context_, "tslot_runtime", fn);
@@ -154,8 +155,10 @@ void CodegenContext::emitTensorSlotStore(llvm::Value* tensor_ptr, llvm::Value* i
 
     builder_.SetInsertPoint(runtime_bb);
     llvm::Value* val_slot = spillTaggedToEntrySlot(tagged_value, "tslot_val");
+    // The vector API promotes the carrier for a value it cannot hold; the
+    // tensor API keeps the carrier numeric and refuses (ADR-0020).
     llvm::FunctionCallee store = module_.getOrInsertFunction(
-        "eshkol_tensor_slot_store",
+        promote_on_non_numeric ? "eshkol_vector_slot_store" : "eshkol_tensor_slot_store",
         llvm::FunctionType::get(int32Type(), {ptrType(), int64Type(), ptrType()}, false));
     llvm::Value* status = builder_.CreateCall(store, {tensor_ptr, index, val_slot},
                                               "tslot_status");

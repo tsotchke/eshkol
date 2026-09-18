@@ -29,7 +29,7 @@ pages and lets them fan out to their siblings.
 - [Language Guide](ESHKOL_LANGUAGE_GUIDE.md) — tutorial-style introduction to the language
 - [Language Reference index](reference/language/INDEX.md) — complete, example-verified function and syntax reference (binding/mutation, control flow, error handling, pattern matching, modules, continuations, and more)
 - [Complete Language Specification](COMPLETE_LANGUAGE_SPECIFICATION.md) — full technical specification, v1.3.5-evolve
-- [Quick Reference](ESHKOL_QUICK_REFERENCE.md) — one-page cheat sheet over the 1,052-builtin surface
+- [Quick Reference](ESHKOL_QUICK_REFERENCE.md) — one-page cheat sheet over the 1,053-builtin surface
 - [API Reference](API_REFERENCE.md) — comprehensive function documentation
 - [Gradual typing guide](guide/GRADUAL_TYPING.md) — annotations, what is checked where, function types, branch joins, loop typing, reading a diagnostic
 - [Standard Library API index](reference/stdlib/INDEX.md) — module-by-function map of the standard library (63 modules)
