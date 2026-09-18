@@ -39,6 +39,14 @@
         "run-only": 1,
         "skip": 3
       }
+    },
+    "upgrading": {
+      "marked": {},
+      "marked_total": {
+        "known-defect": 0,
+        "run-only": 0,
+        "skip": 0
+      }
     }
   }
 }
