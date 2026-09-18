@@ -2,13 +2,13 @@ id: SW-183
 bucket: LOUD-ERROR
 subtag: structural
 family: ad/closure-capture-through-map
-status: open
-needs_decision: false
+status: fixed
+closed_at: "9990be69"
 title: "a derivative through `map` with a lambda that captures the differentiated variable is 0, with `Invalid type for int64 storage value: 6` on stderr and exit status 0"
 repro: >-
   (define (f a) (fold-left + 0.0 (map (lambda (x) (* a x)) '(1.0 2.0 3.0))))
   (display (derivative f 2.0))
-observed: >-
+observed_before: >-
   Prints `0` after three lines of "ERROR: Invalid type for int64 storage
   value: 6" on stderr, exit 0, under `eshkol-run -r` and from an AOT binary.
   The same sum written as a named-let loop over the list prints 6, and
@@ -16,6 +16,28 @@ observed: >-
   list `map` builds from the capturing lambda, not in fold-left.
 correct: >-
   6.
+root_cause: >-
+  A cons slot is a tagged value, but emitted code never moved it as one.
+  codegenTaggedArenaConsCellFromTaggedValue branched at run time over storage
+  classes (null, double, pointer, else int64), and seven readers
+  (extractCarAsTaggedValue, extractCdrAsTaggedValue,
+  extractConsCarAsTaggedValue, CollectionCodegen::car and ::cdr, and two
+  copies inside codegenCompoundCarCdr) each branched over their own closed
+  list of representations and rebuilt the value through a typed runtime
+  accessor. A forward-mode dual number (type 6) and a complex number were in
+  none of the lists: arena_tagged_cons_set_int64 rejected the store with
+  "Invalid type for int64 storage value: 6" and left the slot empty, and
+  arena_tagged_cons_get_int64 answered 0. The lists had been extended one type
+  at a time as types were found missing (bool, char, logic variables) and had
+  drifted: the cdr reader never received the char arm, so
+  `(apply cdr (list (cons #\a #\b)))` answered 98, and the cdr builtin crashed
+  on a dual number in its slot.
+fix: >-
+  TaggedValueCodegen::loadConsSlot and storeConsSlot are now the only way
+  emitted code reads or writes a cons element, and they move the tagged value
+  whole (type, flags and payload). The builder and all seven readers delegate
+  to them, so the set of value types a list can hold is open and no future
+  type needs a case. About 900 lines of emitted dispatch are gone.
 evidence: >-
   Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
   arm64 macOS. Two tutorial programs compute their loss with this
@@ -29,6 +51,15 @@ evidence: >-
   5000 steps, reports "Fitted: 0x^2 + 0x + 0" with MSE 491.11 and exits 0,
   where an independent gradient-descent computation gives
   0.828x^2 + 0.900x + 1.026 with MSE 0.0183.
+  Fixed on fix/v135-ad-carriers, Release build, arm64 macOS:
+  tests/ad/differentiated_values_in_list_cells_test.esk (25 checks: the ledger
+  row, fold-right, reduce, apply, for-each, filter, two-list map, an internal
+  define, nested map, cons/car, cons/cdr, cadr, append/reverse/list-ref,
+  reverse mode, second order, least squares at scalar variables, a complex
+  number and a character kept by a list, and value-semantics controls) fails
+  on the base build (four derivatives 0, then a crash) and passes 25/25 on the
+  fix, cached and uncached JIT and AOT, with no diagnostic on stderr.
+  Tutorial 26 runs with its marker removed and matches on JIT and AOT.
 caught_by: [doc-example-gate]
 missed_by: [run_ad_oracle, doc_audit]
 notes: >-
