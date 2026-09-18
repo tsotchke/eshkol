@@ -7,7 +7,7 @@ sources: []
 ---
 # Resolution of the 2026-08-25 architecture and conformity audit
 
-- Source audit: `~/Desktop/Selene/ESHKOL-ARCHITECTURE-AUDIT-2026-08-25.md` (604 lines), subject `4bf871a0`
+- Source audit: the maintainer's private architecture audit of 2026-08-25 (604 lines), subject `4bf871a0`
 - This resolution: worktree `.worktrees/v135/conformity`, branch `docs/conformity-audit-resolution`, originally based on `origin/master` at `4bf871a0`, **rebased 2026-08-25 onto `73cc7cbb`** (PR #464 merged) after #464 landed and conflicted with this branch on the shared doc areas
 - Governing rule (maintainer): **docs are the blueprint and are not walked back.** A doc claim that describes a real, intended capability the code does not yet have is corrected only in the sense of being made *honest about present attainment* — the claim itself stays as tracked, targeted work. A doc is only softened/deleted when it is factually wrong about the past, or when it contradicts itself or another doc (in which case we resolve to the measured truth and cite it).
 - Overlap with PR #464 (`docs/v135-refresh`, merged as `73cc7cbb`): that PR fixed the FEATURE_MATRIX v1.2 Vulkan/Distributed row (d1), the `tensor_codegen.cpp` line-count claim (a9), and the ROADMAP.md version-timeline re-dating (a11). Those three items are marked **SKIPPED (see #464)** below, confirmed absent from this branch's diff against `origin/master` post-rebase, and not duplicated. Everything else in the audit's 50-row conformity table is resolved here. One genuine cross-PR disagreement surfaced during the rebase and was resolved by direct re-verification rather than by picking a side — see d4's updated entry below (ONNX export).
