@@ -188,7 +188,21 @@ def evaluate_release_facts(block: str) -> dict[str, str]:
 
 def release_fact_problems(source: str, tag: str, assets: list[str]) -> list[str]:
     problems: list[str] = []
-    before, block, after = split_release_facts(source)
+    try:
+        before, block, after = split_release_facts(source)
+    except SiteCheckError as exc:
+        # No single definition: every tag and download URL is hand-written.
+        problems.append(str(exc))
+        for m in sorted(set(TAG_RE.findall(source))):
+            problems.append(f"{SITE_SOURCE} hand-writes the release tag {m}"
+                            + ("" if m == tag else f", not the recorded {tag}"))
+        for m in DOWNLOAD_URL_RE.finditer(source):
+            if m.group("tag") != tag:
+                problems.append(f"{SITE_SOURCE} install URL {m.group(0)} is for {m.group('tag')}, not {tag}")
+        for m in re.finditer(r"What's new in (v[\w.\-]+)", source):
+            if m.group(1) != tag:
+                problems.append(f"{SITE_SOURCE} \"what's new\" heading names {m.group(1)}, not {tag}")
+        return problems
     facts = evaluate_release_facts(block)
     if facts["release-tag"] != tag:
         problems.append(
