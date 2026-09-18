@@ -164,8 +164,20 @@ class LanguageCoverageDeterminismTest(unittest.TestCase):
 
     @staticmethod
     def normalise(root, records):
-        prefix = str(root)
-        return sorted({record.replace(prefix, "<RUN>") for record in records})
+        # A record names its source by DISPLAY path (ADR-0021), which for a
+        # run directory inside the repository is repository-relative, so strip
+        # that spelling as well as the absolute one.
+        prefixes = [str(root)]
+        try:
+            prefixes.append(str(pathlib.Path(root).resolve().relative_to(REPO)))
+        except ValueError:
+            pass
+        normalised = set()
+        for record in records:
+            for prefix in prefixes:
+                record = record.replace(prefix, "<RUN>")
+            normalised.add(record)
+        return sorted(normalised)
 
     def assert_locations_in_range(self, records):
         line_cache = {}
@@ -175,7 +187,12 @@ class LanguageCoverageDeterminismTest(unittest.TestCase):
             fields = record.split("\t")
             if fields[0] not in LOCATED_KINDS or len(fields) < 4:
                 continue
+            # Recorded paths are DISPLAY paths (ADR-0021): repository- or
+            # module-relative, never the build host's absolute path. Resolve
+            # them against the repository root, which is their base.
             path = pathlib.Path(fields[1])
+            if not path.is_absolute():
+                path = REPO / path
             if path not in line_cache:
                 try:
                     line_cache[path] = path.read_bytes().split(b"\n")

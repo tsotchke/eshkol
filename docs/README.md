@@ -207,6 +207,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0018 — Signed-curvature stereographic geometry](design/adr/0018-signed-curvature-stereographic-geometry.md) — Accepted — one κ-stereographic chart for all curvature signs, analytic through `K = 0`, and the execution contract it implies (targets v1.4.0); carried the number 0012 until 2026-09-17
 - [ADR 0019 — Evergreen documentation architecture](design/adr/0019-evergreen-documentation-architecture.md) — Partially implemented
 - [ADR 0020 — One store boundary for every container slot](design/adr/0020-container-slot-store-boundary.md) — Implemented — a value stored into a vector or tensor slot is always a value of the slot's declared representation.
+- [ADR 0021 — One owner for AST string payloads, one spelling for recorded paths](design/adr/0021-ast-string-owner.md) — every AST identifier, literal and synthesized name comes from one rooted arena released at teardown; recorded source paths are normalized at one place so no artifact carries a build-host path; sanitizer builds run leak-clean under one policy
 
 ## Testing and Quality Gates
 

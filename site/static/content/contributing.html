@@ -116,7 +116,7 @@ ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test
 # Run a single Eshkol program through the VM
 ./build/eshkol-vm-standalone-test program.esk</code></pre>
 <h3 id="building-the-website">Building the Website</h3>
-<p>The website is written in Eshkol and compiled to WebAssembly:</p>
+<p>The website is written in Eshkol and compiled to WebAssembly. Its published documentation pages come from one manifest, <code>site/pages.json</code>, which names each Markdown source, its slug and its navigation section. To publish a page, add a manifest entry and run <code>scripts/build-site-content.sh</code>; the generated sidebars pick it up with no change to <code>site/src/main.esk</code>. Before opening a pull request, run <code>python3 scripts/build_site_content.py --check</code> (manifest, fragments and navigation agree), <code>python3 scripts/verify_site_release.py</code> (release facts match <code>tests/coverage/release_record.json</code>) and <code>python3 scripts/site_smoke.py</code> (the pages render in a real browser with no console errors); the Pages deploy runs the same three.</p>
 <pre class="bash"><code># Compile the website
 ./build/eshkol-run --wasm site/src/main.esk -o site/static/eshkol-site.wasm
 

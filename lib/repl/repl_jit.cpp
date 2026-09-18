@@ -7,6 +7,8 @@
 #include "repl_jit.h"
 #include <eshkol/eshkol.h>
 #include <eshkol/abi_fingerprint.h>
+#include <eshkol/frontend/ast_strings.h>
+#include <eshkol/frontend/source_paths.h>
 #include <eshkol/llvm_backend.h>
 #include <eshkol/module_visibility.h>
 #include <eshkol/platform_runtime.h>
@@ -144,19 +146,6 @@ static void configure_jit_target_machine_builder(
 }
 
 /**
- * @brief Heap-allocates a NUL-terminated copy of @p value for embedding into a synthesized eshkol_ast_t.
- *
- * The caller (and ultimately the AST it is attached to) owns the returned buffer.
- */
-static char* repl_copy_ast_cstr(const std::string& value) {
-    char* out = new char[value.size() + 1];
-    if (out) {
-        memcpy(out, value.c_str(), value.size() + 1);
-    }
-    return out;
-}
-
-/**
  * @brief Appends synthesized `(define prefixed-name original-name)` AST nodes for an R7RS `(prefix ...)` import clause.
  *
  * For the module at @p module_index within @p require_ast, if an import
@@ -221,8 +210,7 @@ static void rewrite_repl_import_bindings(
     if (ast->type == ESHKOL_VAR && ast->variable.id) {
         auto it = bindings.find(ast->variable.id);
         if (it != bindings.end()) {
-            delete[] ast->variable.id;
-            ast->variable.id = repl_copy_ast_cstr(it->second);
+            ast->variable.id = eshkol_ast_string_copy(it->second);
         }
         return;
     }
@@ -242,8 +230,7 @@ static void rewrite_repl_import_bindings(
         if (ast->operation.set_op.name) {
             auto it = bindings.find(ast->operation.set_op.name);
             if (it != bindings.end()) {
-                delete[] ast->operation.set_op.name;
-                ast->operation.set_op.name = repl_copy_ast_cstr(it->second);
+                ast->operation.set_op.name = eshkol_ast_string_copy(it->second);
             }
         }
         rewrite_repl_import_bindings(ast->operation.set_op.value, bindings);
@@ -803,6 +790,12 @@ static std::string resolveModulePath(const std::string& module_name,
  * attributes source text therefore also roots the search path, and no site
  * can do one without the other.
  */
+/** True when the ambient source context is not @p expected (a display path). */
+static bool source_path_context_differs(const char* expected) {
+    const char* actual = eshkol_get_source_context_path();
+    return !actual || std::strcmp(actual, expected) != 0;
+}
+
 class ScopedSourceContext {
 public:
     ScopedSourceContext(const std::string& path, const std::string& text)
@@ -3519,7 +3512,11 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
     if (!source_path.empty()) {
         explicit_source_context = std::make_unique<ScopedSourceContext>(
             source_path, source_text);
-        if (source_path != eshkol_get_source_context_path()) {
+        // The ambient context holds the DISPLAY spelling of the path
+        // (ADR-0021), so compare like with like rather than against the host
+        // path this caller happens to hold.
+        const char* expected = eshkol_source_path_display(source_path.c_str());
+        if (!expected || source_path_context_differs(expected)) {
             throw std::runtime_error(
                 "failed to establish explicit JIT batch source context");
         }

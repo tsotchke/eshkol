@@ -1958,11 +1958,15 @@ jobs:
         run: |
           set -euxo pipefail
           if [[ "${{ matrix.sanitizer_flags }}" == *"ESHKOL_ENABLE_ASAN=ON"* ]]; then
-            # Compiler subprocesses intentionally retain process-lifetime
-            # parser/AST state. Keep LeakSanitizer for the explicit workload
-            # gates below, but make the build setting independent of any
-            # runner-level sanitizer environment.
-            export ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:allocator_may_return_null=1"
+            # One leak policy for builds (ADR-0021): the instrumented compiler
+            # compiling the stdlib during the build is a real compiler
+            # workload, so it must be leak-clean under the same checked-in
+            # suppression file as every other workload. This is the setting
+            # scripts/build-sanitizer.sh applies and the release producer
+            # uses; a build that ran with detect_leaks=0 here could not have
+            # caught the module-renaming retention the release dry run did.
+            export ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:allocator_may_return_null=1"
+            export LSAN_OPTIONS="suppressions=$GITHUB_WORKSPACE/.icc/lsan-suppressions.txt:print_suppressions=0"
             export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
           fi
           # `--parallel` with no job count hands the decision to the native

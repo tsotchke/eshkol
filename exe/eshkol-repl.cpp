@@ -7,6 +7,7 @@
 //
 
 #include <eshkol/eshkol.h>
+#include <eshkol/frontend/ast_strings.h>
 #include <eshkol/platform_runtime.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/backend/thread_pool.h>
@@ -141,6 +142,11 @@ void save_readline_history();
     std::fflush(stderr);
     thread_pool_global_shutdown();
     eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_NONE);
+    // The REPL keeps ASTs across inputs (definitions, macros, imports), so AST
+    // strings live for the whole session. Nothing reads one after the runtime
+    // has shut down; release them here, where _Exit() cannot skip it
+    // (ADR-0021).
+    eshkol_ast_strings_teardown();
 #ifdef ESHKOL_HAS_ASAN
     /* _Exit() below skips LSan's atexit leak check; run it here so the REPL
      * is auditable at all. __lsan_do_leak_check() honours ASAN_OPTIONS'
@@ -1739,5 +1745,6 @@ int main(int argc, char** argv) {
     }
 
     save_readline_history();
+    eshkol_ast_strings_teardown();
     std::_Exit(0);
 }

@@ -61,7 +61,10 @@ def main():
                        if x.strip() in ('REFUSED', 'ACCEPTED')]
             expected = 'REFUSED' if reject else 'ACCEPTED'
             if args.engine == 'jit' and name == 'fractional-list':
-                location = re.escape(str(src)) + r":\d+:\d+: Type error in reshape"
+                # The diagnostic names the DISPLAY path (ADR-0021), which for
+                # a file outside every root is its name alone -- never the
+                # build host's absolute path.
+                location = re.escape(src.name) + r":\d+:\d+: Type error in reshape"
                 if not re.search(location, r.stderr):
                     failures.append(name + ': missing correct source location in diagnostic')
             hard_limit = (name == 'limit' and args.engine == 'jit' and
