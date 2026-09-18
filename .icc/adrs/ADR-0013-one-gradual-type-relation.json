@@ -13,10 +13,10 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0013-gradual-type-relation.md:1",
   "source_path": "docs/design/adr/0013-gradual-type-relation.md",
-  "status": "accepted",
+  "status": "proposed",
   "tags": [
     "imported-markdown"
   ],
   "title": "One gradual type relation",
-  "updated_at": "2026-09-18T01:53:35Z"
+  "updated_at": "2026-09-14T00:00:00Z"
 }

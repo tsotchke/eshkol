@@ -1289,6 +1289,28 @@ static double as_number_vm(VM* vm, Value v) {
     return 0.0;
 }
 
+/** @brief The VM half of the container slot store boundary (ADR-0020).
+ *
+ * A tensor slot holds a real number. Every VM mutator that writes a Scheme
+ * value into a tensor -- vector-set! on a tensor operand and both tensor-set!
+ * forms -- obtains the slot's double here. A value with no real-number
+ * representation is refused: the caller raises a catchable error instead of
+ * storing the 0.0 that as_number_vm() answers for an unknown tag. Characters
+ * are refused too; as_number_vm() reads one as its code point, which is an
+ * index convenience, not a numeric value.
+ *
+ * @return 1 and the slot value in @p out, or 0 when the value is refused. */
+static int vm_tensor_slot_value(VM* vm, Value v, double* out) {
+    switch (v.type) {
+    case VAL_INT: case VAL_FLOAT: case VAL_RATIONAL: case VAL_BIGNUM:
+    case VAL_DUAL: case VAL_HYPER_DUAL:
+        *out = as_number_vm(vm, v);
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 /** @brief Validate that @p v's heap pointer is in range AND its object
  *         header matches @p type. */
 static inline int is_heap_type(VM* vm, Value v, HeapType type) {

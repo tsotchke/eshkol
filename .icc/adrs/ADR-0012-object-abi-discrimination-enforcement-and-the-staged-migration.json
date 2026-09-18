@@ -13,10 +13,10 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0012-object-abi-staged-migration.md:1",
   "source_path": "docs/design/adr/0012-object-abi-staged-migration.md",
-  "status": "accepted",
+  "status": "proposed",
   "tags": [
     "imported-markdown"
   ],
   "title": "Object ABI \u2014 discrimination, enforcement, and the staged migration",
-  "updated_at": "2026-09-18T01:53:34Z"
+  "updated_at": "2026-08-25T00:00:00Z"
 }

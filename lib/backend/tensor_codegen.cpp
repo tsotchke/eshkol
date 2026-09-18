@@ -1100,7 +1100,10 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
 
     // Extract the tensor pointer from the tagged value (type-checked: ESH-0069)
     llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor-set!");
+    // The operand is written through in place, so a coercible collection is
+    // rejected rather than updated as a throwaway copy.
+    llvm::Value* tensor_ptr = unpackTensorOperandChecked(
+        tensor_val, "tensor-set!", TensorOperandMode::RequireTensor);
 
     // Calculate linear index from multi-dimensional indices
     llvm::Value* linear_index = llvm::ConstantInt::get(ctx_.int64Type(), 0);
@@ -1111,10 +1114,6 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
 
     llvm::Value* ndim_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 1);
     llvm::Value* ndim = ctx_.builder().CreateLoad(ctx_.int64Type(), ndim_field_ptr);
-
-    llvm::Value* elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 2);
-    llvm::Value* elements_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), elements_field_ptr);
-    llvm::Value* typed_elements_ptr = ctx_.builder().CreatePointerCast(elements_ptr, ctx_.ptrType());
 
     llvm::Value* total_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 3);
     llvm::Value* total_elements = ctx_.builder().CreateLoad(ctx_.int64Type(), total_field_ptr);
@@ -1233,11 +1232,15 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
         ctx_.builder().SetInsertPoint(bounds_ok);
     }
 
-    // Store new value at linear index — tensor stores doubles as int64 bitpatterns
-    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_elements_ptr, linear_index);
-    llvm::Value* val_double = extractAsDouble(new_value);
-    llvm::Value* val_bits = ctx_.builder().CreateBitCast(val_double, ctx_.int64Type());
-    ctx_.builder().CreateStore(val_bits, elem_ptr);
+    // ADR-0020 slot store boundary: the value is converted to the slot's
+    // declared representation (dtype-reduced f64) or refused with a catchable
+    // error; a DOUBLE into an f64 tensor is stored inline.
+    if (new_value->getType() != ctx_.taggedValueType()) {
+        new_value = new_value->getType()->isFloatingPointTy()
+            ? tagged_.packDouble(new_value)
+            : tagged_.packInt64(tagged_.safeExtractInt64(new_value), true);
+    }
+    ctx_.emitTensorSlotStore(tensor_ptr, linear_index, new_value, "tensor-set!");
 
     return tagged_.packHeapPtr(tensor_ptr); // Return the (validated) tensor
 }

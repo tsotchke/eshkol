@@ -13,10 +13,10 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0018-signed-curvature-stereographic-geometry.md:1",
   "source_path": "docs/design/adr/0018-signed-curvature-stereographic-geometry.md",
-  "status": "accepted",
+  "status": "proposed",
   "tags": [
     "imported-markdown"
   ],
   "title": "Signed-curvature stereographic geometry and the K = 0 execution contract",
-  "updated_at": "2026-09-18T01:53:38Z"
+  "updated_at": "2026-08-30T00:00:00Z"
 }

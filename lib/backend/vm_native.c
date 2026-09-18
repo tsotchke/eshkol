@@ -5399,7 +5399,9 @@ static int vm_vecref_tensor_path(VM* vm, Value tensor_val, Value idx_val) {
  * Mirrors CollectionCodegen::vectorSet's tensor path: unlike vector-ref,
  * native does NOT special-case N-D row addressing here — `idx` is always
  * bounds-checked against the FLAT total element count regardless of rank,
- * and the value is stored as a double directly into the flat data buffer.
+ * and the value is converted to the slot's double by vm_tensor_slot_value(),
+ * the VM half of the ADR-0020 slot store boundary (a value with no
+ * real-number representation raises instead of being stored as 0.0).
  *
  * Returns 1 on success (caller still pushes the void result, matching the
  * VAL_VECTOR path's convention). On an out-of-range index this RAISES a
@@ -5413,7 +5415,13 @@ static int vm_vecset_tensor_path(VM* vm, Value tensor_val, Value idx_val, Value 
         vm_raise_error_msg(vm, "vector-set!: index out of bounds");
         return 0;
     }
-    t->data[idx] = as_number(val);
+    double slot = 0.0;
+    if (!vm_tensor_slot_value(vm, val, &slot)) {
+        vm_raise_error_msg(vm, "vector-set!: value has no representation in a numeric "
+                               "tensor slot (a tensor-backed vector holds real numbers only)");
+        return 0;
+    }
+    t->data[idx] = slot;
     return 1;
 }
 
@@ -10339,6 +10347,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_raise_error_msg(vm, "tensor-set!: index must be an integer, list or vector");
             break;
         }
+        /* ADR-0020 slot store boundary: MS-04 / SW-166 made an exact rational
+         * or bignum convert to its correctly-rounded double here; a value with
+         * no real-number representation is now refused rather than stored as
+         * the 0.0 as_number_vm() answers for it. */
+        double slot = 0.0;
+        if (!vm_tensor_slot_value(vm, val, &slot)) {
+            vm_raise_error_msg(vm, "tensor-set!: value has no representation in a numeric "
+                                   "tensor slot (a tensor-backed vector holds real numbers only)");
+            break;
+        }
         /* Bounds contract (#356): an out-of-range write is a catchable error on
          * every substrate.  vm_tensor_set() returns silently instead, so an
          * out-of-range tensor-set! was a NO-OP the program could not detect. */
@@ -10349,10 +10367,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm_raise_error_msg(vm, "tensor-set!: index out of bounds");
                 break;
             }
-            /* MS-04 / SW-166: as_number_vm so an exact rational/bignum value
-             * (e.g. (tensor-set! t 0 1/2)) converts to its correctly-rounded
-             * double instead of silently writing 0.0. */
-            t->data[indices[0]] = as_number_vm(vm, val);
+            t->data[indices[0]] = slot;
             vm_push(vm, NIL_VAL);
             break;
         }
@@ -10360,7 +10375,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_raise_error_msg(vm, "tensor-set!: index out of bounds");
             break;
         }
-        vm_tensor_set(t, indices, n, as_number_vm(vm, val));
+        vm_tensor_set(t, indices, n, slot);
         vm_push(vm, NIL_VAL);
         break;
     }

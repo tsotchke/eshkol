@@ -13,10 +13,10 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0004-type-system-trajectory.md:1",
   "source_path": "docs/design/adr/0004-type-system-trajectory.md",
-  "status": "accepted",
+  "status": "proposed",
   "tags": [
     "imported-markdown"
   ],
   "title": "One quantitative dependent type system for Eshkol",
-  "updated_at": "2026-09-18T01:53:29Z"
+  "updated_at": "2026-07-09T00:00:00Z"
 }

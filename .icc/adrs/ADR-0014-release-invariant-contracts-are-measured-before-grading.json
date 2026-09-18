@@ -13,10 +13,10 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0014-release-invariant-contracts.md:1",
   "source_path": "docs/design/adr/0014-release-invariant-contracts.md",
-  "status": "accepted",
+  "status": "proposed",
   "tags": [
     "imported-markdown"
   ],
   "title": "Release invariant contracts are measured before grading",
-  "updated_at": "2026-09-18T01:53:36Z"
+  "updated_at": "2026-09-14T00:00:00Z"
 }

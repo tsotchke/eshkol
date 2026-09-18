@@ -13,10 +13,10 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0006-language-conformance-modules.md:1",
   "source_path": "docs/design/adr/0006-language-conformance-modules.md",
-  "status": "accepted",
+  "status": "proposed",
   "tags": [
     "imported-markdown"
   ],
   "title": "Binding-resolved libraries and proper tail invocation",
-  "updated_at": "2026-09-18T01:53:30Z"
+  "updated_at": "2026-07-09T00:00:00Z"
 }

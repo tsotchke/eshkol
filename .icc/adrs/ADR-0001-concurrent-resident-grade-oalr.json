@@ -13,10 +13,10 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0001-oalr-concurrent-resident.md:1",
   "source_path": "docs/design/adr/0001-oalr-concurrent-resident.md",
-  "status": "accepted",
+  "status": "proposed",
   "tags": [
     "imported-markdown"
   ],
   "title": "Concurrent, resident-grade OALR",
-  "updated_at": "2026-09-18T01:53:28Z"
+  "updated_at": "2026-07-09T00:00:00Z"
 }

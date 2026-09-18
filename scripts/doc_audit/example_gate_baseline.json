@@ -16,7 +16,7 @@
           "known-defect": 1
         },
         "docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md": {
-          "known-defect": 2
+          "known-defect": 1
         },
         "docs/tutorials/18_WEB_PLATFORM.md": {
           "skip": 3
@@ -35,7 +35,7 @@
         }
       },
       "marked_total": {
-        "known-defect": 7,
+        "known-defect": 6,
         "run-only": 1,
         "skip": 3
       }
