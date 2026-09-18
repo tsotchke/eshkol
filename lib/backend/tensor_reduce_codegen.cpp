@@ -2728,9 +2728,12 @@ llvm::Value* TensorCodegen::tensorMean(const eshkol_operations_t* op) {
     llvm::BasicBlock* svec_loop_body = llvm::BasicBlock::Create(ctx_.context(), "svec_mean_body", current_func);
     llvm::BasicBlock* svec_loop_exit = llvm::BasicBlock::Create(ctx_.context(), "svec_mean_exit", current_func);
 
-    llvm::Value* svec_sum = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "svec_mean_acc");
+    // The same tagged, dual-aware accumulator tensor-sum uses (ESH-0121): a
+    // Scheme vector of forward jets averages to a jet instead of reading each
+    // jet as 0.0 (SW-186).
+    llvm::Value* svec_sum = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "svec_mean_acc");
     llvm::Value* svec_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "svec_mean_i");
-    ctx_.builder().CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), svec_sum);
+    ctx_.builder().CreateStore(tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0)), svec_sum);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), svec_counter);
     ctx_.builder().CreateBr(svec_loop_cond);
 
@@ -2745,19 +2748,17 @@ llvm::Value* TensorCodegen::tensorMean(const eshkol_operations_t* op) {
     llvm::Value* svec_elems_typed = ctx_.builder().CreatePointerCast(svec_elems_base, ctx_.ptrType());
     llvm::Value* svec_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), svec_elems_typed, svec_i);
     llvm::Value* svec_elem_tagged = ctx_.builder().CreateLoad(ctx_.taggedValueType(), svec_elem_ptr);
-    llvm::Value* svec_elem_val = extractAsDouble(svec_elem_tagged);
-    llvm::Value* svec_current_sum = ctx_.builder().CreateLoad(ctx_.doubleType(), svec_sum);
-    llvm::Value* svec_new_sum = ctx_.builder().CreateFAdd(svec_current_sum, svec_elem_val);
+    llvm::Value* svec_current_sum = ctx_.builder().CreateLoad(ctx_.taggedValueType(), svec_sum);
+    llvm::Value* svec_new_sum = dualAwareScalarBinOp(svec_current_sum, svec_elem_tagged, "add");
     ctx_.builder().CreateStore(svec_new_sum, svec_sum);
     llvm::Value* svec_next_i = ctx_.builder().CreateAdd(svec_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
     ctx_.builder().CreateStore(svec_next_i, svec_counter);
     ctx_.builder().CreateBr(svec_loop_cond);
 
     ctx_.builder().SetInsertPoint(svec_loop_exit);
-    llvm::Value* svec_total = ctx_.builder().CreateLoad(ctx_.doubleType(), svec_sum);
+    llvm::Value* svec_total = ctx_.builder().CreateLoad(ctx_.taggedValueType(), svec_sum);
     llvm::Value* svec_len_fp = ctx_.builder().CreateSIToFP(svec_len, ctx_.doubleType());
-    llvm::Value* svec_result = ctx_.builder().CreateFDiv(svec_total, svec_len_fp);
-    llvm::Value* svec_tagged_result = tagged_.packDouble(svec_result);
+    llvm::Value* svec_tagged_result = dualAwareScalarBinOp(svec_total, tagged_.packDouble(svec_len_fp), "div");
     ctx_.builder().CreateBr(mean_merge);
     llvm::BasicBlock* svec_exit_block = ctx_.builder().GetInsertBlock();
 

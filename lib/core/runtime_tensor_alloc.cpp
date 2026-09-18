@@ -104,8 +104,8 @@ void* eshkol_tensor_from_collection(arena_t* arena,
  * not return (the type error raises). The trailing `return nullptr` keeps the
  * compiler happy and is never reached.
  */
-void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
-                                    const char* op_name) {
+static void* tensor_operand_checked_core(const eshkol_tagged_value_t* val,
+                                          const char* op_name) {
     if (val) {
         if (void* projected = dense_ad_node_as_tensor(val)) return projected;
         /* A NEST goes to the shared rank-N walker before any of the flat cases
@@ -271,6 +271,40 @@ void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
 }
 
 /*
+ * The tensor operand boundary for every native tensor operator (SW-186).
+ *
+ * A forward-mode derivative can arrive as a tensor whose elements are tagged
+ * dual jets (dtype ESHKOL_TENSOR_DTYPE_DUAL): a vector of jets coerced above,
+ * or the output of a dual-aware operator. The f64 kernels read those 16-byte
+ * slots as 8-byte doubles and answered 0. eshkol_tensor_operand_checked is
+ * the default and REFUSES such a tensor, naming the operator;
+ * eshkol_tensor_operand_carrier_checked is for the operators that propagate
+ * it or read only its shape (TensorCodegen::unpackTensorOperandChecked holds
+ * the one list of them).
+ */
+extern "C" void* eshkol_tensor_operand_carrier_checked(const eshkol_tagged_value_t* val,
+                                                       const char* op_name) {
+    return tensor_operand_checked_core(val, op_name);
+}
+
+static void refuse_dual_tensor(const eshkol_tensor_t* t, const char* op_name) {
+    if (t && t->dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+            "%s: a forward-mode derivative cannot pass through this tensor operation "
+            "(it has no rule for a tensor of dual numbers); differentiate with gradient "
+            "or restructure the computation",
+            op_name ? op_name : "tensor-op");
+    }
+}
+
+void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
+                                    const char* op_name) {
+    void* t = tensor_operand_checked_core(val, op_name);
+    refuse_dual_tensor(static_cast<const eshkol_tensor_t*>(t), op_name);
+    return t;
+}
+
+/*
  * Type-checked unpack for an operand the op MUTATES IN PLACE.
  *
  * Same classification as eshkol_tensor_operand_checked, minus the coercion:
@@ -305,6 +339,7 @@ void* eshkol_tensor_destination_checked(const eshkol_tagged_value_t* val,
                         op_name, "numeric tensor (this vector holds non-numeric elements)", val);
                     return nullptr;  /* not reached */
                 }
+                refuse_dual_tensor(static_cast<const eshkol_tensor_t*>(ptr), op_name);
                 return ptr;
             }
         }
@@ -320,6 +355,7 @@ void* eshkol_tensor_destination_checked(const eshkol_tagged_value_t* val,
                                      op_name ? op_name : "tensor-op");
                 return nullptr;
             }
+            refuse_dual_tensor(static_cast<const eshkol_tensor_t*>(t), op_name);
             return (void*)t;
         }
     }
@@ -379,6 +415,7 @@ void* eshkol_tensor_matrix_operand_checked(const eshkol_tagged_value_t* val,
     }
 
     if (t && t->num_dimensions >= 2) {
+        refuse_dual_tensor(static_cast<const eshkol_tensor_t*>(t), op_name);
         return (void*)t;
     }
     if (t) {
