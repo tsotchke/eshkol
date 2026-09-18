@@ -5858,6 +5858,66 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "Failed: 0"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # ADR-0024: one unspecified value, distinct from '(), printed as nothing,
+    # returned by every form R7RS leaves unspecified. Three native lanes; the
+    # VM side is covered by the parity corpus program below.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/unspecified_value_test.esk")
+        add_test(
+            NAME unspecified_value_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/unspecified_value_test.esk"
+        )
+        set_tests_properties(unspecified_value_runtime_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME unspecified_value_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/unspecified_value_test.esk"
+        )
+        set_tests_properties(unspecified_value_jit_smoke PROPERTIES
+            TIMEOUT 180
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME unspecified_value_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/unspecified_value_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/core/unspecified_value_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/unspecified_value_aot'"
+        )
+        set_tests_properties(unspecified_value_aot_smoke PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    # SW-189 / SW-190 / ADR-0024 on the VM: a binder in operand position, a
+    # closure escaping a top-level let, and the void value, run as one VM
+    # program (the corpus differential runs it against native as well).
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/86_binder_in_operand_and_void.esk")
+        add_test(
+            NAME binder_in_operand_and_void_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm_parity/corpus/86_binder_in_operand_and_void.esk"
+        )
+        set_tests_properties(binder_in_operand_and_void_vm_smoke PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "\\(counter 3\\)"
+            FAIL_REGULAR_EXPRESSION "ERROR|fatal runtime error|<closure@")
+    endif()
+    # ADR-0024 in the piped REPL: nothing is echoed after an unspecified value.
+    if(NOT WIN32 AND TARGET eshkol-repl AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/piped_unspecified_echo_test.sh")
+        add_test(
+            NAME repl_piped_unspecified_echo_test
+            COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/piped_unspecified_echo_test.sh"
+        )
+        set_tests_properties(repl_piped_unspecified_echo_test PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            PASS_REGULAR_EXPRESSION "PASS: piped REPL"
+            FAIL_REGULAR_EXPRESSION "^FAIL:")
+    endif()
     # SW-163: a QUOTED bignum or bignum-rational literal must be the same
     # runtime value an evaluated one is. codegenQuotedAST() (lib/backend/
     # llvm_codegen.cpp) had no case for ESHKOL_BIGNUM_LITERAL and silently

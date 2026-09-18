@@ -1,0 +1,62 @@
+; SW-189 / SW-190 / ADR-0024: the bytecode VM and the native engines agree on
+; a binder in operand position, on a closure escaping a top-level let, and on
+; the unspecified value.
+
+; SW-189: a let (or any binder) as an operand of list / vector / apply / a
+; call. The VM allocated the binder's locals at the stack depth of the
+; operands already pushed, so the pushed operands were overwritten.
+(display (list 'a (let ((v 5)) v))) (newline)
+(display (list (let ((v 5)) v))) (newline)
+(display (list 'a (let ((v 5)) v) 'b)) (newline)
+(display (vector 'a (let ((v 5)) v))) (newline)
+(display (list (let ((a 1)) a) (let ((b 2)) b) (let ((c 3)) c))) (newline)
+(display (list 'a (list 'b (let ((v 5)) v)))) (newline)
+(display (list 'a (vector 'b (let ((v 5)) v)))) (newline)
+(display (apply + (list 1 (let ((v 2)) v)))) (newline)
+(define (two a b) (list a b))
+(display (two 'a (let ((v 5)) v))) (newline)
+(display (string-append "a" (let ((s "b")) s))) (newline)
+(display (list 'a (let loop ((i 0)) (if (< i 3) (loop (+ i 1)) i)))) (newline)
+(display (list 'a (letrec ((g (lambda () 7))) (g)))) (newline)
+(display (list 'a (do ((i 0 (+ i 1))) ((= i 2) i)))) (newline)
+(display (list 'a (let* ((x 1) (y (+ x 1))) y))) (newline)
+(display (list 'a (case 2 ((2) 'two) (else 'other)))) (newline)
+(display (list 'a (cond ((let ((v #t)) v) 'yes) (else 'no)))) (newline)
+(display (list 'a (and 1 (let ((v 2)) v)))) (newline)
+(display (list 'a (if (let ((v #t)) v) (let ((v 'yes)) v) 'no))) (newline)
+
+; a vector escaping a let through every shape
+(display (list 'list (let ((v (vector 1 2))) (vector-set! v 0 9) v))) (newline)
+(display (cons 'cons (let ((v (vector 1 2))) (vector-set! v 0 9) v))) (newline)
+(define (mk) (let ((v (vector 1 2))) (vector-set! v 0 9) v))
+(display (list 'ret (mk))) (newline)
+(display (list 'nested (let ((w (let ((v (vector 1 2))) (vector-set! v 0 9) v))) w))) (newline)
+(define outer (vector 0 0))
+(vector-set! outer 0 (let ((v (vector 1 2))) (vector-set! v 0 9) v))
+(display (list 'vset outer)) (newline)
+(display (list 'let-list (let ((l (list 1 2))) (set-car! l 9) l))) (newline)
+
+; SW-190: a closure created inside a top-level let captures the let's locals
+; by value; the VM held an open reference to a slot the let retired.
+(define f (let ((v 1)) (lambda () v)))
+(display (f)) (newline)
+(display (list 'c (f))) (newline)
+(define f3 (let ((v 1)) (lambda (x) (+ v x))))
+(display (f3 1)) (newline)
+(define fv (let ((v (vector 1 2))) (vector-set! v 0 9) (lambda () v)))
+(display (list 'closure (fv))) (newline)
+(define counter (let ((n 0)) (lambda () (set! n (+ n 1)) n)))
+(counter) (counter)
+(display (list 'counter (counter))) (newline)
+
+; ADR-0024: the unspecified value is distinct from '() and prints as nothing
+(define x 5)
+(display (list 'w (when #f 1) 'u (unless #t 1) 'i (if #f 1))) (newline)
+(display (list 's (set! x 6) 'd (display "") 'n (newline))) (newline)
+(define v (vector 1 2))
+(define p (cons 1 2))
+(display (list 'vs (vector-set! v 0 3) 'sc (set-car! p 9) 'fe (for-each display '()))) (newline)
+(display (list (null? (when #f 1)) (eq? (when #f 1) '()) (null? (display "")) (null? (set! x 7)) (null? (vector-set! v 1 4)))) (newline)
+(display (when #f 1)) (newline)
+(display (if #f #f)) (newline)
+(display (list (if #f #f))) (newline)

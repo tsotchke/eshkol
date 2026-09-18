@@ -25,8 +25,9 @@ Each call to `make-adder` produces a closure over its own `n`.
 (set! var value)
 ```
 Mutates an existing binding. `set!` does not create a binding — the variable must
-already be bound in some enclosing scope. Returns an unspecified value; use it for
-effect.
+already be bound in some enclosing scope. Returns
+[the unspecified value](control-flow.md#the-unspecified-value), not the stored
+value; use it for effect.
 
 ```scheme
 (define (make-counter)

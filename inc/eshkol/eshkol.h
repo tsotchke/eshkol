@@ -135,6 +135,13 @@ typedef enum {
 
     // Neuro-symbolic consciousness engine types
     ESHKOL_VALUE_LOGIC_VAR   = 10,  // Logic variable ?x (data = var_id : int64)
+    // The unspecified value (ADR-0024): what every form R7RS leaves
+    // unspecified evaluates to -- display, newline, set!, vector-set!, when and
+    // unless with a false test, for-each, ... It is an immediate with no
+    // payload, distinct from the empty list (ESHKOL_VALUE_NULL) so `null?` is
+    // #f and `eq?` against '() is #f, prints as nothing, and is the native
+    // counterpart of the bytecode VM's VAL_VOID.
+    ESHKOL_VALUE_UNSPECIFIED = 11,
 
     // ═══════════════════════════════════════════════════════════════════════
     // MULTIMEDIA TYPES (16-19) - linear resources with lifecycle management
@@ -688,6 +695,7 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 
 // Immediate type checks (no masking needed for new types)
 #define ESHKOL_IS_NULL_TYPE(type)        ((type) == ESHKOL_VALUE_NULL)
+#define ESHKOL_IS_UNSPECIFIED_TYPE(type) ((type) == ESHKOL_VALUE_UNSPECIFIED)
 #define ESHKOL_IS_INT64_TYPE(type)       ((type) == ESHKOL_VALUE_INT64)
 #define ESHKOL_IS_DOUBLE_TYPE(type)      ((type) == ESHKOL_VALUE_DOUBLE)
 #define ESHKOL_IS_BOOL_TYPE(type)        ((type) == ESHKOL_VALUE_BOOL)

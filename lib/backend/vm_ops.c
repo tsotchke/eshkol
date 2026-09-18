@@ -266,18 +266,21 @@ static void vm_exec_cdr(VM* vm) {
 static void vm_exec_set_car(VM* vm) {
     Value val = vm_pop(vm), pair = vm_pop(vm);
     if (pair.type == VAL_PAIR) vm->heap.objects[pair.as.ptr]->cons.car = val;
-    vm_push(vm, NIL_VAL);
+    vm_push(vm, (Value){.type = VAL_VOID});  /* ADR-0024: unspecified */
 }
 
 static void vm_exec_set_cdr(VM* vm) {
     Value val = vm_pop(vm), pair = vm_pop(vm);
     if (pair.type == VAL_PAIR) vm->heap.objects[pair.as.ptr]->cons.cdr = val;
-    vm_push(vm, NIL_VAL);
+    vm_push(vm, (Value){.type = VAL_VOID});  /* ADR-0024: unspecified */
 }
 
 static void vm_exec_popn(VM* vm, int32_t operand) {
     int n = operand;
     if (n > 0 && vm->sp > n) {
+        /* The n slots beneath the result are this scope's locals; a closure
+         * still reading one of them keeps its last value (SW-190). */
+        if (vm->n_open_uvs > 0) vm_close_open_upvalues_from(vm, vm->sp - 1 - n);
         Value top = vm->stack[vm->sp - 1];
         vm->sp -= n;
         vm->stack[vm->sp - 1] = top;
@@ -335,7 +338,7 @@ static void vm_exec_vec_set(VM* vm) {
         /* SW-26 sibling gap. */
         if (!vm_vecset_tensor_path(vm, vec_val, idx, val)) return;
     }
-    vm_push(vm, NIL_VAL);
+    vm_push(vm, (Value){.type = VAL_VOID});  /* ADR-0024: unspecified */
 }
 
 static void vm_exec_vec_len(VM* vm) {

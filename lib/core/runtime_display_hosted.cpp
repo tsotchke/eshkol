@@ -312,6 +312,11 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
             fprintf(get_output(opts), "()");
             break;
 
+        case ESHKOL_VALUE_UNSPECIFIED:
+            // ADR-0024: the unspecified value produces no output, as the
+            // bytecode VM's VAL_VOID does.
+            break;
+
         case ESHKOL_VALUE_HEAP_PTR: {
             // Consolidated heap pointer - read subtype from object header
             void* data_ptr = (void*)value->data.ptr_val;
