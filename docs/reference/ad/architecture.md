@@ -106,7 +106,7 @@ other paths, and neither is a wiring change.
 arithmetic, `tensor-sum` and `tensor-mean`.** This was, through v1.3.4, the single largest gap in the AD
 architecture: no compiled program could create one of these nodes at all.
 `AutodiffCodegen::recordADNodeTensor` existed and had exactly one call site,
-dead behind `kDenseTensorADNodesEnabled` in `lib/backend/llvm_codegen.cpp`, and
+dead behind the flag now read by `denseTensorADNodesEnabled()` (`lib/backend/autodiff_codegen.cpp`), and
 flipping that flag SIGSEGV'd rather than yielding a slower-but-correct
 gradient, for three independent reasons:
 

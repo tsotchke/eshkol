@@ -1,3 +1,19 @@
+---
+kind: reference
+status: current
+owner-area: build
+since: v1.0.0
+sources:
+  - inc/eshkol/eshkol.h
+  - inc/eshkol/types/type_relation.h
+  - inc/eshkol/backend/libm_codegen.h
+  - inc/eshkol/backend/static_callee_binding.h
+  - inc/eshkol/backend/closure_capture_scope.h
+  - exe/eshkol-run.cpp
+  - lib/backend/llvm_codegen.cpp
+  - lib/types/type_checker.cpp
+  - CMakeLists.txt
+---
 # Eshkol System Architecture Reference
 
 **Version**: v1.3.5-evolve
@@ -53,7 +69,7 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 | Parser | 11,691 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp)) |
 | Memory manager | 4,259 lines ([`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_*` siblings) |
 | Weight matrix transformer | ~7,400 lines, 127/127 inline + 124/124 traced, 3-way verified |
-| Test suite | 528 self-reported tests across 37 suites (0 failures) |
+| Test suite | 1,020 self-reported tests across 46 suites (0 failures; see [TEST_COVERAGE.md](TEST_COVERAGE.md)) |
 
 ---
 
@@ -257,7 +273,7 @@ Eshkol uses **three layers** of type information for different purposes:
 
 ### Layer 1: Runtime Types (Tagged Values)
 
-**Implementation**: [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) (3,592 lines)
+**Implementation**: [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) (3,759 lines)
 
 ```c
 typedef struct eshkol_tagged_value {
@@ -1105,7 +1121,7 @@ eshkol/
 ├── LICENSE                 # MIT license
 │
 ├── inc/eshkol/             # Public headers
-│   ├── eshkol.h            # Main header (2,990 lines)
+│   ├── eshkol.h            # Main header (3,759 lines)
 │   ├── llvm_backend.h      # Backend API (432 lines)
 │   ├── logger.h            # Logging system
 │   │
@@ -1335,7 +1351,7 @@ This makes arena functions, autodiff tape operations, etc. available to JIT-comp
 
 ### Test Suite Organization
 
-**528 self-reported tests** across 37 suites:
+**1,020 self-reported tests** across 46 suites (the aggregate `scripts/run_all_tests.sh` run; figures in [TEST_COVERAGE.md](TEST_COVERAGE.md)). Representative categories:
 
 | Category | Count | Purpose |
 |----------|-------|---------|
@@ -1398,7 +1414,7 @@ These features are **designed but not implemented**. See roadmap documents for d
 
 ### Primary Source Files (analyzed in detail)
 
-- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (3,592 lines)
+- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (3,759 lines)
 - [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (47,107 lines)
 - [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (1226 lines; 4,259 across all `runtime_*` memory modules)
 - [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (11,691 lines)

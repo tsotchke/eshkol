@@ -587,8 +587,8 @@ via **unification**:
 
 **Implementation:** The `Context` class ([type_checker.cpp](../../lib/types/type_checker.cpp))
 maintains a scope stack for lexical scoping, type aliases from `define-type`, and tracks
-the current checking mode. Each AST node is processed by `checkExpression` (checking mode)
-or `synthesizeExpression` (synthesis mode).
+the current checking mode. Each AST node is processed by `TypeChecker::check` (checking mode)
+or `TypeChecker::synthesize` (synthesis mode).
 
 ### Which Forms Are Synthesized
 
