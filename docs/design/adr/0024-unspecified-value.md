@@ -12,10 +12,10 @@ sources:
   - tests/core/unspecified_value_test.esk
   - tests/vm_parity/corpus/86_binder_in_operand_and_void.esk
 ---
-# ADR-0023: One unspecified value
+# ADR-0024: One unspecified value
 
 **Status:** Accepted
-**Ledger:** SW-186, SW-187 (the VM defects found on the way), the REPL echo build item
+**Ledger:** SW-189, SW-190 (the VM defects found on the way), the REPL echo build item
 **Scope:** The native value model (JIT, AOT, REPL JIT), the bytecode VM, the REPL and its machine-mode protocol.
 
 ## Context

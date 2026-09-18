@@ -2,13 +2,13 @@ id: SW-181
 bucket: LOUD-ERROR
 subtag: structural
 family: ad/dense-tensor-operands
-status: open
-needs_decision: false
+status: fixed
+closed_at: "a3ec9f69"
 title: "native: tensor-dot refuses the differentiated result of matmul, so gradient of a quadratic form x . (A x) raises a type error"
 repro: >-
   (display (gradient (lambda (x) (tensor-dot x (matmul (eye 3) x)))
                      #(1.0 2.0 3.0)))
-observed: >-
+observed_before: >-
   "Type error in tensor-dot: expected tensor, got ad-node", exit 1, under
   `eshkol-run -r` and from an AOT binary. Each half works alone:
   (gradient (lambda (x) (tensor-dot x x)) ...) is #(2 4 6),
@@ -19,10 +19,42 @@ correct: >-
   docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md, "Integration with
   Autodiff", documents this program as the example of differentiable tensor
   operations.
+root_cause: >-
+  The dense reverse path (ADR-0002 Position A) publishes a matmul or
+  elementwise result as ONE CALLABLE AD node whose tensor_value is an f64
+  buffer. Operators with a dense rule (tensor-sum, tensor-mean, tensor-add,
+  tensor-mul, matmul) recognise that node before reading it; every other
+  consumer reads its operand through eshkol_tensor_operand_checked, which
+  classified HEAP_PTR tensors and numeric collections and raised for anything
+  else, or classified the value by hand. tensor-dot, reshape, tensor-scale,
+  relu, tensor-exp, tensor-sqrt, softmax and tensor-get raised; the two-argument
+  tensor-ref returned the node itself; vector-length, vector-ref and
+  vector->list read it as a Scheme vector, which is how the stdlib's tensor-norm
+  (sqrt of a vref loop) answered 0 through a matmul.
+fix: >-
+  One projection, eshkol_ad_dense_node_elements (lib/core/runtime_autodiff.cpp):
+  a dense node becomes the tensor of its shape whose element i is an
+  AD_NODE_DENSE_ELEM node (registry row 95) projecting element i, appended to
+  the tape, so every scalarising rule applies unchanged and the reverse sweep
+  scatters each element's adjoint into the dense node's gradient (identity, no
+  arithmetic; the inverse of TENSOR_PACK). The tensor boundary and the
+  collection builtins (TaggedValueCodegen::resolveDenseTensorNode) route a
+  CALLABLE dense node to it; the two-argument tensor-ref indexes the
+  projection. eshkol_ad_node_probe's node-type bound is the registry count
+  instead of the literal 63. Operators with dense rules are untouched. ADR-0023.
 evidence: >-
   Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
   arm64 macOS, JIT and AOT, by scripts/doc_audit/check_doc_examples.py (EXIT 1
   with the diagnostic above on both engines).
+  Fixed on fix/v135-ad-tensor-operands, Release build, arm64 macOS:
+  tests/ad/dense_tensor_operand_boundary_test.esk (24 checks: the ledger row
+  in both operand orders, reshape, tensor-scale, relu, tensor-exp,
+  tensor-sqrt, softmax, tensor-get, tensor-ref, vector-length, vector-ref,
+  vector->list, a chain through both representations, the stdlib tensor-norm,
+  and the dense-rule operators as controls) raises the ledger error on the
+  base build and passes 24/24 on the fix, cached and uncached JIT and AOT.
+  Tutorial 11's example runs with its marker removed and matches on JIT and
+  AOT.
 caught_by: [doc-example-gate]
 missed_by: [run_ad_oracle, run_dense_tensor_ad_gate, doc_audit]
 notes: >-

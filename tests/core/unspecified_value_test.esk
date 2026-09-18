@@ -1,4 +1,4 @@
-;;; core.unspecified_value -- ADR-0023: one unspecified value.
+;;; core.unspecified_value -- ADR-0024: one unspecified value.
 ;;;
 ;;; Every form R7RS leaves unspecified evaluates to the unspecified value: an
 ;;; immediate distinct from the empty list, printed as nothing, the native

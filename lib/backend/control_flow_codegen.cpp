@@ -713,7 +713,7 @@ llvm::Value* ControlFlowCodegen::codegenWhen(const eshkol_operations_t* op) {
     llvm::Value* is_true = isTruthy(test);
 
     // Create the false result before branching
-    llvm::Value* false_result = tagged_.packUnspecified();  // ADR-0023: R7RS leaves it unspecified
+    llvm::Value* false_result = tagged_.packUnspecified();  // ADR-0024: R7RS leaves it unspecified
     llvm::BasicBlock* branch_block = ctx_.builder().GetInsertBlock();
 
     ctx_.builder().CreateCondBr(is_true, then_block, done_block);
@@ -798,7 +798,7 @@ llvm::Value* ControlFlowCodegen::codegenUnless(const eshkol_operations_t* op) {
     llvm::Value* is_true = isTruthy(test);
 
     // Create the false result before branching
-    llvm::Value* false_result = tagged_.packUnspecified();  // ADR-0023: R7RS leaves it unspecified
+    llvm::Value* false_result = tagged_.packUnspecified();  // ADR-0024: R7RS leaves it unspecified
     llvm::BasicBlock* branch_block = ctx_.builder().GetInsertBlock();
 
     // Branch to else block if test is FALSE

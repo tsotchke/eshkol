@@ -135,7 +135,7 @@ typedef enum {
 
     // Neuro-symbolic consciousness engine types
     ESHKOL_VALUE_LOGIC_VAR   = 10,  // Logic variable ?x (data = var_id : int64)
-    // The unspecified value (ADR-0023): what every form R7RS leaves
+    // The unspecified value (ADR-0024): what every form R7RS leaves
     // unspecified evaluates to -- display, newline, set!, vector-set!, when and
     // unless with a false test, for-each, ... It is an immediate with no
     // payload, distinct from the empty list (ESHKOL_VALUE_NULL) so `null?` is

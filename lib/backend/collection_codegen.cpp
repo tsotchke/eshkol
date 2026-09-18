@@ -1470,6 +1470,7 @@ llvm::Value* CollectionCodegen::vectorLength(const eshkol_operations_t* op) {
 
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!vec_arg) return nullptr;
+    vec_arg = tagged_.resolveDenseTensorNode(vec_arg);  // ADR-0023
 
     llvm::Value* length = nullptr;
 
@@ -1570,6 +1571,7 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     void* idx_typed = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
     if (!vec_arg || !idx_typed) return nullptr;
+    vec_arg = tagged_.resolveDenseTensorNode(vec_arg);  // ADR-0023
 
     llvm::Value* idx_tagged = typed_to_tagged_callback_(idx_typed, callback_context_);
     if (!idx_tagged) return nullptr;
@@ -2056,7 +2058,7 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
     }
 
     ctx_.builder().SetInsertPoint(vset_merge);
-    // ADR-0023: vector-set! evaluates to the unspecified value.
+    // ADR-0024: vector-set! evaluates to the unspecified value.
     return tagged_.packUnspecified();
 }
 
@@ -2154,7 +2156,7 @@ llvm::Value* CollectionCodegen::vectorCopy(const eshkol_operations_t* op) {
 
     // One status vocabulary and one failure block for every slot store.
     ctx_.emitSlotStoreStatusCheck(status, "vector-copy!");
-    return tagged_.packUnspecified();  // ADR-0023
+    return tagged_.packUnspecified();  // ADR-0024
 }
 
 /**
@@ -2671,7 +2673,7 @@ llvm::Value* CollectionCodegen::vectorFill(const eshkol_operations_t* op) {
     // the value once to the slot's declared representation, fills every slot,
     // and runs the region write barrier for tagged destinations.
     ctx_.emitSequenceFill(vec_arg, fill_val, "vector-fill!");
-    return tagged_.packUnspecified();  // ADR-0023
+    return tagged_.packUnspecified();  // ADR-0024
 }
 
 /**
@@ -2704,6 +2706,7 @@ llvm::Value* CollectionCodegen::vectorToList(const eshkol_operations_t* op) {
     // Get vector
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!vec_arg) return nullptr;
+    vec_arg = tagged_.resolveDenseTensorNode(vec_arg);  // ADR-0023
 
     // Vector literals may be represented either as Scheme vectors
     // ([length][tagged elements...]) or as tensor-backed numeric vectors.

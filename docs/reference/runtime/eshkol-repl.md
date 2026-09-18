@@ -152,7 +152,7 @@ Success response:
   `type-of`). A form that evaluates to the unspecified value (a definition,
   `display`, `set!`, a `when` whose test is false, ...) is reported with an
   empty `value` and `value_type: "unspecified"`
-  ([ADR-0023](../../design/adr/0023-unspecified-value.md)).
+  ([ADR-0024](../../design/adr/0024-unspecified-value.md)).
 
 Failure response:
 

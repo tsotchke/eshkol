@@ -1529,6 +1529,26 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         break;
     }
 
+    /* --- DENSE_ELEM (95): one element of a dense node, ADR-0023 ---
+     * The inverse of TENSOR_PACK: the adjoint of element p[0] lands on the
+     * dense parent's gradient at p[0]. Identity, no arithmetic. */
+    case AD_NODE_DENSE_ELEM: {
+        ad_node_t* parent = node->input1;
+        if (!parent || !parent->tensor_value || !parent->shape || !upstream_grad) break;
+        int64_t total = compute_total_elements(parent->shape, parent->ndim);
+        int64_t idx = p[0];
+        if (total <= 0 || idx < 0 || idx >= total ||
+            (uint64_t)total > SIZE_MAX / sizeof(double)) break;
+        if (!parent->tensor_gradient) {
+            parent->tensor_gradient = arena_allocate_zeroed(
+                eshkol_ad_home_arena(get_global_arena()),
+                (size_t)total * sizeof(double));
+            if (!parent->tensor_gradient) break;
+        }
+        ((double*)parent->tensor_gradient)[idx] += upstream_grad[0];
+        break;
+    }
+
     /* Batched matrix multiplication: C[b] = A[b] B[b]. */
     case AD_NODE_BATCH_MATMUL: {
         if (!node->saved_tensors || node->num_saved < 2) break;

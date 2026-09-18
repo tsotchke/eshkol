@@ -4363,6 +4363,46 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: differentiated_values_in_list_cells"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Invalid type for int64 storage|non-int-storage cell")
+    # The dense reverse path publishes matmul and elementwise results as one AD
+    # node with an f64 buffer. Every consumer without a dense rule read it
+    # through the tensor boundary or classified it by hand and had no case for
+    # it: tensor-dot, reshape, relu, softmax raised a type error, tensor-ref
+    # returned the node, vector-length misread it (SW-181). A dense node now
+    # resolves in one place to a tensor of DENSE_ELEM projections (ADR-0023).
+    # JIT with and without the run cache, and AOT.
+    add_test(
+        NAME dense_tensor_operand_boundary_cached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/dense_tensor_operand_boundary_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(dense_tensor_operand_boundary_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: dense_tensor_operand_boundary"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|expected tensor, got ad-node")
+    add_test(
+        NAME dense_tensor_operand_boundary_uncached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/dense_tensor_operand_boundary_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(dense_tensor_operand_boundary_uncached
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: dense_tensor_operand_boundary"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|expected tensor, got ad-node")
+    add_test(
+        NAME dense_tensor_operand_boundary_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/dense_tensor_operand_boundary_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/dense_tensor_operand_boundary_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/dense_tensor_operand_boundary_aot'"
+    )
+    set_tests_properties(dense_tensor_operand_boundary_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: dense_tensor_operand_boundary"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|expected tensor, got ad-node")
     # map and reduce call a statically known procedure directly. map re-resolved
     # a named closure's captures by name at the call site (cross-function IR
     # inside a nested lambda); reduce passed none. map now reads the closure's
@@ -5818,7 +5858,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "Failed: 0"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
-    # ADR-0023: one unspecified value, distinct from '(), printed as nothing,
+    # ADR-0024: one unspecified value, distinct from '(), printed as nothing,
     # returned by every form R7RS leaves unspecified. Three native lanes; the
     # VM side is covered by the parity corpus program below.
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/unspecified_value_test.esk")
@@ -5851,7 +5891,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "Failed: 0"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
-    # SW-186 / SW-187 / ADR-0023 on the VM: a binder in operand position, a
+    # SW-189 / SW-190 / ADR-0024 on the VM: a binder in operand position, a
     # closure escaping a top-level let, and the void value, run as one VM
     # program (the corpus differential runs it against native as well).
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/86_binder_in_operand_and_void.esk")
@@ -5866,7 +5906,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "\\(counter 3\\)"
             FAIL_REGULAR_EXPRESSION "ERROR|fatal runtime error|<closure@")
     endif()
-    # ADR-0023 in the piped REPL: nothing is echoed after an unspecified value.
+    # ADR-0024 in the piped REPL: nothing is echoed after an unspecified value.
     if(NOT WIN32 AND TARGET eshkol-repl AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/piped_unspecified_echo_test.sh")
         add_test(
             NAME repl_piped_unspecified_echo_test

@@ -3759,7 +3759,7 @@ static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
         if (!found) fprintf(stderr, "WARNING: set! on undefined variable '%s'\n", name);
     }
     /* set! returns void — push NIL */
-    chunk_emit(c, OP_VOID, 0);  /* ADR-0023: set! evaluates to the unspecified value */
+    chunk_emit(c, OP_VOID, 0);  /* ADR-0024: set! evaluates to the unspecified value */
     return;
 }
 
@@ -4674,7 +4674,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
 
     if (is_sym(head, "gpu-matmul") && node->n_children == 3) {
-        int __opnd_s = c->n_locals;  /* SW-186: pushed operands are tracked locals */
+        int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
         add_local(c, "__operand__");
         compile_expr(c, node->children[2], 0);
@@ -4685,7 +4685,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "gpu-elementwise") && node->n_children == 4) {
         int native_id = gpu_elementwise_native_id(node->children[1]);
         if (native_id >= 0) {
-            int __opnd_s = c->n_locals;  /* SW-186: pushed operands are tracked locals */
+            int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
             compile_expr(c, node->children[2], 0);
             add_local(c, "__operand__");
             compile_expr(c, node->children[3], 0);
@@ -4753,14 +4753,14 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             compile_expr(c, node->children[1], 0);                     /* stop  */
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(1)));   /* step  */
         } else if (node->n_children == 3) {
-            int __opnd_s = c->n_locals;  /* SW-186: pushed operands are tracked locals */
+            int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
             compile_expr(c, node->children[1], 0);                     /* start */
             add_local(c, "__operand__");
             compile_expr(c, node->children[2], 0);                     /* stop  */
             c->n_locals = __opnd_s;
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(1)));   /* step  */
         } else { /* node->n_children == 4 */
-            int __opnd_s = c->n_locals;  /* SW-186: pushed operands are tracked locals */
+            int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
             compile_expr(c, node->children[1], 0);                     /* start */
             add_local(c, "__operand__");
             compile_expr(c, node->children[2], 0);                     /* stop  */
@@ -4781,7 +4781,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * the one-argument builtin closure. Dedicated ids retain old bytecode. */
     if (is_sym(head, "string->utf8") &&
         (node->n_children == 3 || node->n_children == 4)) {
-        int __opnd_s = c->n_locals;  /* SW-186: pushed operands are tracked locals */
+        int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
         add_local(c, "__operand__");
         compile_expr(c, node->children[2], 0);
@@ -4799,7 +4799,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * carry the same bounds contract as the codegen. */
     if (is_sym(head, "bytevector-copy") &&
         (node->n_children == 3 || node->n_children == 4)) {
-        int __opnd_s = c->n_locals;  /* SW-186: pushed operands are tracked locals */
+        int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);          /* bv    */
         add_local(c, "__operand__");
         compile_expr(c, node->children[2], 0);          /* start */
@@ -4818,7 +4818,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * 2205/2206). */
     if (is_sym(head, "bytevector-copy!") &&
         (node->n_children == 5 || node->n_children == 6)) {
-        int __opnd_s = c->n_locals;  /* SW-186: pushed operands are tracked locals */
+        int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);          /* to    */
         add_local(c, "__operand__");
         compile_expr(c, node->children[2], 0);          /* at    */
@@ -4874,7 +4874,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * used to read a stale stack slot; arity validation correctly exposes
      * that mismatch instead of allowing a plausible but ungrounded result. */
     if (is_sym(head, "fg-infer!") && node->n_children == 3) {
-        int __opnd_s = c->n_locals;  /* SW-186: pushed operands are tracked locals */
+        int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
         add_local(c, "__operand__");
         compile_expr(c, node->children[2], 0);
@@ -5100,7 +5100,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * implementation. Operand order matches _write2: value pushed first,
      * then port, so native pops port then value. */
     if (is_sym(head, "display") && node->n_children == 3) {
-        int __opnd_s = c->n_locals;  /* SW-186: pushed operands are tracked locals */
+        int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
         add_local(c, "__operand__");
         compile_expr(c, node->children[2], 0);
@@ -5190,7 +5190,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             return;
         }
         /* Each pushed element is an operand a later element's binder must not
-         * reuse (SW-186), so the pushes are tracked. */
+         * reuse (SW-189), so the pushes are tracked. */
         int s = c->n_locals;
         compile_operands_tracked(c, node, 1, node->n_children - 1);
         c->n_locals = s;
@@ -5230,7 +5230,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
     /* Rational literal: (exact-rational num denom) — generated by parser for 1/3 syntax */
     if (is_sym(head, "exact-rational") && node->n_children == 3) {
-        int __opnd_s = c->n_locals;  /* SW-186: pushed operands are tracked locals */
+        int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
         add_local(c, "__operand__");
         compile_expr(c, node->children[2], 0);
@@ -5442,7 +5442,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     /* (apply f args-list) — call f with list as arguments */
     if (is_sym(head, "apply") && node->n_children == 3) {
         /* Handled via NATIVE_CALL 70 which unpacks the list at runtime */
-        int __opnd_s = c->n_locals;  /* SW-186: pushed operands are tracked locals */
+        int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0); /* push f */
         add_local(c, "__operand__");
         compile_expr(c, node->children[2], 0); /* push args list */
@@ -5576,7 +5576,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "list")) {
         /* (list a b c) → cons(a, cons(b, cons(c, nil))). The growing list is
          * an operand that stays on the stack while each element compiles, so
-         * it occupies a tracked local slot (SW-186): a binder inside an
+         * it occupies a tracked local slot (SW-189): a binder inside an
          * element -- (list 'a (let ((v ...)) v)) -- allocates its variables at
          * c->n_locals, and without the slot it landed on the accumulator and
          * the list came back as (). */
@@ -5903,7 +5903,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         (strcmp(node->children[3]->symbol, ":dtype") == 0 ||
          strcmp(node->children[3]->symbol, "#:dtype") == 0 ||
          strcmp(node->children[3]->symbol, "dtype") == 0)) {
-        int __opnd_s = c->n_locals;  /* SW-186: pushed operands are tracked locals */
+        int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
         add_local(c, "__operand__");
         compile_expr(c, node->children[2], 0);

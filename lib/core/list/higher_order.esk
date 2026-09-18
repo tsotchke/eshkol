@@ -88,7 +88,7 @@
 (define (for-each proc . lists)
   (let loop ((ls lists))
     (if (__eshkol-any-null? ls)
-        (if #f #f)   ; the unspecified value (ADR-0023)
+        (if #f #f)   ; the unspecified value (ADR-0024)
         (begin
           (apply proc (map car ls))
           (loop (map cdr ls))))))

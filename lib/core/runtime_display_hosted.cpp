@@ -313,7 +313,7 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
             break;
 
         case ESHKOL_VALUE_UNSPECIFIED:
-            // ADR-0023: the unspecified value produces no output, as the
+            // ADR-0024: the unspecified value produces no output, as the
             // bytecode VM's VAL_VOID does.
             break;
 

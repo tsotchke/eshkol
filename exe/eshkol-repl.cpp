@@ -402,7 +402,7 @@ bool is_definition_statement(const eshkol_ast_t& ast) {
 // Runs one REPL form. A form whose value the REPL shows (everything but a
 // definition or an explicit output call, see is_definition_statement) is
 // evaluated through executeTagged() and its value printed here: nothing for
-// the unspecified value (ADR-0023), the value and a newline otherwise. The
+// the unspecified value (ADR-0024), the value and a newline otherwise. The
 // former (begin (display expr) (newline)) wrapper could not tell "nothing to
 // show" from the empty list, so `(when #t (display "hi"))` echoed `hi()`.
 static void* repl_run_form(eshkol::ReplJITContext& repl_ctx, eshkol_ast_t* ast,

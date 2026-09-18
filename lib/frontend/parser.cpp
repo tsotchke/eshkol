@@ -5652,7 +5652,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
             if (token.type == TOKEN_RPAREN) {
                 // No else clause: the form evaluates to the unspecified value
-                // (ADR-0023), spelled as a call to `void`, not to '().
+                // (ADR-0024), spelled as a call to `void`, not to '().
                 else_expr = *eshkol_alloc_symbolic_ast();
                 else_expr.type = ESHKOL_OP;
                 else_expr.operation.op = ESHKOL_CALL_OP;

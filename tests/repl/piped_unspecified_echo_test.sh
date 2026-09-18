@@ -1,5 +1,5 @@
 #!/bin/sh
-# ADR-0023: the REPL shows nothing after a form that evaluates to the
+# ADR-0024: the REPL shows nothing after a form that evaluates to the
 # unspecified value, and still shows the empty list. Before the fix
 # `(when (> x 1) (display "hi"))` echoed `hi()`.
 set -u

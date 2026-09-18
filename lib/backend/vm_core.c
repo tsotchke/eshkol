@@ -1008,7 +1008,7 @@ typedef struct VM {
     struct {
         int active;
     } ts_queries[32];
-    /* Open upvalues (SW-187). Every (closure, upvalue) that native 151 pointed
+    /* Open upvalues (SW-190). Every (closure, upvalue) that native 151 pointed
      * at a top-level stack slot, so the scope that retires the slot (OP_POPN,
      * OP_TAIL_CALL_POPN) can CLOSE the capture -- copy the slot's last value
      * into the closure -- instead of leaving it pointing at a slot the next

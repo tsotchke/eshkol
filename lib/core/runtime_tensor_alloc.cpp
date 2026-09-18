@@ -37,6 +37,26 @@ extern void eshkol_runtime_fatal(eshkol_exception_type_t type,
  * freestanding-adjacent translation unit's include surface small; ABI-stable
  * symbols. */
 bool eshkol_tensor_collection_is_nested(const eshkol_tagged_value_t* input);
+/* A dense tensor AD node read as a tensor of scalar nodes (runtime_autodiff.cpp). */
+extern "C" void* eshkol_ad_dense_node_elements(void* dense_node);
+
+/* (f) operand is a dense tensor AD node: a CALLABLE whose object header says
+ *     AD_NODE and whose tensor_value is set. The dense reverse path publishes
+ *     its results this way, and every operator that has no dense rule reads
+ *     its operand here. The node is returned as a tensor of its shape whose
+ *     elements project it, so the operator's scalarising AD rule applies and
+ *     the reverse sweep reaches the dense node (ADR-0023). Before this case a
+ *     matmul result fed to tensor-dot, reshape, relu, softmax or tensor-scale
+ *     raised "expected tensor, got ad-node" (SW-181). */
+static void* dense_ad_node_as_tensor(const eshkol_tagged_value_t* val) {
+    if (!val || (val->type & 0x0F) != ESHKOL_VALUE_CALLABLE || !val->data.ptr_val) return nullptr;
+    void* ptr = (void*)(uintptr_t)val->data.ptr_val;
+    const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(ptr);
+    if (!hdr || hdr->subtype != CALLABLE_SUBTYPE_AD_NODE) return nullptr;
+    const ad_node_t* node = (const ad_node_t*)ptr;
+    if (!node->tensor_value) return nullptr;
+    return eshkol_ad_dense_node_elements(ptr);
+}
 void* eshkol_tensor_from_collection(arena_t* arena,
                                     const eshkol_tagged_value_t* input);
 
@@ -87,6 +107,7 @@ void* eshkol_tensor_from_collection(arena_t* arena,
 void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
                                     const char* op_name) {
     if (val) {
+        if (void* projected = dense_ad_node_as_tensor(val)) return projected;
         /* A NEST goes to the shared rank-N walker before any of the flat cases
          * below, so a runtime-built nested collection denotes the same tensor as
          * the identical nested literal. Checked first because a nest is also a
@@ -337,6 +358,8 @@ void* eshkol_tensor_matrix_operand_checked(const eshkol_tagged_value_t* val,
                                           const char* op_name) {
     const eshkol_tensor_t* t = nullptr;
     if (val) {
+        if (void* projected = dense_ad_node_as_tensor(val)) t = (const eshkol_tensor_t*)projected;
+        else
         if (val->type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
             void* ptr = (void*)(uintptr_t)val->data.ptr_val;
             const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(ptr);

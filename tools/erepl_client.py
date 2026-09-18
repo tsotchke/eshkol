@@ -354,7 +354,7 @@ def _self_test(binary: str) -> int:
         check(r["stdout"] == "42", "explicit display output lands in stdout, exactly",
               repr(r))
         check(r["value"] == "" and r["value_type"] == "unspecified",
-              "display evaluates to the unspecified value: empty value, value_type unspecified (ADR-0023)",
+              "display evaluates to the unspecified value: empty value, value_type unspecified (ADR-0024)",
               repr(r))
 
         # -- the unspecified value is not the empty list ------------------

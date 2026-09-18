@@ -154,4 +154,4 @@ not run their body, `set!`, `display`, `newline`, `write`, `for-each`,
 `display` prints nothing for it, so a list holding one shows a gap, and the
 REPL shows nothing after a form that evaluates to it. The bytecode VM's own
 void value is the same value: a program prints the same text on every engine.
-This is [ADR-0023](../../design/adr/0023-unspecified-value.md).
+This is [ADR-0024](../../design/adr/0024-unspecified-value.md).

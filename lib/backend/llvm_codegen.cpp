@@ -6648,7 +6648,7 @@ private:
         return tagged_->packNull();
     }
 
-    /** The unspecified value (ADR-0023). */
+    /** The unspecified value (ADR-0024). */
     Value* packUnspecifiedToTaggedValue() {
         return tagged_->packUnspecified();
     }
@@ -12316,7 +12316,7 @@ private:
             builder->CreateStore(store_value, var_ptr);
             eshkol_debug("set! updated variable: %s", var_name);
 
-            // ADR-0023: set! evaluates to the unspecified value.
+            // ADR-0024: set! evaluates to the unspecified value.
             return tagged_->packUnspecified();
         } else {
             // Variable is not mutable (might be a function argument passed by value)
@@ -14597,7 +14597,7 @@ private:
                         {PointerType::getUnqual(*context)}, false));
                 builder->CreateCall(write_func, {arg_ptr});
             }
-            co_return packUnspecifiedToTaggedValue();  // ADR-0023
+            co_return packUnspecifiedToTaggedValue();  // ADR-0024
         }
 
         // R7RS read: parse S-expression from port (or stdin)
@@ -15444,7 +15444,7 @@ private:
         // R7RS unspecified-value constructor.  Eshkol represents the single
         // unspecified value as its canonical null tagged value.
         if (func_name == "void" && op->call_op.num_vars == 0)
-            co_return packUnspecifiedToTaggedValue();  // ADR-0023
+            co_return packUnspecifiedToTaggedValue();  // ADR-0024
 
         // Handle if conditional
         if (func_name == "if") co_return codegenIfCall(op);
@@ -17000,7 +17000,7 @@ private:
             builder->CreateStore(builder->CreateAdd(ci2, ConstantInt::get(int64_type, 1)), idx_ptr);
             builder->CreateBr(cond_bb);
             builder->SetInsertPoint(done_bb);
-            co_return packUnspecifiedToTaggedValue();  // ADR-0023
+            co_return packUnspecifiedToTaggedValue();  // ADR-0024
         }
         // R7RS vector-map: (vector-map proc vector) → vector
         // Handles both Scheme vectors (16-byte tagged elements) and tensors (8-byte doubles)
@@ -34577,6 +34577,16 @@ private:
 
         BasicBlock* check_callable = BasicBlock::Create(*context, "vref_check_callable", current_func);
         // Scalar inputs: (tensor-ref 6.0 0) → return 6.0 directly
+        // The tensor path reads its source through this slot, so a dense
+        // AD node can hand it a projection instead of the node (ADR-0023).
+        IRBuilderBase::InsertPoint vref_saved_ip = builder->saveIP();
+        if (current_func && !current_func->empty()) {
+            BasicBlock& vref_entry = current_func->getEntryBlock();
+            builder->SetInsertPoint(&vref_entry, vref_entry.begin());
+        }
+        Value* vref_src_slot = builder->CreateAlloca(int64_type, nullptr, "vref_src");
+        builder->restoreIP(vref_saved_ip);
+        builder->CreateStore(safeExtractInt64(vector_val), vref_src_slot);
         builder->CreateCondBr(is_scalar, scalar_input, check_callable);
 
         builder->SetInsertPoint(check_callable);
@@ -34612,6 +34622,36 @@ private:
         
         // Unpack AD node pointer from tagged_value
         Value* ad_node_ptr = unpackPtrFromTaggedValue(vector_val);
+
+        // A CALLABLE AD node with a tensor_value is a DENSE tensor node (the
+        // dense reverse path's result). Indexing it means indexing its
+        // elements, so it is projected through the runtime and read by the
+        // tensor path below; only a node without a tensor value is the scalar
+        // node the comment above describes. Returning the dense node itself
+        // gave `(tensor-ref (matmul A x) i)` the whole vector (SW-181).
+        {
+            Value* vref_node = ad_node_ptr->getType()->isPointerTy()
+                ? ad_node_ptr : builder->CreateIntToPtr(ad_node_ptr, builder->getPtrTy());
+            Value* vref_tv = builder->CreateLoad(builder->getPtrTy(),
+                builder->CreateStructGEP(ctx_->adNodeType(), vref_node, 6));
+            BasicBlock* vref_dense = BasicBlock::Create(*context, "vref_dense_node", current_func);
+            BasicBlock* vref_scalar_node = BasicBlock::Create(*context, "vref_scalar_node", current_func);
+            builder->CreateCondBr(builder->CreateICmpNE(vref_tv,
+                ConstantPointerNull::get(builder->getPtrTy())), vref_dense, vref_scalar_node);
+
+            builder->SetInsertPoint(vref_dense);
+            Function* vref_proj_fn = module->getFunction("eshkol_ad_dense_node_elements");
+            if (!vref_proj_fn) {
+                vref_proj_fn = Function::Create(
+                    FunctionType::get(builder->getPtrTy(), {builder->getPtrTy()}, false),
+                    Function::ExternalLinkage, "eshkol_ad_dense_node_elements", module.get());
+            }
+            Value* vref_projected = builder->CreateCall(vref_proj_fn, {vref_node});
+            builder->CreateStore(builder->CreatePtrToInt(vref_projected, int64_type), vref_src_slot);
+            builder->CreateBr(tensor_input);
+
+            builder->SetInsertPoint(vref_scalar_node);
+        }
         
         // AD node struct: {type, value, gradient, input1, input2, id}
         // We want field 1 (value)
@@ -34662,7 +34702,7 @@ private:
         builder->SetInsertPoint(tensor_input);
 
         // Unpack if tagged_value (lambda parameters are tagged_value)
-        Value* vector_ptr_int = safeExtractInt64(vector_val);
+        Value* vector_ptr_int = builder->CreateLoad(int64_type, vref_src_slot);
         Value* index_int = safeExtractInt64(index);
         
         // Use class member tensor_type (shared by all tensor operations)
@@ -41249,7 +41289,7 @@ private:
             builder->CreateStore(barriered, tv_slot);
             builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
                                 {cons_ptr, slot_flag, tv_slot});
-            return packUnspecifiedToTaggedValue();  // ADR-0023
+            return packUnspecifiedToTaggedValue();  // ADR-0024
         }
 
         // Fallback: non-tagged scalar. detectValueType still classifies
@@ -41271,7 +41311,7 @@ private:
                 {cons_ptr, slot_flag, new_val_typed.llvm_value,
                  ConstantInt::get(int8_type, type_tag)});
         }
-        return packUnspecifiedToTaggedValue();  // ADR-0023
+        return packUnspecifiedToTaggedValue();  // ADR-0024
     }
 
     Value* codegenSetCar(const eshkol_operations_t* op) {
