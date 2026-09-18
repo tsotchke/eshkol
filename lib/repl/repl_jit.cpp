@@ -8,6 +8,7 @@
 #include <eshkol/eshkol.h>
 #include <eshkol/abi_fingerprint.h>
 #include <eshkol/frontend/ast_strings.h>
+#include <eshkol/frontend/source_paths.h>
 #include <eshkol/llvm_backend.h>
 #include <eshkol/module_visibility.h>
 #include <eshkol/platform_runtime.h>
@@ -789,6 +790,12 @@ static std::string resolveModulePath(const std::string& module_name,
  * attributes source text therefore also roots the search path, and no site
  * can do one without the other.
  */
+/** True when the ambient source context is not @p expected (a display path). */
+static bool source_path_context_differs(const char* expected) {
+    const char* actual = eshkol_get_source_context_path();
+    return !actual || std::strcmp(actual, expected) != 0;
+}
+
 class ScopedSourceContext {
 public:
     ScopedSourceContext(const std::string& path, const std::string& text)
@@ -3505,7 +3512,11 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
     if (!source_path.empty()) {
         explicit_source_context = std::make_unique<ScopedSourceContext>(
             source_path, source_text);
-        if (source_path != eshkol_get_source_context_path()) {
+        // The ambient context holds the DISPLAY spelling of the path
+        // (ADR-0020), so compare like with like rather than against the host
+        // path this caller happens to hold.
+        const char* expected = eshkol_source_path_display(source_path.c_str());
+        if (!expected || source_path_context_differs(expected)) {
             throw std::runtime_error(
                 "failed to establish explicit JIT batch source context");
         }
