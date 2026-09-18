@@ -206,6 +206,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0017 — Stochastic Binary Lambda Calculus](design/adr/0017-stochastic-binary-lambda-calculus.md) — Proposed — `core.sblc`, the self-delimiting binary program grammar, exact rational distribution semantics under a step bound (first slice targets v1.4.0); carried the number 0011 until 2026-09-17
 - [ADR 0018 — Signed-curvature stereographic geometry](design/adr/0018-signed-curvature-stereographic-geometry.md) — Accepted — one κ-stereographic chart for all curvature signs, analytic through `K = 0`, and the execution contract it implies (targets v1.4.0); carried the number 0012 until 2026-09-17
 - [ADR 0019 — Evergreen documentation architecture](design/adr/0019-evergreen-documentation-architecture.md) — Partially implemented
+- [ADR 0020 — One boundary for each place a value crosses a representation](design/adr/0020-ad-value-boundaries.md) — Accepted — a gradient point written as separate scalars is parsed as the vector literal it stands for, and a cons slot is read and written whole, so a derivative carrier survives both
 
 ## Testing and Quality Gates
 

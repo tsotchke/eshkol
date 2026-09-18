@@ -13429,8 +13429,8 @@ entries:
   - id: SW-182
     bucket: SILENT-WRONG
     family: ad/gradient-scalar-point-arguments
-    status: open
-    needs_decision: true
+    status: fixed
+    closed_at: "26419805"
     title: "native: (gradient f a b ...) with the point given as separate scalar arguments differentiates at 0 unless every argument is a literal, so a gradient-descent loop written that way never moves off its first gradient"
     repro: >-
       (define (loss a b) (+ (* (- a 3.0) (- a 3.0)) (* (- b 1.0) (- b 1.0))))
@@ -13439,7 +13439,7 @@ entries:
       (display (gradient loss p q))
       (display (gradient loss (+ p 0.0) (+ q 0.0)))
       (display (gradient loss (list p q)))
-    observed: >-
+    observed_before: >-
       `#(-4.8 -1.6)`, `#(-6 -2)`, `#(-6 -2)`, `#(-4.8 -1.6)` under `eshkol-run -r`
       and from an AOT binary, exit 0, no diagnostic. #(-6 -2) is the gradient at
       (0, 0): a point argument that is a variable, a parameter or any other
@@ -13453,6 +13453,27 @@ entries:
     correct: >-
       #(-4.8 -1.6) for every form, or a compile-time refusal of the scalar-argument
       form if only literals are meant to be accepted.
+    root_cause: >-
+      The parser rewrote the separate-scalar form `(gradient f a b ...)` into a
+      vector point by assembling its own node, of the bare ESHKOL_TENSOR kind, in
+      place of the ESHKOL_TENSOR_OP node a written `#(...)` produces. Nothing else
+      produces that kind. Its lowering (codegenTensor in lib/backend/
+      llvm_codegen.cpp) handles an element that evaluates to a raw integer or
+      double and stored the constant 0 for anything else, so a variable, a
+      parameter, a loop variable or a call (all of which evaluate to a tagged
+      value) became 0. The VM compiles the form through its ordinary vector path,
+      which is why it was right. Every other operator (hessian, jacobian,
+      laplacian, divergence, curl, directional-derivative, derivative) takes a
+      single point expression and was already evaluated correctly; the vector,
+      list and `#(...)` point forms of gradient were too.
+    fix: >-
+      The ruling is to support the form, since tutorial 24 teaches it by name.
+      The parser now seeds parse_vector_body with the first point argument, so
+      `(gradient f a b ...)` is parsed as the literal `#(a b ...)` it stands for,
+      by the same rules and through the same element evaluator every vector
+      literal uses. The bare-node lowering no longer invents a value: an element
+      it cannot store is a compile-time error. docs/reference/ad/operators.md
+      lists the separate-scalar point form.
     evidence: >-
       Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
       arm64 macOS, JIT and AOT. Three tutorial programs are written this way and
@@ -13465,6 +13486,14 @@ entries:
       minimum at (19.99, 0) with f = 16000360.99 against (0.9944, 0.9888) and
       f = 3.14e-05 on the VM; problem 3 is written the same way.
       scripts/doc_audit/check_doc_examples.py reports all three.
+      Fixed on fix/v135-ad-carriers, Release build, arm64 macOS:
+      tests/ad/gradient_scalar_point_arguments_test.esk (29 checks: the four
+      ledger rows, globals, calls, mixed literal and variable, parameters,
+      let-bound, named-let loop variables, three arguments, a 100-step descent
+      loop, and every other operator's point as a control) fails 13 of 29 on the
+      base build and passes 29/29 on the fix, cached and uncached JIT and AOT.
+      scripts/doc_audit/check_doc_examples.py runs the three tutorial programs
+      with their markers removed and they match on JIT and AOT.
     caught_by: [doc-example-gate]
     missed_by: [run_ad_oracle, run_ad_exactness_gate, run_dense_tensor_ad_gate, doc_audit]
     notes: >-
@@ -13479,13 +13508,13 @@ entries:
     bucket: LOUD-ERROR
     subtag: structural
     family: ad/closure-capture-through-map
-    status: open
-    needs_decision: false
+    status: fixed
+    closed_at: "9990be69"
     title: "a derivative through `map` with a lambda that captures the differentiated variable is 0, with `Invalid type for int64 storage value: 6` on stderr and exit status 0"
     repro: >-
       (define (f a) (fold-left + 0.0 (map (lambda (x) (* a x)) '(1.0 2.0 3.0))))
       (display (derivative f 2.0))
-    observed: >-
+    observed_before: >-
       Prints `0` after three lines of "ERROR: Invalid type for int64 storage
       value: 6" on stderr, exit 0, under `eshkol-run -r` and from an AOT binary.
       The same sum written as a named-let loop over the list prints 6, and
@@ -13493,6 +13522,28 @@ entries:
       list `map` builds from the capturing lambda, not in fold-left.
     correct: >-
       6.
+    root_cause: >-
+      A cons slot is a tagged value, but emitted code never moved it as one.
+      codegenTaggedArenaConsCellFromTaggedValue branched at run time over storage
+      classes (null, double, pointer, else int64), and seven readers
+      (extractCarAsTaggedValue, extractCdrAsTaggedValue,
+      extractConsCarAsTaggedValue, CollectionCodegen::car and ::cdr, and two
+      copies inside codegenCompoundCarCdr) each branched over their own closed
+      list of representations and rebuilt the value through a typed runtime
+      accessor. A forward-mode dual number (type 6) and a complex number were in
+      none of the lists: arena_tagged_cons_set_int64 rejected the store with
+      "Invalid type for int64 storage value: 6" and left the slot empty, and
+      arena_tagged_cons_get_int64 answered 0. The lists had been extended one type
+      at a time as types were found missing (bool, char, logic variables) and had
+      drifted: the cdr reader never received the char arm, so
+      `(apply cdr (list (cons #\a #\b)))` answered 98, and the cdr builtin crashed
+      on a dual number in its slot.
+    fix: >-
+      TaggedValueCodegen::loadConsSlot and storeConsSlot are now the only way
+      emitted code reads or writes a cons element, and they move the tagged value
+      whole (type, flags and payload). The builder and all seven readers delegate
+      to them, so the set of value types a list can hold is open and no future
+      type needs a case. About 900 lines of emitted dispatch are gone.
     evidence: >-
       Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
       arm64 macOS. Two tutorial programs compute their loss with this
@@ -13506,6 +13557,15 @@ entries:
       5000 steps, reports "Fitted: 0x^2 + 0x + 0" with MSE 491.11 and exits 0,
       where an independent gradient-descent computation gives
       0.828x^2 + 0.900x + 1.026 with MSE 0.0183.
+      Fixed on fix/v135-ad-carriers, Release build, arm64 macOS:
+      tests/ad/differentiated_values_in_list_cells_test.esk (25 checks: the ledger
+      row, fold-right, reduce, apply, for-each, filter, two-list map, an internal
+      define, nested map, cons/car, cons/cdr, cadr, append/reverse/list-ref,
+      reverse mode, second order, least squares at scalar variables, a complex
+      number and a character kept by a list, and value-semantics controls) fails
+      on the base build (four derivatives 0, then a crash) and passes 25/25 on the
+      fix, cached and uncached JIT and AOT, with no diagnostic on stderr.
+      Tutorial 26 runs with its marker removed and matches on JIT and AOT.
     caught_by: [doc-example-gate]
     missed_by: [run_ad_oracle, doc_audit]
     notes: >-
