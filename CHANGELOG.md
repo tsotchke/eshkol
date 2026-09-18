@@ -1334,6 +1334,31 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **Every ML activation takes a number or a tensor, from one dispatch point
+  (#705).** `relu` and `sigmoid` accepted either; `softplus`, `gelu`,
+  `leaky-relu`, `silu`, `elu`, `selu`, `mish`, `hard-swish`, `hard-sigmoid` and
+  `celu` were tensor-only and raised on a number, against the documented
+  contract. One lowering now serves the family: the operand is evaluated once
+  and classified at run time, a tensor going to the tensor kernel and a number
+  or scalar differentiation carrier to the activation's own formula over the
+  differentiable scalar primitives — the same formula, constants and stability
+  threshold the tensor kernel uses, so the two agree elementwise and the scalar
+  form differentiates in every mode with no rule of its own. The classification
+  never consults the static type, which narrows an unannotated parameter to
+  `Tensor`. `swish` joins the family as a builtin (`x * sigmoid(beta*x)`;
+  beta 1 is `silu`), taking the surface to 1,053 builtins; a user or library
+  definition of any of these names still shadows the builtin. An activation's
+  scalar value is inexact, as every tensor element is. Tutorial 01's original
+  claim and examples are restored and executed by the documentation example
+  gate. Test: `tests/ml/scalar_activations_test.esk`.
+
+- **`kb-query`'s documented result is its real one (#705).**
+  `docs/ESHKOL_QUICK_REFERENCE.md` said `kb-query` returned the matching facts;
+  `docs/API_REFERENCE.md`, the language specification and every engine return
+  one substitution per unifying fact. The quick reference is corrected, with
+  the documented pattern forms in its example. Test:
+  `tests/logic/kb_query_substitutions_test.esk` on JIT, AOT and the VM.
+
 - **A non-numeric store into a `#(...)` literal promotes the carrier instead of
   raising, so the engines agree (ledger SW-185, ADR-0020 amendment 1).** A
   numeric `#(...)` literal materialises as a tensor natively and as a
@@ -1349,7 +1374,7 @@ the source changes; the verification record for the tagged commit is the
   all read the new representation; the two copies of the iterator element
   loader became one. `tests/vm_parity/corpus/85_container_slot_store.esk`
   proves native and VM agree for a string, boolean, pair, character, symbol and
-  nested vector.
+  nested vector. (#705)
 
 - **One store boundary for every container slot (ledger SW-179, ADR-0020).**
   A numeric `#(...)` literal is a tensor, and `vector-set!` wrote the payload
@@ -1388,7 +1413,7 @@ the source changes; the verification record for the tagged commit is the
   now wraps only a real element. `fast-convolve`'s known-limitation text is
   removed; the defect had been attributed to a shared-library code-generation
   problem, which it was not. Test: `tests/signal/fft_complex_input_test.esk`
-  on the cached run path, the in-process JIT, AOT and the VM.
+  on the cached run path, the in-process JIT, AOT and the VM. (#705)
 
 - **Exact rationals reach the derivative carrier, a vanishing tangent keeps
   the seed's exactness, the three scalar AD operators nest safely through a

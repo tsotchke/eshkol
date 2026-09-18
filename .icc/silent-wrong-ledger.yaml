@@ -13642,7 +13642,7 @@ entries:
     bucket: PARITY-RATCHET
     family: native/vector-literal-non-numeric-store
     status: fixed
-    closed_at: "PENDING"
+    closed_at: "523371f1"
     title: "a non-numeric store into a `#(...)` literal raised on the native engines and stored on the VM, because the native literal is a numeric tensor and the VM's is a heterogeneous vector"
     repro: >-
       (define v #(10 20 30)) (vector-set! v 0 "x") (display v)
