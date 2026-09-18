@@ -1,0 +1,29 @@
+{
+  "status": "PASS",
+  "errors": [],
+  "scores": {
+    "0": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "1": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "2": [
+      2,
+      2,
+      2,
+      2
+    ]
+  },
+  "measured_noise_range": 0,
+  "treatment_margin": 1,
+  "instrument_resolution": 1,
+  "decision_threshold": 0.5,
+  "noise_method": "maximum within-dose range of four fresh process observations; findings are integer counts"
+}

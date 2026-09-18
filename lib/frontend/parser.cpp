@@ -3678,7 +3678,8 @@ static std::vector<std::string> analyzeLambdaCaptures(
 
 static ParserTask<eshkol_ast_t> parse_expression(SchemeTokenizer& tokenizer);
 static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer);
-static ParserTask<eshkol_ast_t> parse_vector_body(SchemeTokenizer& tokenizer);
+static ParserTask<eshkol_ast_t> parse_vector_body(SchemeTokenizer& tokenizer,
+                                                  std::vector<eshkol_ast_t> leading = {});
 static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer);
 
 /**
@@ -9480,54 +9481,34 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
             // Check for closing paren or additional point arguments
             // Supports: (gradient f x), (gradient f x y), (gradient f x y z ...)
-            // Multiple args are packed into #(x y z ...) tensor for the codegen.
+            //
+            // The separate-scalar form is defined as sugar for the vector point
+            // `(gradient f #(x y z ...))`, so it is parsed AS that literal: the
+            // first point argument seeds parse_vector_body, which reads the rest
+            // with parse_expression and builds the ordinary ESHKOL_TENSOR_OP node.
+            // Every point argument may therefore be any expression (a variable, a
+            // parameter, a call, a loop variable), and is evaluated by the one
+            // element evaluator every vector literal uses.
+            //
+            // SW-182: this site used to assemble a bare ESHKOL_TENSOR node by
+            // hand. That node kind has a literal-only lowering which stored 0 for
+            // any element that was not a raw number, so `(gradient f p q)`
+            // differentiated at the origin with no diagnostic.
             Token close_token = tokenizer.nextToken();
             if (close_token.type != TOKEN_RPAREN) {
-                // Multi-argument gradient: (gradient f x y ...) → (gradient f #(x y ...))
-                // Collect all remaining arguments
-                std::vector<eshkol_ast_t> point_args;
-                point_args.push_back(point);  // First point arg already parsed
-
-                // Parse the current token and any remaining args
-                eshkol_ast_t next_arg;
-                if (close_token.type == TOKEN_LPAREN) {
-                    next_arg = (co_await parse_list(tokenizer));
-                } else {
-                    next_arg = (co_await parse_atom(close_token));
+                if (close_token.type == TOKEN_EOF) {
+                    PARSE_ERROR_AT(token, "unterminated gradient expression");
+                    ast.type = ESHKOL_INVALID;
+                    co_return ast;
                 }
-                point_args.push_back(next_arg);
-
-                while (true) {
-                    Token t = tokenizer.nextToken();
-                    if (t.type == TOKEN_RPAREN) break;
-                    if (t.type == TOKEN_EOF) {
-                        PARSE_ERROR_AT(token, "unterminated gradient expression");
-                        ast.type = ESHKOL_INVALID;
-                        co_return ast;
-                    }
-                    eshkol_ast_t arg;
-                    if (t.type == TOKEN_LPAREN) {
-                        arg = (co_await parse_list(tokenizer));
-                    } else {
-                        arg = (co_await parse_atom(t));
-                    }
-                    point_args.push_back(arg);
+                tokenizer.pushBack(close_token);
+                std::vector<eshkol_ast_t> leading_point_args;
+                leading_point_args.push_back(point);
+                point = (co_await parse_vector_body(tokenizer, std::move(leading_point_args)));
+                if (point.type == ESHKOL_INVALID) {
+                    ast.type = ESHKOL_INVALID;
+                    co_return ast;
                 }
-
-                // Build tensor literal #(x y z ...) from the collected args.
-                // The gradient codegen detects tensor inputs and uses forward-mode AD
-                // with proper multi-parameter function call unpacking.
-                eshkol_ast_t tensor_point;
-                tensor_point.type = ESHKOL_TENSOR;
-                tensor_point.tensor_val.total_elements = point_args.size();
-                tensor_point.tensor_val.num_dimensions = 1;
-                tensor_point.tensor_val.dimensions = new uint64_t[1];
-                tensor_point.tensor_val.dimensions[0] = point_args.size();
-                tensor_point.tensor_val.elements = new eshkol_ast_t[point_args.size()];
-                for (size_t i = 0; i < point_args.size(); i++) {
-                    tensor_point.tensor_val.elements[i] = point_args[i];
-                }
-                point = tensor_point;
             }
 
             // Set up gradient operation (2-argument form, point may be packed tensor)
@@ -10859,12 +10840,17 @@ static bool is_tensor_unsafe_literal_element(const eshkol_ast_t& elem) {
  * existing any_sub_tensor/sub_shapes_match check just below already demotes
  * THIS level too, the same way it already handles a ragged nest.
  */
-static ParserTask<eshkol_ast_t> parse_vector_body(SchemeTokenizer& tokenizer) {
+static ParserTask<eshkol_ast_t> parse_vector_body(SchemeTokenizer& tokenizer,
+                                                  std::vector<eshkol_ast_t> leading) {
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_OP;
     ast.operation.op = ESHKOL_TENSOR_OP;
 
-    std::vector<eshkol_ast_t> elements;
+    // `leading` holds elements a caller has already parsed. A form that is
+    // defined as sugar for a vector literal (the separate-scalar point form
+    // of `gradient`) continues here, so it builds the SAME node through the
+    // SAME rules as a written `#(...)` instead of assembling its own.
+    std::vector<eshkol_ast_t> elements = std::move(leading);
 
     while (true) {
         Token elem_token = tokenizer.nextToken();

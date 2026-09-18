@@ -473,9 +473,8 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         ctx_.builder().CreateUnreachable();
 
         ctx_.builder().SetInsertPoint(subtype_ok);
-        // Direct struct load: car is at offset 0.
-        llvm::Value* car_tagged_direct = ctx_.builder().CreateLoad(
-            ctx_.taggedValueType(), cons_ptr, "car_direct");
+        // The slot is loaded whole; see TaggedValueCodegen::loadConsSlot.
+        llvm::Value* car_tagged_direct = tagged_.loadConsSlot(cons_ptr, false);
         ctx_.builder().CreateBr(car_final);
         llvm::BasicBlock* direct_exit = ctx_.builder().GetInsertBlock();
 
@@ -1007,183 +1006,11 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
 
         llvm::Value* cons_ptr = ctx_.builder().CreateIntToPtr(pair_int_safe, ctx_.ptrType());
 
-        // Get cdr type (properly handles legacy types >= 32)
-        llvm::Value* is_cdr = llvm::ConstantInt::get(ctx_.int1Type(), 1);
-        llvm::Value* cdr_type = ctx_.builder().CreateCall(mem_.getTaggedConsGetType(), {cons_ptr, is_cdr});
-        llvm::Value* cdr_base_type = tagged_.getBaseType(cdr_type);
-
-        // Type checks
-        llvm::Value* cdr_is_double = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
-        // Handle both legacy (CONS_PTR) and consolidated (HEAP_PTR) formats
-        llvm::Value* cdr_is_cons_legacy = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
-        llvm::Value* cdr_is_heap_ptr = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
-        llvm::Value* cdr_is_cons_ptr = ctx_.builder().CreateOr(cdr_is_cons_legacy, cdr_is_heap_ptr);
-        llvm::Value* cdr_is_null_type = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL));
-        llvm::Value* cdr_is_string_ptr = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
-        llvm::Value* cdr_is_lambda_sexpr = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
-        // Check for both legacy CLOSURE_PTR and new CALLABLE type
-        llvm::Value* cdr_is_closure_legacy = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
-        llvm::Value* cdr_is_callable = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
-        llvm::Value* cdr_is_closure_ptr = ctx_.builder().CreateOr(cdr_is_closure_legacy, cdr_is_callable);
-        llvm::Value* cdr_is_bool = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_BOOL));
-        llvm::Value* cdr_is_char = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CHAR));
-        llvm::Value* cdr_is_hash_ptr = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
-
-        // Create blocks for each type
-        llvm::BasicBlock* double_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_double", current_func);
-        llvm::BasicBlock* check_cons_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_cons", current_func);
-        llvm::BasicBlock* cons_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_cons", current_func);
-        llvm::BasicBlock* check_null_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_null", current_func);
-        llvm::BasicBlock* null_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_null", current_func);
-        llvm::BasicBlock* check_string_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_string", current_func);
-        llvm::BasicBlock* string_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_string", current_func);
-        llvm::BasicBlock* check_lambda_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_lambda", current_func);
-        llvm::BasicBlock* lambda_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_lambda", current_func);
-        llvm::BasicBlock* check_closure_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_closure", current_func);
-        llvm::BasicBlock* closure_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_closure", current_func);
-        llvm::BasicBlock* check_bool_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_bool", current_func);
-        llvm::BasicBlock* bool_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_bool", current_func);
-        llvm::BasicBlock* check_char_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_char", current_func);
-        llvm::BasicBlock* char_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_char", current_func);
-        llvm::BasicBlock* check_hash_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_hash", current_func);
-        llvm::BasicBlock* hash_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_hash", current_func);
-        llvm::BasicBlock* int_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_int", current_func);
-        llvm::BasicBlock* merge_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_merge", current_func);
-
-        ctx_.builder().CreateCondBr(cdr_is_double, double_cdr, check_cons_cdr);
-
-        ctx_.builder().SetInsertPoint(double_cdr);
-        llvm::Value* cdr_double = ctx_.builder().CreateCall(mem_.getTaggedConsGetDouble(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_double_cdr = tagged_.packDouble(cdr_double);
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* double_exit = ctx_.builder().GetInsertBlock();
-
-        ctx_.builder().SetInsertPoint(check_cons_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_cons_ptr, cons_cdr, check_null_cdr);
-
-        ctx_.builder().SetInsertPoint(cons_cdr);
-        llvm::Value* cdr_cons = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        // Pack as HEAP_PTR (consolidated format) - type checks handle both formats
-        llvm::Value* tagged_cons_cdr = tagged_.packHeapPtr(cdr_cons);
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* cons_exit_cdr = ctx_.builder().GetInsertBlock();
-
-        ctx_.builder().SetInsertPoint(check_null_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_null_type, null_cdr, check_string_cdr);
-
-        ctx_.builder().SetInsertPoint(null_cdr);
-        llvm::Value* tagged_null_extract = tagged_.packNull();
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* null_cdr_exit = ctx_.builder().GetInsertBlock();
-
-        // Handle STRING_PTR
-        ctx_.builder().SetInsertPoint(check_string_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_string_ptr, string_cdr, check_lambda_cdr);
-
-        ctx_.builder().SetInsertPoint(string_cdr);
-        llvm::Value* cdr_string = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_string_cdr = tagged_.packPtr(ctx_.builder().CreateIntToPtr(cdr_string, ctx_.ptrType()), ESHKOL_VALUE_HEAP_PTR);
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* string_exit = ctx_.builder().GetInsertBlock();
-
-        // Handle LAMBDA_SEXPR
-        ctx_.builder().SetInsertPoint(check_lambda_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_lambda_sexpr, lambda_cdr, check_closure_cdr);
-
-        ctx_.builder().SetInsertPoint(lambda_cdr);
-        llvm::Value* lambda_type_cdr = ctx_.builder().CreateCall(mem_.getTaggedConsGetType(), {cons_ptr, is_cdr});
-        llvm::Value* lambda_flags_cdr = ctx_.builder().CreateCall(mem_.getTaggedConsGetFlags(), {cons_ptr, is_cdr});
-        llvm::Value* lambda_ptr_cdr = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_lambda_cdr = tagged_.packPtrWithFlags(
-            ctx_.builder().CreateIntToPtr(lambda_ptr_cdr, ctx_.ptrType()),
-            lambda_type_cdr, lambda_flags_cdr);
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* lambda_exit = ctx_.builder().GetInsertBlock();
-
-        // Handle CLOSURE_PTR
-        ctx_.builder().SetInsertPoint(check_closure_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_closure_ptr, closure_cdr, check_bool_cdr);
-
-        ctx_.builder().SetInsertPoint(closure_cdr);
-        llvm::Value* closure_type_cdr = ctx_.builder().CreateCall(mem_.getTaggedConsGetType(), {cons_ptr, is_cdr});
-        llvm::Value* closure_flags_cdr = ctx_.builder().CreateCall(mem_.getTaggedConsGetFlags(), {cons_ptr, is_cdr});
-        llvm::Value* closure_ptr_cdr = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_closure_cdr = tagged_.packPtrWithFlags(
-            ctx_.builder().CreateIntToPtr(closure_ptr_cdr, ctx_.ptrType()),
-            closure_type_cdr, closure_flags_cdr);
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* closure_exit = ctx_.builder().GetInsertBlock();
-
-        // Handle boolean values
-        ctx_.builder().SetInsertPoint(check_bool_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_bool, bool_cdr, check_char_cdr);
-
-        ctx_.builder().SetInsertPoint(bool_cdr);
-        llvm::Value* cdr_bool_int = ctx_.builder().CreateCall(mem_.getTaggedConsGetInt64(), {cons_ptr, is_cdr});
-        llvm::Value* cdr_bool_i1 = ctx_.builder().CreateICmpNE(cdr_bool_int, llvm::ConstantInt::get(ctx_.int64Type(), 0));
-        llvm::Value* tagged_bool_cdr = tagged_.packBool(cdr_bool_i1);
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* bool_exit = ctx_.builder().GetInsertBlock();
-
-        // Handle CHAR values
-        ctx_.builder().SetInsertPoint(check_char_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_char, char_cdr, check_hash_cdr);
-
-        ctx_.builder().SetInsertPoint(char_cdr);
-        llvm::Value* cdr_char_int = ctx_.builder().CreateCall(mem_.getTaggedConsGetInt64(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_char_cdr = tagged_.packChar(cdr_char_int);
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* char_exit = ctx_.builder().GetInsertBlock();
-
-        // Handle HASH_PTR for hash tables (legacy HASH_PTR - repacks as HEAP_PTR)
-        ctx_.builder().SetInsertPoint(check_hash_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_hash_ptr, hash_cdr, int_cdr);
-
-        ctx_.builder().SetInsertPoint(hash_cdr);
-        llvm::Value* cdr_hash = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        // Repack as HEAP_PTR (consolidated format) - subtype is in object header
-        llvm::Value* tagged_hash_cdr = tagged_.packHeapPtr(ctx_.builder().CreateIntToPtr(cdr_hash, ctx_.ptrType()));
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* hash_exit = ctx_.builder().GetInsertBlock();
-
-        ctx_.builder().SetInsertPoint(int_cdr);
-        llvm::Value* cdr_int64 = ctx_.builder().CreateCall(mem_.getTaggedConsGetInt64(), {cons_ptr, is_cdr});
-        // Preserve the STORED type byte rather than hardcoding INT64. This
-        // block is the fallback for every int-payload immediate the chain
-        // above does not enumerate, and re-tagging them all as INT64 silently
-        // destroyed their type: `(cdr (cons ?a ?b))` came back as the raw
-        // variable id `1` instead of `?b`, so `(logic-var? (cdr p))` was #f
-        // natively and #t on the VM. Carrying the tag through fixes
-        // LOGIC_VAR and any future immediate at the root instead of adding a
-        // tenth special case.
-        llvm::Value* tagged_int64_cdr = tagged_.packInt64WithTypeAndFlags(
-            cdr_int64, cdr_type, llvm::ConstantInt::get(ctx_.int8Type(), 0));
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
-
-        ctx_.builder().SetInsertPoint(merge_cdr);
-        llvm::PHINode* cdr_tagged_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 10);
-        cdr_tagged_phi->addIncoming(tagged_double_cdr, double_exit);
-        cdr_tagged_phi->addIncoming(tagged_cons_cdr, cons_exit_cdr);
-        cdr_tagged_phi->addIncoming(tagged_null_extract, null_cdr_exit);
-        cdr_tagged_phi->addIncoming(tagged_string_cdr, string_exit);
-        cdr_tagged_phi->addIncoming(tagged_lambda_cdr, lambda_exit);
-        cdr_tagged_phi->addIncoming(tagged_closure_cdr, closure_exit);
-        cdr_tagged_phi->addIncoming(tagged_bool_cdr, bool_exit);
-        cdr_tagged_phi->addIncoming(tagged_char_cdr, char_exit);
-        cdr_tagged_phi->addIncoming(tagged_hash_cdr, hash_exit);
-        cdr_tagged_phi->addIncoming(tagged_int64_cdr, int_exit);
+        // The slot is loaded whole (SW-183); see TaggedValueCodegen::loadConsSlot.
+        // `car` above already loaded its slot directly; this reader still branched
+        // over a closed list of representations, so a dual number in a cdr slot
+        // was read through the int64 accessor.
+        llvm::Value* cdr_tagged_phi = tagged_.loadConsSlot(cons_ptr, true);
         ctx_.builder().CreateBr(cdr_final);
         llvm::BasicBlock* merge_exit = ctx_.builder().GetInsertBlock();
 

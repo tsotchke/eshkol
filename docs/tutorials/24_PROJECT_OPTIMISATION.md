@@ -10,7 +10,6 @@ Newton's method, and the Hessian — all powered by compiler-native AD.
 The Rosenbrock function is a classic optimisation benchmark. The minimum
 is at (1, 1) but the valley is narrow and curved — hard for optimisers.
 
-<!-- doc-example: known-defect SW-182: gradient descent reaches (0.994, 0.988); natively (gradient rosenbrock x y) is taken at 0 on every step and the run ends at (19.99, 0) -->
 ```scheme
 ;; f(x, y) = (1 - x)^2 + 100*(y - x^2)^2
 (define (rosenbrock x y)
@@ -71,7 +70,6 @@ Newton steps: x_new = x - H^(-1) * grad.
 
 ## Problem 3: Gradient Descent on a Loss Landscape
 
-<!-- doc-example: known-defect SW-182: the fit reaches 0.828x^2 + 0.900x + 1.026; natively the gradient is taken at 0 (and the map over the data hits SW-183), so nothing is fitted -->
 ```scheme
 ;; Fit a quadratic y = ax^2 + bx + c to noisy data
 (define data '((0 1.1) (1 2.8) (2 6.2) (3 11.1) (4 17.9)))

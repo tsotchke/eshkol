@@ -1615,6 +1615,8 @@ static void print_value(VM* vm, Value v) {
  ******************************************************************************/
 
 static void vm_run(VM* vm);
+/* The one implementation of + - * / (vm_ops.c); the first-class natives call it. */
+static void vm_op_arith(VM* vm, char op);
 
 /* Validate fixed-arity closures at the call boundary, before their body can
  * read argument locals. Unknown metadata remains permissive for legacy

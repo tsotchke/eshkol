@@ -1379,6 +1379,26 @@ the source changes; the verification record for the tagged commit is the
   `tests/vm_parity/corpus/85_container_slot_store.esk`, and tutorial 11's
   element-mutation example, which now runs unmarked in the documentation
   example gate. (#701)
+- **Every AD operator evaluates its point, and a list cell holds any value.**
+  `(gradient f a b ...)` is parsed as the vector literal `#(a b ...)` it
+  stands for, so a point given as variables, parameters, loop variables or
+  calls is evaluated like any other expression instead of being read as 0
+  (SW-182); the bare literal lowering refuses an element it cannot store. A
+  cons slot is read and written whole through
+  `TaggedValueCodegen::loadConsSlot` and `storeConsSlot`, replacing seven
+  hand-written readers and one writer that each dispatched over a closed list
+  of value types, so a forward-mode dual number, a complex number or a
+  character survives `map`, `fold-left`, `fold-right`, `reduce`, `apply`,
+  `cons`, `cdr` and the compound accessors (SW-183). On the VM, `+ - * /`
+  have one implementation, `vm_op_arith`, shared by both dispatch loops and
+  the first-class procedures, so a derivative through `(fold-left + ...)` is
+  recorded on the tape. Design in ADR-0022. Tests:
+  `tests/ad/gradient_scalar_point_arguments_test.esk` and
+  `tests/ad/differentiated_values_in_list_cells_test.esk` (JIT, cached run
+  path and AOT), `tests/vm_parity/corpus/87_gradient_scalar_point_arguments.esk`
+  and `tests/vm_parity/corpus/88_differentiated_values_in_list_cells.esk`, and
+  tutorials 21, 24 and 26, which now run unmarked in the documentation example
+  gate. (#706)
 
 - **Exact rationals reach the derivative carrier, a vanishing tangent keeps
   the seed's exactness, the three scalar AD operators nest safely through a

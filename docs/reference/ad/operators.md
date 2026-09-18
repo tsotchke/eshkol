@@ -324,6 +324,14 @@ for the full rule table.
 | `(tensor 1.0 2.0)` | 8-byte doubles | Yes | Yes |
 | scalar `3.0` | double | Yes (1-D) | Yes (1-D) |
 | multi-param via `(list …)` | cons list | Yes (first-order ops) | — |
+| separate scalars `(gradient f x y …)` | read as `#(x y …)` | `gradient` | — |
+
+The separate-scalar form is shorthand for the `#(…)` point: `(gradient f x y)`
+is `(gradient f #(x y))`, and `f` receives one argument per coordinate. Every
+point argument is an ordinary expression, so a variable, a parameter, a loop
+variable or a call is evaluated like any other, which is what a
+gradient-descent loop written as `(train (- a (* lr (vector-ref g 0))) …)`
+needs.
 
 First- and second-order operators both accept `vector`, `tensor` and `#(…)`
 points (verified against the [AD oracle](support-matrix.md) matrix, which runs

@@ -227,6 +227,68 @@ llvm::Value* TaggedValueCodegen::packCallable(llvm::Value* ptr_val, uint8_t flag
     return packPtr(ptr_val, ESHKOL_VALUE_CALLABLE, flags);
 }
 
+// === Cons slots ===
+// The contract is stated once, on the declarations in tagged_value_codegen.h.
+
+namespace {
+llvm::Value* consCellAsPointer(eshkol::CodegenContext& ctx, llvm::Value* cell) {
+    if (!cell) return nullptr;
+    if (cell->getType()->isPointerTy()) return cell;
+    if (cell->getType()->isIntegerTy(64)) {
+        return ctx.builder().CreateIntToPtr(cell, ctx.ptrType());
+    }
+    return nullptr;
+}
+
+llvm::StructType* consCellType(eshkol::CodegenContext& ctx) {
+    return llvm::StructType::get(ctx.context(),
+                                 {ctx.taggedValueType(), ctx.taggedValueType()});
+}
+} // namespace
+
+llvm::Value* TaggedValueCodegen::loadConsSlot(llvm::Value* cell, bool is_cdr) {
+    auto& b = ctx_.builder();
+    llvm::Value* cell_ptr = consCellAsPointer(ctx_, cell);
+    if (!cell_ptr) return nullptr;
+
+    // Packing emits instructions, so the null result is materialised in the
+    // block the null edge leaves from.
+    llvm::Value* empty_list = packNull();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* from_bb = b.GetInsertBlock();
+    llvm::BasicBlock* load_bb = llvm::BasicBlock::Create(ctx_.context(), "cons_slot_load", fn);
+    llvm::BasicBlock* join_bb = llvm::BasicBlock::Create(ctx_.context(), "cons_slot_join", fn);
+    llvm::Value* is_null = b.CreateICmpEQ(
+        b.CreatePtrToInt(cell_ptr, ctx_.int64Type()),
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    b.CreateCondBr(is_null, join_bb, load_bb);
+
+    b.SetInsertPoint(load_bb);
+    llvm::Value* slot_ptr = b.CreateStructGEP(consCellType(ctx_), cell_ptr, is_cdr ? 1 : 0,
+                                              is_cdr ? "cdr_slot_ptr" : "car_slot_ptr");
+    llvm::Value* loaded = b.CreateLoad(ctx_.taggedValueType(), slot_ptr,
+                                       is_cdr ? "cdr_slot" : "car_slot");
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(join_bb);
+    llvm::PHINode* slot = b.CreatePHI(ctx_.taggedValueType(), 2,
+                                      is_cdr ? "cdr_value" : "car_value");
+    slot->addIncoming(empty_list, from_bb);
+    slot->addIncoming(loaded, load_bb);
+    return slot;
+}
+
+bool TaggedValueCodegen::storeConsSlot(llvm::Value* cell, bool is_cdr, llvm::Value* tagged) {
+    if (!tagged || tagged->getType() != ctx_.taggedValueType()) return false;
+    llvm::Value* cell_ptr = consCellAsPointer(ctx_, cell);
+    if (!cell_ptr) return false;
+    auto& b = ctx_.builder();
+    llvm::Value* slot_ptr = b.CreateStructGEP(consCellType(ctx_), cell_ptr, is_cdr ? 1 : 0,
+                                              is_cdr ? "cdr_slot_ptr" : "car_slot_ptr");
+    b.CreateStore(tagged, slot_ptr);
+    return true;
+}
+
 /** @brief Build the NULL tagged value (via an entry alloca + field stores, then a load). */
 llvm::Value* TaggedValueCodegen::packNull() {
     llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_null");

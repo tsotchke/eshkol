@@ -15566,101 +15566,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 142: { /* add2 — complex- and rational-aware */
-        /* The variadic prelude folds with these, so they must dispatch over
-         * exactly the same tag set as the OP_ADD/OP_SUB/OP_MUL opcodes.  A
-         * rational operand had NO branch here and fell through to the double
-         * path, where as_number() reads its heap pointer as 0.0 — so
-         * `(apply + (list 1/3 1.5))` answered 1.5, silently dropping a term. */
-        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
-            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
-            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            VmComplex* r = vm_complex_add(&vm->heap.regions, &a_z, &b_z);
-            if (!r) { vm->error = 1; break; }
-            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
-            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
-        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL) {
-            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 331);
-        } else if (vm_either_bignum(a_val,b_val)) { vm_bignum_arith(vm,a_val,b_val,'+'); }
-        else if (a_val.type==VAL_INT && b_val.type==VAL_INT) {
-            int64_t r; if (__builtin_add_overflow(a_val.as.i,b_val.as.i,&r)) vm_bignum_arith(vm,a_val,b_val,'+'); else vm_push(vm, INT_VAL(r));
-        } else { vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) + as_number_vm(vm,b_val))); }
-        break; }
-    case 143: { /* sub2 — complex-aware */
-        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
-            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
-            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            VmComplex* r = vm_complex_sub(&vm->heap.regions, &a_z, &b_z);
-            if (!r) { vm->error = 1; break; }
-            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
-            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
-        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL) {
-            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 332);
-        } else if (vm_either_bignum(a_val,b_val)) { vm_bignum_arith(vm,a_val,b_val,'-'); }
-        else if (a_val.type==VAL_INT && b_val.type==VAL_INT) {
-            int64_t r; if (__builtin_sub_overflow(a_val.as.i,b_val.as.i,&r)) vm_bignum_arith(vm,a_val,b_val,'-'); else vm_push(vm, INT_VAL(r));
-        } else { vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) - as_number_vm(vm,b_val))); }
-        break; }
-    case 144: { /* mul2 — complex-aware */
-        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
-            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
-            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            VmComplex* r = vm_complex_mul(&vm->heap.regions, &a_z, &b_z);
-            if (!r) { vm->error = 1; break; }
-            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
-            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
-        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL) {
-            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 333);
-        } else if (vm_either_bignum(a_val,b_val)) { vm_bignum_arith(vm,a_val,b_val,'*'); }
-        else if (a_val.type==VAL_INT && b_val.type==VAL_INT) {
-            int64_t r; if (__builtin_mul_overflow(a_val.as.i,b_val.as.i,&r)) vm_bignum_arith(vm,a_val,b_val,'*'); else vm_push(vm, INT_VAL(r));
-        } else { vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) * as_number_vm(vm,b_val))); }
-        break; }
-    case 145: { /* div2 — complex- and rational-aware.
-                 * The prelude's variadic `/` folds with div2, so this is the
-                 * real path for (/ 1 3). Exact/exact division yields an exact
-                 * rational (or an integer when it divides), matching the native
-                 * path; previously it always produced an inexact float. */
-        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
-            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
-            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            VmComplex* r = vm_complex_div(&vm->heap.regions, &a_z, &b_z);
-            if (!r) { vm->error = 1; break; }
-            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
-            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
-        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL ||
-                   (a_val.type == VAL_INT && b_val.type == VAL_INT)) {
-            if ((a_val.type == VAL_INT && b_val.type == VAL_INT && b_val.as.i == 0)) {
-                fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
-            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 334); /* rational div: reduces, collapses denom==1 to int */
-        } else if (vm_either_bignum(a_val, b_val)) {
-            /* as_number() answers 0.0 for a heap-boxed bignum, so without this
-             * branch the plain double fallback below silently produced 0 for
-             * every bignum division routed through the variadic `/`. */
-            vm_bignum_arith(vm, a_val, b_val, '/');
-        } else {
-            /* At least one operand is INEXACT here, so a zero divisor is
-             * IEEE-754: ±inf.0 / +nan.0, exactly as native computes it. */
-            vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) / as_number_vm(vm,b_val)));
-        }
-        break; }
-    /* Comparison operators as first-class functions (for sort, map, fold, etc.)
-     * SW-158: the AD-carrier arm must run before vm_either_exact_wide() —
-     * see vm_either_ad_carrier() in vm_ops.c for the full rationale (the
-     * bytecode OP_LT/GT/LE/GE/EQ opcodes carry the identical fix via
-     * vm_exec_lt() et al.; this is the separate first-class-closure copy). */
+    /* The first-class procedures + - * / (and the variadic prelude folds over
+     * them). They run the opcode implementation itself, so a first-class `+`
+     * and an inline `+` cannot disagree about any operand type (SW-183). */
+    case 142: vm_op_arith(vm, '+'); break; /* add2 */
+    case 143: vm_op_arith(vm, '-'); break; /* sub2 */
+    case 144: vm_op_arith(vm, '*'); break; /* mul2 */
+    case 145: vm_op_arith(vm, '/'); break; /* div2 */
+
     case 146: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_ad_carrier(a,b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <  as_number_vm(vm,b))); break; } if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) < as_number_vm(vm,b))); break; }  /* < */
     case 147: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_ad_carrier(a,b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >  as_number_vm(vm,b))); break; } if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) > as_number_vm(vm,b))); break; }  /* > */
     case 148: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_ad_carrier(a,b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; } if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; } /* <= */

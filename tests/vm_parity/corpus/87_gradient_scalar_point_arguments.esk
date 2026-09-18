@@ -1,0 +1,43 @@
+; VM<->native parity: a gradient point given as separate scalar arguments is
+; evaluated, whatever expression each argument is.
+;
+; `(gradient f a b ...)` is shorthand for the point `#(a b ...)`. The native
+; parser used to build its own node for it, whose lowering stored 0 for any
+; element that was not a numeric literal, so a point given as variables was
+; differentiated at the origin (SW-182). The VM always evaluated the
+; arguments. `gradient` is vm-supported per PARITY.tsv; every point is inexact.
+
+; loss = (a-3)^2 + (b-1)^2, grad = (2(a-3), 2(b-1))
+(define (loss a b) (+ (* (- a 3.0) (- a 3.0)) (* (- b 1.0) (- b 1.0))))
+(define p 0.6)
+(define q 0.2)
+(display (gradient loss 0.6 0.2)) (newline)
+; #(-4.8 -1.6)
+(display (gradient loss p q)) (newline)
+; #(-4.8 -1.6)
+(display (gradient loss (+ p 0.0) (+ q 0.0))) (newline)
+; #(-4.8 -1.6)
+(display (gradient loss (list p q))) (newline)
+; #(-4.8 -1.6)
+
+(define (at-params a b) (gradient loss a b))
+(display (at-params 1.0 3.0)) (newline)
+; #(-4 4)
+
+; three coordinates, a literal, a variable and a call:
+; grad of x y z = (y z, x z, x y) = (6, 3, 2) at (1, 2, 3)
+(define two 2.0)
+(display (gradient (lambda (x y z) (* x (* y z))) 1.0 two (+ two 1.0))) (newline)
+; #(6 3 2)
+
+; 100 steps of descent from the origin reach (3, 1)
+(define (descend a b n)
+  (if (= n 0)
+      (list a b)
+      (let ((g (gradient loss a b)))
+        (descend (- a (* 0.1 (vector-ref g 0))) (- b (* 0.1 (vector-ref g 1))) (- n 1)))))
+(define end (descend 0.0 0.0 100))
+(display (< (abs (- (car end) 3.0)) 1e-8)) (newline)
+; #t
+(display (< (abs (- (cadr end) 1.0)) 1e-8)) (newline)
+; #t
