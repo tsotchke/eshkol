@@ -1,0 +1,34 @@
+id: SW-184
+bucket: SILENT-WRONG
+family: ad/vm-tensor-carrier
+status: open
+needs_decision: true
+title: "VM: a gradient through any tensor operator (tensor-dot, tensor-mul, matmul, tensor-sum) is silently #(0 0 ...) although PARITY.tsv marks every one of them vm-supported"
+repro: >-
+  (1) (display (gradient (lambda (x) (tensor-dot x x)) #(1.0 2.0 3.0)))
+  (2) (display (gradient (lambda (x) (tensor-sum (tensor-mul x x))) #(1.0 2.0 3.0)))
+  (3) (display (gradient (lambda (x) (tensor-sum (matmul (eye 3) x))) #(1.0 2.0 3.0)))
+observed: >-
+  All three print #(0 0 0) on eshkol-vm-standalone-test, exit 0, no
+  diagnostic. Native prints #(2 4 6), #(2 4 6), #(1 1 1). The VM's scalar
+  gradient path (84_named_closure_derivative_capture.esk, vector-ref over a
+  vector point) is correct, so the loss is specific to the tensor operators:
+  the VM tensor natives do not carry the forward dual through tensor
+  operations, and the reverse tape does not record them.
+correct: >-
+  #(2 4 6), #(2 4 6), #(1 1 1), or PARITY.tsv rows for the tensor operators
+  under differentiation marked as a gap so the parity manifest is truthful.
+evidence: >-
+  Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
+  arm64 macOS, while sweeping SW-181. tensor-dot, matmul, tensor-sum, eye and
+  gradient are all `vm-supported` in tests/vm_parity/PARITY.tsv; the AD
+  carrier manifest names the VM gradient carrier vm-dual-forward.
+caught_by: [coordinator-sweep]
+missed_by: [run_vm_parity, run_engine_parity_coverage, gate_ad_shared_node_model]
+notes: >-
+  Found while closing SW-181 (native). Not a corpus program for SW-181 for
+  this reason: the native fix cannot be held to a VM that answers zero. Needs
+  a ruling: either the VM tensor natives gain the dual carrier (the manifest's
+  own end state), or the parity rows are demoted until they do. Filed
+  SILENT-WRONG because exit 0 with a wrong derivative is that bucket's
+  definition.

@@ -1,0 +1,29 @@
+id: SW-185
+bucket: LOUD-ERROR
+subtag: structural
+family: ad/dense-tensor-operands
+status: open
+needs_decision: true
+title: "native: jacobian of a function returning a dense tensor AD node (a matmul result) is a SIGSEGV, and hessian of a function using matmul on a 1-D point raises a dual-tensor rank error"
+repro: >-
+  (1) (display (jacobian (lambda (v) (matmul (eye 2) v)) #(1.0 2.0)))
+  (2) (display (hessian (lambda (v) (tensor-dot v (matmul (eye 2) v))) #(1.0 2.0)))
+observed: >-
+  (1) fatal signal SIGSEGV at address 0, exit 139, under `eshkol-run -r`.
+  (2) "matmul: dual-tensor (autodiff) matmul requires 2-D operands with
+  A.cols == B.rows", exit 1. Both on the base and after the SW-181 fix, which
+  covers operands of tensor builtins, not the function-result classification
+  of jacobian (autodiff_codegen.cpp, output_is_callable is accepted as a
+  vector type and then read as one) or the forward-dual matmul used by hessian.
+correct: >-
+  (1) #((1 0) (0 1)); (2) #((2 0) (0 2)); or a precise error naming the
+  unsupported combination for (2).
+evidence: >-
+  Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
+  arm64 macOS, while sweeping SW-181.
+caught_by: [coordinator-sweep]
+missed_by: [run_ad_oracle, run_dense_tensor_ad_gate]
+notes: >-
+  The same class as SW-181 one level up: a dense node reaching a slot that
+  assumes a tensor, here the function-result slot of jacobian. The SW-181
+  projection (eshkol_ad_dense_node_elements) is the facility to apply there.
