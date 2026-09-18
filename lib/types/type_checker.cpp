@@ -4,6 +4,7 @@
  */
 
 #include "eshkol/types/type_checker.h"
+#include <eshkol/frontend/ast_strings.h>
 #include "eshkol/types/type_relation.h"
 #include "../../lib/core/arena_memory.h"
 #include <cstdio>
@@ -198,7 +199,7 @@ static hott_type_expr_t* substituteTypeVars(
     switch (type_expr->kind) {
         case HOTT_TYPE_VAR:
             // Already handled above, but needed for completeness
-            result->var_name = type_expr->var_name ? strdup(type_expr->var_name) : nullptr;
+            result->var_name = type_expr->var_name ? eshkol_ast_strdup(type_expr->var_name) : nullptr;
             break;
 
         case HOTT_TYPE_ARROW:
@@ -223,7 +224,7 @@ static hott_type_expr_t* substituteTypeVars(
                 // Create a modified substitution map excluding bound variables
                 std::map<std::string, hott_type_expr_t*> inner_subst = substitutions;
                 for (uint64_t i = 0; i < type_expr->forall.num_vars; i++) {
-                    result->forall.type_vars[i] = strdup(type_expr->forall.type_vars[i]);
+                    result->forall.type_vars[i] = eshkol_ast_strdup(type_expr->forall.type_vars[i]);
                     inner_subst.erase(type_expr->forall.type_vars[i]);
                 }
                 result->forall.num_vars = type_expr->forall.num_vars;

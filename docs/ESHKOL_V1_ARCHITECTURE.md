@@ -850,6 +850,25 @@ Deterministic locations are what make language-coverage records reproducible; `l
 
 Ownership analysis and escape analysis traverse the AST iteratively. Each analyzer keeps an explicit stack of work records (`WorkItem`): an `AST` record visits a node, and continuation records (`LET_BINDING`, `EXIT_SCOPE`, `UNBORROW` for ownership; `LET_BINDING`, `EXIT_SCOPE`, `LET_EXIT`, `LAMBDA_EXIT` for escape) run the step that follows a child's traversal. The records preserve the traversal order and the scope cleanup of a recursive walk, so diagnostics are unchanged, while native stack use is independent of source nesting. Together with the explicit continuation stacks in the parser, the type checker and codegen, this lets deeply nested source compile ahead of time within the default 8 MiB stack: the `parser_stack_compile` CTest compiles and runs 16,000 levels of nesting through the JIT and AOT with the stack limit fixed at 8 MiB, and `ownership_nested_diagnostics` holds the analyzers' diagnostics on nested input (since v1.3.5).
 
+### AST ownership
+
+Every phase above reads the same AST, so its data lives for the whole
+compilation:
+
+- **Node identity and spans**: `NodeId -> SourceSpan`, minted by the parser
+  ([`node_identity.h`](../inc/eshkol/frontend/node_identity.h), ADR-0000
+  Stage 1).
+- **String payloads**: identifiers, literal text, operation names, rest
+  parameters, type-variable names, and every name that expansion, renaming,
+  the driver, the REPL or codegen synthesizes. These have one owner, a
+  process-rooted chunked arena
+  ([`ast_strings.h`](../inc/eshkol/frontend/ast_strings.h),
+  [ADR-0021](design/adr/0021-ast-string-owner.md)). Producers allocate from
+  it, and no consumer frees an individual string. `eshkol-run` releases it
+  when `main()` returns, and the REPL releases it in its ordered exit.
+- **Node storage** (`eshkol_ast_t` arrays) is still reclaimed only when the
+  process exits (epic #182).
+
 ### Special Forms (70+)
 
 **Core**: `define`, `define-type`, `define-syntax`, `set!`, `lambda`, `let`, `let*`, `letrec`, `if`, `cond`, `case`, `match`, `and`, `or`, `when`, `unless`, `do`

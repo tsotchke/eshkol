@@ -110,6 +110,14 @@ need to coordinate resets.
   `.icc/lsan-suppressions.txt` does not already name and justify, plus a slope
   check on the one retention the suppressions do hide, so a per-form growth
   regression cannot hide behind a suppression rule.
+- Shipped artifacts are read as bytes for build-host paths (v1.3.5-evolve,
+  ADR-0021). A compiler records source locations, and recording the absolute
+  host path put the build machine's directory layout — home directory and user
+  name — inside the site WebAssembly module. Recorded paths are now normalized
+  at one place to a repository- or module-relative spelling, and
+  `scripts/check_artifact_paths.py` (a layer of `scripts/check_disclosure.py`,
+  and a ctest of its own) fails on any home-directory path in a shipped
+  artifact.
 - Closed-enum dispatch is compiler-enforced (v1.3.5-evolve, #500). A `switch`
   over a closed enum may not carry a `default:` clause, so adding a tag, an
   opcode, a heap subtype or a port flag cannot silently fall through to a

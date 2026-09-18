@@ -1,6 +1,6 @@
 #include <eshkol/module_visibility.h>
+#include <eshkol/frontend/ast_strings.h>
 
-#include <cstring>
 
 namespace eshkol {
 namespace {
@@ -8,12 +8,12 @@ namespace {
 using RenameMap = std::map<std::string, std::string>;
 using BoundNames = std::set<std::string>;
 
+// The old spelling stays with the AST string owner (ast_strings.h), which
+// releases every AST string at the compilation's teardown; a rename only
+// repoints the slot.
 static void replace_name(char*& slot, const std::string& name) {
     if (!slot) return;
-    char* replacement = new char[name.size() + 1];
-    std::memcpy(replacement, name.c_str(), name.size() + 1);
-    delete[] slot;
-    slot = replacement;
+    slot = eshkol_ast_string_copy(name);
 }
 
 static std::string private_name(const std::string& module_name,
