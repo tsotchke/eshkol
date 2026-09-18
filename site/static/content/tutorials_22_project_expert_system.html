@@ -1,0 +1,129 @@
+<h1 id="project-build-a-medical-diagnosis-expert-system">Project: Build
+a Medical Diagnosis Expert System</h1>
+<p>A complete program that uses the consciousness engine to reason about
+symptoms and suggest diagnoses. Combines knowledge bases, pattern
+matching queries, and factor graph inference.</p>
+<p>Save as <code>diagnosis.esk</code> and run with
+<code>eshkol-run diagnosis.esk -o diagnosis &amp;&amp; ./diagnosis</code>.</p>
+<hr />
+<h2 id="the-complete-program">The Complete Program</h2>
+<pre class="scheme"><code>;; ═══════════════════════════════════════════════════════
+;; Medical Diagnosis Expert System
+;; Uses: KB (logic), factor graphs (inference)
+;; ═══════════════════════════════════════════════════════
+
+;; --- Build the knowledge base ---
+(define kb (make-kb))
+
+;; Symptom-disease associations
+(kb-assert! kb (make-fact &#39;causes &#39;flu &#39;fever))
+(kb-assert! kb (make-fact &#39;causes &#39;flu &#39;cough))
+(kb-assert! kb (make-fact &#39;causes &#39;flu &#39;fatigue))
+(kb-assert! kb (make-fact &#39;causes &#39;cold &#39;cough))
+(kb-assert! kb (make-fact &#39;causes &#39;cold &#39;sneezing))
+(kb-assert! kb (make-fact &#39;causes &#39;allergy &#39;sneezing))
+(kb-assert! kb (make-fact &#39;causes &#39;allergy &#39;rash))
+(kb-assert! kb (make-fact &#39;causes &#39;food-poisoning &#39;nausea))
+(kb-assert! kb (make-fact &#39;causes &#39;food-poisoning &#39;fever))
+
+;; Severity ratings
+(kb-assert! kb (make-fact &#39;severity &#39;flu &#39;moderate))
+(kb-assert! kb (make-fact &#39;severity &#39;cold &#39;mild))
+(kb-assert! kb (make-fact &#39;severity &#39;allergy &#39;mild))
+(kb-assert! kb (make-fact &#39;severity &#39;food-poisoning &#39;moderate))
+
+;; Treatment recommendations
+(kb-assert! kb (make-fact &#39;treatment &#39;flu &#39;rest-and-fluids))
+(kb-assert! kb (make-fact &#39;treatment &#39;cold &#39;rest))
+(kb-assert! kb (make-fact &#39;treatment &#39;allergy &#39;antihistamine))
+(kb-assert! kb (make-fact &#39;treatment &#39;food-poisoning &#39;hydration))
+
+;; --- Query engine ---
+
+;; Find diseases that could cause a given symptom
+(define (diseases-for-symptom symptom)
+  (kb-query kb (make-fact &#39;causes ?disease symptom)))
+
+;; Find all symptoms of a disease
+(define (symptoms-of disease)
+  (kb-query kb (make-fact &#39;causes disease ?symptom)))
+
+;; Get treatment for a disease
+(define (treatment-for disease)
+  (kb-query kb (make-fact &#39;treatment disease ?treatment)))
+
+;; --- Diagnosis ---
+
+(display &quot;=== Medical Diagnosis Expert System ===&quot;)
+(newline) (newline)
+
+;; Patient presents with fever and cough
+(define patient-symptoms &#39;(fever cough))
+
+(display &quot;Patient symptoms: &quot;)
+(display patient-symptoms)
+(newline) (newline)
+
+;; Find candidate diseases for each symptom
+(display &quot;Diseases that cause fever:&quot;)
+(newline)
+(display (diseases-for-symptom &#39;fever))
+(newline)
+
+(display &quot;Diseases that cause cough:&quot;)
+(newline)
+(display (diseases-for-symptom &#39;cough))
+(newline) (newline)
+
+;; Check what flu causes — does it match our symptoms?
+(display &quot;All flu symptoms:&quot;)
+(newline)
+(display (symptoms-of &#39;flu))
+(newline)
+
+;; Get recommended treatment
+(display &quot;Treatment for flu:&quot;)
+(newline)
+(display (treatment-for &#39;flu))
+(newline) (newline)
+
+;; --- Probabilistic reasoning with factor graph ---
+;; Model: symptom observations → disease probability
+;; Three binary variables (each with 2 states).
+;; Signature: (make-factor-graph num-vars dims-tensor)
+(define fg (make-factor-graph 3 #(2 2 2)))
+
+;; Factor: fever → flu (high correlation)
+;; Signature: (fg-add-factor! fg var-indices-tensor cpt-tensor)
+(fg-add-factor! fg #(0 1) #(0.8 0.2 0.1 0.9))
+
+;; Factor: flu → fatigue (secondary symptom)
+(fg-add-factor! fg #(1 2) #(0.7 0.3 0.3 0.7))
+
+;; Run belief propagation
+(fg-infer! fg 10)
+
+(display &quot;Factor graph inference complete.&quot;)
+(newline)
+(display &quot;Free energy (surprise): &quot;)
+(display (free-energy fg #(0 0)))
+(newline)
+
+(display &quot;=== Diagnosis: likely flu. Recommend rest and fluids. ===&quot;)
+(newline)</code></pre>
+<hr />
+<h2 id="key-concepts-demonstrated">Key Concepts Demonstrated</h2>
+<ol type="1">
+<li><strong>Knowledge base</strong> — structured facts with
+predicate-argument patterns</li>
+<li><strong>Logic variables</strong> — <code>?disease</code>,
+<code>?symptom</code> in queries match any value</li>
+<li><strong>Pattern matching queries</strong> — find all facts matching
+a template</li>
+<li><strong>Factor graphs</strong> — probabilistic model of
+symptom-disease relationships</li>
+<li><strong>Belief propagation</strong> — <code>fg-infer!</code>
+propagates evidence through the graph</li>
+<li><strong>Free energy</strong> — quantifies how surprising the
+observations are given the model</li>
+</ol>

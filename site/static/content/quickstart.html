@@ -13,7 +13,7 @@ omits the decimal point — <code>6</code>, not <code>6.0</code> — and the
 value is still inexact. <code>-0.0</code> is the one exception and
 prints in full. Text inside a fenced result block is the exact printed
 output. See <a
-href="reference/language/numeric-tower.md#exactness">reference/language/numeric-tower.md</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exactness" target="_blank" rel="noopener noreferrer">reference/language/numeric-tower.md</a>.</p>
 </blockquote>
 <hr />
 <h2 id="try-without-installing">Try Without Installing</h2>
@@ -99,7 +99,7 @@ packages)</td>
 If a Debian-derivative’s apt.llvm.org suite cannot be resolved
 automatically, set <code>ESHKOL_BASE_CODENAME=jammy</code> (or
 <code>noble</code>/<code>bookworm</code>) and rerun.</p>
-<h3 id="windows-visual-studio-2022-llvm-21">Windows (Visual Studio 2022
+<h3 id="windows-visual-studio-2022--llvm-21">Windows (Visual Studio 2022
 + LLVM 21)</h3>
 <pre class="powershell"><code># In Developer PowerShell for VS 2022:
 git clone https://github.com/tsotchke/eshkol.git
@@ -159,7 +159,7 @@ promotion (exact integer → rational → double, promoting only when a
 value actually requires it). An inexact value with no fractional part
 prints without a decimal point, so <code>4</code> above may be either
 exact or inexact — ask <code>exact?</code> if it matters. See <a
-href="reference/language/numeric-tower.md">the numeric tower
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md" target="_blank" rel="noopener noreferrer">the numeric tower
 reference</a>.</p>
 <hr />
 <h3 id="variables-and-functions">Variables and Functions</h3>
@@ -456,7 +456,7 @@ them automatically!</li>
 </ol>
 <hr />
 <h2 id="key-language-features">Key Language Features</h2>
-<h3 id="homoiconic-code-as-data">1. <strong>Homoiconic
+<h3 id="1-homoiconic-code-as-data">1. <strong>Homoiconic
 Code-as-Data</strong></h3>
 <pre class="scheme"><code>; Code is data
 (define code &#39;(lambda (x) (* x 2)))
@@ -469,7 +469,7 @@ Code-as-Data</strong></h3>
 (display (lambda (x) (* x 2)))
 ; Output: (lambda (x) (* x 2))</code></pre>
 <hr />
-<h3 id="pattern-matching">2. <strong>Pattern Matching</strong></h3>
+<h3 id="2-pattern-matching">2. <strong>Pattern Matching</strong></h3>
 <pre class="scheme"><code>(define (classify x)
   (match x
     ((? number?) &#39;is-number)
@@ -480,7 +480,7 @@ Code-as-Data</strong></h3>
 (classify 42)           ; =&gt; is-number
 (classify &#39;(1 2 3))     ; =&gt; is-triple</code></pre>
 <hr />
-<h3 id="tail-call-optimization">3. <strong>Tail Call
+<h3 id="3-tail-call-optimization">3. <strong>Tail Call
 Optimization</strong></h3>
 <pre class="scheme"><code>; Tail-recursive factorial (no stack overflow)
 (define (factorial n)
@@ -493,14 +493,15 @@ Optimization</strong></h3>
 
 (factorial 10000)  ; Works! (optimized to loop)</code></pre>
 <hr />
-<h3 id="exception-handling">4. <strong>Exception Handling</strong></h3>
+<h3 id="4-exception-handling">4. <strong>Exception
+Handling</strong></h3>
 <pre class="scheme"><code>(guard (exn
          ((divide-by-zero? exn) &#39;infinity)
          (else &#39;unknown-error))
   (/ 1 0))
 ; =&gt; infinity</code></pre>
 <hr />
-<h3 id="file-io">5. <strong>File I/O</strong></h3>
+<h3 id="5-file-io">5. <strong>File I/O</strong></h3>
 <pre class="scheme"><code>; Write to file — the string comes first, the port second
 (define out (open-output-file &quot;data.txt&quot;))
 (write-line &quot;Hello, File!&quot; out)
@@ -664,13 +665,13 @@ Equation</h2>
 <h2 id="next-steps">Next Steps</h2>
 <h3 id="learn-more">Learn More</h3>
 <ol type="1">
-<li><strong><a href="API_REFERENCE.md">API Reference</a></strong> —
+<li><strong><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a></strong> —
 Complete function reference (550+ functions)</li>
-<li><strong><a href="ESHKOL_V1_ARCHITECTURE.md">Architecture
+<li><strong><a href="/docs#page=eshkol_v1_architecture" data-url="/content/eshkol_v1_architecture.html">Architecture
 Guide</a></strong> — System internals (memory, types, compilation)</li>
-<li><strong><a href="reference/language/INDEX.md">Language
+<li><strong><a href="/docs#page=reference_language" data-url="/content/reference_language.html">Language
 Reference</a></strong> — Comprehensive language guide</li>
-<li><strong><a href="breakdown/AUTODIFF.md">Autodiff Deep
+<li><strong><a href="/docs#page=breakdown_autodiff" data-url="/content/breakdown_autodiff.html">Autodiff Deep
 Dive</a></strong> — Three differentiation modes in detail</li>
 </ol>
 <h3 id="example-programs">Example Programs</h3>
@@ -687,7 +688,7 @@ Exact-numeric tower applied to CODATA physical-constants computation -
 <p>For agent harnesses and the larger research-grade examples
 (<code>agent.esk</code>, <code>selene_*.esk</code>,
 <code>consciousness_inference.esk</code>), see the project tutorials at
-<a href="tutorials/"><code>tutorials/</code></a> — Tutorial 04 covers
+<a href="https://github.com/tsotchke/eshkol/tree/master/docs/tutorials" target="_blank" rel="noopener noreferrer"><code>tutorials/</code></a> — Tutorial 04 covers
 the consciousness engine and Tutorials 21–26 cover project-scale
 examples.</p>
 <h3 id="standard-library">Standard Library</h3>
@@ -701,7 +702,7 @@ examples.</p>
 ; Or import everything at once
 (require stdlib)</code></pre>
 <p>Full module list in <a
-href="../lib/stdlib.esk"><code>lib/stdlib.esk</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/stdlib.esk" target="_blank" rel="noopener noreferrer"><code>lib/stdlib.esk</code></a></p>
 <hr />
 <h3 id="statistics">Statistics</h3>
 <pre class="scheme"><code>(require math.statistics)
@@ -754,7 +755,7 @@ eshkol-run -O2 program.esk -o program
 # Compile without stdlib (bare metal)
 eshkol-run --no-stdlib program.esk -o program</code></pre>
 <hr />
-<h2 id="tips-tricks">Tips &amp; Tricks</h2>
+<h2 id="tips--tricks">Tips &amp; Tricks</h2>
 <h3 id="performance">Performance</h3>
 <pre class="scheme"><code>; Use let for cached computations
 (let ((expensive-calc (big-computation)))
@@ -848,7 +849,7 @@ ar rcs libmylib.a mylib.o</code></pre>
 <hr />
 <h2 id="exact-arithmetic-complex-numbers-and-the-numeric-tower">Exact
 Arithmetic, Complex Numbers and the Numeric Tower</h2>
-<h3 id="exact-arithmetic-bignums-rationals">Exact Arithmetic (Bignums
+<h3 id="exact-arithmetic-bignums--rationals">Exact Arithmetic (Bignums
 &amp; Rationals)</h3>
 <pre class="scheme"><code>;; Arbitrary-precision integers
 (define big (+ 9223372036854775807 1))  ; Overflows int64 → bignum
@@ -1076,35 +1077,35 @@ localStorage, fetch, timers.</p>
 <ul>
 <li><strong>GitHub</strong>: https://github.com/tsotchke/eshkol</li>
 <li><strong>Documentation</strong>: <a
-href="."><code>docs/</code></a></li>
+href="https://github.com/tsotchke/eshkol/tree/master/docs" target="_blank" rel="noopener noreferrer"><code>docs/</code></a></li>
 <li><strong>Examples</strong>: <a
-href="../examples"><code>examples/</code></a></li>
-<li><strong>Tests</strong>: <a href="../tests"><code>tests/</code></a>
+href="https://github.com/tsotchke/eshkol/tree/master/examples" target="_blank" rel="noopener noreferrer"><code>examples/</code></a></li>
+<li><strong>Tests</strong>: <a href="https://github.com/tsotchke/eshkol/tree/master/tests" target="_blank" rel="noopener noreferrer"><code>tests/</code></a>
 (528 self-reported tests across 37 suites)</li>
 </ul>
 <hr />
-<h2 id="community-support">Community &amp; Support</h2>
+<h2 id="community--support">Community &amp; Support</h2>
 <p><strong>Report Issues</strong>: GitHub Issues
 <strong>Discussions</strong>: GitHub Discussions
 <strong>License</strong>: MIT</p>
 <hr />
 <h2 id="next-steps-1">Next Steps</h2>
 <ul>
-<li><strong><a href="API_REFERENCE.md">API Reference</a></strong> —
+<li><strong><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a></strong> —
 Complete function documentation (555+ builtins)</li>
-<li><strong><a href="../examples/">Examples</a></strong> — Runnable
+<li><strong><a href="https://github.com/tsotchke/eshkol/tree/master/examples" target="_blank" rel="noopener noreferrer">Examples</a></strong> — Runnable
 programs demonstrating AD, tensors, parallelism, consciousness
 engine</li>
-<li><strong><a href="breakdown/CONSCIOUSNESS_ENGINE.md">Consciousness
+<li><strong><a href="/docs#page=breakdown_consciousness_engine" data-url="/content/breakdown_consciousness_engine.html">Consciousness
 Engine</a></strong> — Logic programming, factor graphs, global
 workspace</li>
-<li><strong><a href="breakdown/AUTODIFF.md">Automatic
+<li><strong><a href="/docs#page=breakdown_autodiff" data-url="/content/breakdown_autodiff.html">Automatic
 Differentiation</a></strong> — Forward/reverse mode, vector calculus
 operators</li>
-<li><strong><a href="breakdown/MACHINE_LEARNING.md">Machine
+<li><strong><a href="/docs#page=breakdown_machine_learning" data-url="/content/breakdown_machine_learning.html">Machine
 Learning</a></strong> — Neural network training, optimizers,
 activations</li>
-<li><strong><a href="ESHKOL_LANGUAGE_GUIDE.md">Language
+<li><strong><a href="/docs#page=eshkol_language_guide" data-url="/content/eshkol_language_guide.html">Language
 Guide</a></strong> — Comprehensive language tutorial</li>
 <li><strong><a href="https://eshkol.ai">eshkol.ai</a></strong> —
 Interactive browser REPL with runnable tutorials</li>

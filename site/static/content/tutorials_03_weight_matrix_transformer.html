@@ -1,0 +1,256 @@
+<h1 id="tutorial-3-the-weight-matrix-transformer">Tutorial 3: The Weight
+Matrix Transformer</h1>
+<p>Eshkol’s most architecturally distinctive feature: bytecode programs
+execute as matrix multiplications through a 6-layer transformer whose
+weights ARE the interpreter. Programs are literally neural network
+weights.</p>
+<hr />
+<h2 id="the-concept">The Concept</h2>
+<pre><code>Eshkol source → canonical bytecode/AD ISA (83 opcodes) → state vector (256 floats)
+→ transformer forward pass (W @ x + b) → next state → repeat</code></pre>
+<p>One forward pass = one instruction executed. The transformer’s 12.22
+million analytically constructed parameters implement a bounded,
+arena-backed stack machine with an in-state reverse-mode AD tape. This
+is verified by running programs three ways and comparing results:</p>
+<ol type="1">
+<li><strong>Reference VM</strong> — C <code>switch(opcode)</code>
+interpreter</li>
+<li><strong>Simulated transformer</strong> — C functions mirroring the
+weight matrices</li>
+<li><strong>Matrix forward pass</strong> — actual
+<code>W @ state + b</code> matmul</li>
+</ol>
+<p>All three produce identical results. The current repository artifact
+verifies 126/126 inline programs and 123/123 traced programs.</p>
+<hr />
+<h2 id="the-state-vector-d_model--256">The State Vector (d_model =
+256)</h2>
+<p>The VM’s bounded runtime state fits in 256 floats:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Dimensions</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0-15</td>
+<td>Persistent VM state: PC, stack top values, output, halt, locals,
+SP/FP, closure</td>
+</tr>
+<tr>
+<td>16-31</td>
+<td>Per-cycle transients: opcode, operand, products, loads, comparisons,
+dispatch flags</td>
+</tr>
+<tr>
+<td>32-35</td>
+<td>Type tags for TOS/SOS/R2/R3</td>
+</tr>
+<tr>
+<td>36-47</td>
+<td>AD control state: tape length, cursor, mode, current node
+fields</td>
+</tr>
+<tr>
+<td>48-111</td>
+<td>AD tape storage: 8 nodes x 8 fields</td>
+</tr>
+<tr>
+<td>112-127</td>
+<td>AD/type-predicate transient indicators</td>
+</tr>
+<tr>
+<td>128-207</td>
+<td>Bounded arena bank: 16 cells x 5 fields</td>
+</tr>
+<tr>
+<td>208-255</td>
+<td>Arena operation transients for
+cons/list/vector/string/closure/continuation slices</td>
+</tr>
+</tbody>
+</table>
+<p>The arena bank is the important memory model point: stack values hold
+small cell indices, not host pointers. There is no GC heap in the weight
+artifact.</p>
+<hr />
+<h2 id="the-6-layers">The 6 Layers</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Mechanism</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>Gaussian attention</td>
+<td>Instruction fetch — reads opcode at PC position</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Gated preprocessing</td>
+<td>Address resolution, comparisons, type predicates, AD parent
+loads</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Square-activation FFN</td>
+<td>Product precompute — computes TOS * SOS and AD products</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Gated FFN</td>
+<td>Execution — opcode dispatch, arithmetic, control flow, arena
+reads/writes</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Gated FFN</td>
+<td>Tape and arena writeback, continuation/closure state, AD parent
+load</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Gated FFN</td>
+<td>AD gradient writeback and backward-pass updates</td>
+</tr>
+</tbody>
+</table>
+<h3 id="how-op_add-works-in-weights">How OP_ADD Works in Weights</h3>
+<p>The gate neuron fires when <code>opcode == 7</code>. The value
+neurons compute <code>TOS + SOS</code> and write the result back. This
+is pure <code>W @ state + b</code> — no C code, no branching, just
+linear algebra.</p>
+<p>82 of 83 canonical opcodes are weight-encoded in the current bounded
+artifact. The only external boundary is <code>OP_NATIVE_CALL</code>.</p>
+<hr />
+<h2 id="two-tiers-of-execution">Two Tiers of Execution</h2>
+<p><strong>Tier 1: Weight-encoded opcodes</strong> — arithmetic,
+comparisons, jumps, stack manipulation, bounded arena memory, closures,
+continuations, type predicates, and the verifier-covered reverse-mode AD
+tape. Computed entirely through matrix multiplication.</p>
+<p><strong>Tier 2: Native dispatch boundary (IDs 300+)</strong> —
+<code>OP_NATIVE_CALL</code> carries a native function ID. The
+transformer detects it and delegates to C:</p>
+<table>
+<thead>
+<tr>
+<th>ID Range</th>
+<th>Subsystem</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>300-369</td>
+<td>Core (cons, car, cdr, display, I/O)</td>
+</tr>
+<tr>
+<td>370-409</td>
+<td>Automatic differentiation (dual numbers, AD tape)</td>
+</tr>
+<tr>
+<td>410-470</td>
+<td>Tensor operations (matmul, reshape, reduce)</td>
+</tr>
+<tr>
+<td>500-549</td>
+<td>Consciousness engine (logic, inference, workspace)</td>
+</tr>
+<tr>
+<td>800-803</td>
+<td>Model I/O (tensor/model checkpoint save-load)</td>
+</tr>
+<tr>
+<td>804-843</td>
+<td>Geometric manifolds (Riemannian operations)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="using-it">Using It</h2>
+<h3 id="compile-to-bytecode">Compile to Bytecode</h3>
+<pre class="bash"><code>$ eshkol-run program.esk -o program -B program.eskb</code></pre>
+<p>The <code>-B</code> flag emits an ESKB binary (section-based bytecode
+container with CRC32 integrity check) alongside the native binary.</p>
+<h3 id="export-as-qlmw-weights">Export as QLMW Weights</h3>
+<p>The weight matrices are exported in QLMW (Quantum LLM Weights) binary
+format:</p>
+<pre><code>Header: magic &quot;QLMW&quot;, version 3, d_model 256, n_layers 6
+Per-layer: W_Q, W_K, W_V, W_O, W1, b1, W2, b2, ln_gamma, ln_beta</code></pre>
+<p>These can be loaded by the qLLM runtime for Metal/CUDA-accelerated
+execution of Eshkol programs as neural network inference.</p>
+<hr />
+<h2 id="why-this-matters">Why This Matters</h2>
+<ol type="1">
+<li><p><strong>Programs are differentiable</strong> — execution is
+matrix multiplication, so you can compute gradients of program behavior
+with respect to the weights. This enables learning to improve the
+interpreter itself.</p></li>
+<li><p><strong>The interpreter is a neural network</strong> — weight
+changes create a different interpreter. One that might execute programs
+faster or with learned optimizations.</p></li>
+<li><p><strong>Bridging discrete and continuous</strong> — bytecode is
+discrete (integer opcodes), execution is continuous (float matmul). This
+is the foundation for differentiable programming at the instruction
+level.</p></li>
+<li><p><strong>Constructive Turing-completeness proof</strong> — the
+weight matrices implement a universal stack machine, proving transformer
+architectures are Turing-complete in a verifiable, constructive
+way.</p></li>
+</ol>
+<hr />
+<h2 id="source-files">Source Files</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>File</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>lib/backend/weight_matrices.c</code></td>
+<td>Weight construction + 3-way verification</td>
+</tr>
+<tr>
+<td><code>lib/backend/weight_compiler.c</code></td>
+<td>Bytecode → weight matrix compilation</td>
+</tr>
+<tr>
+<td><code>lib/backend/qllm_interpreter.c</code></td>
+<td>qLLM integration + QLMW loading</td>
+</tr>
+<tr>
+<td><code>lib/backend/qllm_backward.c</code></td>
+<td>Backward pass for weight learning</td>
+</tr>
+<tr>
+<td><code>lib/backend/eskb_writer.c</code></td>
+<td>ESKB bytecode serialisation</td>
+</tr>
+<tr>
+<td><code>lib/backend/eskb_reader.c</code></td>
+<td>ESKB bytecode deserialisation</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<p><em>Next: Tutorial 4 — The Consciousness Engine</em></p>

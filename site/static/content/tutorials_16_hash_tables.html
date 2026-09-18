@@ -1,0 +1,44 @@
+<h1 id="tutorial-16-hash-tables">Tutorial 16: Hash Tables</h1>
+<p>Eshkol provides mutable hash tables with FNV-1a hashing and open
+addressing — O(1) average lookup and insertion.</p>
+<hr />
+<h2 id="creating-and-using-hash-tables">Creating and Using Hash
+Tables</h2>
+<pre class="scheme"><code>;; Create an empty hash table
+(define ht (make-hash-table))
+
+;; Insert key-value pairs
+(hash-table-set! ht &quot;name&quot; &quot;Alice&quot;)
+(hash-table-set! ht &quot;age&quot; 30)
+(hash-table-set! ht &quot;city&quot; &quot;NYC&quot;)
+
+;; Lookup
+(display (hash-table-ref ht &quot;name&quot;))    ;; =&gt; Alice
+(display (hash-table-ref ht &quot;age&quot;))     ;; =&gt; 30
+
+;; Check existence
+(display (hash-table-exists? ht &quot;name&quot;))  ;; =&gt; #t
+(display (hash-table-exists? ht &quot;foo&quot;))   ;; =&gt; #f
+
+;; Delete
+(hash-table-delete! ht &quot;city&quot;)
+(display (hash-table-exists? ht &quot;city&quot;))  ;; =&gt; #f
+
+;; Size
+(display (hash-table-size ht))  ;; =&gt; 2</code></pre>
+<hr />
+<h2 id="iterating">Iterating</h2>
+<pre class="scheme"><code>;; Get all keys
+(display (hash-table-keys ht))
+;; =&gt; (&quot;name&quot; &quot;age&quot;)
+
+;; Get all values
+(display (hash-table-values ht))
+;; =&gt; (&quot;Alice&quot; 30)</code></pre>
+<hr />
+<h2 id="use-cases">Use Cases</h2>
+<p>Hash tables are ideal for: - Frequency counting:
+<code>(hash-table-set! ht word (+ 1 (or (hash-table-ref ht word) 0)))</code>
+- Memoisation: cache expensive computation results by input - Symbol
+tables: fast lookup by name - Graphs: adjacency lists keyed by node
+ID</p>

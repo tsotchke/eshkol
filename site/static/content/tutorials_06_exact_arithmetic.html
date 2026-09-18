@@ -1,0 +1,85 @@
+<h1 id="tutorial-6-exact-arithmetic">Tutorial 6: Exact Arithmetic</h1>
+<p>Eshkol’s numeric tower includes arbitrary-precision integers
+(bignums), exact rationals, and complex numbers. Arithmetic
+automatically promotes when precision demands it — no overflow, no
+truncation.</p>
+<hr />
+<h2 id="part-1-bignums">Part 1: Bignums</h2>
+<p>Standard 64-bit integers promote to bignums when they would
+overflow:</p>
+<pre class="scheme"><code>;; 2^64 — overflows int64, automatically becomes a bignum
+(display (expt 2 64))
+(newline)
+;; =&gt; 18446744073709551616
+
+;; Factorial of 100 — 158 digits
+(define (factorial n)
+  (if (= n 0) 1 (* n (factorial (- n 1)))))
+
+(display (factorial 100))
+(newline)
+;; =&gt; 93326215443944152681699238856266700490715968264381621468...
+
+;; Fibonacci of 1000
+(define (fib n)
+  (define (loop a b i)
+    (if (= i n) a (loop b (+ a b) (+ i 1))))
+  (loop 0 1 0))
+
+(display (fib 1000))
+(newline)
+;; =&gt; 43466557686937456435688527675040625802564...</code></pre>
+<p>Bignums support all standard arithmetic:</p>
+<pre class="scheme"><code>(+ (expt 10 50) 1)       ;; exact
+(* (expt 2 128) 3)       ;; exact
+(quotient (expt 10 100) (expt 10 50))  ;; =&gt; 100000000000000000000000000000000000000000000000000 (10^50)
+(gcd 1000000007 999999937)             ;; works on bignums</code></pre>
+<hr />
+<h2 id="part-2-exact-rationals">Part 2: Exact Rationals</h2>
+<p>Rationals are written as <code>numerator/denominator</code> and stay
+exact:</p>
+<pre class="scheme"><code>(display (+ 1/3 1/6))    ;; =&gt; 1/2
+(display (* 3/4 4/3))    ;; =&gt; 1
+(display (- 5/7 2/7))    ;; =&gt; 3/7
+
+;; Rationals normalise automatically
+(display (+ 1/4 1/4))    ;; =&gt; 1/2 (not 2/4)
+
+;; Mixed exact/inexact promotes to inexact (R7RS rule)
+(display (+ 1/3 0.1))    ;; =&gt; 0.4333...
+(display (exact-&gt;inexact 1/3))  ;; =&gt; 0.3333...</code></pre>
+<hr />
+<h2 id="part-3-complex-numbers">Part 3: Complex Numbers</h2>
+<pre class="scheme"><code>(define z (make-rectangular 3.0 4.0))  ;; 3 + 4i
+(display z)              ;; =&gt; 3+4i
+(display (magnitude z))  ;; =&gt; 5.0
+(display (angle z))      ;; =&gt; 0.9273... (radians)
+
+;; Arithmetic
+(display (+ z (make-rectangular 1.0 -1.0)))  ;; =&gt; 4+3i
+(display (* z z))        ;; =&gt; -7+24i
+
+;; Polar form
+(define w (make-polar 2.0 1.5707963267948966))  ;; r=2, theta=pi/2
+(display w)              ;; =&gt; ~0+2i</code></pre>
+<p>Complex numbers integrate with autodiff — you can differentiate
+functions of complex arguments.</p>
+<hr />
+<h2 id="part-4-number-conversions-and-predicates">Part 4: Number
+Conversions and Predicates</h2>
+<pre class="scheme"><code>;; Type predicates
+(display (integer? 42))      (newline)  ;; =&gt; #t
+(display (rational? 1/3))    (newline)  ;; =&gt; #t
+(display (real? 3.14))       (newline)  ;; =&gt; #t
+(display (exact? 1/3))       (newline)  ;; =&gt; #t
+(display (inexact? 3.14))    (newline)  ;; =&gt; #t
+(display (zero? 0))          (newline)  ;; =&gt; #t
+(display (positive? 5))      (newline)  ;; =&gt; #t
+(display (negative? -3))     (newline)  ;; =&gt; #t
+
+;; Conversion between exact and inexact
+(display (exact-&gt;inexact 1/3))  (newline)  ;; =&gt; 0.333...
+(display (number-&gt;string 255))  (newline)  ;; =&gt; &quot;255&quot;
+(display (string-&gt;number &quot;42&quot;)) (newline)  ;; =&gt; 42</code></pre>
+<hr />
+<p><em>Next: Tutorial 7 — Parallel Computing</em></p>

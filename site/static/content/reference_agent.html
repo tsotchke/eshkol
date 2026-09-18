@@ -1,0 +1,115 @@
+<h1 id="agent--ffi-reference">Agent &amp; FFI Reference</h1>
+<p>The <code>agent.*</code> modules are Eshkol’s hosted,
+capability-gated surface for talking to the outside world — HTTP,
+databases, subprocesses, cryptography, the terminal, git, and native
+training. They are built on the <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/agent/ffi.md" target="_blank" rel="noopener noreferrer">FFI</a>
+<code>extern</code> mechanism and link native C runtimes
+(<code>qllm_*</code>, <code>eshkol_*</code>). Load one with
+<code>(require agent.&lt;name&gt;)</code>.</p>
+<h2 id="foundations">Foundations</h2>
+<ul>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/agent/ffi.md" target="_blank" rel="noopener noreferrer">FFI</a> — the <code>extern</code> /
+<code>:real</code> declaration syntax, the type-keyword → C ABI mapping,
+tagged-value boundary conversion, and how
+<code>requires_agent_ffi</code> drives <strong>transitive</strong>
+agent-FFI linking for AOT binaries (vs JIT resolution), plus the
+object-ABI guard symbol <code>eshkol_object_abi_v*</code> — what an
+undefined reference to it means, its four causes, and the three cases it
+does not cover.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/agent/capabilities.md" target="_blank" rel="noopener noreferrer">Capabilities</a> — the process-local
+allow-list policy and which agent operation requires which
+capability.</li>
+</ul>
+<h2 id="modules">Modules</h2>
+<table>
+<colgroup>
+<col style="width: 36%" />
+<col style="width: 22%" />
+<col style="width: 40%" />
+</colgroup>
+<thead>
+<tr>
+<th>Module</th>
+<th>Doc</th>
+<th>Summary</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent.http</code>, <code>agent.http-server</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/agent/http.md" target="_blank" rel="noopener noreferrer">http</a></td>
+<td>HTTP client (GET/POST, SSE), HTTP/Unix-socket/WebSocket server</td>
+</tr>
+<tr>
+<td><code>agent.sqlite</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/agent/sqlite.md" target="_blank" rel="noopener noreferrer">sqlite</a></td>
+<td>Embedded SQLite: connections, prepared statements,
+<code>with-db</code>/<code>with-statement</code></td>
+</tr>
+<tr>
+<td>platform filesystem ABI</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/agent/platform.md" target="_blank" rel="noopener noreferrer">platform</a></td>
+<td>Precision-safe file metadata and stable file identity</td>
+</tr>
+<tr>
+<td><code>agent.subprocess</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/agent/subprocess.md" target="_blank" rel="noopener noreferrer">subprocess</a></td>
+<td>Process spawning (shell + injection-safe argv), ownership/cleanup
+contract (#94)</td>
+</tr>
+<tr>
+<td><code>agent.crypto</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/agent/crypto.md" target="_blank" rel="noopener noreferrer">crypto</a></td>
+<td>SHA-256, HMAC, random bytes/hex, UUIDv4, base64url</td>
+</tr>
+<tr>
+<td><code>agent.eagle</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/agent/eagle.md" target="_blank" rel="noopener noreferrer">eagle</a></td>
+<td>Native linear-head training (<code>qllm_ffi_linear_*</code>, PR
+#104)</td>
+</tr>
+<tr>
+<td><code>core.memory</code>, <code>core.memory_store</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/agent/memory-faculty.md" target="_blank" rel="noopener noreferrer">memory faculty</a></td>
+<td>Content-addressed, CRDT-merged event log</td>
+</tr>
+<tr>
+<td><code>agent.regex</code>, <code>agent.glob</code>,
+<code>agent.fs-watch</code>, <code>agent.keychain</code>,
+<code>agent.terminal</code>, <code>agent.git-ffi</code>,
+<code>agent.layout</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/agent/platform-utilities.md" target="_blank" rel="noopener noreferrer">platform utilities</a></td>
+<td>Regex (PCRE2), globbing, file watching, secret store, terminal/TUI,
+git, layout</td>
+</tr>
+<tr>
+<td><code>agent.quantum</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/agent/quantum.md" target="_blank" rel="noopener noreferrer">quantum</a></td>
+<td>Moonlab state-vector simulation, gates, measurement, CHSH Bell gate,
+molecular Hamiltonians, and a VQE energy differentiable through Eshkol’s
+AD (opt-in <code>-DESHKOL_QUANTUM_ENABLED=ON</code>;
+<code>quantum-random</code> builtins in all builds)</td>
+</tr>
+<tr>
+<td><code>agent.pqc</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/agent/pqc.md" target="_blank" rel="noopener noreferrer">pqc</a></td>
+<td>ML-KEM (FIPS 203) post-quantum KEM at 512/768/1024, QRNG-seeded,
+over the same opt-in Moonlab link target</td>
+</tr>
+</tbody>
+</table>
+<h2 id="cross-cutting-notes">Cross-cutting notes</h2>
+<ul>
+<li><strong>AOT vs JIT</strong>: always verify agent-FFI code under AOT,
+not just <code>-r</code> — the JIT resolves symbols from the host
+process, while AOT depends on the link-args scan firing. See <a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/agent/ffi.md" target="_blank" rel="noopener noreferrer">FFI § AOT linking</a>.</li>
+<li><strong>Capabilities off by default</strong>: with no policy
+installed everything is permitted; installing one is deny-by-default.
+See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/agent/capabilities.md" target="_blank" rel="noopener noreferrer">capabilities</a>.</li>
+</ul>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="/docs#page=reference_runtime" data-url="/content/reference_runtime.html">Runtime reference</a> — CLI,
+environment variables, memory, parallelism, JIT.</li>
+</ul>

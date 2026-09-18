@@ -1,0 +1,1459 @@
+<h1 id="compiler-architecture-in-eshkol-v135-evolve">Compiler
+Architecture in Eshkol (v1.3.5-evolve)</h1>
+<h2 id="table-of-contents">Table of Contents</h2>
+<ul>
+<li><a href="/docs#page=breakdown_compiler_architecture&amp;overview" data-url="/content/breakdown_compiler_architecture.html">Overview</a></li>
+<li><a href="/docs#page=breakdown_compiler_architecture&amp;compilation-pipeline" data-url="/content/breakdown_compiler_architecture.html">Compilation Pipeline</a></li>
+<li><a href="/docs#page=breakdown_compiler_architecture&amp;frontend-parsing-and-macro-expansion" data-url="/content/breakdown_compiler_architecture.html">Frontend: Parsing
+and Macro Expansion</a></li>
+<li><a href="/docs#page=breakdown_compiler_architecture&amp;type-checking-hott-system" data-url="/content/breakdown_compiler_architecture.html">Type Checking (HoTT
+System)</a></li>
+<li><a href="/docs#page=breakdown_compiler_architecture&amp;llvm-backend" data-url="/content/breakdown_compiler_architecture.html">LLVM Backend</a></li>
+<li><a href="/docs#page=breakdown_compiler_architecture&amp;bytecode-vm-architecture" data-url="/content/breakdown_compiler_architecture.html">Bytecode VM
+Architecture</a></li>
+<li><a href="/docs#page=breakdown_compiler_architecture&amp;tagged-value-representation" data-url="/content/breakdown_compiler_architecture.html">Tagged Value
+Representation</a></li>
+<li><a href="/docs#page=breakdown_compiler_architecture&amp;modular-codegen-architecture" data-url="/content/breakdown_compiler_architecture.html">Modular Codegen
+Architecture</a></li>
+<li><a href="/docs#page=breakdown_compiler_architecture&amp;v11-accelerate-feature-codegen" data-url="/content/breakdown_compiler_architecture.html">v1.1-accelerate Feature
+Codegen</a></li>
+<li><a href="/docs#page=breakdown_compiler_architecture&amp;optimization-pipeline" data-url="/content/breakdown_compiler_architecture.html">Optimization Pipeline</a></li>
+<li><a href="/docs#page=breakdown_compiler_architecture&amp;jit-compilation-repl" data-url="/content/breakdown_compiler_architecture.html">JIT Compilation (REPL)</a></li>
+<li><a href="/docs#page=breakdown_compiler_architecture&amp;build-system" data-url="/content/breakdown_compiler_architecture.html">Build System</a></li>
+<li><a href="/docs#page=breakdown_compiler_architecture&amp;compiler-executables" data-url="/content/breakdown_compiler_architecture.html">Compiler Executables</a></li>
+<li><a href="/docs#page=breakdown_compiler_architecture&amp;runtime-architecture" data-url="/content/breakdown_compiler_architecture.html">Runtime Architecture</a></li>
+</ul>
+<hr />
+<h2 id="overview">Overview</h2>
+<p>Eshkol is a <strong>production compiler</strong> targeting
+<strong>LLVM IR</strong> for native code generation. The v1.1-accelerate
+release extends the v1.0 foundation with GPU acceleration, parallel
+primitives, a consciousness engine, exact arithmetic (full R7RS numeric
+tower), first-class continuations, signal processing, a 75+ builtin ML
+framework, and WebAssembly output.</p>
+<p>The architecture combines:</p>
+<ul>
+<li><strong>S-expression parser</strong> for R7RS-compatible Scheme
+syntax</li>
+<li><strong>Hygienic macro expander</strong> via
+<code>syntax-rules</code> pattern matching</li>
+<li><strong>HoTT-inspired type checker</strong> for gradual typing
+(warnings, not errors)</li>
+<li><strong>Modular LLVM backend</strong> with 34 specialized codegen
+modules (~108,400 lines)</li>
+<li><strong>JIT compiler</strong> for interactive REPL via LLVM OrcJIT
+(LLJIT)</li>
+<li><strong>Pre-compiled standard library</strong> (40 modules, compiled
+to <code>stdlib.o</code>)</li>
+<li><strong>GPU dispatch</strong> with SIMD/cBLAS/Metal cost model
+selection</li>
+<li><strong>Work-stealing thread pool</strong> for parallel higher-order
+functions</li>
+</ul>
+<hr />
+<h2 id="compilation-pipeline">Compilation Pipeline</h2>
+<p>The compiler executes a 5-phase pipeline. Source files
+(<code>.esk</code>) enter at Phase 1 and produce a native executable
+binary at the output.</p>
+<pre><code> Source Code (.esk)
+       |
+       v
++------------------+
+| 1. MACRO         |  lib/frontend/macro_expander.cpp (1,820 lines)
+|    EXPANSION     |  Hygienic expansion via syntax-rules
++------------------+
+       |
+       v
++------------------+
+| 2. S-EXPRESSION  |  lib/frontend/parser.cpp (11,691 lines)
+|    PARSING       |  Builds eshkol_ast_t tree, 94 operation types
++------------------+
+       |
+       v
++------------------+
+| 3. HoTT TYPE     |  lib/types/type_checker.cpp (6,061 lines)
+|    CHECKING      |  Constraint generation + unification (non-blocking)
++------------------+
+       |
+       v
++------------------+
+| 4. LLVM IR       |  lib/backend/llvm_codegen.cpp plus the extracted codegen modules
+|    GENERATION    |  AST -&gt; LLVM IR via 36 specialized codegen modules
++------------------+
+       |
+       v
++------------------+
+| 5. LLVM          |  LLVM PassBuilder + TargetMachine
+|    OPT + CODEGEN |  New PassManager pipeline, then native code emission
++------------------+
+       |
+       v
+ Executable Binary (or .o / .wasm)</code></pre>
+<p><strong>Key distinction from v1.0:</strong> The v1.1 pipeline adds
+GPU kernel compilation (Metal/CUDA), parallel worker function generation
+with <code>LinkOnceODRLinkage</code>, consciousness engine runtime
+dispatch, and exact arithmetic promotion paths.</p>
+<hr />
+<h2 id="frontend-parsing-and-macro-expansion">Frontend: Parsing and
+Macro Expansion</h2>
+<h3 id="macro-system">Macro System</h3>
+<p><strong>Implementation:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/macro_expander.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/macro_expander.cpp</code></a>
+(1,820 lines)</p>
+<p>Hygienic macro expansion runs before parsing. The system
+supports:</p>
+<ul>
+<li>Pattern matching with ellipsis (<code>...</code>) for
+repetition</li>
+<li>Literal identifiers for keyword-like matching</li>
+<li>Nested patterns and template substitution</li>
+<li>Hygiene via automatic renaming to prevent variable capture</li>
+</ul>
+<pre class="scheme"><code>;; Define macro
+(define-syntax when
+  (syntax-rules ()
+    ((when test body ...)
+     (if test (begin body ...) #f))))
+
+;; Usage expands hygienically
+(when (&gt; x 0) (display &quot;positive&quot;) (newline))
+;; =&gt; (if (&gt; x 0) (begin (display &quot;positive&quot;) (newline)) #f)</code></pre>
+<p>Several R7RS derived forms (<code>case-lambda</code>,
+<code>parameterize</code>, <code>cond-expand</code>,
+<code>define-record-type</code>) are desugared during macro expansion or
+the subsequent parse phase.</p>
+<h3 id="s-expression-parser">S-Expression Parser</h3>
+<p><strong>Implementation:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a>
+(11,691 lines)</p>
+<p>The parser builds an AST from S-expressions through an explicit
+continuation stack: a child parse suspends into a heap-allocated
+coroutine frame and is resumed through a linked list, so native stack
+consumption is independent of grammar nesting. It handles:</p>
+<pre class="c"><code>// inc/eshkol/eshkol.h
+typedef struct eshkol_ast {
+    eshkol_type_t type;          // AST node type (ESHKOL_INT64, ESHKOL_FUNC, ESHKOL_OP, etc.)
+    union {
+        int64_t int64_val;       // Integer literal
+        double double_val;       // Float literal
+        struct { char *ptr; uint64_t size; } str_val;   // String literal
+        struct {                  // Function definition
+            char *id;
+            struct eshkol_ast *variables;
+            eshkol_operations_t *func_commands;
+            uint8_t is_variadic;
+            hott_type_expr_t *return_type;
+        } eshkol_func;
+        struct {                  // Cons cell
+            struct eshkol_ast *car;
+            struct eshkol_ast *cdr;
+        } cons_cell;
+        eshkol_operations_t operation;  // Operations (if, let, lambda, etc.)
+    };
+    uint32_t inferred_hott_type;  // HoTT type [TypeId:16][universe:8][flags:8]
+    uint32_t line;
+    uint32_t column;
+} eshkol_ast_t;</code></pre>
+<p><strong>Key responsibilities:</strong> - 94 operation types (see
+<code>eshkol_op_t</code> enum in <a
+href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a>) -
+Internal define to <code>letrec*</code> transformation (all define
+names, wherever they appear in the body; a value define’s initializer
+stays at its source position) -
+<code>delay</code>/<code>delay-force</code> desugaring to promise
+constructors - <code>define-record-type</code> to vector operation
+transformation - <code>?x</code> syntax for logic variables
+(<code>ESHKOL_LOGIC_VAR_OP</code>) - Line/column tracking for error
+messages - HoTT type annotation attachment to AST nodes</p>
+<p><strong>Critical invariant:</strong> The <code>letrec*</code>
+transformation only collects consecutive <code>define</code> forms from
+the beginning of a body. Once a non-define expression appears,
+collection stops. This preserves side-effect ordering per R7RS
+semantics.</p>
+<hr />
+<h2 id="type-checking-hott-system">Type Checking (HoTT System)</h2>
+<p><strong>Implementation:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a>
+(6,061 lines)</p>
+<p>Eshkol uses a Homotopy Type Theory-inspired type system with a
+universe hierarchy:</p>
+<pre><code>U_2 (universe of universes)
+ +-- U_1 (universe of types)
+ |    +-- integer : U_0
+ |    +-- real : U_0
+ |    +-- (-&gt; t1 t2) : U_0
+ |    +-- (list t) : U_0
+ |    +-- (forall (a) t) : U_1
+ +-- U_0 (universe of values)</code></pre>
+<h3 id="type-inference-algorithm">Type Inference Algorithm</h3>
+<ol type="1">
+<li><strong>Constraint Generation</strong> – Collect type constraints
+from AST traversal</li>
+<li><strong>Unification</strong> – Solve constraints using Robinson’s
+unification algorithm</li>
+<li><strong>Type Substitution</strong> – Apply solutions throughout the
+AST</li>
+<li><strong>Warning Emission</strong> – Report type mismatches as
+warnings (not errors)</li>
+</ol>
+<p><strong>Gradual typing:</strong> Type errors produce warnings, code
+still compiles. This preserves Scheme’s exploratory programming model
+while enabling aggressive optimization when types are statically known.
+The 16-byte tagged values store an 8-bit type field; when the type is
+known at compile time, the compiler generates untagged LLVM IR,
+eliminating tagging overhead.</p>
+<h3 id="type-expression-structure">Type Expression Structure</h3>
+<pre class="c"><code>typedef struct hott_type_expr {
+    hott_type_kind_t kind;       // INTEGER, REAL, ARROW, FORALL, etc.
+    union {
+        char* var_name;          // For type variables
+        struct {                 // For arrow types
+            struct hott_type_expr** param_types;
+            uint64_t num_params;
+            struct hott_type_expr* return_type;
+        } arrow;
+        struct {                 // For forall types
+            char** type_vars;
+            uint64_t num_vars;
+            struct hott_type_expr* body;
+        } forall;
+        // ... other type constructors
+    };
+} hott_type_expr_t;</code></pre>
+<p>35+ built-in types including <code>integer</code>, <code>real</code>,
+<code>boolean</code>, <code>string</code>, <code>list</code>,
+<code>vector</code>, <code>tensor</code>, <code>complex</code>,
+<code>rational</code>, <code>bignum</code>, function types, and
+polymorphic types.</p>
+<hr />
+<h2 id="llvm-backend">LLVM Backend</h2>
+<p><strong>Implementation:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a>,
+<a
+href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/backend/llvm_codegen.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/backend/llvm_codegen.h</code></a>,
+and the extracted initialization, builtin-factory, and REPL-resolution
+modules.</p>
+<p>The LLVM backend is the heart of the compiler. It translates ASTs to
+LLVM IR through the public <code>EshkolLLVMCodeGen</code> class and its
+focused codegen modules.</p>
+<h3 id="code-generator-class-structure">Code Generator Class
+Structure</h3>
+<p>The main code generator holds <code>std::unique_ptr</code> member
+objects for each module – not <code>std::function</code> callbacks:</p>
+<pre class="cpp"><code>// inc/eshkol/backend/llvm_codegen.h (simplified)
+class EshkolLLVMCodeGen {
+    // LLVM infrastructure
+    std::unique_ptr&lt;LLVMContext&gt; context;
+    std::unique_ptr&lt;Module&gt; module;
+    std::unique_ptr&lt;IRBuilder&lt;&gt;&gt; builder;
+
+    // Shared infrastructure
+    std::unique_ptr&lt;eshkol::TypeSystem&gt; types;       // LLVM type cache
+    std::unique_ptr&lt;eshkol::FunctionCache&gt; funcs;    // Lazy-loaded C library functions
+    std::unique_ptr&lt;eshkol::MemoryCodegen&gt; mem;      // Arena allocation declarations
+    std::unique_ptr&lt;eshkol::CodegenContext&gt; ctx_;     // Shared state for all modules
+
+    // Codegen modules (owned unique_ptrs, NOT std::function callbacks)
+    std::unique_ptr&lt;eshkol::TaggedValueCodegen&gt; tagged_;     // Pack/unpack tagged values
+    std::unique_ptr&lt;eshkol::BuiltinDeclarations&gt; builtins_;  // Runtime function decls
+    std::unique_ptr&lt;eshkol::ComplexCodegen&gt; complex_;        // Complex arithmetic
+    std::unique_ptr&lt;eshkol::ArithmeticCodegen&gt; arith_;       // Polymorphic arithmetic
+    std::unique_ptr&lt;eshkol::CallApplyCodegen&gt; call_apply_;   // Function calls, apply
+    std::unique_ptr&lt;eshkol::MapCodegen&gt; map_;                // map/for-each/fold
+    std::unique_ptr&lt;eshkol::ControlFlowCodegen&gt; flow_;       // if/cond/case/match/call-cc
+    std::unique_ptr&lt;eshkol::StringIOCodegen&gt; strio_;         // String/IO operations
+    std::unique_ptr&lt;eshkol::CollectionCodegen&gt; coll_;        // List/vector operations
+    std::unique_ptr&lt;eshkol::FunctionCodegen&gt; func_;          // Lambda/closure codegen
+    std::unique_ptr&lt;eshkol::TensorCodegen&gt; tensor_;          // Tensor/ML builtins
+    std::unique_ptr&lt;eshkol::AutodiffCodegen&gt; autodiff_;      // Three AD modes
+    std::unique_ptr&lt;eshkol::BindingCodegen&gt; binding_;        // let/letrec/define/set!
+    std::unique_ptr&lt;eshkol::HomoiconicCodegen&gt; homoiconic_;  // quote, S-expressions, eval
+    std::unique_ptr&lt;eshkol::TailCallCodegen&gt; tailcall_;      // TCO transformation
+    std::unique_ptr&lt;eshkol::SystemCodegen&gt; system_;          // System/env/time/process
+    std::unique_ptr&lt;eshkol::HashCodegen&gt; hash_;              // Hash table operations
+    std::unique_ptr&lt;eshkol::ParallelCodegen&gt; parallel_;      // Parallel primitives
+};</code></pre>
+<p>Each module is constructed via <code>std::make_unique</code> during
+initialization. Modules receive a <code>CodegenContext&amp;</code>
+reference for shared LLVM state, and inter-module calls use
+<strong>static wrapper callbacks</strong> (via a
+<code>ControlFlowCallbacks</code> helper class), not
+<code>std::function</code> lambdas. For example:</p>
+<pre class="cpp"><code>// Module initialization (lib/backend/module_init_codegen.cpp)
+tensor_ = std::make_unique&lt;eshkol::TensorCodegen&gt;(*ctx_, *tagged_, *mem);
+tensor_-&gt;setCodegenCallbacks(
+    ControlFlowCallbacks::codegenASTWrapper,
+    ControlFlowCallbacks::codegenTypedASTWrapper,
+    ControlFlowCallbacks::typedToTaggedWrapper,
+    this  // opaque pointer back to main codegen
+);</code></pre>
+<p>This pattern inverts the typical dependency graph – modules call back
+into the main codegen through thin static wrappers rather than holding
+direct references to each other.</p>
+<hr />
+<h2 id="bytecode-vm-architecture">Bytecode VM Architecture</h2>
+<p>The bytecode backend is a unity-build C system rooted at <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/eshkol_vm.c" target="_blank" rel="noopener noreferrer"><code>lib/backend/eshkol_vm.c</code></a>.
+The hub includes the VM components in dependency order, while the
+interpreter responsibilities are kept in separate source modules:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Responsibility</th>
+<th>Owner</th>
+<th>Boundary</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dispatch loop</td>
+<td><code>vm_run.c</code></td>
+<td>Fetch/decode plus computed-goto and switch dispatch</td>
+</tr>
+<tr>
+<td>Value opcode bodies</td>
+<td><code>vm_ops.c</code></td>
+<td>Comparisons, pairs, vectors, and operand-stack shuffles</td>
+</tr>
+<tr>
+<td>Frames and closures</td>
+<td><code>vm_frame.c</code></td>
+<td>Upvalues, closure construction, and return handling</td>
+</tr>
+<tr>
+<td>Non-local control</td>
+<td><code>vm_control.c</code></td>
+<td>Continuations, dynamic-wind state, and handlers</td>
+</tr>
+<tr>
+<td>Execution limits</td>
+<td><code>vm_limits.c</code></td>
+<td>Instruction-limit state and timeout checkpoints</td>
+</tr>
+<tr>
+<td>VM lifecycle</td>
+<td><code>vm_lifecycle.c</code></td>
+<td><code>vm_create</code>, <code>vm_free</code>, and test-program
+emission</td>
+</tr>
+</tbody>
+</table>
+<p>Builtin trampolines and native dispatch remain in
+<code>vm_native.c</code>; error-object support remains in
+<code>vm_error.c</code>; and coverage hooks plus public ESKB/VM entry
+points remain in <code>eshkol_vm.c</code>. This keeps the public symbols
+and unity-build linkage stable while making the dispatch loop the only
+owner of fetch/decode and dispatch control flow. Handlers with
+intentionally different threaded and switch semantics stay inline in
+<code>vm_run.c</code>.</p>
+<hr />
+<h2 id="tagged-value-representation">Tagged Value Representation</h2>
+<p>Every Eshkol value at runtime is a 16-byte tagged struct with
+<strong>5 fields</strong>:</p>
+<pre><code>+--------+--------+----------+---------+----------+
+| type   | flags  | reserved | padding |   data   |
+| (i8)   | (i8)   | (i16)    | (i32)   | (i64)    |
++--------+--------+----------+---------+----------+
+  idx 0    idx 1    idx 2      idx 3     idx 4</code></pre>
+<h3 id="llvm-type-definition">LLVM Type Definition</h3>
+<pre class="cpp"><code>// inc/eshkol/backend/type_system.h — TypeSystem class
+// The tagged value struct is {i8, i8, i16, i32, i64} = 16 bytes
+llvm::StructType* tagged_value_type = llvm::StructType::create(
+    context,
+    {
+        llvm::Type::getInt8Ty(context),   // idx 0: type tag (0-10, 16-19)
+        llvm::Type::getInt8Ty(context),   // idx 1: flags (EXACT, LINEAR, etc.)
+        llvm::Type::getInt16Ty(context),  // idx 2: reserved
+        llvm::Type::getInt32Ty(context),  // idx 3: padding (alignment)
+        llvm::Type::getInt64Ty(context)   // idx 4: data (int64/double bits/pointer)
+    },
+    &quot;eshkol_tagged_value_t&quot;
+);</code></pre>
+<h3 id="field-index-constants">Field Index Constants</h3>
+<pre class="cpp"><code>// inc/eshkol/backend/type_system.h
+static constexpr unsigned TAGGED_VALUE_TYPE_IDX = 0;     // uint8_t type
+static constexpr unsigned TAGGED_VALUE_FLAGS_IDX = 1;    // uint8_t flags
+static constexpr unsigned TAGGED_VALUE_RESERVED_IDX = 2; // uint16_t reserved
+static constexpr unsigned TAGGED_VALUE_PADDING_IDX = 3;  // uint32_t padding
+static constexpr unsigned TAGGED_VALUE_DATA_IDX = 4;     // int64_t data</code></pre>
+<p><strong>Critical:</strong> The data field is at index
+<strong>4</strong>, not 3. Using index 3 accesses the padding field,
+which was the root cause of multiple null dereference bugs in v1.0.</p>
+<h3 id="type-tags">Type Tags</h3>
+<table>
+<colgroup>
+<col style="width: 38%" />
+<col style="width: 30%" />
+<col style="width: 30%" />
+</colgroup>
+<thead>
+<tr>
+<th style="text-align: center;">Tag</th>
+<th style="text-align: left;">Name</th>
+<th style="text-align: left;">Data Encoding</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;">0</td>
+<td style="text-align: left;"><code>ESHKOL_VALUE_NULL</code></td>
+<td style="text-align: left;">Null/empty value</td>
+</tr>
+<tr>
+<td style="text-align: center;">1</td>
+<td style="text-align: left;"><code>ESHKOL_VALUE_INT64</code></td>
+<td style="text-align: left;">64-bit signed integer (inline)</td>
+</tr>
+<tr>
+<td style="text-align: center;">2</td>
+<td style="text-align: left;"><code>ESHKOL_VALUE_DOUBLE</code></td>
+<td style="text-align: left;">Double as int64 bit pattern (inline)</td>
+</tr>
+<tr>
+<td style="text-align: center;">3</td>
+<td style="text-align: left;"><code>ESHKOL_VALUE_BOOL</code></td>
+<td style="text-align: left;">Boolean #t/#f (inline)</td>
+</tr>
+<tr>
+<td style="text-align: center;">4</td>
+<td style="text-align: left;"><code>ESHKOL_VALUE_CHAR</code></td>
+<td style="text-align: left;">Unicode codepoint (inline)</td>
+</tr>
+<tr>
+<td style="text-align: center;">5</td>
+<td style="text-align: left;"><code>ESHKOL_VALUE_SYMBOL</code></td>
+<td style="text-align: left;">Interned symbol pointer</td>
+</tr>
+<tr>
+<td style="text-align: center;">6</td>
+<td style="text-align: left;"><code>ESHKOL_VALUE_DUAL_NUMBER</code></td>
+<td style="text-align: left;">Forward-mode AD dual number pointer</td>
+</tr>
+<tr>
+<td style="text-align: center;">7</td>
+<td style="text-align: left;"><code>ESHKOL_VALUE_COMPLEX</code></td>
+<td style="text-align: left;">Complex number
+<code>{real:f64, imag:f64}</code> pointer</td>
+</tr>
+<tr>
+<td style="text-align: center;">8</td>
+<td style="text-align: left;"><code>ESHKOL_VALUE_HEAP_PTR</code></td>
+<td style="text-align: left;">Heap pointer (subtype in 8-byte object
+header)</td>
+</tr>
+<tr>
+<td style="text-align: center;">9</td>
+<td style="text-align: left;"><code>ESHKOL_VALUE_CALLABLE</code></td>
+<td style="text-align: left;">Callable pointer (closure, lambda-sexpr,
+ad-node)</td>
+</tr>
+<tr>
+<td style="text-align: center;">10</td>
+<td style="text-align: left;"><code>ESHKOL_VALUE_LOGIC_VAR</code></td>
+<td style="text-align: left;">Logic variable <code>?x</code> (var_id as
+int64)</td>
+</tr>
+</tbody>
+</table>
+<p>Tags 0-7 are immediate values (data stored inline). Tags 8-9 are
+consolidated pointer types – the specific type is determined by reading
+the 8-byte object header at <code>pointer - 8</code>.</p>
+<h3 id="heap-subtypes-20-as-of-v11">Heap Subtypes (20 as of v1.1)</h3>
+<pre class="c"><code>// inc/eshkol/eshkol.h
+HEAP_SUBTYPE_CONS         = 0,   // Cons cell (pair/list node)
+HEAP_SUBTYPE_STRING       = 1,   // String (UTF-8 with length)
+HEAP_SUBTYPE_VECTOR       = 2,   // Heterogeneous vector (16 bytes/element)
+HEAP_SUBTYPE_TENSOR       = 3,   // N-dimensional numeric tensor (8 bytes/element)
+HEAP_SUBTYPE_MULTI_VALUE  = 4,   // Multiple return values container
+HEAP_SUBTYPE_HASH         = 5,   // Hash table / dictionary
+HEAP_SUBTYPE_EXCEPTION    = 6,   // Exception object
+HEAP_SUBTYPE_RECORD       = 7,   // User-defined record type
+HEAP_SUBTYPE_BYTEVECTOR   = 8,   // Raw byte vector (R7RS)
+HEAP_SUBTYPE_PORT         = 9,   // I/O port
+HEAP_SUBTYPE_SYMBOL       = 10,  // Interned symbol
+HEAP_SUBTYPE_BIGNUM       = 11,  // Arbitrary-precision integer
+HEAP_SUBTYPE_SUBSTITUTION = 12,  // Logic engine: immutable binding map
+HEAP_SUBTYPE_FACT         = 13,  // Logic engine: predicate + arguments
+HEAP_SUBTYPE_KNOWLEDGE_BASE = 15, // Logic engine: collection of facts
+HEAP_SUBTYPE_FACTOR_GRAPH = 16,  // Active inference: factor graph
+HEAP_SUBTYPE_WORKSPACE    = 17,  // Global workspace: cognitive competition
+HEAP_SUBTYPE_PROMISE      = 18,  // Lazy promise (delay/force)
+HEAP_SUBTYPE_RATIONAL     = 19,  // Exact rational number</code></pre>
+<p>Subtypes 12-19 are new in v1.1-accelerate. The consolidation of 8
+legacy pointer types (CONS_PTR, STRING_PTR, etc.) into
+<code>HEAP_PTR</code> + subtype headers freed the type tag space for
+these extensions.</p>
+<hr />
+<h2 id="modular-codegen-architecture">Modular Codegen Architecture</h2>
+<p>The LLVM backend distributes code generation across 36 specialized
+modules. Each domain module is a C++ class instantiated as a
+<code>std::unique_ptr</code> member of <code>EshkolLLVMCodeGen</code>;
+orchestration, builtin declarations, and REPL resolution are separate
+translation units that share the exposed class contract.</p>
+<h3 id="complete-module-table">Complete Module Table</h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th style="text-align: left;">Module</th>
+<th style="text-align: left;">Source File</th>
+<th style="text-align: right;">Lines</th>
+<th style="text-align: left;">Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Main Codegen</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>llvm_codegen.cpp</code></a></td>
+<td style="text-align: right;">Orchestrator and AST dispatch</td>
+<td style="text-align: left;"></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Module
+Initialization</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/module_init_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>module_init_codegen.cpp</code></a></td>
+<td style="text-align: right;">Codegen construction and library
+initialization</td>
+<td style="text-align: left;"></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Builtin Factory</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/builtin_factory_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>builtin_factory_codegen.cpp</code></a></td>
+<td style="text-align: right;">LLVM declarations for runtime, math, and
+builtin calls</td>
+<td style="text-align: left;"></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>REPL Resolution</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/repl_resolution_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>repl_resolution_codegen.cpp</code></a></td>
+<td style="text-align: right;">Cross-evaluation function and C-ABI thunk
+resolution</td>
+<td style="text-align: left;"></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Autodiff</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>autodiff_codegen.cpp</code></a></td>
+<td style="text-align: right;">14,083</td>
+<td style="text-align: left;">Forward/reverse/symbolic AD modes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Arithmetic</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/arithmetic_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>arithmetic_codegen.cpp</code></a></td>
+<td style="text-align: right;">4,012</td>
+<td style="text-align: left;">+, -, *, /, bignum, rational, complex
+dispatch</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>String/IO</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/string_io_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>string_io_codegen.cpp</code></a></td>
+<td style="text-align: right;">3,860</td>
+<td style="text-align: left;">String ops, display/write, file I/O, JSON,
+CSV</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Collections</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/collection_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>collection_codegen.cpp</code></a></td>
+<td style="text-align: right;">3,173</td>
+<td style="text-align: left;">Vector, list, cons, bytevector
+operations</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Parallel LLVM</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/parallel_llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>parallel_llvm_codegen.cpp</code></a></td>
+<td style="text-align: right;">2,626</td>
+<td style="text-align: left;">Work-stealing parallelism LLVM IR
+generation</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>System</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/system_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>system_codegen.cpp</code></a></td>
+<td style="text-align: right;">2,039</td>
+<td style="text-align: left;">System, environment, time, process, eval
+support</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Tensor (dispatch)</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensor_codegen.cpp</code></a></td>
+<td style="text-align: right;">1,867</td>
+<td style="text-align: left;">Entry/dispatch shell; per-domain ops live
+in <code>tensor_*_codegen.cpp</code> siblings</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Bindings</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/binding_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>binding_codegen.cpp</code></a></td>
+<td style="text-align: right;">1,662</td>
+<td style="text-align: left;">let/let<em>/letrec/letrec</em> with TCO
+context save/restore</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Thread Pool</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/thread_pool.cpp" target="_blank" rel="noopener noreferrer"><code>thread_pool.cpp</code></a></td>
+<td style="text-align: right;">1,524</td>
+<td style="text-align: left;">Work-stealing thread pool runtime</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Tensor Backward</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_backward.cpp" target="_blank" rel="noopener noreferrer"><code>tensor_backward.cpp</code></a></td>
+<td style="text-align: right;">1,572</td>
+<td style="text-align: left;">Backward-mode AD gradient computation for
+tensors</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>BLAS Backend</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/blas_backend.cpp" target="_blank" rel="noopener noreferrer"><code>blas_backend.cpp</code></a></td>
+<td style="text-align: right;">1,281</td>
+<td style="text-align: left;">BLAS dispatch, GPU cost model
+calibration</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Call/Apply</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/call_apply_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>call_apply_codegen.cpp</code></a></td>
+<td style="text-align: right;">1,270</td>
+<td style="text-align: left;">Function calls, apply, partial
+application, variadic</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Control Flow</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/control_flow_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>control_flow_codegen.cpp</code></a></td>
+<td style="text-align: right;">1,107</td>
+<td
+style="text-align: left;">if/cond/case/match/when/unless/call-cc/guard</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Map</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/map_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>map_codegen.cpp</code></a></td>
+<td style="text-align: right;">1,142</td>
+<td style="text-align: left;">map/for-each/fold with closure
+dispatch</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Parallel</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/parallel_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>parallel_codegen.cpp</code></a></td>
+<td style="text-align: right;">1,008</td>
+<td style="text-align: left;">parallel-map/fold/filter/for-each
+runtime</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Tagged Values</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tagged_value_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tagged_value_codegen.cpp</code></a></td>
+<td style="text-align: right;">807</td>
+<td style="text-align: left;">Pack/unpack tagged values, type
+extraction</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Tail Calls</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tail_call_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tail_call_codegen.cpp</code></a></td>
+<td style="text-align: right;">748</td>
+<td style="text-align: left;">TCO transformation, trampoline
+runtime</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Homoiconic</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/homoiconic_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>homoiconic_codegen.cpp</code></a></td>
+<td style="text-align: right;">706</td>
+<td style="text-align: left;">Code-as-data, quote, lambda S-expressions,
+eval</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Hash</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/hash_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>hash_codegen.cpp</code></a></td>
+<td style="text-align: right;">734</td>
+<td style="text-align: left;">make-hash, hash-ref, hash-set!,
+hash-for-each</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Complex</strong></td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/complex_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>complex_codegen.cpp</code></a></td>
+<td style="text-align: right;">640</td>
+<td style="text-align: left;">Complex number arithmetic (Smith’s formula
+division)</td>
+</tr>
+</tbody>
+</table>
+<p>The original <code>tensor_codegen.cpp</code> was decomposed in v1.2
+into thirteen per-domain modules
+(<code>tensor_activation_codegen.cpp</code>,
+<code>tensor_arith_codegen.cpp</code>,
+<code>tensor_conv_codegen.cpp</code>,
+<code>tensor_creation_codegen.cpp</code>,
+<code>tensor_dataloader_codegen.cpp</code>,
+<code>tensor_extras_codegen.cpp</code>,
+<code>tensor_linalg_codegen.cpp</code>,
+<code>tensor_loss_codegen.cpp</code>,
+<code>tensor_reduce_codegen.cpp</code>,
+<code>tensor_shape_codegen.cpp</code>,
+<code>tensor_training_codegen.cpp</code>,
+<code>tensor_transformer_codegen.cpp</code>,
+<code>tensorcore_codegen.cpp</code>), totalling 22,355 lines re-exported
+through the dispatcher above.</p>
+<p><strong>Additional backend components (not in the 21-module
+count):</strong></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th style="text-align: left;">Component</th>
+<th style="text-align: left;">Source Files</th>
+<th style="text-align: right;">Lines</th>
+<th style="text-align: left;">Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">Type System</td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/type_system.cpp" target="_blank" rel="noopener noreferrer"><code>type_system.cpp</code></a></td>
+<td style="text-align: right;">187</td>
+<td style="text-align: left;">LLVM type creation and caching</td>
+</tr>
+<tr>
+<td style="text-align: left;">Codegen Context</td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/codegen_context.cpp" target="_blank" rel="noopener noreferrer"><code>codegen_context.cpp</code></a></td>
+<td style="text-align: right;">377</td>
+<td style="text-align: left;">Shared state for module communication</td>
+</tr>
+<tr>
+<td style="text-align: left;">Function Cache</td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/function_cache.cpp" target="_blank" rel="noopener noreferrer"><code>function_cache.cpp</code></a></td>
+<td style="text-align: right;">173</td>
+<td style="text-align: left;">Lazy-loaded C library function
+declarations</td>
+</tr>
+<tr>
+<td style="text-align: left;">Builtin Declarations</td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/builtin_declarations.cpp" target="_blank" rel="noopener noreferrer"><code>builtin_declarations.cpp</code></a></td>
+<td style="text-align: right;">148</td>
+<td style="text-align: left;">Runtime function declarations (deep_equal,
+display, registry)</td>
+</tr>
+<tr>
+<td style="text-align: left;">Memory Codegen</td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/memory_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>memory_codegen.cpp</code></a></td>
+<td style="text-align: right;">401</td>
+<td style="text-align: left;">Arena allocation IR generation</td>
+</tr>
+<tr>
+<td style="text-align: left;">CPU Features</td>
+<td style="text-align: left;"><a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/cpu_features.cpp" target="_blank" rel="noopener noreferrer"><code>cpu_features.cpp</code></a></td>
+<td style="text-align: right;">416</td>
+<td style="text-align: left;">SIMD capability detection</td>
+</tr>
+<tr>
+<td style="text-align: left;">XLA/StableHLO</td>
+<td style="text-align: left;">6 files in
+<code>lib/backend/xla/</code></td>
+<td style="text-align: right;">4,020</td>
+<td style="text-align: left;">Tensor compilation via MLIR pipeline</td>
+</tr>
+<tr>
+<td style="text-align: left;">GPU/Metal</td>
+<td
+style="text-align: left;"><code>lib/backend/gpu/gpu_memory.mm</code>,
+<code>metal_softfloat.h</code></td>
+<td style="text-align: right;">8,954</td>
+<td style="text-align: left;">Metal compute, SF64 software float64, CUDA
+stubs</td>
+</tr>
+</tbody>
+</table>
+<h3 id="module-initialization-order">Module Initialization Order</h3>
+<p>Modules are initialized in dependency order during
+<code>EshkolLLVMCodeGen</code> construction:</p>
+<pre><code>TypeSystem -&gt; MemoryCodegen -&gt; CodegenContext -&gt; TaggedValueCodegen
+  -&gt; BuiltinDeclarations -&gt; TensorCodegen -&gt; AutodiffCodegen
+  -&gt; ComplexCodegen -&gt; ArithmeticCodegen -&gt; CallApplyCodegen
+  -&gt; MapCodegen -&gt; ControlFlowCodegen -&gt; StringIOCodegen
+  -&gt; BindingCodegen -&gt; CollectionCodegen -&gt; HomoiconicCodegen
+  -&gt; TailCallCodegen -&gt; SystemCodegen -&gt; HashCodegen -&gt; ParallelCodegen</code></pre>
+<p>ArithmeticCodegen depends on TensorCodegen, AutodiffCodegen, and
+ComplexCodegen because polymorphic arithmetic must dispatch to tensor
+element-wise ops, dual number propagation, and complex arithmetic
+paths.</p>
+<hr />
+<h2 id="v11-accelerate-feature-codegen">v1.1-accelerate Feature
+Codegen</h2>
+<h3 id="gpu-dispatch-simd---cblas---metal">GPU Dispatch (SIMD -&gt;
+cBLAS -&gt; Metal)</h3>
+<p><strong>Implementation:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/blas_backend.cpp" target="_blank" rel="noopener noreferrer"><code>blas_backend.cpp</code></a>
+(1,316 lines), <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/gpu/gpu_memory.mm" target="_blank" rel="noopener noreferrer"><code>gpu_memory.mm</code></a>
+(4,485 lines)</p>
+<p>The cost model selects the optimal compute backend based on tensor
+dimensions:</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th style="text-align: left;">Backend</th>
+<th style="text-align: right;">Peak Performance</th>
+<th style="text-align: right;">Overhead</th>
+<th style="text-align: left;">When Selected</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">SIMD (vectorized)</td>
+<td style="text-align: right;">25 GFLOPS</td>
+<td style="text-align: right;">~0</td>
+<td style="text-align: left;">16 or fewer elements</td>
+</tr>
+<tr>
+<td style="text-align: left;">cBLAS (Apple Accelerate AMX)</td>
+<td style="text-align: right;">1,100 GFLOPS</td>
+<td style="text-align: right;">5 us</td>
+<td style="text-align: left;">17 to ~1B elements</td>
+</tr>
+<tr>
+<td style="text-align: left;">Metal GPU (SF64 software float64)</td>
+<td style="text-align: right;">200 GFLOPS</td>
+<td style="text-align: right;">200 us</td>
+<td style="text-align: left;">&gt;1B elements (GPU genuinely
+faster)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>SF64 (Software Float64):</strong> Metal GPUs lack native
+float64. SF64 emulates double precision using double-double arithmetic
+(two 32-bit mantissas for ~100-bit effective precision). Implemented in
+<a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/gpu/metal_softfloat.h" target="_blank" rel="noopener noreferrer"><code>metal_softfloat.h</code></a>
+(4,499 lines).</p>
+<p><strong>Cost model calibration:</strong> Measured values are
+<code>blas_peak_gflops=1100</code> (Apple AMX) and
+<code>gpu_peak_gflops=200</code> (SF64). Configurable via environment
+variables <code>ESHKOL_BLAS_PEAK_GFLOPS</code> and
+<code>ESHKOL_GPU_PEAK_GFLOPS</code>.</p>
+<p>The Metal shader source is embedded at build time via a CMake custom
+command that converts <code>metal_softfloat.h</code> into a C string
+literal (<code>metal_sf64_embedded.inc</code>), ensuring the GPU kernel
+and host code stay in sync.</p>
+<h3 id="parallel-primitives">Parallel Primitives</h3>
+<p><strong>Implementation:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/parallel_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>parallel_codegen.cpp</code></a>
+(1,009 lines), <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/parallel_llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>parallel_llvm_codegen.cpp</code></a>
+(2,317 lines), <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/thread_pool.cpp" target="_blank" rel="noopener noreferrer"><code>thread_pool.cpp</code></a>
+(1,530 lines)</p>
+<p>Four parallel higher-order functions with work-stealing
+scheduling:</p>
+<pre class="scheme"><code>(parallel-map f vec)        ; Apply f to each element in parallel
+(parallel-fold f init vec)  ; Associative reduction with work distribution
+(parallel-filter pred vec)  ; Parallel predicate-based selection
+(parallel-for-each f vec)   ; Parallel side-effecting iteration</code></pre>
+<p>Worker functions use <code>LinkOnceODRLinkage</code> to prevent
+duplicate symbol errors when multiple compilation units contain parallel
+constructs. The same linkage is used for all stdlib symbols to allow
+user-defined functions to override stdlib definitions.</p>
+<h3 id="consciousness-engine-codegen">Consciousness Engine Codegen</h3>
+<p><strong>Runtime:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/core/logic.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/logic.cpp</code></a>
+(1,505 lines), <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/core/inference.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/inference.cpp</code></a>
+(1,258 lines), <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/core/workspace.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/workspace.cpp</code></a>
+(354 lines)</p>
+<p><strong>Codegen:</strong> Dispatched directly from <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>llvm_codegen.cpp</code></a>
+(not a separate module)</p>
+<p>22 builtins across three theoretical frameworks:</p>
+<p><strong>Logic Programming (Robinson’s unification):</strong>
+<code>unify</code>, <code>walk</code>, <code>make-substitution</code>,
+<code>make-fact</code>, <code>make-kb</code>, <code>kb-assert!</code>,
+<code>kb-query</code>, <code>logic-var?</code>,
+<code>substitution?</code>, <code>kb?</code>, <code>fact?</code></p>
+<p><strong>Active Inference (Free Energy Principle):</strong>
+<code>make-factor-graph</code>, <code>fg-add-factor!</code>,
+<code>fg-infer!</code>, <code>fg-update-cpt!</code>,
+<code>free-energy</code>, <code>expected-free-energy</code>,
+<code>factor-graph?</code></p>
+<p><strong>Global Workspace Theory:</strong>
+<code>make-workspace</code>, <code>ws-register!</code>,
+<code>ws-step!</code>, <code>workspace?</code></p>
+<p><code>ws-step!</code> is fully implemented: LLVM codegen generates a
+loop that calls registered module closures via
+<code>codegenClosureCall</code>, then C runtime helpers
+(<code>eshkol_ws_make_content_tensor</code>,
+<code>eshkol_ws_step_finalize</code>) handle tensor wrapping and softmax
+broadcast for competitive attention.</p>
+<p>Logic variables use syntax <code>?x</code> (parsed as
+<code>ESHKOL_LOGIC_VAR_OP</code>), which is R7RS-compatible since
+<code>?</code> is a valid identifier start character in Scheme.</p>
+<h3 id="exact-arithmetic-dispatch">Exact Arithmetic Dispatch</h3>
+<p><strong>Implementation:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/arithmetic_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>arithmetic_codegen.cpp</code></a>
+(4,625 lines)</p>
+<p>The full R7RS numeric tower with automatic precision promotion:</p>
+<pre><code>int64 -&gt; bignum -&gt; rational -&gt; double -&gt; complex
+         (overflow)  (exact div)  (inexact)  (make-rectangular)</code></pre>
+<p>All arithmetic operations (<code>+</code>, <code>-</code>,
+<code>*</code>, <code>/</code>, comparison, <code>abs</code>,
+<code>min</code>, <code>max</code>, <code>expt</code>) dispatch through
+a type-based cascade:</p>
+<ol type="1">
+<li>Check for dual number (AD active) – propagate derivatives</li>
+<li>Check for <code>HEAP_PTR</code> – inspect subtype for
+bignum/rational</li>
+<li>Check for <code>DOUBLE</code> – IEEE 754 arithmetic</li>
+<li>Check for <code>INT64</code> – native integer ops with overflow
+check</li>
+<li>Overflow promotes int64 to bignum via C runtime
+(<code>eshkol_bignum_binary_tagged</code>)</li>
+</ol>
+<p><strong>Exactness tracking:</strong> The
+<code>ESHKOL_FLAG_EXACT</code> flag in the tagged value’s flags byte
+propagates through operations. R7RS semantics: exact + exact = exact,
+exact + inexact = inexact.</p>
+<p><strong>Runtime functions for exact arithmetic:</strong> -
+<code>eshkol_bignum_binary_tagged</code> – bignum +, -, *, div, mod, gcd
+- <code>eshkol_bignum_compare_tagged</code> – exact comparison -
+<code>eshkol_bignum_pow_tagged</code> – exact exponentiation via
+repeated squaring - <code>eshkol_rational_compare_tagged_ptr</code> –
+rational comparison - <code>eshkol_bignum_to_string</code> /
+<code>eshkol_string_to_number_tagged</code> – conversion</p>
+<h3 id="first-class-continuations">First-Class Continuations</h3>
+<p><strong>Implementation:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/control_flow_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>control_flow_codegen.cpp</code></a>
+(1,108 lines), with <code>call/cc</code> and <code>dynamic-wind</code>
+dispatch in <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>llvm_codegen.cpp</code></a></p>
+<ul>
+<li><code>call/cc</code> – multi-shot re-entrant continuations;
+escape-only captures keep the zero-overhead setjmp/longjmp path</li>
+<li><code>dynamic-wind</code> – before/after thunks with proper
+unwinding on non-local exit</li>
+<li><code>guard</code>/<code>raise</code> – R7RS exception handling with
+cond-style clauses</li>
+<li><code>with-exception-handler</code> – low-level exception handler
+installation</li>
+<li><code>delay</code>/<code>force</code>/<code>make-promise</code>/<code>delay-force</code>
+– full R7RS promise system with memoization</li>
+</ul>
+<p>Continuations are <code>HEAP_PTR</code> objects with
+<code>HEAP_SUBTYPE_PROMISE</code> (for promises) or stored as callable
+closures (for <code>call/cc</code>).</p>
+<h3 id="machine-learning-framework-75-builtins">Machine Learning
+Framework (75+ Builtins)</h3>
+<p><strong>Implementation:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensor_codegen.cpp</code></a>
+(1,867-line dispatcher; thirteen sibling
+<code>tensor_*_codegen.cpp</code> files after the v1.2 split), <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_backward.cpp" target="_blank" rel="noopener noreferrer"><code>tensor_backward.cpp</code></a>
+(1,876 lines)</p>
+<p>Categories: activations (16), loss functions (14), optimizers (5+3),
+weight initializers (5), LR schedulers (4), CNN layers (7), transformer
+operations (8), data loading (6), plus tensor creation/manipulation
+ops.</p>
+<p>All ML builtins integrate with reverse-mode AD – calling
+<code>gradient</code> on any composition produces exact gradients via
+the computational tape.</p>
+<hr />
+<h2 id="optimization-pipeline">Optimization Pipeline</h2>
+<p>Eshkol uses LLVM’s <strong>New Pass Manager</strong> (not the
+deprecated Legacy PassManagerBuilder):</p>
+<pre class="cpp"><code>// lib/backend/llvm_codegen.cpp
+static void optimizeModule(llvm::Module&amp; module, llvm::TargetMachine* TM) {
+    auto opt_level = getPassBuilderOptLevel();
+    if (opt_level == llvm::OptimizationLevel::O0) return;
+
+    llvm::PassBuilder PB(TM);
+
+    llvm::LoopAnalysisManager LAM;
+    llvm::FunctionAnalysisManager FAM;
+    llvm::CGSCCAnalysisManager CGAM;
+    llvm::ModuleAnalysisManager MAM;
+
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+    llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(opt_level);
+    MPM.run(module, MAM);
+}</code></pre>
+<h3 id="optimization-levels">Optimization Levels</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th style="text-align: left;">Flag</th>
+<th style="text-align: left;">LLVM Level</th>
+<th style="text-align: left;">Passes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>-O0</code></td>
+<td style="text-align: left;"><code>OptimizationLevel::O0</code></td>
+<td style="text-align: left;">No optimization (default for
+stdlib.o)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>-O1</code></td>
+<td style="text-align: left;"><code>OptimizationLevel::O1</code></td>
+<td style="text-align: left;">Basic: constant folding, DCE</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>-O2</code></td>
+<td style="text-align: left;"><code>OptimizationLevel::O2</code></td>
+<td style="text-align: left;">Full: inlining, GVN, LICM, SROA</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>-O3</code></td>
+<td style="text-align: left;"><code>OptimizationLevel::O3</code></td>
+<td style="text-align: left;">Aggressive: loop unrolling,
+auto-vectorization</td>
+</tr>
+</tbody>
+</table>
+<h3 id="eshkol-specific-optimization-patterns">Eshkol-Specific
+Optimization Patterns</h3>
+<p><strong>Tagged Value Elimination:</strong> When types are statically
+known from HoTT inference, the compiler generates untagged LLVM IR:</p>
+<pre class="scheme"><code>;; Typed function -- tags eliminated
+(define (add x : integer y : integer) : integer (+ x y))
+;; =&gt; define i64 @add(i64 %x, i64 %y) { %r = add i64 %x, %y; ret i64 %r }</code></pre>
+<p><strong>PHI Node Avoidance:</strong> Loops that call
+<code>codegenClosureCall</code> (which creates 15+ basic blocks) use
+alloca + store/load instead of PHI nodes. PHI nodes require exactly one
+entry per predecessor block, but closure calls break this invariant by
+inserting intermediate blocks.</p>
+<pre class="cpp"><code>// CORRECT pattern for loops with closure calls:
+Value* counter_ptr = builder-&gt;CreateAlloca(int64_type);  // alloca
+builder-&gt;CreateStore(ConstantInt::get(int64_type, 0), counter_ptr);
+// ... in loop body:
+Value* counter = builder-&gt;CreateLoad(int64_type, counter_ptr);
+// ... call closure ...
+builder-&gt;CreateStore(new_counter, counter_ptr);
+
+// INCORRECT (breaks with closure calls):
+// PHINode* counter = builder-&gt;CreatePHI(int64_type, 2);</code></pre>
+<p><strong>Block Capture After IR-Generating Calls:</strong> Any
+function that may create basic blocks (e.g.,
+<code>extractDoubleFromTagged</code>,
+<code>packDoubleToTaggedValue</code>, <code>isHeapSubtype</code>) can
+shift the builder’s insert point. Code that creates PHI nodes or
+conditional branches must capture the actual exit block with
+<code>builder-&gt;GetInsertBlock()</code> after such calls, not
+before.</p>
+<hr />
+<h2 id="jit-compilation-repl">JIT Compilation (REPL)</h2>
+<p><strong>Implementation:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a>
+(4,679 lines)</p>
+<p>The REPL uses <strong>LLVM’s LLJIT</strong> (via OrcJIT v2) for
+interactive execution.</p>
+<h3 id="jit-architecture">JIT Architecture</h3>
+<pre><code>User Input: &quot;(+ 1 2)&quot;
+       |
+       v
+  Parse -&gt; AST
+       |
+       v
+  Type Check (optional)
+       |
+       v
+  Generate LLVM IR (same codegen as AOT)
+       |
+       v
+  LLJIT Compile -&gt; Native Code (in-process)
+       |
+       v
+  Execute -&gt; Return 3
+       |
+       v
+  Display: &quot;3&quot;</code></pre>
+<h3 id="critical-codegenoptlevel-matching">Critical: CodeGenOptLevel
+Matching</h3>
+<p>The JIT’s <code>CodeGenOptLevel</code> <strong>must</strong> match
+the optimization level used to compile <code>stdlib.o</code>:</p>
+<pre class="cpp"><code>// lib/repl/repl_jit.cpp
+auto jtmb = orc::JITTargetMachineBuilder::detectHost();
+// detectHost() defaults to CodeGenOptLevel::Default (-O2)
+// BUT stdlib.o is compiled at -O0
+// On ARM64, -O2 generates different struct arg stack layouts for
+// {i8, i8, i16, i32, i64} -- 3rd+ arg received as all-zeros
+jtmb-&gt;setCodeGenOptLevel(CodeGenOptLevel::None);  // Match stdlib.o</code></pre>
+<p>Without this fix, the 3rd and subsequent tagged value arguments to
+stdlib functions arrive as all-zeros on ARM64, because the ABI for
+struct passing differs between optimization levels.</p>
+<h3 id="stdlib-preloading">Stdlib Preloading</h3>
+<p>The REPL preloads stdlib via two mechanisms:</p>
+<ol type="1">
+<li><strong><code>addObjectFile</code></strong> – Loads
+<code>stdlib.o</code> directly into the JIT for instant availability of
+all 237+ stdlib functions and 305 globals</li>
+<li><strong><code>.bc</code> metadata</strong> – Parses
+<code>stdlib.bc</code> (bitcode) to dynamically discover all exported
+function and global names, enabling the JIT to resolve stdlib symbols
+without hardcoded lists</li>
+</ol>
+<pre class="cpp"><code>// Symbol resolution chain:
+// 1. JIT-compiled user code (current session)
+// 2. stdlib.o (preloaded object file)
+// 3. DynamicLibrarySearchGenerator (host process symbols)
+auto generator = orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+    jit_-&gt;getDataLayout().getGlobalPrefix());</code></pre>
+<h3 id="force-loading-for-jit-symbol-resolution">Force-Loading for JIT
+Symbol Resolution</h3>
+<p>The REPL executable links with <code>-force_load</code> (macOS) or
+<code>--whole-archive</code> (Linux) to prevent the linker from
+dead-stripping archive members that are only referenced by JIT-compiled
+code at runtime:</p>
+<pre class="cmake"><code># CMakeLists.txt (macOS)
+target_link_options(eshkol-repl PRIVATE
+    &quot;-Wl,-force_load&quot; &quot;$&lt;TARGET_FILE:eshkol-static&gt;&quot;)
+target_link_options(eshkol-repl PRIVATE &quot;-Wl,-export_dynamic&quot;)</code></pre>
+<p>Combined with <code>-export_dynamic</code>, this makes
+<code>DynamicLibrarySearchGenerator</code> auto-resolve ALL runtime
+symbols – new runtime functions added to the compiler are automatically
+available in the REPL without manual <code>ADD_SYMBOL</code>
+registration.</p>
+<hr />
+<h2 id="build-system">Build System</h2>
+<p><strong>Implementation:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/CMakeLists.txt" target="_blank" rel="noopener noreferrer"><code>CMakeLists.txt</code></a></p>
+<p>Eshkol uses CMake (minimum 3.14) with C17/C++20 standards.</p>
+<h3 id="build-modes">Build Modes</h3>
+<p>The build system supports two LLVM integration modes:</p>
+<p><strong>Lite Build (default):</strong> Uses the system LLVM 21
+toolchain on macOS/Linux and the LLVM 21 CMake package on native
+Windows.</p>
+<p><strong>XLA Build:</strong> Set <code>STABLEHLO_ROOT</code> to use
+StableHLO’s bundled LLVM/MLIR. Enables full XLA backend with StableHLO
+dialect support for tensor compilation via MLIR.</p>
+<h3 id="library-structure">Library Structure</h3>
+<pre class="cmake"><code># Static library containing ALL backend sources (auto-discovered)
+file(GLOB_RECURSE LIB_SRC RELATIVE ${CMAKE_SOURCE_DIR} &quot;lib/*.c*&quot;)
+list(FILTER LIB_SRC EXCLUDE REGEX &quot;lib/repl/.*&quot;)         # REPL separate
+list(FILTER LIB_SRC EXCLUDE REGEX &quot;lib/backend/gpu/.*&quot;)   # GPU added explicitly
+
+add_library(eshkol-static STATIC ${LIB_SRC})
+# GPU sources added per-platform (Metal .mm on macOS, stub .cpp on Linux)
+target_sources(eshkol-static PRIVATE ${GPU_SOURCES})</code></pre>
+<h3 id="build-targets">Build Targets</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th style="text-align: left;">Target</th>
+<th style="text-align: left;">Source</th>
+<th style="text-align: left;">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>eshkol-static</code></td>
+<td style="text-align: left;"><code>lib/**/*.cpp</code></td>
+<td style="text-align: left;">Static library with all compiler + runtime
+code</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>eshkol-run</code></td>
+<td style="text-align: left;"><code>exe/eshkol-run.cpp</code></td>
+<td style="text-align: left;">AOT compiler (also supports
+<code>-e</code>/<code>--eval</code> JIT mode)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>eshkol-repl</code></td>
+<td style="text-align: left;"><code>exe/eshkol-repl.cpp</code></td>
+<td style="text-align: left;">Interactive REPL with LLJIT</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>eshkol-repl-lib</code></td>
+<td style="text-align: left;"><code>lib/repl/*.cpp</code></td>
+<td style="text-align: left;">JIT library (linked into both
+<code>eshkol-run</code> and <code>eshkol-repl</code>)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>stdlib</code></td>
+<td style="text-align: left;"><code>lib/stdlib.esk</code></td>
+<td style="text-align: left;">Pre-compiled standard library
+(<code>stdlib.o</code>)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>eshkol-pkg</code></td>
+<td style="text-align: left;"><code>tools/pkg/eshkol_pkg.cpp</code></td>
+<td style="text-align: left;">Package manager</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>eshkol-lsp</code></td>
+<td style="text-align: left;"><code>tools/lsp/eshkol_lsp.cpp</code></td>
+<td style="text-align: left;">LSP server</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>metal_sf64_shader</code></td>
+<td
+style="text-align: left;"><code>lib/backend/gpu/metal_softfloat.h</code></td>
+<td style="text-align: left;">Embedded Metal shader (macOS only)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="platform-specific-configuration">Platform-Specific
+Configuration</h3>
+<p><strong>BLAS Acceleration:</strong> - macOS: Apple Accelerate
+framework (built-in, AMX-optimized) - Linux: OpenBLAS via
+<code>find_package(BLAS)</code> or <code>pkg-config</code></p>
+<p><strong>GPU Acceleration:</strong> - macOS: Metal framework +
+MetalPerformanceShaders (Objective-C++ via <code>gpu_memory.mm</code>) -
+Linux: CUDA Toolkit (<code>gpu_memory_cuda.cpp</code> +
+<code>gpu_cuda_kernels.cu</code>) - No GPU: Stub
+(<code>gpu_memory_stub.cpp</code>) so API symbols resolve at link
+time</p>
+<p><strong>Stack Size:</strong> - macOS:
+<code>-Wl,-stack_size,0x20000000</code> (512MB) - Linux:
+<code>-Wl,-z,stacksize=536870912</code> (512MB) - Runtime override via
+<code>ESHKOL_STACK_SIZE</code> environment variable</p>
+<h3 id="stdlib-compilation">Stdlib Compilation</h3>
+<p>The standard library is compiled as a custom build step:</p>
+<pre class="cmake"><code>add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/stdlib.o
+    COMMAND $&lt;TARGET_FILE:eshkol-run&gt; --shared-lib -c -o &quot;stdlib&quot; &quot;lib/stdlib.esk&quot;
+    DEPENDS eshkol-run lib/stdlib.esk
+)</code></pre>
+<p>Library mode (<code>--shared-lib</code>) uses
+<code>LinkOnceODRLinkage</code> for all symbols, allowing user programs
+to override any stdlib function without duplicate symbol errors. The
+<code>-c</code> pins the <strong>object</strong> flavour: without it,
+<code>--shared-lib</code> links a loadable shared library and coerces
+its exports to the platform C ABI, which is not what an object destined
+to be linked into other Eshkol modules wants.</p>
+<h3 id="build-commands">Build Commands</h3>
+<pre class="bash"><code># Standard build
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+
+# Build with XLA support
+cmake -B build -DESHKOL_XLA_ENABLED=ON -DSTABLEHLO_ROOT=/path/to/stablehlo
+cmake --build build -j$(nproc)
+
+# Quick rebuild (from build directory)
+cd build &amp;&amp; make -j8
+
+# Install
+sudo cmake --install build</code></pre>
+<h3 id="optional-features">Optional Features</h3>
+<pre class="cmake"><code>option(ESHKOL_BUILD_TESTS &quot;Build tests&quot; ON)
+option(ESHKOL_BLAS_ENABLED &quot;Enable BLAS acceleration&quot; ON)
+option(ESHKOL_GPU_ENABLED &quot;Enable GPU acceleration&quot; ON)
+option(ESHKOL_XLA_ENABLED &quot;Enable XLA backend&quot; OFF)
+option(BUILD_REPL &quot;Build the interactive REPL&quot; ON)
+option(ESHKOL_ENABLE_ASAN &quot;Enable Address Sanitizer&quot; OFF)
+option(ESHKOL_ENABLE_UBSAN &quot;Enable UB Sanitizer&quot; OFF)</code></pre>
+<hr />
+<h2 id="compiler-executables">Compiler Executables</h2>
+<h3 id="eshkol-run-aot-compiler--eval">eshkol-run (AOT Compiler +
+Eval)</h3>
+<p><strong>Source:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a></p>
+<p>Ahead-of-time compiler that produces native executables:</p>
+<pre class="bash"><code># Compile and run
+eshkol-run program.esk -o program
+./program
+
+# Compile to WebAssembly
+eshkol-run --wasm program.esk
+
+# Library-mode object (for stdlib) -- -c pins the object flavour
+eshkol-run --shared-lib -c -o stdlib lib/stdlib.esk
+
+# Loadable shared library with C-ABI exports (for a C/Python host)
+eshkol-run --shared-lib -o mylib mylib.esk
+
+# JIT eval mode (uses REPL JIT internally)
+eshkol-run -e &#39;(display (+ 1 2))&#39;
+
+# Debug flags
+eshkol-run --dump-ir program.esk     # Print LLVM IR
+eshkol-run --dump-ast program.esk    # Print AST</code></pre>
+<p>The <code>require</code> system handles module discovery:
+<code>(require stdlib)</code> links with pre-compiled
+<code>stdlib.o</code>, while <code>(require core.list.transform)</code>
+loads a specific sub-module. Module discovery uses
+<code>collect_all_submodules()</code> which recursively parses source
+files – no hardcoded prefix lists.</p>
+<h3 id="eshkol-repl-jit-repl">eshkol-repl (JIT REPL)</h3>
+<p><strong>Source:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-repl.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-repl.cpp</code></a></p>
+<p>Interactive Read-Eval-Print Loop with readline support:</p>
+<pre class="bash"><code>eshkol-repl
+&gt; (define (fib n) (if (&lt; n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+&gt; (fib 30)
+832040
+&gt; (derivative (lambda (x) (* x x)) 3.0)
+6.0</code></pre>
+<h3 id="eshkol-lsp-language-server">eshkol-lsp (Language Server)</h3>
+<p><strong>Source:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/tools/lsp/eshkol_lsp.cpp" target="_blank" rel="noopener noreferrer"><code>tools/lsp/eshkol_lsp.cpp</code></a>
+(954 lines)</p>
+<p>LSP server providing completions, hover, go-to-definition,
+diagnostics, and formatting for IDE integration (VSCode extension
+available).</p>
+<h3 id="eshkol-pkg-package-manager">eshkol-pkg (Package Manager)</h3>
+<p><strong>Source:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/tools/pkg/eshkol_pkg.cpp" target="_blank" rel="noopener noreferrer"><code>tools/pkg/eshkol_pkg.cpp</code></a>
+(876 lines)</p>
+<p>Package manager with TOML manifests and git-based registry:
+<code>eshkol-pkg init/build/run/add/clean</code>.</p>
+<hr />
+<h2 id="runtime-architecture">Runtime Architecture</h2>
+<h3 id="global-arena">Global Arena</h3>
+<p><strong>Implementation:</strong> <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a>
+and its <code>runtime_arena_*</code> / <code>runtime_regions</code> /
+<code>runtime_*_alloc</code> siblings (4,259 lines total)</p>
+<ul>
+<li>Single allocator for all heap objects</li>
+<li>8KB minimum block size, doubling growth strategy</li>
+<li>O(1) bump-pointer allocation until block exhaustion</li>
+<li>No individual <code>free()</code> – memory reclaimed via arena
+reset</li>
+<li>Thread-safe for parallel primitives</li>
+</ul>
+<h3 id="object-header-system">Object Header System</h3>
+<p>Every heap-allocated object has an 8-byte header prepended at
+<code>pointer - 8</code>:</p>
+<pre class="c"><code>struct eshkol_object_header_t {
+    uint8_t subtype;     // 20 subtypes (cons, string, vector, tensor, closure, ...)
+    uint8_t flags;       // Linear, borrowed, shared, marked, exact
+    uint16_t ref_count;  // For shared objects (0 = not ref-counted)
+    uint32_t size;       // Object size excluding header
+};</code></pre>
+<p>The subtype field determines the actual type of <code>HEAP_PTR</code>
+and <code>CALLABLE</code> tagged values. Type checking at runtime reads
+the header at <code>pointer - 8</code>, costing one memory dereference
+but providing extensible type space.</p>
+<h3 id="closure-structure-40-bytes">Closure Structure (40 bytes)</h3>
+<pre class="c"><code>struct {
+    void*    func_ptr;       // Function pointer (8 bytes)
+    void*    env;            // Captured environment pointer (8 bytes)
+    void*    sexpr_ptr;      // Lambda S-expression for homoiconicity (8 bytes)
+    uint8_t  return_type;    // Return type tag
+    uint8_t  input_arity;    // Number of parameters
+    uint8_t  flags;          // Variadic, tail-recursive, etc.
+    uint8_t  reserved;
+    uint32_t hott_type_id;   // HoTT type identifier
+};</code></pre>
+<p>Closures capture variables by storing <strong>pointers</strong> to
+bindings (not copies), enabling mutation through <code>set!</code>.</p>
+<h3 id="tensor-vs-vector-distinction">Tensor vs. Vector Distinction</h3>
+<p><strong>Scheme vectors</strong> (<code>HEAP_SUBTYPE_VECTOR</code>):
+Heterogeneous arrays of 16-byte tagged values. Any Eshkol value can be
+stored. Created via <code>(vector 1 "hello" #t)</code>.</p>
+<p><strong>Tensors</strong> (<code>HEAP_SUBTYPE_TENSOR</code>):
+Homogeneous arrays of doubles stored as int64 bit patterns (8 bytes
+each). Multidimensional with shape metadata. Created via
+<code>#(1.0 2.0 3.0)</code> or
+<code>(make-tensor (list 4 4) 0.0)</code>.</p>
+<p>The distinction matters for iteration builtins:
+<code>vector-for-each</code> and <code>vector-map</code> must check the
+header subtype at <code>ptr - 8</code> to determine element size and
+dispatch correctly.</p>
+<h3 id="computational-tape-reverse-mode-ad">Computational Tape
+(Reverse-Mode AD)</h3>
+<p>A dynamic array of AD nodes allocated during the forward pass,
+topologically sorted for the backward pass. The 32-level tape stack
+enables computing nested derivatives (Hessians, meta-learning
+gradients).</p>
+<h3 id="consciousness-engine-runtime">Consciousness Engine Runtime</h3>
+<p>Three C runtime libraries: - <strong>Logic</strong> (<a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/core/logic.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/logic.cpp</code></a>,
+1,505 lines): Robinson’s unification, substitution environments,
+knowledge base query - <strong>Inference</strong> (<a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/core/inference.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/inference.cpp</code></a>,
+1,258 lines): Factor graph construction, belief propagation, free energy
+computation - <strong>Workspace</strong> (<a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/core/workspace.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/workspace.cpp</code></a>,
+354 lines): Module registration, softmax competitive attention, step
+execution</p>
+<p>LLVM codegen dispatches to these runtime functions via tagged value
+calling conventions, with heap subtypes 12-17 identifying consciousness
+engine objects.</p>
+<hr />
+<h2 id="see-also">See Also</h2>
+<ul>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/OVERVIEW.md" target="_blank" rel="noopener noreferrer">Overview</a> – High-level architecture and
+feature summary</li>
+<li><a href="/docs#page=breakdown_type_system" data-url="/content/breakdown_type_system.html">Type System</a> – Tagged values, HoTT
+types, gradual typing</li>
+<li><a href="/docs#page=breakdown_memory_management" data-url="/content/breakdown_memory_management.html">Memory Management</a> – OALR system,
+arena allocation, object headers</li>
+<li><a href="/docs#page=breakdown_autodiff" data-url="/content/breakdown_autodiff.html">Automatic Differentiation</a> – Three AD
+modes, tape architecture</li>
+<li><a href="/docs#page=breakdown_machine_learning" data-url="/content/breakdown_machine_learning.html">Machine Learning</a> – 75+ ML builtins
+deep dive</li>
+<li><a href="/docs#page=breakdown_consciousness_engine" data-url="/content/breakdown_consciousness_engine.html">Consciousness Engine</a> – Logic,
+active inference, global workspace</li>
+<li><a href="/docs#page=breakdown_gpu_acceleration" data-url="/content/breakdown_gpu_acceleration.html">GPU Acceleration</a> – Metal, SF64,
+cost model</li>
+<li><a href="/docs#page=breakdown_parallel_computing" data-url="/content/breakdown_parallel_computing.html">Parallel Computing</a> –
+Work-stealing, parallel primitives</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/EXACT_ARITHMETIC.md" target="_blank" rel="noopener noreferrer">Exact Arithmetic</a> – Numeric tower,
+bignum, rational</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/CONTINUATIONS.md" target="_blank" rel="noopener noreferrer">Continuations</a> – call/cc,
+dynamic-wind, guard/raise</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/MODULE_SYSTEM.md" target="_blank" rel="noopener noreferrer">Module System</a> – require/provide,
+precompiled stdlib</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/REPL_JIT.md" target="_blank" rel="noopener noreferrer">REPL JIT</a> – Interactive development</li>
+<li><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a> – Complete function
+reference</li>
+</ul>

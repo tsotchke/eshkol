@@ -1,4 +1,4 @@
-<h1 id="eshkol-v1.3.5-api-reference">Eshkol v1.3.5 API Reference</h1>
+<h1 id="eshkol-v135-api-reference">Eshkol v1.3.5 API Reference</h1>
 <p><strong>Version</strong>: 1.3.5 <strong>Last Updated</strong>:
 2026-09-14 <strong>Audience</strong>: Scientific Computing &amp; AI
 Systems Programming</p>
@@ -18,48 +18,48 @@ exception is <code>-0.0</code>, which prints in full because reading
 <code>-0</code> back would lose both the inexactness and the sign.
 Output shown inside a fenced result block is always the exact printed
 text. See <a
-href="reference/language/numeric-tower.md#exactness">reference/language/numeric-tower.md</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exactness" target="_blank" rel="noopener noreferrer">reference/language/numeric-tower.md</a>.</p>
 </blockquote>
 <hr />
 <h2 id="table-of-contents">Table of Contents</h2>
 <ol type="1">
-<li><a href="#special-forms">Special Forms</a> (70+)</li>
-<li><a href="#automatic-differentiation">Automatic Differentiation</a>
+<li><a href="/docs#page=api_reference&amp;special-forms" data-url="/content/api_reference.html">Special Forms</a> (70+)</li>
+<li><a href="/docs#page=api_reference&amp;automatic-differentiation" data-url="/content/api_reference.html">Automatic Differentiation</a>
 (9 operations, 3 modes)</li>
-<li><a href="#tensor-operations">Tensor Operations</a> (30+
+<li><a href="/docs#page=api_reference&amp;tensor-operations" data-url="/content/api_reference.html">Tensor Operations</a> (30+
 operations)</li>
-<li><a href="#list-processing">List Processing</a> (50+ operations)</li>
-<li><a href="#arithmetic--comparison">Arithmetic &amp;
+<li><a href="/docs#page=api_reference&amp;list-processing" data-url="/content/api_reference.html">List Processing</a> (50+ operations)</li>
+<li><a href="/docs#page=api_reference&amp;arithmetic--comparison" data-url="/content/api_reference.html">Arithmetic &amp;
 Comparison</a></li>
-<li><a href="#math-functions">Math Functions</a> (30+ functions)</li>
-<li><a href="#string-operations">String Operations</a></li>
-<li><a href="#file--io">File &amp; I/O</a></li>
-<li><a href="#system-operations">System Operations</a></li>
-<li><a href="#hash-tables">Hash Tables</a></li>
-<li><a href="#type-system">Type System</a></li>
-<li><a href="#standard-library-reference">Standard Library</a> (25+
+<li><a href="/docs#page=api_reference&amp;math-functions" data-url="/content/api_reference.html">Math Functions</a> (30+ functions)</li>
+<li><a href="/docs#page=api_reference&amp;string-operations" data-url="/content/api_reference.html">String Operations</a></li>
+<li><a href="/docs#page=api_reference&amp;file--io" data-url="/content/api_reference.html">File &amp; I/O</a></li>
+<li><a href="/docs#page=api_reference&amp;system-operations" data-url="/content/api_reference.html">System Operations</a></li>
+<li><a href="/docs#page=api_reference&amp;hash-tables" data-url="/content/api_reference.html">Hash Tables</a></li>
+<li><a href="/docs#page=api_reference&amp;type-system" data-url="/content/api_reference.html">Type System</a></li>
+<li><a href="/docs#page=api_reference&amp;standard-library-reference" data-url="/content/api_reference.html">Standard Library</a> (25+
 modules)</li>
-<li><a href="#exact-arithmetic">Exact Arithmetic</a> (v1.1)</li>
-<li><a href="#complex-numbers">Complex Numbers</a> (v1.1)</li>
-<li><a href="#continuations--control-flow">Continuations &amp; Control
+<li><a href="/docs#page=api_reference&amp;exact-arithmetic" data-url="/content/api_reference.html">Exact Arithmetic</a> (v1.1)</li>
+<li><a href="/docs#page=api_reference&amp;complex-numbers" data-url="/content/api_reference.html">Complex Numbers</a> (v1.1)</li>
+<li><a href="/docs#page=api_reference&amp;continuations--control-flow" data-url="/content/api_reference.html">Continuations &amp; Control
 Flow</a> (v1.1)</li>
-<li><a href="#parallel-primitives">Parallel Primitives</a> (v1.1)</li>
-<li><a href="#consciousness-engine">Consciousness Engine</a> (v1.1)</li>
-<li><a href="#gpu-operations">GPU Operations</a> (v1.1)</li>
-<li><a href="#signal-processing">Signal Processing</a> (v1.1)</li>
-<li><a href="#bytevectors">Bytevectors</a> (v1.1)</li>
-<li><a href="#environment-variables">Environment Variables</a></li>
-<li><a href="#statistics">Statistics</a> (v1.1)</li>
-<li><a href="#tensor-utilities">Tensor Utilities</a> (v1.1)</li>
-<li><a href="#special-functions">Special Functions</a> (v1.1)</li>
-<li><a href="#mathematical-constants">Mathematical Constants</a>
+<li><a href="/docs#page=api_reference&amp;parallel-primitives" data-url="/content/api_reference.html">Parallel Primitives</a> (v1.1)</li>
+<li><a href="/docs#page=api_reference&amp;consciousness-engine" data-url="/content/api_reference.html">Consciousness Engine</a> (v1.1)</li>
+<li><a href="/docs#page=api_reference&amp;gpu-operations" data-url="/content/api_reference.html">GPU Operations</a> (v1.1)</li>
+<li><a href="/docs#page=api_reference&amp;signal-processing" data-url="/content/api_reference.html">Signal Processing</a> (v1.1)</li>
+<li><a href="/docs#page=api_reference&amp;bytevectors" data-url="/content/api_reference.html">Bytevectors</a> (v1.1)</li>
+<li><a href="/docs#page=api_reference&amp;environment-variables" data-url="/content/api_reference.html">Environment Variables</a></li>
+<li><a href="/docs#page=api_reference&amp;statistics" data-url="/content/api_reference.html">Statistics</a> (v1.1)</li>
+<li><a href="/docs#page=api_reference&amp;tensor-utilities" data-url="/content/api_reference.html">Tensor Utilities</a> (v1.1)</li>
+<li><a href="/docs#page=api_reference&amp;special-functions" data-url="/content/api_reference.html">Special Functions</a> (v1.1)</li>
+<li><a href="/docs#page=api_reference&amp;mathematical-constants" data-url="/content/api_reference.html">Mathematical Constants</a>
 (v1.1)</li>
-<li><a href="#ode-solvers">ODE Solvers</a> (v1.1)</li>
-<li><a href="#random-numbers">Random Numbers</a> (v1.1)</li>
-<li><a href="#web-platform-wasm">Web Platform (WASM)</a> (v1.1)</li>
-<li><a href="#thread-pool--promise-builtins">Thread Pool &amp; Promise
+<li><a href="/docs#page=api_reference&amp;ode-solvers" data-url="/content/api_reference.html">ODE Solvers</a> (v1.1)</li>
+<li><a href="/docs#page=api_reference&amp;random-numbers" data-url="/content/api_reference.html">Random Numbers</a> (v1.1)</li>
+<li><a href="/docs#page=api_reference&amp;web-platform-wasm" data-url="/content/api_reference.html">Web Platform (WASM)</a> (v1.1)</li>
+<li><a href="/docs#page=api_reference&amp;thread-pool--promise-builtins" data-url="/content/api_reference.html">Thread Pool &amp; Promise
 Builtins</a> (v1.1)</li>
-<li><a href="#command-line-tools">Command-Line Tools</a></li>
+<li><a href="/docs#page=api_reference&amp;command-line-tools" data-url="/content/api_reference.html">Command-Line Tools</a></li>
 </ol>
 <hr />
 <h2 id="special-forms">Special Forms</h2>
@@ -78,7 +78,7 @@ first-class values.</p>
 <strong>Returns</strong>: Unspecified (implementation returns the
 defined value)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenDefine()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenDefine()</code></a></p>
 <hr />
 <h4 id="lambda"><code>lambda</code></h4>
 <p><strong>Syntax</strong>: <code>(lambda (params...) body)</code> or
@@ -93,7 +93,7 @@ rest parameters.</p>
 <strong>Returns</strong>: Closure (40-byte structure with captures and
 S-expression for homoiconicity)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenLambda()</code></a>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenLambda()</code></a>
 <strong>Closure Structure</strong>:
 <code>{func_ptr(8), env(8), sexpr_ptr(8), return_type(1), arity(1), flags(1)}</code></p>
 <p><strong>Advanced Features</strong>: - <strong>Mutable
@@ -125,8 +125,8 @@ recursive definitions.</p>
 <strong>Scope</strong>: <code>let</code> - parallel, <code>let*</code> -
 sequential, <code>letrec</code> - recursive<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenLet()</code></a>, <a
-href="../lib/backend/binding_codegen.cpp"><code>BindingCodegen</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenLet()</code></a>, <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/binding_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>BindingCodegen</code></a></p>
 <hr />
 <h4 id="set"><code>set!</code></h4>
 <p><strong>Syntax</strong>: <code>(set! var value)</code></p>
@@ -142,7 +142,7 @@ and closure captures.</p>
 <strong>Returns</strong>: Unspecified (implementation returns the new
 value)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenSet()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenSet()</code></a></p>
 <hr />
 <h4 id="if"><code>if</code></h4>
 <p><strong>Syntax</strong>:
@@ -155,7 +155,7 @@ to unspecified).</p>
 <p><strong>Type</strong>: Conditional expression<br />
 <strong>Returns</strong>: Value of executed branch<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/control_flow_codegen.cpp"><code>codegenIfCall()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/control_flow_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenIfCall()</code></a></p>
 <hr />
 <h4 id="cond"><code>cond</code></h4>
 <p><strong>Syntax</strong>:
@@ -174,7 +174,7 @@ matching clause.</p>
 <p><strong>Type</strong>: Multi-conditional<br />
 <strong>Returns</strong>: Value of first matching clause<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/control_flow_codegen.cpp"><code>codegenCond()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/control_flow_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenCond()</code></a></p>
 <hr />
 <h4 id="case"><code>case</code></h4>
 <p><strong>Syntax</strong>:
@@ -188,7 +188,7 @@ href="../lib/backend/control_flow_codegen.cpp"><code>codegenCond()</code></a></p
 <p><strong>Type</strong>: Pattern matching<br />
 <strong>Returns</strong>: Value of matching clause<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/control_flow_codegen.cpp"><code>codegenCase()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/control_flow_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenCase()</code></a></p>
 <hr />
 <h4 id="begin"><code>begin</code></h4>
 <p><strong>Syntax</strong>: <code>(begin expr...)</code></p>
@@ -202,7 +202,7 @@ effects.</p>
 <p><strong>Type</strong>: Sequence operator<br />
 <strong>Returns</strong>: Value of last expression<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/control_flow_codegen.cpp"><code>codegenBegin()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/control_flow_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenBegin()</code></a></p>
 <hr />
 <h4 id="and-or-not"><code>and</code>, <code>or</code>,
 <code>not</code></h4>
@@ -217,9 +217,9 @@ value.</p>
 (not #f)  ; =&gt; #t</code></pre>
 <p><strong>Type</strong>: Boolean operators<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/control_flow_codegen.cpp"><code>codegenAnd()</code></a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/control_flow_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenAnd()</code></a>,
 <a
-href="../lib/backend/control_flow_codegen.cpp"><code>codegenOr()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/control_flow_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenOr()</code></a></p>
 <hr />
 <h4 id="when-unless"><code>when</code>, <code>unless</code></h4>
 <p><strong>Syntax</strong>: <code>(when test body...)</code>,
@@ -235,7 +235,7 @@ href="../lib/backend/control_flow_codegen.cpp"><code>codegenOr()</code></a></p>
 <p><strong>Type</strong>: Conditional side effects<br />
 <strong>Returns</strong>: Unspecified or last body value<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/control_flow_codegen.cpp"><code>codegenWhen()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/control_flow_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenWhen()</code></a></p>
 <hr />
 <h4 id="do"><code>do</code></h4>
 <p><strong>Syntax</strong>:
@@ -249,7 +249,7 @@ href="../lib/backend/control_flow_codegen.cpp"><code>codegenWhen()</code></a></p
 <strong>Returns</strong>: Value of result expressions when test
 succeeds<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenDo()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenDo()</code></a></p>
 <hr />
 <h4 id="quote-quasiquote-unquote"><code>quote</code>,
 <code>quasiquote</code>, <code>unquote</code></h4>
@@ -264,9 +264,9 @@ evaluation.</p>
 <p><strong>Type</strong>: Data literals<br />
 <strong>Returns</strong>: S-expression (cons-based data structure)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenQuotedAST()</code></a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenQuotedAST()</code></a>,
 <a
-href="../lib/backend/homoiconic_codegen.cpp"><code>HomoiconicCodegen</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/homoiconic_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>HomoiconicCodegen</code></a></p>
 <hr />
 <h4 id="apply"><code>apply</code></h4>
 <p><strong>Syntax</strong>:
@@ -278,7 +278,7 @@ href="../lib/backend/homoiconic_codegen.cpp"><code>HomoiconicCodegen</code></a><
 <p><strong>Type</strong>: Higher-order application<br />
 <strong>Returns</strong>: Result of procedure application<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/call_apply_codegen.cpp"><code>codegenApply()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/call_apply_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenApply()</code></a></p>
 <hr />
 <h3 id="exception-handling">Exception Handling</h3>
 <h4 id="guard"><code>guard</code></h4>
@@ -292,7 +292,7 @@ href="../lib/backend/call_apply_codegen.cpp"><code>codegenApply()</code></a></p>
   (/ 1 0))</code></pre>
 <p><strong>Type</strong>: Exception handler<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenGuard()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenGuard()</code></a></p>
 <hr />
 <h4 id="raise"><code>raise</code></h4>
 <p><strong>Syntax</strong>: <code>(raise obj)</code></p>
@@ -302,7 +302,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenGuard()</code></a></p>
 (if (&lt; x 0) (raise &quot;negative value&quot;) x)</code></pre>
 <p><strong>Type</strong>: Exception trigger<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenRaise()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenRaise()</code></a></p>
 <hr />
 <h3 id="multiple-return-values">Multiple Return Values</h3>
 <h4 id="values"><code>values</code></h4>
@@ -313,7 +313,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenRaise()</code></a></p>
 (define (divmod a b) (values (quotient a b) (remainder a b)))</code></pre>
 <p><strong>Type</strong>: Multi-value constructor<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenValues()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenValues()</code></a></p>
 <hr />
 <h4 id="call-with-values"><code>call-with-values</code></h4>
 <p><strong>Syntax</strong>:
@@ -325,7 +325,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenValues()</code></a></p>
   (lambda (a b) (+ a b)))  ; =&gt; 3</code></pre>
 <p><strong>Type</strong>: Multi-value application<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenCallWithValues()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenCallWithValues()</code></a></p>
 <hr />
 <h3 id="pattern-matching">Pattern Matching</h3>
 <h4 id="match"><code>match</code></h4>
@@ -345,7 +345,7 @@ patterns, lists, wildcards, predicates, and or-patterns.</p>
 <code>literal</code>, <code>(p1 . p2)</code>, <code>(p...)</code>,
 <code>(? pred)</code>, <code>(or p...)</code><br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenMatch()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenMatch()</code></a></p>
 <hr />
 <h3 id="memory-management-oalr">Memory Management (OALR)</h3>
 <h4 id="with-region"><code>with-region</code></h4>
@@ -358,7 +358,7 @@ VM by being found reachable and promoted out of the swept set. Both
 engines reclaim; the VM’s Stage-1 evacuator sweeps at arena-block
 granularity, so an escaping value with an out-of-line payload retains a
 little more there. See <a
-href="reference/runtime/memory-model.md#which-engine-reclaims">memory
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/memory-model.md#which-engine-reclaims" target="_blank" rel="noopener noreferrer">memory
 model: which engine reclaims</a>.</p>
 <p><strong>Examples</strong>:</p>
 <pre class="scheme"><code>(with-region
@@ -366,7 +366,7 @@ model: which engine reclaims</a>.</p>
     (process big-data)))  ; native: memory freed after block</code></pre>
 <p><strong>Type</strong>: Region-based memory management<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenWithRegion()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenWithRegion()</code></a></p>
 <hr />
 <h4 id="owned-move-borrow-shared"><code>owned</code>, <code>move</code>,
 <code>borrow</code>, <code>shared</code></h4>
@@ -377,7 +377,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenWithRegion()</code></a></p>
 (compile-time tracking).</p>
 <p><strong>Type</strong>: Ownership markers<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenOwned()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenOwned()</code></a></p>
 <hr />
 <h3 id="external-interface">External Interface</h3>
 <h4 id="extern"><code>extern</code></h4>
@@ -389,14 +389,14 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenOwned()</code></a></p>
 (extern &quot;int&quot; &quot;puts&quot; &quot;string&quot;)</code></pre>
 <p><strong>Type</strong>: FFI declaration<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenExtern()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenExtern()</code></a></p>
 <hr />
 <h4 id="extern-var"><code>extern-var</code></h4>
 <p><strong>Syntax</strong>: <code>(extern-var type name)</code></p>
 <p>Declares external C variable.</p>
 <p><strong>Type</strong>: FFI variable<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenExternVar()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenExternVar()</code></a></p>
 <hr />
 <h2 id="automatic-differentiation">Automatic Differentiation</h2>
 <p>Eshkol provides <strong>three modes</strong> of automatic
@@ -433,7 +433,7 @@ formula)<br />
 <strong>Rules</strong>: Sum, product, quotient, chain rule for
 sin/cos/exp/log/pow/sqrt<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>buildSymbolicDerivative()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>buildSymbolicDerivative()</code></a></p>
 <hr />
 <h3 id="forward-mode-ad-dual-numbers">Forward-Mode AD (Dual
 Numbers)</h3>
@@ -456,9 +456,9 @@ Numbers)</h3>
 automatic chain rule propagation<br />
 <strong>Complexity</strong>: O(1) overhead per operation<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenDerivative()</code></a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenDerivative()</code></a>,
 <a
-href="../lib/backend/autodiff_codegen.cpp"><code>AutodiffCodegen::derivative()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>AutodiffCodegen::derivative()</code></a></p>
 <p><strong>Dual Number Arithmetic</strong>: - Addition:
 <code>(a, a') + (b, b') = (a+b, a'+b')</code> - Multiplication:
 <code>(a, a') * (b, b') = (ab, a'b + ab')</code> - Sin:
@@ -489,7 +489,7 @@ backpropagation<br />
 <strong>Complexity</strong>: O(1) backward pass (optimal for scalar
 outputs)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenGradient()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenGradient()</code></a></p>
 <p><strong>Graph Construction</strong>: - Forward pass builds
 computation graph (AD nodes on tape) - Backward pass propagates
 gradients via chain rule - Nested gradients are supported through a tape
@@ -497,7 +497,7 @@ stack, up to the forward carrier’s nesting ceiling: any depth of
 first-order passes composes, and one pass of order &gt;= 2 composes with
 one enclosing first-order pass. Two enclosing levels over a pass of
 order &gt;= 2 is not supported in v1.3.5 (ledger SW-154) — see <a
-href="reference/ad/support-matrix.md#nesting-ceiling-sw-154">the AD
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md#nesting-ceiling-sw-154" target="_blank" rel="noopener noreferrer">the AD
 support matrix</a> for the full table and the exact diagnostics.</p>
 <h4 id="native-squared-geodesic-distance-bridge">Native squared
 geodesic-distance bridge</h4>
@@ -540,7 +540,7 @@ opcode. Its backward is registered in
 component)<br />
 <strong>Complexity</strong>: O(m) backward passes<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenJacobian()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenJacobian()</code></a></p>
 <hr />
 <h4 id="hessian"><code>hessian</code></h4>
 <p><strong>Syntax</strong>: <code>(hessian f point)</code></p>
@@ -559,7 +559,7 @@ on gradient)<br />
 finite difference<br />
 <strong>Complexity</strong>: O(n²) gradient computations<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenHessian()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenHessian()</code></a></p>
 <hr />
 <h3 id="vector-calculus-operators">Vector Calculus Operators</h3>
 <h4 id="divergence"><code>divergence</code></h4>
@@ -576,7 +576,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenHessian()</code></a></p>
 elements)<br />
 <strong>Physics</strong>: Measures “source strength” at a point<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenDivergence()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenDivergence()</code></a></p>
 <hr />
 <h4 id="curl"><code>curl</code></h4>
 <p><strong>Syntax</strong>: <code>(curl f point)</code></p>
@@ -593,7 +593,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenDivergence()</code></a></p>
 <strong>Generalization</strong>: Works for n≥2 (differential
 2-forms)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenCurl()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenCurl()</code></a></p>
 <hr />
 <h4 id="laplacian"><code>laplacian</code></h4>
 <p><strong>Syntax</strong>: <code>(laplacian f point)</code></p>
@@ -610,7 +610,7 @@ derivatives)<br />
 <strong>Physics</strong>: Fundamental in heat equation, wave equation,
 quantum mechanics<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenLaplacian()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenLaplacian()</code></a></p>
 <hr />
 <h4 id="directional-derivative"><code>directional-derivative</code></h4>
 <p><strong>Syntax</strong>:
@@ -625,7 +625,7 @@ direction vector<br />
 <strong>Output</strong>: Scalar (rate of change in specified
 direction)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenDirectionalDerivative()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenDirectionalDerivative()</code></a></p>
 <hr />
 <h2 id="tensor-operations">Tensor Operations</h2>
 <p>Tensors are N-dimensional arrays with homogeneous double-precision
@@ -651,8 +651,8 @@ elements stored as int64 bit patterns.</p>
 <strong>Returns</strong>: Tensor (HEAP_PTR with
 HEAP_SUBTYPE_TENSOR)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp"><code>zeros()</code></a>, <a
-href="../lib/backend/tensor_codegen.cpp"><code>ones()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>zeros()</code></a>, <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>ones()</code></a></p>
 <hr />
 <h4 id="eye"><code>eye</code></h4>
 <p><strong>Syntax</strong>: <code>(eye n)</code> or
@@ -663,7 +663,7 @@ href="../lib/backend/tensor_codegen.cpp"><code>ones()</code></a></p>
 (eye 2 3)    ; =&gt; #((1.0 0.0 0.0) (0.0 1.0 0.0))</code></pre>
 <p><strong>Type</strong>: Matrix constructor<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp"><code>eye()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>eye()</code></a></p>
 <hr />
 <h4 id="arange"><code>arange</code></h4>
 <p><strong>Syntax</strong>: <code>(arange n)</code> or
@@ -675,7 +675,7 @@ href="../lib/backend/tensor_codegen.cpp"><code>eye()</code></a></p>
 (arange 0.0 1.0 0.25) ; =&gt; #(0.0 0.25 0.5 0.75)</code></pre>
 <p><strong>Type</strong>: Range constructor<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp"><code>arange()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>arange()</code></a></p>
 <hr />
 <h4 id="linspace"><code>linspace</code></h4>
 <p><strong>Syntax</strong>: <code>(linspace start end num)</code></p>
@@ -685,9 +685,9 @@ to <code>end</code> (inclusive).</p>
 <pre class="scheme"><code>(linspace 0.0 1.0 5)  ; =&gt; #(0.0 0.25 0.5 0.75 1.0)</code></pre>
 <p><strong>Type</strong>: Linear spacing constructor<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp"><code>linspace()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>linspace()</code></a></p>
 <hr />
-<h3 id="tensor-access-manipulation">Tensor Access &amp;
+<h3 id="tensor-access--manipulation">Tensor Access &amp;
 Manipulation</h3>
 <h4 id="tensor-get"><code>tensor-get</code></h4>
 <p><strong>Syntax</strong>: <code>(tensor-get tensor idx...)</code> or
@@ -704,9 +704,9 @@ Manipulation</h3>
 <strong>AD-Aware</strong>: Preserves AD node pointers during gradient
 computation<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp"><code>tensorGet()</code></a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorGet()</code></a>,
 <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenTensorVectorRef()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenTensorVectorRef()</code></a></p>
 <hr />
 <h4 id="tensor-set"><code>tensor-set</code></h4>
 <p><strong>Syntax</strong>:
@@ -717,7 +717,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenTensorVectorRef()</code></a>
 (tensor-set M 99 0 1)  ; M[0,1] := 99</code></pre>
 <p><strong>Type</strong>: Tensor mutation<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp"><code>tensorSet()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorSet()</code></a></p>
 <hr />
 <h4 id="transpose"><code>transpose</code></h4>
 <p><strong>Syntax</strong>: <code>(transpose matrix)</code></p>
@@ -727,7 +727,7 @@ href="../lib/backend/tensor_codegen.cpp"><code>tensorSet()</code></a></p>
 <p><strong>Type</strong>: Matrix transformation<br />
 <strong>Complexity</strong>: O(mn) time, O(mn) space<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp"><code>transpose()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>transpose()</code></a></p>
 <hr />
 <h4 id="reshape"><code>reshape</code></h4>
 <p><strong>Syntax</strong>: <code>(reshape tensor dim...)</code> or
@@ -739,7 +739,7 @@ href="../lib/backend/tensor_codegen.cpp"><code>transpose()</code></a></p>
 <p><strong>Type</strong>: Shape transformation<br />
 <strong>Constraint</strong>: Total elements must match<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp"><code>reshape()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>reshape()</code></a></p>
 <hr />
 <h4 id="flatten"><code>flatten</code></h4>
 <p><strong>Syntax</strong>: <code>(flatten tensor)</code></p>
@@ -748,7 +748,7 @@ href="../lib/backend/tensor_codegen.cpp"><code>reshape()</code></a></p>
 <pre class="scheme"><code>(flatten #(#(1 2) #(3 4)))  ; =&gt; #(1 2 3 4)</code></pre>
 <p><strong>Type</strong>: Dimensionality reduction<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenFlatten()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenFlatten()</code></a></p>
 <hr />
 <h4 id="tensor-shape"><code>tensor-shape</code></h4>
 <p><strong>Syntax</strong>: <code>(tensor-shape tensor)</code></p>
@@ -758,7 +758,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenFlatten()</code></a></p>
 <p><strong>Type</strong>: Metadata query<br />
 <strong>Returns</strong>: Cons-based list of int64 dimensions<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp"><code>tensorShape()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorShape()</code></a></p>
 <hr />
 <h4 id="tensor-save"><code>tensor-save</code></h4>
 <p><strong>Syntax</strong>: <code>(tensor-save path tensor)</code></p>
@@ -817,7 +817,7 @@ vectors.</p>
 <p><strong>Type</strong>: Element-wise binary operations<br />
 <strong>Constraint</strong>: Operands must have same shape<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp"><code>tensorArithmetic()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorArithmetic()</code></a></p>
 <hr />
 <h4 id="tensor-dot"><code>tensor-dot</code></h4>
 <p><strong>Syntax</strong>: <code>(tensor-dot A B)</code> or
@@ -832,9 +832,9 @@ href="../lib/backend/tensor_codegen.cpp"><code>tensorArithmetic()</code></a></p>
 <p><strong>Type</strong>: Linear algebra operation<br />
 <strong>Complexity</strong>: O(mnk) for m×k @ k×n matrices<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp"><code>tensorDot()</code></a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorDot()</code></a>,
 <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenMatmul()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenMatmul()</code></a></p>
 <hr />
 <h4 id="trace"><code>trace</code></h4>
 <p><strong>Syntax</strong>: <code>(trace matrix)</code></p>
@@ -843,7 +843,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenMatmul()</code></a></p>
 <pre class="scheme"><code>(trace #(#(1 2) #(3 4)))  ; =&gt; 5</code></pre>
 <p><strong>Type</strong>: Matrix invariant<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenTrace()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenTrace()</code></a></p>
 <hr />
 <h4 id="norm"><code>norm</code></h4>
 <p><strong>Syntax</strong>: <code>(norm vector)</code></p>
@@ -852,7 +852,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenTrace()</code></a></p>
 <pre class="scheme"><code>(norm #(3.0 4.0))  ; =&gt; 5.0</code></pre>
 <p><strong>Type</strong>: Vector magnitude<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenNorm()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenNorm()</code></a></p>
 <hr />
 <h4 id="outer"><code>outer</code></h4>
 <p><strong>Syntax</strong>: <code>(outer u v)</code></p>
@@ -861,7 +861,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenNorm()</code></a></p>
 <pre class="scheme"><code>(outer #(1 2) #(3 4 5))  ; =&gt; #((3 4 5) (6 8 10))</code></pre>
 <p><strong>Type</strong>: Tensor product<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenOuterProduct()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenOuterProduct()</code></a></p>
 <hr />
 <h3 id="tensor-reductions">Tensor Reductions</h3>
 <h4 id="tensor-sum-tensor-mean"><code>tensor-sum</code>,
@@ -874,9 +874,9 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenOuterProduct()</code></a></p
 (tensor-mean #(2 4 6 8))    ; =&gt; 5.0</code></pre>
 <p><strong>Type</strong>: Statistical reductions<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp"><code>tensorSum()</code></a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorSum()</code></a>,
 <a
-href="../lib/backend/tensor_codegen.cpp"><code>tensorMean()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorMean()</code></a></p>
 <hr />
 <h4 id="tensor-reduce"><code>tensor-reduce</code></h4>
 <p><strong>Syntax</strong>:
@@ -888,9 +888,9 @@ href="../lib/backend/tensor_codegen.cpp"><code>tensorMean()</code></a></p>
 (tensor-reduce matrix max -inf 0) ; Row-wise maximum</code></pre>
 <p><strong>Type</strong>: Generalized reduction<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp"><code>tensorReduceAll()</code></a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorReduceAll()</code></a>,
 <a
-href="../lib/backend/tensor_codegen.cpp"><code>tensorReduceWithDim()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorReduceWithDim()</code></a></p>
 <hr />
 <h4 id="tensor-apply"><code>tensor-apply</code></h4>
 <p><strong>Syntax</strong>: <code>(tensor-apply tensor func)</code></p>
@@ -899,7 +899,7 @@ href="../lib/backend/tensor_codegen.cpp"><code>tensorReduceWithDim()</code></a><
 <pre class="scheme"><code>(tensor-apply #(1 2 3) (lambda (x) (* x x)))  ; =&gt; #(1 4 9)</code></pre>
 <p><strong>Type</strong>: Element-wise map
 <strong>Implementation</strong>: <a
-href="../lib/backend/tensor_codegen.cpp"><code>tensorApply()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensorApply()</code></a></p>
 <hr />
 <h3 id="broadcasting-rules">Broadcasting Rules</h3>
 <p>When operating on tensors of different shapes, Eshkol applies
@@ -915,7 +915,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <code>tensor-sub</code>, <code>tensor-mul</code>,
 <code>tensor-div</code>, and all element-wise operations. Internally
 implemented via <code>eshkol_broadcast_elementwise_f64()</code> in <a
-href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_codegen.cpp</a>.</p>
 <hr />
 <h3 id="tensor-random-number-generation">Tensor Random Number
 Generation</h3>
@@ -928,7 +928,7 @@ variadic dimension arguments directly rather than a list.</p>
 <p>Uniform random tensor with values in [0, 1). Uses
 <code>drand48()</code> internally.</p>
 <p><strong>Implementation:</strong> <code>tensorRand</code> in <a
-href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(rand 3)       ; =&gt; #(0.482 0.917 0.123)
 (rand 2 3)     ; =&gt; 2×3 tensor with uniform random values</code></pre>
 <h4 id="randn"><code>randn</code></h4>
@@ -937,7 +937,7 @@ href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
 internally: generates pairs of uniform samples u₁, u₂ and computes z =
 √(-2 ln u₁) · cos(2π u₂).</p>
 <p><strong>Implementation:</strong> <code>tensorRandn</code> in <a
-href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(randn 5)      ; =&gt; #(-0.31 1.24 0.08 -1.53 0.67) (varies)
 (randn 3 3)    ; =&gt; 3×3 tensor with standard normal values</code></pre>
 <h4 id="randint"><code>randint</code></h4>
@@ -945,7 +945,7 @@ href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
 Tensor</p>
 <p>Random integer tensor with values in [lo, hi).</p>
 <p><strong>Implementation:</strong> <code>tensorRandint</code> in <a
-href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(randint 0 10 5)     ; =&gt; #(3.0 7.0 1.0 9.0 4.0) (integers as doubles)
 (randint 1 7 2 3)    ; =&gt; 2×3 tensor, dice rolls</code></pre>
 <hr />
@@ -964,7 +964,7 @@ permutation matrix.</p>
 pivoting (row swaps for numerical stability).</p>
 <p><strong>Complexity:</strong> O(n³/3) for n×n matrices.</p>
 <p><strong>Implementation:</strong> <code>tensorLU</code> in <a
-href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_linalg_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(define A #(#(2.0 1.0) #(1.0 3.0)))
 (let ((result (tensor-lu A)))
   (let ((L (car result)) (U (cadr result)) (P (caddr result)))
@@ -977,7 +977,7 @@ href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codege
 <p><strong>Complexity:</strong> O(n³/3) — dominated by the LU
 factorization.</p>
 <p><strong>Implementation:</strong> <code>tensorDet</code> in <a
-href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_linalg_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(tensor-det #(#(2.0 1.0) #(1.0 3.0)))   ; =&gt; 5.0
 (tensor-det #(#(1.0 0.0) #(0.0 1.0)))   ; =&gt; 1.0 (identity)</code></pre>
 <h4 id="tensor-inverse"><code>tensor-inverse</code></h4>
@@ -987,7 +987,7 @@ substitution.</p>
 <p><strong>Complexity:</strong> O(n³). Raises an error for singular
 matrices (det ≈ 0).</p>
 <p><strong>Implementation:</strong> <code>tensorInverse</code> in <a
-href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_linalg_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(define A #(#(2.0 1.0) #(1.0 3.0)))
 (define Ainv (tensor-inverse A))
 (tensor-matmul A Ainv)   ; =&gt; ~identity matrix</code></pre>
@@ -998,7 +998,7 @@ back substitution.</p>
 <p><strong>Complexity:</strong> O(n³/3) for LU + O(n²) for
 substitution.</p>
 <p><strong>Implementation:</strong> <code>tensorSolve</code> in <a
-href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_linalg_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(define A #(#(2.0 1.0) #(1.0 3.0)))
 (define b #(3.0 5.0))
 (tensor-solve A b)   ; =&gt; #(0.8 1.4) — solution x where Ax = b</code></pre>
@@ -1015,7 +1015,7 @@ decomposition.</p>
 systems (covariance matrices, kernel matrices in Gaussian processes).
 Twice as efficient as general LU.</p>
 <p><strong>Implementation:</strong> <code>tensorCholesky</code> in <a
-href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_linalg_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(define A #(#(4.0 2.0) #(2.0 3.0)))   ; symmetric positive-definite
 (define L (tensor-cholesky A))
 ;; L·L^T = A</code></pre>
@@ -1030,7 +1030,7 @@ stable and efficient.</p>
 <p><strong>Use case:</strong> Least-squares problems (∥Ax - b∥²
 minimization), eigenvalue algorithms (QR iteration).</p>
 <p><strong>Implementation:</strong> <code>tensorQR</code> in <a
-href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_linalg_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(define A #(#(1.0 1.0) #(0.0 1.0) #(1.0 0.0)))   ; 3×2
 (let ((result (tensor-qr A)))
   (let ((Q (car result)) (R (cadr result)))
@@ -1049,7 +1049,7 @@ descending order.</p>
 low-rank approximation (truncated SVD), matrix pseudoinverse, condition
 number computation.</p>
 <p><strong>Implementation:</strong> <code>tensorSVD</code> in <a
-href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_linalg_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(define A #(#(1.0 2.0) #(3.0 4.0) #(5.0 6.0)))   ; 3×2
 (let ((result (tensor-svd A)))
   (let ((U (car result)) (S (cadr result)) (Vt (caddr result)))
@@ -1072,7 +1072,7 @@ scalar | | <code>"ij,ij-&gt;"</code> | Frobenius inner product |
 <code>"i,i-&gt;"</code> | Dot product |
 <code>(einsum "i,i-&gt;" u v)</code> → scalar |</p>
 <p><strong>Implementation:</strong> <code>tensorEinsum</code> in <a
-href="../lib/backend/tensor_linalg_codegen.cpp">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_linalg_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_linalg_codegen.cpp</a>.</p>
 <pre class="scheme"><code>(define A #(#(1.0 2.0) #(3.0 4.0)))
 (define B #(#(5.0 6.0) #(7.0 8.0)))
 (einsum &quot;ij,jk-&gt;ik&quot; A B)   ; matrix multiply: #((19.0 22.0) (43.0 50.0))
@@ -1100,7 +1100,7 @@ storage per element).</p>
 <strong>Returns</strong>: HEAP_PTR (consolidated pointer with
 HEAP_SUBTYPE_CONS)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/collection_codegen.cpp"><code>cons()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/collection_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>cons()</code></a></p>
 <hr />
 <h4 id="car-cdr"><code>car</code>, <code>cdr</code></h4>
 <p><strong>Syntax</strong>: <code>(car pair)</code>,
@@ -1115,8 +1115,8 @@ vectors/tensors.</p>
 <strong>Returns</strong>: Tagged value (preserves type of stored
 element)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/collection_codegen.cpp"><code>car()</code></a>, <a
-href="../lib/backend/collection_codegen.cpp"><code>cdr()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/collection_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>car()</code></a>, <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/collection_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>cdr()</code></a></p>
 <hr />
 <h4 id="list"><code>list</code></h4>
 <p><strong>Syntax</strong>: <code>(list expr...)</code></p>
@@ -1129,7 +1129,7 @@ href="../lib/backend/collection_codegen.cpp"><code>cdr()</code></a></p>
 <strong>Evaluation</strong>: Left-to-right (preserves side-effect
 order)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/collection_codegen.cpp"><code>list()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/collection_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>list()</code></a></p>
 <hr />
 <h4 id="list-1"><code>list*</code></h4>
 <p><strong>Syntax</strong>: <code>(list* e1 e2 ... en)</code></p>
@@ -1139,10 +1139,10 @@ href="../lib/backend/collection_codegen.cpp"><code>list()</code></a></p>
 (list* &#39;a &#39;b &#39;c)      ; =&gt; (a b . c)</code></pre>
 <p><strong>Type</strong>: Improper list constructor<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenListStar()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenListStar()</code></a></p>
 <hr />
 <h3 id="compound-accessors">Compound Accessors</h3>
-<h4 id="cadr-caddr-cadddr-etc."><code>cadr</code>, <code>caddr</code>,
+<h4 id="cadr-caddr-cadddr-etc"><code>cadr</code>, <code>caddr</code>,
 <code>cadddr</code>, etc.</h4>
 <p><strong>Syntax</strong>: <code>(c[ad]+r list)</code> where
 <code>a</code> = car, <code>d</code> = cdr</p>
@@ -1156,7 +1156,7 @@ caaar, caadr, cadar, cdaar, cdadr, cddar, cdddr<br />
 <strong>Optimization</strong>: For vectors/tensors, uses direct indexing
 instead of traversal<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenCompoundCarCdr()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenCompoundCarCdr()</code></a></p>
 <hr />
 <h3 id="predicates">Predicates</h3>
 <h4 id="null-pair-list"><code>null?</code>, <code>pair?</code>,
@@ -1171,9 +1171,9 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenCompoundCarCdr()</code></a><
 (list? &#39;(1 . 2))   ; =&gt; #f (improper list)</code></pre>
 <p><strong>Type</strong>: Boolean predicates<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/collection_codegen.cpp"><code>isNull()</code></a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/collection_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>isNull()</code></a>,
 <a
-href="../lib/backend/collection_codegen.cpp"><code>isPair()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/collection_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>isPair()</code></a></p>
 <hr />
 <h3 id="mutators">Mutators</h3>
 <h4 id="set-car-set-cdr"><code>set-car!</code>,
@@ -1187,7 +1187,7 @@ href="../lib/backend/collection_codegen.cpp"><code>isPair()</code></a></p>
 <p><strong>Type</strong>: Destructive update<br />
 <strong>Returns</strong>: Unspecified<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenSetCar()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenSetCar()</code></a></p>
 <hr />
 <h3 id="higher-order-list-functions">Higher-Order List Functions</h3>
 <h4 id="map"><code>map</code></h4>
@@ -1200,7 +1200,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenSetCar()</code></a></p>
 <strong>Arity</strong>: Supports multi-list mapping (proc must accept n
 arguments for n lists)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/map_codegen.cpp"><code>MapCodegen::map()</code></a><br />
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/map_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>MapCodegen::map()</code></a><br />
 <strong>Performance</strong>: Iterative LLVM IR (not recursive) for
 efficiency</p>
 <hr />
@@ -1235,7 +1235,7 @@ lcm - <code>core.operators.compare</code> - &lt;, &gt;, =, &lt;=, &gt;=
 <h3 id="key-standard-library-functions">Key Standard Library
 Functions</h3>
 <p><em>Note: Complete list available in <a
-href="../lib/stdlib.esk"><code>lib/stdlib.esk</code></a></em></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/stdlib.esk" target="_blank" rel="noopener noreferrer"><code>lib/stdlib.esk</code></a></em></p>
 <p><strong>List Processing</strong> (from <code>core.list.*</code>): -
 <code>length</code>, <code>append</code>, <code>reverse</code> - Basic
 utilities - <code>filter</code>, <code>fold</code>,
@@ -1248,7 +1248,7 @@ utilities - <code>filter</code>, <code>fold</code>,
 <code>uncurry</code> - Currying transformations - <code>flip</code> -
 Argument order reversal - <code>partial</code> - Partial application</p>
 <p><strong>Math Library</strong> (<a
-href="../lib/math.esk"><code>lib/math.esk</code></a>): -
+href="https://github.com/tsotchke/eshkol/blob/master/lib/math.esk" target="_blank" rel="noopener noreferrer"><code>lib/math.esk</code></a>): -
 <code>det</code> - Determinant (LU decomposition) - <code>inv</code> -
 Matrix inverse (Gauss-Jordan) - <code>solve</code> - Linear system
 solver - <code>cross</code> - Cross product (3D) -
@@ -1257,11 +1257,11 @@ solver - <code>cross</code> - Cross product (3D) -
 <code>integrate</code> - Simpson’s rule integration -
 <code>newton</code> - Root finding</p>
 <hr />
-<h2 id="arithmetic-comparison">Arithmetic &amp; Comparison</h2>
+<h2 id="arithmetic--comparison">Arithmetic &amp; Comparison</h2>
 <h3 id="arithmetic-operators">Arithmetic Operators</h3>
 <p><strong>Polymorphic</strong>: Support int64, double, dual numbers
 (forward AD), and AD nodes (reverse AD)</p>
-<h4 id="section"><code>+</code>, <code>-</code>, <code>*</code>,
+<h4 id="----"><code>+</code>, <code>-</code>, <code>*</code>,
 <code>/</code></h4>
 <p><strong>Syntax</strong>: <code>(+ a b ...)</code>,
 <code>(- a b ...)</code>, <code>(* a b ...)</code>,
@@ -1278,7 +1278,7 @@ Int64 + Double = Double (inexact) - Double + Double = Double
 <p><strong>AD Support</strong>: - Dual numbers: Automatic derivative
 propagation - AD nodes: Computational graph construction</p>
 <p><strong>Implementation</strong>: <a
-href="../lib/backend/arithmetic_codegen.cpp"><code>polymorphicAdd()</code></a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/arithmetic_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>polymorphicAdd()</code></a>,
 etc.</p>
 <hr />
 <h4 id="abs-quotient-remainder-modulo"><code>abs</code>,
@@ -1294,7 +1294,7 @@ etc.</p>
 <p><strong>Type</strong>: Numeric operations<br />
 <strong>abs</strong>: Preserves type (int→int, double→double)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenAbs()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenAbs()</code></a></p>
 <hr />
 <h4 id="gcd-lcm"><code>gcd</code>, <code>lcm</code></h4>
 <p><strong>Syntax</strong>: <code>(gcd a b)</code>,
@@ -1305,10 +1305,10 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenAbs()</code></a></p>
 (lcm 12 18)  ; =&gt; 36</code></pre>
 <p><strong>Algorithm</strong>: Euclidean algorithm<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenGCD()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenGCD()</code></a></p>
 <hr />
 <h3 id="comparison-operators">Comparison Operators</h3>
-<h4 id="section-1"><code>=</code>, <code>&lt;</code>, <code>&gt;</code>,
+<h4 id="-----1"><code>=</code>, <code>&lt;</code>, <code>&gt;</code>,
 <code>&lt;=</code>, <code>&gt;=</code></h4>
 <p><strong>Syntax</strong>: <code>(= a b)</code>,
 <code>(&lt; a b)</code>, etc.</p>
@@ -1321,7 +1321,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenGCD()</code></a></p>
 <strong>Optimization</strong>: HoTT type system enables compile-time
 resolution when types are known<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/arithmetic_codegen.cpp"><code>polymorphicCompare()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/arithmetic_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>polymorphicCompare()</code></a></p>
 <hr />
 <h4 id="eq-eqv-equal"><code>eq?</code>, <code>eqv?</code>,
 <code>equal?</code></h4>
@@ -1340,8 +1340,8 @@ lists)</li>
 (equal? &#39;(1 2) &#39;(1 2)) ; =&gt; #t
 (eq? &#39;(1 2) &#39;(1 2))    ; =&gt; #f (different pointers)</code></pre>
 <p><strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenEq()</code></a>, <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenEqual()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenEq()</code></a>, <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenEqual()</code></a></p>
 <hr />
 <h2 id="math-functions">Math Functions</h2>
 <p>All math functions support dual numbers (forward-mode AD) and AD
@@ -1357,7 +1357,7 @@ nodes (reverse-mode AD) automatically.</p>
 <p><strong>AD Support</strong>: Chain rule automatically applied with
 dual numbers<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenMathFunction()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenMathFunction()</code></a></p>
 <hr />
 <h3 id="hyperbolic-functions">Hyperbolic Functions</h3>
 <p><strong>Functions</strong>: <code>sinh</code>, <code>cosh</code>,
@@ -1369,7 +1369,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenMathFunction()</code></a></p
 <p><strong>Implementation</strong>: C math library bindings with dual
 number support</p>
 <hr />
-<h3 id="exponential-logarithmic">Exponential &amp; Logarithmic</h3>
+<h3 id="exponential--logarithmic">Exponential &amp; Logarithmic</h3>
 <p><strong>Functions</strong>: <code>exp</code>, <code>exp2</code>,
 <code>log</code>, <code>log10</code>, <code>log2</code>,
 <code>pow</code>, <code>sqrt</code>, <code>cbrt</code></p>
@@ -1380,7 +1380,7 @@ number support</p>
 (sqrt 16)       ; =&gt; 4.0</code></pre>
 <p><strong>AD Support</strong>: All functions differentiable<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/autodiff_codegen.cpp"><code>dualExp()</code></a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>dualExp()</code></a>,
 etc.</p>
 <hr />
 <h3 id="rounding-functions">Rounding Functions</h3>
@@ -1415,12 +1415,12 @@ rigorous Taylor models (<code>tm-var</code>, <code>tm+</code>,
 <code>(require core.ad.taylor_models)</code>. Every result endpoint
 there is built from exactly one such nudge, which is what keeps the
 soundness argument valid across a whole computation. See <a
-href="reference/stdlib/certified-enclosures.md">reference/stdlib/certified-enclosures.md</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">reference/stdlib/certified-enclosures.md</a>.</p>
 <p><strong>Implementation</strong>: <code>codegenNextafter()</code> in
 <a
-href="../lib/backend/llvm_codegen.cpp"><code>lib/backend/llvm_codegen.cpp</code></a>;
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a>;
 native ids 2228/2229 in <a
-href="../lib/backend/vm_native.c"><code>lib/backend/vm_native.c</code></a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/vm_native.c" target="_blank" rel="noopener noreferrer"><code>lib/backend/vm_native.c</code></a>.</p>
 <hr />
 <h3 id="numeric-predicates">Numeric Predicates</h3>
 <p><strong>Functions</strong>: <code>number?</code>,
@@ -1434,7 +1434,7 @@ href="../lib/backend/vm_native.c"><code>lib/backend/vm_native.c</code></a>.</p>
 (nan? (/ 0.0 0.0))  ; =&gt; #t
 (finite? 1e100) ; =&gt; #t</code></pre>
 <p><strong>Implementation</strong>: <a
-href="../lib/backend/llvm_codegen.cpp"><code>codegenNumericPredicate()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>codegenNumericPredicate()</code></a></p>
 <hr />
 <h2 id="string-operations">String Operations</h2>
 <p>Strings are heap-allocated with header (HEAP_SUBTYPE_STRING).</p>
@@ -1448,7 +1448,7 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenNumericPredicate()</code></a
 (string-ref &quot;hello&quot; 1)     ; =&gt; #\e
 (string-set! s 0 #\H)      ; Mutates string</code></pre>
 <p><strong>Implementation</strong>: <a
-href="../lib/backend/string_io_codegen.cpp"><code>StringIOCodegen</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/string_io_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>StringIOCodegen</code></a></p>
 <hr />
 <h4 id="string-byte-length"><code>string-byte-length</code></h4>
 <p><strong>Syntax</strong>: <code>(string-byte-length str)</code></p>
@@ -1467,7 +1467,7 @@ Use <code>string-byte-length</code> there instead:</p>
 (fwrite s 1 (string-byte-length s) f)  ; correct — writes every byte
 (fwrite s 1 (string-length s) f)       ; WRONG on multibyte input — truncates</code></pre>
 <p><strong>Implementation</strong>: <a
-href="../lib/backend/string_io_codegen.cpp"><code>StringIOCodegen::stringByteLength</code></a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/string_io_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>StringIOCodegen::stringByteLength</code></a>,
 backed by the existing runtime helper
 <code>eshkol_string_byte_length</code>
 (<code>lib/core/runtime_string.cpp</code>).</p>
@@ -1480,7 +1480,7 @@ backed by the existing runtime helper
 <pre class="scheme"><code>(string-append &quot;Hello&quot; &quot; &quot; &quot;World&quot;)  ; =&gt; &quot;Hello World&quot;
 (substring &quot;hello&quot; 1 4)              ; =&gt; &quot;ell&quot;</code></pre>
 <hr />
-<h4 id="string-string-etc."><code>string=?</code>,
+<h4 id="string-string-etc"><code>string=?</code>,
 <code>string&lt;?</code>, etc.</h4>
 <p><strong>Syntax</strong>: <code>(string=? s1 s2)</code>,
 <code>(string&lt;? s1 s2)</code>, etc.</p>
@@ -1511,7 +1511,7 @@ conversion routine, so their output is byte-identical.</p>
 (number-&gt;string 3.0)        ; =&gt; &quot;3&quot;      (integral double, still inexact)
 (number-&gt;string -0.0)       ; =&gt; &quot;-0.0&quot;   (sign and inexactness both survive)</code></pre>
 <hr />
-<h2 id="file-io">File &amp; I/O</h2>
+<h2 id="file--io">File &amp; I/O</h2>
 <h3 id="port-operations">Port Operations</h3>
 <h4
 id="open-input-file-open-output-file-close-port"><code>open-input-file</code>,
@@ -1525,7 +1525,7 @@ id="open-input-file-open-output-file-close-port"><code>open-input-file</code>,
 (close-port in)</code></pre>
 <p><strong>Type</strong>: File handle (opaque pointer)<br />
 <strong>Implementation</strong>: <a
-href="../lib/backend/string_io_codegen.cpp"><code>openInputFile()</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/string_io_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>openInputFile()</code></a></p>
 <p>If the path cannot be opened, <code>open-input-file</code> raises a
 catchable I/O error. Capability-policy denial remains the documented
 false result. <code>read-line</code> also raises a catchable error when
@@ -1554,13 +1554,13 @@ printer for lambdas.</p>
 (display (lambda (x) (* x 2)))  ; Shows: (lambda (x) (* x 2))
 (newline)</code></pre>
 <p><strong>Implementation</strong>: <a
-href="../lib/backend/string_io_codegen.cpp"><code>display()</code></a>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/string_io_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>display()</code></a>
 with <a
-href="../lib/core/printer.cpp"><code>eshkol_display_value</code></a>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/core/printer.cpp" target="_blank" rel="noopener noreferrer"><code>eshkol_display_value</code></a>
 runtime</p>
 <hr />
 <h2 id="system-operations">System Operations</h2>
-<h3 id="environment-process">Environment &amp; Process</h3>
+<h3 id="environment--process">Environment &amp; Process</h3>
 <h4 id="getenv-setenv-unsetenv"><code>getenv</code>,
 <code>setenv</code>, <code>unsetenv</code></h4>
 <p><strong>Syntax</strong>: <code>(getenv name)</code>,
@@ -1611,7 +1611,7 @@ arbitrary bit pattern to the process exit status.</p>
 (directory-list &quot;/tmp&quot;)
 (make-directory &quot;output&quot;)</code></pre>
 <p><strong>Implementation</strong>: <a
-href="../lib/backend/system_codegen.cpp"><code>SystemCodegen</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/system_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>SystemCodegen</code></a></p>
 <hr />
 <h2 id="hash-tables">Hash Tables</h2>
 <h4 id="make-hash-table"><code>make-hash-table</code></h4>
@@ -1640,7 +1640,7 @@ probing<br />
 <pre class="scheme"><code>(hash-keys ht)    ; =&gt; List of keys
 (hash-count ht)   ; =&gt; Number of entries</code></pre>
 <p><strong>Implementation</strong>: <a
-href="../lib/backend/hash_codegen.cpp"><code>HashCodegen</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/hash_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>HashCodegen</code></a></p>
 <hr />
 <h2 id="type-system">Type System</h2>
 <p>Eshkol uses a <strong>triple-layer type system</strong>:</p>
@@ -1681,9 +1681,9 @@ List, Vector, Tensor, Function arrows<br />
 <strong>Erasure</strong>: Proof types erased at runtime (dependent types
 compile to nothing)<br />
 <strong>Implementation</strong>: <a
-href="../lib/types/type_checker.cpp"><code>TypeChecker</code></a></p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>TypeChecker</code></a></p>
 <hr />
-<h2 id="performance-implementation-notes">Performance &amp;
+<h2 id="performance--implementation-notes">Performance &amp;
 Implementation Notes</h2>
 <h3 id="compilation-pipeline">Compilation Pipeline</h3>
 <ol type="1">
@@ -1896,7 +1896,7 @@ real-domain only and signal a catchable type error on a complex (use
 (+ z1 z1)           ; =&gt; 6+8i
 (* z1 (make-rectangular 0.0 1.0))  ; =&gt; -4+3i</code></pre>
 <hr />
-<h2 id="continuations-control-flow">Continuations &amp; Control
+<h2 id="continuations--control-flow">Continuations &amp; Control
 Flow</h2>
 <p>Eshkol implements full R7RS continuations with <code>call/cc</code>,
 <code>dynamic-wind</code>, and structured exception handling via
@@ -1924,7 +1924,7 @@ identically on the native <code>-r</code> JIT, the native AOT compiler,
 and the bytecode VM (SHIPPED v1.3.5-evolve). A continuation captured
 inside <code>with-region</code> pins that region, so resuming after the
 region exits is safe. See <a
-href="reference/language/continuations.md">docs/reference/language/continuations.md</a>
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/continuations.md" target="_blank" rel="noopener noreferrer">docs/reference/language/continuations.md</a>
 for the per-engine account and the remaining bounded limits.</p>
 <pre class="scheme"><code>(call/cc (lambda (k)
   (k 42)))  ; =&gt; 42
@@ -2036,7 +2036,7 @@ across heterogeneous workloads.</p>
 cores). Can be tuned via environment variable
 <code>ESHKOL_NUM_THREADS</code>.</p>
 <p><strong>Implementation:</strong> <a
-href="../lib/backend/system_codegen.cpp">system_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/system_codegen.cpp" target="_blank" rel="noopener noreferrer">system_codegen.cpp</a>.</p>
 <h3 id="parallel-map"><code>parallel-map</code></h3>
 <p><strong>Syntax:</strong> <code>(parallel-map proc list)</code> →
 List</p>
@@ -2051,7 +2051,7 @@ whose bodies use an internal named-let loop or a builtin such as
 <code>memv</code>): scope reclamation degrades to commit-only on pool
 workers sharing the thread-safe arena, so results are <strong>identical
 to serial <code>map</code></strong>. See <a
-href="reference/runtime/parallelism.md#scope-reclamation-on-workers-is-commit-only-v134">parallelism</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/parallelism.md#scope-reclamation-on-workers-is-commit-only-v134" target="_blank" rel="noopener noreferrer">parallelism</a>.</p>
 <pre class="scheme"><code>(parallel-map (lambda (x) (* x x)) &#39;(1 2 3 4 5))  ; =&gt; (1 4 9 16 25)</code></pre>
 <h3 id="parallel-fold"><code>parallel-fold</code></h3>
 <p><strong>Syntax:</strong> <code>(parallel-fold proc init list)</code>
@@ -2089,7 +2089,7 @@ initialization tasks.</p>
   (lambda () (display &quot;task B\n&quot;))
   (lambda () (display &quot;task C\n&quot;)))
 ;; All three run concurrently; output order varies</code></pre>
-<h3 id="future-force"><code>future</code> / <code>force</code></h3>
+<h3 id="future--force"><code>future</code> / <code>force</code></h3>
 <p><strong>Syntax:</strong> <code>(future expr)</code> → Future,
 <code>(force f)</code> → Value</p>
 <p>Asynchronous computation primitives. <code>future</code> launches the
@@ -2174,7 +2174,7 @@ systems.</p>
 </table>
 <p><strong>Implementation:</strong> <code>LogicWorkspaceCodegen</code>
 in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>
 holds the codegen methods (<code>codegenMakeFactorGraph</code>,
 <code>codegenFGAddFactor</code>, <code>codegenFGInfer</code>,
 <code>codegenFreeEnergy</code>, <code>codegenEFE</code>,
@@ -2183,13 +2183,13 @@ holds the codegen methods (<code>codegenMakeFactorGraph</code>,
 <code>codegenWSStep</code>, plus the logic-engine entry points); the
 dispatch table lives in
 <code>LLVMCodeGenerator::codegenSpecialOperation</code> in <a
-href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>.
-Runtime: <a href="../inc/eshkol/core/logic.h">logic.h</a> / <a
-href="../lib/core/logic.cpp">logic.cpp</a>, <a
-href="../inc/eshkol/core/inference.h">inference.h</a> / <a
-href="../lib/core/inference.cpp">inference.cpp</a>, <a
-href="../inc/eshkol/core/workspace.h">workspace.h</a> / <a
-href="../lib/core/workspace.cpp">workspace.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/llvm_codegen.cpp</a>.
+Runtime: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/core/logic.h" target="_blank" rel="noopener noreferrer">logic.h</a> / <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/core/logic.cpp" target="_blank" rel="noopener noreferrer">logic.cpp</a>, <a
+href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/core/inference.h" target="_blank" rel="noopener noreferrer">inference.h</a> / <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/core/inference.cpp" target="_blank" rel="noopener noreferrer">inference.cpp</a>, <a
+href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/core/workspace.h" target="_blank" rel="noopener noreferrer">workspace.h</a> / <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/core/workspace.cpp" target="_blank" rel="noopener noreferrer">workspace.cpp</a>.</p>
 <h3 id="logic-programming">Logic Programming</h3>
 <p>Logic programming in Eshkol is grounded in first-order unification
 theory. The central operation is finding a substitution σ such that
@@ -2222,7 +2222,7 @@ maps to a term that may reference other variables, but never itself
 subtype 12).</p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenMakeSubst</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_make_substitution_tagged</code>.</p>
 <h4 id="unify"><code>unify</code></h4>
 <p><strong>Syntax:</strong> <code>(unify t₁ t₂ σ)</code> → Substitution
@@ -2259,7 +2259,7 @@ compression, where n is the number of variables in the terms and α is
 the inverse Ackermann function. In practice, near-linear.</p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenUnify</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_unify_tagged</code>.</p>
 <pre class="scheme"><code>(define s (make-substitution))
 (define s1 (unify ?x 42 s))           ; bind ?x → 42
@@ -2277,7 +2277,7 @@ construction (the occurs check prevents cycles). Therefore,
 <code>walk</code> always terminates.</p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenWalk</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_walk_tagged</code>.</p>
 <pre class="scheme"><code>(define s (make-substitution))
 (define s1 (unify ?x ?y s))
@@ -2299,7 +2299,7 @@ arguments. Facts are first-class values (heap subtype 13) that can be
 stored in knowledge bases or manipulated directly.</p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenMakeFact</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_make_fact_tagged</code>.</p>
 <pre class="scheme"><code>(make-fact &#39;parent &#39;alice &#39;bob)      ; parent(alice, bob)
 (make-fact &#39;edge 1 2 5.0)            ; edge(1, 2, 5.0) — weighted graph edge
@@ -2317,7 +2317,7 @@ facts that supports assertion and unification-based query.</p>
 subtype 15).</p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenMakeKB</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_make_kb_tagged</code>.</p>
 <h4 id="kb-assert"><code>kb-assert!</code></h4>
 <p><strong>Syntax:</strong> <code>(kb-assert! kb fact)</code> → void</p>
@@ -2326,7 +2326,7 @@ KB is modified in-place. Facts are stored in insertion order and all are
 considered during queries.</p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenKBAssert</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_kb_assert_tagged</code>.</p>
 <h4 id="kb-query"><code>kb-query</code></h4>
 <p><strong>Syntax:</strong> <code>(kb-query kb pattern)</code> → List of
@@ -2351,7 +2351,7 @@ must unify; a sub-list unifies structurally, so
 successful substitutions into a list.</p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenKBQuery</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_kb_query_tagged</code>.</p>
 <pre class="scheme"><code>;; Build a family knowledge base
 (define kb (make-kb))
@@ -2409,7 +2409,7 @@ in the predicate helpers
 <code>codegenSubstPred</code>, <code>codegenKBPred</code>,
 <code>codegenFactPred</code>, <code>codegenFactorGraphPred</code>, and
 <code>codegenWorkspacePred</code> in <a
-href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/llvm_codegen.cpp</a>.</p>
 <h3 id="active-inference">Active Inference</h3>
 <p>Active inference (Friston, 2010) models perception and action as
 variational inference on a generative model. Eshkol implements this via
@@ -2448,7 +2448,7 @@ variable).</p>
 16) with no factors attached.</p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenMakeFactorGraph</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_make_factor_graph_tagged</code>.</p>
 <pre class="scheme"><code>;; Two binary variables (each with 2 states)
 (define fg (make-factor-graph 2 #(2 2)))
@@ -2470,7 +2470,7 @@ P(v_a = i, v_b = j) (or the conditional log P(v_b = j | v_a = i),
 depending on the model structure).</p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenFGAddFactor</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_fg_add_factor_tagged</code>.</p>
 <pre class="scheme"><code>;; Unary factor: prior over variable 0 (binary)
 ;; P(sunny) = 0.7, P(rainy) = 0.3
@@ -2508,7 +2508,7 @@ across variables: beliefs for variable 0 (|S_0| entries), then variable
 1 (|S_1| entries), etc.</p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenFGInfer</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_fg_infer_tagged</code>.</p>
 <pre class="scheme"><code>(define beliefs (fg-infer! fg 20))    ; run 20 iterations of BP
 ;; beliefs: #(0.7 0.3 0.65 0.35)
@@ -2528,7 +2528,7 @@ descent on the free energy), the model adapts its generative
 structure.</p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenFGUpdateCPT</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_fg_update_cpt_tagged</code>.</p>
 <pre class="scheme"><code>;; Update the prior: now P(sunny) = 0.2, P(rainy) = 0.8
 (fg-update-cpt! fg 0 #(-1.6094 -0.2231))   ; log(0.2), log(0.8)
@@ -2552,7 +2552,7 @@ model fit. Minimizing F with respect to model parameters (CPTs) is
 equivalent to maximizing the evidence lower bound (ELBO).</p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenFreeEnergy</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_free_energy_tagged</code>.</p>
 <pre class="scheme"><code>;; Observe: variable 1 (umbrella) is in state 0 (yes)
 (define F (free-energy fg #(1.0 0.0)))
@@ -2584,7 +2584,7 @@ that simultaneously maximize information gain and goal achievement.</p>
 action.</p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenEFE</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_efe_tagged</code>.</p>
 <pre class="scheme"><code>;; Evaluate expected free energy for each possible action
 (define g0 (expected-free-energy fg 0 0))   ; EFE of action-var 0, state 0
@@ -2597,7 +2597,7 @@ runtime <code>eshkol_efe_tagged</code>.</p>
 subtype 16), <code>#f</code> otherwise.</p>
 <p><strong>Implementation:</strong>
 <code>LLVMCodeGenerator::codegenFactorGraphPred</code> in <a
-href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/llvm_codegen.cpp</a>.</p>
 <h4 id="complete-active-inference-example">Complete Active Inference
 Example</h4>
 <pre class="scheme"><code>;; Weather→Umbrella Bayesian network as a factor graph
@@ -2674,7 +2674,7 @@ of module slots (integer)</p>
 initialized with a zero content tensor.</p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenMakeWorkspace</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_make_workspace_tagged</code>.</p>
 <pre class="scheme"><code>(define ws (make-workspace 4 3))   ; 4-dimensional content, 3 module slots</code></pre>
 <h4 id="ws-register"><code>ws-register!</code></h4>
@@ -2696,7 +2696,7 @@ debugging/inspection) - <code>process-fn</code> — a closure with
 signature <code>(tensor → (cons number tensor))</code></p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenWSRegister</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>,
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>,
 runtime <code>eshkol_ws_register_tagged</code>.</p>
 <pre class="scheme"><code>(ws-register! ws &quot;perception&quot;
   (lambda (content)
@@ -2730,7 +2730,7 @@ argument</strong> (the workspace). There is no separate input parameter
 input.</p>
 <p><strong>Implementation:</strong>
 <code>LogicWorkspaceCodegen::codegenWSStep</code> in <a
-href="../lib/backend/logic_workspace_codegen.cpp">lib/backend/logic_workspace_codegen.cpp</a>.
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/logic_workspace_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/logic_workspace_codegen.cpp</a>.
 The codegen generates a loop calling <code>codegenClosureCall</code> for
 each registered module. C runtime helpers
 <code>eshkol_ws_make_content_tensor</code> and
@@ -2750,7 +2750,7 @@ broadcast respectively.</p>
 subtype 17), <code>#f</code> otherwise.</p>
 <p><strong>Implementation:</strong>
 <code>LLVMCodeGenerator::codegenWorkspacePred</code> in <a
-href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/llvm_codegen.cpp</a>.</p>
 <h4 id="complete-global-workspace-example">Complete Global Workspace
 Example</h4>
 <pre class="scheme"><code>;; Multi-modal integration: perception + memory + planning
@@ -2834,7 +2834,7 @@ Example</h4>
 </tbody>
 </table>
 <hr />
-<h2 id="machine-learning-neural-networks">Machine Learning &amp; Neural
+<h2 id="machine-learning--neural-networks">Machine Learning &amp; Neural
 Networks</h2>
 <p>Eshkol provides a comprehensive suite of compiler-level machine
 learning primitives spanning activation functions, loss functions,
@@ -2847,9 +2847,9 @@ integration with Eshkol’s automatic differentiation system via
 <code>gradient</code>.</p>
 <p><strong>Architecture:</strong> Operations are dispatched in
 <code>LLVMCodeGenerator::codegenCall</code> in <a
-href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/llvm_codegen.cpp</a>
 and implemented in <a
-href="../lib/backend/tensor_codegen.cpp">tensor_codegen.cpp</a>.
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">tensor_codegen.cpp</a>.
 Backward passes are available for AD integration (e.g.,
 <code>tensorReluBackward</code>,
 <code>tensorSigmoidBackward</code>).</p>
@@ -2872,9 +2872,9 @@ ceasing to learn.</p>
 <p><strong>Use case:</strong> Default activation for hidden layers in
 most architectures.</p>
 <p><strong>Implementation:</strong> <code>tensorRelu</code> in <a
-href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.
 Backward: <code>tensorReluBackward</code> in <a
-href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="sigmoid"><code>sigmoid</code></h4>
 <p><strong>Syntax:</strong> <code>(sigmoid t)</code> → Tensor</p>
 <p>Logistic sigmoid: σ(x) = 1 / (1 + e^(-x)).</p>
@@ -2884,9 +2884,9 @@ in deep networks. Outputs are not zero-centered.</p>
 <p><strong>Use case:</strong> Binary classification output layers,
 gating mechanisms (LSTM, GRU).</p>
 <p><strong>Implementation:</strong> <code>tensorSigmoid</code> in <a
-href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.
 Backward: <a
-href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_codegen.cpp</a>.</p>
 <h4 id="softmax"><code>softmax</code></h4>
 <p><strong>Syntax:</strong> <code>(softmax t)</code> → Tensor</p>
 <p>Normalized exponential: softmax(x)_i = exp(x_i) / Σ_j exp(x_j).</p>
@@ -2899,9 +2899,9 @@ prevent overflow.</p>
 (produces a probability distribution that sums to 1), attention weight
 normalization in transformers.</p>
 <p><strong>Implementation:</strong> <code>tensorSoftmax</code> in <a
-href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.
 Backward: <a
-href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_codegen.cpp</a>.</p>
 <h4 id="gelu"><code>gelu</code></h4>
 <p><strong>Syntax:</strong> <code>(gelu t)</code> → Tensor</p>
 <p>Gaussian Error Linear Unit: GELU(x) = x · Φ(x) ≈ x · σ(1.702x), where
@@ -2913,9 +2913,9 @@ flow through negative activations.</p>
 ViT). Outperforms ReLU in language modeling tasks due to smoother
 optimization landscape.</p>
 <p><strong>Implementation:</strong> <code>tensorGelu</code> in <a
-href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.
 Backward: <a
-href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_codegen.cpp</a>.</p>
 <h4 id="leaky-relu"><code>leaky-relu</code></h4>
 <p><strong>Syntax:</strong> <code>(leaky-relu t [α])</code> → Tensor</p>
 <p>Leaky ReLU: f(x) = x if x &gt; 0, αx otherwise. Default α = 0.01.</p>
@@ -2925,9 +2925,9 @@ unit always receives non-zero gradient.</p>
 <p><strong>Use case:</strong> Drop-in replacement for ReLU when dead
 neurons are observed during training.</p>
 <p><strong>Implementation:</strong> <code>tensorLeakyRelu</code> in <a
-href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.
 Backward: <a
-href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_codegen.cpp</a>.</p>
 <h4 id="silu"><code>silu</code></h4>
 <p><strong>Syntax:</strong> <code>(silu t)</code> → Tensor</p>
 <p>Sigmoid Linear Unit (Swish): SiLU(x) = x · σ(x).</p>
@@ -2937,9 +2937,9 @@ below. Gradients flow more uniformly than ReLU.</p>
 <p><strong>Use case:</strong> EfficientNet, modern ConvNets. Often
 outperforms both ReLU and GELU.</p>
 <p><strong>Implementation:</strong> <code>tensorSilu</code> in <a
-href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.
 Backward: <a
-href="../lib/backend/tensor_codegen.cpp">lib/backend/tensor_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_codegen.cpp</a>.</p>
 <h4 id="elu"><code>elu</code></h4>
 <p><strong>Syntax:</strong> <code>(elu t [α])</code> → Tensor</p>
 <p>Exponential Linear Unit: f(x) = x if x &gt; 0, α(e^x - 1) otherwise.
@@ -2950,7 +2950,7 @@ bias shift effect and accelerating convergence.</p>
 <p><strong>Use case:</strong> When negative outputs are needed and mean
 activation near zero is desirable.</p>
 <p><strong>Implementation:</strong> <code>tensorElu</code> in <a
-href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="selu"><code>selu</code></h4>
 <p><strong>Syntax:</strong> <code>(selu t)</code> → Tensor</p>
 <p>Scaled Exponential Linear Unit: SELU(x) = λ · ELU(x, α) where λ ≈
@@ -2965,7 +2965,7 @@ initialization (<code>lecun-normal!</code>).</p>
 <p><strong>Use case:</strong> Deep fully-connected networks without
 batch normalization.</p>
 <p><strong>Implementation:</strong> <code>tensorSelu</code> in <a
-href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="mish"><code>mish</code></h4>
 <p><strong>Syntax:</strong> <code>(mish t)</code> → Tensor</p>
 <p>Mish: f(x) = x · tanh(softplus(x)) = x · tanh(ln(1 + e^x)).</p>
@@ -2976,7 +2976,7 @@ unlike ReLU (non-differentiable at 0) or Leaky ReLU (non-smooth at
 <p><strong>Use case:</strong> Object detection (YOLOv4 adopted Mish as
 default activation).</p>
 <p><strong>Implementation:</strong> <code>tensorMish</code> in <a
-href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="hard-swish"><code>hard-swish</code></h4>
 <p><strong>Syntax:</strong> <code>(hard-swish t)</code> → Tensor</p>
 <p>Piecewise linear approximation of Swish: f(x) = x · min(max(x + 3,
@@ -2986,7 +2986,7 @@ than SiLU/Swish. Negligible accuracy difference in practice.</p>
 <p><strong>Use case:</strong> Mobile and edge deployment (MobileNetV3).
 Optimized for inference speed on resource-constrained devices.</p>
 <p><strong>Implementation:</strong> <code>tensorHardSwish</code> in <a
-href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="hard-sigmoid"><code>hard-sigmoid</code></h4>
 <p><strong>Syntax:</strong> <code>(hard-sigmoid t)</code> → Tensor</p>
 <p>Piecewise linear approximation of sigmoid: f(x) = min(max(x + 3, 0),
@@ -2996,7 +2996,7 @@ href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activatio
 <p><strong>Use case:</strong> Mobile architectures where sigmoid’s
 exponential is expensive. Gating in efficient architectures.</p>
 <p><strong>Implementation:</strong> <code>tensorHardSigmoid</code> in <a
-href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="softplus"><code>softplus</code></h4>
 <p><strong>Syntax:</strong> <code>(softplus t)</code> → Tensor</p>
 <p>Smooth approximation of ReLU: f(x) = ln(1 + e^x).</p>
@@ -3007,7 +3007,7 @@ softplus(x) ≈ x when x ≫ 0.</p>
 (e.g., variance in variational inference, concentration parameters in
 Bayesian models).</p>
 <p><strong>Implementation:</strong> <code>tensorSoftplus</code> in <a
-href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="celu"><code>celu</code></h4>
 <p><strong>Syntax:</strong> <code>(celu t [α])</code> → Tensor</p>
 <p>Continuously Differentiable ELU: f(x) = max(0, x) + min(0, α(e^(x/α)
@@ -3018,7 +3018,7 @@ smoothness property improves optimization convergence.</p>
 <p><strong>Use case:</strong> Research architectures requiring smooth
 activation functions.</p>
 <p><strong>Implementation:</strong> <code>tensorCelu</code> in <a
-href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="dropout"><code>dropout</code></h4>
 <p><strong>Syntax:</strong> <code>(dropout t rate training)</code> →
 Tensor</p>
@@ -3035,7 +3035,7 @@ interpreted as approximate Bayesian inference over an ensemble of 2^n
 sub-networks, where n is the number of units. It prevents co-adaptation
 of feature detectors.</p>
 <p><strong>Implementation:</strong> <code>tensorDropout</code> in <a
-href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activation_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="activation-function-examples">Activation Function Examples</h4>
 <pre class="scheme"><code>(define x #(-2.0 -1.0 0.0 1.0 2.0))
 (relu x)               ; =&gt; #(0 0 0 1 2)
@@ -3049,7 +3049,7 @@ href="../lib/backend/tensor_activation_codegen.cpp">lib/backend/tensor_activatio
 (dropout x 0.5 #t)     ; =&gt; #(0.0 -2.0 0.0 2.0 0.0) (varies, scaled by 2)
 (dropout x 0.5 #f)     ; =&gt; #(-2.0 -1.0 0.0 1.0 2.0) (unchanged in inference)</code></pre>
 <p>(An integral double prints without a decimal point — see <a
-href="reference/language/numeric-tower.md#exactness">the numeric
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exactness" target="_blank" rel="noopener noreferrer">the numeric
 tower</a>. <code>#(0 0 0 1 2)</code> above is five inexact values, not
 five exact integers.)</p>
 <blockquote>
@@ -3084,7 +3084,7 @@ log-likelihood under a Gaussian noise model N(y | ŷ, σ²) with fixed
 <p><strong>Use case:</strong> Regression tasks with Gaussian-distributed
 residuals.</p>
 <p><strong>Implementation:</strong> <code>mseLoss</code> in <a
-href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="mae-loss"><code>mae-loss</code></h4>
 <p><strong>Syntax:</strong> <code>(mae-loss pred target)</code> →
 Number</p>
@@ -3097,7 +3097,7 @@ log-likelihood under Laplacian noise.</p>
 <p><strong>Use case:</strong> Regression with outliers; median
 regression.</p>
 <p><strong>Implementation:</strong> <code>maeLoss</code> in <a
-href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="cross-entropy-loss"><code>cross-entropy-loss</code></h4>
 <p><strong>Syntax:</strong>
 <code>(cross-entropy-loss logits targets)</code> → Number</p>
@@ -3128,7 +3128,7 @@ probabilities, scaled by the mean reduction.</p>
 <p><strong>Use case:</strong> Multi-class classification with one-hot,
 probability, or indexed class targets.</p>
 <p><strong>Implementation:</strong> <code>crossEntropyLoss</code> in <a
-href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="bce-loss"><code>bce-loss</code></h4>
 <p><strong>Syntax:</strong> <code>(bce-loss pred target)</code> →
 Number</p>
@@ -3139,7 +3139,7 @@ layer. Internally clamped to [ε, 1-ε] for numerical stability.</p>
 <p><strong>Use case:</strong> Binary classification, multi-label
 classification.</p>
 <p><strong>Implementation:</strong> <code>bceLoss</code> in <a
-href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4
 id="binary-cross-entropy-loss"><code>binary-cross-entropy-loss</code></h4>
 <p><strong>Syntax:</strong>
@@ -3148,7 +3148,7 @@ id="binary-cross-entropy-loss"><code>binary-cross-entropy-loss</code></h4>
 (post-sigmoid).</p>
 <p><strong>Implementation:</strong> Dispatches to <code>bceLoss</code>
 at <code>LLVMCodeGenerator::codegenCall</code> in <a
-href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/llvm_codegen.cpp</a>.</p>
 <h4 id="huber-loss"><code>huber-loss</code></h4>
 <p><strong>Syntax:</strong> <code>(huber-loss pred target [δ])</code> →
 Number</p>
@@ -3161,7 +3161,7 @@ the optimum.</p>
 <p><strong>Use case:</strong> Regression that needs robustness without
 the non-differentiability of MAE.</p>
 <p><strong>Implementation:</strong> <code>huberLoss</code> in <a
-href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="kl-div-loss"><code>kl-div-loss</code></h4>
 <p><strong>Syntax:</strong> <code>(kl-div-loss P Q)</code> → Number</p>
 <p>Kullback-Leibler Divergence: D_KL(P ‖ Q) = Σ_i P_i · log(P_i /
@@ -3172,7 +3172,7 @@ Q_i).</p>
 autoencoders (VAEs), knowledge distillation. In VAEs, minimizes
 D_KL(q(z|x) ‖ p(z)) where q is the encoder and p is the prior.</p>
 <p><strong>Implementation:</strong> <code>klDivLoss</code> in <a
-href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="hinge-loss"><code>hinge-loss</code></h4>
 <p><strong>Syntax:</strong> <code>(hinge-loss pred target)</code> →
 Number</p>
@@ -3182,7 +3182,7 @@ classified examples with confidence ≥ 1 incur zero loss.</p>
 <p><strong>Use case:</strong> Support Vector Machine (SVM)
 classification.</p>
 <p><strong>Implementation:</strong> <code>hingeLoss</code> in <a
-href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="smooth-l1-loss"><code>smooth-l1-loss</code></h4>
 <p><strong>Syntax:</strong>
 <code>(smooth-l1-loss pred target [β])</code> → Number</p>
@@ -3192,7 +3192,7 @@ convention used in object detection literature.</p>
 <p><strong>Use case:</strong> Object detection bounding box regression
 (Faster R-CNN, SSD).</p>
 <p><strong>Implementation:</strong> <code>smoothL1Loss</code> in <a
-href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="focal-loss"><code>focal-loss</code></h4>
 <p><strong>Syntax:</strong> <code>(focal-loss pred target [γ])</code> →
 Number</p>
@@ -3214,7 +3214,7 @@ must be finite and non-negative.</p>
 object detection, where background examples vastly outnumber foreground
 objects).</p>
 <p><strong>Implementation:</strong> <code>focalLoss</code> in <a
-href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="triplet-loss"><code>triplet-loss</code></h4>
 <p><strong>Syntax:</strong>
 <code>(triplet-loss anchor positive negative [margin])</code> →
@@ -3228,7 +3228,7 @@ from easy triplets).</p>
 <p><strong>Use case:</strong> Metric learning, face recognition
 (FaceNet), retrieval systems.</p>
 <p><strong>Implementation:</strong> <code>tripletLoss</code> in <a
-href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="contrastive-loss"><code>contrastive-loss</code></h4>
 <p><strong>Syntax:</strong>
 <code>(contrastive-loss t1 t2 y [margin])</code> → Number</p>
@@ -3238,7 +3238,7 @@ for dissimilar pairs.</p>
 <p><strong>Use case:</strong> Siamese networks, pairwise similarity
 learning.</p>
 <p><strong>Implementation:</strong> <code>contrastiveLoss</code> in <a
-href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="label-smoothing-loss"><code>label-smoothing-loss</code></h4>
 <p><strong>Syntax:</strong>
 <code>(label-smoothing-loss logits targets n-classes [ε])</code> →
@@ -3253,7 +3253,7 @@ all classes. Improves calibration and generalization (Szegedy et al.,
 distillation, model calibration.</p>
 <p><strong>Implementation:</strong> <code>labelSmoothingLoss</code> in
 <a
-href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="cosine-embedding-loss"><code>cosine-embedding-loss</code></h4>
 <p><strong>Syntax:</strong>
 <code>(cosine-embedding-loss t1 t2 y [margin])</code> → Number</p>
@@ -3263,7 +3263,7 @@ t2) - margin) if y = -1. Default margin = 0.0.</p>
 embedding alignment tasks.</p>
 <p><strong>Implementation:</strong> <code>cosineEmbeddingLoss</code> in
 <a
-href="../lib/backend/tensor_loss_codegen.cpp">lib/backend/tensor_loss_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_loss_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_loss_codegen.cpp</a>.</p>
 <h4 id="loss-function-examples">Loss Function Examples</h4>
 <pre class="scheme"><code>(define pred #(2.0 1.0 0.1))
 (define target #(1.0 0.0 0.0))            ; one-hot: class 0
@@ -3309,7 +3309,7 @@ as params) - <code>lr</code> — learning rate η (scalar) -
 <code>velocity</code> — velocity tensor (modified in-place, optional,
 same shape as params)</p>
 <p><strong>Implementation:</strong> <code>sgdStep</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="adam-step"><code>adam-step</code></h4>
 <p><strong>Syntax:</strong>
 <code>(adam-step params grads lr m v t [β₁ β₂ ε])</code> → void</p>
@@ -3329,7 +3329,7 @@ v̂_t = v_t / (1 - β₂^t)                         (bias correction)
 moment tensor (modified in-place, initialized to zeros) - <code>t</code>
 — step count (integer, for bias correction; starts at 1)</p>
 <p><strong>Implementation:</strong> <code>adamStep</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="adamw-step"><code>adamw-step</code></h4>
 <p><strong>Syntax:</strong>
 <code>(adamw-step params grads lr m v t [β₁ β₂ ε wd])</code> → void</p>
@@ -3343,7 +3343,7 @@ regularization effect.</p>
 <p><strong>Defaults:</strong> β₁ = 0.9, β₂ = 0.999, ε = 1e-8, wd =
 0.01.</p>
 <p><strong>Implementation:</strong> <code>adamwStep</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="rmsprop-step"><code>rmsprop-step</code></h4>
 <p><strong>Syntax:</strong>
 <code>(rmsprop-step params grads lr v [α ε])</code> → void</p>
@@ -3356,7 +3356,7 @@ rate by a running average of gradient magnitudes:</p>
 parameters with large gradients (steep directions) and increases it for
 parameters with small gradients (flat directions).</p>
 <p><strong>Implementation:</strong> <code>rmspropStep</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="adagrad-step"><code>adagrad-step</code></h4>
 <p><strong>Syntax:</strong>
 <code>(adagrad-step params grads lr accum [ε])</code> → void</p>
@@ -3370,7 +3370,7 @@ monotonically decreases over training. This makes Adagrad well-suited
 for sparse features (common in NLP) but may cause premature convergence
 for dense features. RMSprop was developed as a fix for this issue.</p>
 <p><strong>Implementation:</strong> <code>adagradStep</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="zero-grad"><code>zero-grad!</code></h4>
 <p><strong>Syntax:</strong> <code>(zero-grad! grad-tensor)</code> →
 void</p>
@@ -3379,7 +3379,7 @@ before each forward pass to prevent gradient accumulation across
 mini-batches (unless accumulation is intentional, e.g., for gradient
 accumulation with large effective batch sizes).</p>
 <p><strong>Implementation:</strong> <code>zeroGrad</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="clip-grad-norm"><code>clip-grad-norm!</code></h4>
 <p><strong>Syntax:</strong>
 <code>(clip-grad-norm! grads max-norm)</code> → Number</p>
@@ -3392,7 +3392,7 @@ gradients can explode due to repeated matrix multiplication in the
 computational graph. The returned norm can be monitored for training
 health diagnostics.</p>
 <p><strong>Implementation:</strong> <code>clipGradNorm</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="check-grad-health"><code>check-grad-health</code></h4>
 <p><strong>Syntax:</strong> <code>(check-grad-health tensor)</code> →
 Integer</p>
@@ -3402,7 +3402,7 @@ numerical instability — typically caused by learning rates that are too
 high, division by zero in the loss function, or overflow in deep
 computational graphs.</p>
 <p><strong>Implementation:</strong> <code>checkGradHealth</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="optimizer-examples">Optimizer Examples</h4>
 <pre class="scheme"><code>;; Simple SGD training step
 (define params #(1.0 2.0 3.0))
@@ -3439,14 +3439,14 @@ void</p>
 backward signal variance simultaneously under linear activations.
 Optimal for sigmoid and tanh networks.</p>
 <p><strong>Implementation:</strong> <code>xavierUniform</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="xavier-normal"><code>xavier-normal!</code></h4>
 <p><strong>Syntax:</strong> <code>(xavier-normal! t fi fo)</code> →
 void</p>
 <p>Gaussian variant: N(0, √(2/(fi+fo))). Same variance as Xavier
 uniform.</p>
 <p><strong>Implementation:</strong> <code>xavierNormal</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="kaiming-uniform"><code>kaiming-uniform!</code></h4>
 <p><strong>Syntax:</strong> <code>(kaiming-uniform! t fi)</code> →
 void</p>
@@ -3455,14 +3455,14 @@ void</p>
 zero out half the signal (effectively halving the variance). Compensates
 by doubling the initialization variance compared to Xavier.</p>
 <p><strong>Implementation:</strong> <code>kaimingUniform</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="kaiming-normal"><code>kaiming-normal!</code></h4>
 <p><strong>Syntax:</strong> <code>(kaiming-normal! t fi)</code> →
 void</p>
 <p>Gaussian variant: N(0, √(2/fi)). Same variance as Kaiming
 uniform.</p>
 <p><strong>Implementation:</strong> <code>kaimingNormal</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="lecun-normal"><code>lecun-normal!</code></h4>
 <p><strong>Syntax:</strong> <code>(lecun-normal! t fi)</code> → void</p>
 <p>LeCun et al. (1998): N(0, √(1/fi)).</p>
@@ -3470,7 +3470,7 @@ href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_co
 (required for the self-normalizing property). Also suitable for
 tanh-based networks.</p>
 <p><strong>Implementation:</strong> <code>lecunNormal</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="initializer-selection-guide">Initializer Selection Guide</h4>
 <table>
 <colgroup>
@@ -3526,7 +3526,7 @@ avoids the abrupt drops of step-based schedules.</p>
 <p><strong>Use case:</strong> Standard for transformer training (BERT,
 GPT).</p>
 <p><strong>Implementation:</strong> <code>cosineAnnealingLR</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="step-decay-lr"><code>step-decay-lr</code></h4>
 <p><strong>Syntax:</strong>
 <code>(step-decay-lr base-lr γ step size)</code> → Number</p>
@@ -3535,7 +3535,7 @@ href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_co
 Common values: γ = 0.1, size = 30 epochs.</p>
 <p><strong>Use case:</strong> Classic ResNet training schedule.</p>
 <p><strong>Implementation:</strong> <code>stepDecayLR</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="linear-warmup-lr"><code>linear-warmup-lr</code></h4>
 <p><strong>Syntax:</strong>
 <code>(linear-warmup-lr base-lr step warmup)</code> → Number</p>
@@ -3550,7 +3550,7 @@ statistics before taking large steps.</p>
 <p><strong>Use case:</strong> Combined with cosine annealing for
 transformer training.</p>
 <p><strong>Implementation:</strong> <code>linearWarmupLR</code> in <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="exponential-decay-lr"><code>exponential-decay-lr</code></h4>
 <p><strong>Syntax:</strong>
 <code>(exponential-decay-lr base-lr γ step)</code> → Number</p>
@@ -3559,7 +3559,7 @@ href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_co
 reduces every step.</p>
 <p><strong>Implementation:</strong> <code>exponentialDecayLR</code> in
 <a
-href="../lib/backend/tensor_training_codegen.cpp">lib/backend/tensor_training_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_training_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_training_codegen.cpp</a>.</p>
 <h4 id="scheduler-composition-example">Scheduler Composition
 Example</h4>
 <pre class="scheme"><code>;; Warmup for 1000 steps, then cosine decay for 9000 steps
@@ -3608,7 +3608,7 @@ kernel_size) / stride⌋ + 1</p>
 <p><strong>Use case:</strong> Time-series processing, audio analysis, 1D
 signal convolution.</p>
 <p><strong>Implementation:</strong> <code>conv1d</code> in <a
-href="../lib/backend/tensor_conv_codegen.cpp">lib/backend/tensor_conv_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_conv_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_conv_codegen.cpp</a>.</p>
 <h4 id="conv2d"><code>conv2d</code></h4>
 <p><strong>Syntax:</strong>
 <code>(conv2d input kernel stride padding)</code> → Tensor</p>
@@ -3621,7 +3621,7 @@ Kernel: (out_channels, in_channels, kH, kW) - Output: (batch, out_H,
 out_W, out_channels) where out_H = ⌊(H + 2·padding - kH) / stride⌋ + 1
 (analogous for W)</p>
 <p><strong>Implementation:</strong> <code>conv2d</code> in <a
-href="../lib/backend/tensor_conv_codegen.cpp">lib/backend/tensor_conv_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_conv_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_conv_codegen.cpp</a>.</p>
 <h4 id="conv3d"><code>conv3d</code></h4>
 <p><strong>Syntax:</strong>
 <code>(conv3d input kernel stride padding)</code> → Tensor</p>
@@ -3631,7 +3631,7 @@ clouds).</p>
 Kernel: (out_channels, in_channels, kD, kH, kW) - Output: (batch, out_D,
 out_H, out_W, out_channels)</p>
 <p><strong>Implementation:</strong> <code>conv3d</code> in <a
-href="../lib/backend/tensor_extras_codegen.cpp">lib/backend/tensor_extras_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_extras_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_extras_codegen.cpp</a>.</p>
 <h4 id="max-pool2d"><code>max-pool2d</code></h4>
 <p><strong>Syntax:</strong>
 <code>(max-pool2d input kernel-size stride padding)</code> → Tensor</p>
@@ -3641,7 +3641,7 @@ Provides partial translation invariance.</p>
 <p><strong>Output:</strong> (batch, ⌊(H + 2·padding - kernel_size) /
 stride⌋ + 1, analogous for W, channels)</p>
 <p><strong>Implementation:</strong> <code>maxPool2d</code> in <a
-href="../lib/backend/tensor_conv_codegen.cpp">lib/backend/tensor_conv_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_conv_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_conv_codegen.cpp</a>.</p>
 <h4 id="avg-pool2d"><code>avg-pool2d</code></h4>
 <p><strong>Syntax:</strong>
 <code>(avg-pool2d input kernel-size stride padding)</code> → Tensor</p>
@@ -3649,7 +3649,7 @@ href="../lib/backend/tensor_conv_codegen.cpp">lib/backend/tensor_conv_codegen.cp
 window. Smoother than max pooling — preserves more information about the
 spatial distribution of activations.</p>
 <p><strong>Implementation:</strong> <code>avgPool2d</code> in <a
-href="../lib/backend/tensor_conv_codegen.cpp">lib/backend/tensor_conv_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_conv_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_conv_codegen.cpp</a>.</p>
 <h4 id="batch-norm"><code>batch-norm</code></h4>
 <p><strong>Syntax:</strong> <code>(batch-norm input γ β ε)</code> →
 Tensor</p>
@@ -3664,7 +3664,7 @@ normalization.</p>
 enables higher learning rates, acts as regularization. Batch-dependent —
 behavior changes between training and inference.</p>
 <p><strong>Implementation:</strong> <code>batchNorm</code> in <a
-href="../lib/backend/tensor_conv_codegen.cpp">lib/backend/tensor_conv_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_conv_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_conv_codegen.cpp</a>.</p>
 <h4 id="layer-norm"><code>layer-norm</code></h4>
 <p><strong>Syntax:</strong> <code>(layer-norm input γ β ε)</code> →
 Tensor</p>
@@ -3676,7 +3676,7 @@ norm independent of batch size. This is critical for transformer
 architectures where batch sizes vary and sequence positions must be
 processed independently.</p>
 <p><strong>Implementation:</strong> <code>layerNorm</code> in <a
-href="../lib/backend/tensor_conv_codegen.cpp">lib/backend/tensor_conv_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_conv_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_conv_codegen.cpp</a>.</p>
 <h4 id="cnn-example">CNN Example</h4>
 <pre class="scheme"><code>;; Simple convolutional feature extractor
 (define (cnn-forward x conv-k1 conv-k2 gamma beta)
@@ -3709,7 +3709,7 @@ seq_q, seq_k) — 0 = attend, -∞ = block - Output: (…, seq_q, d_v)</p>
 product.</p>
 <p><strong>Implementation:</strong>
 <code>scaledDotProductAttention</code> in <a
-href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_transformer_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="multi-head-attention"><code>multi-head-attention</code></h4>
 <p><strong>Syntax:</strong>
 <code>(multi-head-attention Q K V n-heads W_Q W_K W_V W_O [mask])</code>
@@ -3729,7 +3729,7 @@ projection matrices - W_O: (d_model, d_model) — output projection -
 n-heads must evenly divide d_model</p>
 <p><strong>Implementation:</strong> <code>multiHeadAttention</code> in
 <a
-href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_transformer_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="positional-encoding"><code>positional-encoding</code></h4>
 <p><strong>Syntax:</strong>
 <code>(positional-encoding max-len d-model)</code> → Tensor</p>
@@ -3743,7 +3743,7 @@ lengths not seen during training, and allows it to learn relative
 position attention via linear combinations.</p>
 <p><strong>Implementation:</strong> <code>positionalEncoding</code> in
 <a
-href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_transformer_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="rotary-embedding"><code>rotary-embedding</code></h4>
 <p><strong>Syntax:</strong>
 <code>(rotary-embedding x seq-positions dim)</code> → Tensor</p>
@@ -3757,7 +3757,7 @@ positions — enabling length generalization.</p>
 positions naturally, decays with distance, and is more efficient (no
 additive embedding table needed).</p>
 <p><strong>Implementation:</strong> <code>rotaryEmbedding</code> in <a
-href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_transformer_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="causal-mask"><code>causal-mask</code></h4>
 <p><strong>Syntax:</strong> <code>(causal-mask seq-len)</code> →
 Tensor</p>
@@ -3768,7 +3768,7 @@ seq-len).</p>
 the left-to-right generation constraint in decoder models (GPT, language
 models).</p>
 <p><strong>Implementation:</strong> <code>causalMask</code> in <a
-href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_transformer_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="padding-mask"><code>padding-mask</code></h4>
 <p><strong>Syntax:</strong> <code>(padding-mask lengths max-len)</code>
 → Tensor</p>
@@ -3777,7 +3777,7 @@ positions as 0 and padding positions as -∞. Shape: (batch, max-len).</p>
 <p><code>lengths</code> is a tensor of actual sequence lengths for each
 batch element.</p>
 <p><strong>Implementation:</strong> <code>paddingMask</code> in <a
-href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_transformer_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="feed-forward"><code>feed-forward</code></h4>
 <p><strong>Syntax:</strong> <code>(feed-forward x W₁ b₁ W₂ b₂)</code> →
 Tensor</p>
@@ -3787,7 +3787,7 @@ b₂.</p>
 position in the sequence. Typically d_ff = 4 · d_model (the inner
 dimension is 4× the model dimension).</p>
 <p><strong>Implementation:</strong> <code>feedForward</code> in <a
-href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_transformer_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="embedding"><code>embedding</code></h4>
 <p><strong>Syntax:</strong> <code>(embedding indices weights)</code> →
 Tensor</p>
@@ -3813,7 +3813,7 @@ raises a catchable Eshkol condition (observable to <code>guard</code> /
 <code>with-exception-handler</code>); none of them reads outside the
 weight buffer.</p>
 <p><strong>Implementation:</strong> <code>embedding</code> in <a
-href="../lib/backend/tensor_transformer_codegen.cpp">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_transformer_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_transformer_codegen.cpp</a>.</p>
 <h4 id="transformer-example">Transformer Example</h4>
 <pre class="scheme"><code>;; Transformer decoder block
 (define (decoder-block x n-heads W_Q W_K W_V W_O
@@ -3895,8 +3895,8 @@ systems compose into a complete neural network training pipeline.</p>
 Dispatch is automatic based on a cost model comparing CPU (cBLAS/SIMD)
 vs GPU throughput, accounting for data transfer latency.</p>
 <p><strong>Implementation:</strong> <a
-href="../lib/backend/gpu/gpu_memory.mm">gpu_memory.mm</a> (Metal), <a
-href="../lib/backend/system_codegen.cpp">system_codegen.cpp</a>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/gpu/gpu_memory.mm" target="_blank" rel="noopener noreferrer">gpu_memory.mm</a> (Metal), <a
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/system_codegen.cpp" target="_blank" rel="noopener noreferrer">system_codegen.cpp</a>
 (dispatch logic).</p>
 <h3 id="automatic-dispatch">Automatic Dispatch</h3>
 <p>The compiler automatically dispatches tensor operations to GPU when
@@ -3950,7 +3950,7 @@ chain is: SIMD → cBLAS (Apple Accelerate / AMX) → GPU.</p>
 meaning the computation must be intensive enough to amortize the host ↔︎
 device data transfer. For most operations below ~4096 elements, CPU
 (cBLAS) is faster.</p>
-<h3 id="sf64-software-float64-on-metal">SF64 — Software Float64 on
+<h3 id="sf64--software-float64-on-metal">SF64 — Software Float64 on
 Metal</h3>
 <p>Apple’s Metal Shading Language lacks native float64 support. Eshkol
 implements <strong>SF64</strong> (Software Float64) — a double-precision
@@ -4031,7 +4031,7 @@ tensor allocations and enabling whole-graph optimizations.</p>
 MLIR optimization passes → target-specific code (CPU with SIMD / GPU via
 Metal or CUDA).</p>
 <p><strong>Implementation:</strong> <a
-href="../lib/backend/xla/xla_runtime.cpp">xla_runtime.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/xla/xla_runtime.cpp" target="_blank" rel="noopener noreferrer">xla_runtime.cpp</a>.</p>
 <h3 id="operation-fusion">Operation Fusion</h3>
 <p>XLA’s primary advantage is <strong>operation fusion</strong>: chains
 of element-wise operations and reductions are compiled into single
@@ -4093,13 +4093,13 @@ before any speedup</li>
 </table>
 <hr />
 <h2 id="signal-processing">Signal Processing</h2>
-<h3 id="fft-ifft">FFT / IFFT</h3>
+<h3 id="fft--ifft">FFT / IFFT</h3>
 <p>Built-in Cooley-Tukey radix-2 FFT:</p>
 <ul>
 <li><code>(fft tensor)</code> — Forward FFT, returns complex tensor</li>
 <li><code>(ifft tensor)</code> — Inverse FFT</li>
 </ul>
-<h3 id="signal-processing-library-signal.filters">Signal Processing
+<h3 id="signal-processing-library-signalfilters">Signal Processing
 Library (<code>signal.filters</code>)</h3>
 <pre class="scheme"><code>(require signal.filters)</code></pre>
 <h4 id="window-functions">Window Functions</h4>
@@ -4244,8 +4244,8 @@ to that limit — <code>120</code> heap, <code>121</code> stack,
 <code>timeout(1)</code>), <code>125</code> VM instructions. See
 <code>ESHKOL_EXIT_LIMIT_*</code> in
 <code>inc/eshkol/core/resource_limits.h</code> and <a
-href="reference/runtime/environment-variables.md">runtime/environment-variables.md</a>.</p>
-<h3 id="logging-debug">Logging &amp; Debug</h3>
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/environment-variables.md" target="_blank" rel="noopener noreferrer">runtime/environment-variables.md</a>.</p>
+<h3 id="logging--debug">Logging &amp; Debug</h3>
 <table>
 <thead>
 <tr>
@@ -4535,7 +4535,7 @@ and maximum.</p>
 <h2 id="tensor-utilities">Tensor Utilities</h2>
 <p>High-level shape manipulation and query utilities for tensors. These
 functions provide convenient wrappers over the core tensor operations
-documented in <a href="#tensor-operations">Tensor Operations</a>.</p>
+documented in <a href="/docs#page=api_reference&amp;tensor-operations" data-url="/content/api_reference.html">Tensor Operations</a>.</p>
 <p><strong>Module</strong>: <code>lib/tensor/utils.esk</code>
 <strong>Import</strong>: <code>(require tensor.utils)</code></p>
 <h3 id="shape-manipulation">Shape Manipulation</h3>
@@ -5229,7 +5229,7 @@ return a trajectory as a list of <code>(t y)</code> pairs; adaptive
 methods adjust step size to meet a specified tolerance.</p>
 <p><strong>Module</strong>: <code>lib/math/ode.esk</code>
 <strong>Import</strong>: <code>(require "math/ode")</code></p>
-<h3 id="euler-method-oh">Euler Method – O(h)</h3>
+<h3 id="euler-method--oh">Euler Method – O(h)</h3>
 <h4 id="euler"><code>euler</code></h4>
 <p><strong>Syntax</strong>: <code>(euler f t0 y0 tf h)</code></p>
 <p>Solves an ODE using Euler’s method (first-order explicit). The update
@@ -5256,7 +5256,7 @@ loops.</p>
 <p>Solves using Euler’s method and returns only the final value.</p>
 <p><strong>Returns</strong>: Number or vector (y at time tf)</p>
 <hr />
-<h3 id="heuns-method-oh2">Heun’s Method – O(h^2)</h3>
+<h3 id="heuns-method--oh2">Heun’s Method – O(h^2)</h3>
 <h4 id="heun"><code>heun</code></h4>
 <p><strong>Syntax</strong>: <code>(heun f t0 y0 tf h)</code></p>
 <p>Solves an ODE using Heun’s method (second-order,
@@ -5274,7 +5274,7 @@ evaluations per step.</p>
 <p>Performs a single Heun step.</p>
 <p><strong>Returns</strong>: Number or vector (y at next step)</p>
 <hr />
-<h3 id="midpoint-method-oh2">Midpoint Method – O(h^2)</h3>
+<h3 id="midpoint-method--oh2">Midpoint Method – O(h^2)</h3>
 <h4 id="midpoint"><code>midpoint</code></h4>
 <p><strong>Syntax</strong>: <code>(midpoint f t0 y0 tf h)</code></p>
 <p>Solves an ODE using the explicit midpoint method (second-order). The
@@ -5290,7 +5290,7 @@ y_{n+1} = y_n + h * f(t + h/2, y + h/2 * k1)</code></pre>
 <p>Performs a single midpoint step.</p>
 <p><strong>Returns</strong>: Number or vector (y at next step)</p>
 <hr />
-<h3 id="classical-runge-kutta-oh4">Classical Runge-Kutta – O(h^4)</h3>
+<h3 id="classical-runge-kutta--oh4">Classical Runge-Kutta – O(h^4)</h3>
 <h4 id="rk4"><code>rk4</code></h4>
 <p><strong>Syntax</strong>: <code>(rk4 f t0 y0 tf h)</code></p>
 <p>Solves an ODE using the classical fourth-order Runge-Kutta method.
@@ -5324,7 +5324,7 @@ step.</p>
 <p>Solves using RK4 and returns only the final value.</p>
 <p><strong>Returns</strong>: Number or vector (y at time tf)</p>
 <hr />
-<h3 id="runge-kutta-fehlberg-adaptive-oh4oh5">Runge-Kutta-Fehlberg –
+<h3 id="runge-kutta-fehlberg--adaptive-oh4oh5">Runge-Kutta-Fehlberg –
 Adaptive O(h<sup>4)/O(h</sup>5)</h3>
 <h4 id="rk45"><code>rk45</code></h4>
 <p><strong>Syntax</strong>: <code>(rk45 f t0 y0 tf h0 tol)</code></p>
@@ -5353,7 +5353,7 @@ spacing due to adaptive steps)</p>
 <p>Solves with RK45 and returns only the final value.</p>
 <p><strong>Returns</strong>: Number or vector (y at time tf)</p>
 <hr />
-<h3 id="backward-euler-implicit-oh">Backward Euler – Implicit O(h)</h3>
+<h3 id="backward-euler--implicit-oh">Backward Euler – Implicit O(h)</h3>
 <h4 id="backward-euler"><code>backward-euler</code></h4>
 <p><strong>Syntax</strong>:
 <code>(backward-euler f t0 y0 tf h)</code></p>
@@ -5959,7 +5959,7 @@ resolution.</p>
 <p>Releases a JavaScript object handle when it is no longer needed.
 Important for preventing memory leaks in long-running applications.</p>
 <hr />
-<h2 id="thread-pool-promise-builtins">Thread Pool &amp; Promise
+<h2 id="thread-pool--promise-builtins">Thread Pool &amp; Promise
 Builtins</h2>
 <p>Low-level primitives for inspecting the work-stealing thread pool and
 managing promises/futures. The thread pool is initialized automatically
@@ -6018,7 +6018,7 @@ its computation and the result is available without blocking.</p>
 <p><strong>Returns</strong>: Boolean</p>
 <hr />
 <h2 id="command-line-tools">Command-Line Tools</h2>
-<h3 id="eshkol-run-compiler-and-jit-runner"><code>eshkol-run</code> –
+<h3 id="eshkol-run--compiler-and-jit-runner"><code>eshkol-run</code> –
 Compiler and JIT Runner</h3>
 <p>The primary compiler driver. Compiles <code>.esk</code> source files
 to native binaries, object files, or WebAssembly, and supports JIT
@@ -6146,8 +6146,8 @@ eshkol-run -r &lt;file.esk&gt;         (JIT run file)</code></pre>
 
 ;; Dump LLVM IR for debugging
 ;; $ eshkol-run --dump-ir program.esk -o program</code></pre>
-<h4 id="shared-lib-the-two-flavours"><code>--shared-lib</code>: the two
-flavours</h4>
+<h4 id="--shared-lib-the-two-flavours"><code>--shared-lib</code>: the
+two flavours</h4>
 <table>
 <colgroup>
 <col style="width: 54%" />
@@ -6235,7 +6235,7 @@ Eshkol modules (the precompiled standard library,
 <code>cmake/EshkolCompile.cmake</code> consumers) that call with it. Do
 not dlopen a <code>--shared-lib -c</code> object and call it from C.</p>
 <hr />
-<h3 id="eshkol-repl-interactive-repl"><code>eshkol-repl</code> –
+<h3 id="eshkol-repl--interactive-repl"><code>eshkol-repl</code> –
 Interactive REPL</h3>
 <p>A visual live coding environment with JIT compilation, tab
 completion, and crash recovery.</p>
@@ -6339,7 +6339,7 @@ balancing</p>
 </tbody>
 </table>
 <hr />
-<h3 id="eshkol-pkg-package-manager"><code>eshkol-pkg</code> – Package
+<h3 id="eshkol-pkg--package-manager"><code>eshkol-pkg</code> – Package
 Manager</h3>
 <p>Manages Eshkol project dependencies and builds using
 <code>eshkol.toml</code> manifests and a git-based package registry.</p>
@@ -6414,7 +6414,7 @@ math-utils = &quot;1.0.0&quot;</code></pre>
 binary (default: <code>eshkol-run</code>) - <code>ESHKOL_REGISTRY</code>
 – Package registry URL</p>
 <hr />
-<h3 id="eshkol-lsp-language-server"><code>eshkol-lsp</code> – Language
+<h3 id="eshkol-lsp--language-server"><code>eshkol-lsp</code> – Language
 Server</h3>
 <p>Provides IDE integration via the Language Server Protocol (LSP) over
 stdin/stdout using JSON-RPC 2.0 transport.</p>
@@ -6486,7 +6486,7 @@ of <code>batch-size</code> elements on each call to
 <code>shuffle</code> — if <code>#t</code>, randomly permutes the data
 indices. Default: <code>#f</code></p>
 <p><strong>Implementation:</strong> <code>makeDataloader</code> in <a
-href="../lib/backend/tensor_dataloader_codegen.cpp">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_dataloader_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
 <h3 id="dataloader-next"><code>dataloader-next</code></h3>
 <p><strong>Syntax:</strong> <code>(dataloader-next loader)</code> →
 Tensor | null</p>
@@ -6495,7 +6495,7 @@ consumed. Advances the internal position by <code>batch-size</code>. The
 last batch may be smaller than <code>batch-size</code> if the dataset
 size is not evenly divisible.</p>
 <p><strong>Implementation:</strong> <code>dataloaderNext</code> in <a
-href="../lib/backend/tensor_dataloader_codegen.cpp">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_dataloader_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
 <h3 id="dataloader-reset"><code>dataloader-reset!</code></h3>
 <p><strong>Syntax:</strong> <code>(dataloader-reset! loader)</code> →
 Dataloader</p>
@@ -6503,20 +6503,20 @@ Dataloader</p>
 <code>shuffle = #t</code>, re-permutes the indices. Returns the loader
 for chaining.</p>
 <p><strong>Implementation:</strong> <code>dataloaderReset</code> in <a
-href="../lib/backend/tensor_dataloader_codegen.cpp">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_dataloader_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
 <h3 id="dataloader-length"><code>dataloader-length</code></h3>
 <p><strong>Syntax:</strong> <code>(dataloader-length loader)</code> →
 Integer</p>
 <p>Returns the number of batches: ⌈n / batch-size⌉.</p>
 <p><strong>Implementation:</strong> <code>dataloaderLength</code> in <a
-href="../lib/backend/tensor_dataloader_codegen.cpp">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_dataloader_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
 <h3 id="dataloader-has-next"><code>dataloader-has-next?</code></h3>
 <p><strong>Syntax:</strong> <code>(dataloader-has-next? loader)</code> →
 Boolean</p>
 <p>Returns <code>#t</code> if more batches remain, <code>#f</code>
 otherwise.</p>
 <p><strong>Implementation:</strong> <code>dataloaderHasNext</code> in <a
-href="../lib/backend/tensor_dataloader_codegen.cpp">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_dataloader_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
 <h3 id="train-test-split"><code>train-test-split</code></h3>
 <p><strong>Syntax:</strong>
 <code>(train-test-split data labels ratio [shuffle])</code> → Vector of
@@ -6528,7 +6528,7 @@ indices are permuted before splitting.</p>
 <p><strong>Returns:</strong> A vector of four tensors:
 <code>(train-data train-labels test-data test-labels)</code>.</p>
 <p><strong>Implementation:</strong> <code>trainTestSplit</code> in <a
-href="../lib/backend/tensor_dataloader_codegen.cpp">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_dataloader_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_dataloader_codegen.cpp</a>.</p>
 <h3 id="dataloader-example">Dataloader Example</h3>
 <pre class="scheme"><code>;; Create shuffled dataloader with batch size 32
 (define loader (make-dataloader training-data 32 #t))
@@ -6558,7 +6558,7 @@ exists a unique h: A + B → C implementing case analysis.</p>
 where tag is 0 (left) or 1 (right).</p>
 <p><strong>Implementation:</strong> dispatched from
 <code>LLVMCodeGenerator::codegenCall</code> in <a
-href="../lib/backend/llvm_codegen.cpp">lib/backend/llvm_codegen.cpp</a>;
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/llvm_codegen.cpp</a>;
 <code>inject-left</code> / <code>inject-right</code> lower through
 <code>codegenSumInject</code>.</p>
 <h3 id="inject-left"><code>inject-left</code></h3>
@@ -6630,7 +6630,7 @@ values in-place.</li>
 <p><strong>Implementation:</strong> Parser transforms
 <code>define-record-type</code> into vector operations
 (<code>ESHKOL_DEFINE_RECORD_TYPE_OP</code> branch in <a
-href="../lib/frontend/parser.cpp">lib/frontend/parser.cpp</a>). The
+href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer">lib/frontend/parser.cpp</a>). The
 constructor creates a tagged vector with a unique type identifier, the
 predicate checks this identifier, and accessors/mutators map to
 <code>vector-ref</code> / <code>vector-set!</code>.</p>
@@ -6672,7 +6672,7 @@ predicate checks this identifier, and accessors/mutators map to
 and utility functions implemented in Eshkol. These are stdlib functions
 (compiled to <code>stdlib.o</code>), distinct from the compiler-level ML
 builtins documented in <a
-href="#machine-learning--neural-networks">Machine Learning &amp; Neural
+href="/docs#page=api_reference&amp;machine-learning--neural-networks" data-url="/content/api_reference.html">Machine Learning &amp; Neural
 Networks</a>.</p>
 <h3 id="optimization-algorithms">Optimization Algorithms</h3>
 <p><strong>Module:</strong> <code>lib/ml/optimization.esk</code>
@@ -6743,7 +6743,7 @@ condition.</p>
 (adam rosenbrock #(0.0 0.0))              ; =&gt; ~#(1.0 1.0)
 (l-bfgs rosenbrock #(0.0 0.0))           ; =&gt; ~#(1.0 1.0) (faster)
 (gradient-descent rosenbrock #(0.0 0.0) 0.0001 10000)  ; slower but simplest</code></pre>
-<h3 id="activation-normalization-utilities">Activation &amp;
+<h3 id="activation--normalization-utilities">Activation &amp;
 Normalization Utilities</h3>
 <p><strong>Module:</strong> <code>lib/ml/activations.esk</code>
 <strong>Import:</strong> <code>(require ml)</code> or
@@ -6828,9 +6828,9 @@ for composability and custom pipelines.</p>
 <h2 id="implementation-statistics">Implementation Statistics</h2>
 <p><strong>Codebase Size</strong>: ~329,100 lines of production C++
 <strong>Main Backend</strong>: <a
-href="../lib/backend/llvm_codegen.cpp">llvm_codegen.cpp</a> — 47,107
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a> — 47,107
 lines <strong>Tensor Codegen</strong>: <a
-href="../lib/backend/tensor_codegen.cpp">tensor_codegen.cpp</a> —
+href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">tensor_codegen.cpp</a> —
 1,867-line dispatcher plus 22,355 lines across thirteen per-domain
 <code>tensor_*_codegen.cpp</code> modules <strong>Compiler
 Modules</strong>: 36 specialized code generators <strong>Test
@@ -6839,9 +6839,9 @@ Operations</strong>: 555+ builtins, 300+ standard library functions</p>
 <hr />
 <h2 id="see-also">See Also</h2>
 <ul>
-<li><a href="ESHKOL_V1_ARCHITECTURE.md"><strong>Architecture
+<li><a href="/docs#page=eshkol_v1_architecture" data-url="/content/eshkol_v1_architecture.html"><strong>Architecture
 Guide</strong></a> — Complete system architecture</li>
-<li><a href="KNOWN_ISSUES.md"><strong>Known Issues</strong></a> —
+<li><a href="/docs#page=known_issues" data-url="/content/known_issues.html"><strong>Known Issues</strong></a> —
 Current limitations and planned features</li>
 </ul>
 <hr />

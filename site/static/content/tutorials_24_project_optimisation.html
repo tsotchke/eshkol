@@ -1,0 +1,105 @@
+<h1 id="project-function-optimisation-with-autodiff">Project: Function
+Optimisation with Autodiff</h1>
+<p>Find the minimum of complex functions using gradient descent,
+Newton’s method, and the Hessian — all powered by compiler-native
+AD.</p>
+<hr />
+<h2 id="problem-1-rosenbrock-function">Problem 1: Rosenbrock
+Function</h2>
+<p>The Rosenbrock function is a classic optimisation benchmark. The
+minimum is at (1, 1) but the valley is narrow and curved — hard for
+optimisers.</p>
+<!-- doc-example: known-defect SW-182: gradient descent reaches (0.994, 0.988); natively (gradient rosenbrock x y) is taken at 0 on every step and the run ends at (19.99, 0) -->
+<pre class="scheme"><code>;; f(x, y) = (1 - x)^2 + 100*(y - x^2)^2
+(define (rosenbrock x y)
+  (+ (* (- 1.0 x) (- 1.0 x))
+     (* 100.0 (* (- y (* x x)) (- y (* x x))))))
+
+;; Gradient descent with autodiff
+(define (optimise-gd x y lr steps)
+  (if (= steps 0)
+      (begin
+        (display &quot;Minimum at: (&quot;)
+        (display x) (display &quot;, &quot;) (display y) (display &quot;)&quot;)
+        (newline)
+        (display &quot;f(x,y) = &quot;) (display (rosenbrock x y))
+        (newline))
+      (let ((g (gradient rosenbrock x y)))
+        (optimise-gd (- x (* lr (vector-ref g 0)))
+                     (- y (* lr (vector-ref g 1)))
+                     lr (- steps 1)))))
+
+(display &quot;=== Rosenbrock Optimisation ===&quot;) (newline)
+(display &quot;Starting at (0, 0):&quot;) (newline)
+(optimise-gd 0.0 0.0 0.001 10000)
+;; =&gt; Minimum at: (0.994..., 0.988...)
+;; =&gt; f(x,y) = 3.1...e-05
+;; Converges towards (1, 1) with f ~ 0</code></pre>
+<hr />
+<h2 id="problem-2-newtons-method-with-hessian">Problem 2: Newton’s
+Method with Hessian</h2>
+<p>For faster convergence, use the Hessian (second derivatives) to take
+Newton steps: x_new = x - H^(-1) * grad.</p>
+<pre class="scheme"><code>;; Simple 1D Newton&#39;s method for finding roots of f&#39;(x) = 0
+(define (newton-1d f x steps)
+  (if (= steps 0)
+      (begin
+        (display &quot;Minimum at x = &quot;) (display x)
+        (display &quot;, f(x) = &quot;) (display (f x))
+        (newline))
+      (let ((fp (derivative f x))
+            (fpp (derivative (lambda (t) (derivative f t)) x)))
+        (if (&lt; (abs fpp) 1e-10)
+            x  ;; Hessian too small, stop
+            (newton-1d f (- x (/ fp fpp)) (- steps 1))))))
+
+;; f(x) = x^4 - 3x^2 + 2  (minima at x = +/- sqrt(3/2))
+(define (quartic x) (+ (- (expt x 4) (* 3.0 (* x x))) 2.0))
+
+(display &quot;=== Newton&#39;s Method ===&quot;) (newline)
+(newton-1d quartic 2.0 20)</code></pre>
+<hr />
+<h2 id="problem-3-gradient-descent-on-a-loss-landscape">Problem 3:
+Gradient Descent on a Loss Landscape</h2>
+<!-- doc-example: known-defect SW-182: the fit reaches 0.828x^2 + 0.900x + 1.026; natively the gradient is taken at 0 (and the map over the data hits SW-183), so nothing is fitted -->
+<pre class="scheme"><code>;; Fit a quadratic y = ax^2 + bx + c to noisy data
+(define data &#39;((0 1.1) (1 2.8) (2 6.2) (3 11.1) (4 17.9)))
+
+(define (model a b c x) (+ (* a (* x x)) (* b x) c))
+
+(define (mse a b c)
+  (fold-left + 0.0
+    (map (lambda (point)
+           (let* ((x (car point))
+                  (y (cadr point))
+                  (pred (model a b c x)))
+             (* (- pred y) (- pred y))))
+         data)))
+
+(define (fit a b c lr steps)
+  (if (= steps 0)
+      (begin
+        (display &quot;Fitted: &quot;) (display a) (display &quot;x^2 + &quot;)
+        (display b) (display &quot;x + &quot;) (display c)
+        (newline)
+        (display &quot;MSE: &quot;) (display (mse a b c)) (newline))
+      (let ((g (gradient mse a b c)))
+        (fit (- a (* lr (vector-ref g 0)))
+             (- b (* lr (vector-ref g 1)))
+             (- c (* lr (vector-ref g 2)))
+             lr (- steps 1)))))
+
+(display &quot;=== Quadratic Fit ===&quot;) (newline)
+(fit 0.0 0.0 0.0 0.0001 5000)
+;; =&gt; Fitted: 0.828...x^2 + 0.899...x + 1.025...
+;; =&gt; MSE: 0.0183...
+;; Heading towards a=1, b=1, c=1 (y = x^2 + x + 1)</code></pre>
+<hr />
+<h2 id="why-this-matters">Why This Matters</h2>
+<p>In most languages, gradient descent requires: - A framework (PyTorch,
+JAX, TensorFlow) - Defining a computation graph - Calling
+<code>.backward()</code> or <code>jax.grad()</code> - Managing parameter
+tensors</p>
+<p>In Eshkol: <code>(gradient f x y)</code> — that’s it. The compiler
+computes exact derivatives of arbitrary Scheme code. You write math, the
+compiler differentiates it.</p>

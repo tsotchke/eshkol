@@ -1,0 +1,72 @@
+<h1 id="runtime-reference">Runtime Reference</h1>
+<p>Reference documentation for the Eshkol runtime and toolchain
+(v1.3.5-evolve).</p>
+<h2 id="tools">Tools</h2>
+<ul>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/eshkol-run.md" target="_blank" rel="noopener noreferrer"><code>eshkol-run</code></a> — the compiler
+&amp; JIT driver: every CLI flag (AOT, <code>-r</code>/<code>-e</code>
+JIT, <code>-c</code>/<code>--emit-object</code>, <code>-s</code> shared
+lib, <code>-w</code> WASM, <code>--profile</code>,
+<code>--target</code>, <code>-O</code>,
+<code>--dump-ast</code>/<code>--dump-ir</code>,
+<code>--debug-info</code>, …).</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/eshkol-repl.md" target="_blank" rel="noopener noreferrer"><code>eshkol-repl</code></a> — interactive
+REPL and the <code>--machine</code> warm-worker <strong>EREPL
+v1</strong> protocol: the original READY/DONE/FAIL bare-line framing,
+plus a versioned JSON request/response layer on top of it
+(<code>ready</code> handshake, <code>"op":"eval"</code> with the form’s
+value and stdout reported separately from the stdout pipe, structured
+error kinds). <code>tools/erepl_client.py</code> is the stdlib-only
+Python reference client and the executable form of the contract.</li>
+<li><a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/eshkol-vm-standalone.md" target="_blank" rel="noopener noreferrer"><code>eshkol-vm-standalone</code></a> —
+the bytecode VM, the <strong>ESKB</strong> binary format,
+<code>--emit-eskb</code>, and
+<code>--require-vm-entry[-zero-arg]</code>.</li>
+</ul>
+<h2 id="runtime-concepts">Runtime concepts</h2>
+<ul>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/environment-variables.md" target="_blank" rel="noopener noreferrer">Environment variables</a> — the
+full user-facing set: JIT/run cache, search paths, resource limits,
+parallelism, backends, subprocess sandbox.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/memory-model.md" target="_blank" rel="noopener noreferrer">Memory model</a> — 16-byte tagged values,
+the arena allocator, the hybrid global/per-thread model, and
+<code>with-region</code> semantics (incl. the PR #81 reclamation fix).
+Both engines reclaim through <code>with-region</code>; the AUTOMATIC
+per-loop nursery and the
+<code>region-open</code>/<code>region-close</code> handles are
+native-engine capabilities.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/parallelism.md" target="_blank" rel="noopener noreferrer">Parallelism &amp; threading</a> —
+<code>parallel-map</code>/<code>-fold</code>/<code>-filter</code>/
+<code>-execute</code>, <code>future</code>/<code>force</code>, the
+work-stealing pool, the serialized-state pattern, and the AD-mode-flag
+limitation.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/jit-internals.md" target="_blank" rel="noopener noreferrer">JIT internals</a> — the run cache, the
+stdlib object cache, and the Large code model / arm64 Branch26
+veneer.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/event-loop.md" target="_blank" rel="noopener noreferrer">Event loop</a> — the portable readiness
+multiplexer over kqueue / epoll / IOCP: <code>make-event-loop</code>,
+<code>event-loop-add-fd!</code>, <code>event-loop-remove-fd!</code>,
+<code>event-loop-poll</code>, <code>event-loop-close</code>, the Windows
+completion-vs-readiness adaptation and its stated limits, and why the
+loop lives outside the arena.</li>
+</ul>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="/docs#page=reference_agent" data-url="/content/reference_agent.html">Agent / FFI reference</a></li>
+<li><a href="https://github.com/tsotchke/eshkol/tree/master/docs/platform" target="_blank" rel="noopener noreferrer">Platform reference</a> — <a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/CI_LANES.md" target="_blank" rel="noopener noreferrer">CI lanes</a>, <a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/BUILD_NOTES.md" target="_blank" rel="noopener noreferrer">build notes</a>, <a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/TARGET_SUPPORT_MATRIX.md" target="_blank" rel="noopener noreferrer">target matrix</a>.</li>
+</ul>
+<h2 id="notes">Notes</h2>
+<ul>
+<li>The binary reports <code>v1.3.5-evolve</code>
+(<code>eshkol-run --version</code>), matching this documentation.</li>
+<li><code>-e</code> does not auto-print a bare value expression;
+<code>--help</code> says so (“output is shown via
+<code>(display …)</code>”), and <code>eshkol-run -e '(+ 1 2)'</code>
+prints nothing while <code>eshkol-run -e '(display (+ 1 2))'</code>
+prints <code>3</code>. (See <a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/eshkol-run.md" target="_blank" rel="noopener noreferrer"><code>eshkol-run</code></a>.)</li>
+</ul>

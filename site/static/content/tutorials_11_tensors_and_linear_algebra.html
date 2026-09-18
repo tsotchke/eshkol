@@ -1,0 +1,105 @@
+<h1 id="tutorial-11-tensors-and-linear-algebra">Tutorial 11: Tensors and
+Linear Algebra</h1>
+<p>Eshkol’s tensor system provides N-dimensional arrays of doubles with
+automatic SIMD vectorisation and optional GPU dispatch.</p>
+<hr />
+<h2 id="creating-tensors">Creating Tensors</h2>
+<pre class="scheme"><code>;; Tensor literal (homogeneous doubles, 8 bytes per element)
+(define v #(1.0 2.0 3.0 4.0 5.0))
+
+;; From functions
+(define z (zeros 3 3))         ;; 3x3 zero matrix
+(define o (ones 4))            ;; 4-element ones vector
+(define I (eye 3))             ;; 3x3 identity matrix
+(define r (arange 10))         ;; #(0 1 2 3 4 5 6 7 8 9)
+(define ls (linspace 0.0 1.0 5)) ;; #(0.0 0.25 0.5 0.75 1.0)
+(define rnd (rand 3 3))        ;; 3x3 random uniform [0,1)</code></pre>
+<p><strong>Tensors vs Vectors:</strong> <code>#(1 2 3)</code> creates a
+tensor (homogeneous doubles, 8 bytes each).
+<code>(vector 1 "two" #t)</code> creates a heterogeneous vector (tagged
+values, 16 bytes each). Use tensors for numeric computation.</p>
+<hr />
+<h2 id="element-access-and-mutation">Element Access and Mutation</h2>
+<!-- doc-example: known-defect SW-179: vector-set! of 99 shows #(99 20 30 40 50); the native engines store the integer bits and show 4.9e-322 -->
+<pre class="scheme"><code>(define v #(10 20 30 40 50))
+
+(display (vector-ref v 2))    ;; =&gt; 30
+(vector-set! v 0 99)
+(display v)                   ;; =&gt; #(99 20 30 40 50)
+(display (vector-length v))   ;; =&gt; 5</code></pre>
+<hr />
+<h2 id="reshaping">Reshaping</h2>
+<pre class="scheme"><code>(define flat #(1 2 3 4 5 6))
+(define M (reshape flat 2 3))   ;; 2x3 matrix
+(display (tensor-shape M))      ;; =&gt; (2 3)
+(define col (flatten M))        ;; back to 1D</code></pre>
+<hr />
+<h2 id="element-wise-operations">Element-Wise Operations</h2>
+<pre class="scheme"><code>(define a #(1.0 2.0 3.0))
+(define b #(4.0 5.0 6.0))
+
+(display (tensor-add a b))     ;; =&gt; #(5.0 7.0 9.0)
+(display (tensor-sub a b))     ;; =&gt; #(-3.0 -3.0 -3.0)
+(display (tensor-mul a b))     ;; =&gt; #(4.0 10.0 18.0)
+(display (tensor-div a b))     ;; =&gt; #(0.25 0.4 0.5)
+(display (tensor-scale a 2.0)) ;; =&gt; #(2.0 4.0 6.0)</code></pre>
+<hr />
+<h2 id="reductions">Reductions</h2>
+<pre class="scheme"><code>(define v #(1.0 2.0 3.0 4.0 5.0))
+
+(display (tensor-sum v))   ;; =&gt; 15.0
+(display (tensor-mean v))  ;; =&gt; 3.0
+(display (tensor-min v))   ;; =&gt; 1.0
+(display (tensor-max v))   ;; =&gt; 5.0</code></pre>
+<hr />
+<h2 id="linear-algebra">Linear Algebra</h2>
+<pre class="scheme"><code>;; Dot product
+(display (tensor-dot #(1 2 3) #(4 5 6)))  ;; =&gt; 32
+
+;; Matrix multiplication — auto-dispatches SIMD -&gt; BLAS -&gt; GPU
+(define A (reshape #(1 2 3 4) 2 2))
+(define B (reshape #(5 6 7 8) 2 2))
+(define C (matmul A B))
+(display C)  ;; =&gt; #((19 22) (43 50))
+
+;; Transpose
+(display (transpose A))
+
+;; Norm, trace
+(display (norm #(3.0 4.0)))   ;; =&gt; 5.0
+(display (trace (eye 4)))     ;; =&gt; 4.0
+
+;; Outer product
+(display (outer #(1 2) #(3 4)))  ;; =&gt; #((3 4) (6 8))</code></pre>
+<hr />
+<h2 id="gpu-acceleration">GPU Acceleration</h2>
+<p>When tensor sizes exceed a threshold, operations automatically
+dispatch to GPU (Metal on macOS, CUDA on Linux/Windows):</p>
+<pre class="scheme"><code>(define A (rand 64 64))
+(define B (rand 64 64))
+(define large-vector (rand 4096))
+(define large-A (rand 256 256))
+(define large-B (rand 256 256))
+
+;; Explicit GPU dispatch (falls back to the CPU when no GPU is present)
+(define result (gpu-matmul A B))
+(define soft (gpu-softmax large-vector))
+
+;; The cost-model dispatcher chooses automatically:
+;; Small tensors → SIMD (SSE/AVX/NEON)
+;; Medium tensors → cBLAS
+;; Large tensors → Metal/CUDA
+(define big-result (matmul large-A large-B))  ;; auto-dispatched</code></pre>
+<hr />
+<h2 id="integration-with-autodiff">Integration with Autodiff</h2>
+<p>Tensor operations are differentiable:</p>
+<!-- doc-example: known-defect SW-181: the gradient is #(2 4 6); the native engines raise a type error in tensor-dot -->
+<pre class="scheme"><code>;; Gradient of a function that uses tensors
+(define (quadratic-form x)
+  (tensor-dot x (matmul (eye 3) x)))
+
+(display (gradient quadratic-form #(1.0 2.0 3.0)))
+;; =&gt; #(2.0 4.0 6.0)</code></pre>
+<hr />
+<p><em>All tensor operations compose with <code>parallel-map</code>,
+<code>fold-left</code>, and the rest of the language.</em></p>

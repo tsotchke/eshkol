@@ -122,29 +122,29 @@ and an <strong>active inference consciousness engine</strong>.</p>
 <hr />
 <h2 id="table-of-contents">Table of Contents</h2>
 <ol type="1">
-<li><a href="#getting-started">Getting Started</a></li>
-<li><a href="#language-overview">Language Overview</a></li>
-<li><a href="#core-features">Core Features</a></li>
-<li><a href="#automatic-differentiation">Automatic
+<li><a href="/docs#page=eshkol_language_guide&amp;getting-started" data-url="/content/eshkol_language_guide.html">Getting Started</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;language-overview" data-url="/content/eshkol_language_guide.html">Language Overview</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;core-features" data-url="/content/eshkol_language_guide.html">Core Features</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;automatic-differentiation" data-url="/content/eshkol_language_guide.html">Automatic
 Differentiation</a></li>
-<li><a href="#tensor--matrix-operations">Tensor &amp; Matrix
+<li><a href="/docs#page=eshkol_language_guide&amp;tensor--matrix-operations" data-url="/content/eshkol_language_guide.html">Tensor &amp; Matrix
 Operations</a></li>
-<li><a href="#exact-arithmetic">Exact Arithmetic</a></li>
-<li><a href="#complex-numbers">Complex Numbers</a></li>
-<li><a href="#continuations--exception-handling">Continuations &amp;
+<li><a href="/docs#page=eshkol_language_guide&amp;exact-arithmetic" data-url="/content/eshkol_language_guide.html">Exact Arithmetic</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;complex-numbers" data-url="/content/eshkol_language_guide.html">Complex Numbers</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;continuations--exception-handling" data-url="/content/eshkol_language_guide.html">Continuations &amp;
 Exception Handling</a></li>
-<li><a href="#parallel-primitives">Parallel Primitives</a></li>
-<li><a href="#gpu-acceleration">GPU Acceleration</a></li>
-<li><a href="#consciousness-engine">Consciousness Engine</a></li>
-<li><a href="#signal-processing">Signal Processing</a></li>
-<li><a href="#web-platform">Web Platform</a></li>
-<li><a href="#higher-order-functions">Higher-Order Functions</a></li>
-<li><a href="#memory-model">Memory Model</a></li>
-<li><a href="#c-interoperability">C Interoperability</a></li>
-<li><a href="#interactive-repl">Interactive REPL</a></li>
-<li><a href="#examples">Examples</a></li>
-<li><a href="#technical-architecture">Technical Architecture</a></li>
-<li><a href="#why-eshkol">Why Eshkol?</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;parallel-primitives" data-url="/content/eshkol_language_guide.html">Parallel Primitives</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;gpu-acceleration" data-url="/content/eshkol_language_guide.html">GPU Acceleration</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;consciousness-engine" data-url="/content/eshkol_language_guide.html">Consciousness Engine</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;signal-processing" data-url="/content/eshkol_language_guide.html">Signal Processing</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;web-platform" data-url="/content/eshkol_language_guide.html">Web Platform</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;higher-order-functions" data-url="/content/eshkol_language_guide.html">Higher-Order Functions</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;memory-model" data-url="/content/eshkol_language_guide.html">Memory Model</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;c-interoperability" data-url="/content/eshkol_language_guide.html">C Interoperability</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;interactive-repl" data-url="/content/eshkol_language_guide.html">Interactive REPL</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;examples" data-url="/content/eshkol_language_guide.html">Examples</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;technical-architecture" data-url="/content/eshkol_language_guide.html">Technical Architecture</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;why-eshkol" data-url="/content/eshkol_language_guide.html">Why Eshkol?</a></li>
 </ol>
 <hr />
 <h2 id="getting-started">Getting Started</h2>
@@ -332,7 +332,7 @@ punctuation another token claims — as of v1.3.5 (#462).
 </tr>
 </tbody>
 </table>
-<h3 id="built-in-functions">1,052 Built-in Functions</h3>
+<h3 id="1052-built-in-functions">1,052 Built-in Functions</h3>
 <p>Eshkol v1.3.5-evolve ships 1,052 built-in functions. They span
 arithmetic, math, strings, lists, vectors, tensors, automatic
 differentiation, vector calculus, exact arithmetic, complex numbers,
@@ -423,13 +423,13 @@ also accepts <code>#(...)</code> tensor literals),
 <h3 id="the-killer-feature">The Killer Feature</h3>
 <p>Eshkol provides <strong>three modes of automatic
 differentiation</strong> as built-in language primitives:</p>
-<h4 id="symbolic-differentiation-diff">1. Symbolic Differentiation
+<h4 id="1-symbolic-differentiation-diff">1. Symbolic Differentiation
 (<code>diff</code>)</h4>
 <p>Compile-time expression transformation:</p>
 <pre class="scheme"><code>(diff (* x x) x)           ;; -&gt; (* 2 x)
 (diff (sin (* x x)) x)     ;; -&gt; (* (cos (* x x)) (* 2 x))
 (diff (+ (* x x) (* 3 x)) x)  ;; -&gt; (+ (* 2 x) 3)</code></pre>
-<h4 id="forward-mode-ad-derivative">2. Forward-Mode AD
+<h4 id="2-forward-mode-ad-derivative">2. Forward-Mode AD
 (<code>derivative</code>)</h4>
 <p>Numerical derivatives using dual numbers:</p>
 <pre class="scheme"><code>(define f (lambda (x) (* x x x)))  ;; f(x) = x^3
@@ -437,7 +437,7 @@ differentiation</strong> as built-in language primitives:</p>
 
 (define g (lambda (x) (sin (* x x))))
 (derivative g 1.0)                  ;; -&gt; 1.0806046117362795 (2x*cos(x^2))</code></pre>
-<h4 id="reverse-mode-ad-gradient-jacobian-hessian">3. Reverse-Mode AD
+<h4 id="3-reverse-mode-ad-gradient-jacobian-hessian">3. Reverse-Mode AD
 (<code>gradient</code>, <code>jacobian</code>,
 <code>hessian</code>)</h4>
 <p>Computation graph-based differentiation for multivariate
@@ -464,7 +464,7 @@ functions:</p>
 point, so the <code>6</code>, <code>8</code> and <code>2</code> above
 are the doubles 6.0, 8.0 and 2.0 — ask <code>exact?</code> if the
 distinction matters. See <a
-href="reference/language/numeric-tower.md">the numeric tower
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md" target="_blank" rel="noopener noreferrer">the numeric tower
 reference</a>.</p>
 <h3 id="vector-calculus-operators">Vector Calculus Operators</h3>
 <p>Built-in operators for physics and engineering:</p>
@@ -491,7 +491,7 @@ Towers</h3>
 number of times). The Taylor-tower engine computes
 <strong>every</strong> derivative up to an arbitrary order
 <code>k</code> in a single pass, exactly where the arithmetic allows it.
-See the <a href="guide/AUTOMATIC_DIFFERENTIATION.md">Automatic
+See the <a href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic
 Differentiation guide</a> for the full walkthrough of all 13 phases
 (P0-P12: no-heap monomorphization, multivariate mixed partials,
 reverse-over-Taylor, exact bignum/rational coefficients, tensor towers,
@@ -537,9 +537,9 @@ a-priori bound at each step and <code>tm-prove-bound</code> /
 <code>tm-prove-nonzero</code> answer <code>#t</code> only when the
 enclosure proves the claim. Use <code>tm-rigorous?</code> to tell which
 kind of model you are holding. See <a
-href="reference/stdlib/certified-enclosures.md">reference/stdlib/certified-enclosures.md</a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">reference/stdlib/certified-enclosures.md</a>.</p>
 <hr />
-<h2 id="tensor-matrix-operations">Tensor &amp; Matrix Operations</h2>
+<h2 id="tensor--matrix-operations">Tensor &amp; Matrix Operations</h2>
 <h3 id="creation">Creation</h3>
 <pre class="scheme"><code>(vector 1.0 2.0 3.0)           ;; 1D vector
 #(1.0 2.0 3.0)                 ;; tensor literal
@@ -673,9 +673,9 @@ exact whether the constant is an inline literal, a top-level
 (derivative (lambda (x) (* x x)) 1/3)       ;; -&gt; 2/3   exact
 (derivative (lambda (x) (* c x x)) 1/3)     ;; -&gt; 2/15  exact</code></pre>
 <p>See <a
-href="reference/language/numeric-tower.md">reference/language/numeric-tower.md</a>
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md" target="_blank" rel="noopener noreferrer">reference/language/numeric-tower.md</a>
 for the whole tower and <a
-href="reference/ad/INDEX.md">reference/ad/INDEX.md</a> for the exactness
+href="/docs#page=reference_ad" data-url="/content/reference_ad.html">reference/ad/INDEX.md</a> for the exactness
 tier, including the one nesting shape that is not supported in
 v1.3.5.</p>
 <hr />
@@ -716,7 +716,7 @@ and a zero real part or a unit imaginary part is elided, so
 (sqrt (make-rectangular -1.0 0.0)) ;; -&gt; +i   (zero real part elided; +/-1 imaginary prints as +i/-i)
 (exp (make-rectangular 0.0 3.14159)) ;; -&gt; -0.9999999999964793+2.65358979335273e-06i</code></pre>
 <hr />
-<h2 id="continuations-exception-handling">Continuations &amp; Exception
+<h2 id="continuations--exception-handling">Continuations &amp; Exception
 Handling</h2>
 <p>Eshkol implements first-class continuations (<code>call/cc</code>),
 dynamic wind guards, and structured exception handling following R7RS
@@ -1173,7 +1173,7 @@ Sequential allocation - <strong>Deterministic cleanup</strong> - Memory
 freed when scope exits, on both engines; the bytecode VM has no
 automatic per-loop nursery, so a resident VM loop needs an explicit
 <code>with-region</code> — see <a
-href="reference/runtime/memory-model.md#which-engine-reclaims">memory
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/memory-model.md#which-engine-reclaims" target="_blank" rel="noopener noreferrer">memory
 model</a> - <strong>Fast allocation</strong> - O(1) bump-pointer
 allocation</p>
 <h3 id="tagged-value-system">Tagged Value System</h3>
@@ -1608,7 +1608,7 @@ whose body names the qubit, a <code>guard</code> whose handler does,
 <code>call/cc</code> — it says so on stderr, naming the form, and rules
 neither way. The same rule is enforced on the bytecode VM, which runs
 the same judgment rather than a second implementation of it. See <a
-href="COMPLETE_LANGUAGE_SPECIFICATION.md">the specification, 3.6.8</a>
+href="/docs#page=complete_language_specification" data-url="/content/complete_language_specification.html">the specification, 3.6.8</a>
 for the exact enforced and unenforced sets.</p></li>
 </ul>
 <hr />

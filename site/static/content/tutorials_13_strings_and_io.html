@@ -1,0 +1,87 @@
+<h1 id="tutorial-13-strings-and-io">Tutorial 13: Strings and I/O</h1>
+<hr />
+<h2 id="string-operations">String Operations</h2>
+<pre class="scheme"><code>(require core.strings)
+
+(string-length &quot;hello&quot;)               ;; =&gt; 5
+(string-ref &quot;hello&quot; 1)                ;; =&gt; #\e
+(substring &quot;hello world&quot; 0 5)         ;; =&gt; &quot;hello&quot;
+(string-append &quot;hello&quot; &quot; &quot; &quot;world&quot;)   ;; =&gt; &quot;hello world&quot;
+(string-upcase &quot;hello&quot;)               ;; =&gt; &quot;HELLO&quot;
+(string-downcase &quot;HELLO&quot;)             ;; =&gt; &quot;hello&quot;
+(string-contains &quot;hello world&quot; &quot;world&quot;)  ;; =&gt; #t
+(string-find &quot;hello world&quot; &quot;world&quot;)      ;; =&gt; 6 (index)
+(string-reverse &quot;abcde&quot;)              ;; =&gt; &quot;edcba&quot;
+(string-repeat &quot;ab&quot; 3)                ;; =&gt; &quot;ababab&quot;
+(string-starts-with? &quot;hello&quot; &quot;hel&quot;)   ;; =&gt; #t
+(string-ends-with? &quot;hello&quot; &quot;llo&quot;)     ;; =&gt; #t
+(string-count &quot;banana&quot; #\a)           ;; =&gt; 3</code></pre>
+<hr />
+<h2 id="string-predicates">String Predicates</h2>
+<pre class="scheme"><code>(string? &quot;hello&quot;)       ;; =&gt; #t
+(string=? &quot;abc&quot; &quot;abc&quot;)  ;; =&gt; #t
+(string&lt;? &quot;abc&quot; &quot;abd&quot;)  ;; =&gt; #t
+(string-ci=? &quot;Hello&quot; &quot;hello&quot;)  ;; =&gt; #t (case-insensitive)</code></pre>
+<hr />
+<h2 id="character-operations">Character Operations</h2>
+<pre class="scheme"><code>(char? #\a)              ;; =&gt; #t
+(char-alphabetic? #\a)   ;; =&gt; #t
+(char-numeric? #\5)      ;; =&gt; #t
+(char-whitespace? #\space) ;; =&gt; #t
+(char-upper-case? #\A)   ;; =&gt; #t
+(char-lower-case? #\a)   ;; =&gt; #t
+(char-upcase #\a)        ;; =&gt; #\A
+(char-downcase #\A)      ;; =&gt; #\a</code></pre>
+<hr />
+<h2 id="display-and-output">Display and Output</h2>
+<pre class="scheme"><code>(display &quot;Hello, world!&quot;)  ;; prints: Hello, world!
+(newline)                  ;; prints a newline
+(display 42)               ;; prints: 42
+(display #t)               ;; prints: #t
+(display &#39;(1 2 3))         ;; prints: (1 2 3)
+
+;; write outputs in read-back format (strings quoted, etc.)
+(write &quot;hello&quot;)            ;; prints: &quot;hello&quot; (with quotes)
+(write &#39;(1 &quot;two&quot; 3))       ;; prints: (1 &quot;two&quot; 3)</code></pre>
+<hr />
+<h2 id="file-io">File I/O</h2>
+<pre class="scheme"><code>;; Write to a file
+(define out (open-output-file &quot;data.txt&quot;))
+(write-string &quot;line 1\n&quot; out)
+(write-string &quot;line 2\n&quot; out)
+(close-port out)
+
+;; Read from a file
+(define in (open-input-file &quot;data.txt&quot;))
+(display (read-line in))   ;; =&gt; line 1
+(display (read-line in))   ;; =&gt; line 2
+(close-port in)
+
+;; Read entire file character by character
+(define in (open-input-file &quot;data.txt&quot;))
+(let loop ()
+  (let ((ch (read-char in)))
+    (if (eof-object? ch)
+        (close-port in)
+        (begin (display ch) (loop)))))</code></pre>
+<hr />
+<h2 id="string-ports">String Ports</h2>
+<p>String ports let you build strings incrementally or parse from
+strings:</p>
+<pre class="scheme"><code>;; Output string port — build a string
+(define sp (open-output-string))
+(write-string &quot;hello &quot; sp)
+(write-string &quot;world&quot; sp)
+(display (get-output-string sp))  ;; =&gt; &quot;hello world&quot;
+
+;; Input string port — parse from a string
+(define ip (open-input-string &quot;(+ 1 2)&quot;))
+(define expr (read ip))
+(display expr)  ;; =&gt; (+ 1 2)</code></pre>
+<hr />
+<h2 id="number-string-conversion">Number-String Conversion</h2>
+<pre class="scheme"><code>(number-&gt;string 42)          ;; =&gt; &quot;42&quot;
+(number-&gt;string 3.14)        ;; =&gt; &quot;3.14&quot;
+(string-&gt;number &quot;42&quot;)        ;; =&gt; 42
+(string-&gt;number &quot;3.14&quot;)      ;; =&gt; 3.14
+(string-&gt;number &quot;not-a-num&quot;) ;; =&gt; #f</code></pre>

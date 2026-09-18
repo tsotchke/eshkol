@@ -1,0 +1,196 @@
+<h1 id="tensors--ml--reference">Tensors &amp; ML — Reference</h1>
+<p>Machine-verified reference for Eshkol’s tensor system and the
+ML/numerical library modules (v1.3.5-evolve). Every signature and output
+on these pages was produced by running the current compiler; broken
+operations are documented against their behavior, not hidden.</p>
+<h2 id="pages">Pages</h2>
+<table>
+<colgroup>
+<col style="width: 37%" />
+<col style="width: 62%" />
+</colgroup>
+<thead>
+<tr>
+<th>Page</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/tensors/creation.md" target="_blank" rel="noopener noreferrer">creation.md</a></td>
+<td><code>vector</code> vs <code>tensor</code> (heterogeneous 16-byte
+tagged values vs homogeneous 8-byte doubles), literals
+<code>#(…)</code>, <code>make-tensor</code>/<code>make-vector</code>,
+and dtypes (f16/bf16/f32/f64/i8).</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/tensors/operations.md" target="_blank" rel="noopener noreferrer">operations.md</a></td>
+<td>Shape ops, elementwise &amp; unary math, linear algebra +
+decompositions, reductions, conv1d/2d/3d, pooling, normalization,
+attention, embedding, activations, the PR-#79 type guards, pixel fills,
+and save/load — with known-broken ops flagged.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/tensors/eskm-v1.md" target="_blank" rel="noopener noreferrer">eskm-v1.md</a></td>
+<td>Normative ESKM v1 checkpoint wire format, decoder requirements,
+historical provenance, and executable compatibility fixtures.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/tensors/gpu.md" target="_blank" rel="noopener noreferrer">gpu.md</a></td>
+<td>Honest GPU-dispatch status: the <code>gpu-*</code> builtins, the
+cost-model threshold, what actually runs on Metal in <code>-r</code> vs
+AOT, and how that squares with ESH-0022/0023.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/tensors/ml-modules.md" target="_blank" rel="noopener noreferrer">ml-modules.md</a></td>
+<td><code>ml.optimization</code>, <code>core.manifold</code>,
+<code>signal.fft</code> — every <code>provide</code> with signature and
+a run example.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/tensors/eskt-engine-parity.md" target="_blank" rel="noopener noreferrer">eskt-engine-parity.md</a></td>
+<td>Public ESKM tensor-file 4 × 4 producer/consumer test, exact byte/CRC
+oracle, and scope (historical page filename).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="two-containers-at-a-glance">Two containers at a glance</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th></th>
+<th><code>vector</code> / <code>make-vector</code></th>
+<th><code>tensor</code> / <code>#(…)</code> /
+<code>make-tensor</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Storage</td>
+<td>heterogeneous 16-byte tagged values</td>
+<td>homogeneous 8-byte doubles</td>
+</tr>
+<tr>
+<td>Mixed types</td>
+<td>yes</td>
+<td>no (numeric only)</td>
+</tr>
+<tr>
+<td>dtype / shape</td>
+<td>no</td>
+<td>yes (<code>f64</code> default)</td>
+</tr>
+<tr>
+<td>Displays as</td>
+<td><code>#(…)</code></td>
+<td><code>#(…)</code> (same — distinguish via
+<code>tensor-dtype</code>)</td>
+</tr>
+</tbody>
+</table>
+<h2
+id="binary-element-wise-arithmetic-takes-two-operands-of-matching-shape">Binary
+element-wise arithmetic takes two operands of matching shape</h2>
+<p><code>+ - * /</code> over a vector or tensor is a
+<strong>binary</strong> contract: both operands are classified before
+either is dereferenced, so the Scheme-vector kernel runs only when both
+sides are Scheme vectors of equal length and every other combination
+goes to the tensor path, where the shared operand check validates each
+side independently. Scalar broadcast is a <strong>separate
+operator</strong>, <code>tensor-scale</code>.</p>
+<ul>
+<li>A scalar in either position raises, at the call site’s own location:
+<code>Type error in tensor-mul: expected tensor, got integer</code>.</li>
+<li>A pair the broadcast computation refuses raises
+<code>Shape mismatch in tensor-mul: shapes (3) and (2) are not broadcast-compatible</code>.</li>
+<li>A length-1 operand still broadcasts:
+<code>(* #(2.0) #(1.0 2.0 3.0))</code> is <code>#(2 4 6)</code>.</li>
+<li>A vector and a rank-1 tensor are two spellings of one value, so a
+mixed pair is the element-wise result:
+<code>(* (vector 1.0 2.0) (tensor 3.0 4.0))</code> is
+<code>#(3 8)</code>.</li>
+</ul>
+<p>Every one of those was previously a silent wrong answer or an
+uncatchable fatal signal (ledger LE-18, LE-19, LE-22). Element-wise
+arithmetic over vectors/tensors is a <strong>native-engine</strong>
+capability: the bytecode VM raises
+<code>*: expected numeric operands</code> for
+<code>(* vector vector)</code>.</p>
+<h2 id="reading-a-printed-tensor-back-in">Reading a printed tensor back
+in</h2>
+<p>A rank-2 tensor <strong>prints</strong> as
+<code>#((1 2) (3 4))</code>, but that text is not how you write one:
+read back, it is a vector of two <em>lists</em>, and handing it to a
+tensor operation is a compile-time refusal rather than a rank-2 tensor.
+Build one with nested vector literals, <code>reshape</code>, or nested
+lists:</p>
+<pre class="scheme"><code>#(#(1.0 2.0) #(3.0 4.0))                          ; nested vector literals
+(reshape (tensor 1.0 2.0 3.0 4.0) (list 2 2))     ; from a flat tensor
+(tensor (list (list 1.0 2.0) (list 3.0 4.0)))     ; from nested lists</code></pre>
+<p>All three are the same 2x2 tensor. Closing the print/read asymmetry
+is a build item; so is turning the current refusal into a plain
+diagnostic rather than an internal codegen error.</p>
+<h2 id="what-works-what-to-avoid">What works, what to avoid</h2>
+<p><strong>Solid:</strong> all shape ops, elementwise/unary math, linear
+algebra incl. LU/QR/SVD/Cholesky/solve/inverse/det plus
+<code>linear-solve</code> (full-f64 mixed-precision iterative refinement
+— see <a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/tensors/operations.md#linear-solve--full-f64-solve-with-a-mixed-precision-fast-path" target="_blank" rel="noopener noreferrer">operations.md</a>),
+reductions, <code>conv1d</code>/<code>conv2d</code>/<code>conv3d</code>,
+<code>max-pool2d</code>/<code>avg-pool2d</code>,
+<code>multi-head-attention</code> (forward), <code>embedding</code>,
+<code>positional-encoding</code>, <code>dropout</code>,
+<code>softmax</code>, tensor-only activations, dtype casts, rect/disk
+pixel fills, and all three library modules.</p>
+<p><strong>Known limitations on this build:</strong></p>
+<table>
+<colgroup>
+<col style="width: 61%" />
+<col style="width: 38%" />
+</colgroup>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Issue</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>tensor creation</td>
+<td>no element type-check for non-numeric args
+(<code>(tensor 1.0 "x")</code> → garbage)</td>
+</tr>
+<tr>
+<td>type-guard text</td>
+<td>reports raw doubles as <code>integer</code></td>
+</tr>
+</tbody>
+</table>
+<p>(The release sweep-B fixes landed:
+<code>batch-norm</code>/<code>layer-norm</code> handle scalar
+<strong>and</strong> per-feature tensor gamma/beta plus the 5-arg axis
+form; <code>tensor-load</code> round-trips the shape;
+<code>gpu-reduce</code> returns a scalar; scalar math like
+<code>tanh</code> maps elementwise over a tensor;
+<code>tensor-pow</code> accepts a scalar exponent; and
+<code>(tensor 1 2.5 3)</code> builds the obvious 1-D tensor.)</p>
+<h2 id="gpu-status-in-one-line">GPU status in one line</h2>
+<p>The <code>gpu-*</code> builtins resolve and run in both
+<code>-r</code> and AOT; plain <code>tensor-matmul</code>
+auto-dispatches to Metal (both <code>-r</code> and AOT) when the size
+threshold is met, so AOT is <strong>not</strong> CPU-only on Metal.
+ESH-0022/0023 are therefore partly stale — see <a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/tensors/gpu.md" target="_blank" rel="noopener noreferrer">gpu.md</a>.</p>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="/docs#page=reference_ad" data-url="/content/reference_ad.html">../ad/INDEX.md</a> — automatic
+differentiation (flows through tensors)</li>
+<li><a
+href="/docs#page=breakdown_autodiff" data-url="/content/breakdown_autodiff.html">../../breakdown/AUTODIFF.md</a> —
+tensor backward pass, GPU gradient flow</li>
+</ul>

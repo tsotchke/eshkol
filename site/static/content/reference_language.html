@@ -1,0 +1,308 @@
+<h1 id="eshkol-language-core-reference">Eshkol Language Core
+Reference</h1>
+<p>Complete reference for the Eshkol language core, targeting
+<strong>v1.3.5-evolve</strong>.</p>
+<p>Every example in these documents was executed against a fresh build
+of the compiler
+(<code>cmake --build build --target eshkol-run stdlib</code>) and the
+shown output is the real program output. Examples are run with the JIT
+runner:</p>
+<pre class="sh"><code>eshkol-run -r file.esk        # JIT-run a file
+eshkol-run -e &#39;(display (+ 2 3))&#39;   # JIT-evaluate one expression
+eshkol-run file.esk -o binary # ahead-of-time (AOT) compile to a native binary</code></pre>
+<p>Unless noted otherwise, behaviour described here is that of the
+<strong>native code path</strong> (the LLVM JIT used by <code>-r</code>,
+and AOT). Where the separate bytecode VM backend differs, it is called
+out explicitly.</p>
+<h2 id="contents">Contents</h2>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 40%" />
+<col style="width: 40%" />
+</colgroup>
+<thead>
+<tr>
+<th>#</th>
+<th>Area</th>
+<th>File</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Definitions, <code>lambda</code>, <code>let</code>-family,
+<code>letrec</code>, named <code>let</code>, <code>begin</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/special-forms.md" target="_blank" rel="noopener noreferrer">special-forms.md</a></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>set!</code>, closure capture, lexical scope, shadowing</td>
+<td><a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/binding-mutation-and-scope.md" target="_blank" rel="noopener noreferrer">binding-mutation-and-scope.md</a></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>quote</code>, <code>quasiquote</code>, <code>unquote</code>,
+<code>unquote-splicing</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/quote-and-quasiquote.md" target="_blank" rel="noopener noreferrer">quote-and-quasiquote.md</a></td>
+</tr>
+<tr>
+<td>4</td>
+<td>Booleans and type predicates</td>
+<td><a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/booleans-and-predicates.md" target="_blank" rel="noopener noreferrer">booleans-and-predicates.md</a></td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>if</code>, <code>cond</code>, <code>case</code>,
+<code>when</code>, <code>unless</code>, <code>do</code>,
+<code>and</code>, <code>or</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/control-flow.md" target="_blank" rel="noopener noreferrer">control-flow.md</a></td>
+</tr>
+<tr>
+<td>6</td>
+<td>Tail-call guarantees</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/tail-calls.md" target="_blank" rel="noopener noreferrer">tail-calls.md</a></td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>raise</code>, <code>guard</code>, <code>error</code>,
+<code>with-exception-handler</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/error-handling.md" target="_blank" rel="noopener noreferrer">error-handling.md</a></td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>call/cc</code>, <code>dynamic-wind</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/continuations.md" target="_blank" rel="noopener noreferrer">continuations.md</a></td>
+</tr>
+<tr>
+<td>9</td>
+<td><code>match</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/pattern-matching.md" target="_blank" rel="noopener noreferrer">pattern-matching.md</a></td>
+</tr>
+<tr>
+<td>10</td>
+<td><code>values</code>, <code>call-with-values</code>,
+<code>let-values</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/multiple-values.md" target="_blank" rel="noopener noreferrer">multiple-values.md</a></td>
+</tr>
+<tr>
+<td>11</td>
+<td>Function parameters: variadic, keyword args, <code>apply</code></td>
+<td><a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/functions-and-parameters.md" target="_blank" rel="noopener noreferrer">functions-and-parameters.md</a></td>
+</tr>
+<tr>
+<td>12</td>
+<td>Modules: <code>require</code>/<code>provide</code>,
+<code>load</code>, <code>define-library</code>/<code>import</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/modules.md" target="_blank" rel="noopener noreferrer">modules.md</a></td>
+</tr>
+<tr>
+<td>13</td>
+<td>Characters, strings, symbols, string interpolation
+<code>~{}</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/strings-chars-symbols.md" target="_blank" rel="noopener noreferrer">strings-chars-symbols.md</a></td>
+</tr>
+<tr>
+<td>14</td>
+<td>Numeric tower: exact/inexact/rational/bignum/complex</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md" target="_blank" rel="noopener noreferrer">numeric-tower.md</a></td>
+</tr>
+<tr>
+<td>15</td>
+<td>Capability policy (<code>core.capabilities</code>)</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/capabilities.md" target="_blank" rel="noopener noreferrer">capabilities.md</a></td>
+</tr>
+<tr>
+<td>16</td>
+<td>Native 128-bit integers (<code>i128</code>): distinct wrapping
+fixed-width type</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/i128.md" target="_blank" rel="noopener noreferrer">i128.md</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="known-issue-conventions">Known-issue conventions</h2>
+<p>Open defects are tracked in the project ledger
+(<code>.swarm/tasks/ESH-*.json</code>). Where a form has a documented
+defect, the reference links it inline as, e.g.,
+<strong>ESH-0090</strong>. These are documented honestly as <em>Known
+Issues</em> — they are real, reproducible, and not worked around in the
+examples.</p>
+<p>Consolidated list of language-core known issues referenced here:</p>
+<table>
+<colgroup>
+<col style="width: 47%" />
+<col style="width: 52%" />
+</colgroup>
+<thead>
+<tr>
+<th>Ledger</th>
+<th>Summary</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ESH-0090</td>
+<td>A user <code>(define (raise …) …)</code> cannot shadow the builtin
+<code>raise</code>.</td>
+</tr>
+<tr>
+<td>SW-154</td>
+<td>Nested differentiation has a ceiling: <strong>two enclosing levels
+over a pass of order ≥ 2</strong> is not supported. On the inexact tier
+that shape currently answers <code>0</code> rather than raising; on the
+exact tier it raises. Everything below the ceiling composes exactly. See
+<a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md#nesting-ceiling-sw-154" target="_blank" rel="noopener noreferrer">../ad/support-matrix.md</a>.</td>
+</tr>
+<tr>
+<td>—</td>
+<td><code>(apply f a … arg-list)</code> — apply’s
+<strong>leading-args</strong> form — is native-only. The bytecode VM
+rejects it for any operator; see <a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/functions-and-parameters.md#apply" target="_blank" rel="noopener noreferrer">functions-and-parameters.md</a>.</td>
+</tr>
+<tr>
+<td>ESH-0109 (part)</td>
+<td>Curried <code>define</code> sugar <code>(define ((f x) y) …)</code>
+is a parse error, and <code>raise-continuable</code> is
+<strong>unimplemented on every substrate</strong> — the native path and
+the bytecode VM alike (the earlier “it exists in the bytecode VM” claim
+here was never true of any build; corrected under <code>SW-80b</code>).
+The <code>cond</code>/<code>case</code>/<code>guard</code>
+<code>=&gt;</code> and <code>define-values</code> parts of that ledger
+entry are done — <code>=&gt;</code> inside <code>guard</code>, and
+<code>=&gt;</code> on the VM at all, landed with the guard coverage gate
+(<code>SW-78</code>).</td>
+</tr>
+<tr>
+<td>—</td>
+<td>Mutual tail recursion IS optimized, in every tail spelling
+(<code>if</code>, <code>cond</code>, <code>case</code>,
+<code>when</code>, <code>unless</code>,
+<code>and</code>/<code>or</code>), at any pair of arities, and on every
+target, to 100,000,000 hops in constant stack (ESH-0102, ESH-0102b,
+ESH-0102c). Two lowerings carry it: LLVM <code>musttail</code> where the
+target can express it, and the tail-transfer dispatcher everywhere else.
+Bounded exceptions — indirect tail calls through a procedure value,
+mutual tail calls between <code>letrec</code>-bound lambdas or from
+inside a named <code>let</code> loop, sites forwarding a pointer into
+the caller’s frame, and mutual tail calls in the body of
+<code>guard</code> (which R7RS does not make a tail context) — are
+listed in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/tail-calls.md" target="_blank" rel="noopener noreferrer">tail-calls.md</a>.</td>
+</tr>
+</tbody>
+</table>
+<p>Closed since v1.3.3 — kept here because earlier releases documented
+them, and each is now covered by an example in the page that used to
+carry the warning:</p>
+<table>
+<colgroup>
+<col style="width: 44%" />
+<col style="width: 27%" />
+<col style="width: 27%" />
+</colgroup>
+<thead>
+<tr>
+<th>Ledger</th>
+<th>Was</th>
+<th>Now</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ESH-0101 / ESH-0112 (ledger SW-81)</td>
+<td>A deep non-tail recursion ran the native stack into its guard page
+and died with a bare SIGILL and no message.</td>
+<td>Exhausting the stack prints
+<code>eshkol: stack overflow: recursion depth exceeded the N MiB stack (ESHKOL_STACK_SIZE); …</code>,
+names the limit and exits 121 — on JIT, on AOT and inside
+<code>parallel-map</code> workers, each of which gets its own
+<code>sigaltstack</code>. A larger <code>ESHKOL_STACK_SIZE</code>
+completes the same program. See <a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/environment-variables.md#native-stack-guard" target="_blank" rel="noopener noreferrer">../runtime/environment-variables.md</a>.</td>
+</tr>
+<tr>
+<td>ESH-0103</td>
+<td>Deeply nested non-macro expressions took superlinear frontend time
+and memory, and grammar nesting consumed native stack.</td>
+<td>Recursive descent is replaced by an explicit continuation stack, so
+parse-and-lower stack consumption is independent of grammar nesting, and
+JIT/AOT compile time and RSS scale near-linearly at 1,000 / 4,000 /
+16,000 levels.</td>
+</tr>
+<tr>
+<td>ESH-0092 / ESH-0103</td>
+<td>A top-level global named after a libc symbol (<code>free</code>,
+<code>log</code>, …) corrupted it: SIGBUS at teardown, or a
+<code>set!</code> silently lost.</td>
+<td>Ordinary bindings on JIT and AOT — see <a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/binding-mutation-and-scope.md" target="_blank" rel="noopener noreferrer">binding-mutation-and-scope.md</a>.</td>
+</tr>
+<tr>
+<td>ESH-0104</td>
+<td>Long forms
+<code>(quasiquote …)</code>/<code>(unquote …)</code>/<code>(unquote-splicing …)</code>
+were inert data.</td>
+<td>Identical to the reader sugar — see <a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/quote-and-quasiquote.md" target="_blank" rel="noopener noreferrer">quote-and-quasiquote.md</a>.</td>
+</tr>
+<tr>
+<td>ESH-0105</td>
+<td>Exact rational arithmetic degraded to <code>double</code> (or
+<code>0</code>) once a bignum operand appeared.</td>
+<td>Stays exact: <code>(+ 1/3 (expt 2 70))</code> →
+<code>3541774862152233910273/3</code>, <code>exact?</code> →
+<code>#t</code>.</td>
+</tr>
+<tr>
+<td>ESH-0106</td>
+<td><code>'sym</code> inside a <code>guard</code> form compiled as a
+variable reference.</td>
+<td>Both quote spellings agree everywhere — see <a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/error-handling.md" target="_blank" rel="noopener noreferrer">error-handling.md</a>.</td>
+</tr>
+<tr>
+<td>ESH-0107</td>
+<td>Nested <code>quasiquote</code> (level ≥ 2) collapsed to
+<code>()</code>.</td>
+<td>Follows the R7RS level rule — see <a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/quote-and-quasiquote.md" target="_blank" rel="noopener noreferrer">quote-and-quasiquote.md</a>.</td>
+</tr>
+<tr>
+<td>ESH-0108</td>
+<td>stdlib <code>length</code>/<code>filter</code> crashed (SIGILL) on
+very large lists.</td>
+<td><code>(length (iota 1000000))</code> → <code>1000000</code>;
+<code>(filter even? (iota 1000000))</code> → 500,000 elements.</td>
+</tr>
+<tr>
+<td>ESH-0109 (<code>=&gt;</code> and <code>define-values</code>)</td>
+<td><code>=&gt;</code> was parsed as a variable reference;
+<code>define-values</code> was unsupported.</td>
+<td>R7RS <code>=&gt;</code> clauses work in <code>cond</code> and
+<code>case</code> — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/control-flow.md" target="_blank" rel="noopener noreferrer">control-flow.md</a>;
+<code>(define-values (a b) (values 1 2))</code> binds both.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="/docs#page=reference_ad" data-url="/content/reference_ad.html">Automatic differentiation reference</a> —
+the AD operators, the exactness tier, and the <a
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md#nesting-ceiling-sw-154" target="_blank" rel="noopener noreferrer">nesting
+ceiling</a>.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">Certified enclosures</a>
+— <code>fl-next-up</code> / <code>fl-next-down</code> and the
+proof-backed interval and Taylor-model layer above them.</li>
+<li><a href="/docs#page=reference_runtime" data-url="/content/reference_runtime.html">Runtime reference</a> —
+<code>eshkol-run</code> and <code>eshkol-repl</code> (including the
+<strong>EREPL v1</strong> machine protocol), environment variables and
+the resource-limit contracts, the memory model, and the bytecode
+VM.</li>
+<li><a href="/docs#page=reference_tensors" data-url="/content/reference_tensors.html">Tensors</a> — the tensor carrier,
+element-wise dispatch and <code>tensor-scale</code>, and where a tensor
+differs from a Scheme vector.</li>
+</ul>

@@ -1,0 +1,67 @@
+<h1 id="tutorial-14-json-csv-and-base64">Tutorial 14: JSON, CSV, and
+Base64</h1>
+<p>Eshkol includes built-in support for common data interchange
+formats.</p>
+<hr />
+<h2 id="json">JSON</h2>
+<p>The file I/O part of this example reads <code>data.json</code>.
+Create it first:</p>
+<!-- doc-example: file data.json: the input file the JSON example reads -->
+<pre class="json"><code>{&quot;name&quot;: &quot;Alice&quot;, &quot;age&quot;: 30}</code></pre>
+<pre class="scheme"><code>(require core.json)
+
+;; Parse JSON string to Eshkol data
+(define data (json-parse &quot;{\&quot;name\&quot;:\&quot;Alice\&quot;,\&quot;age\&quot;:30}&quot;))
+(display data)
+(newline)
+
+;; Convert Eshkol data to JSON string
+(define json-str (json-stringify &#39;((name . &quot;Bob&quot;) (age . 25))))
+(display json-str)
+(newline)
+
+;; File I/O
+(define port (open-input-file &quot;data.json&quot;))
+(define parsed (json-read port))
+(close-port port)
+
+(define out (open-output-file &quot;output.json&quot;))
+(json-write parsed out)
+(close-port out)</code></pre>
+<hr />
+<h2 id="csv">CSV</h2>
+<pre class="scheme"><code>(require core.data.csv)
+
+;; Parse CSV string
+(define rows (csv-parse &quot;name,age\nAlice,30\nBob,25&quot;))
+(display rows)
+(newline)
+;; =&gt; ((name age) (Alice 30) (Bob 25))
+;; a list of rows, each row a list of field strings
+
+;; Write CSV
+(define csv-str (csv-stringify &#39;((&quot;name&quot; &quot;age&quot;) (&quot;Alice&quot; &quot;30&quot;) (&quot;Bob&quot; &quot;25&quot;))))
+(display csv-str)
+(newline)
+
+;; File I/O
+(csv-write-file &quot;output.csv&quot; &#39;((&quot;x&quot; &quot;y&quot;) (&quot;1&quot; &quot;2&quot;) (&quot;3&quot; &quot;4&quot;)))</code></pre>
+<hr />
+<h2 id="base64">Base64</h2>
+<pre class="scheme"><code>(require core.data.base64)
+
+;; `base64-encode` operates on a byte list; `base64-encode-string` is the
+;; string entry point that does the conversion for you. `base64-decode`
+;; returns bytes; `base64-decode-string` returns a string.
+
+;; Encode string to Base64
+(define encoded (base64-encode-string &quot;Hello, world!&quot;))
+(display encoded)
+(newline)
+;; =&gt; &quot;SGVsbG8sIHdvcmxkIQ==&quot;
+
+;; Decode Base64 back to string
+(define decoded (base64-decode-string encoded))
+(display decoded)
+(newline)
+;; =&gt; &quot;Hello, world!&quot;</code></pre>

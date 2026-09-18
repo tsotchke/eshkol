@@ -1,0 +1,167 @@
+<h1 id="tutorial-19-gpu-acceleration">Tutorial 19: GPU Acceleration</h1>
+<p>Eshkol automatically dispatches tensor operations to the fastest
+available backend: SIMD (SSE/AVX/NEON), cBLAS, Metal (macOS), or CUDA
+(Linux/Windows).</p>
+<hr />
+<h2 id="the-cost-model-dispatcher">The Cost-Model Dispatcher</h2>
+<p>When you call <code>matmul</code>, the compiler chooses the backend
+based on tensor size:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Tensor size</th>
+<th>Backend</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Small (&lt; 64 elements)</td>
+<td>SIMD intrinsics</td>
+<td>Overhead of GPU launch &gt; computation</td>
+</tr>
+<tr>
+<td>Medium (64-4096)</td>
+<td>cBLAS (Accelerate/OpenBLAS)</td>
+<td>Optimised CPU BLAS</td>
+</tr>
+<tr>
+<td>Large (&gt; 4096)</td>
+<td>Metal or CUDA</td>
+<td>GPU parallelism wins</td>
+</tr>
+</tbody>
+</table>
+<pre class="scheme"><code>;; Same API regardless of backend
+(define A (rand 100 100))
+(define B (rand 100 100))
+(define C (matmul A B))     ;; auto-dispatched to best backend</code></pre>
+<hr />
+<h2 id="metal-macos">Metal (macOS)</h2>
+<p>On Apple Silicon, Eshkol uses Metal compute shaders with multiple
+precision tiers:</p>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Precision</th>
+<th>Speed</th>
+<th>Use case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SF64</td>
+<td>Simulated float64</td>
+<td>Moderate</td>
+<td>When doubles are required</td>
+</tr>
+<tr>
+<td>DF64</td>
+<td>Double-float64</td>
+<td>Moderate</td>
+<td>High precision</td>
+</tr>
+<tr>
+<td>F32</td>
+<td>Native float32</td>
+<td>Fast</td>
+<td>ML inference</td>
+</tr>
+<tr>
+<td>FP24</td>
+<td>24-bit float</td>
+<td>Fastest</td>
+<td>Approximate computation</td>
+</tr>
+<tr>
+<td>FP53</td>
+<td>53-bit mantissa</td>
+<td>Moderate</td>
+<td>Double-precision compatible</td>
+</tr>
+</tbody>
+</table>
+<p>The Ozaki-II CRT-based algorithm provides exact matrix multiplication
+by splitting doubles into float32 components and accumulating with
+compensated summation.</p>
+<hr />
+<h2 id="cuda-linux--windows">CUDA (Linux / Windows)</h2>
+<p>On NVIDIA GPUs, Eshkol uses cuBLAS for matrix operations with
+occupancy-aware kernel configuration:</p>
+<pre class="scheme"><code>(define A #(#(1.0 2.0) #(3.0 4.0)))
+(define B #(#(5.0 6.0) #(7.0 8.0)))
+(define M A)
+(define logits #(1.0 2.0 3.0))
+
+;; Explicit GPU dispatch (the same calls fall back to the CPU when the
+;; build or the machine has no GPU)
+(define result (gpu-matmul A B))            ;; =&gt; #((19 22) (43 50))
+
+;; Element-wise GPU operations
+(define scaled (gpu-elementwise * A B))     ;; =&gt; #((5 12) (21 32))
+(define reduced (gpu-reduce + M))           ;; =&gt; 10
+(define soft (gpu-softmax logits))          ;; =&gt; #(0.0900... 0.2447... 0.6652...)
+(define transposed (gpu-transpose M))       ;; =&gt; #((1 3) (2 4))</code></pre>
+<p><code>gpu-elementwise</code> accepts the binary operators
+<code>+</code>, <code>-</code>, <code>*</code>, and <code>/</code>.
+<code>gpu-reduce</code> accepts <code>+</code>, <code>mean</code>,
+<code>max</code>, and <code>min</code> and reduces across the full
+tensor. These forms use GPU dispatch when profitable and fall back to
+the CPU tensor implementation otherwise.</p>
+<hr />
+<h2 id="simd-vectorisation">SIMD Vectorisation</h2>
+<p>For small tensors, the LLVM backend generates platform-specific SIMD
+instructions:</p>
+<ul>
+<li><strong>x86_64</strong>: SSE4.2, AVX2, AVX-512 (when available)</li>
+<li><strong>ARM64</strong>: NEON</li>
+</ul>
+<p>Loop vectorisation is automatic — the compiler detects vectorisable
+patterns in tensor operations and emits wide instructions.</p>
+<pre class="scheme"><code>(define large-vector (rand 4096))
+(define a #(1.0 2.0 3.0 4.0))
+(define b #(5.0 6.0 7.0 8.0))
+(define v #(1.0 2.0 3.0 4.0))
+
+;; These are all SIMD-vectorised on supported hardware
+(define sum (tensor-sum large-vector))
+(define product (tensor-mul a b))
+(define scaled (tensor-scale v 3.14))</code></pre>
+<hr />
+<h2 id="build-configurations">Build Configurations</h2>
+<p>The release ships three tiers per platform:</p>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Flag</th>
+<th>Includes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Lite</strong></td>
+<td>default</td>
+<td>SIMD + cBLAS</td>
+</tr>
+<tr>
+<td><strong>XLA</strong></td>
+<td><code>-DESHKOL_XLA_ENABLED=ON</code></td>
+<td>+ StableHLO/MLIR backend</td>
+</tr>
+<tr>
+<td><strong>CUDA</strong></td>
+<td><code>-DESHKOL_GPU_ENABLED=ON</code></td>
+<td>+ Metal/CUDA acceleration</td>
+</tr>
+</tbody>
+</table>
+<pre class="bash"><code># Build with GPU support
+cmake .. -DCMAKE_BUILD_TYPE=Release -DESHKOL_GPU_ENABLED=ON
+make -j$(nproc)</code></pre>

@@ -1,5 +1,5 @@
 <h1
-id="eshkol-v1.3.5-evolve-sixteen-thousand-levels-deep-and-a-callable-that-is-the-one-you-named">Eshkol
+id="eshkol-v135-evolve--sixteen-thousand-levels-deep-and-a-callable-that-is-the-one-you-named">Eshkol
 v1.3.5-evolve — sixteen thousand levels deep, and a callable that is the
 one you named</h1>
 <p><strong>Feed the compiler a source file sixteen thousand parentheses
@@ -276,14 +276,14 @@ on re-entry on both engines pending assignment conversion. Final
 platform results, CTest and engine-parity counts and the readiness
 verdict are recorded at the tag, not here.</p>
 <p>Full engineering detail is in <a
-href="CHANGELOG.md">CHANGELOG.md</a>; the user-facing summary and the
+href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>; the user-facing summary and the
 migration contracts are in <a
-href="RELEASE_NOTES.md">RELEASE_NOTES.md</a>. Known limitations,
+href="/docs#page=release_notes" data-url="/content/release_notes.html">RELEASE_NOTES.md</a>. Known limitations,
 including the ones this release’s own hardening surfaced, are in <a
-href="docs/KNOWN_ISSUES.md">docs/KNOWN_ISSUES.md</a>.</p>
+href="/docs#page=known_issues" data-url="/content/known_issues.html">docs/KNOWN_ISSUES.md</a>.</p>
 <hr />
 <h1
-id="eshkol-v1.3.4-evolve-resident-correctness-and-a-wrong-answer-that-can-no-longer-look-like-a-right-one">Eshkol
+id="eshkol-v134-evolve--resident-correctness-and-a-wrong-answer-that-can-no-longer-look-like-a-right-one">Eshkol
 v1.3.4-evolve — resident correctness, and a wrong answer that can no
 longer look like a right one</h1>
 <p><strong>Run an Eshkol daemon for 100,000 ticks and its memory stays
@@ -527,19 +527,19 @@ not advertised, because NVIDIA does not provide the required supported
 toolkit.</li>
 </ul>
 <p>Full engineering detail lives in <a
-href="CHANGELOG.md">CHANGELOG.md</a>. The user-facing summary and gate
-matrix are in <a href="RELEASE_NOTES.md">RELEASE_NOTES.md</a>. The
+href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>. The user-facing summary and gate
+matrix are in <a href="/docs#page=release_notes" data-url="/content/release_notes.html">RELEASE_NOTES.md</a>. The
 complete AD walkthrough is the <a
-href="docs/guide/AUTOMATIC_DIFFERENTIATION.md">Automatic Differentiation
+href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic Differentiation
 guide</a>, and the memory model is documented in <a
-href="docs/reference/runtime/memory-model.md">docs/reference/runtime/memory-model.md</a>.
+href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/memory-model.md" target="_blank" rel="noopener noreferrer">docs/reference/runtime/memory-model.md</a>.
 Known limitations, including the ones this release’s own hardening
 surfaced, are in <a
-href="docs/KNOWN_ISSUES.md">docs/KNOWN_ISSUES.md</a>. Every claim above
+href="/docs#page=known_issues" data-url="/content/known_issues.html">docs/KNOWN_ISSUES.md</a>. Every claim above
 is tied to shipped code and an executable gate.</p>
 <hr />
 <h1
-id="eshkol-v1.3.3-evolve-quantum-circuits-you-can-differentiate-post-quantum-crypto-and-incremental-dataflow">Eshkol
+id="eshkol-v133-evolve--quantum-circuits-you-can-differentiate-post-quantum-crypto-and-incremental-dataflow">Eshkol
 v1.3.3-evolve — quantum circuits you can differentiate, post-quantum
 crypto, and incremental dataflow</h1>
 <p><strong>Eshkol v1.3.3-evolve introduces an opt-in quantum computing
@@ -567,17 +567,16 @@ an overstated AD claim from v1.3.2-evolve with the real fix: exact
 vector/learnable gamma. It closes the region-escape evacuator series
 (ESH-0214).</p>
 <p>Full engineering detail lives in <a
-href="CHANGELOG.md">CHANGELOG.md</a>. The user-facing summary and gate
-matrix are in <a href="RELEASE_NOTES.md">RELEASE_NOTES.md</a>, and the
+href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>. The user-facing summary and gate
+matrix are in <a href="/docs#page=release_notes" data-url="/content/release_notes.html">RELEASE_NOTES.md</a>, and the
 complete AD walkthrough is the <a
-href="docs/guide/AUTOMATIC_DIFFERENTIATION.md">Automatic Differentiation
+href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic Differentiation
 guide</a>. Every claim below is tied to shipped code and an executable
 gate.</p>
 <hr />
-<h2 id="whats-new-since-v1.3.1-evolve">What’s new since
-v1.3.1-evolve</h2>
+<h2 id="whats-new-since-v131-evolve">What’s new since v1.3.1-evolve</h2>
 <h3
-id="v1.3.3-evolve-quantum-computing-post-quantum-crypto-incremental-dataflow">v1.3.3-evolve:
+id="v133-evolve-quantum-computing-post-quantum-crypto-incremental-dataflow">v1.3.3-evolve:
 quantum computing, post-quantum crypto, incremental dataflow</h3>
 <ul>
 <li><strong>Quantum circuit simulation, opt-in</strong>
@@ -682,7 +681,7 @@ instead of ~32 GB;</li>
 </ul></li>
 </ul>
 <h3
-id="v1.3.3-evolve-also-closes-out-the-ad-exactness-correction-and-the-evacuator-series">v1.3.3-evolve
+id="v133-evolve-also-closes-out-the-ad-exactness-correction-and-the-evacuator-series">v1.3.3-evolve
 also closes out the AD-exactness correction and the evacuator
 series</h3>
 <ul>
@@ -735,7 +734,7 @@ again on the timeout branch) so an already-dead child is reaped
 immediately instead of falling through to a spurious timeout.</li>
 </ul>
 <h3
-id="v1.3.2-evolve-thread-safe-regions-deeper-evacuation-and-new-tooling">v1.3.2-evolve:
+id="v132-evolve-thread-safe-regions-deeper-evacuation-and-new-tooling">v1.3.2-evolve:
 thread-safe regions, deeper evacuation, and new tooling</h3>
 <ul>
 <li><strong>Region escape evacuator now covers logic and workspace
@@ -772,10 +771,9 @@ check) (#215).</li>
 </ul>
 <hr />
 <h2
-id="the-foundation-this-release-runs-on-v1.3.1-evolve-and-v1.3.0-evolve">The
+id="the-foundation-this-release-runs-on-v131-evolve-and-v130-evolve">The
 foundation this release runs on: v1.3.1-evolve and v1.3.0-evolve</h2>
-<h3
-id="flat-memory-for-resident-and-daemon-workloads-v1.3.1-evolve">Flat
+<h3 id="flat-memory-for-resident-and-daemon-workloads-v131-evolve">Flat
 memory for resident and daemon workloads (v1.3.1-evolve)</h3>
 <p>The per-iteration arena-reclamation work that the region-evacuator
 series builds on started here. Self-tail-recursive <code>define</code>
@@ -791,13 +789,13 @@ documentation pass across every public embedding header and most
 implementation files, plus a navigable per-subsystem documentation
 index.</p>
 <h3
-id="arbitrary-order-automatic-differentiation-v1.3.0-evolve">Arbitrary-order
+id="arbitrary-order-automatic-differentiation-v130-evolve">Arbitrary-order
 automatic differentiation (v1.3.0-evolve)</h3>
 <p>Eshkol’s forward-mode, reverse-mode, and symbolic AD were already
 exact at first and second order. v1.3.0-evolve added a second axis on
 top of that: <strong>order</strong>. A Taylor-tower engine — designed in
 <a
-href="docs/design/AD_TAYLOR_TOWER.md"><code>docs/design/AD_TAYLOR_TOWER.md</code></a>
+href="https://github.com/tsotchke/eshkol/blob/master/docs/design/AD_TAYLOR_TOWER.md" target="_blank" rel="noopener noreferrer"><code>docs/design/AD_TAYLOR_TOWER.md</code></a>
 and delivered across thirteen gated phases, P0 through P12 — computes
 <em>every</em> derivative up to an arbitrary order <code>k</code> in one
 pass, using closed Taylor recurrences
@@ -868,13 +866,13 @@ taylor(f, x0=2, order 5): (1073741824 16106127360 116769423360 544923975680 1839
 <code>1073741824</code>, is <code>2^30</code> on the nose, confirming
 the series is centered correctly. No floating-point error anywhere in
 the pipeline. See the <a
-href="docs/guide/AUTOMATIC_DIFFERENTIATION.md">Automatic Differentiation
+href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic Differentiation
 guide</a> for the full operator-by-operator walkthrough with verified
 output for all thirteen phases, and <a
-href="docs/reference/ad/INDEX.md"><code>docs/reference/ad/INDEX.md</code></a>
+href="/docs#page=reference_ad" data-url="/content/reference_ad.html"><code>docs/reference/ad/INDEX.md</code></a>
 for the API reference.</p>
-<h3 id="r7rs-conformance-on-the-portable-corpus">100% R7RS conformance
-on the portable corpus</h3>
+<h3 id="100-r7rs-conformance-on-the-portable-corpus">100% R7RS
+conformance on the portable corpus</h3>
 <p>A reference-Scheme differential oracle runs the same portable
 R7RS-small program on Eshkol and on <strong>chibi-scheme 0.12.0</strong>
 — the strictest mainstream R7RS-small implementation — and diffs the
@@ -918,7 +916,7 @@ now also emit the paired runtime shutdown call they were previously
 skipping entirely.</li>
 </ul>
 <p>Full root-cause detail for each: <a
-href="CHANGELOG.md">CHANGELOG.md</a>.</p>
+href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>.</p>
 <h3 id="a-hardened-permanent-adversarial-testing-program">A hardened,
 permanent adversarial-testing program</h3>
 <p>v1.3.0-evolve shipped the testing infrastructure that found and
@@ -930,7 +928,7 @@ fuzzer, a feature-pair edge matrix, an AD finite-difference oracle, a
 stress harness with RSS/time budgets, a VM-parity ratchet,
 depth-parametric sweeps, and the external reference-Scheme differential
 oracle described above. See <a
-href="docs/TESTING.md"><code>docs/TESTING.md</code></a>.</p>
+href="/docs#page=testing" data-url="/content/testing.html"><code>docs/TESTING.md</code></a>.</p>
 <hr />
 <h2 id="why-it-matters">Why it matters</h2>
 <p>Differentiable programming today mostly means “trace a Python
@@ -967,22 +965,22 @@ you can leave running as a daemon.</p>
 <h2 id="get-started">Get started</h2>
 <pre class="bash"><code>brew tap tsotchke/eshkol &amp;&amp; brew install eshkol</code></pre>
 <p>Or build from source (LLVM 21+, C++20, CMake 3.14+) — see <a
-href="README.md#quick-start">README.md</a> and <a
-href="docs/tutorials/00_FIRST_5_MINUTES.md"><code>docs/tutorials/00_FIRST_5_MINUTES.md</code></a>.</p>
+href="https://github.com/tsotchke/eshkol/blob/master/README.md#quick-start" target="_blank" rel="noopener noreferrer">README.md</a> and <a
+href="/tutorials#page=tutorials_00_first_5_minutes" data-url="/content/tutorials_00_first_5_minutes.html"><code>docs/tutorials/00_FIRST_5_MINUTES.md</code></a>.</p>
 <p>Try the AD example above yourself:</p>
 <pre class="bash"><code>eshkol-run -r your_file.esk</code></pre>
 <ul>
-<li><strong><a href="docs/guide/AUTOMATIC_DIFFERENTIATION.md">Automatic
+<li><strong><a href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic
 Differentiation guide</a></strong> — the full P0–P12 walkthrough, every
 example verified against a real build.</li>
-<li><strong><a href="docs/reference/language/INDEX.md">Documentation
+<li><strong><a href="/docs#page=reference_language" data-url="/content/reference_language.html">Documentation
 reference index</a></strong> — navigable, example-verified
 language/AD/runtime/tensor/stdlib/agent reference.</li>
-<li><strong><a href="docs/ESHKOL_LANGUAGE_GUIDE.md">Eshkol Language
+<li><strong><a href="/docs#page=eshkol_language_guide" data-url="/content/eshkol_language_guide.html">Eshkol Language
 Guide</a></strong> — tutorial introduction to the language.</li>
-<li><strong><a href="CHANGELOG.md">CHANGELOG.md</a></strong> — itemized
+<li><strong><a href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a></strong> — itemized
 engineering detail, release by release.</li>
-<li><strong><a href="RELEASE_NOTES.md">RELEASE_NOTES.md</a></strong> —
+<li><strong><a href="/docs#page=release_notes" data-url="/content/release_notes.html">RELEASE_NOTES.md</a></strong> —
 the user-facing release summary, with the full gate matrix.</li>
 </ul>
 <h2 id="under-the-hood">Under the hood</h2>

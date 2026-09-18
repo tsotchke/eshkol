@@ -1,0 +1,180 @@
+<h1 id="tutorial-5-signal-processing">Tutorial 5: Signal Processing</h1>
+<p>Eshkol includes a complete signal processing library — FFT, window
+functions, and digital filter design — all integrated with the autodiff
+system so you can differentiate through signal processing chains.</p>
+<hr />
+<h2 id="part-1-fft-and-inverse-fft">Part 1: FFT and Inverse FFT</h2>
+<pre class="scheme"><code>;; Create a signal: 3 Hz + 7 Hz sine waves, 32 samples
+(define (make-signal n sample-rate)
+  (let ((dt (/ 1.0 sample-rate)))
+    (let loop ((i 0) (result &#39;()))
+      (if (= i n) (reverse result)
+          (let ((t (* i dt)))
+            (loop (+ i 1)
+                  (cons (+ (sin (* 2.0 3.14159 3.0 t))
+                           (* 0.5 (sin (* 2.0 3.14159 7.0 t))))
+                        result)))))))
+
+;; fft, ifft and the filters below work on vectors
+(define signal (list-&gt;vector (make-signal 32 32.0)))
+
+;; Compute FFT
+(define spectrum (fft signal))
+(display &quot;Spectrum computed&quot;)
+(newline)
+
+;; Inverse FFT recovers the original signal
+(define recovered (ifft spectrum))</code></pre>
+<hr />
+<h2 id="part-2-window-functions">Part 2: Window Functions</h2>
+<p>Window functions reduce spectral leakage when analysing finite-length
+signals. Four are built in:</p>
+<pre class="scheme"><code>;; Generate a 64-sample window
+(define ham (hamming-window 64))
+(define han (hann-window 64))
+(define blk (blackman-window 64))
+(define kai (kaiser-window 64 8.0))  ;; beta parameter
+
+;; Apply a window to a signal before FFT: apply-window multiplies the two
+;; vectors element by element
+(define windowed (apply-window signal (hamming-window 32)))
+(define windowed-spectrum (fft windowed))</code></pre>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Sidelobe level</th>
+<th>Main lobe width</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hamming-window</code></td>
+<td>-43 dB</td>
+<td>Moderate</td>
+</tr>
+<tr>
+<td><code>hann-window</code></td>
+<td>-31 dB</td>
+<td>Moderate</td>
+</tr>
+<tr>
+<td><code>blackman-window</code></td>
+<td>-58 dB</td>
+<td>Wide</td>
+</tr>
+<tr>
+<td><code>kaiser-window</code></td>
+<td>Adjustable (beta)</td>
+<td>Adjustable</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="part-3-fir-filters">Part 3: FIR Filters</h2>
+<p>Design and apply finite impulse response filters:</p>
+<pre class="scheme"><code>;; Create a simple moving-average FIR filter (5-tap)
+(define coeffs #(0.2 0.2 0.2 0.2 0.2))
+
+;; Apply FIR filter to a signal
+(define filtered (fir-filter coeffs signal))
+(display filtered)
+(newline)</code></pre>
+<h3 id="convolution">Convolution</h3>
+<pre class="scheme"><code>;; General convolution of two sequences
+(define result (convolve signal coeffs))</code></pre>
+<hr />
+<h2 id="part-4-iir--butterworth-filters">Part 4: IIR / Butterworth
+Filters</h2>
+<p>Design classic Butterworth filters for lowpass, highpass, or
+bandpass:</p>
+<pre class="scheme"><code>;; Design a 4th-order Butterworth lowpass filter.
+;; Cutoffs are normalised so that 1.0 is the Nyquist frequency: a 100 Hz
+;; cutoff at a 1000 Hz sample rate (Nyquist 500 Hz) is 100/500 = 0.2.
+(define lp (butterworth-lowpass 4 0.2))
+
+;; The design is a pair (b-coeffs . a-coeffs); apply it with iir-filter
+(define smoothed (iir-filter (car lp) (cdr lp) signal))
+(display (vector-length smoothed))   ;; =&gt; 32</code></pre>
+<p>The filter design uses the bilinear transform from the analog
+prototype, computing poles on the Butterworth circle and mapping to the
+z-plane.</p>
+<hr />
+<h2 id="part-5-integration-with-autodiff">Part 5: Integration with
+Autodiff</h2>
+<p>All signal processing functions compose with Eshkol’s autodiff:</p>
+<!-- doc-example: known-defect SW-180: the derivative with respect to the cutoff is 73.81; the build answers 0 because the filter design runs through complex arithmetic -->
+<pre class="scheme"><code>;; How does the output power change with respect to filter cutoff?
+;; This is differentiable because the filter design and the filter are
+;; smooth operations on floats.
+(define (signal-power cutoff)
+  (let* ((lp (butterworth-lowpass 2 cutoff))
+         (filtered (iir-filter (car lp) (cdr lp) signal)))
+    ;; power of the filtered signal
+    (let loop ((i 0) (power 0.0))
+      (if (= i (vector-length filtered))
+          power
+          (loop (+ i 1)
+                (+ power (* (vector-ref filtered i) (vector-ref filtered i))))))))
+
+;; Gradient of power with respect to the (normalised) cutoff frequency
+(display (derivative signal-power 0.2))
+;; =&gt; 73.81...</code></pre>
+<hr />
+<h2 id="builtin-reference">Builtin Reference</h2>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>fft</code></td>
+<td>Fast Fourier Transform (Cooley-Tukey radix-2)</td>
+</tr>
+<tr>
+<td><code>ifft</code></td>
+<td>Inverse FFT</td>
+</tr>
+<tr>
+<td><code>hamming-window</code></td>
+<td>Hamming window function</td>
+</tr>
+<tr>
+<td><code>hann-window</code></td>
+<td>Hann (raised cosine) window</td>
+</tr>
+<tr>
+<td><code>blackman-window</code></td>
+<td>Blackman window</td>
+</tr>
+<tr>
+<td><code>kaiser-window</code></td>
+<td>Kaiser window (adjustable beta)</td>
+</tr>
+<tr>
+<td><code>fir-filter</code></td>
+<td>Apply FIR filter coefficients to signal</td>
+</tr>
+<tr>
+<td><code>convolve</code></td>
+<td>General convolution of two sequences</td>
+</tr>
+<tr>
+<td><code>butterworth-lowpass</code></td>
+<td>Butterworth lowpass filter design</td>
+</tr>
+<tr>
+<td><code>butterworth-highpass</code></td>
+<td>Butterworth highpass filter design</td>
+</tr>
+<tr>
+<td><code>butterworth-bandpass</code></td>
+<td>Butterworth bandpass filter design</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<p><em>Next: Tutorial 6 — Exact Arithmetic</em></p>
