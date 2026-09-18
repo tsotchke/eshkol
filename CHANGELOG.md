@@ -2324,6 +2324,18 @@ the source changes; the verification record for the tagged commit is the
   documents state the release date and status from the release record, and
   `RELEASE_NOTES.md` carries the measured final verification. (#696)
 
+- **The v1.3.5-evolve documentation is complete and accounted for.** New
+  pages: the gradual typing guide, upgrading to v1.3.5, troubleshooting, the
+  release process, writing documentation and a glossary. Architecture
+  Decision Records have unique numbers (three renumbered to 0016-0018), statuses
+  taken from the tree, an index, and ADR 0019 (evergreen documentation
+  architecture). `scripts/check_changelog_completeness.py` requires every merged
+  pull request in the release range to be referenced here or listed in
+  `tests/coverage/changelog_no_user_facing_change.json`, and
+  `scripts/check_doc_front_matter.py` validates page front matter and evergreen
+  wording; both are CI and release-evidence gates. The documentation example
+  gate covers the gradual typing guide and the upgrade page. (#702)
+
 ### Contributors
 
 Gabriel Kahen led the ESKM model I/O work this cycle: the v1 compatibility
