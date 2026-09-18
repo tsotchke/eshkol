@@ -79,4 +79,4 @@ proper list.
   or one store.
 - `tests/ad/gradient_scalar_point_arguments_test.esk` and
   `tests/ad/differentiated_values_in_list_cells_test.esk` pin every case, and
-  corpus programs 85 and 86 hold the native engine to the VM.
+  corpus programs 87 and 88 hold the native engine to the VM.
