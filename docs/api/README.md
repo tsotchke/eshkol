@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2463/5271 public symbols documented (46.7%), 2808 undocumented.
+**Coverage:** 2466/5274 public symbols documented (46.8%), 2808 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -43,7 +43,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1286/2982 symbols documented.
+1289/2985 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -55,7 +55,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/call_apply_codegen.h`](backend/call_apply_codegen.md) | 57 | 22 |
 | [`backend/cblas_compat.h`](backend/cblas_compat.md) | 7 | 0 |
 | [`backend/closure_capture_scope.h`](backend/closure_capture_scope.md) | 6 | 6 |
-| [`backend/codegen_context.h`](backend/codegen_context.md) | 188 | 44 |
+| [`backend/codegen_context.h`](backend/codegen_context.md) | 193 | 49 |
 | [`backend/collection_codegen.h`](backend/collection_codegen.md) | 32 | 20 |
 | [`backend/complex_codegen.h`](backend/complex_codegen.md) | 34 | 23 |
 | [`backend/control_flow_codegen.h`](backend/control_flow_codegen.md) | 32 | 12 |
@@ -81,7 +81,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/static_callee_binding.h`](backend/static_callee_binding.md) | 13 | 7 |
 | [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 74 | 56 |
 | [`backend/system_codegen.h`](backend/system_codegen.md) | 277 | 265 |
-| [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 52 | 44 |
+| [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 50 | 42 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
 | [`backend/tensor_backward.h`](backend/tensor_backward.md) | 22 | 22 |
 | [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 206 | 186 |

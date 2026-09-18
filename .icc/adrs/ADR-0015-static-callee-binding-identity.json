@@ -1,7 +1,7 @@
 {
   "consequences": "",
   "context": "",
-  "created_at": "2026-09-14T00:00:00Z",
+  "created_at": "2026-09-18T03:34:40Z",
   "decision": "**Status:** Accepted \u2014 implemented in v1.3.5-evolve (`inc/eshkol/backend/static_callee_binding.h`)\n**Ledger:** LE-28\n**Scope:** Native LLVM code generation, JIT and AOT.\n\n## Context\n\nThe backend keeps `<name>_func` aliases so calls, `apply`, list higher-order\noperations and differentiation can call an LLVM function directly. A name is\nonly a valid shortcut while it still denotes the binding that created the\nalias. A later `set!`, top-level redefinition, sibling binding or parameter can\nmake the runtime value a different procedure. Before LE-28, those paths could\nsilently call the original lambda. Dynamic `remove` also treated predicate\nresults as integer bits and rebuilt list elements without preserving their\ntagged type.\n\n## Decision\n\nStatic callee aliases are binding facts. One shared abstraction records the\nalias and the LLVM storage that owns it. A reassigned binding gets no alias; a\nsame-name runtime binding hides an alias unless its storage is the recorded\nowner. Top-level reassignment and redefinition facts are computed before code\ngeneration from the compiler's existing lexical mutation analysis. This uses\nthe existing source binding names and storage locations; it creates no second\nAST identifier namespace.\n\nEvery static callee fast path applies the same facts. When a name can change,\nthe backend evaluates its current value and dispatches through the closure ABI.\nDynamic `remove` tests the tagged predicate result with Scheme truthiness,\ncompares non-procedure items with the operation's `eq?`, `eqv?` or `equal?`\nfunction, and copies retained elements with their original tags.\n\nThe mutation scan treats an `extern` declaration as signature metadata, not a\ncall expression. Compiler assurance compares the duplicated public and\nimplementation `EshkolLLVMCodeGen` member layouts across their real translation\nunits so a drift cannot silently corrupt LLVM state.\n\n## Consequences\n\nCalls through a mutable binding take the runtime closure path. Unmodified\nbindings retain direct-call resolution. The shared owner fact also rejects a\nstale alias after a sibling `let` or parameter shadows its name. These\nconstraints trade a fast path only where static resolution would violate the\nprogram's current binding.\n\n## Verification\n\nThe JIT and AOT regression gates cover reassigned differentiands and callees,\nredefinition, capture and shadowing, `apply`, `map`, `vector-map`, `reduce`,\ndynamic predicate removal, tagged inexact list elements, and `eq?`/`eqv?`/\n`equal?` item removal. See `.icc/ledger/entries/LE-28.yaml` for the defect and\nmeasured evidence.",
   "id": "ADR-0015",
   "links": {
@@ -13,10 +13,10 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0015-static-callee-binding-identity.md:1",
   "source_path": "docs/design/adr/0015-static-callee-binding-identity.md",
-  "status": "accepted",
+  "status": "proposed",
   "tags": [
     "imported-markdown"
   ],
   "title": "Static callee binding identity",
-  "updated_at": "2026-09-18T01:53:37Z"
+  "updated_at": "2026-09-18T03:34:40Z"
 }

@@ -1,0 +1,276 @@
+;;; core.container_slot_store -- SW-179 and the ADR-0016 slot store boundary.
+;;;
+;;; Invariant under test: a value stored into a container slot is a value of
+;;; the slot's declared representation. A Scheme vector slot holds any tagged
+;;; value unchanged. A tensor slot -- a numeric `#(...)` literal is a tensor --
+;;; holds a real number, converted exactly as `inexact` converts it; a value
+;;; with no real-number representation is refused with a catchable error and
+;;; the destination is left untouched. No mutator reinterprets payload bits.
+;;;
+;;; Before the fix `vector-set!` wrote the raw payload of any non-double into a
+;;; tensor slot (`(vector-set! #(10 20 30) 0 99)` displayed 4.9e-322 and a
+;;; later `vector-ref` of such a slot crashed), `vector-fill!` had no tensor
+;;; path at all (it read the tensor header as a length and crashed),
+;;; `tensor-set!` stored 0 for a non-number and silently updated a throwaway
+;;; copy of a Scheme vector operand, and `vector-copy!` refused an exact
+;;; rational it should have converted.
+;;;
+;;; Every mutator is swept against every value kind on both representations.
+
+(define pass 0)
+(define fail 0)
+(define (check nm ok)
+  (if ok
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display nm) (newline))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display nm) (newline))))
+
+(define big 123456789012345678901234567890)
+(define (sq x) (* x x))
+
+;; ---- 1. the reported programs, verbatim ----
+
+(define v #(10 20 30))
+(vector-set! v 0 99)
+(check "SW-179 (1): slot 0 is 99" (= (vector-ref v 0) 99))
+(check "SW-179 (1): slot 1 untouched" (= (vector-ref v 1) 20))
+(check "SW-179 (1): slot 2 untouched" (= (vector-ref v 2) 30))
+(check "SW-179 (1): equals #(99 20 30)" (equal? v (vector 99.0 20.0 30.0)))
+
+(define z #(1.5 2.5))
+(vector-set! z 1 7)
+(check "SW-179 (2): vector-ref after an integer store is 7" (= (vector-ref z 1) 7))
+(check "SW-179 (2): slot 0 untouched" (= (vector-ref z 0) 1.5))
+
+;; tutorial 11, "Element Access and Mutation"
+(define tv #(10 20 30 40 50))
+(vector-set! tv 0 99)
+(check "tutorial 11: #(99 20 30 40 50)"
+       (equal? (vector->list tv) (list 99.0 20.0 30.0 40.0 50.0)))
+(check "tutorial 11: length 5" (= (vector-length tv) 5))
+
+;; ---- 2. vector-set! into a tensor-backed literal, every numeric kind ----
+
+(define t #(10 20 30))
+(check "literal is tensor-backed" (tensor? t))
+(vector-set! t 0 1.25)
+(check "double into literal" (= (vector-ref t 0) 1.25))
+(vector-set! t 0 -7)
+(check "negative integer into literal" (= (vector-ref t 0) -7))
+(vector-set! t 0 0)
+(check "zero into literal" (= (vector-ref t 0) 0))
+(vector-set! t 0 1/2)
+(check "exact rational into literal converts to 0.5" (= (vector-ref t 0) 0.5))
+(vector-set! t 1 1/3)
+(check "1/3 into literal is (inexact 1/3)" (= (vector-ref t 1) (inexact 1/3)))
+(vector-set! t 2 big)
+(check "bignum into literal is (inexact big)" (= (vector-ref t 2) (inexact big)))
+(define k 41)
+(vector-set! t 0 (+ k 1))
+(check "computed integer into literal" (= (vector-ref t 0) 42))
+(vector-set! t 0 (sq 9))
+(check "integer returned by a call into literal" (= (vector-ref t 0) 81))
+(check "a tensor slot reads back inexact" (not (exact? (vector-ref t 0))))
+
+;; ---- 3. vector-set! of a value with no real-number representation ----
+;; Refused with a catchable error; the destination keeps its value.
+
+(define r #(10 20 30))
+(define (refused? thunk) (eq? (guard (e (#t 'refused)) (thunk) 'stored) 'refused))
+(check "string into literal is refused" (refused? (lambda () (vector-set! r 0 "x"))))
+(check "boolean #t into literal is refused" (refused? (lambda () (vector-set! r 0 #t))))
+(check "boolean #f into literal is refused" (refused? (lambda () (vector-set! r 0 #f))))
+(check "character into literal is refused" (refused? (lambda () (vector-set! r 0 #\a))))
+(check "symbol into literal is refused" (refused? (lambda () (vector-set! r 0 'sym))))
+(check "pair into literal is refused" (refused? (lambda () (vector-set! r 0 (list 1 2)))))
+(check "empty list into literal is refused" (refused? (lambda () (vector-set! r 0 '()))))
+(check "nested vector into literal is refused"
+       (refused? (lambda () (vector-set! r 0 (vector 1 2)))))
+(check "nested literal into literal is refused"
+       (refused? (lambda () (vector-set! r 0 #(1 2)))))
+(check "procedure into literal is refused" (refused? (lambda () (vector-set! r 0 sq))))
+(check "refused stores left slot 0 at 10" (= (vector-ref r 0) 10))
+(check "refused stores left slot 1 at 20" (= (vector-ref r 1) 20))
+(check "refused stores left slot 2 at 30" (= (vector-ref r 2) 30))
+(check "out-of-range index on a literal is refused"
+       (refused? (lambda () (vector-set! r 3 1))))
+(check "negative index on a literal is refused"
+       (refused? (lambda () (vector-set! r -1 1))))
+
+;; ---- 4. vector-set! into a Scheme vector keeps every kind unchanged ----
+
+(define s (vector 10 20 30))
+(check "(vector ...) is not tensor-backed" (not (tensor? s)))
+(vector-set! s 0 99)
+(check "integer into vector stays exact"
+       (and (exact? (vector-ref s 0)) (= (vector-ref s 0) 99)))
+(vector-set! s 0 1.5)
+(check "double into an integer vector" (= (vector-ref s 0) 1.5))
+(define ds (vector 1.5 2.5))
+(vector-set! ds 1 7)
+(check "integer into a double vector stays exact 7"
+       (and (exact? (vector-ref ds 1)) (= (vector-ref ds 1) 7)))
+(vector-set! s 0 "str")
+(check "string into vector" (equal? (vector-ref s 0) "str"))
+(vector-set! s 0 #t)
+(check "boolean into vector" (eq? (vector-ref s 0) #t))
+(vector-set! s 0 #\a)
+(check "character into vector" (eqv? (vector-ref s 0) #\a))
+(vector-set! s 0 'sym)
+(check "symbol into vector" (eq? (vector-ref s 0) 'sym))
+(vector-set! s 0 (list 1 2))
+(check "pair into vector" (equal? (vector-ref s 0) (list 1 2)))
+(vector-set! s 0 1/2)
+(check "rational into vector stays exact 1/2"
+       (and (exact? (vector-ref s 0)) (= (vector-ref s 0) 1/2)))
+(vector-set! s 0 big)
+(check "bignum into vector stays exact"
+       (and (exact? (vector-ref s 0)) (= (vector-ref s 0) big)))
+(vector-set! s 0 (vector 1 "two"))
+(check "nested vector into vector" (equal? (vector-ref (vector-ref s 0) 1) "two"))
+(vector-set! s 0 #(1 2))
+(check "tensor-backed literal into vector" (= (vector-ref (vector-ref s 0) 1) 2))
+(vector-set! s 0 sq)
+(check "procedure into vector" (= ((vector-ref s 0) 5) 25))
+(check "neighbours untouched" (and (= (vector-ref s 1) 20) (= (vector-ref s 2) 30)))
+(check "out-of-range index on a vector is refused"
+       (refused? (lambda () (vector-set! s 3 1))))
+
+;; every other vector constructor yields mutable slots of the right kind
+(define mv (make-vector 3 0.0))
+(vector-set! mv 0 7)
+(check "make-vector slot keeps exact 7"
+       (and (exact? (vector-ref mv 0)) (= (vector-ref mv 0) 7)))
+(define lv (list->vector (list 1 2.5 "s")))
+(vector-set! lv 1 "t")
+(check "list->vector slot takes a string" (equal? (vector-ref lv 1) "t"))
+(define cv (vector-copy #(1 2 3)))
+(vector-set! cv 0 9)
+(check "vector-copy of a literal takes an integer" (= (vector-ref cv 0) 9))
+(define av (vector-append #(1 2) #(3)))
+(vector-set! av 2 8)
+(check "vector-append result takes an integer" (= (vector-ref av 2) 8))
+(define mapv (vector-map (lambda (x) (* x 2)) #(1 2 3)))
+(vector-set! mapv 0 "m")
+(check "vector-map result takes a string" (equal? (vector-ref mapv 0) "m"))
+(define ct (tensor 1.0 2.0 3.0))
+(vector-set! ct 1 5)
+(check "(tensor ...) takes an integer through vector-set!" (= (vector-ref ct 1) 5))
+
+;; ---- 5. vector-fill! ----
+
+(define f1 #(10 20 30))
+(vector-fill! f1 7)
+(check "vector-fill! literal with an integer"
+       (equal? (vector->list f1) (list 7.0 7.0 7.0)))
+(vector-fill! f1 2.5)
+(check "vector-fill! literal with a double"
+       (equal? (vector->list f1) (list 2.5 2.5 2.5)))
+(vector-fill! f1 1/4)
+(check "vector-fill! literal with a rational"
+       (equal? (vector->list f1) (list 0.25 0.25 0.25)))
+(vector-fill! f1 big)
+(check "vector-fill! literal with a bignum" (= (vector-ref f1 2) (inexact big)))
+(vector-fill! f1 3)
+(check "vector-fill! of a string into a literal is refused"
+       (refused? (lambda () (vector-fill! f1 "x"))))
+(check "refused fill left the literal at 3"
+       (equal? (vector->list f1) (list 3.0 3.0 3.0)))
+(check "vector-fill! keeps the literal's length" (= (vector-length f1) 3))
+(define f2 (vector 1 2 3))
+(vector-fill! f2 "x")
+(check "vector-fill! vector with a string"
+       (equal? (vector->list f2) (list "x" "x" "x")))
+(vector-fill! f2 5)
+(check "vector-fill! vector with an exact integer"
+       (and (exact? (vector-ref f2 2)) (equal? (vector->list f2) (list 5 5 5))))
+(check "vector-fill! of a list operand is refused"
+       (refused? (lambda () (vector-fill! (list 1 2) 0))))
+(define f3 #(#(1 2) #(3 4)))
+(vector-fill! f3 9)
+(check "vector-fill! fills every element of a rank-2 literal"
+       (= (tensor-ref f3 1 1) 9))
+
+;; ---- 6. vector-copy! ----
+
+(define c1 #(10 20 30))
+(vector-copy! c1 0 (vector 1 1/2))
+(check "vector-copy! vector->literal converts integer and rational"
+       (equal? (vector->list c1) (list 1.0 0.5 30.0)))
+(vector-copy! c1 2 (vector big))
+(check "vector-copy! vector->literal converts a bignum"
+       (= (vector-ref c1 2) (inexact big)))
+(define c2 #(10 20 30))
+(check "vector-copy! of a string into a literal is refused"
+       (refused? (lambda () (vector-copy! c2 0 (vector 1 "x")))))
+(check "refused copy modified nothing (validated before the first write)"
+       (equal? (vector->list c2) (list 10.0 20.0 30.0)))
+(define c3 (vector 0 0 0))
+(vector-copy! c3 0 #(1 2 3))
+(check "vector-copy! literal->vector" (equal? (vector->list c3) (list 1.0 2.0 3.0)))
+(define c4 #(10 20 30))
+(vector-copy! c4 1 #(7 8))
+(check "vector-copy! literal->literal" (equal? (vector->list c4) (list 10.0 7.0 8.0)))
+(define c5 #(1 2 3 4))
+(vector-copy! c5 1 c5 0 3)
+(check "vector-copy! overlapping within a literal"
+       (equal? (vector->list c5) (list 1.0 1.0 2.0 3.0)))
+(check "vector-copy! past the end is refused"
+       (refused? (lambda () (vector-copy! c4 2 #(1 2)))))
+
+;; ---- 7. tensor-set! ----
+
+(define ts #(10 20 30))
+(tensor-set! ts 0 99)
+(check "tensor-set! integer" (= (tensor-ref ts 0) 99))
+(tensor-set! ts 1 1/2)
+(check "tensor-set! rational" (= (tensor-ref ts 1) 0.5))
+(tensor-set! ts 2 big)
+(check "tensor-set! bignum" (= (tensor-ref ts 2) (inexact big)))
+(tensor-set! ts 2 2.5)
+(check "tensor-set! double" (= (tensor-ref ts 2) 2.5))
+(check "tensor-set! of a string is refused"
+       (refused? (lambda () (tensor-set! ts 0 "x"))))
+(check "tensor-set! of a boolean is refused"
+       (refused? (lambda () (tensor-set! ts 0 #t))))
+(check "refused tensor-set! left slot 0 at 99" (= (tensor-ref ts 0) 99))
+(define m #(#(1 2) #(3 4)))
+(tensor-set! m 1 0 7)
+(check "tensor-set! rank-2 integer" (= (tensor-ref m 1 0) 7))
+(check "tensor-set! rank-2 neighbours untouched"
+       (and (= (tensor-ref m 0 0) 1) (= (tensor-ref m 0 1) 2) (= (tensor-ref m 1 1) 4)))
+(define sv (vector 10 20 30))
+(check "tensor-set! on a Scheme vector is refused, not absorbed by a copy"
+       (refused? (lambda () (tensor-set! sv 0 99))))
+(check "the Scheme vector is unchanged" (= (vector-ref sv 0) 10))
+
+;; ---- 8. a store inside a differentiated function stays on the tape ----
+
+(define g1
+  (gradient (lambda (p)
+              (let ((w #(0.0 0.0)))
+                (vector-set! w 0 (* (vector-ref p 0) (vector-ref p 0)))
+                (vector-ref w 0)))
+            #(3.0 1.0)))
+(check "gradient through vector-set! into a literal: d/dx x^2 at 3 is 6"
+       (= (vector-ref g1 0) 6))
+(check "gradient through vector-set! into a literal: d/dy is 0"
+       (= (vector-ref g1 1) 0))
+(define g2
+  (gradient (lambda (p)
+              (let ((w (vector 0.0 0.0)))
+                (vector-set! w 1 (* 2 (vector-ref p 1)))
+                (+ (vector-ref w 1) (vector-ref p 0))))
+            #(3.0 1.0)))
+(check "gradient through vector-set! into a vector is #(1 2)"
+       (and (= (vector-ref g2 0) 1) (= (vector-ref g2 1) 2)))
+
+;; ---- 9. non-sequence operands ----
+
+(check "vector-set! on an integer operand is refused"
+       (refused? (lambda () (vector-set! 5 0 1))))
+(check "vector-set! on a string operand is refused"
+       (refused? (lambda () (vector-set! "abc" 0 1))))
+
+(newline)
+(display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)

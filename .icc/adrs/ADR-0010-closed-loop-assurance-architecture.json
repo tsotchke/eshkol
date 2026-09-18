@@ -13,10 +13,10 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0010-closed-loop-assurance.md:1",
   "source_path": "docs/design/adr/0010-closed-loop-assurance.md",
-  "status": "accepted",
+  "status": "proposed",
   "tags": [
     "imported-markdown"
   ],
   "title": "Closed-loop assurance architecture",
-  "updated_at": "2026-09-18T01:53:34Z"
+  "updated_at": "2026-07-24T00:00:00Z"
 }

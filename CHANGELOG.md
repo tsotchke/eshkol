@@ -1334,6 +1334,33 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **One store boundary for every container slot (ledger SW-179, ADR-0020).**
+  A numeric `#(...)` literal is a tensor, and `vector-set!` wrote the payload
+  bits of whatever value it was given into the tensor's f64 slot:
+  `(define v #(10 20 30)) (vector-set! v 0 99) (display v)` printed
+  `#(4.9e-322 20 30)`, and reading such a slot back with `vector-ref` crashed.
+  The same sweep found `vector-fill!` with no tensor path (it read the tensor
+  descriptor as a length), `tensor-set!` storing `0` for a value that is not a
+  number and silently updating a throwaway copy of a Scheme vector operand,
+  `vector-copy!` refusing an exact rational it should have converted, and the
+  VM's tensor writers storing `0` for a value that is not a number. All of
+  them now go through one boundary: a value stored into a slot is converted to
+  the slot's declared representation or refused. A real number of any
+  exactness becomes the tensor's dtype-reduced f64 (`1/2` becomes `0.5`, as
+  tensor construction already does); a differentiation node keeps its
+  in-tensor carrier, so a store inside a differentiated function stays on the
+  tape; any other value raises a catchable error before the destination is
+  modified. The runtime half is `lib/core/runtime_vector_mutation.cpp`
+  (`eshkol_sequence_slot_store`, `eshkol_tensor_slot_store`,
+  `eshkol_sequence_fill`, `eshkol_vector_copy_mutating`, one status
+  vocabulary); the compiled half is three `CodegenContext` emitters and one
+  failure block; the VM half is `vm_tensor_slot_value`. A Scheme vector store
+  and an f64 store of a double stay inline. Tests:
+  `tests/core/container_slot_store_test.esk` (JIT, cached run path and AOT),
+  `tests/vm_parity/corpus/85_container_slot_store.esk`, and tutorial 11's
+  element-mutation example, which now runs unmarked in the documentation
+  example gate. (#701)
+
 - **Exact rationals reach the derivative carrier, a vanishing tangent keeps
   the seed's exactness, the three scalar AD operators nest safely through a
   capture, and a comparison inside a differentiand acts on the carrier's

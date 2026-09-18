@@ -13,10 +13,10 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0002-ad-staged-dense-kernels.md:1",
   "source_path": "docs/design/adr/0002-ad-staged-dense-kernels.md",
-  "status": "accepted",
+  "status": "proposed",
   "tags": [
     "imported-markdown"
   ],
   "title": "Dense tensor AD nodes and a staged value-and-grad kernel",
-  "updated_at": "2026-09-18T01:53:29Z"
+  "updated_at": "2026-07-09T00:00:00Z"
 }

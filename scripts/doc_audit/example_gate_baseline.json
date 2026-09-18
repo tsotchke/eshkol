@@ -16,17 +16,26 @@
           "known-defect": 1
         },
         "docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md": {
-          "known-defect": 2
+          "known-defect": 1
         },
         "docs/tutorials/18_WEB_PLATFORM.md": {
           "skip": 3
         },
         "docs/tutorials/20_BITWISE_AND_SYSTEM.md": {
           "run-only": 1
+        },
+        "docs/tutorials/21_PROJECT_NEURAL_NETWORK.md": {
+          "known-defect": 1
+        },
+        "docs/tutorials/24_PROJECT_OPTIMISATION.md": {
+          "known-defect": 2
+        },
+        "docs/tutorials/26_PROJECT_SELF_IMPROVING.md": {
+          "known-defect": 1
         }
       },
       "marked_total": {
-        "known-defect": 3,
+        "known-defect": 6,
         "run-only": 1,
         "skip": 3
       }
