@@ -211,6 +211,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0022 — One boundary for each place a value crosses a representation](design/adr/0022-ad-value-boundaries.md) — Accepted — a gradient point written as separate scalars is parsed as the vector literal it stands for, and a cons slot is read and written whole, so a derivative carrier survives both
 - [ADR 0023 — A dense tensor AD node is read as a tensor through one resolver](design/adr/0023-dense-tensor-node-as-operand.md) — Accepted — a matmul result under differentiation is resolved once into a tensor of element-projection nodes, so every tensor and collection consumer accepts it and the reverse sweep reaches it
 - [ADR 0024 — One unspecified value](design/adr/0024-unspecified-value.md) — Implemented — every form R7RS leaves unspecified evaluates to one value, distinct from the empty list, printed as nothing, shared with the VM
+- [ADR 0025 — A complex value carries the derivative of its components](design/adr/0025-complex-values-carry-derivatives.md) — Accepted — a derivative with respect to a real parameter passes through every complex operation on both engines; no derivative at the origin raises
 
 ## Testing and Quality Gates
 

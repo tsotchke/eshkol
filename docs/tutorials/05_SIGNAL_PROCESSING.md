@@ -108,7 +108,6 @@ computing poles on the Butterworth circle and mapping to the z-plane.
 
 All signal processing functions compose with Eshkol's autodiff:
 
-<!-- doc-example: known-defect SW-180: the derivative with respect to the cutoff is 73.81; the build answers 0 because the filter design runs through complex arithmetic -->
 ```scheme
 ;; How does the output power change with respect to filter cutoff?
 ;; This is differentiable because the filter design and the filter are
