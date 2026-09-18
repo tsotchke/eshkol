@@ -229,6 +229,7 @@ class Release:
             ["scripts/gen_api_docs.py", "--check", "--no-trace"],
             ["scripts/gen_language_surface.py", "--check"],
             ["scripts/check_surface_counts.py", "--no-trace"],
+            ["scripts/check_changelog_completeness.py", "--no-trace"],
             ["scripts/check_ledger_integrity.py", "--no-trace"],
             ["scripts/verify_site_release.py"],
             ["tests/toolchain/test_release_readiness_guard.py"],
