@@ -6,7 +6,7 @@
  */
 /**
  * @file ast_strings.cpp
- * @brief Storage for AST string payloads (ADR-0020).
+ * @brief Storage for AST string payloads (ADR-0021).
  *
  * A singly linked list of chunks rooted at one global. Allocation bumps a
  * cursor in the newest chunk under a mutex; a request that does not fit

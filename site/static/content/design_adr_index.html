@@ -1,0 +1,250 @@
+<h1 id="architecture-decision-records">Architecture Decision Records</h1>
+<p>An Architecture Decision Record (ADR) states one architectural decision: the context that forces it, the decision itself, the alternatives rejected, and the staged path that delivers it. A record is a blueprint. Its body is not edited down when the tree lags behind it; the <code>Status:</code> line says how much of the decision the tree carries, and the remaining stages stay in the record as planned work. The release schedule for those stages is in <a href="/docs#page=roadmap" data-url="/content/roadmap.html"><code>ROADMAP.md</code></a>.</p>
+<p>This page is the index of every record in <code>docs/design/adr/</code>. The documentation hub lists the same records in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/README.md" target="_blank" rel="noopener noreferrer"><code>docs/README.md</code></a>.</p>
+<h2 id="index">Index</h2>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+</colgroup>
+<thead>
+<tr>
+<th>Id</th>
+<th>Title</th>
+<th>Status</th>
+<th>Date</th>
+<th>Implemented in</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0000-unified-trajectory.md" target="_blank" rel="noopener noreferrer">0000</a></td>
+<td>Unified architectural trajectory</td>
+<td>Accepted — partially implemented</td>
+<td>2026-07-09</td>
+<td>Stages 1 and 2: <code>inc/eshkol/frontend/node_identity.h</code> (<code>NodeId</code>), <code>inc/eshkol/frontend/semantic_identity.h</code> (<code>BindingId</code>, <code>NominalTypeId</code>, <code>TypeRef</code>), gates <code>scripts/run_adr0000_stage1_gate.sh</code> and <code>scripts/run_adr0000_stage2_gate.sh</code>; Stage 5 slice: <code>lib/core/dbsp.esk</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0001-oalr-concurrent-resident.md" target="_blank" rel="noopener noreferrer">0001</a></td>
+<td>Concurrent, resident-grade OALR</td>
+<td>Accepted — partially implemented</td>
+<td>2026-07-09</td>
+<td>Phase A accessor: <code>eshkol_memctx_current</code>, <code>eshkol_current_arena</code> in <code>lib/core/runtime_regions.cpp</code>; Phase C header definition: <code>eshkol_object_header_v2_t</code> in <code>inc/eshkol/memory_abi_v2.h</code> behind <code>ESHKOL_MEMORY_ABI_V2</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0002-ad-staged-dense-kernels.md" target="_blank" rel="noopener noreferrer">0002</a></td>
+<td>Dense tensor AD nodes and a staged value-and-grad kernel</td>
+<td>Accepted — partially implemented</td>
+<td>2026-07-09</td>
+<td>Phase A: <code>eshkol_value_and_grad</code> in <code>lib/core/runtime_autodiff.cpp</code>; Phase C dense nodes: <code>recordADNodeTensor</code> in <code>lib/backend/autodiff_codegen.cpp</code>, gate <code>scripts/run_dense_tensor_ad_gate.sh</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0003-codegen-vm-parity.md" target="_blank" rel="noopener noreferrer">0003</a></td>
+<td>VM/LLVM parity conformance matrix and modularization notes</td>
+<td>Superseded by <code>tests/vm_parity/PARITY.tsv</code> (op-by-op table)</td>
+<td>2026-07-09</td>
+<td>The live matrix is <code>tests/vm_parity/PARITY.tsv</code>, checked by <code>scripts/run_vm_parity.sh</code>; see <a href="/docs#page=vm_parity" data-url="/content/vm_parity.html"><code>docs/VM_PARITY.md</code></a></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0004-type-system-trajectory.md" target="_blank" rel="noopener noreferrer">0004</a></td>
+<td>One quantitative dependent type system for Eshkol</td>
+<td>Accepted — partially implemented</td>
+<td>2026-07-09</td>
+<td>Type identity substrate: <code>inc/eshkol/frontend/semantic_identity.h</code>; the gradual relation of ADR 0013: <code>lib/types/type_relation.cpp</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0005-lambda-foundations-programs-to-weights.md" target="_blank" rel="noopener noreferrer">0005</a></td>
+<td>Lambda foundations to resident programs-as-weights</td>
+<td>Proposed</td>
+<td>2026-07-09</td>
+<td>—</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0006-language-conformance-modules.md" target="_blank" rel="noopener noreferrer">0006</a></td>
+<td>Binding-resolved libraries and proper tail invocation</td>
+<td>Accepted — partially implemented</td>
+<td>2026-07-09</td>
+<td><code>BindingId</code>, <code>ImportSet</code>, <code>ImportResolver</code>, <code>BindingResolver</code> in <code>inc/eshkol/frontend/semantic_identity.h</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0007-performance-pgo-wpo.md" target="_blank" rel="noopener noreferrer">0007</a></td>
+<td>PGO, whole-program optimization, and staged training throughput</td>
+<td>Accepted — partially implemented</td>
+<td>2026-07-09</td>
+<td>Phase 0 slice: <code>scripts/run_codegen_optlevel_tests.sh</code>, <code>bench/pgo_corpus/</code> with <code>scripts/run_pgo_corpus_smoke.sh</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0008-dev-experience-tooling.md" target="_blank" rel="noopener noreferrer">0008</a></td>
+<td>One semantic tooling core for Eshkol developer experience</td>
+<td>Accepted — partially implemented</td>
+<td>2026-07-09</td>
+<td><code>WorkspaceResolver</code> in <code>inc/eshkol/frontend/workspace.h</code>, Diagnostic v1 in <code>inc/eshkol/frontend/diagnostic.h</code>, <code>eshkol check</code> and <code>eshkol doc modules</code> in <code>exe/eshkol.cpp</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0009-incremental-dataflow-dbsp.md" target="_blank" rel="noopener noreferrer">0009</a></td>
+<td>Native DBSP-style incremental dataflow and unified differentiation</td>
+<td>Accepted — partially implemented</td>
+<td>2026-07-09</td>
+<td><code>core.dbsp</code> in <code>lib/core/dbsp.esk</code>, gate <code>scripts/run_dbsp_gate.sh</code>; reference page <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/dbsp.md" target="_blank" rel="noopener noreferrer"><code>dbsp.md</code></a></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0010-closed-loop-assurance.md" target="_blank" rel="noopener noreferrer">0010</a></td>
+<td>Closed-loop assurance architecture</td>
+<td>Accepted — partially implemented</td>
+<td>2026-07-24</td>
+<td><code>release-readiness-gate</code> in <code>.github/workflows/release.yml</code>, <code>.github/workflows/adversarial-nightly.yml</code>, <code>scripts/language_coverage.py</code>, <code>tests/diagnostics/</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0011-guest-collector-adapter.md" target="_blank" rel="noopener noreferrer">0011</a></td>
+<td>Hosted guest collectors over OALR regions</td>
+<td>Proposed</td>
+<td>2026-08-25</td>
+<td>— (the design’s falsifier harness is <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0011-gc-adapter-falsifier/build-and-run.sh" target="_blank" rel="noopener noreferrer"><code>0011-gc-adapter-falsifier/</code></a>)</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0012-object-abi-staged-migration.md" target="_blank" rel="noopener noreferrer">0012</a></td>
+<td>Object ABI: discrimination, enforcement, and the staged migration</td>
+<td>Accepted — partially implemented</td>
+<td>2026-08-25</td>
+<td>Stages 0-2: <code>.icc/abi-header-baseline.json</code> ratchet, <code>inc/eshkol/abi_fingerprint.h</code> (link-time guard, <code>ESHKOL_OBJECT_ABI_CACHE_TAG</code>), the WASM geometry guard</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0013-gradual-type-relation.md" target="_blank" rel="noopener noreferrer">0013</a></td>
+<td>One gradual type relation</td>
+<td>Accepted — implemented in v1.3.5-evolve</td>
+<td>2026-09-14</td>
+<td><code>TypeRelation</code> in <code>inc/eshkol/types/type_relation.h</code> and <code>lib/types/type_relation.cpp</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0014-release-invariant-contracts.md" target="_blank" rel="noopener noreferrer">0014</a></td>
+<td>Release invariant contracts are measured before grading</td>
+<td>Accepted — implemented in v1.3.5-evolve</td>
+<td>2026-09-14</td>
+<td><code>scripts/lib/release_invariant_probes.sh</code>, <code>scripts/run_release_invariant_probes.sh</code>, <code>tests/toolchain/test_release_invariant_contracts.py</code>, <code>tests/toolchain/wasm_flat_ad_import_test.py</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0015-static-callee-binding-identity.md" target="_blank" rel="noopener noreferrer">0015</a></td>
+<td>Static callee binding identity</td>
+<td>Accepted — implemented in v1.3.5-evolve</td>
+<td>2026-09-14</td>
+<td><code>inc/eshkol/backend/static_callee_binding.h</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0016-ad-alt-architect.md" target="_blank" rel="noopener noreferrer">0016</a></td>
+<td>Staged dense-tensor reverse-mode AD and <code>value_and_grad</code></td>
+<td>Proposed</td>
+<td>2026-07-09</td>
+<td>— (ADR 0000 section 5 schedules four of its artifacts into the staged kernel ABI of ADR 0002 and keeps its typed static reverse schedule as the v2.0 endpoint)</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0017-stochastic-binary-lambda-calculus.md" target="_blank" rel="noopener noreferrer">0017</a></td>
+<td>Stochastic Binary Lambda Calculus</td>
+<td>Proposed</td>
+<td>2026-08-30</td>
+<td>— (first slice targets v1.4.0)</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0018-signed-curvature-stereographic-geometry.md" target="_blank" rel="noopener noreferrer">0018</a></td>
+<td>Signed-curvature stereographic geometry and the K = 0 execution contract</td>
+<td>Accepted (maintainer ruling 2026-08-30)</td>
+<td>2026-08-30</td>
+<td>— (targets v1.4.0)</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0019-evergreen-documentation-architecture.md" target="_blank" rel="noopener noreferrer">0019</a></td>
+<td>Evergreen documentation architecture</td>
+<td>Accepted — partially implemented</td>
+<td>2026-09-17</td>
+<td>The v1.3.5 stage named in the record; contributor guide <a href="/docs#page=documentation" data-url="/content/documentation.html"><code>docs/DOCUMENTATION.md</code></a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="numbering">Numbering</h2>
+<p>Each record has exactly one number, and each number names exactly one record. A new record takes the next free number, which is one more than the highest number in the index above. A number is never reused, including the number of a superseded or withdrawn record: the old record stays in the directory with its status changed, and the replacement gets a new number. The file name starts with the four-digit number and a short slug (<code>0013-gradual-type-relation.md</code>), and the H1 repeats the number (<code># ADR-0013: One gradual type relation</code>). A supporting directory carries the number of the record that owns it (<code>0011-gc-adapter-falsifier/</code> belongs to ADR 0011).</p>
+<p>Three records carry a <code>Renumbered:</code> line in their header. Citations written before 2026-09-17, including the sections of <code>CHANGELOG.md</code> for releases before 1.3.5-evolve, use their former numbers:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Record</th>
+<th>Former number</th>
+<th>The record that keeps the former number</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0016-ad-alt-architect.md" target="_blank" rel="noopener noreferrer">0016</a> — Staged dense-tensor reverse-mode AD and <code>value_and_grad</code></td>
+<td>0002</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0002-ad-staged-dense-kernels.md" target="_blank" rel="noopener noreferrer">0002</a> — Dense tensor AD nodes and a staged value-and-grad kernel</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0017-stochastic-binary-lambda-calculus.md" target="_blank" rel="noopener noreferrer">0017</a> — Stochastic Binary Lambda Calculus</td>
+<td>0011</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0011-guest-collector-adapter.md" target="_blank" rel="noopener noreferrer">0011</a> — Hosted guest collectors over OALR regions</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0018-signed-curvature-stereographic-geometry.md" target="_blank" rel="noopener noreferrer">0018</a> — Signed-curvature stereographic geometry</td>
+<td>0012</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0012-object-abi-staged-migration.md" target="_blank" rel="noopener noreferrer">0012</a> — Object ABI staged migration</td>
+</tr>
+</tbody>
+</table>
+<h2 id="status-vocabulary">Status vocabulary</h2>
+<p>The <code>Status:</code> line of a record uses one of these forms, in the header style the record already has:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Form</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Proposed</code></td>
+<td>The decision is written down and nothing of it is in the tree.</td>
+</tr>
+<tr>
+<td><code>Accepted</code></td>
+<td>The decision is ruled; the record names the release its implementation targets.</td>
+</tr>
+<tr>
+<td><code>Accepted — partially implemented: &lt;slice&gt;; remaining stages Proposed</code></td>
+<td>The named stage or slice is in the tree, and the line names the file or module that proves it. The other stages stay in the record as planned work.</td>
+</tr>
+<tr>
+<td><code>Accepted — implemented in &lt;release&gt;</code></td>
+<td>The decision is fully realised; the line names the file or symbol that carries it.</td>
+</tr>
+<tr>
+<td><code>Superseded by &lt;record or artifact&gt;</code></td>
+<td>Another record or a maintained artifact replaces this one. The superseded record stays in the directory.</td>
+</tr>
+</tbody>
+</table>
+<p>A status line claims an implementation only with a pointer that exists: a file path and, where one applies, a symbol. The pointer is checked against the tree when the line is written.</p>
+<h2 id="registering-a-record-with-icc">Registering a record with ICC</h2>
+<p>The ICC registry under <code>.icc/adrs/</code> holds one JSON claim per record, which is what <code>icc citation-binding</code> resolves an <code>ADR-NNNN</code> citation against. After adding a record or changing a status:</p>
+<ol type="1">
+<li><p>Import the directory. Every <code>NNNN-*.md</code> file becomes (or refreshes) one <code>.icc/adrs/ADR-NNNN-&lt;title-slug&gt;.json</code> entry whose <code>source_path</code> is the markdown file; this page has no number and is skipped.</p>
+<pre class="sh"><code>icc adr import-markdown --repo &lt;alias&gt; --dir docs/design/adr --no-write --format markdown
+icc adr import-markdown --repo &lt;alias&gt; --dir docs/design/adr</code></pre></li>
+<li><p>Set the registry status. The importer recognises a status only when the whole value is one registry word (<code>proposed</code>, <code>accepted</code>, <code>rejected</code>, <code>superseded</code>, <code>deprecated</code>) on a <code>- Status:</code> list item, and records <code>proposed</code> otherwise, so every <code>Accepted — ...</code> and <code>Superseded ...</code> record is set explicitly after each import:</p>
+<pre class="sh"><code>icc adr update --repo &lt;alias&gt; --id ADR-0013 --status accepted
+icc adr update --repo &lt;alias&gt; --id ADR-0003 --status superseded</code></pre></li>
+<li><p>Remove an entry whose record was renamed or retitled, because the entry file name contains the title slug and the importer writes a second file instead of replacing the first:</p>
+<pre class="sh"><code>icc adr delete --repo &lt;alias&gt; --id &lt;stale id&gt;</code></pre></li>
+<li><p>Check the result. The list has one row per record, every id equals the record’s number, and no id ends in <code>-dupN</code> (the importer’s marker for two files sharing a number):</p>
+<pre class="sh"><code>icc adr list --repo &lt;alias&gt; --format markdown
+icc citation-binding --repo &lt;alias&gt; --no-memory --format markdown</code></pre></li>
+</ol>

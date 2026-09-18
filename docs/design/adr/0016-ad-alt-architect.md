@@ -1,8 +1,10 @@
-# ADR 0002: Staged Dense-Tensor Reverse-Mode AD and `value_and_grad`
+# ADR 0016: Staged Dense-Tensor Reverse-Mode AD and `value_and_grad`
 
 Status: Proposed
 
 Date: 2026-07-09
+
+Renumbered: was ADR 0002 until 2026-09-17; renumbered to give every record a unique id.
 
 Audience: Eshkol compiler/runtime maintainers working on the AD subsystem for
 SciML and PINN training workloads.

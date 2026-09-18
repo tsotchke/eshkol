@@ -3359,7 +3359,7 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/nod
         PASS_REGULAR_EXPRESSION "PASS: node identity substrate")
 endif()
 
-# ADR-0020: the one owner of AST string payloads.
+# ADR-0021: the one owner of AST string payloads.
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/ast_strings_test.cpp")
     add_executable(ast_strings_test tests/frontend/ast_strings_test.cpp)
     target_compile_features(ast_strings_test PRIVATE cxx_std_20)
@@ -3374,7 +3374,7 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/ast
         PASS_REGULAR_EXPRESSION "PASS: AST string owner")
 endif()
 
-# ADR-0020: a recorded source path is never the absolute host path.
+# ADR-0021: a recorded source path is never the absolute host path.
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/source_paths_test.cpp")
     add_executable(source_paths_test tests/frontend/source_paths_test.cpp)
     target_compile_features(source_paths_test PRIVATE cxx_std_20)
@@ -5585,6 +5585,44 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "Failed: 0"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # SW-179 / ADR-0016: one store boundary for every container slot. A numeric
+    # #(...) literal is a tensor; vector-set! wrote the payload bits of any
+    # non-double into its f64 slot (99 displayed as 4.9e-322, and vector-ref of
+    # such a slot crashed), vector-fill! had no tensor path, tensor-set! stored
+    # 0 for a non-number and absorbed a Scheme-vector operand into a copy. The
+    # sweep stores every value kind through every mutator on both
+    # representations and asserts exact results. Three lanes: the cached run
+    # path, the in-process JIT, and AOT.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/container_slot_store_test.esk")
+        add_test(
+            NAME container_slot_store_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/container_slot_store_test.esk"
+        )
+        set_tests_properties(container_slot_store_runtime_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME container_slot_store_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/container_slot_store_test.esk"
+        )
+        set_tests_properties(container_slot_store_jit_smoke PROPERTIES
+            TIMEOUT 180
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME container_slot_store_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/container_slot_store_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/core/container_slot_store_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/container_slot_store_aot'"
+        )
+        set_tests_properties(container_slot_store_aot_smoke PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     # SW-163: a QUOTED bignum or bignum-rational literal must be the same
     # runtime value an evaluated one is. codegenQuotedAST() (lib/backend/
     # llvm_codegen.cpp) had no case for ESHKOL_BIGNUM_LITERAL and silently
@@ -7186,7 +7224,7 @@ if(ESHKOL_BUILD_TESTS)
         )
         set_tests_properties(oracle_schema_gate oracle_schema_gate_selftest PROPERTIES TIMEOUT 60)
     endif()
-    # ADR-0020: AST string payloads have one owner. Fails on a raw
+    # ADR-0021: AST string payloads have one owner. Fails on a raw
     # new char[] / strdup in an AST producer, or a consumer freeing one.
     if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_ast_string_owner.py")
         add_test(
@@ -7204,7 +7242,7 @@ if(ESHKOL_BUILD_TESTS)
         )
         set_tests_properties(ast_string_owner_gate ast_string_owner_gate_selftest PROPERTIES TIMEOUT 60)
     endif()
-    # ADR-0020: no shipped artifact carries a build-host path.
+    # ADR-0021: no shipped artifact carries a build-host path.
     if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_artifact_paths.py")
         add_test(
             NAME artifact_host_path_gate
@@ -8402,6 +8440,25 @@ endif()
                 TIMEOUT 300
                 ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
                 PASS_REGULAR_EXPRESSION "SUMMARY:"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
+
+    # SW-179 / ADR-0016, VM half: vector-set! on a tensor operand and both
+    # tensor-set! forms obtain the slot's double from vm_tensor_slot_value().
+    # A real number of any exactness converts (vector-set! used to store 0 for
+    # an exact rational); a value with no real-number representation raises
+    # instead of being stored as 0.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/tensor_slot_store_test.esk")
+        add_test(
+            NAME tensor_slot_store_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/vm/tensor_slot_store_test.esk"
+        )
+        set_tests_properties(tensor_slot_store_vm_smoke
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "Failed: 0"
                 FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
     endif()
 

@@ -125,3 +125,13 @@ Both short-circuit.
 5
 #t #f
 ```
+
+## Static types of the control forms
+
+The optional type checker examines the tests, keys and every branch body of
+these forms, exactly as it examines a call at top level, and gives each form
+the join of its branch types (plus `#f` for a `cond`, `case`, `when` or
+`unless` that may run no branch). An `if` and the equivalent `cond` have the
+same type. The rules, with runnable examples, are in
+[the gradual typing guide](../../guide/GRADUAL_TYPING.md#3-what-is-checked-and-where).
+

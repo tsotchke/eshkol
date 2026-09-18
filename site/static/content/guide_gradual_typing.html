@@ -1,0 +1,380 @@
+<h1 id="gradual-typing-in-eshkol">Gradual Typing in Eshkol</h1>
+<p><em>A user guide to the type checker as it stands in v1.3.5-evolve.</em></p>
+<p>Eshkol is a Scheme: every program runs without a single type annotation, and every value carries its type at run time. On top of that sits an optional static checker. You annotate what you want checked, the checker reports what it can prove is wrong, and everything it cannot see stays dynamic. This guide is about using that checker: where to put annotations, what is checked and where, how the checker decides that two types fit, and how to read what it prints.</p>
+<p>The theory, the type representation and the runtime tags are in <a href="/docs#page=breakdown_type_system" data-url="/content/breakdown_type_system.html">the type system breakdown</a>. The design record for the rules on this page is <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0013-gradual-type-relation.md" target="_blank" rel="noopener noreferrer">ADR 0013 — One gradual type relation</a>.</p>
+<p>Every example on this page is executed by the documentation example gate on the JIT and as a compiled binary, and the output shown is what the build prints.</p>
+<h2 id="contents">Contents</h2>
+<ol type="1">
+<li><a href="/docs#page=guide_gradual_typing&amp;1-annotations" data-url="/content/guide_gradual_typing.html">Annotations</a></li>
+<li><a href="/docs#page=guide_gradual_typing&amp;2-warnings-and-errors" data-url="/content/guide_gradual_typing.html">Warnings and errors</a></li>
+<li><a href="/docs#page=guide_gradual_typing&amp;3-what-is-checked-and-where" data-url="/content/guide_gradual_typing.html">What is checked, and where</a></li>
+<li><a href="/docs#page=guide_gradual_typing&amp;4-fitting-one-type-to-another" data-url="/content/guide_gradual_typing.html">Fitting one type to another</a></li>
+<li><a href="/docs#page=guide_gradual_typing&amp;5-function-types" data-url="/content/guide_gradual_typing.html">Function types</a></li>
+<li><a href="/docs#page=guide_gradual_typing&amp;6-branches-join" data-url="/content/guide_gradual_typing.html">Branches join</a></li>
+<li><a href="/docs#page=guide_gradual_typing&amp;7-loops-are-typed-by-what-they-carry" data-url="/content/guide_gradual_typing.html">Loops are typed by what they carry</a></li>
+<li><a href="/docs#page=guide_gradual_typing&amp;8-telling-the-checker-what-you-know" data-url="/content/guide_gradual_typing.html">Telling the checker what you know</a></li>
+<li><a href="/docs#page=guide_gradual_typing&amp;9-reading-a-diagnostic" data-url="/content/guide_gradual_typing.html">Reading a diagnostic</a></li>
+<li><a href="/docs#page=guide_gradual_typing&amp;10-quick-reference" data-url="/content/guide_gradual_typing.html">Quick reference</a></li>
+</ol>
+<h2 id="1-annotations">1. Annotations</h2>
+<p>A parameter is annotated by writing it as <code>(name : type)</code>. A return type follows the parameter list after a <code>:</code>. Both are optional and independent.</p>
+<pre class="scheme"><code>(define (area (w : number) (h : number)) : number
+  (* w h))
+
+(display (area 3 4))
+(newline)
+(display (area 2.5 4))
+(newline)
+(display (area 1/2 4))
+(newline)</code></pre>
+<pre class="text"><code>12
+10
+2</code></pre>
+<p><code>number</code> accepts the whole numeric tower, so the exact integer, the flonum and the exact rational are all legal arguments, and the arithmetic keeps its usual exactness. Annotations never change what a program computes. They tell the checker what you intend, and they let the compiler pick a direct instruction where it would otherwise dispatch on the runtime tag.</p>
+<p><code>lambda</code> takes the same syntax: <code>(lambda ((x : number)) : number (* x x))</code>. The type names are those of the type registry: the numeric tower (<code>integer</code>, <code>real</code>, <code>float64</code>, <code>number</code>, …), <code>string</code>, <code>symbol</code>, <code>boolean</code>, <code>char</code>, <code>list</code>, <code>vector</code>, <code>procedure</code>, function types written <code>(-&gt; argument ... result)</code>, and the types you introduce with <code>define-type</code>. The full grammar is in <a href="/docs#page=complete_language_specification" data-url="/content/complete_language_specification.html">the language specification, section 3.6</a>.</p>
+<h2 id="2-warnings-and-errors">2. Warnings and errors</h2>
+<p>By default a type mismatch is a <strong>warning</strong>. The program is compiled and run anyway, because the checker may simply know less than you do. This program warns and still runs:</p>
+<pre class="scheme"><code>(define (area (w : number) (h : number)) : number (* w h))
+
+(define (report flag)
+  (when flag
+    (area &quot;wide&quot; 3)))
+
+(display (report #f))
+(newline)</code></pre>
+<pre class="text"><code>#f</code></pre>
+<p>The compiler writes this on standard error:</p>
+<pre class="console"><code>[WARN] Type warning: argument 1 of &#39;area&#39;: expected Number, got String (line 5:11)
+   WARNING: HoTT: 1 type warnings detected (gradual typing continues)</code></pre>
+<p>Two flags change the policy:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--strict-types</code></td>
+<td>Every type diagnostic is an error. No code is generated and the exit status is nonzero.</td>
+</tr>
+<tr>
+<td><code>--unsafe</code></td>
+<td>Skip all type checks.</td>
+</tr>
+</tbody>
+</table>
+<p>Under <code>--strict-types</code> the same program stops at compile time:</p>
+<pre class="console"><code>[ERROR] Type error: argument 1 of &#39;area&#39;: expected Number, got String (line 5:11)
+     ERROR: HoTT: 1 type errors detected (strict mode)
+     ERROR: Refusing to generate code for a program with type errors (--strict-types)</code></pre>
+<p>One family of diagnostics is an error in every mode: <strong>linearity</strong>. Using a linear value such as a <code>Qubit</code> twice, or dropping it, is a compile-time error even without <code>--strict-types</code>, because no run-time check could recover from it. See <a href="/docs#page=eshkol_language_guide" data-url="/content/eshkol_language_guide.html">the language guide</a> for the linear types.</p>
+<h2 id="3-what-is-checked-and-where">3. What is checked, and where</h2>
+<p>A call is checked against the callee’s annotations <strong>wherever the call is written</strong>. The checker descends into the body of every control form, so a call inside a <code>cond</code> clause, a <code>do</code> step or a <code>guard</code> handler is examined exactly as it would be at top level. The warning above came from inside a <code>when</code>.</p>
+<pre class="scheme"><code>(define (area (w : number) (h : number)) (* w h))
+
+(define (describe flag)
+  (cond (flag (area &quot;wide&quot; 3))
+        (else 0)))
+
+(define (tally n)
+  (do ((i 0 (+ i 1))
+       (total 0 (+ total (area i &quot;tall&quot;))))
+      ((= i n) total)))
+
+(define (checked x)
+  (guard (e (#t (area &quot;handler&quot; 1)))
+    (when (&gt; x 0) (area x &quot;body&quot;))))
+
+(display (describe #f))
+(newline)</code></pre>
+<pre class="text"><code>0</code></pre>
+<p>Each of the four wrong calls is reported, with its own position:</p>
+<pre class="console"><code>[WARN] Type warning: argument 1 of &#39;area&#39;: expected Number, got String (line 4:21)
+[WARN] Type warning: argument 2 of &#39;area&#39;: expected Number, got String (line 9:34)
+[WARN] Type warning: argument 2 of &#39;area&#39;: expected Number, got String (line 14:27)
+[WARN] Type warning: argument 1 of &#39;area&#39;: expected Number, got String (line 13:23)</code></pre>
+<p>The positions the checker examines:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Form</th>
+<th>Examined</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>begin</code>, function and <code>let</code> bodies</td>
+<td>every expression, not only the last</td>
+</tr>
+<tr>
+<td><code>if</code>, <code>cond</code>, <code>case</code>, <code>when</code>, <code>unless</code></td>
+<td>tests, keys and every branch body</td>
+</tr>
+<tr>
+<td><code>and</code>, <code>or</code></td>
+<td>every operand</td>
+</tr>
+<tr>
+<td><code>match</code></td>
+<td>the scrutinee and every clause body</td>
+</tr>
+<tr>
+<td><code>do</code></td>
+<td>initialisers, steps, the test, the result and the body</td>
+</tr>
+<tr>
+<td><code>guard</code>, <code>raise</code></td>
+<td>the body, the handler clauses, the raised operand</td>
+</tr>
+<tr>
+<td><code>set!</code></td>
+<td>the assigned value</td>
+</tr>
+<tr>
+<td>quasiquote</td>
+<td>every <code>unquote</code> and <code>unquote-splicing</code> escape, at the right nesting level; quoted data is not evaluated and not examined</td>
+</tr>
+<tr>
+<td><code>call/cc</code>, <code>dynamic-wind</code>, <code>parameterize</code></td>
+<td>the procedure and all three thunks</td>
+</tr>
+<tr>
+<td><code>values</code>, <code>call-with-values</code>, <code>let-values</code>, <code>let*-values</code>, <code>receive</code>, <code>define-values</code></td>
+<td>operands, producer, consumer and body</td>
+</tr>
+<tr>
+<td><code>with-region</code> and the ownership forms (<code>borrow</code>, <code>owned</code>, <code>move</code>, <code>shared</code>, <code>weak-ref</code>)</td>
+<td>the body or operand</td>
+</tr>
+<tr>
+<td>the calculus operators (<code>derivative</code>, <code>gradient</code>, <code>jacobian</code>, <code>hessian</code>, <code>divergence</code>, <code>curl</code>, <code>laplacian</code>, <code>directional-derivative</code>, <code>taylor</code>, <code>derivative-n</code>)</td>
+<td>the function, the point, the direction and the order</td>
+</tr>
+<tr>
+<td>a call through a computed callee, such as <code>((pick-operation flag) 1 2)</code></td>
+<td>the callee expression and the arguments</td>
+</tr>
+<tr>
+<td>tensor literals and arithmetic with more than two operands</td>
+<td>every element and operand</td>
+</tr>
+</tbody>
+</table>
+<p>A branch body is checked in its own scope. What the checker learns inside one <code>cond</code> clause does not leak into the next clause or into the enclosing function. A test does refine what follows it, as section 8 shows.</p>
+<h2 id="4-fitting-one-type-to-another">4. Fitting one type to another</h2>
+<p>The checker asks one question at every boundary (an argument, a return, an assignment to an annotated binding): does the type it derived fit the type that was asked for? Two ideas answer it.</p>
+<p><strong>Subtyping</strong> is the static part: every <code>integer</code> is a <code>number</code>, every <code>Pair&lt;Float64, Float64&gt;</code> is a <code>Pair</code>, every type is a <code>Value</code>. A subtype always fits where its supertype is expected.</p>
+<p><strong>Consistency</strong> is the gradual part. When the checker does not know a type, it calls it <code>Value</code>, the dynamic type. <code>Value</code> is <em>consistent</em> with every type: it fits anywhere, and anything fits it. That is not a claim that the program is right. It says the checker has no evidence that it is wrong, so the run-time tag is what decides.</p>
+<p>The rule the checker applies is the combination, <em>consistent subtyping</em>: the derived type fits if it is a subtype of the expected type, treating every unknown part as acceptable. So:</p>
+<ul>
+<li>a known mismatch is reported: <code>String</code> does not fit <code>Number</code>;</li>
+<li>an unknown is accepted: <code>(car xs)</code> has type <code>Value</code>, and fits <code>number</code>;</li>
+<li>a partly known type is checked where it is known: pair components are covariant, so a pair fits wherever each of its components fits, and a function type is compared parameter by parameter (section 5).</li>
+</ul>
+<p>The numeric tower is flat at a call. A parameter declared <code>integer</code> accepts an argument the checker knows only as a <code>number</code>, and the other way round, because every member of the tower is a number and the arithmetic dispatches on the run-time tag. Inside a function type the components are compared exactly, as section 5 shows.</p>
+<pre class="scheme"><code>(define (first-number (xs : list)) : number
+  (car xs))
+
+(display (first-number (list 7 8)))
+(newline)</code></pre>
+<pre class="text"><code>7</code></pre>
+<p><code>(car xs)</code> is <code>Value</code>, so the return annotation accepts it and nothing is printed on standard error. Return annotations, arguments, <code>if</code> and <code>cond</code> results, and <code>the</code> ascriptions all use this one relation, so a type that fits in one position fits in the others.</p>
+<h2 id="5-function-types">5. Function types</h2>
+<p>A procedure’s signature is a type, written <code>(-&gt; argument ... result)</code>, and it appears in diagnostics in that form. A parameter can require one:</p>
+<pre class="scheme"><code>(define (twice (f : (-&gt; number number)) (x : number))
+  (f (f x)))
+
+(define (halve (x : number)) : number (/ x 2))
+(define (int-only (x : integer)) : number (+ x 1))
+(define (shout (s : string)) : string s)
+
+(display (twice halve 10))
+(newline)
+
+(define (never-called)
+  (twice int-only 1)
+  (twice shout 1))</code></pre>
+<pre class="text"><code>5/2</code></pre>
+<pre class="console"><code>[WARN] Type warning: argument 1 of &#39;twice&#39;: expected (-&gt; Number Number), got (-&gt; Int64 Number) (line 12:10)
+[WARN] Type warning: argument 1 of &#39;twice&#39;: expected (-&gt; Number Number), got (-&gt; String String) (line 13:10)</code></pre>
+<p><code>halve</code> fits. <code>int-only</code> does not: <code>twice</code> promises to call <code>f</code> with any number, and <code>int-only</code> only accepts integers. Function types are <strong>contravariant in their parameters</strong> (a function that accepts <em>more</em> fits where one that accepts less is expected) and <strong>covariant in their result</strong> (a function that returns <em>less</em> fits where one that returns more is expected). A function with a different number of parameters never fits. A parameter or result that is unknown stays acceptable, so an unannotated <code>(lambda (x) x)</code> fits <code>(-&gt; number number)</code>.</p>
+<p><code>procedure</code> is the top of the function types: any procedure fits it, and it says nothing about the signature.</p>
+<h2 id="6-branches-join">6. Branches join</h2>
+<p>The type of an expression with several branches is the <strong>join</strong> of the branch types: the most specific type that every branch fits. Two strings join to <code>String</code>; an exact integer and a flonum join to <code>Number</code>; a number and a string have nothing more specific in common than <code>Value</code>. The rule is the same for <code>if</code>, <code>cond</code>, <code>case</code>, <code>match</code>, <code>when</code>, <code>unless</code>, <code>and</code> and <code>or</code>, so rewriting an <code>if</code> as a <code>cond</code> cannot change a program’s types.</p>
+<pre class="scheme"><code>(define (pick flag) (if flag 1 2.5))
+(define (label (s : string)) (string-length s))
+
+(define (never-called flag)
+  (label (pick flag)))
+
+(display (pick #t))
+(newline)</code></pre>
+<pre class="text"><code>1</code></pre>
+<pre class="console"><code>[WARN] Type warning: argument 1 of &#39;label&#39;: expected String, got Number (line 5:11)</code></pre>
+<p>A form that may run no branch contributes the value it then yields: <code>cond</code>, <code>case</code>, <code>when</code> and <code>unless</code> without a matching branch yield <code>#f</code>, so <code>(when flag 1)</code> is the join of <code>Int64</code> and <code>Boolean</code>. <code>match</code> raises and <code>guard</code> re-raises when nothing matches, so they add nothing. A branch the checker cannot type contributes <code>Value</code> and does not fail the form.</p>
+<p>The result of a recursive procedure is found the same way: the join of its base cases, with the recursive calls taking the type being inferred.</p>
+<h2 id="7-loops-are-typed-by-what-they-carry">7. Loops are typed by what they carry</h2>
+<p>A named <code>let</code> binds a loop procedure whose parameters have no annotations. The checker gives each parameter the join of its initial value and of <strong>every argument the loop passes back to it</strong>, so an accumulator may start as one thing and grow into a wider one.</p>
+<pre class="scheme"><code>(define (mean-pair xs)
+  (let loop ((rest xs) (acc (cons 0.0 0)))
+    (if (null? rest)
+        (/ (car acc) (cdr acc))
+        (loop (cdr rest)
+              (cons (+ (car acc) (car rest)) (+ (cdr acc) 1))))))
+
+(display (mean-pair (list 1.0 2.0 3.0 6.0)))
+(newline)</code></pre>
+<pre class="text"><code>3</code></pre>
+<p><code>acc</code> starts as the literal pair <code>(0.0 . 0)</code> and is fed the result of two additions on every turn. The loop carries a pair of numbers, that is what <code>acc</code> is typed as, and no diagnostic is printed.</p>
+<p>The join has to be informative. If the only thing the seed and an argument have in common is <code>Value</code>, the parameter keeps its type and the argument is reported:</p>
+<pre class="scheme"><code>(define (count-to n)
+  (let loop ((i 0))
+    (if (&lt; i n) (loop (+ i 1)) &quot;done&quot;)))
+
+(display (count-to 3))
+(newline)
+
+(define (never-called n)
+  (let loop ((i 0))
+    (if (&lt; i n) (loop &quot;three&quot;) i)))</code></pre>
+<pre class="text"><code>done</code></pre>
+<pre class="console"><code>[WARN] Type warning: argument 1 of &#39;loop&#39;: expected Int64, got String (line 10:23)</code></pre>
+<p>Three refinements:</p>
+<ul>
+<li>An annotated loop parameter is a contract. It is never widened, and a sum-type annotation on a named-<code>let</code> parameter is honoured across iterations.</li>
+<li>A <code>#f</code> seed means “nothing yet”. A parameter seeded with <code>#f</code> and later given a value is typed <code>Value</code> and accepted.</li>
+<li>A <code>do</code> loop variable is the join of its initialiser and its step, and adopts the join even when it reaches <code>Value</code>, because a <code>do</code> step is an assignment, not an argument being checked.</li>
+</ul>
+<h2 id="8-telling-the-checker-what-you-know">8. Telling the checker what you know</h2>
+<p><strong>Predicates narrow.</strong> Inside a branch guarded by <code>number?</code>, <code>integer?</code>, <code>string?</code>, <code>symbol?</code>, <code>pair?</code>, <code>null?</code>, <code>vector?</code> or <code>procedure?</code>, the tested variable has that type. Narrowing works in <code>if</code>, <code>cond</code>, <code>when</code> and across the later operands of <code>and</code>, and a <code>match</code> pattern <code>(? pred name)</code> narrows <code>name</code> the same way. A <code>set!</code> of the variable cancels it.</p>
+<p><strong><code>the</code> ascribes.</strong> <code>(the type expr)</code> tells the checker that <code>expr</code> has <code>type</code>. It costs nothing at run time: the generated code is that of <code>expr</code> alone. It is accepted whenever the two types can overlap, and reported only when no value could have both.</p>
+<pre class="scheme"><code>(define (describe x)
+  (cond ((number? x) (+ x 1))
+        ((string? x) (string-length x))
+        (else 0)))
+
+(display (describe 41))
+(newline)
+(display (describe &quot;four&quot;))
+(newline)
+
+(define (label (s : string)) : integer (string-length s))
+(define mixed (list 1 &quot;two&quot; 3.0))
+
+(display (label (the string (cadr mixed))))
+(newline)</code></pre>
+<pre class="text"><code>42
+4
+3</code></pre>
+<h2 id="9-reading-a-diagnostic">9. Reading a diagnostic</h2>
+<pre class="console"><code>[WARN] Type warning: argument 1 of &#39;twice&#39;: expected (-&gt; Number Number), got (-&gt; Int64 Number) (line 12:10)</code></pre>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Part</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>[WARN] Type warning</code></td>
+<td>Severity. <code>[ERROR] Type error</code> under <code>--strict-types</code>, and for linearity in every mode.</td>
+</tr>
+<tr>
+<td><code>argument 1 of 'twice'</code></td>
+<td>The boundary that was checked: a numbered argument of a named procedure, a <code>body type ... doesn't match return annotation ...</code>, or an <code>ascription (the T ...) contradicts the inferred type ...</code>.</td>
+</tr>
+<tr>
+<td><code>expected (-&gt; Number Number)</code></td>
+<td>The type the annotation asked for, in the checker’s spelling: <code>number</code> prints as <code>Number</code>, <code>integer</code> as <code>Int64</code>, <code>real</code> as <code>Float64</code>.</td>
+</tr>
+<tr>
+<td><code>got (-&gt; Int64 Number)</code></td>
+<td>The type the checker derived for the expression.</td>
+</tr>
+<tr>
+<td><code>(line 12:10)</code></td>
+<td>Line and column of the offending expression in the file being compiled.</td>
+</tr>
+</tbody>
+</table>
+<p>Types print structurally: <code>Pair&lt;Float64, Float64&gt;</code> is a pair whose components are known, <code>Pair</code> one whose components are not; <code>(-&gt; String ... Value)</code> is a variadic procedure; <code>Function</code> is a procedure whose signature is unknown; <code>Value</code> is the dynamic type. A <code>got Value</code> never appears in a warning, because <code>Value</code> fits everything.</p>
+<p>The summary line <code>HoTT: N type warnings detected (gradual typing continues)</code> follows the individual diagnostics. A program with no diagnostics prints nothing.</p>
+<p>When a warning is wrong for your program, in order of preference: narrow with a predicate, so the run-time test and the checker agree; ascribe with <code>the</code> where you know something the checker cannot; widen the annotation if the procedure really does accept more than it declared.</p>
+<h2 id="10-quick-reference">10. Quick reference</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>You write</th>
+<th>The checker does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(define (f (x : T)) ...)</code></td>
+<td>checks every call’s argument against <code>T</code>, wherever the call is written</td>
+</tr>
+<tr>
+<td><code>(define (f ...) : T ...)</code></td>
+<td>checks the body’s type against <code>T</code></td>
+</tr>
+<tr>
+<td>no annotation</td>
+<td>treats the binding as <code>Value</code>: nothing is checked, nothing is reported</td>
+</tr>
+<tr>
+<td><code>(if c a b)</code>, <code>(cond ...)</code>, <code>(case ...)</code>, <code>(match ...)</code></td>
+<td>result is the join of the branches</td>
+</tr>
+<tr>
+<td><code>(let loop ((acc seed)) ...)</code></td>
+<td><code>acc</code> is the join of <code>seed</code> and every argument passed back</td>
+</tr>
+<tr>
+<td><code>(do ((v init step)) ...)</code></td>
+<td><code>v</code> is the join of <code>init</code> and <code>step</code></td>
+</tr>
+<tr>
+<td><code>(number? x)</code> in a test</td>
+<td><code>x</code> is <code>Number</code> in the guarded branch</td>
+</tr>
+<tr>
+<td><code>(the T expr)</code></td>
+<td>takes <code>expr</code> as <code>T</code>; free at run time; reported only if impossible</td>
+</tr>
+<tr>
+<td><code>--strict-types</code></td>
+<td>diagnostics are errors; no code is generated</td>
+</tr>
+<tr>
+<td><code>--unsafe</code></td>
+<td>no type checks</td>
+</tr>
+</tbody>
+</table>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="/docs#page=breakdown_type_system" data-url="/content/breakdown_type_system.html">Type system breakdown</a>: the type representation, the universe hierarchy, runtime tags and the implementation files.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0013-gradual-type-relation.md" target="_blank" rel="noopener noreferrer">ADR 0013 — One gradual type relation</a>.</li>
+<li><a href="/docs#page=complete_language_specification" data-url="/content/complete_language_specification.html">Language specification, section 3.6</a>: annotation grammar, <code>the</code>, linear types.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/eshkol-run.md" target="_blank" rel="noopener noreferrer"><code>eshkol-run</code> reference</a>: <code>--strict-types</code> and <code>--unsafe</code>.</li>
+<li><a href="/docs#page=upgrading" data-url="/content/upgrading.html">Upgrading to v1.3.5</a>: what the wider checking means for a program written against v1.3.4.</li>
+</ul>

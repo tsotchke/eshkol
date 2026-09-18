@@ -61,7 +61,7 @@ def main():
                        if x.strip() in ('REFUSED', 'ACCEPTED')]
             expected = 'REFUSED' if reject else 'ACCEPTED'
             if args.engine == 'jit' and name == 'fractional-list':
-                # The diagnostic names the DISPLAY path (ADR-0020), which for
+                # The diagnostic names the DISPLAY path (ADR-0021), which for
                 # a file outside every root is its name alone -- never the
                 # build host's absolute path.
                 location = re.escape(src.name) + r":\d+:\d+: Type error in reshape"

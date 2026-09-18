@@ -145,7 +145,7 @@ void save_readline_history();
     // The REPL keeps ASTs across inputs (definitions, macros, imports), so AST
     // strings live for the whole session. Nothing reads one after the runtime
     // has shut down; release them here, where _Exit() cannot skip it
-    // (ADR-0020).
+    // (ADR-0021).
     eshkol_ast_strings_teardown();
 #ifdef ESHKOL_HAS_ASAN
     /* _Exit() below skips LSan's atexit leak check; run it here so the REPL

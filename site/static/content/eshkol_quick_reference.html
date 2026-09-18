@@ -48,7 +48,7 @@
   ((1 2 3) =&gt; (lambda (x) (* x 100)))
   ((4 5 6) =&gt; (lambda (x) (* x 10)))          ;; -&gt; 50
   (else 0))</code></pre>
-<h2 id="quoting-macros">Quoting &amp; Macros</h2>
+<h2 id="quoting--macros">Quoting &amp; Macros</h2>
 <pre class="scheme"><code>&#39;(1 2 3)                          ;; quote -&gt; (1 2 3)
 `(1 ,(+ 1 1) 3)                   ;; quasiquote + unquote -&gt; (1 2 3)
 `(1 ,@(list 2 3) 4)               ;; unquote-splicing -&gt; (1 2 3 4)
@@ -105,7 +105,7 @@
                                 ;;    NATIVE ONLY — the bytecode VM rejects the
                                 ;;    leading-args form for any operator)
 (apply vector-copy (list (vector 7 8 9)))  ;; -&gt; #(7 8 9)  (builtins are values)</code></pre>
-<h2 id="vectors-tensors">Vectors &amp; Tensors</h2>
+<h2 id="vectors--tensors">Vectors &amp; Tensors</h2>
 <pre class="scheme"><code>(vector 1 2 3)            ;; create vector (heterogeneous, 16-byte tagged)
 (vref v i)                ;; get element
 (vector-set! v i x)       ;; set element
@@ -161,10 +161,8 @@
 (curl F v)                ;; curl(F) at v (3D)
 (laplacian f v)           ;; laplacian(f) at v
 (directional-derivative f v dir)</code></pre>
-<h3 id="arbitrary-order-ad-taylor-towers">Arbitrary-Order AD (Taylor
-Towers)</h3>
-<p>See the <a href="guide/AUTOMATIC_DIFFERENTIATION.md">Automatic
-Differentiation guide</a> for the full walkthrough.</p>
+<h3 id="arbitrary-order-ad-taylor-towers">Arbitrary-Order AD (Taylor Towers)</h3>
+<p>See the <a href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic Differentiation guide</a> for the full walkthrough.</p>
 <pre class="scheme"><code>;; Core tower builtins (no require needed)
 (taylor f x k)                    ;; k+1 Taylor coefficients c[0..k] of f at x
 (derivative-n f x k)              ;; the k-th derivative f^(k)(x), any order
@@ -233,8 +231,7 @@ Differentiation guide</a> for the full walkthrough.</p>
 
 ;; Exactness through differentiation follows the RUNTIME value (v1.3.5)
 (derivative (lambda (x) (* x x)) 1/3)    ;; -&gt; 2/3   exact</code></pre>
-<p>Everything above answers identically on the native engine and the
-bytecode VM.</p>
+<p>Everything above answers identically on the native engine and the bytecode VM.</p>
 <h2 id="complex-numbers">Complex Numbers</h2>
 <pre class="scheme"><code>;; Creation
 (make-rectangular 3.0 4.0)    ;; 3+4i
@@ -256,8 +253,7 @@ bytecode VM.</p>
 ;; Predicates
 (complex? z)               ;; -&gt; #t
 (number? z)                ;; -&gt; #t</code></pre>
-<h2 id="continuations-exception-handling">Continuations &amp; Exception
-Handling</h2>
+<h2 id="continuations--exception-handling">Continuations &amp; Exception Handling</h2>
 <pre class="scheme"><code>;; First-class continuations
 (call/cc (lambda (k)       ;; capture continuation
   (+ 1 (k 42))))           ;; -&gt; 42
@@ -416,11 +412,7 @@ exp log log10 log2 sqrt pow
 fl-next-up fl-next-down</code></pre>
 <pre class="scheme"><code>(fl-next-up 1.0)      ;; -&gt; 1.0000000000000002
 (fl-next-down 1.0)    ;; -&gt; 0.9999999999999999</code></pre>
-<p>The primitive beneath certified enclosures —
-<code>ia+</code>/<code>ia*</code>/<code>ia-sqrt</code>/… and the
-rigorous Taylor models
-<code>tm-var</code>/<code>tm+</code>/<code>tm*</code>/<code>tm-bound</code>/<code>tm-prove-bound</code>,
-all reached with <code>(require core.ad.taylor_models)</code>.</p>
+<p>The primitive beneath certified enclosures — <code>ia+</code>/<code>ia*</code>/<code>ia-sqrt</code>/… and the rigorous Taylor models <code>tm-var</code>/<code>tm+</code>/<code>tm*</code>/<code>tm-bound</code>/<code>tm-prove-bound</code>, all reached with <code>(require core.ad.taylor_models)</code>.</p>
 <h2 id="type-predicates">Type Predicates</h2>
 <pre class="scheme"><code>(null? x)    (pair? x)     (list? x)
 (number? x)  (integer? x)  (real? x)
@@ -436,8 +428,7 @@ all reached with <code>(require core.ad.taylor_models)</code>.</p>
 (logic-var? x)     (substitution? x)
 (kb? x)            (fact? x)
 (factor-graph? x)  (workspace? x)</code></pre>
-<h2 id="static-type-checking-strict-mode">Static Type Checking (strict
-mode)</h2>
+<h2 id="static-type-checking-strict-mode">Static Type Checking (strict mode)</h2>
 <pre class="scheme"><code>;; Checked ascription — trusted assertion to the checker, runtime no-op.
 ;; A provably impossible ascription is reported at compile time:
 ;;   (the string (+ 1 2))  ;; warning (fatal under --strict-types)
@@ -475,8 +466,7 @@ mode)</h2>
 
 ;; With aliasing
 (extern void log :real printf char* ...)</code></pre>
-<h2 id="standard-library-require-stdlib">Standard Library (require
-stdlib)</h2>
+<h2 id="standard-library-require-stdlib">Standard Library (require stdlib)</h2>
 <pre class="scheme"><code>;; Combinators
 (compose f g)             ;; (f (g x))
 (identity x)              ;; x
@@ -555,8 +545,4 @@ stdlib)</h2>
 --version           Version string
 --features          This build&#39;s compile-time capabilities, as KEY=VALUE lines
 --abi-fingerprint   The object-ABI fingerprint (ADR-0012) this build uses</code></pre>
-<p>Machine-driven use: <code>eshkol-repl --machine</code> speaks
-<strong>EREPL v1</strong>, a versioned JSON request/response protocol
-over the original READY/DONE/FAIL framing, with
-<code>tools/erepl_client.py</code> as the reference client. See <a
-href="reference/runtime/eshkol-repl.md">reference/runtime/eshkol-repl.md</a>.</p>
+<p>Machine-driven use: <code>eshkol-repl --machine</code> speaks <strong>EREPL v1</strong>, a versioned JSON request/response protocol over the original READY/DONE/FAIL framing, with <code>tools/erepl_client.py</code> as the reference client. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/eshkol-repl.md" target="_blank" rel="noopener noreferrer">reference/runtime/eshkol-repl.md</a>.</p>

@@ -67,7 +67,7 @@
 #
 #   * 8 sites were the compiler front end's AST, addressed below. Two of
 #     them (make_parser_string_ast, parse_extern_modifier_tail) allocated
-#     only AST *string payloads* and were retired by ADR-0020, which gave
+#     only AST *string payloads* and were retired by ADR-0021, which gave
 #     those payloads one rooted owner (inc/eshkol/frontend/ast_strings.h);
 #     6 remain, and they now cover AST *node* storage only.
 #
@@ -87,7 +87,7 @@
 # AST STRING PAYLOADS are not in this section and must never be added to it.
 # Identifiers, literal text, operation names, rest parameters, type-variable
 # names and every synthesized name come from one owner -- the rooted,
-# chunked arena in inc/eshkol/frontend/ast_strings.h (ADR-0020) -- so
+# chunked arena in inc/eshkol/frontend/ast_strings.h (ADR-0021) -- so
 # LeakSanitizer sees them as live, not leaked, and eshkol-run and the REPL
 # release them at teardown. A string leak report from the front end means a
 # producer bypassed that owner; fix the producer (scripts/
@@ -113,13 +113,13 @@
 # Measured contribution of each site over the audit's workload set is given
 # for scale; a site is listed because it was observed, not because it is big.
 
-# 1 190 850 B / 109 657 objects (measured before ADR-0020 moved the
+# 1 190 850 B / 109 657 objects (measured before ADR-0021 moved the
 # identifier text out). lib/frontend/parser.cpp parse_list():
 # `new eshkol_ast_t[N]` for each list's element array. This is the bulk of
 # the AST proper.
 leak:parse_list
 
-# 291 155 B / 63 341 objects before ADR-0020, almost all of it literal and
+# 291 155 B / 63 341 objects before ADR-0021, almost all of it literal and
 # symbol text, which the AST string owner now holds. lib/frontend/parser.cpp
 # parse_atom(): what remains is node storage -- the `make-rational` call node
 # and its operand array for an exact rational literal, and the one-element
@@ -129,7 +129,7 @@ leak:parse_atom
 # 168 583 B / 20 863 objects. lib/frontend/parser.cpp
 # parse_function_signature(): the parameter-node and parameter-type arrays
 # for each `define`/`lambda` (the parameter NAMES are AST strings, owned by
-# ADR-0020's owner). Same AST lifetime as the node they describe.
+# ADR-0021's owner). Same AST lifetime as the node they describe.
 leak:parse_function_signature
 
 # 255 469 B / 35 201 objects. lib/frontend/macro_expander.cpp
@@ -155,7 +155,7 @@ leak:parse_quoted_data_with_token
 # above, for the branch that lowers a quoted list to a `(list e0 ... eN)`
 # call -- the `list` callee node and the element array are allocated here and
 # become part of the AST codegen materialises (the `list` identifier text is
-# an AST string, owned by ADR-0020's owner). Reported
+# an AST string, owned by ADR-0021's owner). Reported
 # as an INDIRECT leak, which is why it stayed invisible while this gate's
 # diagnostic printed only Direct blocks. It crossed the reporting threshold
 # in v1.3.5 because the shipped library gained a great deal of quoted list

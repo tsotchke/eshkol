@@ -92,7 +92,7 @@ if [[ -n "${LLVM_CONFIG:-}" ]]; then
 fi
 cmake -S "$REPO_ROOT" -B "$BUILD_DIR" "${cmake_args[@]}"
 
-# Leak policy for sanitizer builds (ADR-0020; docs/reference/runtime/
+# Leak policy for sanitizer builds (ADR-0021; docs/reference/runtime/
 # memory-model.md "Leak detection during builds"). The build runs the
 # instrumented compiler on the standard library, which is a real compiler
 # workload, so it must be leak-clean under the same checked-in suppression

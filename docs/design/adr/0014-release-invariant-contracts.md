@@ -1,6 +1,6 @@
 # ADR 0014 — Release invariant contracts are measured before grading
 
-- Status: Accepted
+- Status: Accepted — implemented in v1.3.5-evolve (`scripts/lib/release_invariant_probes.sh`, `scripts/run_release_invariant_probes.sh`, and the CTest contracts `tests/toolchain/test_release_invariant_contracts.py` and `tests/toolchain/wasm_flat_ad_import_test.py`)
 - Date: 2026-09-14
 - Decision owners: Eshkol compiler/runtime maintainers; release assurance maintainers
 - Related: ADR-0000 (frontend identity substrate), ADR-0001 (OALR object model),

@@ -747,7 +747,7 @@ static bool g_emit_debug_info = false;
 static std::string g_debug_source_filename;
 static std::string g_debug_source_directory;
 // Source text + filepath for structured error messages with caret display.
-// g_source_filepath is a RECORDING spelling (ADR-0020): it is printed in
+// g_source_filepath is a RECORDING spelling (ADR-0021): it is printed in
 // diagnostics and embedded as a string constant for runtime error locations,
 // so it is the normalized display path, never the absolute host path.
 // g_source_hostpath is the path the text was read from, and is never emitted.

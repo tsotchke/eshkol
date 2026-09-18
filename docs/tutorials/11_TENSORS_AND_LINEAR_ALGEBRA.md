@@ -28,7 +28,6 @@ automatic SIMD vectorisation and optional GPU dispatch.
 
 ## Element Access and Mutation
 
-<!-- doc-example: known-defect SW-179: vector-set! of 99 shows #(99 20 30 40 50); the native engines store the integer bits and show 4.9e-322 -->
 ```scheme
 (define v #(10 20 30 40 50))
 

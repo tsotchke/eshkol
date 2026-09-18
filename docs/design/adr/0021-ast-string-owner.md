@@ -1,4 +1,16 @@
-# ADR-0020: One owner for AST string payloads, one spelling for recorded paths
+---
+kind: explanation
+status: current
+owner-area: memory
+since: v1.3.5
+sources:
+  - inc/eshkol/frontend/ast_strings.h
+  - inc/eshkol/frontend/source_paths.h
+  - lib/frontend/ast_strings.cpp
+  - lib/frontend/source_paths.cpp
+  - .icc/lsan-suppressions.txt
+---
+# ADR-0021: One owner for AST string payloads, one spelling for recorded paths
 
 **Status:** Accepted
 **Amends:** ADR-0000 Stage 1 (the frontend identity substrate), ADR-0010 gap A12

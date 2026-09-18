@@ -1,6 +1,6 @@
 # ADR-0013: One gradual type relation
 
-- **Status:** Accepted
+- **Status:** Accepted — implemented in v1.3.5-evolve (`TypeRelation` in `inc/eshkol/types/type_relation.h` and `lib/types/type_relation.cpp`)
 - **Date:** 2026-09-14
 - **Decision owners:** Eshkol type-system maintainers
 

@@ -1,6 +1,6 @@
 # ADR-0015: Static callee binding identity
 
-**Status:** Accepted
+**Status:** Accepted — implemented in v1.3.5-evolve (`inc/eshkol/backend/static_callee_binding.h`)
 **Ledger:** LE-28
 **Scope:** Native LLVM code generation, JIT and AOT.
 

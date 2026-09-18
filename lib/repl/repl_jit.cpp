@@ -3513,7 +3513,7 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
         explicit_source_context = std::make_unique<ScopedSourceContext>(
             source_path, source_text);
         // The ambient context holds the DISPLAY spelling of the path
-        // (ADR-0020), so compare like with like rather than against the host
+        // (ADR-0021), so compare like with like rather than against the host
         // path this caller happens to hold.
         const char* expected = eshkol_source_path_display(source_path.c_str());
         if (!expected || source_path_context_differs(expected)) {

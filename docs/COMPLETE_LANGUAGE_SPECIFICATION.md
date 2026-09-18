@@ -475,6 +475,18 @@ preserved exactly (an exact rational element stays exact; `exact?` on it is
 flattened tensor count (SW-153). This is why `#(1 "two" #t)`, above, is a
 vector and not an attempted tensor.
 
+Both kinds of literal are mutable through the vector API, and both obey one
+store rule: a value stored into a slot is a value of the slot's declared
+representation. A vector slot holds any value. A tensor slot holds a real
+number, so `(vector-set! v 0 99)` on `(define v #(10 20 30))` stores 99 and
+`(vector-set! v 0 1/2)` stores `0.5` — the same conversion tensor construction
+applies to each element — while a value with no real-number representation (a
+string, boolean, character, symbol, pair, vector or procedure) raises a
+catchable error and leaves the tensor unchanged. `vector-fill!`, `vector-copy!`
+and `tensor-set!` follow the same rule. A heterogeneous mutable vector is built
+with `vector`, `make-vector` or `list->vector`
+([ADR-0020](design/adr/0020-container-slot-store-boundary.md)).
+
 ### 3.3 Variable Definition and Binding
 
 #### 3.3.1 `define` - Variable Definition
@@ -916,6 +928,49 @@ Additionally: **sum-type annotations are honored on `named-let` parameters**, an
 a **numeric-tower join** gives a recursive accumulator the least-upper-bound of
 the numeric types that flow into it (so an integer accumulator that later takes a
 rational or real value is accepted rather than rejected).
+
+#### 3.6.7.1 Where Checking Applies, and How Types Fit
+
+The rules below are normative for the checker; the
+[gradual typing guide](guide/GRADUAL_TYPING.md) presents them with runnable
+examples, and [ADR 0013](design/adr/0013-gradual-type-relation.md) records the
+decision.
+
+1. **Every evaluated subexpression is checked** (since v1.3.5). A call is
+   checked against the callee's annotations wherever it is written: in every
+   expression of a `begin` or body; in the tests, keys, scrutinee and branch
+   bodies of `if`, `cond`, `case`, `match`, `when` and `unless`; in every
+   operand of `and` and `or`; in the initialisers, steps, test, result and body
+   of `do`; in a `guard` body and handler, a `raise` operand, a `set!` value, a
+   quasiquote escape, the procedure of `call/cc`, the thunks of `dynamic-wind`
+   (and so a `parameterize` body), the operands of `values`, the producer and
+   consumer of `call-with-values`, a `let-values` producer and body, a
+   `with-region` body, a computed callee, and the function, point, direction and
+   order of a calculus operator. Quoted data is not evaluated and not checked.
+2. **One fitting rule.** An argument, a return-annotated body and an annotated
+   binding are accepted when the derived type is a *consistent subtype* of the
+   expected type: a static subtype, in which every component the checker does
+   not know (`Value`) is acceptable. A body of type `Value` therefore satisfies
+   any return annotation, as a `Value` argument satisfies any parameter; a
+   concrete contradiction (`String` where `Number` is expected) is reported.
+   Members of the numeric tower are mutually acceptable at a call.
+3. **Function types** `(-> A ... R)` are contravariant in their parameters and
+   covariant in their result, and a different number of parameters never fits.
+   `procedure` is the top of the function types. Diagnostics print a signature
+   as its arrow, for example `(-> Number Int64)`, and a variadic one as
+   `(-> String ... Value)`.
+4. **Branch results join.** The type of a multi-branch form is the join of its
+   branch types, plus `#f` for a `cond`, `case`, `when` or `unless` that may run
+   no branch. `if` and the equivalent `cond` have the same type. Branches with
+   nothing more specific in common have type `Value`.
+5. **Loop parameters are typed by what the loop carries** (since v1.3.5). An
+   unannotated named-`let` parameter has the join of its initial value and of
+   every argument the loop passes back to it, found by iterating the body to a
+   fixpoint. A join that reaches `Value` is not adopted: the parameter keeps its
+   type and the argument is reported. A parameter seeded with `#f` widens to
+   `Value`. An annotated or linear parameter is never widened. A `do` variable
+   is the join of its initialiser and its step, and adopts every join. A
+   recursive procedure's result is the least fixpoint over its own calls.
 
 #### 3.6.8 Linear Types — `Qubit`
 `Qubit` is a first-class **linear** type: its values must be used exactly once.

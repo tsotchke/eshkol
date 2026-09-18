@@ -13314,8 +13314,8 @@ entries:
   - id: SW-179
     bucket: SILENT-WRONG
     family: native/vector-set-numeric-store
-    status: open
-    needs_decision: true
+    status: fixed
+    closed_at: "0da5a050"
     title: "native: vector-set! of an exact integer into a `#(...)` literal stores the integer's bit pattern as a double, and reading the slot back with vector-ref crashes"
     repro: >-
       (1) (define v #(10 20 30))
@@ -13341,15 +13341,49 @@ entries:
       arm64 macOS, JIT and AOT, by scripts/doc_audit/check_doc_examples.py: the
       tutorial example fails with MISMATCH expected '#(99 20 30 40 50)' got
       '#(4.9e-322 20 30 40 50)' on both engines.
+    root_cause: >-
+      A numeric `#(...)` literal is a tensor (f64 slots in a separate element
+      buffer). CollectionCodegen::vectorSet dispatched on the heap subtype but
+      stored `unpackDouble(value)`, which bit-casts the tagged payload: an exact
+      integer, a string pointer or a boolean was written as if it were a double.
+      vectorRef then decoded a small integer payload as a differentiation-node
+      pointer, which is the crash in program (2). The defect was one instance of
+      a missing facility: every mutator carried its own copy of the store.
+      vector-fill! had no tensor path and read the tensor descriptor as a length
+      (SIGSEGV even for a double); tensor-set! converted numbers but stored 0 for
+      a non-number and, taking its operand in coercing mode, updated a throwaway
+      copy of a Scheme vector; vector-copy!'s conversion did not know exact
+      rationals or bignums; the VM's vector-set! tensor path stored 0 for an exact
+      rational and every VM tensor writer stored 0 for a non-number.
+    fix: >-
+      ADR-0020, one store boundary. Invariant: a value stored into a container
+      slot is a value of the slot's declared representation. encode_tensor_slot()
+      in lib/core/runtime_vector_mutation.cpp is the only code that writes a
+      Scheme value into a tensor slot: a real number of any exactness becomes the
+      dtype-reduced f64, a differentiation node keeps its in-tensor carrier, and
+      any other value is refused with a catchable error before the destination is
+      modified. vector-set!, vector-fill!, vector-copy! and tensor-set! lower
+      through three CodegenContext emitters and one failure block; tensor-set!
+      takes its operand in RequireTensor mode; the VM's writers share
+      vm_tensor_slot_value(). The literal stays a tensor, as the language
+      specification defines it.
+    evidence: >-
+      tests/core/container_slot_store_test.esk stores every value kind through
+      every mutator on both representations: 90 checks, 0 failures on the cached
+      run path, the in-process JIT and AOT (ctest container_slot_store_
+      {runtime,jit,aot}_smoke); the base build crashes in it.
+      tests/vm/tensor_slot_store_test.esk: 23 checks on the VM (14 fail on the
+      base build). tests/vm_parity/corpus/85_container_slot_store.esk agrees
+      across native and VM. The tutorial example runs unmarked in
+      scripts/doc_audit/check_doc_examples.py.
     caught_by: [doc-example-gate]
     missed_by: [run_all_tests, vm_parity, doc_audit]
     notes: >-
-      Found by executing the tutorials. The example is marked
-      `doc-example: known-defect SW-179` in the tutorial and is still executed on
-      every gate run; the gate fails the day it passes, so the marker cannot
-      outlive the defect. Not root-caused here: the `#(...)` literal is
-      tensor-backed (double storage), and the store path appears to write the
-      tagged integer payload without converting it.
+      Found by executing the tutorials. Storing a value with no real-number
+      representation into a tensor-backed literal is a catchable error natively;
+      the VM materialises `#(...)` as a Scheme vector and accepts it. That is the
+      literal-representation difference already recorded in
+      tests/vm_parity/found/tensor_predicate_on_literal.esk, and it is loud.
   - id: SW-180
     bucket: SILENT-WRONG
     family: ad/complex-carrier
@@ -13514,3 +13548,41 @@ entries:
       an example that writes an error diagnostic for that reason. Tutorial 26
       carries `doc-example: known-defect SW-183`; tutorial 24 problem 3 carries
       SW-182, the first defect it reaches.
+  - id: LE-30
+    bucket: LOUD-ERROR
+    subtag: wrong-diagnostic-on-legal-code
+    status: open
+    title: "set! of a procedure bound by the (define (f ...) ...) shorthand is rejected as an undefined variable on the JIT and AOT"
+    repro: >-
+      (define (f x) x)
+      (set! f (lambda (x) (* 2 x)))
+      (display (f 21))
+      compiled with `eshkol-run -r` or `eshkol-run file.esk -o bin`.
+    observed: >-
+      Both engines refuse to compile: "ERROR: set!: undefined variable 'f'"
+      followed by "compilation reported 1 error(s); no artifact was written".
+      The same program with `(define f (lambda (x) x))` compiles and prints 42.
+    correct: >-
+      R7RS 5.3: `(define (f x) ...)` binds the variable f exactly as
+      `(define f (lambda (x) ...))` does, and `set!` may assign any bound
+      variable. The program prints 42. ADR-0015 (static callee binding identity)
+      already specifies how a reassigned procedure binding is called.
+    root_cause: >-
+      Not yet diagnosed. The set! lowering does not find a storage location for
+      a top-level binding introduced by the procedure-define shorthand, which
+      codegen emits as a function rather than as a variable holding a closure.
+    impact: >-
+      A legal program is refused at compile time. No wrong value is produced.
+      Found while documenting ADR-0015's reassignment rule for v1.3.5; the
+      documentation examples use the lambda spelling.
+    fix_requires: >-
+      A procedure-define shorthand gets the same assignable global storage as a
+      lambda-valued define when the lexical mutation analysis reports a set! of
+      it, so ADR-0015's binding facts apply unchanged.
+    evidence: >-
+      Reproduced on the v1.3.5 release cut d1295a42 with the JIT and AOT
+      drivers, 2026-09-17.
+    caught_by: [direct-measurement]
+    missed_by: [ctest]
+    notes: >-
+      Recorded only; no fix in this change.

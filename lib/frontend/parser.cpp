@@ -11480,7 +11480,7 @@ extern "C" void eshkol_reset_parse_line_counter(void) {
 /* Interned source-file table backing eshkol_ast_t::source_file_id.
  *
  * Two columns per entry, because a compiler does two different things with a
- * path (ADR-0020): it READS the file by its host path, and it RECORDS where
+ * path (ADR-0021): it READS the file by its host path, and it RECORDS where
  * code came from. Recording an absolute host path carries the build machine's
  * directory layout into diagnostics and into the string constants the backend
  * embeds in shipped objects and WebAssembly modules, and makes those artifacts

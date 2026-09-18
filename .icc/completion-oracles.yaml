@@ -1738,6 +1738,38 @@ oracles:
         label: 'Every example in docs/tutorials runs on the JIT and as an AOT binary within its time limit and prints what the page says; exclusions are explicit, named and ratcheted (scripts/doc_audit/check_doc_examples.py)'
         action: python3 scripts/doc_audit/check_doc_examples.py --scope tutorials --eshkol-run build/eshkol-run
 
+      # v1.3.5-evolve: the release's documentation sweep ran on 2026-09-11 and
+      # dozens of pull requests merged after it; the changelog described few
+      # of them and nothing noticed, because no gate connected "a pull request
+      # merged" with "the release section accounts for it". This probe walks
+      # <previous_tag>..HEAD from tests/coverage/release_record.json and
+      # requires every merged pull request to be referenced in the release's
+      # changelog section or listed, with a class and a reason, in
+      # tests/coverage/changelog_no_user_facing_change.json. It needs the full
+      # history and tags, and fails closed (NO_DATA) without them.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["changelog_accounts_for_every_pr"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every pull request merged since the previous release is referenced in the release changelog section or ledgered with a class and a reason as having no user-facing change (scripts/check_changelog_completeness.py)'
+        action: python3 scripts/check_changelog_completeness.py
+
+      # ADR 0019 (evergreen documentation): a page declares its kind and status
+      # in a front-matter block, and a block nobody checks decays like the
+      # prose it replaced. This probe validates every block, refuses release
+      # narrative in current tutorial/guide/reference/explanation pages,
+      # refuses an unlabelled link from a current page to a historical or
+      # superseded one, and ratchets the count of pages without front matter
+      # in tests/coverage/doc_front_matter_baseline.json. Build-free.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["doc_front_matter_valid"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every documentation page with front matter declares a valid kind, status, owner area, release and existing sources; current evergreen pages carry no release narrative and label links to dated pages; the unmarked-page count only goes down (scripts/check_doc_front_matter.py)'
+        action: python3 scripts/check_doc_front_matter.py
+
       # 2026-08-28: the second squash-merge-body infrastructure-hostname leak
       # in one week. GitHub assembles a squash-merge commit body out of the
       # PR's individual commit messages, so a hostname mentioned in passing

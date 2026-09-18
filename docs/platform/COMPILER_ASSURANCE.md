@@ -69,11 +69,24 @@ files and duplicate dispatcher names as well as missing cases and defaults.
 
 The v1.3.5-evolve release passes this strict policy with zero findings: the
 gate discovers 34 AST operation switches, each exhaustive with no default, and
-exactly one callable dispatch site, `codegenClosureCall`. When the gate was
-introduced it reported 32 switches with omissions or defaults and seven direct
-callable consumers outside the canonical dispatcher; the routing work that
-followed answered all of them. Findings are blocking and the gate has no
-baseline or exception list, so the policy holds on every change. Run the gate
+exactly one callable dispatch site, `codegenClosureCall`. The 32 switches with
+omissions or defaults and the seven direct callable consumers outside the
+canonical dispatcher that the gate's first run reported are all routed.
+Findings are blocking and the gate has no baseline or exception list, so the
+policy holds on every change.
+
+The same gate compares the two declarations of `EshkolLLVMCodeGen`: the public
+class contract in `inc/eshkol/backend/llvm_codegen.h` and the implementation
+class in `lib/backend/llvm_codegen.cpp`, which the extracted codegen translation
+units share. It derives each declaration's non-static data-member layout
+(member order, types, referenced nested layouts, bit fields) and fails on any
+difference, including a change that keeps the object size, and on a
+layout-level preprocessor conditional it cannot evaluate
+(`codegen_class_layout_unparseable`). Two translation units that disagree on
+the layout of one object would read each other's LLVM state at the wrong
+offsets; the gate turns that into a failed check (since v1.3.5;
+[ADR 0015](../design/adr/0015-static-callee-binding-identity.md)). Its JSON
+report carries the result under `class_layout`. Run the gate
 to obtain exact paths and line numbers for every discovered site. An
 intentionally partial analysis is not a runtime defect, but it must still state
 its remaining cases explicitly.

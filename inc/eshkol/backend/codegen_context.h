@@ -195,6 +195,45 @@ public:
     /** Get the lambda name a function returns (or empty string) */
     std::string getFunctionReturnsLambda(const std::string& funcName) const;
 
+    // === Container Slot Store Boundary (ADR-0020) ===
+    //
+    // Invariant: a value stored into a container slot is a value of the slot's
+    // declared representation. These three emitters are the only way compiled
+    // code stores into a tensor slot, and the way every sequence mutator
+    // reaches an operand whose representation it has not proven. The runtime
+    // side is lib/core/runtime_vector_mutation.cpp.
+
+    /**
+     * Store @p tagged_value at linear @p index of the vector-or-tensor operand
+     * @p sequence_tagged, raising a catchable error named after @p who when the
+     * operand is not a sequence, the index is out of range, or the value has
+     * no representation in the slot. Leaves the insert point on the success
+     * path.
+     */
+    void emitSequenceSlotStore(llvm::Value* sequence_tagged, llvm::Value* index,
+                               llvm::Value* tagged_value, const char* who);
+
+    /**
+     * Store @p tagged_value at linear @p index of the tensor @p tensor_ptr
+     * (payload pointer; the index is NOT bounds-checked inline because tensor
+     * callers have already checked it per dimension). A DOUBLE into an f64
+     * tensor is stored inline; every other combination goes through the
+     * runtime encoder.
+     */
+    void emitTensorSlotStore(llvm::Value* tensor_ptr, llvm::Value* index,
+                             llvm::Value* tagged_value, const char* who);
+
+    /**
+     * Branch on an eshkol_slot_store_status_t returned by a runtime half of
+     * the boundary: continue on OK, otherwise raise the one diagnostic for that
+     * status, named after @p who. Leaves the insert point on the success path.
+     */
+    void emitSlotStoreStatusCheck(llvm::Value* status, const char* who);
+
+    /** Store @p tagged_value into every slot of @p sequence_tagged. */
+    void emitSequenceFill(llvm::Value* sequence_tagged, llvm::Value* tagged_value,
+                          const char* who);
+
     // === Region Write Barrier (ESH-0214c) ===
 
     /**
@@ -497,6 +536,9 @@ private:
      * @p message_ptr, raise it, and terminate the block.
      */
     void emitRaiseWithMessagePtr(llvm::Value* message_ptr);
+
+    /** Spill a tagged value to an entry-block slot and return its address. */
+    llvm::Value* spillTaggedToEntrySlot(llvm::Value* tagged_value, const char* name);
 
     // LLVM infrastructure (references, not owned)
     llvm::LLVMContext& context_;

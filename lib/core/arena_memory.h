@@ -884,15 +884,41 @@ void eshkol_region_write_barrier_range(const void* dst,
                                        eshkol_tagged_value_t* slots,
                                        uint64_t n);
 
-// Representation-aware vector mutation. Eshkol exposes both Scheme vectors
-// (inline tagged slots) and numeric tensor-backed #(...) literals through the
-// R7RS vector API; vector-copy! must therefore bridge both layouts safely.
-typedef enum eshkol_vector_copy_status {
-    ESHKOL_VECTOR_COPY_OK = 0,
-    ESHKOL_VECTOR_COPY_NULL = 1,
-    ESHKOL_VECTOR_COPY_BOUNDS = 2,
-    ESHKOL_VECTOR_COPY_TYPE = 3
-} eshkol_vector_copy_status_t;
+// The container slot store boundary (docs/design/adr/0020-container-slot-store-boundary.md).
+//
+// Eshkol exposes two sequence representations through the R7RS vector API: a
+// Scheme vector (inline 16-byte tagged slots, any value) and a tensor (a dense
+// numeric carrier; a numeric #(...) literal is one). Invariant: a value stored
+// into a slot is a value of the slot's declared representation. A Scheme vector
+// slot takes the tagged value unchanged. A tensor slot takes a real number of
+// any exactness, converted exactly as `inexact` converts it and reduced to the
+// tensor's dtype; a differentiation carrier keeps its established in-tensor
+// encoding; any other value is refused with ESHKOL_SLOT_STORE_VALUE before the
+// destination is modified. Payload bits are never reinterpreted.
+//
+// Every mutator reaches a tensor slot through these entry points. Compiled code
+// may store inline only on the two paths where the representation is already
+// proven: a tagged value into a Scheme vector slot, and a DOUBLE into an f64
+// tensor slot.
+typedef enum eshkol_slot_store_status {
+    ESHKOL_SLOT_STORE_OK = 0,
+    ESHKOL_SLOT_STORE_NULL = 1,
+    ESHKOL_SLOT_STORE_BOUNDS = 2,
+    ESHKOL_SLOT_STORE_CONTAINER = 3,  // operand is neither a vector nor a tensor
+    ESHKOL_SLOT_STORE_VALUE = 4       // value has no representation in the slot
+} eshkol_slot_store_status_t;
+// Store one value at a linear index of a vector or tensor operand.
+int32_t eshkol_sequence_slot_store(const eshkol_tagged_value_t* sequence,
+                                   int64_t index,
+                                   const eshkol_tagged_value_t* value);
+// Store one value at a linear index of a tensor object (payload pointer).
+int32_t eshkol_tensor_slot_store(void* tensor, int64_t index,
+                                 const eshkol_tagged_value_t* value);
+// Store one value into every slot of a vector or tensor operand.
+int32_t eshkol_sequence_fill(const eshkol_tagged_value_t* sequence,
+                             const eshkol_tagged_value_t* value);
+// Copy src[start, end) into dst at `at`; end == -1 means the source length.
+// Overlap-safe; validates every value before the destination is modified.
 int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
                                     const void* src, int64_t start, int64_t end);
 

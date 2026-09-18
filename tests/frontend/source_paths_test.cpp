@@ -6,7 +6,7 @@
  */
 /**
  * @file source_paths_test.cpp
- * @brief Contract tests for recorded source-path normalization (ADR-0020).
+ * @brief Contract tests for recorded source-path normalization (ADR-0021).
  *
  * The claim under test is the one the shipped artifacts depend on: a path
  * that is RECORDED — interned into the `NodeId` substrate's file table, put

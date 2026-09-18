@@ -67,7 +67,7 @@ Hygienic macro expansion via `syntax-rules` pattern matching. The system support
 **Phase 2: S-Expression Parsing** (11,691 lines in [parser.cpp](../../lib/frontend/parser.cpp))
 
 Builds an AST from S-expressions. The parser drives an explicit continuation stack rather than the native stack, so nesting depth costs heap rather than stack. It handles:
-- 94 operation types (see `eshkol_op_t` enum in [eshkol.h](../../inc/eshkol/eshkol.h))
+- 113 operation types (see `eshkol_op_t` enum in [eshkol.h](../../inc/eshkol/eshkol.h))
 - Variadic parameter encoding in lambda/define
 - HoTT type annotation attachment to AST nodes
 - Internal define → `letrec*` transformation (all define names, wherever they appear in the body; a value define's initializer stays at its source position)
@@ -101,7 +101,7 @@ Translates ASTs to LLVM IR. The modular architecture distributes code generation
 | [collection_codegen.cpp](../../lib/backend/collection_codegen.cpp) | 3,173 | Vector, list, hash table operations |
 | [parallel_llvm_codegen.cpp](../../lib/backend/parallel_llvm_codegen.cpp) | 2,626 | Work-stealing parallelism codegen |
 | [system_codegen.cpp](../../lib/backend/system_codegen.cpp) | 2,039 | System, environment, time, process |
-| [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) | 1,867 | Tensor-op dispatch shell; per-domain ops live in thirteen `tensor_*_codegen.cpp` siblings (22,355 lines combined) |
+| [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) | 2,012 | Tensor-op dispatch shell; per-domain ops live in thirteen `tensor_*_codegen.cpp` siblings (23,389 lines combined) |
 | [binding_codegen.cpp](../../lib/backend/binding_codegen.cpp) | 1,662 | let/let\*/letrec/letrec\* with TCO |
 | [thread_pool.cpp](../../lib/backend/thread_pool.cpp) | 1,524 | Work-stealing thread pool |
 | [tensor_backward.cpp](../../lib/backend/tensor_backward.cpp) | 1,572 | Backward-mode AD gradients |
@@ -228,7 +228,7 @@ v1.1-accelerate adds eight major feature systems to the v1.0-foundation core:
 
 ### Machine Learning Framework (75+ Builtins)
 
-A complete ML framework implemented as compiler-level builtins. The dispatch entry point is [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) (2,012 lines after the v1.2 split); the per-domain implementations live in thirteen `tensor_*_codegen.cpp` siblings (22,355 lines combined) with SIMD acceleration and automatic GPU dispatch:
+A complete ML framework implemented as compiler-level builtins. The dispatch entry point is [tensor_codegen.cpp](../../lib/backend/tensor_codegen.cpp) (2,012 lines after the v1.2 split); the per-domain implementations live in thirteen `tensor_*_codegen.cpp` siblings (23,389 lines combined) with SIMD acceleration and automatic GPU dispatch:
 
 - **Activations** (16): relu, relu6, sigmoid, tanh, gelu, swish, mish, softmax, log-softmax, softplus, softsign, leaky-relu, prelu, elu, selu, celu
 - **Loss functions** (14): mse-loss, mae-loss, cross-entropy-loss, bce-loss, huber-loss, kl-div-loss, hinge-loss, smooth-l1-loss, focal-loss, triplet-loss, contrastive-loss, label-smoothing-loss, cosine-embedding-loss
@@ -300,7 +300,7 @@ R7RS-compliant numeric tower with automatic precision promotion:
 - **double**: IEEE 754 64-bit floats (inexact)
 - **complex**: Heap-allocated `{real:f64, imag:f64}` with Smith's formula division
 
-Exactness tracking via `ESHKOL_FLAG_EXACT` in the tagged value flags byte. R7RS semantics: exact + exact = exact, exact + inexact = inexact.
+Exactness tracking via `ESHKOL_VALUE_EXACT_FLAG` in the tagged value flags byte. R7RS semantics: exact + exact = exact, exact + inexact = inexact.
 
 ### First-Class Continuations
 

@@ -1,34 +1,23 @@
 #!/usr/bin/env bash
-# Build site content: Convert markdown docs to HTML fragments for the website.
-# These HTML fragments are fetched by the WASM app at runtime via web-load-content.
+# Build site content: render the documentation pages the website publishes.
+#
+# site/pages.json is the one declared list of pages (file, slug, view, sidebar
+# section). scripts/build_site_content.py renders each listed Markdown file to
+# site/static/content/<slug>.html with pandoc, and generates each view's
+# sidebar (nav-<view>.html) and the published index (pages.json) from the same
+# list. The WASM app loads those fragments at runtime via web-load-content.
+#
+# To publish another page, add one entry to site/pages.json and rerun this
+# script. A listed file that does not exist yet is skipped with a warning when
+# its entry is marked "pending": true.
 
-set -e
+set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CONTENT_DIR="site/static/content"
-mkdir -p "$CONTENT_DIR"
+if ! command -v pandoc >/dev/null 2>&1; then
+    echo "build-site-content.sh: pandoc is required" >&2
+    exit 1
+fi
 
-echo "Building site content from markdown docs..."
-
-# Root docs (LANGUAGE_GUIDE/QUICK_REFERENCE moved under docs/ in the v1.3 root
-# reorg and are handled by the docs/ loop below; ANNOUNCEMENT added in v1.3).
-for doc in ROADMAP CONTRIBUTING ANNOUNCEMENT; do
-    if [ -f "${doc}.md" ]; then
-        out="$CONTENT_DIR/$(echo "$doc" | tr '[:upper:]' '[:lower:]').html"
-        pandoc "${doc}.md" -f markdown -t html --no-highlight -o "$out"
-        echo "  ${doc}.md -> $(basename $out)"
-    fi
-done
-
-# docs/ subdirectory
-for doc in docs/ESHKOL_LANGUAGE_GUIDE docs/ESHKOL_QUICK_REFERENCE docs/COMPLETE_LANGUAGE_SPECIFICATION docs/API_REFERENCE docs/FEATURE_MATRIX docs/QUICKSTART; do
-    if [ -f "${doc}.md" ]; then
-        base=$(basename "$doc")
-        out="$CONTENT_DIR/$(echo "$base" | tr '[:upper:]' '[:lower:]').html"
-        pandoc "${doc}.md" -f markdown -t html --no-highlight -o "$out"
-        echo "  ${doc}.md -> $(basename $out)"
-    fi
-done
-
-echo "Done. Content files:"
-ls -la "$CONTENT_DIR"/*.html 2>/dev/null | awk '{print "  " $NF " (" $5 " bytes)"}'
+echo "Building site content from site/pages.json..."
+exec python3 scripts/build_site_content.py "$@"

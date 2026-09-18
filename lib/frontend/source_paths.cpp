@@ -6,7 +6,7 @@
  */
 /**
  * @file source_paths.cpp
- * @brief Display-path normalization for recorded source locations (ADR-0020).
+ * @brief Display-path normalization for recorded source locations (ADR-0021).
  *
  * See inc/eshkol/frontend/source_paths.h for the rule set. The table is
  * process-lifetime for the same reason the interned file table is: an id

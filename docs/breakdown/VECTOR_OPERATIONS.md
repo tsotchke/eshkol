@@ -133,7 +133,7 @@ For numeric computation over the array, use **tensors** instead.
 
 ## Tensors (Homogeneous Numeric)
 
-**Implementation**: [`lib/backend/tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (1,867-line dispatcher; thirteen `tensor_*_codegen.cpp` siblings after the v1.2 split)
+**Implementation**: [`lib/backend/tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (2,012-line dispatcher; thirteen `tensor_*_codegen.cpp` siblings after the v1.2 split)
 
 Tensors are **N-dimensional numeric arrays** optimized for scientific computing:
 

@@ -128,7 +128,17 @@ ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test
 
 ### Building the Website
 
-The website is written in Eshkol and compiled to WebAssembly:
+The website is written in Eshkol and compiled to WebAssembly. Its published
+documentation pages come from one manifest, `site/pages.json`, which names each
+Markdown source, its slug and its navigation section. To publish a page, add a
+manifest entry and run `scripts/build-site-content.sh`; the generated sidebars
+pick it up with no change to `site/src/main.esk`. Before opening a pull request,
+run `python3 scripts/build_site_content.py --check` (manifest, fragments and
+navigation agree), `python3 scripts/verify_site_release.py` (release facts match
+`tests/coverage/release_record.json`) and `python3 scripts/site_smoke.py`
+(the pages render in a real browser with no console errors); the Pages deploy
+runs the same three.
+
 
 ```bash
 # Compile the website
@@ -405,6 +415,53 @@ Good documentation is crucial for the project:
 - Keep the README and other high-level documentation up to date.
 - Use Markdown for all documentation files.
 
+The documentation system (page kinds, front matter, evergreen wording, facts
+rendered from sources, executed examples and every documentation gate) is
+described in [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md). In short:
+
+- **A change updates its pages in the same pull request.** A behaviour change
+  updates the reference, guide or tutorial that describes it; a new capability
+  adds its reference entry, a runnable example and a changelog line.
+- **Every pull request has a changelog home.** Reference it as `(#N)` in the
+  release section of `CHANGELOG.md`, or, if no user can observe it, add a
+  reasoned entry to `tests/coverage/changelog_no_user_facing_change.json`.
+  `python3 scripts/check_changelog_completeness.py --pending-pr <N>` checks it.
+- **New and substantially edited pages carry front matter**, and evergreen pages
+  carry no release narrative; `python3 scripts/check_doc_front_matter.py`
+  checks both.
+- **Release facts come from `tests/coverage/release_record.json`.** Edit the
+  record and run `python3 scripts/check_surface_counts.py --sync`; never retype
+  a date, total or status.
+- **Generated artifacts are regenerated, never hand-edited**, and each has a
+  freshness check: `docs/api/` (`scripts/gen_api_docs.py --check`), the
+  language surface (`scripts/gen_language_surface.py --check`), the ledger
+  aggregate (`scripts/gen_silent_wrong_ledger.py --check`), the browser import
+  glue (`scripts/generate_wasm_import_glue.py --check`) and the site pages
+  (`scripts/build-site-content.sh`).
+
+#### Scripts, evidence paths and generated files
+
+A script that reads `TRACE_DIR` or `ICC_TRACE_DIR` makes it absolute with the
+helpers in `scripts/lib/evidence_paths.sh` before first use; a relative value
+means relative to the repository root. A script that writes a generated file at
+a path held in a variable uses `scripts/lib/checked_write.sh`
+(`eshkol_install_tmp` then `eshkol_install_checked`, `eshkol_checked_rm`,
+`eshkol_resolve_trusted_command`), so a reader never sees a partial file.
+
+#### Auditing a change with ICC
+
+The repository's code-index and audit tool (ICC) is how a change is checked
+against the rest of the tree. Register the checkout once
+(`icc init --repo <alias> --path <checkout>`), reindex after committing
+(`icc reindex --repo <alias> --full`), then before opening a pull request run
+`icc impact-analysis --repo <alias> --since <base>` to see what the change
+reaches, `icc pre-commit-check --repo <alias> --architecture-model
+.icc/architecture-model.yaml` for the architecture invariants, and, for a
+documentation change, `icc doc-typed-claims` with
+`python3 scripts/check_doc_claims_residual.py` so no new wrong claim lands.
+A new Architecture Decision Record takes the next free number and is registered
+with `icc adr import-markdown --repo <alias> --dir docs/design/adr`.
+
 #### API Reference (docs/api/)
 
 `docs/api/` is a generated browsable reference for the public C/C++ headers
@@ -428,9 +485,11 @@ CI runs `make api-docs-check` for every pull request. After merge,
 only when there is a diff, with concurrency protection and no attribution
 trailers. Do not use a `.gitattributes` merge driver for this directory.
 
-#### Examples in the tutorials are executed
+#### Examples in the tutorials and gated guides are executed
 
-Every fenced `scheme` block under `docs/tutorials/` is run by
+Every fenced `scheme` block in a gated documentation scope (`docs/tutorials/`,
+the gradual-typing guide and the upgrade page; the list is `GATED_SCOPES` in
+`scripts/doc_audit/extract_examples.py`) is run by
 `scripts/doc_audit/check_doc_examples.py` on the JIT (`eshkol-run -r`, what
 the REPL runs) and as an AOT binary, in CI and in the release evidence run.
 Run it before you push a tutorial change:

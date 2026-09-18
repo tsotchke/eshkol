@@ -161,31 +161,28 @@
             return;
           }
 
-          // 3. Sidebar content loader (doc/tutorial pages)
+          // 3. Documentation page loader: sidebar items and links between
+          //    published pages (both carry data-url; see runtime.loadContent)
           const tab = e.target.closest('[data-url]');
           if (tab) {
             e.preventDefault();
-            const url = tab.getAttribute('data-url') || tab.getAttribute('href');
+            const url = tab.getAttribute('data-url');
+            const href = tab.getAttribute('href') || '';
             const area = document.getElementById('doc-content-area')
                       || document.getElementById('tutorial-content-area');
             if (area && url) {
-              document.querySelectorAll('[data-url]').forEach(el => el.classList.remove('active'));
-              tab.classList.add('active');
-              area.innerHTML = '<p style="color:#71717a;font-style:italic">Loading...</p>';
-              fetch(url).then(r => {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.text();
-              }).then(md => {
-                area.innerHTML = runtime.renderMarkdown(md);
-                area.scrollTop = 0;
-                const fragment = decodeURIComponent(window.location.hash.slice(1));
-                if (fragment) {
-                  const anchor = document.getElementById(fragment);
-                  if (anchor) anchor.scrollIntoView();
-                }
-              }).catch(err => {
-                area.innerHTML = '<p style="color:#ff4444">Failed to load: ' + err.message + '</p>';
-              });
+              // Keep the address shareable without re-running the router.
+              const hashAt = href.indexOf('#');
+              if (hashAt >= 0) {
+                history.replaceState(null, '', window.location.pathname + href.slice(hashAt));
+              }
+              const request = EshkolRuntime.contentRequest(window.location.hash);
+              const anchor = request.anchor ? document.getElementById(request.anchor) : null;
+              if (runtime._contentUrl === url && anchor) {
+                anchor.scrollIntoView();
+              } else {
+                runtime.loadContent(url, area, { explicit: true });
+              }
             }
             return;  // Don't let the nav handler also fire
           }

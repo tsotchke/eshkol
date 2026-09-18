@@ -208,7 +208,7 @@ class RuntimeInstrumentationTest(unittest.TestCase):
                 for raw in trace_path.read_text(encoding="utf-8").splitlines():
                     fields = raw.split("\t")
                     if fields[0] == "C" and fields[4] == "abs":
-                        # A recorded path is a DISPLAY path (ADR-0020), so it
+                        # A recorded path is a DISPLAY path (ADR-0021), so it
                         # is relative to the repository root unless it names a
                         # file outside every root.
                         recorded = pathlib.Path(fields[1])

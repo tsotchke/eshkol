@@ -1,0 +1,79 @@
+<h1 id="tutorial-18-web-platform-and-webassembly">Tutorial 18: Web Platform and WebAssembly</h1>
+<p>Eshkol compiles to WebAssembly for browser deployment. The eshkol.ai website itself is written in Eshkol and compiled to WASM.</p>
+<hr />
+<h2 id="compiling-to-wasm">Compiling to WASM</h2>
+<pre class="bash"><code># Compile an Eshkol program to WebAssembly
+$ eshkol-run program.esk -w -o program.wasm</code></pre>
+<p>The <code>-w</code> flag targets the wasm32 backend. The output <code>.wasm</code> file can be loaded by any JavaScript runtime that supports WebAssembly.</p>
+<hr />
+<h2 id="the-browser-repl">The Browser REPL</h2>
+<p>The browser REPL at <a href="https://eshkol.ai">eshkol.ai</a> runs the bytecode VM compiled to WASM via Emscripten. It supports:</p>
+<ul>
+<li>All Scheme primitives (lists, strings, numbers, booleans)</li>
+<li>Exact arithmetic (bignums, rationals)</li>
+<li>Forward-mode autodiff (dual numbers)</li>
+<li>Complex numbers</li>
+<li>Higher-order functions (map, fold, filter)</li>
+<li>Closures and first-class continuations</li>
+<li>call/cc, dynamic-wind, guard/raise</li>
+</ul>
+<p>Type any expression and press Enter:</p>
+<pre class="scheme"><code>(define (factorial n)
+  (if (= n 0) 1 (* n (factorial (- n 1)))))
+(display (factorial 20))
+;; =&gt; 2432902008176640000
+
+(display (derivative (lambda (x) (* x x x)) 2.0))
+;; =&gt; 12.0</code></pre>
+<hr />
+<h2 id="dom-api-80-functions">DOM API (80+ Functions)</h2>
+<p>When compiling a full web application, Eshkol provides DOM bindings via <code>extern</code> declarations:</p>
+<!-- doc-example: skip platform-specific: calls the browser DOM imports, which exist only in a WASM build running in a page -->
+<pre class="scheme"><code>;; Declare external DOM functions
+(extern i32 web-create-element ptr :real web_create_element)
+(extern i32 web-set-text-content i32 ptr :real web_set_text_content)
+(extern i32 web-append-child i32 i32 :real web_append_child)
+(extern i32 web-set-inner-html i32 ptr :real web_set_inner_html)
+(extern i32 web-add-class i32 ptr :real web_add_class)
+(extern i32 web-set-attribute i32 ptr ptr :real web_set_attribute)
+(extern i32 web-add-event-listener i32 ptr ptr :real web_add_event_listener)
+
+;; Create a heading
+(define h1 (web-create-element &quot;h1&quot;))
+(web-set-text-content h1 &quot;Hello from Eshkol!&quot;)
+(web-append-child 0 h1)  ;; 0 = document.body handle</code></pre>
+<p>The eshkol.ai website uses this API to build the entire UI — navigation, code blocks, the REPL, documentation viewer, download tables — all in Eshkol.</p>
+<hr />
+<h2 id="event-handling">Event Handling</h2>
+<!-- doc-example: skip platform-specific: calls the browser DOM imports, which exist only in a WASM build running in a page -->
+<pre class="scheme"><code>(extern i32 web-add-event-listener i32 ptr ptr :real web_add_event_listener)
+
+;; Add click handler
+(web-add-event-listener button &quot;click&quot;
+  (lambda (event)
+    (web-set-text-content output &quot;Button clicked!&quot;)))
+
+;; Keyboard events
+(web-add-event-listener input &quot;keydown&quot;
+  (lambda (event)
+    (let ((key (web-event-key event)))
+      (if (string=? key &quot;Enter&quot;)
+          (process-input)))))</code></pre>
+<hr />
+<h2 id="styling">Styling</h2>
+<!-- doc-example: skip platform-specific: calls the browser DOM imports, which exist only in a WASM build running in a page -->
+<pre class="scheme"><code>;; Set inline styles via a helper
+(define (style! el prop val)
+  (web-set-style-property el prop val))
+
+(style! div &quot;backgroundColor&quot; &quot;#0d0d15&quot;)
+(style! div &quot;padding&quot; &quot;20px&quot;)
+(style! div &quot;borderRadius&quot; &quot;12px&quot;)</code></pre>
+<hr />
+<h2 id="architecture">Architecture</h2>
+<pre><code>Eshkol source (.esk)
+  → LLVM IR (wasm32 target)
+  → .wasm binary
+  → loaded by eshkol-runtime.js
+  → DOM bindings bridge JS ↔ WASM</code></pre>
+<p>The runtime (<code>eshkol-runtime.js</code>) provides: - Memory management (bump allocator for arena) - DOM API bridging (element creation, events, styles) - String marshalling (UTF-8 ↔︎ WASM linear memory) - The bytecode VM REPL (separate <code>eshkol-vm.js</code>)</p>

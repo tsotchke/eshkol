@@ -612,7 +612,7 @@ def main(argv: list[str] | None = None) -> int:
             findings.extend(analyze_line(f"{file_path}:{line_no}", text, allow_phrases, denylist_tokens))
 
         # Layer 3: the artifacts themselves. Text review cannot see a host path
-        # a compiler EMBEDDED in a shipped binary (ADR-0020), so read the bytes.
+        # a compiler EMBEDDED in a shipped binary (ADR-0021), so read the bytes.
         artifact_findings, artifacts_scanned = ([], [])
         if not args.no_artifact_scan:
             artifact_findings, artifacts_scanned = check_artifact_paths.scan_artifacts(

@@ -9,7 +9,7 @@
 
 /**
  * @file ast_strings.h
- * @brief The one owner of AST string payloads (ADR-0020).
+ * @brief The one owner of AST string payloads (ADR-0021).
  *
  * Every `char*` hung off a frontend structure -- `eshkol_ast_t` identifiers
  * (`variable.id`, `eshkol_func.id`), string and bignum literal text

@@ -1,6 +1,6 @@
 # ADR 0010 — Closed-loop assurance architecture
 
-- Status: Accepted
+- Status: Accepted — partially implemented: the enforcement mechanics of section 4 (the `release-readiness-gate` job in `.github/workflows/release.yml`, the nightly `.github/workflows/adversarial-nightly.yml`, the manifest-driven floor in `scripts/language_coverage.py` over `tests/coverage/language_surface.json`, and the `tests/diagnostics/` golden corpus) are in v1.3.5-evolve; the gap closures section 3 sequences into later releases remain Proposed
 - Date: 2026-07-24
 - Decision owners: Eshkol compiler/runtime maintainers; assurance/adversarial-testing maintainers
 - Supersedes: none (this document ratifies and sequences the adversarial-testing

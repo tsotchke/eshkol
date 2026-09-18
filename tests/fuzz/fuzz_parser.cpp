@@ -39,7 +39,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         if (ast.type == ESHKOL_INVALID) break;
         /* Free the tensor arrays the AST carries before the next
          * iteration overwrites the local. String payloads belong to the
-         * AST string owner (ADR-0020) and are released below. */
+         * AST string owner (ADR-0021) and are released below. */
         eshkol_ast_clean(&ast);
     }
     /* Each input is a complete compilation: release its AST strings so a

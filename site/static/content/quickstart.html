@@ -1,35 +1,18 @@
 <h1 id="eshkol-quickstart-guide">Eshkol Quickstart Guide</h1>
 <p><strong>Get started with Eshkol in 15 minutes</strong></p>
-<p>This hands-on tutorial introduces Eshkol’s core features through
-practical examples. You’ll learn functions, lists, tensors, and
-automatic differentiation - the tools for scientific computing and AI
-systems programming.</p>
+<p>This hands-on tutorial introduces Eshkol’s core features through practical examples. You’ll learn functions, lists, tensors, and automatic differentiation - the tools for scientific computing and AI systems programming.</p>
 <blockquote>
-<p><strong>Reading the <code>; =&gt;</code> annotations.</strong> They
-give an expression’s <strong>value</strong>. An inexact value is
-sometimes written with its <code>.0</code> (<code>6.0</code>) for
-clarity, but what the compiler <em>prints</em> for an integral double
-omits the decimal point — <code>6</code>, not <code>6.0</code> — and the
-value is still inexact. <code>-0.0</code> is the one exception and
-prints in full. Text inside a fenced result block is the exact printed
-output. See <a
-href="reference/language/numeric-tower.md#exactness">reference/language/numeric-tower.md</a>.</p>
+<p><strong>Reading the <code>; =&gt;</code> annotations.</strong> They give an expression’s <strong>value</strong>. An inexact value is sometimes written with its <code>.0</code> (<code>6.0</code>) for clarity, but what the compiler <em>prints</em> for an integral double omits the decimal point — <code>6</code>, not <code>6.0</code> — and the value is still inexact. <code>-0.0</code> is the one exception and prints in full. Text inside a fenced result block is the exact printed output. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exactness" target="_blank" rel="noopener noreferrer">reference/language/numeric-tower.md</a>.</p>
 </blockquote>
 <hr />
 <h2 id="try-without-installing">Try Without Installing</h2>
-<p>Visit <strong><a href="https://eshkol.ai">eshkol.ai</a></strong> to
-try Eshkol in your browser:</p>
+<p>Visit <strong><a href="https://eshkol.ai">eshkol.ai</a></strong> to try Eshkol in your browser:</p>
 <ul>
-<li><strong>Playground</strong> — Full REPL with a 72-opcode core VM and
-741 VM-table builtins running in WebAssembly</li>
-<li><strong>Learn</strong> — interactive textbook with runnable code
-examples, plus 27 in-depth tutorials</li>
-<li><strong>Examples</strong> — 10 complete programs you can run
-instantly</li>
+<li><strong>Playground</strong> — Full REPL with a 72-opcode core VM and 741 VM-table builtins running in WebAssembly</li>
+<li><strong>Learn</strong> — interactive textbook with runnable code examples, plus 27 in-depth tutorials</li>
+<li><strong>Examples</strong> — 10 complete programs you can run instantly</li>
 </ul>
-<p>No installation required. The REPL runs the bytecode VM, compiled to
-WebAssembly through Emscripten. Automatic differentiation, exact
-arithmetic, knowledge bases, and more all work in the browser.</p>
+<p>No installation required. The REPL runs the bytecode VM, compiled to WebAssembly through Emscripten. Automatic differentiation, exact arithmetic, knowledge bases, and more all work in the browser.</p>
 <hr />
 <h2 id="installation">Installation</h2>
 <h3 id="macos-homebrew">macOS (Homebrew)</h3>
@@ -38,12 +21,8 @@ brew install eshkol</code></pre>
 <h3 id="linux-debianubuntu">Linux (Debian/Ubuntu)</h3>
 <pre class="bash"><code># Download .deb from https://github.com/tsotchke/eshkol/releases
 sudo dpkg -i eshkol_*.deb</code></pre>
-<h3 id="linux-from-source-any-distribution">Linux (from source, any
-distribution)</h3>
-<p>Eshkol’s default pinned LLVM major is 21, which most distributions do
-not ship by default. The universal build script detects your distro
-family, provisions LLVM 21 and the build dependencies for it, and then
-configures and builds:</p>
+<h3 id="linux-from-source-any-distribution">Linux (from source, any distribution)</h3>
+<p>Eshkol’s default pinned LLVM major is 21, which most distributions do not ship by default. The universal build script detects your distro family, provisions LLVM 21 and the build dependencies for it, and then configures and builds:</p>
 <pre class="bash"><code>git clone https://github.com/tsotchke/eshkol.git
 cd eshkol
 scripts/build-linux.sh            # deps + configure + build
@@ -66,20 +45,17 @@ scripts/build-linux.sh --ctest    # also run the test suite</code></pre>
 <tr>
 <td>debian</td>
 <td>Debian, Ubuntu, Linux Mint, LMDE, Pop!_OS, elementary, Kali</td>
-<td>apt.llvm.org (base codename resolved automatically; Mint’s own
-codename is never used)</td>
+<td>apt.llvm.org (base codename resolved automatically; Mint’s own codename is never used)</td>
 </tr>
 <tr>
 <td>arch</td>
 <td>Arch, Manjaro, EndeavourOS, CachyOS</td>
-<td>pacman (current llvm when it is major 21, else the versioned llvm21
-legacy packages)</td>
+<td>pacman (current llvm when it is major 21, else the versioned llvm21 legacy packages)</td>
 </tr>
 <tr>
 <td>fedora</td>
 <td>Fedora, RHEL, CentOS Stream, Rocky, Alma</td>
-<td>dnf (default LLVM when it is 21, else the versioned llvm21
-packages)</td>
+<td>dnf (default LLVM when it is 21, else the versioned llvm21 packages)</td>
 </tr>
 <tr>
 <td>suse</td>
@@ -89,18 +65,12 @@ packages)</td>
 <tr>
 <td>alpine</td>
 <td>Alpine</td>
-<td>apk (musl libc; experimental, not a release platform; run
-<code>apk add bash</code> first)</td>
+<td>apk (musl libc; experimental, not a release platform; run <code>apk add bash</code> first)</td>
 </tr>
 </tbody>
 </table>
-<p>Mint users can equivalently run
-<code>scripts/build-linux-mint.sh</code> (a shim for the same script).
-If a Debian-derivative’s apt.llvm.org suite cannot be resolved
-automatically, set <code>ESHKOL_BASE_CODENAME=jammy</code> (or
-<code>noble</code>/<code>bookworm</code>) and rerun.</p>
-<h3 id="windows-visual-studio-2022-llvm-21">Windows (Visual Studio 2022
-+ LLVM 21)</h3>
+<p>Mint users can equivalently run <code>scripts/build-linux-mint.sh</code> (a shim for the same script). If a Debian-derivative’s apt.llvm.org suite cannot be resolved automatically, set <code>ESHKOL_BASE_CODENAME=jammy</code> (or <code>noble</code>/<code>bookworm</code>) and rerun.</p>
+<h3 id="windows-visual-studio-2022--llvm-21">Windows (Visual Studio 2022 + LLVM 21)</h3>
 <pre class="powershell"><code># In Developer PowerShell for VS 2022:
 git clone https://github.com/tsotchke/eshkol.git
 cd eshkol
@@ -121,20 +91,9 @@ eshkol-repl
 echo &#39;(display &quot;Hello, Eshkol!&quot;)&#39; &gt; hello.esk
 eshkol-run hello.esk -o hello
 ./hello</code></pre>
-<p><strong>Requirements</strong>: LLVM 21 by default — the compiler
-builds against LLVM <strong>18 through 24</strong>, selected with
-<code>-DESHKOL_REQUIRED_LLVM_MAJOR=&lt;n&gt;</code>; a C++20 compiler;
-CMake 3.14+; Ninja; native image codecs on Linux
-(<code>libpng-dev</code>, <code>libjpeg-dev</code>,
-<code>libwebp-dev</code>; macOS uses ImageIO/CoreGraphics)
-<strong>Platforms</strong>: Linux, macOS (x86-64, ARM64), Windows
-(native x86-64)</p>
-<p><strong>Web REPL</strong>: Visit <a
-href="https://eshkol.ai">eshkol.ai</a> for an interactive Eshkol
-environment without installation — includes a full REPL, tutorials, and
-runnable examples.</p>
-<p><strong>Bytecode</strong>: Emit portable ESKB bytecode alongside
-native compilation: <code>eshkol-run hello.esk -B hello.eskb</code></p>
+<p><strong>Requirements</strong>: LLVM 21 by default — the compiler builds against LLVM <strong>18 through 24</strong>, selected with <code>-DESHKOL_REQUIRED_LLVM_MAJOR=&lt;n&gt;</code>; a C++20 compiler; CMake 3.14+; Ninja; native image codecs on Linux (<code>libpng-dev</code>, <code>libjpeg-dev</code>, <code>libwebp-dev</code>; macOS uses ImageIO/CoreGraphics) <strong>Platforms</strong>: Linux, macOS (x86-64, ARM64), Windows (native x86-64)</p>
+<p><strong>Web REPL</strong>: Visit <a href="https://eshkol.ai">eshkol.ai</a> for an interactive Eshkol environment without installation — includes a full REPL, tutorials, and runnable examples.</p>
+<p><strong>Bytecode</strong>: Emit portable ESKB bytecode alongside native compilation: <code>eshkol-run hello.esk -B hello.eskb</code></p>
 <hr />
 <h2 id="part-1-basics-2-minutes">Part 1: Basics (2 minutes)</h2>
 <h3 id="numbers-and-arithmetic">Numbers and Arithmetic</h3>
@@ -154,13 +113,7 @@ native compilation: <code>eshkol-run hello.esk -B hello.eskb</code></p>
 (sqrt 16)           ; =&gt; 4
 (sin 3.14159)       ; =&gt; 2.65358979335273e-06
 (pow 2 10)          ; =&gt; 1024</code></pre>
-<p><strong>Type System</strong>: Polymorphic arithmetic with automatic
-promotion (exact integer → rational → double, promoting only when a
-value actually requires it). An inexact value with no fractional part
-prints without a decimal point, so <code>4</code> above may be either
-exact or inexact — ask <code>exact?</code> if it matters. See <a
-href="reference/language/numeric-tower.md">the numeric tower
-reference</a>.</p>
+<p><strong>Type System</strong>: Polymorphic arithmetic with automatic promotion (exact integer → rational → double, promoting only when a value actually requires it). An inexact value with no fractional part prints without a decimal point, so <code>4</code> above may be either exact or inexact — ask <code>exact?</code> if it matters. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md" target="_blank" rel="noopener noreferrer">the numeric tower reference</a>.</p>
 <hr />
 <h3 id="variables-and-functions">Variables and Functions</h3>
 <pre class="scheme"><code>; Define variables
@@ -185,8 +138,7 @@ reference</a>.</p>
 (map (lambda (f) (f 10 2)) ops)  ; =&gt; (12 8 20 5)</code></pre>
 <hr />
 <h2 id="part-2-lists-3-minutes">Part 2: Lists (3 minutes)</h2>
-<p>Lists are the fundamental data structure for symbolic
-computation.</p>
+<p>Lists are the fundamental data structure for symbolic computation.</p>
 <pre class="scheme"><code>; Creating lists
 &#39;(1 2 3)                    ; Quoted literal
 (list 1 2 3)                ; Constructor
@@ -241,8 +193,7 @@ computation.</p>
 (define acct (make-account 100))
 (acct 50)   ; =&gt; 150
 (acct -30)  ; =&gt; 120</code></pre>
-<p><strong>Key Feature</strong>: Closures support <code>set!</code> on
-captured variables (mutable captures via pointer-passing)</p>
+<p><strong>Key Feature</strong>: Closures support <code>set!</code> on captured variables (mutable captures via pointer-passing)</p>
 <hr />
 <h2 id="part-4-tensors-3-minutes">Part 4: Tensors (3 minutes)</h2>
 <p>N-dimensional arrays for numerical computing.</p>
@@ -275,13 +226,10 @@ captured variables (mutable captures via pointer-passing)</p>
 (tensor-sum #(1 2 3 4 5))   ; =&gt; 15.0
 (tensor-mean v)             ; =&gt; 2.0
 (norm #(3.0 4.0))           ; =&gt; 5.0</code></pre>
-<p><strong>Performance</strong>: Zero-copy views for
-reshape/transpose/flatten</p>
+<p><strong>Performance</strong>: Zero-copy views for reshape/transpose/flatten</p>
 <hr />
-<h2 id="part-5-automatic-differentiation-5-minutes">Part 5: Automatic
-Differentiation (5 minutes)</h2>
-<p>The killer feature: <strong>three modes of
-differentiation</strong>.</p>
+<h2 id="part-5-automatic-differentiation-5-minutes">Part 5: Automatic Differentiation (5 minutes)</h2>
+<p>The killer feature: <strong>three modes of differentiation</strong>.</p>
 <h3 id="symbolic-differentiation">Symbolic Differentiation</h3>
 <p>Compile-time transformation with algebraic simplification.</p>
 <pre class="scheme"><code>; Symbolic derivative (AST transformation).
@@ -291,8 +239,7 @@ differentiation</strong>.</p>
 (diff (* x x) x)                ; =&gt; (* 2 x)
 (diff (sin (* 2 x)) x)          ; =&gt; (* (cos (* 2 x)) 2)
 (diff (/ 1 x) x)                ; =&gt; (/ (- 1) (* x x))</code></pre>
-<h3 id="forward-mode-ad-dual-numbers">Forward-Mode AD (Dual
-Numbers)</h3>
+<h3 id="forward-mode-ad-dual-numbers">Forward-Mode AD (Dual Numbers)</h3>
 <p>Efficient for functions ℝ → ℝⁿ (single input, many outputs).</p>
 <pre class="scheme"><code>; Derivative of scalar function
 (define (f x) (* x x x))  ; x³
@@ -306,13 +253,10 @@ Numbers)</h3>
 ; Higher-order: returns derivative function
 (define df (derivative f))
 (df 3.0)  ; =&gt; 27.0</code></pre>
-<p><strong>Method</strong>: Dual numbers
-<code>(value, derivative)</code> with automatic chain rule</p>
+<p><strong>Method</strong>: Dual numbers <code>(value, derivative)</code> with automatic chain rule</p>
 <hr />
-<h3 id="reverse-mode-ad-backpropagation">Reverse-Mode AD
-(Backpropagation)</h3>
-<p>Efficient for functions ℝⁿ → ℝ (many inputs, single output).
-Essential for machine learning.</p>
+<h3 id="reverse-mode-ad-backpropagation">Reverse-Mode AD (Backpropagation)</h3>
+<p>Efficient for functions ℝⁿ → ℝ (many inputs, single output). Essential for machine learning.</p>
 <pre class="scheme"><code>; Gradient of scalar function
 (define (f v) 
   (+ (* (vref v 0) (vref v 0))
@@ -328,8 +272,7 @@ Essential for machine learning.</p>
 
 (define grad-loss (gradient loss))
 (grad-loss W train-data)  ; Gradient for optimization</code></pre>
-<p><strong>Method</strong>: Computational graph + backpropagation
-(reverse accumulation)</p>
+<p><strong>Method</strong>: Computational graph + backpropagation (reverse accumulation)</p>
 <hr />
 <h3 id="vector-calculus">Vector Calculus</h3>
 <p>Physics and field theory operators.</p>
@@ -353,11 +296,9 @@ Essential for machine learning.</p>
 
 ; Hessian (curvature)
 (hessian f #(1.0 1.0))  ; =&gt; #((2.0 0.0) (0.0 2.0))</code></pre>
-<p><strong>Applications</strong>: Physics simulations, optimization, PDE
-solvers</p>
+<p><strong>Applications</strong>: Physics simulations, optimization, PDE solvers</p>
 <hr />
-<h2 id="part-6-complete-example---neural-network-training">Part 6:
-Complete Example - Neural Network Training</h2>
+<h2 id="part-6-complete-example---neural-network-training">Part 6: Complete Example - Neural Network Training</h2>
 <p>Here’s a complete 2-layer neural network with backpropagation:</p>
 <pre class="scheme"><code>(require core.functional)
 
@@ -445,19 +386,14 @@ Complete Example - Neural Network Training</h2>
 (train 1000 0.01)</code></pre>
 <p><strong>What just happened?</strong></p>
 <ol type="1">
-<li><strong>Defined a neural network</strong> with 2 layers (3→4→2
-neurons)</li>
-<li><strong>Automatic differentiation</strong> computed gradients of
-loss w.r.t. all weights</li>
-<li><strong>Gradient descent</strong> updated weights to minimize
-loss</li>
-<li><strong>Zero manual derivatives</strong> - the compiler computed
-them automatically!</li>
+<li><strong>Defined a neural network</strong> with 2 layers (3→4→2 neurons)</li>
+<li><strong>Automatic differentiation</strong> computed gradients of loss w.r.t. all weights</li>
+<li><strong>Gradient descent</strong> updated weights to minimize loss</li>
+<li><strong>Zero manual derivatives</strong> - the compiler computed them automatically!</li>
 </ol>
 <hr />
 <h2 id="key-language-features">Key Language Features</h2>
-<h3 id="homoiconic-code-as-data">1. <strong>Homoiconic
-Code-as-Data</strong></h3>
+<h3 id="1-homoiconic-code-as-data">1. <strong>Homoiconic Code-as-Data</strong></h3>
 <pre class="scheme"><code>; Code is data
 (define code &#39;(lambda (x) (* x 2)))
 
@@ -469,7 +405,7 @@ Code-as-Data</strong></h3>
 (display (lambda (x) (* x 2)))
 ; Output: (lambda (x) (* x 2))</code></pre>
 <hr />
-<h3 id="pattern-matching">2. <strong>Pattern Matching</strong></h3>
+<h3 id="2-pattern-matching">2. <strong>Pattern Matching</strong></h3>
 <pre class="scheme"><code>(define (classify x)
   (match x
     ((? number?) &#39;is-number)
@@ -480,8 +416,7 @@ Code-as-Data</strong></h3>
 (classify 42)           ; =&gt; is-number
 (classify &#39;(1 2 3))     ; =&gt; is-triple</code></pre>
 <hr />
-<h3 id="tail-call-optimization">3. <strong>Tail Call
-Optimization</strong></h3>
+<h3 id="3-tail-call-optimization">3. <strong>Tail Call Optimization</strong></h3>
 <pre class="scheme"><code>; Tail-recursive factorial (no stack overflow)
 (define (factorial n)
   (letrec ((fact-iter 
@@ -493,14 +428,14 @@ Optimization</strong></h3>
 
 (factorial 10000)  ; Works! (optimized to loop)</code></pre>
 <hr />
-<h3 id="exception-handling">4. <strong>Exception Handling</strong></h3>
+<h3 id="4-exception-handling">4. <strong>Exception Handling</strong></h3>
 <pre class="scheme"><code>(guard (exn
          ((divide-by-zero? exn) &#39;infinity)
          (else &#39;unknown-error))
   (/ 1 0))
 ; =&gt; infinity</code></pre>
 <hr />
-<h3 id="file-io">5. <strong>File I/O</strong></h3>
+<h3 id="5-file-io">5. <strong>File I/O</strong></h3>
 <pre class="scheme"><code>; Write to file — the string comes first, the port second
 (define out (open-output-file &quot;data.txt&quot;))
 (write-line &quot;Hello, File!&quot; out)
@@ -512,8 +447,7 @@ Optimization</strong></h3>
 (close-port in)
 (display line)  ; =&gt; Hello, File!</code></pre>
 <hr />
-<h2 id="advanced-example-optimization">Advanced Example:
-Optimization</h2>
+<h2 id="advanced-example-optimization">Advanced Example: Optimization</h2>
 <p>Gradient descent to find minimum of Rosenbrock function.</p>
 <pre class="scheme"><code>; Rosenbrock function: f(x,y) = (1-x)² + 100(y-x²)²
 (define (rosenbrock v)
@@ -568,14 +502,9 @@ Iter 100 f(x) = 3.847 x = #(0.234 0.076)
 Iter 900 f(x) = 0.00012 x = #(0.989 0.978)
 Optimum: #(0.999 0.998)
 f(optimum) = 8.4e-7</code></pre>
-<p><strong>What makes this powerful?</strong> - Gradient computed
-<strong>automatically</strong> - no manual calculus! - Works with
-<strong>any function</strong> - change <code>rosenbrock</code> to your
-objective - Scales to <strong>high dimensions</strong> - gradient
-computation is O(1) per parameter</p>
+<p><strong>What makes this powerful?</strong> - Gradient computed <strong>automatically</strong> - no manual calculus! - Works with <strong>any function</strong> - change <code>rosenbrock</code> to your objective - Scales to <strong>high dimensions</strong> - gradient computation is O(1) per parameter</p>
 <hr />
-<h2 id="physics-example-heat-equation">Physics Example: Heat
-Equation</h2>
+<h2 id="physics-example-heat-equation">Physics Example: Heat Equation</h2>
 <p>Solve the 1D heat equation: ∂u/∂t = α∇²u</p>
 <pre class="scheme"><code>(require core.functional)
 
@@ -664,32 +593,14 @@ Equation</h2>
 <h2 id="next-steps">Next Steps</h2>
 <h3 id="learn-more">Learn More</h3>
 <ol type="1">
-<li><strong><a href="API_REFERENCE.md">API Reference</a></strong> —
-Complete function reference (550+ functions)</li>
-<li><strong><a href="ESHKOL_V1_ARCHITECTURE.md">Architecture
-Guide</a></strong> — System internals (memory, types, compilation)</li>
-<li><strong><a href="reference/language/INDEX.md">Language
-Reference</a></strong> — Comprehensive language guide</li>
-<li><strong><a href="breakdown/AUTODIFF.md">Autodiff Deep
-Dive</a></strong> — Three differentiation modes in detail</li>
+<li><strong><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a></strong> — Complete function reference (550+ functions)</li>
+<li><strong><a href="/docs#page=eshkol_v1_architecture" data-url="/content/eshkol_v1_architecture.html">Architecture Guide</a></strong> — System internals (memory, types, compilation)</li>
+<li><strong><a href="/docs#page=reference_language" data-url="/content/reference_language.html">Language Reference</a></strong> — Comprehensive language guide</li>
+<li><strong><a href="/docs#page=breakdown_autodiff" data-url="/content/breakdown_autodiff.html">Autodiff Deep Dive</a></strong> — Three differentiation modes in detail</li>
 </ol>
 <h3 id="example-programs">Example Programs</h3>
-<p>Explore the <code>examples/</code> directory: -
-<code>examples/hello.esk</code> - Simplest program -
-<code>examples/autodiff.esk</code> - Forward and reverse-mode automatic
-differentiation - <code>examples/tensors.esk</code> - Linear algebra
-with BLAS / GPU dispatch - <code>examples/parallel.esk</code> -
-Work-stealing parallel-map / futures -
-<code>examples/consciousness.esk</code> - Logic + factor-graph +
-workspace stack - <code>examples/milli_mag_bohrification.esk</code> -
-Exact-numeric tower applied to CODATA physical-constants computation -
-<code>tests/ml/impressive_demo.esk</code> - ML showcase</p>
-<p>For agent harnesses and the larger research-grade examples
-(<code>agent.esk</code>, <code>selene_*.esk</code>,
-<code>consciousness_inference.esk</code>), see the project tutorials at
-<a href="tutorials/"><code>tutorials/</code></a> — Tutorial 04 covers
-the consciousness engine and Tutorials 21–26 cover project-scale
-examples.</p>
+<p>Explore the <code>examples/</code> directory: - <code>examples/hello.esk</code> - Simplest program - <code>examples/autodiff.esk</code> - Forward and reverse-mode automatic differentiation - <code>examples/tensors.esk</code> - Linear algebra with BLAS / GPU dispatch - <code>examples/parallel.esk</code> - Work-stealing parallel-map / futures - <code>examples/consciousness.esk</code> - Logic + factor-graph + workspace stack - <code>examples/milli_mag_bohrification.esk</code> - Exact-numeric tower applied to CODATA physical-constants computation - <code>tests/ml/impressive_demo.esk</code> - ML showcase</p>
+<p>For agent harnesses and the larger research-grade examples (<code>agent.esk</code>, <code>selene_*.esk</code>, <code>consciousness_inference.esk</code>), see the project tutorials at <a href="https://github.com/tsotchke/eshkol/tree/master/docs/tutorials" target="_blank" rel="noopener noreferrer"><code>tutorials/</code></a> — Tutorial 04 covers the consciousness engine and Tutorials 21–26 cover project-scale examples.</p>
 <h3 id="standard-library">Standard Library</h3>
 <pre class="scheme"><code>; Import modules
 (require core.list.higher_order)  ; fold, filter, any, every
@@ -700,8 +611,7 @@ examples.</p>
 
 ; Or import everything at once
 (require stdlib)</code></pre>
-<p>Full module list in <a
-href="../lib/stdlib.esk"><code>lib/stdlib.esk</code></a></p>
+<p>Full module list in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/stdlib.esk" target="_blank" rel="noopener noreferrer"><code>lib/stdlib.esk</code></a></p>
 <hr />
 <h3 id="statistics">Statistics</h3>
 <pre class="scheme"><code>(require math.statistics)
@@ -754,7 +664,7 @@ eshkol-run -O2 program.esk -o program
 # Compile without stdlib (bare metal)
 eshkol-run --no-stdlib program.esk -o program</code></pre>
 <hr />
-<h2 id="tips-tricks">Tips &amp; Tricks</h2>
+<h2 id="tips--tricks">Tips &amp; Tricks</h2>
 <h3 id="performance">Performance</h3>
 <pre class="scheme"><code>; Use let for cached computations
 (let ((expensive-calc (big-computation)))
@@ -805,18 +715,10 @@ eshkol-run --no-stdlib program.esk -o program</code></pre>
 ((curried-add 3) 4)  ; =&gt; 7</code></pre>
 <hr />
 <h2 id="troubleshooting">Troubleshooting</h2>
-<p><strong>Error: “Unknown function”</strong> - Check spelling and
-imports - Use <code>(require core.module)</code> for standard
-library</p>
-<p><strong>Error: “Type mismatch”</strong> - Eshkol uses gradual typing
-- type errors are warnings - Check if you’re mixing incompatible
-types</p>
-<p><strong>Segfault or crash</strong> - Report bug with minimal
-reproducer - Check if using external pointers correctly</p>
-<p><strong>Slow performance</strong> - Compile with
-<code>eshkol-run</code> for production (not REPL) - Use tensors for
-numerical code - Enable tail call optimization with
-<code>letrec</code></p>
+<p><strong>Error: “Unknown function”</strong> - Check spelling and imports - Use <code>(require core.module)</code> for standard library</p>
+<p><strong>Error: “Type mismatch”</strong> - Eshkol uses gradual typing - type errors are warnings - Check if you’re mixing incompatible types</p>
+<p><strong>Segfault or crash</strong> - Report bug with minimal reproducer - Check if using external pointers correctly</p>
+<p><strong>Slow performance</strong> - Compile with <code>eshkol-run</code> for production (not REPL) - Use tensors for numerical code - Enable tail call optimization with <code>letrec</code></p>
 <hr />
 <h2 id="repl-commands">REPL Commands</h2>
 <pre class="bash"><code># Start REPL
@@ -827,9 +729,7 @@ eshkol&gt; (load &quot;mycode.esk&quot;)
 
 # Exit
 eshkol&gt; (exit)</code></pre>
-<p><strong>REPL Features</strong>: - Cross-evaluation persistence
-(variables and functions persist) - JIT compilation (LLVM ORC) -
-Incremental development</p>
+<p><strong>REPL Features</strong>: - Cross-evaluation persistence (variables and functions persist) - JIT compilation (LLVM ORC) - Incremental development</p>
 <hr />
 <h2 id="compilation">Compilation</h2>
 <h3 id="compile-to-executable">Compile to Executable</h3>
@@ -846,10 +746,8 @@ gcc program.o build/libeshkol-static.a -o program -lm
 <pre class="bash"><code>eshkol-run -c mylib.esk -o mylib.o
 ar rcs libmylib.a mylib.o</code></pre>
 <hr />
-<h2 id="exact-arithmetic-complex-numbers-and-the-numeric-tower">Exact
-Arithmetic, Complex Numbers and the Numeric Tower</h2>
-<h3 id="exact-arithmetic-bignums-rationals">Exact Arithmetic (Bignums
-&amp; Rationals)</h3>
+<h2 id="exact-arithmetic-complex-numbers-and-the-numeric-tower">Exact Arithmetic, Complex Numbers and the Numeric Tower</h2>
+<h3 id="exact-arithmetic-bignums--rationals">Exact Arithmetic (Bignums &amp; Rationals)</h3>
 <pre class="scheme"><code>;; Arbitrary-precision integers
 (define big (+ 9223372036854775807 1))  ; Overflows int64 → bignum
 (display big)       ; =&gt; 9223372036854775808
@@ -878,9 +776,7 @@ Arithmetic, Complex Numbers and the Numeric Tower</h2>
 
 ;; …and differentiation, which reads the runtime value rather than the source
 (derivative (lambda (x) (* x x)) 1/3)   ; =&gt; 2/3   exact</code></pre>
-<p>Everything above answers identically under
-<code>eshkol-run -r</code>, under AOT, and under the bytecode VM —
-bignum-backed rationals included.</p>
+<p>Everything above answers identically under <code>eshkol-run -r</code>, under AOT, and under the bytecode VM — bignum-backed rationals included.</p>
 <hr />
 <h3 id="complex-numbers">Complex Numbers</h3>
 <pre class="scheme"><code>;; Create complex numbers
@@ -970,11 +866,9 @@ eshkol&gt; (sort &lt; &#39;(3 1 4 1 5 9))
 eshkol&gt; :type 42
 Integer
 eshkol&gt; :quit</code></pre>
-<p><strong>REPL Features</strong>: Cross-eval persistence, hot code
-reload, stdlib support, type introspection.</p>
+<p><strong>REPL Features</strong>: Cross-eval persistence, hot code reload, stdlib support, type introspection.</p>
 <hr />
-<h3 id="machine-learning-with-the-tensor-builtins">Machine Learning with
-the Tensor Builtins</h3>
+<h3 id="machine-learning-with-the-tensor-builtins">Machine Learning with the Tensor Builtins</h3>
 <pre class="scheme"><code>;; Initialize weights with Kaiming initialization
 (define W1 (zeros 4 3))
 (kaiming-normal! W1 3)              ; fan-in = 3
@@ -1069,46 +963,28 @@ eshkol-run --wasm app.esk -o app.wasm</code></pre>
 (web-canvas-fill-style ctx &quot;blue&quot;)
 (web-canvas-fill-rect ctx 50.0 50.0 100.0 80.0)
 (web-canvas-fill-text ctx &quot;Hello from Eshkol!&quot; 60.0 100.0)</code></pre>
-<p>73 web API functions available: DOM manipulation, events, Canvas 2D,
-localStorage, fetch, timers.</p>
+<p>73 web API functions available: DOM manipulation, events, Canvas 2D, localStorage, fetch, timers.</p>
 <hr />
 <h2 id="resources">Resources</h2>
 <ul>
 <li><strong>GitHub</strong>: https://github.com/tsotchke/eshkol</li>
-<li><strong>Documentation</strong>: <a
-href="."><code>docs/</code></a></li>
-<li><strong>Examples</strong>: <a
-href="../examples"><code>examples/</code></a></li>
-<li><strong>Tests</strong>: <a href="../tests"><code>tests/</code></a>
-(528 self-reported tests across 37 suites)</li>
+<li><strong>Documentation</strong>: <a href="https://github.com/tsotchke/eshkol/tree/master/docs" target="_blank" rel="noopener noreferrer"><code>docs/</code></a></li>
+<li><strong>Examples</strong>: <a href="https://github.com/tsotchke/eshkol/tree/master/examples" target="_blank" rel="noopener noreferrer"><code>examples/</code></a></li>
+<li><strong>Tests</strong>: <a href="https://github.com/tsotchke/eshkol/tree/master/tests" target="_blank" rel="noopener noreferrer"><code>tests/</code></a> (528 self-reported tests across 37 suites)</li>
 </ul>
 <hr />
-<h2 id="community-support">Community &amp; Support</h2>
-<p><strong>Report Issues</strong>: GitHub Issues
-<strong>Discussions</strong>: GitHub Discussions
-<strong>License</strong>: MIT</p>
+<h2 id="community--support">Community &amp; Support</h2>
+<p><strong>Report Issues</strong>: GitHub Issues <strong>Discussions</strong>: GitHub Discussions <strong>License</strong>: MIT</p>
 <hr />
 <h2 id="next-steps-1">Next Steps</h2>
 <ul>
-<li><strong><a href="API_REFERENCE.md">API Reference</a></strong> —
-Complete function documentation (555+ builtins)</li>
-<li><strong><a href="../examples/">Examples</a></strong> — Runnable
-programs demonstrating AD, tensors, parallelism, consciousness
-engine</li>
-<li><strong><a href="breakdown/CONSCIOUSNESS_ENGINE.md">Consciousness
-Engine</a></strong> — Logic programming, factor graphs, global
-workspace</li>
-<li><strong><a href="breakdown/AUTODIFF.md">Automatic
-Differentiation</a></strong> — Forward/reverse mode, vector calculus
-operators</li>
-<li><strong><a href="breakdown/MACHINE_LEARNING.md">Machine
-Learning</a></strong> — Neural network training, optimizers,
-activations</li>
-<li><strong><a href="ESHKOL_LANGUAGE_GUIDE.md">Language
-Guide</a></strong> — Comprehensive language tutorial</li>
-<li><strong><a href="https://eshkol.ai">eshkol.ai</a></strong> —
-Interactive browser REPL with runnable tutorials</li>
+<li><strong><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a></strong> — Complete function documentation (555+ builtins)</li>
+<li><strong><a href="https://github.com/tsotchke/eshkol/tree/master/examples" target="_blank" rel="noopener noreferrer">Examples</a></strong> — Runnable programs demonstrating AD, tensors, parallelism, consciousness engine</li>
+<li><strong><a href="/docs#page=breakdown_consciousness_engine" data-url="/content/breakdown_consciousness_engine.html">Consciousness Engine</a></strong> — Logic programming, factor graphs, global workspace</li>
+<li><strong><a href="/docs#page=breakdown_autodiff" data-url="/content/breakdown_autodiff.html">Automatic Differentiation</a></strong> — Forward/reverse mode, vector calculus operators</li>
+<li><strong><a href="/docs#page=breakdown_machine_learning" data-url="/content/breakdown_machine_learning.html">Machine Learning</a></strong> — Neural network training, optimizers, activations</li>
+<li><strong><a href="/docs#page=eshkol_language_guide" data-url="/content/eshkol_language_guide.html">Language Guide</a></strong> — Comprehensive language tutorial</li>
+<li><strong><a href="https://eshkol.ai">eshkol.ai</a></strong> — Interactive browser REPL with runnable tutorials</li>
 </ul>
 <hr />
-<p><strong>Copyright</strong> © 2025-2026 tsotchke
-<strong>License</strong>: MIT</p>
+<p><strong>Copyright</strong> © 2025-2026 tsotchke <strong>License</strong>: MIT</p>

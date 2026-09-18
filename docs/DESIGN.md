@@ -66,7 +66,7 @@ The LLVM backend delegates to roughly thirty specialized modules via `std::funct
 | collection_codegen.cpp | 3,173 | Vector, list, hash table operations |
 | parallel_llvm_codegen.cpp | 2,626 | Work-stealing parallelism codegen |
 | system_codegen.cpp | 2,039 | System, environment, time, process |
-| tensor_codegen.cpp | 1,867 | Tensor ops dispatch shell (post v1.2 split) |
+| tensor_codegen.cpp | 2,012 | Tensor ops dispatch shell (post v1.2 split) |
 | binding_codegen.cpp | 1,662 | let/let\*/letrec/letrec\* with TCO |
 | thread_pool.cpp | 1,524 | Work-stealing thread pool |
 | tensor_backward.cpp | 1,572 | Backward-mode AD gradients |
@@ -81,7 +81,7 @@ The LLVM backend delegates to roughly thirty specialized modules via `std::funct
 | hash_codegen.cpp | 734 | Hash operations |
 | complex_codegen.cpp | 640 | Complex number ops (Smith's formula) |
 
-The original `tensor_codegen.cpp` was split in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling 22,355 lines and re-exported through the original `tensor_codegen.cpp` dispatcher.
+The original `tensor_codegen.cpp` was split in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling 23,389 lines and re-exported through the original `tensor_codegen.cpp` dispatcher.
 
 Additional backends (XLA/StableHLO, Metal, CUDA, the bytecode VM and weight-matrix transformer artefacts) live alongside these modules in `lib/backend/`; the directory totals approximately 220,211 lines indexed.
 
@@ -206,7 +206,7 @@ R7RS-compliant numeric tower with automatic precision promotion:
 - **double**: IEEE 754 64-bit floats (inexact)
 - **complex**: Heap-allocated `{real:f64, imag:f64}` with Smith's formula division
 
-Exactness tracked via `ESHKOL_FLAG_EXACT` in the tagged value flags byte. R7RS semantics: exact + exact = exact, exact + inexact = inexact.
+Exactness tracked via `ESHKOL_VALUE_EXACT_FLAG` in the tagged value flags byte. R7RS semantics: exact + exact = exact, exact + inexact = inexact.
 
 ### Signal Processing
 

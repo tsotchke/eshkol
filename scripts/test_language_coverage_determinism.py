@@ -164,7 +164,7 @@ class LanguageCoverageDeterminismTest(unittest.TestCase):
 
     @staticmethod
     def normalise(root, records):
-        # A record names its source by DISPLAY path (ADR-0020), which for a
+        # A record names its source by DISPLAY path (ADR-0021), which for a
         # run directory inside the repository is repository-relative, so strip
         # that spelling as well as the absolute one.
         prefixes = [str(root)]
@@ -187,7 +187,7 @@ class LanguageCoverageDeterminismTest(unittest.TestCase):
             fields = record.split("\t")
             if fields[0] not in LOCATED_KINDS or len(fields) < 4:
                 continue
-            # Recorded paths are DISPLAY paths (ADR-0020): repository- or
+            # Recorded paths are DISPLAY paths (ADR-0021): repository- or
             # module-relative, never the build host's absolute path. Resolve
             # them against the repository root, which is their base.
             path = pathlib.Path(fields[1])

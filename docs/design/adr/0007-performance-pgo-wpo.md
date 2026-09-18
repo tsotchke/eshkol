@@ -1,6 +1,6 @@
 # ADR 0007: PGO, Whole-Program Optimization, and Staged Training Throughput
 
-Status: Proposed
+Status: Accepted — partially implemented: the Phase 0 slice (persisted artifacts default to O2 and the contract is asserted by `scripts/run_codegen_optlevel_tests.sh`; the `bench/pgo_corpus/` training corpus is exercised under JIT and AOT by `scripts/run_pgo_corpus_smoke.sh`) is in v1.3.5-evolve; remaining phases Proposed
 
 Date: 2026-07-09
 

@@ -10,7 +10,7 @@
 /**
  * @file source_paths.h
  * @brief The one place a source path is turned into the spelling that may be
- * recorded or emitted (ADR-0020).
+ * recorded or emitted (ADR-0021).
  *
  * A compiler reads files by their host path and *records* where code came
  * from in several places: the `NodeId -> SourceSpan` substrate's interned

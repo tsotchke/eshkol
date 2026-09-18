@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source gate for ADR-0020: AST string payloads have exactly one owner.
+"""Source gate for ADR-0021: AST string payloads have exactly one owner.
 
 Every producer of AST string payloads allocates through
 inc/eshkol/frontend/ast_strings.h, and no consumer frees one. This gate reads
@@ -137,7 +137,7 @@ def main(argv: list[str]) -> int:
     if problems:
         for p in problems:
             print(p)
-        print(f"FAIL: AST string owner gate ({len(problems)} violation(s)); see ADR-0020")
+        print(f"FAIL: AST string owner gate ({len(problems)} violation(s)); see ADR-0021")
         return 1
     print(f"PASS: AST string owner gate ({len(PRODUCERS)} producer files clean)")
     return 0

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""No shipped artifact carries a build-host path (ADR-0020).
+"""No shipped artifact carries a build-host path (ADR-0021).
 
 A compiler records where code came from: in diagnostics, in the location
 substrate, and in string constants the backend embeds so the runtime can name
@@ -138,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         for finding in findings:
             print(f"  {finding}")
         print(f"FAIL: artifact host-path gate ({len(findings)} finding(s) in "
-              f"{len(scanned)} artifact(s)); see ADR-0020")
+              f"{len(scanned)} artifact(s)); see ADR-0021")
         return 1
     print(f"PASS: artifact host-path gate ({len(scanned)} artifact(s) clean: {', '.join(scanned)})")
     return 0
