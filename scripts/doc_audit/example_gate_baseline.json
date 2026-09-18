@@ -23,19 +23,10 @@
         },
         "docs/tutorials/20_BITWISE_AND_SYSTEM.md": {
           "run-only": 1
-        },
-        "docs/tutorials/21_PROJECT_NEURAL_NETWORK.md": {
-          "known-defect": 1
-        },
-        "docs/tutorials/24_PROJECT_OPTIMISATION.md": {
-          "known-defect": 2
-        },
-        "docs/tutorials/26_PROJECT_SELF_IMPROVING.md": {
-          "known-defect": 1
         }
       },
       "marked_total": {
-        "known-defect": 6,
+        "known-defect": 2,
         "run-only": 1,
         "skip": 3
       }

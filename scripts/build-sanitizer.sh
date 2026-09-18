@@ -92,6 +92,20 @@ if [[ -n "${LLVM_CONFIG:-}" ]]; then
 fi
 cmake -S "$REPO_ROOT" -B "$BUILD_DIR" "${cmake_args[@]}"
 
+# Leak policy for sanitizer builds (ADR-0021; docs/reference/runtime/
+# memory-model.md "Leak detection during builds"). The build runs the
+# instrumented compiler on the standard library, which is a real compiler
+# workload, so it must be leak-clean under the same checked-in suppression
+# file as every other LeakSanitizer workload. CI's sanitizer lane and the
+# release producer (scripts/run_v1_3_release_producers.sh) use this same
+# setting; a caller's own ASAN_OPTIONS/LSAN_OPTIONS still win. macOS has no
+# working LeakSanitizer in the system toolchain, so it keeps detection off.
+if [[ "$ASAN" == "ON" && "$(uname -s)" != "Darwin" ]]; then
+    : "${ASAN_OPTIONS:=detect_leaks=1:halt_on_error=1:allocator_may_return_null=1}"
+    : "${LSAN_OPTIONS:=suppressions=$REPO_ROOT/.icc/lsan-suppressions.txt:print_suppressions=0}"
+    export ASAN_OPTIONS LSAN_OPTIONS
+fi
+
 cmake --build "$BUILD_DIR" --target eshkol-run stdlib --parallel "$JOBS"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then

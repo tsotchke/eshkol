@@ -1,8 +1,8 @@
 id: SW-182
 bucket: SILENT-WRONG
 family: ad/gradient-scalar-point-arguments
-status: open
-needs_decision: true
+status: fixed
+closed_at: "a41ac3f5"
 title: "native: (gradient f a b ...) with the point given as separate scalar arguments differentiates at 0 unless every argument is a literal, so a gradient-descent loop written that way never moves off its first gradient"
 repro: >-
   (define (loss a b) (+ (* (- a 3.0) (- a 3.0)) (* (- b 1.0) (- b 1.0))))
@@ -11,7 +11,7 @@ repro: >-
   (display (gradient loss p q))
   (display (gradient loss (+ p 0.0) (+ q 0.0)))
   (display (gradient loss (list p q)))
-observed: >-
+observed_before: >-
   `#(-4.8 -1.6)`, `#(-6 -2)`, `#(-6 -2)`, `#(-4.8 -1.6)` under `eshkol-run -r`
   and from an AOT binary, exit 0, no diagnostic. #(-6 -2) is the gradient at
   (0, 0): a point argument that is a variable, a parameter or any other
@@ -25,6 +25,27 @@ observed: >-
 correct: >-
   #(-4.8 -1.6) for every form, or a compile-time refusal of the scalar-argument
   form if only literals are meant to be accepted.
+root_cause: >-
+  The parser rewrote the separate-scalar form `(gradient f a b ...)` into a
+  vector point by assembling its own node, of the bare ESHKOL_TENSOR kind, in
+  place of the ESHKOL_TENSOR_OP node a written `#(...)` produces. Nothing else
+  produces that kind. Its lowering (codegenTensor in lib/backend/
+  llvm_codegen.cpp) handles an element that evaluates to a raw integer or
+  double and stored the constant 0 for anything else, so a variable, a
+  parameter, a loop variable or a call (all of which evaluate to a tagged
+  value) became 0. The VM compiles the form through its ordinary vector path,
+  which is why it was right. Every other operator (hessian, jacobian,
+  laplacian, divergence, curl, directional-derivative, derivative) takes a
+  single point expression and was already evaluated correctly; the vector,
+  list and `#(...)` point forms of gradient were too.
+fix: >-
+  The ruling is to support the form, since tutorial 24 teaches it by name.
+  The parser now seeds parse_vector_body with the first point argument, so
+  `(gradient f a b ...)` is parsed as the literal `#(a b ...)` it stands for,
+  by the same rules and through the same element evaluator every vector
+  literal uses. The bare-node lowering no longer invents a value: an element
+  it cannot store is a compile-time error. docs/reference/ad/operators.md
+  lists the separate-scalar point form.
 evidence: >-
   Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
   arm64 macOS, JIT and AOT. Three tutorial programs are written this way and
@@ -37,6 +58,14 @@ evidence: >-
   minimum at (19.99, 0) with f = 16000360.99 against (0.9944, 0.9888) and
   f = 3.14e-05 on the VM; problem 3 is written the same way.
   scripts/doc_audit/check_doc_examples.py reports all three.
+  Fixed on fix/v135-ad-carriers, Release build, arm64 macOS:
+  tests/ad/gradient_scalar_point_arguments_test.esk (29 checks: the four
+  ledger rows, globals, calls, mixed literal and variable, parameters,
+  let-bound, named-let loop variables, three arguments, a 100-step descent
+  loop, and every other operator's point as a control) fails 13 of 29 on the
+  base build and passes 29/29 on the fix, cached and uncached JIT and AOT.
+  scripts/doc_audit/check_doc_examples.py runs the three tutorial programs
+  with their markers removed and they match on JIT and AOT.
 caught_by: [doc-example-gate]
 missed_by: [run_ad_oracle, run_ad_exactness_gate, run_dense_tensor_ad_gate, doc_audit]
 notes: >-

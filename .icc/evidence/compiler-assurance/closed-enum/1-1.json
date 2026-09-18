@@ -1,0 +1,9 @@
+{
+  "schema": "eshkol.compiler_assurance.observation.v1",
+  "execution_id": "a67de94a-7c22-4130-835c-e53ece16eea2",
+  "dose": 1,
+  "gate_score": 1,
+  "raw_receipt": "/Users/tyr/Desktop/eshkol/.worktrees/v135-ad-carriers/.icc/evidence/compiler-assurance/raw/1-1.json",
+  "source_sha256": "1e86098e40b248d1c7948b0c747867238fe37d4fe0050ff9401d1c0dbb85ded0",
+  "git_sha": "2049d84b4e7dc1530806a2e143ed532dcab70a29"
+}

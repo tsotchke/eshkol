@@ -2757,6 +2757,8 @@ target_link_libraries(eshkol-runtime PUBLIC eshkol-qllm-abi)
 # hosted reader/runtime support but no LLVM libraries or code-generation TU.
 add_library(eshkol-workspace STATIC
   lib/frontend/parser.cpp
+  lib/frontend/ast_strings.cpp
+  lib/frontend/source_paths.cpp
   lib/frontend/node_identity.cpp
   lib/frontend/semantic_identity.cpp
   lib/frontend/diagnostic.cpp
@@ -3355,6 +3357,37 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/nod
     add_test(NAME node_identity_test COMMAND node_identity_test)
     set_tests_properties(node_identity_test PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: node identity substrate")
+endif()
+
+# ADR-0021: the one owner of AST string payloads.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/ast_strings_test.cpp")
+    add_executable(ast_strings_test tests/frontend/ast_strings_test.cpp)
+    target_compile_features(ast_strings_test PRIVATE cxx_std_20)
+    target_include_directories(ast_strings_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(ast_strings_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(ast_strings_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(ast_strings_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME ast_strings_test COMMAND ast_strings_test)
+    set_tests_properties(ast_strings_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: AST string owner")
+endif()
+
+# ADR-0021: a recorded source path is never the absolute host path.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/source_paths_test.cpp")
+    add_executable(source_paths_test tests/frontend/source_paths_test.cpp)
+    target_compile_features(source_paths_test PRIVATE cxx_std_20)
+    target_include_directories(source_paths_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(source_paths_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(source_paths_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(source_paths_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME source_paths_test COMMAND source_paths_test)
+    set_tests_properties(source_paths_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: source path normalization"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/semantic_identity_test.cpp")
@@ -4251,6 +4284,85 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: named_differentiand_closure_capture"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # `(gradient f a b ...)` is sugar for the vector point `#(a b ...)`. The parser
+    # built its own node for it, of a kind whose lowering stored 0 for any element
+    # that was not a numeric literal, so a point given as variables was
+    # differentiated at the origin with exit status 0 (SW-182). The form is now
+    # parsed as the vector literal it stands for. Every operator's point is
+    # exercised here. JIT with and without the run cache, and AOT.
+    add_test(
+        NAME gradient_scalar_point_arguments_cached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/gradient_scalar_point_arguments_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(gradient_scalar_point_arguments_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: gradient_scalar_point_arguments"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Invalid type for int64 storage|non-int-storage cell")
+    add_test(
+        NAME gradient_scalar_point_arguments_uncached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/gradient_scalar_point_arguments_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(gradient_scalar_point_arguments_uncached
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: gradient_scalar_point_arguments"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Invalid type for int64 storage|non-int-storage cell")
+    add_test(
+        NAME gradient_scalar_point_arguments_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/gradient_scalar_point_arguments_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/gradient_scalar_point_arguments_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/gradient_scalar_point_arguments_aot'"
+    )
+    set_tests_properties(gradient_scalar_point_arguments_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: gradient_scalar_point_arguments"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Invalid type for int64 storage|non-int-storage cell")
+    # A cons slot is a tagged value. Writing and reading one used to branch over
+    # a closed list of representations that a forward-mode dual number was not
+    # in, so a derivative through map, reduce, apply or a compound accessor with
+    # a lambda capturing the differentiated variable was 0, with a diagnostic on
+    # stderr and exit status 0 (SW-183). A slot is now moved whole
+    # (TaggedValueCodegen::loadConsSlot / storeConsSlot). The diagnostics are
+    # failure patterns because the old behaviour still exited 0.
+    add_test(
+        NAME differentiated_values_in_list_cells_cached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/differentiated_values_in_list_cells_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(differentiated_values_in_list_cells_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: differentiated_values_in_list_cells"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Invalid type for int64 storage|non-int-storage cell")
+    add_test(
+        NAME differentiated_values_in_list_cells_uncached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/differentiated_values_in_list_cells_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(differentiated_values_in_list_cells_uncached
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: differentiated_values_in_list_cells"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Invalid type for int64 storage|non-int-storage cell")
+    add_test(
+        NAME differentiated_values_in_list_cells_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/differentiated_values_in_list_cells_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/differentiated_values_in_list_cells_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/differentiated_values_in_list_cells_aot'"
+    )
+    set_tests_properties(differentiated_values_in_list_cells_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: differentiated_values_in_list_cells"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Invalid type for int64 storage|non-int-storage cell")
     # map and reduce call a statically known procedure directly. map re-resolved
     # a named closure's captures by name at the call site (cross-function IR
     # inside a nested lambda); reduce passed none. map now reads the closure's
@@ -7306,6 +7418,41 @@ if(ESHKOL_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         )
         set_tests_properties(oracle_schema_gate oracle_schema_gate_selftest PROPERTIES TIMEOUT 60)
+    endif()
+    # ADR-0021: AST string payloads have one owner. Fails on a raw
+    # new char[] / strdup in an AST producer, or a consumer freeing one.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_ast_string_owner.py")
+        add_test(
+            NAME ast_string_owner_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_ast_string_owner.py"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        add_test(
+            NAME ast_string_owner_gate_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_ast_string_owner.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(ast_string_owner_gate ast_string_owner_gate_selftest PROPERTIES TIMEOUT 60)
+    endif()
+    # ADR-0021: no shipped artifact carries a build-host path.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_artifact_paths.py")
+        add_test(
+            NAME artifact_host_path_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_artifact_paths.py"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        add_test(
+            NAME artifact_host_path_gate_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_artifact_paths.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(artifact_host_path_gate artifact_host_path_gate_selftest PROPERTIES TIMEOUT 60)
     endif()
     # Every branch-protection required status context must be reportable on
     # every PR shape (docs-only included) — see the module docstring for the

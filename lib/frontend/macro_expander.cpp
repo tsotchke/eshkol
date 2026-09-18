@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/core/ast_routing.h>
+#include <eshkol/frontend/ast_strings.h>
 #include <eshkol/frontend/macro_expander.h>
 #include <eshkol/logger.h>
 #include <cstring>
@@ -613,7 +614,7 @@ eshkol_ast_t MacroExpander::instantiateTemplate(const eshkol_macro_template_t* t
             // Variable not found - return as symbol reference
             eshkol_ast_t var_ast;
             var_ast.type = ESHKOL_VAR;
-            var_ast.variable.id = strdup(tmpl->variable_name);
+            var_ast.variable.id = eshkol_ast_strdup(tmpl->variable_name);
             return var_ast;
         }
 
@@ -1096,9 +1097,9 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
         auto rn = active_renames_.find(name);
         if (!in_datum_ && rn != active_renames_.end()) {
             eshkol_ast_t result = copyAst(ast);
-            // copyAst() strdup()s the id, so this must be free()/strdup() too.
-            free(result.variable.id);
-            result.variable.id = strdup(rn->second.c_str());
+            // Identifier text is owned by the AST string owner, so the copy's
+            // id is replaced, never freed (ast_strings.h).
+            result.variable.id = eshkol_ast_string_copy(rn->second);
             return result;
         }
         return copyAst(ast);
@@ -1270,7 +1271,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 if (op->lambda_op.rest_param &&
                     isRenameableBinder(op->lambda_op.rest_param, bindings)) {
                     op->lambda_op.rest_param =
-                        strdup(freshName(op->lambda_op.rest_param).c_str());
+                        eshkol_ast_string_copy(freshName(op->lambda_op.rest_param));
                 }
                 if (op->lambda_op.body) {
                     eshkol_ast_t* new_body = new eshkol_ast_t;
@@ -1305,7 +1306,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                     }
                 }
                 if (op->let_op.name && isRenameableBinder(op->let_op.name, bindings)) {
-                    op->let_op.name = strdup(freshName(op->let_op.name).c_str());
+                    op->let_op.name = eshkol_ast_string_copy(freshName(op->let_op.name));
                 }
 
                 if (op->let_op.num_bindings > 0 && op->let_op.bindings) {
@@ -1424,7 +1425,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                     if (it != bindings.end() && matchTreeHasValue(it->second.tree)) {
                         const eshkol_ast_t& v = matchTreeFirstScalar(it->second.tree);
                         if (v.type == ESHKOL_VAR && v.variable.id) {
-                            op->set_op.name = strdup(v.variable.id);
+                            op->set_op.name = eshkol_ast_strdup(v.variable.id);
                         }
                         // A non-identifier operand in a set! target position is
                         // a user error; leave the name alone so the compiler
@@ -1432,7 +1433,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                     } else {
                         auto rn = active_renames_.find(target);
                         if (rn != active_renames_.end()) {
-                            op->set_op.name = strdup(rn->second.c_str());
+                            op->set_op.name = eshkol_ast_string_copy(rn->second);
                         }
                     }
                 }
@@ -1535,11 +1536,11 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
 }
 
 /**
- * @brief Shallow-copies an AST node, deep-copying any owned string data so
- * the copy does not alias the original's heap allocations.
+ * @brief Shallow-copies an AST node, deep-copying its string payload into the
+ * AST string owner so the copy never aliases the original's text.
  *
  * For @c ESHKOL_STRING and @c ESHKOL_VAR nodes, the string/identifier
- * pointer is duplicated via strdup(). @c ESHKOL_OP nodes are copied
+ * pointer is duplicated via eshkol_ast_strdup(). @c ESHKOL_OP nodes are copied
  * shallowly here; deep-copying their nested operand pointers is the
  * responsibility of the caller (expandNode()/substituteBindings()), which
  * know which sub-pointers are relevant for each operation kind. All other
@@ -1554,15 +1555,16 @@ eshkol_ast_t MacroExpander::copyAst(const eshkol_ast_t& ast) {
     switch (ast.type) {
         case ESHKOL_STRING:
             if (ast.str_val.ptr) {
-                result.str_val.ptr = new char[ast.str_val.size];
-                memcpy(result.str_val.ptr, ast.str_val.ptr, ast.str_val.size);
+                // strndup terminates the copy even when a producer's size
+                // excludes the NUL.
+                result.str_val.ptr = eshkol_ast_strndup(ast.str_val.ptr, ast.str_val.size);
                 result.str_val.size = ast.str_val.size;
             }
             break;
 
         case ESHKOL_VAR:
             if (ast.variable.id) {
-                result.variable.id = strdup(ast.variable.id);
+                result.variable.id = eshkol_ast_strdup(ast.variable.id);
             }
             break;
 

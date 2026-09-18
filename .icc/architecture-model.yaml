@@ -62,10 +62,14 @@ components:
       type terms, typed expression metadata, and versioned frontend diagnostics.
       The resolver is a consumer of parser identity, not a second identity
       scheme, and its tables are shared by native tooling and future VM consumers.
+      AST string payloads have one owner here too (ADR-0021): a rooted chunked
+      arena every producer allocates from and no consumer frees.
     modules:
       - inc/eshkol/frontend/node_identity.h
       - inc/eshkol/frontend/semantic_identity.h
       - inc/eshkol/frontend/diagnostic.h
+      - inc/eshkol/frontend/ast_strings.h
+      - lib/frontend/ast_strings.cpp
       - lib/frontend/node_identity.cpp
       - lib/frontend/semantic_identity.cpp
       - lib/frontend/diagnostic.cpp
