@@ -21,6 +21,7 @@
 #include <string>
 
 #include "eshkol/eshkol.h"
+#include "eshkol/frontend/ast_strings.h"
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     /* Reject absurdly large inputs so the fuzzer corpus doesn't
@@ -36,10 +37,14 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
          * parser if the input triggers a bug, not to validate
          * syntax. */
         if (ast.type == ESHKOL_INVALID) break;
-        /* Free any heap allocations the AST carries before the next
-         * iteration overwrites the local. String/tensor payloads use
-         * `new[]` so eshkol_ast_clean's delete[] is correct. */
+        /* Free the tensor arrays the AST carries before the next
+         * iteration overwrites the local. String payloads belong to the
+         * AST string owner (ADR-0020) and are released below. */
         eshkol_ast_clean(&ast);
     }
+    /* Each input is a complete compilation: release its AST strings so a
+     * long campaign stays inside libFuzzer's RSS limit, and so a stale AST
+     * pointer from a previous input is a use-after-free, not a silent read. */
+    eshkol_ast_strings_teardown();
     return 0;
 }

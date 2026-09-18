@@ -116,6 +116,13 @@ off because its system toolchain has no working LeakSanitizer.
   LeakSanitizer's figure. The rooted retention stays in the per-line slope it
   pins; it does not disappear from the measurement because it is no longer a
   leak.
+- Long-running processes that parse on every request (the language server's
+  workspace checks, `eshkol-server`, runtime `eval`, the C FFI and the Python
+  binding) keep the process-lifetime default. Before this decision they leaked
+  the same identifiers, and they still retain node storage per parse. A
+  per-request compilation scope needs owned nodes too, so it belongs with epic
+  #182 and not in a strings-only owner. The parser fuzzer treats each input as
+  one compilation and tears the owner down after it.
 - Allocation is a bump in a 64 KiB chunk under a mutex, not one heap block
   per string. Compiling the standard library allocates 37 843 AST strings,
   295 050 bytes requested, in 7 chunks (459 KB reserved), against a peak RSS
