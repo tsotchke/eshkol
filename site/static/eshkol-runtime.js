@@ -222,6 +222,64 @@ class EshkolRuntime {
         return out;
     }
 
+    // ── Documentation pages ────────────────────────────────────────
+    // Published pages are HTML fragments under /content/, generated from the
+    // docs tree by scripts/build-site-content.sh (site/pages.json is the
+    // declared list). A view names its page in the URL fragment as
+    // "#page=<slug>" or "#page=<slug>&<heading-id>", so every page has a
+    // shareable address while the pathname router keeps seeing "/docs" or
+    // "/tutorials". Any other fragment is a heading id in the default page.
+    static contentRequest(hash) {
+        const match = /^#page=([a-z0-9][a-z0-9_]*)(?:&(.*))?$/.exec(hash || '');
+        if (!match) return { url: null, anchor: decodeURIComponent((hash || '').slice(1)) };
+        return { url: '/content/' + match[1] + '.html', anchor: decodeURIComponent(match[2] || '') };
+    }
+
+    // Load `url` into `target`. `.html` URLs are generated fragments and are
+    // inserted as they are (Scheme code blocks are highlighted here, because
+    // the fragments are rendered without a highlighter); anything else is
+    // fetched as Markdown and rendered client-side. When `url` is a view's
+    // default page and the address names another page, that page is loaded.
+    loadContent(url, target, options) {
+        const isDefault = !(options && options.explicit);
+        const isNav = /\/nav-[a-z0-9_]+\.html$/.test(url);
+        const request = EshkolRuntime.contentRequest(window.location.hash);
+        if (isDefault && !isNav && request.url) url = request.url;
+        if (!isNav) this._contentUrl = url;
+        const markActive = () => {
+            document.querySelectorAll('.docs-sidebar-item[data-url]').forEach((el) => {
+                el.classList.toggle('active', el.getAttribute('data-url') === this._contentUrl);
+            });
+        };
+        target.innerHTML = '<p style="color:#606078;font-style:italic">Loading...</p>';
+        return fetch(url).then((r) => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return r.text();
+        }).then((text) => {
+            if (!isNav && this._contentUrl !== url) return;  // superseded by a later click
+            if (/\.html$/.test(url)) {
+                target.innerHTML = text;
+                const SCHEME_LANGS = ['scheme', 'eshkol', 'lisp', 'scm'];
+                target.querySelectorAll('pre > code').forEach((code) => {
+                    const classes = (code.parentElement.className + ' ' + code.className).split(/\s+/);
+                    if (classes.some((name) => SCHEME_LANGS.includes(name))) {
+                        code.innerHTML = EshkolRuntime.highlightScheme(code.textContent);
+                    }
+                });
+            } else {
+                target.innerHTML = this.renderMarkdown(text);
+            }
+            markActive();
+            if (isNav) return;
+            // The anchor only exists after this async load, so scroll now.
+            const anchor = request.anchor ? document.getElementById(request.anchor) : null;
+            if (anchor) anchor.scrollIntoView();
+            else if (!isDefault) window.scrollTo(0, 0);
+        }).catch((e) => {
+            target.innerHTML = '<p style="color:#ff4444">Failed to load: ' + e.message + '</p>';
+        });
+    }
+
     renderMarkdown(md) {
         let html = md;
         // Extract code blocks FIRST to protect them from markdown transforms
@@ -1384,29 +1442,11 @@ class EshkolRuntime {
                     return 0;
                 },
 
-                // Content loading (fetch URL, render as markdown into target element)
+                // Content loading (fetch URL into target element). The work
+                // is in loadContent so the sidebar click handler shares it.
                 web_load_content: (urlPtr, targetHandle) => {
-                    const url = rt.readString(urlPtr);
                     const target = rt.handles.get(targetHandle);
-                    if (target) {
-                        target.innerHTML = '<p style="color:#606078;font-style:italic">Loading...</p>';
-                        fetch(url).then(r => {
-                            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-                            return r.text();
-                        }).then(text => {
-                            // Render markdown to HTML with syntax highlighting
-                            target.innerHTML = rt.renderMarkdown(text);
-                            // Deep links (/docs#section): the anchor only
-                            // exists after this async load, so scroll now.
-                            const fragment = decodeURIComponent(window.location.hash.slice(1));
-                            if (fragment) {
-                                const anchor = document.getElementById(fragment);
-                                if (anchor) anchor.scrollIntoView();
-                            }
-                        }).catch(e => {
-                            target.innerHTML = '<p style="color:#ff4444">Failed to load: ' + e.message + '</p>';
-                        });
-                    }
+                    if (target) rt.loadContent(rt.readString(urlPtr), target);
                     return 0;
                 },
 
