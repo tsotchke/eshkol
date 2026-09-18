@@ -11,6 +11,7 @@
 #include <eshkol/llvm_backend.h>
 #include <eshkol/abi_fingerprint.h>
 #include <eshkol/frontend/ast_strings.h>
+#include <eshkol/frontend/source_paths.h>
 #include <eshkol/frontend/node_identity.h>
 #include <eshkol/frontend/semantic_identity.h>
 #include <eshkol/frontend/diagnostic.h>
@@ -746,8 +747,13 @@ static bool g_emit_debug_info = false;
 static std::string g_debug_source_filename;
 static std::string g_debug_source_directory;
 // Source text + filepath for structured error messages with caret display.
+// g_source_filepath is a RECORDING spelling (ADR-0020): it is printed in
+// diagnostics and embedded as a string constant for runtime error locations,
+// so it is the normalized display path, never the absolute host path.
+// g_source_hostpath is the path the text was read from, and is never emitted.
 static std::string g_source_text;
 static std::string g_source_filepath;
+static std::string g_source_hostpath;
 
 /* Module privacy is an internal linkage detail, not part of the source-level
  * name users should see in diagnostics. Private definitions are qualified as
@@ -830,24 +836,29 @@ public:
         // and handed back the OUTGOING file's text — the caret then rendered a
         // line from the wrong file (or nothing, when the new line number ran
         // past the old file's end).
-        std::string text = sourceTextForFile(std::string(name));
+        const char* host = eshkol_source_file_host_path(source_file_id);
+        std::string text = sourceTextForFile(std::string(host && *host ? host : name));
         saved_path_ = std::move(g_source_filepath);
+        saved_host_ = std::move(g_source_hostpath);
         saved_text_ = std::move(g_source_text);
         saved_file_id_ = g_source_file_id_active;
         active_ = true;
         g_source_filepath = name;
+        g_source_hostpath = host ? host : "";
         g_source_text = std::move(text);
         g_source_file_id_active = source_file_id;
     }
     ~ScopedAstProvenance() {
         if (!active_) return;
         g_source_filepath = std::move(saved_path_);
+        g_source_hostpath = std::move(saved_host_);
         g_source_text = std::move(saved_text_);
         g_source_file_id_active = saved_file_id_;
     }
     ScopedAstProvenance(const ScopedAstProvenance&) = delete;
     ScopedAstProvenance& operator=(const ScopedAstProvenance&) = delete;
 private:
+    std::string saved_host_;
     std::string saved_path_;
     std::string saved_text_;
     uint32_t saved_file_id_ = 0;
@@ -45832,7 +45843,9 @@ void eshkol_disable_debug_info(void) {
 }
 
 void eshkol_set_source_context(const char* filepath, const char* source_text) {
-    g_source_filepath = filepath ? filepath : "";
+    const char* display = filepath ? eshkol_source_path_display(filepath) : nullptr;
+    g_source_filepath = display ? display : "";
+    g_source_hostpath = filepath ? filepath : "";
     g_source_text = source_text ? source_text : "";
     /* The ambient path moved without going through ScopedAstProvenance, so its
      * memoised id no longer describes it. 0 never equals a real interned id
@@ -45920,11 +45933,13 @@ LLVMModuleRef eshkol_generate_llvm_ir_with_source(
     const char* source_path, const char* source_text) {
     struct RestoreSourceContext {
         std::string path = g_source_filepath;
+        std::string host = g_source_hostpath;
         std::string text = g_source_text;
         std::string parse_path = eshkol_get_parse_source_context();
 
         ~RestoreSourceContext() {
             g_source_filepath = path;
+            g_source_hostpath = host;
             g_source_text = text;
             g_source_file_id_active = 0;  // see eshkol_set_source_context
             eshkol_set_parse_source_context(parse_path.c_str());
@@ -45934,7 +45949,9 @@ LLVMModuleRef eshkol_generate_llvm_ir_with_source(
         ~FlushLanguageCoverage() { eshkol_language_coverage_flush(); }
     } flush_language_coverage;
 
-    g_source_filepath = source_path ? source_path : "";
+    const char* source_display = source_path ? eshkol_source_path_display(source_path) : nullptr;
+    g_source_filepath = source_display ? source_display : "";
+    g_source_hostpath = source_path ? source_path : "";
     g_source_text = source_text ? source_text : "";
     g_source_file_id_active = 0;  // see eshkol_set_source_context
     eshkol_set_parse_source_context(source_path);

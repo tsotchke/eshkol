@@ -1,11 +1,11 @@
-# ADR-0020: One owner for AST string payloads
+# ADR-0020: One owner for AST string payloads, one spelling for recorded paths
 
 **Status:** Accepted
 **Amends:** ADR-0000 Stage 1 (the frontend identity substrate), ADR-0010 gap A12
 (leak detection)
 **Scope:** Frontend (parser, macro expander), module-private renaming, the
-`eshkol-run` driver, the REPL, the runtime `eval` bridge, HoTT type terms, and
-the LeakSanitizer policy for sanitizer builds.
+`eshkol-run` driver, the REPL, the runtime `eval` bridge, HoTT type terms,
+recorded source paths, and the LeakSanitizer policy for sanitizer builds.
 
 ## Context
 
@@ -85,6 +85,33 @@ owner, not a second one: an interner stores each distinct spelling here once
 and maps it to an id. Node storage (`new eshkol_ast_t[N]`) is not covered;
 that stays epic #182, and its suppression rules now cover node storage only.
 
+### Recorded source paths are normalized at one place
+
+A compiler does two different things with a source path, and they need
+different spellings. It READS the file by its host path. It also RECORDS where
+code came from: in the interned file table behind `source_file_id`, in the
+parse context diagnostics print, and in string constants the backend embeds so
+the runtime can name a location at error time. Recording the host path put the
+build machine's directory layout inside shipped artifacts — the site
+WebAssembly module carried the absolute path of `lib/core/ad/interval.esk`
+from the worktree it was built in, user name included — and made those
+artifacts differ between two builds of the same source.
+
+`inc/eshkol/frontend/source_paths.h` is the one normalizer. Its result is the
+DISPLAY path: a module-relative path when the file is under a directory on
+`ESHKOL_PATH`, else a repository-relative path when it is under a project root
+(the nearest ancestor holding `.git` or `CMakeLists.txt`), else a path relative
+to the working directory, else the file name alone. Never an absolute host
+path. `eshkol_intern_source_file()` stores both columns, so
+`eshkol_source_file_name()` answers with the display path for every recording
+site while `eshkol_source_file_host_path()` still lets the diagnostic printer
+open the file for a caret line. The backend's ambient context holds the same
+pair.
+
+DWARF debug info (`--debug-info`) is deliberately not normalized: a debugger
+needs the directory to find the source, and that output is opt-in and not
+shipped.
+
 ### Leak detection during builds
 
 There is one policy. A sanitizer build runs the instrumented compiler on the
@@ -136,6 +163,14 @@ off because its system toolchain has no working LeakSanitizer.
   standard library. It matched 63 341 objects in the original audit, and
   nearly all of those were literal and symbol text.
 
+- A recorded source path no longer names the build machine. The shipped site
+  WebAssembly module embedded one absolute host path before this change and
+  none after; `scripts/check_artifact_paths.py` reads shipped artifacts as
+  bytes and fails on any home-directory path, and runs as the third layer of
+  `scripts/check_disclosure.py` as well as on its own. A file outside every
+  root records as its file name alone, so a diagnostic still names the file
+  while no artifact names the machine.
+
 ## Verification
 
 - `tests/frontend/ast_strings_test.cpp` (`ast_strings_test`) checks the owner
@@ -148,6 +183,12 @@ off because its system toolchain has no working LeakSanitizer.
   `--self-test` that plants each violation) fails on a raw `new char[]`,
   `strdup` or `strndup` in an AST producer, or a `delete[]`/`free()` of an AST
   string field.
+- `tests/frontend/source_paths_test.cpp` (`source_paths_test`) checks the
+  display rules, memoization, and that the interned table and the parse
+  context hand back the display path while the host path stays available.
+- `scripts/check_artifact_paths.py` (`artifact_host_path_gate`, with a
+  `--self-test` that plants a host path of each shape) scans the shipped
+  WebAssembly modules and anything a caller passes with `--artifact`.
 - The release producer's sanitizer build (`scripts/build-sanitizer.sh
   asan+ubsan` under the producer's `ASAN_OPTIONS`/`LSAN_OPTIONS`) compiles the
   standard library leak-clean. `tests/memory/leak_audit_gate.sh` and

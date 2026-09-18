@@ -3571,18 +3571,36 @@ extern "C" const char* eshkol_get_parse_source_context(void);
  * The table lives for the process and its entries are never reallocated away,
  * so an id is safe to store in an AST node and resolve much later — after the
  * loader's own path strings have gone out of scope.
+ *
+ * Each entry keeps two spellings (ADR-0020): the DISPLAY path, normalized by
+ * inc/eshkol/frontend/source_paths.h and used by everything that records or
+ * embeds a location, and the HOST path as given, used only to read the file.
  * @param path File path to intern; NULL or empty returns 0 ("unknown").
  * @return A nonzero id, or 0 when @p path is NULL/empty.
  */
 extern "C" uint32_t eshkol_intern_source_file(const char* path);
 
 /**
- * @brief Resolve an interned source-file id back to its path.
+ * @brief Resolve an interned source-file id to its DISPLAY path.
+ *
+ * This is the spelling that may be printed in a diagnostic or embedded in a
+ * generated object: repository-relative, module-relative, or a bare file name
+ * — never an absolute host path.
  * @param id Id previously returned by eshkol_intern_source_file().
- * @return The interned path, or NULL when @p id is 0 or not a live id (which is
+ * @return The display path, or NULL when @p id is 0 or not a live id (which is
  *         how an unset/garbage eshkol_ast_t::source_file_id reads as unknown).
  */
 extern "C" const char* eshkol_source_file_name(uint32_t id);
+
+/**
+ * @brief Resolve an interned source-file id to the HOST path it was read from.
+ *
+ * For opening the file (the caret line under a diagnostic). Never record or
+ * embed this: it names the build machine's directory layout.
+ * @param id Id previously returned by eshkol_intern_source_file().
+ * @return The host path, or NULL when @p id is 0 or not a live id.
+ */
+extern "C" const char* eshkol_source_file_host_path(uint32_t id);
 /** Reset/query the current thread's cumulative parser error state. */
 extern "C" void eshkol_reset_parse_errors(void);
 extern "C" int eshkol_parse_had_error(void);

@@ -9,6 +9,7 @@
 #include <eshkol/eshkol.h>
 #include <eshkol/core/logic.h>
 #include <eshkol/frontend/ast_strings.h>
+#include <eshkol/frontend/source_paths.h>
 #include <eshkol/frontend/node_identity.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/symbol_syntax.h>
@@ -11478,13 +11479,27 @@ extern "C" void eshkol_reset_parse_line_counter(void) {
 
 /* Interned source-file table backing eshkol_ast_t::source_file_id.
  *
- * A deque of strings (never reallocates its elements) plus a name->id map. Ids
+ * Two columns per entry, because a compiler does two different things with a
+ * path (ADR-0020): it READS the file by its host path, and it RECORDS where
+ * code came from. Recording an absolute host path carries the build machine's
+ * directory layout into diagnostics and into the string constants the backend
+ * embeds in shipped objects and WebAssembly modules, and makes those artifacts
+ * differ between two builds of the same source. So `display` -- computed once,
+ * by the one normalizer in inc/eshkol/frontend/source_paths.h -- is what every
+ * recording site uses, and `host` is kept only so the diagnostic printer can
+ * open the file to render a caret line.
+ *
+ * A deque of entries (never reallocates its elements) plus a name->id map. Ids
  * are 1-based so 0 stays the "unknown" sentinel, and the table is process-
  * lifetime so an id stamped during parsing resolves correctly at codegen time,
  * long after the loader's own path string has died. */
+struct SourceFileEntry {
+    std::string display;
+    std::string host;
+};
 static std::mutex g_source_file_table_mutex;
-static std::deque<std::string>& source_file_table() {
-    static std::deque<std::string> table;
+static std::deque<SourceFileEntry>& source_file_table() {
+    static std::deque<SourceFileEntry> table;
     return table;
 }
 static std::unordered_map<std::string, uint32_t>& source_file_ids() {
@@ -11494,12 +11509,15 @@ static std::unordered_map<std::string, uint32_t>& source_file_ids() {
 
 extern "C" uint32_t eshkol_intern_source_file(const char* path) {
     if (!path || !*path) return 0;
+    /* Key on the path as given: two different files may normalize to the same
+     * display spelling, and they must stay two ids. */
+    const char* display = eshkol_source_path_display(path);
     std::lock_guard<std::mutex> lock(g_source_file_table_mutex);
     auto& ids = source_file_ids();
     auto it = ids.find(path);
     if (it != ids.end()) return it->second;
     auto& table = source_file_table();
-    table.emplace_back(path);
+    table.push_back(SourceFileEntry{display ? display : path, path});
     uint32_t id = (uint32_t)table.size();  // 1-based
     ids.emplace(path, id);
     return id;
@@ -11510,12 +11528,24 @@ extern "C" const char* eshkol_source_file_name(uint32_t id) {
     std::lock_guard<std::mutex> lock(g_source_file_table_mutex);
     auto& table = source_file_table();
     if (id > table.size()) return NULL;  // unset/garbage id reads as unknown
-    return table[id - 1].c_str();
+    return table[id - 1].display.c_str();
+}
+
+extern "C" const char* eshkol_source_file_host_path(uint32_t id) {
+    if (id == 0) return NULL;
+    std::lock_guard<std::mutex> lock(g_source_file_table_mutex);
+    auto& table = source_file_table();
+    if (id > table.size()) return NULL;
+    return table[id - 1].host.c_str();
 }
 
 extern "C" void eshkol_set_parse_source_context(const char* source_name) {
-    g_parse_filename = (source_name && *source_name) ? source_name : "<unknown>";
-    g_parse_filename_id = eshkol_intern_source_file(g_parse_filename.c_str());
+    /* The parse context is a RECORDING site: it is what diagnostics print and
+     * what the backend inherits as its ambient location. */
+    const char* named = (source_name && *source_name) ? source_name : "<unknown>";
+    g_parse_filename_id = eshkol_intern_source_file(named);
+    const char* display = eshkol_source_file_name(g_parse_filename_id);
+    g_parse_filename = display ? display : named;
 }
 
 extern "C" const char* eshkol_get_parse_source_context(void) {

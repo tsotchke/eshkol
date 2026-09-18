@@ -111,6 +111,8 @@ import sys
 import tempfile
 from typing import NamedTuple
 
+import check_artifact_paths
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_TRACE_DIR = os.path.join(REPO_ROOT, "scripts", "icc_traces")
 TRACE_BASENAME = "disclosure_gate.jsonl"
@@ -564,6 +566,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-trace", action="store_true")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--artifact", action="append", default=[],
+                        help="extra shipped artifact to scan for build-host paths (repeatable)")
+    parser.add_argument("--no-artifact-scan", action="store_true",
+                        help="skip the shipped-artifact host-path layer (layer 3)")
     parser.add_argument("--noop-pass", action="store_true",
                          help="deprecated compatibility flag: report SKIP without claiming a scan")
     parser.add_argument("--reason", default="", help="explanation recorded alongside --noop-pass")
@@ -604,6 +610,17 @@ def main(argv: list[str] | None = None) -> int:
         diff_text = get_diff_text(args.base, args.head)
         for file_path, line_no, text in parse_unified_diff_added_lines(diff_text):
             findings.extend(analyze_line(f"{file_path}:{line_no}", text, allow_phrases, denylist_tokens))
+
+        # Layer 3: the artifacts themselves. Text review cannot see a host path
+        # a compiler EMBEDDED in a shipped binary (ADR-0020), so read the bytes.
+        artifact_findings, artifacts_scanned = ([], [])
+        if not args.no_artifact_scan:
+            artifact_findings, artifacts_scanned = check_artifact_paths.scan_artifacts(
+                extra=args.artifact)
+            for artifact_finding in artifact_findings:
+                findings.append(Finding(artifact_finding.artifact,
+                                        f"artifact-host-path:{artifact_finding.pattern}",
+                                        artifact_finding.excerpt))
     except DisclosureError as exc:
         snippet = f"could not scan {args.base}..{args.head}: {exc}"
         if not args.no_trace:
@@ -620,7 +637,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if passed:
         layer2 = "active" if denylist_active else "not configured"
-        snippet = f"clean over {args.base}..{args.head} (private denylist layer: {layer2})"
+        snippet = (f"clean over {args.base}..{args.head} (private denylist layer: {layer2}; "
+                   f"artifacts scanned: {len(artifacts_scanned)})")
     else:
         snippet = f"{len(finding_lines)} finding(s): " + "; ".join(finding_lines[:5])
 
@@ -636,6 +654,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"{PROBE_ID}: {status}")
         print(f"  private denylist layer: {'active' if denylist_active else 'not configured (optional)'}")
+        if args.no_artifact_scan:
+            print("  shipped-artifact host-path layer: skipped (--no-artifact-scan)")
+        else:
+            print(f"  shipped-artifact host-path layer: {len(artifacts_scanned)} artifact(s) scanned"
+                  + (f" ({', '.join(artifacts_scanned)})" if artifacts_scanned else ""))
         if finding_lines:
             print("  FINDINGS (matched token redacted; fix by removing/rewording the source line, "
                   "then force-push or amend before merge):")

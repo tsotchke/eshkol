@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2388/5283 public symbols documented (45.2%), 2895 undocumented.
+**Coverage:** 2391/5286 public symbols documented (45.2%), 2895 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-336/869 symbols documented.
+337/870 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -25,7 +25,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`agent_http.h`](agent_http.md) | 27 | 0 |
 | [`agent_platform.h`](agent_platform.md) | 2 | 0 |
 | [`builtin_libraries.h`](builtin_libraries.md) | 3 | 1 |
-| [`eshkol.h`](eshkol.md) | 377 | 170 |
+| [`eshkol.h`](eshkol.md) | 378 | 171 |
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
@@ -156,7 +156,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `frontend/`
 
-48/177 symbols documented.
+50/179 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -166,6 +166,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`frontend/macro_expander.h`](frontend/macro_expander.md) | 42 | 23 |
 | [`frontend/node_identity.h`](frontend/node_identity.md) | 14 | 14 |
 | [`frontend/semantic_identity.h`](frontend/semantic_identity.md) | 75 | 0 |
+| [`frontend/source_paths.h`](frontend/source_paths.md) | 2 | 2 |
 | [`frontend/workspace.h`](frontend/workspace.md) | 21 | 0 |
 
 ### `pkg/`

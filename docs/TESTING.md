@@ -574,6 +574,14 @@ rather than an indistinguishable FAIL. Pinned by
   string. Sanitizer builds compile the standard library under
   `detect_leaks=1` with the checked-in suppressions, in CI and in the release
   producer alike.
+- **`source_paths_test`** and **`artifact_host_path_gate`** (ADR-0020) hold
+  the rule that a RECORDED source path — the interned file table, the parse
+  context, and the location constants the backend embeds — is never the
+  absolute host path. The gate
+  (`scripts/check_artifact_paths.py`, with a `--self-test`) reads shipped
+  artifacts as bytes and fails on any home-directory path; it also runs as
+  the third layer of `scripts/check_disclosure.py`, and takes a freshly built
+  binary with `--artifact`.
 - **`tests/memory/vm_region_flat_rss_test.sh`**,
   **`tests/memory/vm_region_evac_subtype_coverage_test.sh`** and
   **`tests/memory/vm_region_growth_watchdog_test.sh`** gate the Stage-1 VM

@@ -2758,6 +2758,7 @@ target_link_libraries(eshkol-runtime PUBLIC eshkol-qllm-abi)
 add_library(eshkol-workspace STATIC
   lib/frontend/parser.cpp
   lib/frontend/ast_strings.cpp
+  lib/frontend/source_paths.cpp
   lib/frontend/node_identity.cpp
   lib/frontend/semantic_identity.cpp
   lib/frontend/diagnostic.cpp
@@ -3371,6 +3372,22 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/ast
     add_test(NAME ast_strings_test COMMAND ast_strings_test)
     set_tests_properties(ast_strings_test PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: AST string owner")
+endif()
+
+# ADR-0020: a recorded source path is never the absolute host path.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/source_paths_test.cpp")
+    add_executable(source_paths_test tests/frontend/source_paths_test.cpp)
+    target_compile_features(source_paths_test PRIVATE cxx_std_20)
+    target_include_directories(source_paths_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(source_paths_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(source_paths_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(source_paths_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME source_paths_test COMMAND source_paths_test)
+    set_tests_properties(source_paths_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: source path normalization"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/semantic_identity_test.cpp")
@@ -7186,6 +7203,23 @@ if(ESHKOL_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         )
         set_tests_properties(ast_string_owner_gate ast_string_owner_gate_selftest PROPERTIES TIMEOUT 60)
+    endif()
+    # ADR-0020: no shipped artifact carries a build-host path.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_artifact_paths.py")
+        add_test(
+            NAME artifact_host_path_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_artifact_paths.py"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        add_test(
+            NAME artifact_host_path_gate_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_artifact_paths.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(artifact_host_path_gate artifact_host_path_gate_selftest PROPERTIES TIMEOUT 60)
     endif()
     # Every branch-protection required status context must be reportable on
     # every PR shape (docs-only included) — see the module docstring for the
