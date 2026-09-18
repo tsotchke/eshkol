@@ -13430,7 +13430,7 @@ entries:
     bucket: SILENT-WRONG
     family: ad/gradient-scalar-point-arguments
     status: fixed
-    closed_at: "26419805"
+    closed_at: "a41ac3f5"
     title: "native: (gradient f a b ...) with the point given as separate scalar arguments differentiates at 0 unless every argument is a literal, so a gradient-descent loop written that way never moves off its first gradient"
     repro: >-
       (define (loss a b) (+ (* (- a 3.0) (- a 3.0)) (* (- b 1.0) (- b 1.0))))
@@ -13509,7 +13509,7 @@ entries:
     subtag: structural
     family: ad/closure-capture-through-map
     status: fixed
-    closed_at: "9990be69"
+    closed_at: "d6ecd4fe"
     title: "a derivative through `map` with a lambda that captures the differentiated variable is 0, with `Invalid type for int64 storage value: 6` on stderr and exit status 0"
     repro: >-
       (define (f a) (fold-left + 0.0 (map (lambda (x) (* a x)) '(1.0 2.0 3.0))))

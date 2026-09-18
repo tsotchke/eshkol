@@ -2,7 +2,7 @@ id: SW-182
 bucket: SILENT-WRONG
 family: ad/gradient-scalar-point-arguments
 status: fixed
-closed_at: "26419805"
+closed_at: "a41ac3f5"
 title: "native: (gradient f a b ...) with the point given as separate scalar arguments differentiates at 0 unless every argument is a literal, so a gradient-descent loop written that way never moves off its first gradient"
 repro: >-
   (define (loss a b) (+ (* (- a 3.0) (- a 3.0)) (* (- b 1.0) (- b 1.0))))
