@@ -105,6 +105,32 @@ public:
      */
     llvm::Value* neg(llvm::Value* operand);
 
+    // === Complex values that carry a derivative (ADR-0025) ===
+
+    /** i1: @p tagged is a real derivative carrier (jet, tape node or Taylor tower). */
+    llvm::Value* isDerivativeCarrier(llvm::Value* tagged);
+
+    /**
+     * The one constructor of a complex value from two real components. A
+     * component that is a derivative carrier is kept (the result is a carrier
+     * complex); otherwise the result is the plain pair of doubles.
+     */
+    llvm::Value* makeRectangular(llvm::Value* real, llvm::Value* imag);
+
+    /** A component of @p value as a tagged real: of a COMPLEX value its
+     *  component, of a real value the value itself or an exact-zero imaginary part. */
+    llvm::Value* complexComponent(llvm::Value* value, bool imag);
+
+    /**
+     * Wraps a binary operator's dispatch. When either operand is complex and
+     * a derivative is in play (a carrier complex, or a real carrier meeting a
+     * complex), the result is the operator's component formula evaluated by
+     * this class's own add/sub/mul/div, so every carrier flows through;
+     * otherwise @p body runs unchanged.
+     */
+    llvm::Value* withComplexCarrierDispatch(llvm::Value* left, llvm::Value* right, char op,
+                                            const std::function<llvm::Value*()>& body);
+
     /**
      * Polymorphic absolute value: |a|
      * @param operand Operand (tagged_value)

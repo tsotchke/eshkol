@@ -434,6 +434,151 @@ llvm::Value* ArithmeticCodegen::isADNode(llvm::Value* operand, llvm::Value* base
 
 // === Central AD Dispatch Handlers ===
 
+// === Complex values that carry a derivative (ADR-0025) ===
+
+llvm::Value* ArithmeticCodegen::isDerivativeCarrier(llvm::Value* tagged) {
+    auto& b = ctx_.builder();
+    llvm::Value* base = tagged_.getBaseType(tagged_.getType(tagged));
+    llvm::Value* is_dual = b.CreateICmpEQ(base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    llvm::Value* is_node = b.CreateICmpEQ(base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    return b.CreateOr(b.CreateOr(is_dual, is_node), emitIsTaylorSingle(tagged), "is_derivative_carrier");
+}
+
+llvm::Value* ArithmeticCodegen::makeRectangular(llvm::Value* real, llvm::Value* imag) {
+    auto& b = ctx_.builder();
+    auto as_tagged = [&](llvm::Value* v) -> llvm::Value* {
+        if (v->getType() == ctx_.taggedValueType()) return v;
+        if (v->getType()->isDoubleTy()) return tagged_.packDouble(v);
+        if (v->getType()->isIntegerTy(64)) return tagged_.packInt64(v, true);
+        return tagged_.packDouble(extractAsDouble(v));
+    };
+    real = as_tagged(real);
+    imag = as_tagged(imag);
+
+    llvm::Value* real_carries = isDerivativeCarrier(real);
+    llvm::Value* imag_carries = isDerivativeCarrier(imag);
+    llvm::Value* real_primal = extractAsDouble(real);
+    llvm::Value* imag_primal = extractAsDouble(imag);
+
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* carrier_bb = llvm::BasicBlock::Create(ctx_.context(), "mkrect_carrier", fn);
+    llvm::BasicBlock* plain_bb = llvm::BasicBlock::Create(ctx_.context(), "mkrect_plain", fn);
+    llvm::BasicBlock* join_bb = llvm::BasicBlock::Create(ctx_.context(), "mkrect_join", fn);
+    b.CreateCondBr(b.CreateOr(real_carries, imag_carries), carrier_bb, plain_bb);
+
+    // A component that carries nothing is stored as the plain double it is, so
+    // a reader of the carrier never meets an exact integer or a rational here.
+    b.SetInsertPoint(carrier_bb);
+    llvm::Value* real_comp = b.CreateSelect(real_carries, real, tagged_.packDouble(real_primal));
+    llvm::Value* imag_comp = b.CreateSelect(imag_carries, imag, tagged_.packDouble(imag_primal));
+    llvm::Value* carrier = complex_.packCarrierComplex(real_primal, imag_primal, real_comp, imag_comp);
+    llvm::BasicBlock* carrier_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(plain_bb);
+    llvm::Value* plain = complex_.packComplexToTagged(complex_.createComplex(real_primal, imag_primal));
+    llvm::BasicBlock* plain_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(join_bb);
+    llvm::PHINode* out = b.CreatePHI(ctx_.taggedValueType(), 2, "mkrect");
+    out->addIncoming(carrier, carrier_exit);
+    out->addIncoming(plain, plain_exit);
+    return out;
+}
+
+llvm::Value* ArithmeticCodegen::complexComponent(llvm::Value* value, bool imag) {
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* complex_bb = llvm::BasicBlock::Create(ctx_.context(), "comp_of_complex", fn);
+    llvm::BasicBlock* real_bb = llvm::BasicBlock::Create(ctx_.context(), "comp_of_real", fn);
+    llvm::BasicBlock* join_bb = llvm::BasicBlock::Create(ctx_.context(), "comp_join", fn);
+    llvm::Value* is_complex = b.CreateICmpEQ(tagged_.getBaseType(tagged_.getType(value)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    b.CreateCondBr(is_complex, complex_bb, real_bb);
+
+    b.SetInsertPoint(complex_bb);
+    llvm::Value* from_complex = complex_.componentTagged(value, imag);
+    llvm::BasicBlock* complex_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(real_bb);
+    llvm::Value* from_real = imag
+        ? tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0))
+        : value;
+    llvm::BasicBlock* real_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(join_bb);
+    llvm::PHINode* out = b.CreatePHI(ctx_.taggedValueType(), 2, imag ? "comp_imag" : "comp_real");
+    out->addIncoming(from_complex, complex_exit);
+    out->addIncoming(from_real, real_exit);
+    return out;
+}
+
+llvm::Value* ArithmeticCodegen::withComplexCarrierDispatch(
+    llvm::Value* left, llvm::Value* right, char op,
+    const std::function<llvm::Value*()>& body) {
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    auto is_complex = [&](llvm::Value* v) {
+        return b.CreateICmpEQ(tagged_.getBaseType(tagged_.getType(v)),
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    };
+    llvm::BasicBlock* probe_bb = llvm::BasicBlock::Create(ctx_.context(), "cplx_carrier_probe", fn);
+    llvm::BasicBlock* carrier_bb = llvm::BasicBlock::Create(ctx_.context(), "cplx_carrier_op", fn);
+    llvm::BasicBlock* normal_bb = llvm::BasicBlock::Create(ctx_.context(), "cplx_carrier_none", fn);
+    llvm::BasicBlock* join_bb = llvm::BasicBlock::Create(ctx_.context(), "cplx_carrier_join", fn);
+
+    // One cheap test on the ordinary path: is either operand complex at all?
+    b.CreateCondBr(b.CreateOr(is_complex(left), is_complex(right)), probe_bb, normal_bb);
+
+    b.SetInsertPoint(probe_bb);
+    llvm::Value* in_play = b.CreateOr(
+        b.CreateOr(complex_.isCarrierComplex(left), complex_.isCarrierComplex(right)),
+        b.CreateOr(isDerivativeCarrier(left), isDerivativeCarrier(right)));
+    b.CreateCondBr(in_play, carrier_bb, normal_bb);
+
+    // (a + bi) op (c + di), each of a, b, c, d an ordinary numeric-tower value.
+    b.SetInsertPoint(carrier_bb);
+    llvm::Value* a = complexComponent(left, false);
+    llvm::Value* bi = complexComponent(left, true);
+    llvm::Value* c = complexComponent(right, false);
+    llvm::Value* d = complexComponent(right, true);
+    llvm::Value* re = nullptr;
+    llvm::Value* im = nullptr;
+    switch (op) {
+        case '+': re = add(a, c); im = add(bi, d); break;
+        case '-': re = sub(a, c); im = sub(bi, d); break;
+        case '*': re = sub(mul(a, c), mul(bi, d)); im = add(mul(a, d), mul(bi, c)); break;
+        case '/': {
+            llvm::Value* den = add(mul(c, c), mul(d, d));
+            re = div(add(mul(a, c), mul(bi, d)), den);
+            im = div(sub(mul(bi, c), mul(a, d)), den);
+            break;
+        }
+        default:
+            eshkol_error("arithmetic: unknown complex carrier operator '%c'", op);
+            return nullptr;
+    }
+    llvm::Value* carrier_result = makeRectangular(re, im);
+    llvm::BasicBlock* carrier_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(normal_bb);
+    llvm::Value* normal_result = body();
+    llvm::BasicBlock* normal_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(join_bb);
+    llvm::PHINode* out = b.CreatePHI(ctx_.taggedValueType(), 2, "cplx_carrier_result");
+    out->addIncoming(carrier_result, carrier_exit);
+    out->addIncoming(normal_result, normal_exit);
+    return out;
+}
+
 /**
  * @brief Central dispatch wrapper for binary arithmetic ops that may involve reverse-mode AD nodes.
  *
@@ -1525,6 +1670,7 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
     // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
     left = autodiff_.maybeJetLiftTapeOperand(left);
     right = autodiff_.maybeJetLiftTapeOperand(right);
+    return withComplexCarrierDispatch(left, right, '+', [&]() -> llvm::Value* {
     return withADBinaryDispatch(left, right, 2 /*AD_NODE_ADD*/, [&]() -> llvm::Value* {
         // Re-extract types inside lambda (handler already checked AD)
         llvm::Value* left_type = tagged_.getType(left);
@@ -1717,6 +1863,7 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
 
         return phi;
     }, "add");
+    });
         });
     std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
     return ctx_.builder().CreateCall(outline,
@@ -1750,6 +1897,7 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
     // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
     left = autodiff_.maybeJetLiftTapeOperand(left);
     right = autodiff_.maybeJetLiftTapeOperand(right);
+    return withComplexCarrierDispatch(left, right, '-', [&]() -> llvm::Value* {
     return withADBinaryDispatch(left, right, 3 /*AD_NODE_SUB*/, [&]() -> llvm::Value* {
         // Re-extract types inside lambda (handler already checked AD)
         llvm::Value* left_type = tagged_.getType(left);
@@ -1942,6 +2090,7 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
 
         return phi;
     }, "sub");
+    });
         });
     std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
     return ctx_.builder().CreateCall(outline,
@@ -1975,6 +2124,7 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
     // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
     left = autodiff_.maybeJetLiftTapeOperand(left);
     right = autodiff_.maybeJetLiftTapeOperand(right);
+    return withComplexCarrierDispatch(left, right, '*', [&]() -> llvm::Value* {
     return withADBinaryDispatch(left, right, 4 /*AD_NODE_MUL*/, [&]() -> llvm::Value* {
         // Re-extract types inside lambda (handler already checked AD)
         llvm::Value* left_type = tagged_.getType(left);
@@ -2167,6 +2317,7 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
 
         return phi;
     }, "mul");
+    });
         });
     std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
     return ctx_.builder().CreateCall(outline,
@@ -2204,6 +2355,7 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
     // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
     left = autodiff_.maybeJetLiftTapeOperand(left);
     right = autodiff_.maybeJetLiftTapeOperand(right);
+    return withComplexCarrierDispatch(left, right, '/', [&]() -> llvm::Value* {
     return withADBinaryDispatch(left, right, 5 /*AD_NODE_DIV*/, [&]() -> llvm::Value* {
         // Re-extract types inside lambda (handler already checked AD)
         llvm::Value* left_type = tagged_.getType(left);
@@ -2441,6 +2593,7 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 
         return phi;
     }, "div");
+    });
         });
     std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
     return ctx_.builder().CreateCall(outline,

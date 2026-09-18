@@ -506,6 +506,41 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_complex_number_t) == 16,
                      "Complex number must be 16 bytes for cache efficiency");
 
 /**
+ * @brief Set in the FLAGS byte of an ESHKOL_VALUE_COMPLEX tagged value whose
+ *        payload is an eshkol_complex_carrier_t rather than the plain pair.
+ *
+ * It lives in the flags byte, not the type byte, so it cannot be mistaken for
+ * an exactness or port flag, and it is meaningful only with the COMPLEX type.
+ */
+#define ESHKOL_COMPLEX_CARRIER_FLAG 0x80
+
+/**
+ * @brief A complex number whose components carry a derivative (ADR-0025).
+ *
+ * A complex value under real-parameter differentiation is a pair of REAL
+ * numbers, and each of those is an ordinary numeric-tower value: a double, a
+ * forward-mode jet, a reverse-tape node, a Taylor tower. `real` and `imag` hold
+ * them as tagged values, and every complex operation on such a value is its
+ * component formula evaluated by the generic real arithmetic, so no operation
+ * needs a rule per carrier.
+ *
+ * `primal` comes FIRST and is always the plain complex value. Any reader that
+ * does not know about carriers (display, equality, the FFT, number->string)
+ * therefore reads a correct complex number from the same pointer; it sees the
+ * value and not the derivative, which is what a non-differentiable consumer
+ * should see.
+ */
+typedef struct eshkol_complex_carrier {
+    eshkol_complex_number_t primal;  // the value; layout-compatible prefix
+    eshkol_tagged_value_t   real;    // real component as a numeric-tower value
+    eshkol_tagged_value_t   imag;    // imaginary component as a numeric-tower value
+} eshkol_complex_carrier_t;
+
+/** @brief Compile-time check: the carrier payload is the plain pair plus two tagged values. */
+ESHKOL_STATIC_ASSERT(sizeof(eshkol_complex_carrier_t) == 48,
+                     "Complex carrier must be the 16-byte primal plus two 16-byte tagged values");
+
+/**
  * @brief X-macro table of the headerless, fixed-size AD payloads.
  *
  * Shared by every producer and every region escape copier of
@@ -521,7 +556,8 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_complex_number_t) == 16,
  */
 #define ESHKOL_AD_PAYLOAD_LAYOUTS(X) \
     X(DUAL_JET,    eshkol_dual_number_t) \
-    X(USER_NUMBER, eshkol_complex_number_t)
+    X(USER_NUMBER, eshkol_complex_number_t) \
+    X(COMPLEX_CARRIER, eshkol_complex_carrier_t)
 
 /**
  * @brief Identifies one row of the headerless AD payload table.
