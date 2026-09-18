@@ -28,7 +28,7 @@ pages and lets them fan out to their siblings.
 - [Complete Language Specification](COMPLETE_LANGUAGE_SPECIFICATION.md) — full technical specification, v1.3.5-evolve
 - [Quick Reference](ESHKOL_QUICK_REFERENCE.md) — one-page cheat sheet over the 1,052-builtin surface
 - [API Reference](API_REFERENCE.md) — comprehensive function documentation
-- [Standard Library API index](reference/stdlib/INDEX.md) — module-by-function map of the standard library (61 modules)
+- [Standard Library API index](reference/stdlib/INDEX.md) — module-by-function map of the standard library (63 modules)
 - [Standard Library API (v1.2 surface notes)](STDLIB_V1_2_API.md) — stdlib module surfaces, including infrastructure modules
 - [Design Document](DESIGN.md) — architecture and design rationale (last revised for v1.3.0-evolve)
 - [Feature Matrix](FEATURE_MATRIX.md) — implementation status table

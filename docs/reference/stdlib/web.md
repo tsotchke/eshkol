@@ -313,7 +313,7 @@ $ file web-demo.wasm
 web-demo.wasm: WebAssembly (wasm) binary module version 0x1 (MVP)
 ```
 
-The module exports a zero-argument `main` entry point; a hosting page calls it after `WebAssembly.instantiate()` supplies the `env.web_*` imports (`docs/breakdown/WEB_PLATFORM.md` names the export `_eshkol_main` — that does not match this build; see report).
+The module exports a zero-argument `main` entry point; a hosting page calls it after `WebAssembly.instantiate()` supplies the `env.web_*` imports (the export section of the module built above contains exactly one function export, `main`; `docs/breakdown/WEB_PLATFORM.md` names it `_eshkol_main`).
 
 ## Known issues
 
