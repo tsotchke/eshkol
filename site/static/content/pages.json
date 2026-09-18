@@ -23,12 +23,44 @@
       "url": "/content/quickstart.html"
     },
     {
+      "slug": "troubleshooting",
+      "title": "Troubleshooting",
+      "view": "docs",
+      "section": "START HERE",
+      "source": "docs/TROUBLESHOOTING.md",
+      "url": "/content/troubleshooting.html"
+    },
+    {
+      "slug": "upgrading",
+      "title": "Upgrading",
+      "view": "docs",
+      "section": "START HERE",
+      "source": "docs/UPGRADING.md",
+      "url": "/content/upgrading.html"
+    },
+    {
       "slug": "faq",
       "title": "FAQ",
       "view": "docs",
       "section": "START HERE",
       "source": "docs/FAQ.md",
       "url": "/content/faq.html"
+    },
+    {
+      "slug": "glossary",
+      "title": "Glossary",
+      "view": "docs",
+      "section": "START HERE",
+      "source": "docs/GLOSSARY.md",
+      "url": "/content/glossary.html"
+    },
+    {
+      "slug": "documentation",
+      "title": "About the Documentation",
+      "view": "docs",
+      "section": "START HERE",
+      "source": "docs/DOCUMENTATION.md",
+      "url": "/content/documentation.html"
     },
     {
       "slug": "eshkol_language_guide",
@@ -45,6 +77,14 @@
       "section": "LANGUAGE",
       "source": "docs/guide/AUTOMATIC_DIFFERENTIATION.md",
       "url": "/content/guide_automatic_differentiation.html"
+    },
+    {
+      "slug": "guide_gradual_typing",
+      "title": "Gradual Typing",
+      "view": "docs",
+      "section": "LANGUAGE",
+      "source": "docs/guide/GRADUAL_TYPING.md",
+      "url": "/content/guide_gradual_typing.html"
     },
     {
       "slug": "complete_language_specification",
@@ -207,6 +247,14 @@
       "url": "/content/breakdown_type_system.html"
     },
     {
+      "slug": "design_adr_index",
+      "title": "Architecture Decisions",
+      "view": "docs",
+      "section": "ARCHITECTURE",
+      "source": "docs/design/adr/README.md",
+      "url": "/content/design_adr_index.html"
+    },
+    {
       "slug": "breakdown_autodiff",
       "title": "Automatic Differentiation",
       "view": "docs",
@@ -325,6 +373,14 @@
       "section": "RELEASE",
       "source": "CHANGELOG.md",
       "url": "/content/changelog.html"
+    },
+    {
+      "slug": "platform_release_process",
+      "title": "Release Process",
+      "view": "docs",
+      "section": "RELEASE",
+      "source": "docs/platform/RELEASE_PROCESS.md",
+      "url": "/content/platform_release_process.html"
     },
     {
       "slug": "roadmap",

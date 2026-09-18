@@ -77,7 +77,7 @@
 </tr>
 <tr>
 <td>Tagged-value type</td>
-<td><code>inc/eshkol/eshkol.h</code> (lines 87, 351–356) and <code>lib/backend/type_system.cpp</code> §<code>createStructTypes</code></td>
+<td><code>inc/eshkol/eshkol.h</code> (lines 137, 824–829) and <code>lib/backend/type_system.cpp</code> §<code>createStructTypes</code></td>
 <td>—</td>
 <td>—</td>
 </tr>
@@ -118,7 +118,7 @@
 </table>
 <p>Logic variables fit entirely in a single tagged value: the type byte is 10 and <code>data.int_val</code> is the variable ID. There is no heap object for the variable itself; the name lives in a static intern pool managed by <code>eshkol_make_logic_var</code> (<code>lib/core/logic.cpp</code> lines 125–151).</p>
 <h3 id="23-new-heap-subtypes">2.3 New heap subtypes</h3>
-<p>All six subtypes are members of the <code>heap_subtype_t</code> enum in <code>inc/eshkol/eshkol.h</code> (lines 337–360):</p>
+<p>All six subtypes are members of the <code>heap_subtype_t</code> enum in <code>inc/eshkol/eshkol.h</code> (lines 810–839):</p>
 <table>
 <colgroup>
 <col style="width: 38%" />
@@ -138,44 +138,44 @@
 <tr>
 <td><code>HEAP_SUBTYPE_SUBSTITUTION</code></td>
 <td>12</td>
-<td>line 351</td>
+<td>line 824</td>
 <td><code>eshkol_substitution_t</code></td>
 </tr>
 <tr>
 <td><code>HEAP_SUBTYPE_FACT</code></td>
 <td>13</td>
-<td>line 352</td>
+<td>line 825</td>
 <td><code>eshkol_fact_t</code></td>
 </tr>
 <tr>
 <td><em>(reserved for RULE)</em></td>
 <td>14</td>
-<td>line 353</td>
+<td>line 826</td>
 <td>—</td>
 </tr>
 <tr>
 <td><code>HEAP_SUBTYPE_KNOWLEDGE_BASE</code></td>
 <td>15</td>
-<td>line 354</td>
+<td>line 827</td>
 <td><code>eshkol_knowledge_base_t</code></td>
 </tr>
 <tr>
 <td><code>HEAP_SUBTYPE_FACTOR_GRAPH</code></td>
 <td>16</td>
-<td>line 355</td>
+<td>line 828</td>
 <td><code>eshkol_factor_graph_t</code></td>
 </tr>
 <tr>
 <td><code>HEAP_SUBTYPE_WORKSPACE</code></td>
 <td>17</td>
-<td>line 356</td>
+<td>line 829</td>
 <td><code>eshkol_workspace_t</code></td>
 </tr>
 </tbody>
 </table>
 <p>Value <code>14</code> is reserved for the rule heap subtype slated for v1.2 backward chaining. The non-monotonic gap is intentional and load-bearing for forward source compatibility.</p>
 <h3 id="24-object-header">2.4 Object header</h3>
-<p>Every heap object carries an 8-byte <code>eshkol_object_header_t</code> prefix (<code>inc/eshkol/eshkol.h</code> lines 322–327):</p>
+<p>Every heap object carries an 8-byte <code>eshkol_object_header_t</code> prefix (<code>inc/eshkol/eshkol.h</code> lines 757–762):</p>
 <pre class="c"><code>struct eshkol_object_header {
     uint8_t  subtype;     // distinguishes heap kinds
     uint8_t  flags;       // GC / linear / shared / pinned / external

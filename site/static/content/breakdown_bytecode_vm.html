@@ -294,3 +294,46 @@ g++ -O2 -std=c++20 exe/eshkol-server.cpp -o eshkol-server \
 
 # Run on port 8080
 ./eshkol-server --port 8080 --web-dir site/static/</code></pre>
+<p>Server options (<code>eshkol-server --help</code>):</p>
+<table>
+<colgroup>
+<col style="width: 40%" />
+<col style="width: 60%" />
+</colgroup>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--port &lt;port&gt;</code></td>
+<td>Port to listen on (default <code>8080</code>)</td>
+</tr>
+<tr>
+<td><code>--host &lt;addr&gt;</code></td>
+<td>IPv4 address (or <code>localhost</code>) to bind (default <code>127.0.0.1</code>)</td>
+</tr>
+<tr>
+<td><code>--public</code></td>
+<td>Bind <code>0.0.0.0</code>. A non-loopback bind is refused unless a compile token is set</td>
+</tr>
+<tr>
+<td><code>--compile-token &lt;token&gt;</code></td>
+<td>Require the token on <code>POST /compile</code>, sent as <code>Authorization: Bearer &lt;token&gt;</code> or <code>X-Eshkol-Compile-Token</code>; <code>ESHKOL_SERVER_TOKEN</code> sets the same value</td>
+</tr>
+<tr>
+<td><code>--cors-origin &lt;origin&gt;</code></td>
+<td>Allow CORS for one exact origin; <code>*</code> is rejected</td>
+</tr>
+<tr>
+<td><code>--web-dir &lt;path&gt;</code></td>
+<td>Directory to serve static files from (default: <code>web/</code> or <code>../web/</code> when it holds an <code>index.html</code>)</td>
+</tr>
+<tr>
+<td><code>--help</code>, <code>-h</code></td>
+<td>Print usage and exit</td>
+</tr>
+</tbody>
+</table>

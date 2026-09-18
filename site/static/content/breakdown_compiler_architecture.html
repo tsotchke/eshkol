@@ -24,7 +24,7 @@
 <li><strong>S-expression parser</strong> for R7RS-compatible Scheme syntax</li>
 <li><strong>Hygienic macro expander</strong> via <code>syntax-rules</code> pattern matching</li>
 <li><strong>HoTT-inspired type checker</strong> for gradual typing (warnings, not errors)</li>
-<li><strong>Modular LLVM backend</strong> with 34 specialized codegen modules (~108,400 lines)</li>
+<li><strong>Modular LLVM backend</strong> with 39 <code>*codegen*.cpp</code> translation units (118,470 lines)</li>
 <li><strong>JIT compiler</strong> for interactive REPL via LLVM OrcJIT (LLJIT)</li>
 <li><strong>Pre-compiled standard library</strong> (40 modules, compiled to <code>stdlib.o</code>)</li>
 <li><strong>GPU dispatch</strong> with SIMD/cBLAS/Metal cost model selection</li>
@@ -44,19 +44,19 @@
        v
 +------------------+
 | 2. S-EXPRESSION  |  lib/frontend/parser.cpp (11,691 lines)
-|    PARSING       |  Builds eshkol_ast_t tree, 94 operation types
+|    PARSING       |  Builds eshkol_ast_t tree, 113 operation types
 +------------------+
        |
        v
 +------------------+
 | 3. HoTT TYPE     |  lib/types/type_checker.cpp (6,061 lines)
-|    CHECKING      |  Constraint generation + unification (non-blocking)
+|    CHECKING      |  Bidirectional synthesis/checking (non-blocking)
 +------------------+
        |
        v
 +------------------+
 | 4. LLVM IR       |  lib/backend/llvm_codegen.cpp plus the extracted codegen modules
-|    GENERATION    |  AST -&gt; LLVM IR via 36 specialized codegen modules
+|    GENERATION    |  AST -&gt; LLVM IR via 39 codegen translation units
 +------------------+
        |
        v
@@ -113,11 +113,22 @@ typedef struct eshkol_ast {
         eshkol_operations_t operation;  // Operations (if, let, lambda, etc.)
     };
     uint32_t inferred_hott_type;  // HoTT type [TypeId:16][universe:8][flags:8]
-    uint32_t line;
-    uint32_t column;
+    // In C++ the four fields below have default member initialisers.
+    uint32_t line;                // = eshkol_ast_birth_location.line
+    uint32_t column;              // = eshkol_ast_birth_location.column
+    uint32_t source_file_id;      // = 0; id into the parser&#39;s interned file table
+    eshkol_node_id_t node_id;     // = 0; key into the node-identity side tables
 } eshkol_ast_t;</code></pre>
-<p><strong>Key responsibilities:</strong> - 94 operation types (see <code>eshkol_op_t</code> enum in <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a>) - Internal define to <code>letrec*</code> transformation (all define names, wherever they appear in the body; a value define’s initializer stays at its source position) - <code>delay</code>/<code>delay-force</code> desugaring to promise constructors - <code>define-record-type</code> to vector operation transformation - <code>?x</code> syntax for logic variables (<code>ESHKOL_LOGIC_VAR_OP</code>) - Line/column tracking for error messages - HoTT type annotation attachment to AST nodes</p>
+<p><strong>Key responsibilities:</strong> - 113 operation types (the <code>eshkol_op_t</code> enumerators in <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a>, <code>ESHKOL_INVALID_OP</code> included) - Internal define to <code>letrec*</code> transformation (all define names, wherever they appear in the body; a value define’s initializer stays at its source position) - <code>delay</code>/<code>delay-force</code> desugaring to promise constructors - <code>define-record-type</code> to vector operation transformation - <code>?x</code> syntax for logic variables (<code>ESHKOL_LOGIC_VAR_OP</code>) - Line/column tracking for error messages and coverage records (per stream; see below) - HoTT type annotation attachment to AST nodes</p>
 <p><strong>Critical invariant:</strong> The <code>letrec*</code> transformation only collects consecutive <code>define</code> forms from the beginning of a body. Once a non-define expression appears, collection stops. This preserves side-effect ordering per R7RS semantics.</p>
+<h3 id="source-locations-and-node-identity">Source Locations and Node Identity</h3>
+<p>Every AST node has a deterministic source location, and one key type identifies it (since v1.3.5):</p>
+<ul>
+<li><strong>Birth location.</strong> In C++, <code>line</code> and <code>column</code> are initialised from the thread-local <code>eshkol_ast_birth_location</code>, and <code>source_file_id</code> and <code>node_id</code> from 0, whether the node is a local, a <code>new</code> allocation, value-initialised, or constructed over raw arena storage by <code>eshkol_ast_construct_array</code>. The parser, the macro expander and codegen each open an <code>EshkolAstBirthLocationScope</code> for the form they are processing, so a node synthesised while lowering that form (internal-define <code>letrec*</code>, body sequences, named-let and <code>do</code> lowering, record-type expansion, hand-built codegen nodes) carries the location of the form it came from. A node’s own stamp overrides its birth location. The initialisers are inside <code>#ifdef __cplusplus</code>; C sees the same plain struct with the same layout.</li>
+<li><strong>Per-stream reader position.</strong> The reader’s cumulative line and column live in <code>std::ios_base</code> storage on each input stream and are bound to the reader for one call at a time (<code>StreamPositionBinding</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a>). The AOT driver reads a required module’s requires while it is still reading that module; the nested read keeps its own position and leaves the parent’s untouched.</li>
+<li><strong>Node identity.</strong> <code>eshkol_ast_t::node_id</code>, the NodeId allocator (<a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/frontend/node_identity.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/frontend/node_identity.h</code></a>) and the semantic queries (<a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/frontend/semantic_identity.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/frontend/semantic_identity.h</code></a>) share the <code>eshkol_node_id_t</code> key type, a 32-bit alias that keeps the public field width (<a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0014-release-invariant-contracts.md" target="_blank" rel="noopener noreferrer">ADR 0014</a>).</li>
+</ul>
+<p>See <a href="/docs#page=eshkol_v1_architecture&amp;source-locations-and-node-identity" data-url="/content/eshkol_v1_architecture.html">ESHKOL_V1_ARCHITECTURE.md</a> for the full account, including the iterative ownership and escape analyses that run in the driver before codegen.</p>
 <hr />
 <h2 id="type-checking-hott-system">Type Checking (HoTT System)</h2>
 <p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a> (6,061 lines)</p>
@@ -132,11 +143,13 @@ typedef struct eshkol_ast {
  +-- U_0 (universe of values)</code></pre>
 <h3 id="type-inference-algorithm">Type Inference Algorithm</h3>
 <ol type="1">
-<li><strong>Constraint Generation</strong> – Collect type constraints from AST traversal</li>
-<li><strong>Unification</strong> – Solve constraints using Robinson’s unification algorithm</li>
-<li><strong>Type Substitution</strong> – Apply solutions throughout the AST</li>
-<li><strong>Warning Emission</strong> – Report type mismatches as warnings (not errors)</li>
+<li><strong>Bidirectional traversal</strong> – <code>synthesize</code> computes a node’s type from its subexpressions; <code>check</code> compares a node against an expected type. Both run as continuation tasks, so native stack use is independent of nesting. Every evaluated subexpression of every control form is synthesised.</li>
+<li><strong>Fixpoint inference for recursive slots</strong> – a named-let parameter is the join of its seed and every argument its own loop passes back, computed by speculative passes whose diagnostics and linear-usage state are rolled back until a pass widens nothing; a recursive procedure’s result type is found the same way, within 8 passes.</li>
+<li><strong>Judgments through one relation</strong> – subtyping, consistency, joins, casts and narrowing all go through <code>TypeRelation</code> (below).</li>
+<li><strong>Warning Emission</strong> – Report type mismatches as warnings (not errors); the result is cached on the node as <code>inferred_hott_type</code>.</li>
 </ol>
+<h3 id="the-type-relation">The Type Relation</h3>
+<p><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/types/type_relation.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/types/type_relation.h</code></a> and <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_relation.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_relation.cpp</code></a> hold the sole owner of judgments over types: static subtyping, gradual consistency and consistent subtyping, compatibility evidence, castability, join and meet, occurrence-test narrowing, inferred-slot widening under two policies (<code>InferenceSlot</code> for named-let parameters, <code>AdoptTop</code> for <code>do</code> variables), pair projection, and printing. <code>TypeEnvironment</code> keeps thin facades (<code>isSubtype</code>, <code>leastCommonSupertype</code>, <code>getTypeName</code>, <code>getFunctionTypeName</code>) that construct a <code>TypeRelation</code> and delegate (since v1.3.5; <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0013-gradual-type-relation.md" target="_blank" rel="noopener noreferrer">ADR 0013</a>). The operation table and the checker’s data flow are in <a href="/docs#page=eshkol_v1_architecture&amp;the-type-relation" data-url="/content/eshkol_v1_architecture.html">ESHKOL_V1_ARCHITECTURE.md</a>; the user-facing account is the <a href="/docs#page=guide_gradual_typing" data-url="/content/guide_gradual_typing.html">Gradual Typing guide</a>.</p>
 <p><strong>Gradual typing:</strong> Type errors produce warnings, code still compiles. This preserves Scheme’s exploratory programming model while enabling aggressive optimization when types are statically known. The 16-byte tagged values store an 8-bit type field; when the type is known at compile time, the compiler generates untagged LLVM IR, eliminating tagging overhead.</p>
 <h3 id="type-expression-structure">Type Expression Structure</h3>
 <pre class="c"><code>typedef struct hott_type_expr {
@@ -206,6 +219,7 @@ tensor_-&gt;setCodegenCallbacks(
     this  // opaque pointer back to main codegen
 );</code></pre>
 <p>This pattern inverts the typical dependency graph – modules call back into the main codegen through thin static wrappers rather than holding direct references to each other.</p>
+<p>The <code>EshkolLLVMCodeGen</code> class is declared twice: the public contract in <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/backend/llvm_codegen.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/backend/llvm_codegen.h</code></a> and the implementation class in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a>, which the extracted translation units share. <code>scripts/gate_compiler_architecture.py</code> compares the two data-member layouts (member order, types, nested layouts, bit fields) and fails on any drift, including a same-size change, and on a layout-level preprocessor conditional it cannot evaluate, so the two translation-unit views of the object cannot silently diverge (since v1.3.5; <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0015-static-callee-binding-identity.md" target="_blank" rel="noopener noreferrer">ADR 0015</a>).</p>
 <hr />
 <h2 id="bytecode-vm-architecture">Bytecode VM Architecture</h2>
 <p>The bytecode backend is a unity-build C system rooted at <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/eshkol_vm.c" target="_blank" rel="noopener noreferrer"><code>lib/backend/eshkol_vm.c</code></a>. The hub includes the VM components in dependency order, while the interpreter responsibilities are kept in separate source modules:</p>
@@ -359,31 +373,39 @@ static constexpr unsigned TAGGED_VALUE_DATA_IDX = 4;     // int64_t data</code><
 </tbody>
 </table>
 <p>Tags 0-7 are immediate values (data stored inline). Tags 8-9 are consolidated pointer types – the specific type is determined by reading the 8-byte object header at <code>pointer - 8</code>.</p>
-<h3 id="heap-subtypes-20-as-of-v11">Heap Subtypes (20 as of v1.1)</h3>
+<h3 id="heap-subtypes">Heap Subtypes</h3>
+<p><code>heap_subtype_t</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> is the single definition of the heap subtypes. Each member’s declaration carries an interior-pointer tag: <code>[DEEPWALK]</code> members must be walked by the region evacuator, and each has a native evacuation handler in <code>evac_kind_for</code> (<a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_regions.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_regions.cpp</code></a>); <code>[LEAF]</code> members hold no interior region pointer and are copied as a contiguous block.</p>
 <pre class="c"><code>// inc/eshkol/eshkol.h
-HEAP_SUBTYPE_CONS         = 0,   // Cons cell (pair/list node)
-HEAP_SUBTYPE_STRING       = 1,   // String (UTF-8 with length)
-HEAP_SUBTYPE_VECTOR       = 2,   // Heterogeneous vector (16 bytes/element)
-HEAP_SUBTYPE_TENSOR       = 3,   // N-dimensional numeric tensor (8 bytes/element)
-HEAP_SUBTYPE_MULTI_VALUE  = 4,   // Multiple return values container
-HEAP_SUBTYPE_HASH         = 5,   // Hash table / dictionary
-HEAP_SUBTYPE_EXCEPTION    = 6,   // Exception object
-HEAP_SUBTYPE_RECORD       = 7,   // User-defined record type
-HEAP_SUBTYPE_BYTEVECTOR   = 8,   // Raw byte vector (R7RS)
-HEAP_SUBTYPE_PORT         = 9,   // I/O port
-HEAP_SUBTYPE_SYMBOL       = 10,  // Interned symbol
-HEAP_SUBTYPE_BIGNUM       = 11,  // Arbitrary-precision integer
-HEAP_SUBTYPE_SUBSTITUTION = 12,  // Logic engine: immutable binding map
-HEAP_SUBTYPE_FACT         = 13,  // Logic engine: predicate + arguments
-HEAP_SUBTYPE_KNOWLEDGE_BASE = 15, // Logic engine: collection of facts
-HEAP_SUBTYPE_FACTOR_GRAPH = 16,  // Active inference: factor graph
-HEAP_SUBTYPE_WORKSPACE    = 17,  // Global workspace: cognitive competition
-HEAP_SUBTYPE_PROMISE      = 18,  // Lazy promise (delay/force)
-HEAP_SUBTYPE_RATIONAL     = 19,  // Exact rational number</code></pre>
-<p>Subtypes 12-19 are new in v1.1-accelerate. The consolidation of 8 legacy pointer types (CONS_PTR, STRING_PTR, etc.) into <code>HEAP_PTR</code> + subtype headers freed the type tag space for these extensions.</p>
+HEAP_SUBTYPE_CONS           = 0,   // Cons cell (pair/list node)            [DEEPWALK]
+HEAP_SUBTYPE_STRING         = 1,   // String (UTF-8 with length)            [LEAF]
+HEAP_SUBTYPE_VECTOR         = 2,   // Heterogeneous vector (16 bytes/elem)  [DEEPWALK]
+HEAP_SUBTYPE_TENSOR         = 3,   // N-dimensional numeric tensor          [DEEPWALK]
+HEAP_SUBTYPE_MULTI_VALUE    = 4,   // Multiple return values container      [DEEPWALK]
+HEAP_SUBTYPE_HASH           = 5,   // Hash table / dictionary               [DEEPWALK]
+HEAP_SUBTYPE_EXCEPTION      = 6,   // Exception object                      [DEEPWALK]
+HEAP_SUBTYPE_RECORD         = 7,   // User-defined record type              [DEEPWALK]
+HEAP_SUBTYPE_BYTEVECTOR     = 8,   // Raw byte vector (R7RS)                [LEAF]
+HEAP_SUBTYPE_PORT           = 9,   // I/O port                              [LEAF]
+HEAP_SUBTYPE_SYMBOL         = 10,  // Interned symbol                       [LEAF]
+HEAP_SUBTYPE_BIGNUM         = 11,  // Arbitrary-precision integer           [LEAF]
+HEAP_SUBTYPE_SUBSTITUTION   = 12,  // Logic engine: immutable binding map   [DEEPWALK]
+HEAP_SUBTYPE_FACT           = 13,  // Logic engine: predicate + arguments   [DEEPWALK]
+// 14 is reserved (RULE)
+HEAP_SUBTYPE_KNOWLEDGE_BASE = 15,  // Logic engine: collection of facts     [DEEPWALK]
+HEAP_SUBTYPE_FACTOR_GRAPH   = 16,  // Active inference: factor graph        [DEEPWALK]
+HEAP_SUBTYPE_WORKSPACE      = 17,  // Global workspace                      [DEEPWALK]
+HEAP_SUBTYPE_PROMISE        = 18,  // Lazy promise (delay/force)            [DEEPWALK]
+HEAP_SUBTYPE_RATIONAL       = 19,  // Exact rational number                 [DEEPWALK]
+HEAP_SUBTYPE_PRNG           = 20,  // Isolated PRNG state                   [LEAF]
+HEAP_SUBTYPE_DNC            = 21,  // Differentiable external memory        [LEAF]
+HEAP_SUBTYPE_SDNC           = 22,  // SDNC weight-program handle            [LEAF]
+HEAP_SUBTYPE_TAYLOR         = 23,  // Truncated-Taylor tower (AD)           [DEEPWALK]
+HEAP_SUBTYPE_PARAMETER      = 24,  // R7RS parameter object                 [DEEPWALK]
+HEAP_SUBTYPE_I128           = 25,  // Native fixed-width 128-bit integer    [LEAF]</code></pre>
+<p>Subtypes 12-19 exist since v1.1. The consolidation of 8 legacy pointer types (CONS_PTR, STRING_PTR, etc.) into <code>HEAP_PTR</code> + subtype headers is what frees the type tag space for these extensions. <code>eshkol_heap_subtype_is_declared()</code> is an exhaustive switch over the enum with no <code>default:</code>, so adding a member without listing it is a compile error, and an undeclared subtype byte read from a header takes a loud fallback. The architecture model grades the tags against the evacuator’s <code>case</code> arms (<code>INV-oalr-interior-pointer-deepwalk</code>; <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0014-release-invariant-contracts.md" target="_blank" rel="noopener noreferrer">ADR 0014</a>).</p>
 <hr />
 <h2 id="modular-codegen-architecture">Modular Codegen Architecture</h2>
-<p>The LLVM backend distributes code generation across 36 specialized modules. Each domain module is a C++ class instantiated as a <code>std::unique_ptr</code> member of <code>EshkolLLVMCodeGen</code>; orchestration, builtin declarations, and REPL resolution are separate translation units that share the exposed class contract.</p>
+<p>The LLVM backend distributes code generation across 39 <code>*codegen*.cpp</code> translation units (118,470 lines). Each domain module is a C++ class instantiated as a <code>std::unique_ptr</code> member of <code>EshkolLLVMCodeGen</code>; orchestration, builtin declarations, and REPL resolution are separate translation units that share the exposed class contract.</p>
 <h3 id="complete-module-table">Complete Module Table</h3>
 <table>
 <colgroup>
@@ -404,151 +426,151 @@ HEAP_SUBTYPE_RATIONAL     = 19,  // Exact rational number</code></pre>
 <tr>
 <td style="text-align: left;"><strong>Main Codegen</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>llvm_codegen.cpp</code></a></td>
-<td style="text-align: right;">Orchestrator and AST dispatch</td>
-<td style="text-align: left;"></td>
+<td style="text-align: right;">47,107</td>
+<td style="text-align: left;">Orchestrator and AST dispatch</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Module Initialization</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/module_init_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>module_init_codegen.cpp</code></a></td>
-<td style="text-align: right;">Codegen construction and library initialization</td>
-<td style="text-align: left;"></td>
+<td style="text-align: right;">644</td>
+<td style="text-align: left;">Codegen construction and library initialization</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Builtin Factory</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/builtin_factory_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>builtin_factory_codegen.cpp</code></a></td>
-<td style="text-align: right;">LLVM declarations for runtime, math, and builtin calls</td>
-<td style="text-align: left;"></td>
+<td style="text-align: right;">828</td>
+<td style="text-align: left;">LLVM declarations for runtime, math, and builtin calls</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>REPL Resolution</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/repl_resolution_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>repl_resolution_codegen.cpp</code></a></td>
-<td style="text-align: right;">Cross-evaluation function and C-ABI thunk resolution</td>
-<td style="text-align: left;"></td>
+<td style="text-align: right;">224</td>
+<td style="text-align: left;">Cross-evaluation function and C-ABI thunk resolution</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Autodiff</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>autodiff_codegen.cpp</code></a></td>
-<td style="text-align: right;">14,083</td>
+<td style="text-align: right;">14,938</td>
 <td style="text-align: left;">Forward/reverse/symbolic AD modes</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Arithmetic</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/arithmetic_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>arithmetic_codegen.cpp</code></a></td>
-<td style="text-align: right;">4,012</td>
+<td style="text-align: right;">4,625</td>
 <td style="text-align: left;">+, -, *, /, bignum, rational, complex dispatch</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>String/IO</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/string_io_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>string_io_codegen.cpp</code></a></td>
-<td style="text-align: right;">3,860</td>
+<td style="text-align: right;">3,926</td>
 <td style="text-align: left;">String ops, display/write, file I/O, JSON, CSV</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Collections</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/collection_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>collection_codegen.cpp</code></a></td>
-<td style="text-align: right;">3,173</td>
+<td style="text-align: right;">3,172</td>
 <td style="text-align: left;">Vector, list, cons, bytevector operations</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Parallel LLVM</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/parallel_llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>parallel_llvm_codegen.cpp</code></a></td>
-<td style="text-align: right;">2,626</td>
+<td style="text-align: right;">2,317</td>
 <td style="text-align: left;">Work-stealing parallelism LLVM IR generation</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>System</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/system_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>system_codegen.cpp</code></a></td>
-<td style="text-align: right;">2,039</td>
+<td style="text-align: right;">2,146</td>
 <td style="text-align: left;">System, environment, time, process, eval support</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Tensor (dispatch)</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensor_codegen.cpp</code></a></td>
-<td style="text-align: right;">1,867</td>
+<td style="text-align: right;">2,012</td>
 <td style="text-align: left;">Entry/dispatch shell; per-domain ops live in <code>tensor_*_codegen.cpp</code> siblings</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Bindings</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/binding_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>binding_codegen.cpp</code></a></td>
-<td style="text-align: right;">1,662</td>
+<td style="text-align: right;">1,831</td>
 <td style="text-align: left;">let/let<em>/letrec/letrec</em> with TCO context save/restore</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Thread Pool</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/thread_pool.cpp" target="_blank" rel="noopener noreferrer"><code>thread_pool.cpp</code></a></td>
-<td style="text-align: right;">1,524</td>
+<td style="text-align: right;">1,530</td>
 <td style="text-align: left;">Work-stealing thread pool runtime</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Tensor Backward</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_backward.cpp" target="_blank" rel="noopener noreferrer"><code>tensor_backward.cpp</code></a></td>
-<td style="text-align: right;">1,572</td>
+<td style="text-align: right;">1,876</td>
 <td style="text-align: left;">Backward-mode AD gradient computation for tensors</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>BLAS Backend</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/blas_backend.cpp" target="_blank" rel="noopener noreferrer"><code>blas_backend.cpp</code></a></td>
-<td style="text-align: right;">1,281</td>
+<td style="text-align: right;">1,316</td>
 <td style="text-align: left;">BLAS dispatch, GPU cost model calibration</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Call/Apply</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/call_apply_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>call_apply_codegen.cpp</code></a></td>
-<td style="text-align: right;">1,270</td>
+<td style="text-align: right;">1,161</td>
 <td style="text-align: left;">Function calls, apply, partial application, variadic</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Control Flow</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/control_flow_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>control_flow_codegen.cpp</code></a></td>
-<td style="text-align: right;">1,107</td>
+<td style="text-align: right;">1,108</td>
 <td style="text-align: left;">if/cond/case/match/when/unless/call-cc/guard</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Map</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/map_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>map_codegen.cpp</code></a></td>
-<td style="text-align: right;">1,142</td>
+<td style="text-align: right;">1,253</td>
 <td style="text-align: left;">map/for-each/fold with closure dispatch</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Parallel</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/parallel_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>parallel_codegen.cpp</code></a></td>
-<td style="text-align: right;">1,008</td>
+<td style="text-align: right;">1,009</td>
 <td style="text-align: left;">parallel-map/fold/filter/for-each runtime</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Tagged Values</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tagged_value_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tagged_value_codegen.cpp</code></a></td>
-<td style="text-align: right;">807</td>
+<td style="text-align: right;">848</td>
 <td style="text-align: left;">Pack/unpack tagged values, type extraction</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Tail Calls</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tail_call_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tail_call_codegen.cpp</code></a></td>
-<td style="text-align: right;">748</td>
+<td style="text-align: right;">830</td>
 <td style="text-align: left;">TCO transformation, trampoline runtime</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Homoiconic</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/homoiconic_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>homoiconic_codegen.cpp</code></a></td>
-<td style="text-align: right;">706</td>
+<td style="text-align: right;">750</td>
 <td style="text-align: left;">Code-as-data, quote, lambda S-expressions, eval</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Hash</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/hash_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>hash_codegen.cpp</code></a></td>
-<td style="text-align: right;">734</td>
+<td style="text-align: right;">743</td>
 <td style="text-align: left;">make-hash, hash-ref, hash-set!, hash-for-each</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>Complex</strong></td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/complex_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>complex_codegen.cpp</code></a></td>
-<td style="text-align: right;">640</td>
+<td style="text-align: right;">624</td>
 <td style="text-align: left;">Complex number arithmetic (Smith’s formula division)</td>
 </tr>
 </tbody>
 </table>
-<p>The original <code>tensor_codegen.cpp</code> was decomposed in v1.2 into thirteen per-domain modules (<code>tensor_activation_codegen.cpp</code>, <code>tensor_arith_codegen.cpp</code>, <code>tensor_conv_codegen.cpp</code>, <code>tensor_creation_codegen.cpp</code>, <code>tensor_dataloader_codegen.cpp</code>, <code>tensor_extras_codegen.cpp</code>, <code>tensor_linalg_codegen.cpp</code>, <code>tensor_loss_codegen.cpp</code>, <code>tensor_reduce_codegen.cpp</code>, <code>tensor_shape_codegen.cpp</code>, <code>tensor_training_codegen.cpp</code>, <code>tensor_transformer_codegen.cpp</code>, <code>tensorcore_codegen.cpp</code>), totalling 22,355 lines re-exported through the dispatcher above.</p>
-<p><strong>Additional backend components (not in the 21-module count):</strong></p>
+<p>The original <code>tensor_codegen.cpp</code> was decomposed in v1.2 into thirteen per-domain modules (<code>tensor_activation_codegen.cpp</code>, <code>tensor_arith_codegen.cpp</code>, <code>tensor_conv_codegen.cpp</code>, <code>tensor_creation_codegen.cpp</code>, <code>tensor_dataloader_codegen.cpp</code>, <code>tensor_extras_codegen.cpp</code>, <code>tensor_linalg_codegen.cpp</code>, <code>tensor_loss_codegen.cpp</code>, <code>tensor_reduce_codegen.cpp</code>, <code>tensor_shape_codegen.cpp</code>, <code>tensor_training_codegen.cpp</code>, <code>tensor_transformer_codegen.cpp</code>, <code>tensorcore_codegen.cpp</code>), totalling 23,389 lines re-exported through the dispatcher above.</p>
+<p><strong>Additional backend components (not in the module table above):</strong></p>
 <table>
 <colgroup>
 <col style="width: 25%" />
@@ -568,13 +590,13 @@ HEAP_SUBTYPE_RATIONAL     = 19,  // Exact rational number</code></pre>
 <tr>
 <td style="text-align: left;">Type System</td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/type_system.cpp" target="_blank" rel="noopener noreferrer"><code>type_system.cpp</code></a></td>
-<td style="text-align: right;">187</td>
+<td style="text-align: right;">189</td>
 <td style="text-align: left;">LLVM type creation and caching</td>
 </tr>
 <tr>
 <td style="text-align: left;">Codegen Context</td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/codegen_context.cpp" target="_blank" rel="noopener noreferrer"><code>codegen_context.cpp</code></a></td>
-<td style="text-align: right;">377</td>
+<td style="text-align: right;">417</td>
 <td style="text-align: left;">Shared state for module communication</td>
 </tr>
 <tr>
@@ -592,7 +614,7 @@ HEAP_SUBTYPE_RATIONAL     = 19,  // Exact rational number</code></pre>
 <tr>
 <td style="text-align: left;">Memory Codegen</td>
 <td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/memory_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>memory_codegen.cpp</code></a></td>
-<td style="text-align: right;">401</td>
+<td style="text-align: right;">420</td>
 <td style="text-align: left;">Arena allocation IR generation</td>
 </tr>
 <tr>
@@ -604,17 +626,56 @@ HEAP_SUBTYPE_RATIONAL     = 19,  // Exact rational number</code></pre>
 <tr>
 <td style="text-align: left;">XLA/StableHLO</td>
 <td style="text-align: left;">6 files in <code>lib/backend/xla/</code></td>
-<td style="text-align: right;">4,020</td>
+<td style="text-align: right;">4,146</td>
 <td style="text-align: left;">Tensor compilation via MLIR pipeline</td>
 </tr>
 <tr>
 <td style="text-align: left;">GPU/Metal</td>
 <td style="text-align: left;"><code>lib/backend/gpu/gpu_memory.mm</code>, <code>metal_softfloat.h</code></td>
-<td style="text-align: right;">8,954</td>
+<td style="text-align: right;">8,984</td>
 <td style="text-align: left;">Metal compute, SF64 software float64, CUDA stubs</td>
 </tr>
 </tbody>
 </table>
+<h3 id="shared-codegen-facilities">Shared Codegen Facilities</h3>
+<p>Three header-only facilities each own one decision that several modules need (since v1.3.5):</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th style="text-align: left;">Header</th>
+<th style="text-align: right;">Lines</th>
+<th style="text-align: left;">Decision</th>
+<th style="text-align: left;">Used by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/backend/libm_codegen.h" target="_blank" rel="noopener noreferrer"><code>libm_codegen.h</code></a></td>
+<td style="text-align: right;">204</td>
+<td style="text-align: left;">How codegen obtains a libm function: the LLVM intrinsic where the LLVM major has one (a reserved name no module symbol can shadow); otherwise a by-name lookup verified against the function type, with a distinctly named <code>eshkol_libm_&lt;name&gt;</code> declaration on a mismatch</td>
+<td style="text-align: left;">Every scalar-math path via <code>EshkolLLVMCodeGen::mathFunc</code>, <code>AutodiffCodegen::getMathFunc</code>, and the tensor activation, loss, training, arithmetic and complex lowerings</td>
+</tr>
+<tr>
+<td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/backend/static_callee_binding.h" target="_blank" rel="noopener noreferrer"><code>static_callee_binding.h</code></a></td>
+<td style="text-align: right;">247</td>
+<td style="text-align: left;">When a variable may be resolved to an <code>llvm::Function</code>: the static <code>&lt;name&gt;_func</code> alias is a binding fact recorded with its owning storage; a reassigned or redefined binding gets no alias and dispatches through the closure ABI (<a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0015-static-callee-binding-identity.md" target="_blank" rel="noopener noreferrer">ADR 0015</a>)</td>
+<td style="text-align: left;">Direct calls, <code>apply</code>, <code>map</code>, <code>reduce</code>, <code>remove</code>, the AD operators</td>
+</tr>
+<tr>
+<td style="text-align: left;"><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/backend/closure_capture_scope.h" target="_blank" rel="noopener noreferrer"><code>closure_capture_scope.h</code></a></td>
+<td style="text-align: right;">182</td>
+<td style="text-align: left;">Where a statically resolved closure’s captures come from: only values usable in the function being emitted (<code>valueUsableInFunction</code>), and, for a callee reached by name, the closure object’s own environment (<code>emitClosureCaptureArguments</code>)</td>
+<td style="text-align: left;"><code>AutodiffCodegen::appendDifferentiandCaptures</code> (the single capture resolver for every AD operator), <code>MapCodegen</code></td>
+</tr>
+</tbody>
+</table>
+<p>Top-level reassignment and redefinition facts for static callee bindings come from the lexical mutation analysis over the expanded unit, computed before code generation. The details are in <a href="/docs#page=eshkol_v1_architecture&amp;shared-codegen-facilities" data-url="/content/eshkol_v1_architecture.html">ESHKOL_V1_ARCHITECTURE.md</a>.</p>
 <h3 id="module-initialization-order">Module Initialization Order</h3>
 <p>Modules are initialized in dependency order during <code>EshkolLLVMCodeGen</code> construction:</p>
 <pre><code>TypeSystem -&gt; MemoryCodegen -&gt; CodegenContext -&gt; TaggedValueCodegen
@@ -698,7 +759,7 @@ HEAP_SUBTYPE_RATIONAL     = 19,  // Exact rational number</code></pre>
 <li>Check for <code>INT64</code> – native integer ops with overflow check</li>
 <li>Overflow promotes int64 to bignum via C runtime (<code>eshkol_bignum_binary_tagged</code>)</li>
 </ol>
-<p><strong>Exactness tracking:</strong> The <code>ESHKOL_FLAG_EXACT</code> flag in the tagged value’s flags byte propagates through operations. R7RS semantics: exact + exact = exact, exact + inexact = inexact.</p>
+<p><strong>Exactness tracking:</strong> The <code>ESHKOL_VALUE_EXACT_FLAG</code> flag in the tagged value’s flags byte propagates through operations. R7RS semantics: exact + exact = exact, exact + inexact = inexact.</p>
 <p><strong>Runtime functions for exact arithmetic:</strong> - <code>eshkol_bignum_binary_tagged</code> – bignum +, -, *, div, mod, gcd - <code>eshkol_bignum_compare_tagged</code> – exact comparison - <code>eshkol_bignum_pow_tagged</code> – exact exponentiation via repeated squaring - <code>eshkol_rational_compare_tagged_ptr</code> – rational comparison - <code>eshkol_bignum_to_string</code> / <code>eshkol_string_to_number_tagged</code> – conversion</p>
 <h3 id="first-class-continuations">First-Class Continuations</h3>
 <p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/control_flow_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>control_flow_codegen.cpp</code></a> (1,108 lines), with <code>call/cc</code> and <code>dynamic-wind</code> dispatch in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>llvm_codegen.cpp</code></a></p>
@@ -711,7 +772,7 @@ HEAP_SUBTYPE_RATIONAL     = 19,  // Exact rational number</code></pre>
 </ul>
 <p>Continuations are <code>HEAP_PTR</code> objects with <code>HEAP_SUBTYPE_PROMISE</code> (for promises) or stored as callable closures (for <code>call/cc</code>).</p>
 <h3 id="machine-learning-framework-75-builtins">Machine Learning Framework (75+ Builtins)</h3>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensor_codegen.cpp</code></a> (1,867-line dispatcher; thirteen sibling <code>tensor_*_codegen.cpp</code> files after the v1.2 split), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_backward.cpp" target="_blank" rel="noopener noreferrer"><code>tensor_backward.cpp</code></a> (1,876 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensor_codegen.cpp</code></a> (2,012-line dispatcher; thirteen sibling <code>tensor_*_codegen.cpp</code> files after the v1.2 split), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_backward.cpp" target="_blank" rel="noopener noreferrer"><code>tensor_backward.cpp</code></a> (1,876 lines)</p>
 <p>Categories: activations (16), loss functions (14), optimizers (5+3), weight initializers (5), LR schedulers (4), CNN layers (7), transformer operations (8), data loading (6), plus tensor creation/manipulation ops.</p>
 <p>All ML builtins integrate with reverse-mode AD – calling <code>gradient</code> on any composition produces exact gradients via the computational tape.</p>
 <hr />

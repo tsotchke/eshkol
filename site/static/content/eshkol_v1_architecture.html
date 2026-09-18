@@ -78,7 +78,7 @@
 </tr>
 <tr>
 <td>Test suite</td>
-<td>528 self-reported tests across 37 suites (0 failures)</td>
+<td>1,020 self-reported tests across 46 suites (0 failures; see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/TEST_COVERAGE.md" target="_blank" rel="noopener noreferrer">TEST_COVERAGE.md</a>)</td>
 </tr>
 </tbody>
 </table>
@@ -207,6 +207,7 @@ _Static_assert(sizeof(eshkol_object_header_t) == 8, &quot;Must be 8 bytes&quot;)
 <pre class="c"><code>#define ESHKOL_GET_HEADER(ptr) \
     ((eshkol_object_header_t*)((uint8_t*)ptr - 8))</code></pre>
 <p>The header is at <strong>offset -8</strong> from the data pointer returned by allocators.</p>
+<p><strong>Heap subtypes have one definition.</strong> <code>heap_subtype_t</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> is the only place a heap subtype is declared: 25 members (values 0-13 and 15-25; 14 is reserved). Each member carries an interior-pointer tag on its declaration line. <code>[DEEPWALK]</code> (16 members) means the region evacuator must walk the object’s interior tagged values and pointers when the object escapes a dying region. <code>[LEAF]</code> (9 members) means a contiguous header-plus-payload copy is sound, because the object holds no interior region pointer. Every <code>[DEEPWALK]</code> member has a native evacuation handler in <code>evac_kind_for</code> (<a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_regions.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_regions.cpp</code></a>); a leaf copy does not count as a deep walk. <code>eshkol_heap_subtype_is_declared()</code> is an exhaustive switch over the same enum with no <code>default:</code>, so a member added to the enum and not to the predicate is a compile error, and a subtype byte read from a header that is not a declared member takes a loud fallback that names the value. The architecture model grades the tags against the evacuator’s actual <code>case</code> arms (<code>INV-oalr-interior-pointer-deepwalk</code>, and <code>INV-vm-region-evac-subtype-total</code> for the VM evacuator) (since v1.3.5; <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0014-release-invariant-contracts.md" target="_blank" rel="noopener noreferrer">ADR 0014</a>).</p>
 <h3 id="phase-3b-tagged-cons-cells">Phase 3B: Tagged Cons Cells</h3>
 <p><strong>Modern cons cell layout</strong> (32 bytes, cache-aligned):</p>
 <pre class="c"><code>typedef struct arena_tagged_cons_cell {
@@ -253,7 +254,7 @@ ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena);</code></pre>
 <h2 id="type-system-triple-layer">Type System (Triple-Layer)</h2>
 <p>Eshkol uses <strong>three layers</strong> of type information for different purposes:</p>
 <h3 id="layer-1-runtime-types-tagged-values">Layer 1: Runtime Types (Tagged Values)</h3>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> (3,592 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> (3,759 lines)</p>
 <pre class="c"><code>typedef struct eshkol_tagged_value {
     uint8_t type;        // eshkol_value_type_t (0-255)
     uint8_t flags;       // Exactness, indirection flags
@@ -321,6 +322,72 @@ ESHKOL_VALUE_CLOSURE_PTR (38)
 } TypeId;</code></pre>
 <p><strong>35+ Built-in Types</strong> organized in supertype hierarchies: - Numeric tower: <code>Number</code> → <code>Integer</code>/<code>Real</code> - Collections: <code>List&lt;T&gt;</code>, <code>Vector&lt;T&gt;</code>, <code>Tensor&lt;T,Shape&gt;</code> - Functions: Π-types (dependent function types) - Proofs: <code>Eq</code>, <code>&lt;</code>, <code>Bounded</code> (erased at runtime)</p>
 <p><strong>Current Status</strong>: Type checker produces <strong>warnings only</strong> and does not block compilation (gradual typing), with one deliberate exception: a value carrying <code>TYPE_FLAG_LINEAR</code> (<code>Qubit</code>, <code>Handle</code>, <code>Stream</code>) is enforced. Cloning one is a compile-time error in the default build on both engines and no artifact is written (v1.3.5-evolve, #471).</p>
+<h4 id="the-type-relation">The Type Relation</h4>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/types/type_relation.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/types/type_relation.h</code></a> (170 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_relation.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_relation.cpp</code></a> (433 lines) (since v1.3.5; <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0013-gradual-type-relation.md" target="_blank" rel="noopener noreferrer">ADR 0013</a>)</p>
+<p><code>TypeRelation</code> is the sole owner of every judgment that compares, combines or prints types. It is a lightweight view over one <code>TypeEnvironment</code>: it reads and extends the environment’s interned signatures, pairs and sums, fills the environment’s subtype cache, and keys nothing by expression or binding (per-expression facts belong to the semantic identity tables, not to this module). The lattice has <code>Value</code> at the top and <code>Never</code> at the bottom; between them sit the nominal graph, tracked pairs <code>Pair&lt;A, B&gt;</code> (a bare <code>Pair</code> is <code>Pair&lt;Value, Value&gt;</code>), sums <code>(+ A B ...)</code>, and function signatures <code>(-&gt; A... R)</code> below the generic procedure types <code>Function</code> and <code>Closure</code>.</p>
+<table>
+<colgroup>
+<col style="width: 52%" />
+<col style="width: 47%" />
+</colgroup>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Judgment</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>isSubtype(sub, super)</code></td>
+<td>Static subtyping <code>A &lt;: B</code> (cached). Arrows are contravariant in parameters and covariant in results; pair components are covariant; a union fits when every source arm fits the target; an unresolved <code>Invalid</code> carries no evidence</td>
+</tr>
+<tr>
+<td><code>isConsistent(a, b)</code></td>
+<td>Siek-Taha consistency <code>A ~ B</code>: equal up to <code>Value</code>, structurally inside arrows and pairs. Symmetric, not transitive, never cached</td>
+</tr>
+<tr>
+<td><code>isConsistentSubtype(sub, super)</code></td>
+<td>Consistent subtyping, the gradual check applied to procedure arguments and return annotations</td>
+</tr>
+<tr>
+<td><code>compatibility(from, to)</code>, <code>accepts(from, to)</code></td>
+<td>Flow evidence (<code>RelationEvidence</code>): <code>Identity</code>, <code>Upcast</code>, <code>Dynamic</code>, <code>Numeric</code> or <code>Incompatible</code>. Every kind except <code>Incompatible</code> is accepted; the kind names the coercion a typed intermediate form makes explicit</td>
+</tr>
+<tr>
+<td><code>castable(actual, ascribed)</code></td>
+<td>The <code>(the T e)</code> rule: the ascription is accepted unless it is a provable contradiction, so overlapping types are castable</td>
+</tr>
+<tr>
+<td><code>join(a, b)</code>, <code>joinAll(types)</code>, <code>meet(a, b)</code></td>
+<td>Least upper and greatest lower bounds. Both recurse through unions, pairs and arrows, then use the nominal graph. <code>Never</code> is the join identity; disjoint concrete types meet at <code>Never</code></td>
+</tr>
+<tr>
+<td><code>narrow(current, proven)</code></td>
+<td>The type a successful runtime test proves: the meet, or the proven type when the meet is empty</td>
+</tr>
+<tr>
+<td><code>widen(slot, incoming, policy)</code></td>
+<td>Inferred-slot widening under one of two policies (<code>WidenPolicy</code>). <code>InferenceSlot</code> (a named-let parameter) treats a join that reaches <code>Value</code> as a conflict and keeps the slot’s type, except where either side is <code>Boolean</code>. <code>AdoptTop</code> (a <code>do</code> variable) adopts every join</td>
+</tr>
+<tr>
+<td><code>pairProjection(pair, side)</code></td>
+<td>The type <code>car</code> or <code>cdr</code> yields: a tracked component, a <code>List</code> tail, else <code>Value</code></td>
+</tr>
+<tr>
+<td><code>print(type)</code></td>
+<td>The one printing function: <code>(-&gt; Number Int64)</code>, <code>Pair&lt;A, B&gt;</code>, <code>(+ A B)</code>, <code>Function</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>TypeEnvironment</code> keeps thin facades for its existing callers (<code>isSubtype</code>, <code>leastCommonSupertype</code>, <code>getTypeName</code>, <code>getFunctionTypeName</code>). Each one constructs a <code>TypeRelation</code> and delegates; none contains a rule of its own. The checker calls <code>TypeRelation</code> directly. <code>tests/types/type_relation_test.cpp</code> is the direct contract for the module (arrow variance, dynamic components, disjoint joins and meets, pair covariance, printing, both widening policies), compiled and run by <code>scripts/run_cpp_type_tests.sh</code>.</p>
+<h4 id="checker-data-flow">Checker Data Flow</h4>
+<p>The checker (<a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a>) is bidirectional (<code>synthesize</code> and <code>check</code>) and runs as continuation tasks, so its native stack use does not grow with expression nesting. Three properties define how types flow through a program (since v1.3.5):</p>
+<ul>
+<li><strong>Every control form is synthesised.</strong> Each evaluated subexpression of <code>cond</code>, <code>case</code>, <code>match</code>, <code>when</code>, <code>unless</code>, <code>do</code>, <code>guard</code>, <code>and</code>, <code>or</code>, <code>set!</code>, <code>begin</code> and body sequences, quasiquote escapes, <code>dynamic-wind</code>, <code>call/cc</code>, <code>values</code>, <code>call-with-values</code>, <code>let-values</code>, <code>raise</code>, <code>with-region</code>, the ownership forms, tensor literals, computed callees, and the function, point, direction and order operands of the differentiation operators reaches the checker, so an argument error inside any of them produces the same diagnostic as the same call at top level. Each branch body is checked in its own scope; a multi-branch form’s type is the <code>join</code> of its branches plus the value the form yields when no branch runs (<code>#f</code> for <code>cond</code>, <code>case</code>, <code>when</code> and <code>unless</code>).</li>
+<li><strong>Recursive slots are typed by fixpoint.</strong> A named-let parameter takes the join of its seed and every argument passed at a call that resolves to that loop’s own binding (<code>LoopFrame</code> records the arguments per parameter). The body is checked in speculative passes: diagnostics are held (<code>emitDiagnostic</code>), and when a pass widens a parameter, <code>rollbackSpeculation</code> undoes the pass’s diagnostics, recorded errors, linearity count and linear-usage counters before the body is checked again. The pass that widens nothing is the real check, and <code>releaseSpeculation</code> prints what it held. Annotated and linear bindings are never widened, and a parameter only moves up its finite supertype chain, so the iteration terminates. The same frame serves the result type of every recursive procedure (named let, function define, <code>letrec</code> lambda), bounded at 8 passes (<code>kMaxRecursionPasses</code>), after which the result is <code>Value</code>. A <code>do</code> variable is the fixpoint join of its init and its step under the <code>AdoptTop</code> policy.</li>
+<li><strong>One relation at every site.</strong> Branch-producing forms use <code>join</code>; return annotations and procedure arguments use consistent subtyping; <code>the</code> uses <code>castable</code>; diagnostics print types through <code>TypeRelation::print</code>.</li>
+</ul>
+<p>The user-facing account of annotations, inference and diagnostics is the <a href="/docs#page=guide_gradual_typing" data-url="/content/guide_gradual_typing.html">Gradual Typing guide</a>.</p>
 <h3 id="layer-3-dependent-types">Layer 3: Dependent Types</h3>
 <p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/dependent.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/dependent.cpp</code></a> (534 lines)</p>
 <p><strong>Compile-Time Value Tracking</strong>:</p>
@@ -468,6 +535,22 @@ CLOSURE_ENV_IS_VARIADIC(packed)        // Test bit 63</code></pre>
 (counter)  ; → 2
 (counter)  ; → 3</code></pre>
 <p><strong>Implementation</strong>: Captured variables are allocated as <code>GlobalVariable</code> or arena storage, closure stores pointers to these locations. <code>set!</code> writes through the pointer.</p>
+<h3 id="static-callee-bindings">Static Callee Bindings</h3>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/backend/static_callee_binding.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/backend/static_callee_binding.h</code></a> (247 lines) (since v1.3.5; <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0015-static-callee-binding-identity.md" target="_blank" rel="noopener noreferrer">ADR 0015</a>)</p>
+<p>Binding a variable to a lambda records a static alias, <code>&lt;name&gt;_func</code> (inside a function also <code>&lt;function&gt;.&lt;name&gt;_func</code>), so direct calls, <code>apply</code>, <code>map</code>, <code>reduce</code>, <code>remove</code> and the differentiation operators can call the LLVM function without going through the runtime closure value. An alias is a binding fact, and the header is the one place its validity is decided:</p>
+<ol type="1">
+<li><strong>The binding keeps its value.</strong> A binding that is the target of a <code>set!</code> anywhere in its scope, or a top-level name that is defined more than once, gets no alias (<code>bindStaticCallee</code>). The top-level reassignment and redefinition facts come from the compiler’s lexical mutation analysis over the fully expanded unit and are computed before code generation (<code>collectRedefinedTopLevelNames</code>, the memoised reassignment query, and the per-body <code>flat_mutation_targets_</code> summaries in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a>). The analysis uses the existing source binding names and storage locations, and it reads an <code>extern</code> declaration as signature metadata, not as a call expression.</li>
+<li><strong>The alias belongs to the binding the name denotes at the use site.</strong> Each alias records the LLVM storage of the binding that created it (<code>recordStaticCallee</code>), and <code>staticCalleeHiddenByRuntimeBinding</code> accepts an alias only when that storage is the one the name currently denotes. A sibling <code>let</code>, a parameter or a loop variable of the same name therefore hides an older alias.</li>
+</ol>
+<p>A call through a mutable binding evaluates the binding’s current value and dispatches through the closure ABI; an unmodified binding keeps direct-call resolution. <code>inheritStaticCalleeCapture</code> propagates an alias into a nested function only for a capture proven immutable.</p>
+<h3 id="capture-resolution-for-direct-calls">Capture Resolution for Direct Calls</h3>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/backend/closure_capture_scope.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/backend/closure_capture_scope.h</code></a> (182 lines), <code>AutodiffCodegen::appendDifferentiandCaptures</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a> (since v1.3.5)</p>
+<p>A lambda with free variables lowers to an LLVM function that takes one pointer parameter per captured variable, appended after its user parameters. A site that calls such a function directly has to supply those pointers itself, and two rules keep that sound:</p>
+<ol type="1">
+<li><strong>A captured value comes only from the function being emitted</strong> (one of its own arguments or instructions) or from the module (a global, constant or function). <code>valueUsableInFunction</code> is the structural check every capture site applies. A value that belongs to an enclosing function is reached through the current function’s own capture pointer; where no such pointer exists, code generation stops with a diagnostic that names the variable, the owning function, the function being emitted and the source location.</li>
+<li><strong>A callee reached through a name takes its captures from the closure object.</strong> <code>emitClosureCaptureArguments</code> reads them from the closure’s environment under the closure-call ABI, including the environment-pointer form used above 64 captures, which is what the runtime closure call does. An inline lambda created at the call site resolves its captures by name.</li>
+</ol>
+<p><code>appendDifferentiandCaptures</code> is the single resolver for a differentiated closure’s captures. <code>derivative</code>, <code>derivative-n</code>, <code>taylor</code>, every <code>gradient</code> path, <code>jacobian</code>, <code>hessian</code>, and through them <code>divergence</code>, <code>curl</code>, <code>laplacian</code> and <code>directional-derivative</code>, all use it. <code>MapCodegen</code> applies the same two rules for <code>map</code> and multi-list <code>map</code>, and <code>reduce</code> dispatches on the closure value.</p>
 <h3 id="variadic-functions">Variadic Functions</h3>
 <p><strong>Rest parameters</strong>:</p>
 <pre class="scheme"><code>(define (variadic-fn a b . rest)
@@ -488,7 +571,7 @@ CLOSURE_RETURN_VOID (7)</code></pre>
 <p>Enables type-directed optimizations in higher-order functions.</p>
 <hr />
 <h2 id="n-dimensional-tensors">N-Dimensional Tensors</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/tensor_codegen.cpp</code></a> (1,867-line dispatcher; per-domain ops in thirteen <code>tensor_*_codegen.cpp</code> siblings totalling 22,355 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/tensor_codegen.cpp</code></a> (2,012-line dispatcher; per-domain ops in thirteen <code>tensor_*_codegen.cpp</code> siblings totalling 23,389 lines)</p>
 <h3 id="tensor-structure">Tensor Structure</h3>
 <pre class="c"><code>typedef struct eshkol_tensor {
     uint64_t* dimensions;     // Array of dimension sizes (8 bytes)
@@ -578,6 +661,17 @@ int64_t wrong = static_cast&lt;int64_t&gt;(value);  // → 3 (loses precision!)<
 │ • Executable (with stdlib.o)  OR                                │
 │ • Shared library (.so/.dylib)                                   │
 └─────────────────────────────────────────────────────────────────┘</code></pre>
+<h3 id="source-locations-and-node-identity">Source Locations and Node Identity</h3>
+<p><strong>Implementation</strong>: <code>eshkol_ast_t</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a>, <a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a>, <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/frontend/node_identity.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/frontend/node_identity.h</code></a> (since v1.3.5)</p>
+<ul>
+<li><strong>Every AST node is born with a location.</strong> In C++, <code>eshkol_ast_t</code> carries default member initialisers: <code>line</code> and <code>column</code> are copied from a thread-local birth location (<code>eshkol_ast_birth_location</code>), and <code>source_file_id</code> and <code>node_id</code> start at 0. The parser, the macro expander and codegen each open an <code>EshkolAstBirthLocationScope</code> for the form they are processing, so a node synthesised while handling that form (internal-define <code>letrec*</code>, body sequences, named-let and <code>do</code> lowering, record-type expansion, nodes built by hand in codegen) inherits the location of the form it came from. A node’s own stamp overrides its birth location, and outside any scope the location is 0/0, which means “no originating form”. Raw arena storage is constructed through <code>eshkol_ast_construct_array</code>, so it follows the same rule. The initialisers, the scope class and the constructor helper sit inside <code>#ifdef __cplusplus</code>; the struct layout is identical in C and C++ and the type stays trivially copyable.</li>
+<li><strong>The reader keeps line and column per input stream.</strong> The cumulative position lives in <code>std::ios_base</code> storage on the stream (<code>xalloc</code> slots), bound to the reader only for the duration of one call (<code>StreamPositionBinding</code>). A nested read of a required module, which the AOT driver performs while it is still reading the parent, cannot disturb the parent’s position; a fresh stream starts at line 1, and the position dies with the stream.</li>
+<li><strong>One node-identity key.</strong> The parser’s <code>eshkol_ast_t::node_id</code>, the NodeId allocator (<code>eshkol_node_id_new</code>) and the semantic queries (<code>eshkol_binding_id_for_node</code>, <code>eshkol_typed_expr_info</code>) share the <code>eshkol_node_id_t</code> key type. The AST field is a 32-bit alias of it, which preserves the public field width and layout (<a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0014-release-invariant-contracts.md" target="_blank" rel="noopener noreferrer">ADR 0014</a>). Payload (source spans, binding identity, typed-expression facts) lives in side tables keyed on this value, not in fields on the node.</li>
+</ul>
+<p>Deterministic locations are what make language-coverage records reproducible; <code>language_coverage_determinism_test</code> holds that property (see <a href="/docs#page=testing&amp;language-coverage-instrumentation" data-url="/content/testing.html">TESTING.md</a>).</p>
+<h3 id="driver-analyses-before-codegen">Driver Analyses Before Codegen</h3>
+<p><strong>Implementation</strong>: <code>OwnershipAnalyzer</code> and <code>EscapeAnalyzer</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a></p>
+<p>Ownership analysis and escape analysis traverse the AST iteratively. Each analyzer keeps an explicit stack of work records (<code>WorkItem</code>): an <code>AST</code> record visits a node, and continuation records (<code>LET_BINDING</code>, <code>EXIT_SCOPE</code>, <code>UNBORROW</code> for ownership; <code>LET_BINDING</code>, <code>EXIT_SCOPE</code>, <code>LET_EXIT</code>, <code>LAMBDA_EXIT</code> for escape) run the step that follows a child’s traversal. The records preserve the traversal order and the scope cleanup of a recursive walk, so diagnostics are unchanged, while native stack use is independent of source nesting. Together with the explicit continuation stacks in the parser, the type checker and codegen, this lets deeply nested source compile ahead of time within the default 8 MiB stack: the <code>parser_stack_compile</code> CTest compiles and runs 16,000 levels of nesting through the JIT and AOT with the stack limit fixed at 8 MiB, and <code>ownership_nested_diagnostics</code> holds the analyzers’ diagnostics on nested input (since v1.3.5).</p>
 <h3 id="special-forms-70">Special Forms (70+)</h3>
 <p><strong>Core</strong>: <code>define</code>, <code>define-type</code>, <code>define-syntax</code>, <code>set!</code>, <code>lambda</code>, <code>let</code>, <code>let*</code>, <code>letrec</code>, <code>if</code>, <code>cond</code>, <code>case</code>, <code>match</code>, <code>and</code>, <code>or</code>, <code>when</code>, <code>unless</code>, <code>do</code></p>
 <p><strong>Quotation</strong>: <code>quote</code>, <code>quasiquote</code>, <code>unquote</code>, <code>unquote-splicing</code></p>
@@ -774,7 +868,7 @@ eshkol&gt; (cube 3)
 ├── LICENSE                 # MIT license
 │
 ├── inc/eshkol/             # Public headers
-│   ├── eshkol.h            # Main header (2,990 lines)
+│   ├── eshkol.h            # Main header (3,759 lines)
 │   ├── llvm_backend.h      # Backend API (432 lines)
 │   ├── logger.h            # Logging system
 │   │
@@ -815,7 +909,7 @@ eshkol&gt; (cube 3)
 │   │   ├── llvm_codegen.cpp      # Main engine (44,003 lines)
 │   │   ├── arithmetic_codegen.cpp# Polymorphic arithmetic (4,012 lines)
 │   │   ├── autodiff_codegen.cpp  # AD operations (14,545 lines)
-│   │   ├── tensor_codegen.cpp    # Tensor-op dispatcher (1,867 lines); per-domain in tensor_*_codegen.cpp
+│   │   ├── tensor_codegen.cpp    # Tensor-op dispatcher (2,012 lines); per-domain in tensor_*_codegen.cpp
 │   │   ├── collection_codegen.cpp# Lists/vectors (3,173 lines)
 │   │   ├── control_flow_codegen.cpp # if/cond/and/or (1,107 lines)
 │   │   ├── binding_codegen.cpp   # define/let/set! (1,662 lines)
@@ -887,6 +981,40 @@ void* callback_context_;
 // Usage:
 llvm::Value* arg_value = codegen_ast_callback_(ast, callback_context_);</code></pre>
 <p><strong>Remaining Work</strong>: Some modules (FunctionCodegen) have stub implementations, full logic still in main codegen.</p>
+<h3 id="shared-codegen-facilities">Shared Codegen Facilities</h3>
+<p>Three header-only facilities under <code>inc/eshkol/backend/</code> each own one decision that several codegen modules need, so no module carries a private copy of the rule (since v1.3.5):</p>
+<table>
+<colgroup>
+<col style="width: 21%" />
+<col style="width: 18%" />
+<col style="width: 59%" />
+</colgroup>
+<thead>
+<tr>
+<th>Header</th>
+<th style="text-align: right;">Lines</th>
+<th>The decision it owns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/backend/libm_codegen.h" target="_blank" rel="noopener noreferrer"><code>libm_codegen.h</code></a></td>
+<td style="text-align: right;">204</td>
+<td>How codegen obtains a libm function</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/backend/static_callee_binding.h" target="_blank" rel="noopener noreferrer"><code>static_callee_binding.h</code></a></td>
+<td style="text-align: right;">247</td>
+<td>When a variable may be resolved to an <code>llvm::Function</code> at compile time (see <a href="/docs#page=eshkol_v1_architecture&amp;static-callee-bindings" data-url="/content/eshkol_v1_architecture.html">Static Callee Bindings</a>)</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/backend/closure_capture_scope.h" target="_blank" rel="noopener noreferrer"><code>closure_capture_scope.h</code></a></td>
+<td style="text-align: right;">182</td>
+<td>Where a statically resolved closure’s captures come from (see <a href="/docs#page=eshkol_v1_architecture&amp;capture-resolution-for-direct-calls" data-url="/content/eshkol_v1_architecture.html">Capture Resolution for Direct Calls</a>)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>libm access.</strong> <code>eshkol::libm_codegen::unary</code> and <code>binary</code> are the single way codegen obtains a libm function. They answer with the LLVM intrinsic (<code>llvm.exp.f64</code>, <code>llvm.log.f64</code>, <code>llvm.pow.f64</code>, …) wherever the LLVM major being built against has one; an intrinsic name is reserved, so no module symbol, including a user program’s own <code>(define (exp x) ...)</code>, can shadow it. Where no intrinsic exists (<code>tanh</code> before LLVM 19, <code>atan2</code> before LLVM 20), the helper looks the function up by name and verifies the found function’s type against the signature about to be emitted; on a mismatch it declares a distinctly named function (<code>eshkol_libm_&lt;name&gt;</code>), so a collision is a link failure and never a call through the wrong ABI. <code>BuiltinFactoryCodegen</code> declares the libm names that have no intrinsic on any supported LLVM (<code>asinh</code>, <code>acosh</code>, <code>atanh</code>, <code>cbrt</code>, <code>fmod</code>, <code>remainder</code>, <code>nextafter</code>) at module initialisation, before any user definition or lowering runs. <code>AutodiffCodegen::getMathFunc</code> and <code>EshkolLLVMCodeGen::mathFunc</code> route the scalar-math and AD paths through the same helper, verify a cached row’s type before reuse, and never return null.</p>
 <hr />
 <h2 id="performance-characteristics">Performance Characteristics</h2>
 <h3 id="memory-allocation">Memory Allocation</h3>
@@ -967,7 +1095,7 @@ llvm::Value* arg_value = codegen_ast_callback_(ast, callback_context_);</code></
 <p><strong>Bottleneck</strong>: LLVM optimization passes (can be reduced with -O0)</p>
 <hr />
 <h2 id="build-system">Build System</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/CMakeLists.txt" target="_blank" rel="noopener noreferrer"><code>CMakeLists.txt</code></a> (10,716 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/CMakeLists.txt" target="_blank" rel="noopener noreferrer"><code>CMakeLists.txt</code></a> (10,748 lines)</p>
 <h3 id="requirements">Requirements</h3>
 <ul>
 <li><strong>CMake</strong>: 3.14 or higher</li>
@@ -1009,7 +1137,7 @@ target_link_options(eshkol-static PUBLIC
 <hr />
 <h2 id="testing">Testing</h2>
 <h3 id="test-suite-organization">Test Suite Organization</h3>
-<p><strong>528 self-reported tests</strong> across 37 suites:</p>
+<p><strong>1,020 self-reported tests</strong> across 46 suites (the aggregate <code>scripts/run_all_tests.sh</code> run; figures in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/TEST_COVERAGE.md" target="_blank" rel="noopener noreferrer">TEST_COVERAGE.md</a>). Representative categories:</p>
 <table>
 <thead>
 <tr>
@@ -1102,13 +1230,14 @@ target_link_options(eshkol-static PUBLIC
 <h2 id="references">References</h2>
 <h3 id="primary-source-files-analyzed-in-detail">Primary Source Files (analyzed in detail)</h3>
 <ul>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> - Main system header (3,592 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> - Main system header (3,759 lines)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a> - Core codegen (47,107 lines)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a> - Arena runtime core (1226 lines; 4,259 across all <code>runtime_*</code> memory modules)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a> - S-expr parser (11,691 lines)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a> - Type inference (6,061 lines)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> - JIT compiler (4,679 lines)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a> - Compiler executable (6,099 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_relation.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_relation.cpp</code></a> - Gradual type relation (433 lines)</li>
 </ul>
 <h3 id="forward-looking-design-documents">Forward-looking design documents</h3>
 <ul>
