@@ -283,7 +283,7 @@ Resource caps applied to children spawned by [`agent.subprocess`](../agent/subpr
 
 | Variable | Effect | Default |
 |----------|--------|---------|
-| `ESHKOL_SERVER_TOKEN` | Auth token for `agent.http-server` / `eshkol-server`. | unset |
+| `ESHKOL_SERVER_TOKEN` | Auth token for `agent.http_server` / `eshkol-server`. | unset |
 | `ESHKOL_VERBOSE` | Metal GPU per-call logging. Requires a leading `1`. Despite the name it affects nothing outside the Metal backend; the CUDA equivalent is `ESHKOL_GPU_VERBOSE`. | off |
 | `ESHKOL_ARENA_POISON` | Poison freed arena memory (debug). See the VM region table above for the accepted-value caveat; set it to exactly `1`. | off |
 | `ESHKOL_ARENA_REPORT` | Set to exactly `1` to print the process-global arena's own byte total once at exit, on stderr, as `[eshkol-arena] global_total_allocated_bytes=N`. Diagnostic only — it changes no allocation behaviour. This is the retention signal `tests/memory/resident_longrun_flat_gate.sh` gates on, because it is deterministic to the byte, whereas peak RSS is a high-water mark of *instantaneous* residency and reads low on a loaded host. | off |
