@@ -67,7 +67,7 @@ Hygienic macro expansion via `syntax-rules` pattern matching. The system support
 **Phase 2: S-Expression Parsing** (11,691 lines in [parser.cpp](../../lib/frontend/parser.cpp))
 
 Builds an AST from S-expressions. The parser drives an explicit continuation stack rather than the native stack, so nesting depth costs heap rather than stack. It handles:
-- 94 operation types (see `eshkol_op_t` enum in [eshkol.h](../../inc/eshkol/eshkol.h))
+- 113 operation types (see `eshkol_op_t` enum in [eshkol.h](../../inc/eshkol/eshkol.h))
 - Variadic parameter encoding in lambda/define
 - HoTT type annotation attachment to AST nodes
 - Internal define → `letrec*` transformation (all define names, wherever they appear in the body; a value define's initializer stays at its source position)

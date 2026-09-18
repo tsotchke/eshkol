@@ -29,8 +29,8 @@ cmake --build build -j
 ## Supported host compilers
 
 Eshkol v1.3.5-evolve is built and verified with **GCC 13** and with
-**Clang/LLVM 21**. Building the compiler itself with **GCC 15 is not supported
-in this release**. Where the system default is GCC 15, pin a supported compiler
+**Clang/LLVM 21**. **GCC 15 is not a supported host compiler** for building the
+compiler itself (since v1.3.5). Where the system default is GCC 15, pin a supported compiler
 for the whole build tree, C and C++ together:
 
 ```sh
