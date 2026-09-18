@@ -621,11 +621,14 @@ results as evidence.
 **Release Date**: July 31, 2026
 
 **Release gates** (all measured on the release cut): aggregate suite 45/45
-suites and 770 individual tests; CTest 183/183, which as of this release is
+suites and 770 individual tests; CTest 183/183 (190/190 when remeasured on
+2026-08-25 against `4bf871a0`), which as of this release is
 itself completion-oracle evidence rather than advice; executable language
 coverage 1,091/1,091 (100.0%, floor PASS); SICP full-book gate 88/88 probes
 across all five chapters under both `-r` and AOT; reference-Scheme differential
-oracle 34/34 AGREE against chibi-scheme 0.12.0; VM parity differential 184/184;
+oracle 34/34 AGREE against chibi-scheme 0.12.0; VM parity differential 184/184
+(the corpus differential; the full manifest gate measured 188/188 on
+2026-08-25);
 qLLM oracle gate 10/10; ICC readiness 100, verdict `ready`. The VM parity
 manifest is 956 rows — 581 `vm-supported`, 44 `native-only-justified`, 331
 `gap`, of which 17 are verified behavioral divergences with reproducible

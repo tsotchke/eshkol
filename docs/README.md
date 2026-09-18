@@ -61,7 +61,7 @@ pages and lets them fan out to their siblings.
   - [jit-internals.md](reference/runtime/jit-internals.md) — run cache, stdlib object cache, large code model
 - [Bytecode VM (breakdown)](breakdown/BYTECODE_VM.md) — 72-opcode core interpreter, ESKB format, WebAssembly execution
 - [REPL JIT (breakdown)](breakdown/REPL_JIT.md) — LLVM OrcJIT, opt-level matching, stdlib preloading, hot reload
-- [VM Parity](VM_PARITY.md) — bytecode-VM vs native-codegen parity ratchet: 961 rows (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`), differential 338/338
+- [VM Parity](VM_PARITY.md) — bytecode-VM vs native-codegen parity ratchet: 961 rows (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`), differential <!-- release-record:vm-parity-figure -->**340/340**<!-- /release-record -->
 - [VM Memory Ops as Weight Matrices](breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md) — lifting VM opcodes into transformer weight constructions
 - [Computable Transformer](breakdown/COMPUTABLE_TRANSFORMER.md) — programs as neural network weight matrices, 6-layer transformer VM encoding
 - [Command-Line Reference](breakdown/COMMAND_LINE_REFERENCE.md) — complete flag reference for `eshkol-run` and `eshkol-repl`

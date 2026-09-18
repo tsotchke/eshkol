@@ -1,3 +1,10 @@
+---
+kind: report
+status: historical
+owner-area: project
+since: v1.3.5
+sources: []
+---
 # Resolution of the 2026-08-25 architecture and conformity audit
 
 - Source audit: `~/Desktop/Selene/ESHKOL-ARCHITECTURE-AUDIT-2026-08-25.md` (604 lines), subject `4bf871a0`
