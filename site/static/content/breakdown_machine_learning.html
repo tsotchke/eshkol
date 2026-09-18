@@ -1,0 +1,578 @@
+<h1 id="eshkol-machine-learning-framework">Eshkol Machine Learning Framework</h1>
+<h2 id="technical-reference">Technical Reference</h2>
+<p><strong>Source:</strong> <code>lib/backend/tensor_codegen.cpp</code> (1,867-line dispatcher) plus the thirteen <code>tensor_*_codegen.cpp</code> per-domain modules (22,355 lines combined) introduced by the v1.2 split <strong>Implementation level:</strong> Compiler-level builtins via LLVM IR codegen <strong>Tensor representation:</strong> Homogeneous <code>double</code> arrays stored as <code>int64</code> bitpatterns (8 bytes per element) <strong>Acceleration:</strong> SIMD vectorization (ARM NEON / x86 SSE/AVX), Apple Accelerate (cBLAS/AMX), Metal GPU</p>
+<hr />
+<h2 id="table-of-contents">Table of Contents</h2>
+<ol type="1">
+<li><a href="/docs#page=breakdown_machine_learning&amp;1-introduction" data-url="/content/breakdown_machine_learning.html">Introduction</a></li>
+<li><a href="/docs#page=breakdown_machine_learning&amp;2-activation-functions" data-url="/content/breakdown_machine_learning.html">Activation Functions</a></li>
+<li><a href="/docs#page=breakdown_machine_learning&amp;3-loss-functions" data-url="/content/breakdown_machine_learning.html">Loss Functions</a></li>
+<li><a href="/docs#page=breakdown_machine_learning&amp;4-optimizers" data-url="/content/breakdown_machine_learning.html">Optimizers</a></li>
+<li><a href="/docs#page=breakdown_machine_learning&amp;5-weight-initializers" data-url="/content/breakdown_machine_learning.html">Weight Initializers</a></li>
+<li><a href="/docs#page=breakdown_machine_learning&amp;6-learning-rate-schedulers" data-url="/content/breakdown_machine_learning.html">Learning Rate Schedulers</a></li>
+<li><a href="/docs#page=breakdown_machine_learning&amp;7-cnn-operations" data-url="/content/breakdown_machine_learning.html">CNN Operations</a></li>
+<li><a href="/docs#page=breakdown_machine_learning&amp;8-transformer-operations" data-url="/content/breakdown_machine_learning.html">Transformer Operations</a></li>
+<li><a href="/docs#page=breakdown_machine_learning&amp;9-data-loading" data-url="/content/breakdown_machine_learning.html">Data Loading</a></li>
+<li><a href="/docs#page=breakdown_machine_learning&amp;10-linear-algebra" data-url="/content/breakdown_machine_learning.html">Linear Algebra</a></li>
+<li><a href="/docs#page=breakdown_machine_learning&amp;11-einstein-summation" data-url="/content/breakdown_machine_learning.html">Einstein Summation</a></li>
+<li><a href="/docs#page=breakdown_machine_learning&amp;12-training-loop-example" data-url="/content/breakdown_machine_learning.html">Training Loop Example</a></li>
+</ol>
+<hr />
+<h2 id="1-introduction">1. Introduction</h2>
+<p>Eshkol provides a comprehensive machine learning framework consisting of 75+ compiler-level builtins spanning neural network layers, optimizers, loss functions, linear algebra decompositions, and data loading infrastructure. Unlike library-based ML frameworks where operations are interpreted or dispatched through a runtime, every ML primitive in Eshkol is lowered directly to LLVM IR during compilation. This eliminates interpreter overhead, enables aggressive LLVM optimization passes (constant folding, loop unrolling, vectorization), and produces native machine code that operates on the same tensor representation used by the rest of the language.</p>
+<h3 id="codegen-architecture">Codegen Architecture</h3>
+<p>All ML builtins are implemented in <code>TensorCodegen</code>. Each operation follows a consistent pattern:</p>
+<ol type="1">
+<li><strong>Argument unpacking</strong> – Tagged values are unwrapped to raw tensor pointers.</li>
+<li><strong>Shape extraction</strong> – Dimensions, rank, element pointer, and total element count are loaded from the tensor struct <code>{dims*, ndim, elems*, total}</code>.</li>
+<li><strong>Result allocation</strong> – A new tensor is allocated via the arena allocator, with dimensions copied from the input.</li>
+<li><strong>SIMD loop</strong> – The main computation processes <code>SIMD_WIDTH</code> elements per iteration using LLVM vector types.</li>
+<li><strong>Scalar tail loop</strong> – Remaining elements (count mod <code>SIMD_WIDTH</code>) are processed individually.</li>
+<li><strong>Result packing</strong> – The result tensor pointer is packed into a tagged value and returned.</li>
+</ol>
+<p>Shape-preserving operations (activations, elementwise losses) produce new tensors. In-place mutation is used only for optimizers (suffixed with <code>!</code>), weight initializers, and gradient utilities. Backward passes for key activations (GELU, SiLU) are implemented as dedicated codegen methods (<code>tensorGeluBackward</code>, <code>tensorSiluBackward</code>) for AD integration.</p>
+<hr />
+<h2 id="2-activation-functions">2. Activation Functions</h2>
+<p>Eshkol provides 14 activation functions, each compiled to SIMD-accelerated native code. All accept a single tensor argument (some accept optional parameters) and return a new tensor of identical shape.</p>
+<h3 id="key-implementations">Key Implementations</h3>
+<p><strong>ReLU</strong> (<code>tensor_codegen.cpp</code>): <code>f(x) = max(0, x)</code>. The SIMD path uses <code>fcmp ogt</code> followed by <code>select</code> on vector types for branchless evaluation.</p>
+<pre class="scheme"><code>(relu #(1.0 -2.0 3.0 -0.5))  ; =&gt; #(1.0 0.0 3.0 0.0)</code></pre>
+<p><strong>Sigmoid</strong> (<code>tensor_codegen.cpp</code>): Uses a numerically stable formulation that computes <code>exp(-|x|)</code> (argument always non-positive, preventing overflow), then selects between two equivalent forms:</p>
+<pre><code>x &gt;= 0:  sigma(x) = 1 / (1 + exp(-|x|))
+x &lt;  0:  sigma(x) = exp(-|x|) / (1 + exp(-|x|))</code></pre>
+<p>Both SIMD and scalar paths employ <code>llvm.exp</code> and <code>llvm.fabs</code> vector intrinsics.</p>
+<p><strong>Softmax</strong> (<code>tensor_codegen.cpp</code>): Three-pass numerically stable algorithm: (1) find global max, (2) compute <code>exp(x_i - max)</code> and accumulate sum, (3) divide. The two-argument form <code>(softmax tensor axis)</code> delegates to <code>eshkol_xla_softmax</code> for axis-aware computation in transformer batch dimensions.</p>
+<p><strong>GELU</strong> (<code>tensor_codegen.cpp</code>): PyTorch-standard tanh approximation: <code>0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))</code>. A dedicated backward pass (<code>tensorGeluBackward</code>) computes exact analytical gradients.</p>
+<p><strong>Leaky ReLU</strong> (<code>tensor_codegen.cpp</code>): <code>x &gt; 0 ? x : alpha*x</code> with default alpha=0.01. SIMD path uses <code>fmul</code> for scaling and <code>select</code> for branching.</p>
+<h3 id="complete-activation-reference">Complete Activation Reference</h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Function</th>
+<th>Formula</th>
+<th>Parameters</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>relu</code></td>
+<td>max(0, x)</td>
+<td>–</td>
+<td>Hidden layers, CNNs</td>
+</tr>
+<tr>
+<td><code>sigmoid</code></td>
+<td>1/(1+exp(-x))</td>
+<td>–</td>
+<td>Binary classification output</td>
+</tr>
+<tr>
+<td><code>softmax</code></td>
+<td>exp(x_i)/sum(exp(x_j))</td>
+<td>optional axis</td>
+<td>Multi-class output</td>
+</tr>
+<tr>
+<td><code>gelu</code></td>
+<td>0.5x(1+tanh(sqrt(2/pi)(x+0.044715x^3)))</td>
+<td>–</td>
+<td>Transformer FFN</td>
+</tr>
+<tr>
+<td><code>leaky-relu</code></td>
+<td>x if x&gt;0, else alpha*x</td>
+<td>alpha (default 0.01)</td>
+<td>Avoiding dead neurons</td>
+</tr>
+<tr>
+<td><code>silu</code></td>
+<td>x * sigmoid(x)</td>
+<td>–</td>
+<td>Modern architectures (SiLU/Swish)</td>
+</tr>
+<tr>
+<td><code>elu</code></td>
+<td>x if x&gt;0, else alpha*(exp(x)-1)</td>
+<td>alpha (default 1.0)</td>
+<td>Smooth negative region</td>
+</tr>
+<tr>
+<td><code>selu</code></td>
+<td>lambda<em>(x if x&gt;0, else alpha</em>(exp(x)-1))</td>
+<td>lambda=1.0507, alpha=1.6733</td>
+<td>Self-normalizing networks</td>
+</tr>
+<tr>
+<td><code>mish</code></td>
+<td>x * tanh(softplus(x))</td>
+<td>–</td>
+<td>Object detection (YOLOv4)</td>
+</tr>
+<tr>
+<td><code>hard-swish</code></td>
+<td>x * min(max(x+3,0),6)/6</td>
+<td>–</td>
+<td>MobileNetV3 (efficient)</td>
+</tr>
+<tr>
+<td><code>hard-sigmoid</code></td>
+<td>min(max(x+3,0),6)/6</td>
+<td>–</td>
+<td>Piecewise linear approx</td>
+</tr>
+<tr>
+<td><code>softplus</code></td>
+<td>ln(1 + exp(x))</td>
+<td>–</td>
+<td>Smooth ReLU approximation</td>
+</tr>
+<tr>
+<td><code>celu</code></td>
+<td>max(0,x)+min(0,alpha*(exp(x/alpha)-1))</td>
+<td>alpha (default 1.0)</td>
+<td>Continuously differentiable ELU</td>
+</tr>
+<tr>
+<td><code>dropout</code></td>
+<td>x * mask / (1-p)</td>
+<td>p (drop probability)</td>
+<td>Regularization (training)</td>
+</tr>
+</tbody>
+</table>
+<p>All activations use <code>alloca</code>-based loop counters (not PHI nodes) to avoid conflicts with basic block creation in closure calls.</p>
+<hr />
+<h2 id="3-loss-functions">3. Loss Functions</h2>
+<p>14 loss functions covering regression, classification, metric learning, and specialized applications. Each returns a scalar tensor (1-element) representing the aggregated loss.</p>
+<h3 id="key-implementations-1">Key Implementations</h3>
+<p><strong>MSE Loss</strong> (<code>tensor_codegen.cpp</code>): <code>L = (1/N) * sum((y_hat - y)^2)</code>. Gradient: <code>2(y_hat - y)/N</code>. Sensitive to outliers, strong gradients far from optimum.</p>
+<p><strong>Cross-Entropy Loss</strong> (<code>tensor_loss_codegen.cpp</code>): <code>L = mean_rows(-sum(target * log(softmax(logits))))</code>. Targets may be exact-shape one-hot/probability rows or integral class-index tensors with the final class dimension removed. Probability rows must be finite, non-negative, and normalized; indices must be in range. Invalid target shape or values are rejected.</p>
+<p><strong>BCE Loss</strong> (<code>tensor_codegen.cpp</code>): <code>L = -(1/N) * sum(y*log(p+eps) + (1-y)*log(1-p+eps))</code>. For binary classification with sigmoid output. Aliased as <code>binary-cross-entropy-loss</code>.</p>
+<p><strong>Huber Loss</strong> (<code>tensor_codegen.cpp</code>): Quadratic for |error| &lt;= delta, linear otherwise. Default delta=1.0. Combines MSE precision with MAE outlier robustness.</p>
+<pre class="scheme"><code>(mse-loss #(2.5 0.0 2.1) #(3.0 -0.5 2.0))
+(cross-entropy-loss logits one-hot-or-index-labels)
+(huber-loss predictions targets 1.5)  ; custom delta</code></pre>
+<h3 id="complete-loss-function-reference">Complete Loss Function Reference</h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Function</th>
+<th>Formula</th>
+<th>Arguments</th>
+<th>Application</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mse-loss</code></td>
+<td>mean((y_hat-y)^2)</td>
+<td>predictions, targets</td>
+<td>Regression</td>
+</tr>
+<tr>
+<td><code>mae-loss</code></td>
+<td>mean(|y_hat-y|)</td>
+<td>predictions, targets</td>
+<td>Robust regression</td>
+</tr>
+<tr>
+<td><code>cross-entropy-loss</code></td>
+<td>-mean(y*log(p))</td>
+<td>predictions, targets</td>
+<td>Multi-class classification</td>
+</tr>
+<tr>
+<td><code>bce-loss</code></td>
+<td>-mean(y<em>log(p)+(1-y)</em>log(1-p))</td>
+<td>predictions, targets</td>
+<td>Binary classification</td>
+</tr>
+<tr>
+<td><code>huber-loss</code></td>
+<td>quadratic/linear hybrid</td>
+<td>preds, targets, [delta=1.0]</td>
+<td>Outlier-robust regression</td>
+</tr>
+<tr>
+<td><code>kl-div-loss</code></td>
+<td>sum(P*log(P/Q))</td>
+<td>P (true), Q (predicted)</td>
+<td>Distribution matching</td>
+</tr>
+<tr>
+<td><code>hinge-loss</code></td>
+<td>mean(max(0, 1-y*y_hat))</td>
+<td>preds, targets (+/-1)</td>
+<td>SVM-style classification</td>
+</tr>
+<tr>
+<td><code>smooth-l1-loss</code></td>
+<td>smooth absolute</td>
+<td>preds, targets, [beta=1.0]</td>
+<td>Object detection</td>
+</tr>
+<tr>
+<td><code>focal-loss</code></td>
+<td>-(1-p)^gamma * log(p)</td>
+<td>preds, targets, [gamma=2.0]</td>
+<td>Class-imbalanced detection</td>
+</tr>
+<tr>
+<td><code>triplet-loss</code></td>
+<td>max(0, d(a,p)-d(a,n)+m)</td>
+<td>anchor, pos, neg, [margin=1.0]</td>
+<td>Metric learning</td>
+</tr>
+<tr>
+<td><code>contrastive-loss</code></td>
+<td>y*d<sup>2+(1-y)*max(0,m-d)</sup>2</td>
+<td>t1, t2, labels, [margin=1.0]</td>
+<td>Siamese networks</td>
+</tr>
+<tr>
+<td><code>label-smoothing-loss</code></td>
+<td>CE with smoothed targets</td>
+<td>logits, targets, n_cls, [eps=0.1]</td>
+<td>Regularized classification</td>
+</tr>
+<tr>
+<td><code>cosine-embedding-loss</code></td>
+<td>1-cos or max(0,cos-m)</td>
+<td>t1, t2, label, [margin=0.0]</td>
+<td>Embedding similarity</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="4-optimizers">4. Optimizers</h2>
+<p>Five gradient-based update rules plus three gradient management utilities. Optimizers mutate parameters in-place (indicated by the <code>!</code> suffix) and operate directly on tensor element arrays without allocation.</p>
+<h3 id="41-sgd-with-momentum">4.1 SGD with Momentum</h3>
+<p><strong>Signature:</strong> <code>(sgd-step! params grads lr [momentum velocity])</code> <strong>Implementation:</strong> <code>tensor_codegen.cpp</code></p>
+<pre><code>Without momentum:  theta &lt;- theta - lr * grad
+With momentum:     v &lt;- momentum * v + grad;  theta &lt;- theta - lr * v</code></pre>
+<pre class="scheme"><code>(sgd-step! weights gradients 0.01)                    ; basic
+(sgd-step! weights gradients 0.01 0.9 velocity)       ; with momentum</code></pre>
+<h3 id="42-adam">4.2 Adam</h3>
+<p><strong>Signature:</strong> <code>(adam-step! params grads lr m v t [beta1 beta2 eps])</code> <strong>Implementation:</strong> <code>tensor_codegen.cpp</code></p>
+<pre><code>m &lt;- beta1*m + (1-beta1)*grad                 (first moment)
+v &lt;- beta2*v + (1-beta2)*grad^2               (second moment)
+m_hat &lt;- m / (1 - beta1^t)                    (bias correction)
+v_hat &lt;- v / (1 - beta2^t)
+theta &lt;- theta - lr * m_hat / (sqrt(v_hat) + eps)</code></pre>
+<p>Defaults: beta1=0.9, beta2=0.999, eps=1e-8. Bias correction uses C <code>pow</code>.</p>
+<h3 id="43-adamw">4.3 AdamW</h3>
+<p><strong>Signature:</strong> <code>(adamw-step! params grads lr m v t [beta1 beta2 eps weight_decay])</code> <strong>Implementation:</strong> <code>tensor_codegen.cpp</code></p>
+<p>Decoupled weight decay (Loshchilov &amp; Hutter, 2017). Weight decay is applied directly to parameters, not through the gradient:</p>
+<pre><code>theta &lt;- theta * (1 - lr * weight_decay) - lr * m_hat / (sqrt(v_hat) + eps)</code></pre>
+<p>Default weight_decay=0.01. Recommended for transformer training.</p>
+<h3 id="44-rmsprop">4.4 RMSprop</h3>
+<p><strong>Signature:</strong> <code>(rmsprop-step! params grads lr v [alpha eps])</code> <strong>Implementation:</strong> <code>tensor_codegen.cpp</code></p>
+<pre><code>v &lt;- alpha*v + (1-alpha)*grad^2;  theta &lt;- theta - lr*grad/(sqrt(v)+eps)</code></pre>
+<p>Default: alpha=0.99, eps=1e-8. Effective for RNNs and non-stationary objectives.</p>
+<h3 id="45-adagrad">4.5 Adagrad</h3>
+<p><strong>Signature:</strong> <code>(adagrad-step! params grads lr accum [eps])</code> <strong>Implementation:</strong> <code>tensor_codegen.cpp</code></p>
+<pre><code>accum &lt;- accum + grad^2;  theta &lt;- theta - lr*grad/(sqrt(accum)+eps)</code></pre>
+<p>Well-suited for sparse features but monotonically increasing accumulator can cause premature learning rate decay.</p>
+<h3 id="46-gradient-utilities">4.6 Gradient Utilities</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Function</th>
+<th>Signature</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>zero-grad!</code></td>
+<td><code>(zero-grad! tensor)</code></td>
+<td>Sets all elements to 0.0 before backward pass</td>
+</tr>
+<tr>
+<td><code>clip-grad-norm!</code></td>
+<td><code>(clip-grad-norm! grads max-norm)</code></td>
+<td>Rescales gradients to bound L2 norm</td>
+</tr>
+<tr>
+<td><code>check-grad-health</code></td>
+<td><code>(check-grad-health tensor)</code></td>
+<td>Returns <code>#t</code> if all finite, <code>#f</code> if NaN/Inf found</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="5-weight-initializers">5. Weight Initializers</h2>
+<p>Five initialization strategies based on fan-in/fan-out analysis. All mutate in-place.</p>
+<h3 id="formulas">Formulas</h3>
+<p><strong>Xavier Uniform</strong> (<code>tensor_codegen.cpp</code>): <code>U(-limit, limit)</code> where <code>limit = sqrt(6 / (fan_in + fan_out))</code>. Uses <code>drand48()</code> scaled to range. Glorot &amp; Bengio (2010).</p>
+<p><strong>Xavier Normal</strong> (<code>tensor_codegen.cpp</code>): <code>N(0, std^2)</code> where <code>std = sqrt(2 / (fan_in + fan_out))</code>.</p>
+<p><strong>Kaiming Uniform</strong> (<code>tensor_codegen.cpp</code>): <code>U(-limit, limit)</code> where <code>limit = sqrt(6 / fan_in)</code>. He et al. (2015), for ReLU.</p>
+<p><strong>Kaiming Normal</strong> (<code>tensor_codegen.cpp</code>): <code>N(0, std^2)</code> where <code>std = sqrt(2 / fan_in)</code>. Standard for ReLU/Leaky ReLU.</p>
+<p><strong>LeCun Normal</strong> (<code>tensor_codegen.cpp</code>): <code>N(0, std^2)</code> where <code>std = sqrt(1 / fan_in)</code>. LeCun et al. (1998), for SELU.</p>
+<pre class="scheme"><code>(define W (make-tensor (list 256 128) 0.0))
+(xavier-uniform! W 256 128)       ; sigmoid/tanh layers
+(kaiming-normal! W 256)            ; ReLU layers</code></pre>
+<table>
+<thead>
+<tr>
+<th>Activation</th>
+<th>Recommended Initializer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ReLU, Leaky ReLU</td>
+<td><code>kaiming-normal!</code> or <code>kaiming-uniform!</code></td>
+</tr>
+<tr>
+<td>Sigmoid, Tanh</td>
+<td><code>xavier-normal!</code> or <code>xavier-uniform!</code></td>
+</tr>
+<tr>
+<td>SELU</td>
+<td><code>lecun-normal!</code></td>
+</tr>
+<tr>
+<td>GELU, SiLU</td>
+<td><code>kaiming-normal!</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="6-learning-rate-schedulers">6. Learning Rate Schedulers</h2>
+<p>Pure functions computing the learning rate for the current step. No mutable state.</p>
+<p><strong>Linear Warmup</strong> (<code>tensor_codegen.cpp</code>): <code>lr = base_lr * min(1.0, step / warmup_steps)</code>. Essential for transformer training.</p>
+<p><strong>Step Decay</strong> (<code>tensor_codegen.cpp</code>): <code>lr = base_lr * gamma^(floor(epoch / step_size))</code>. Classic CNN schedule.</p>
+<p><strong>Exponential Decay</strong> (<code>tensor_codegen.cpp</code>): <code>lr = base_lr * gamma^epoch</code>. Smooth per-epoch decay.</p>
+<p><strong>Cosine Annealing</strong> (<code>tensor_codegen.cpp</code>): <code>lr = min_lr + 0.5*(base_lr - min_lr)*(1 + cos(pi * step / total_steps))</code>. Smooth warmdown, commonly combined with linear warmup.</p>
+<pre class="scheme"><code>(define lr (if (&lt; step 4000)
+               (linear-warmup-lr 0.001 step 4000)
+               (cosine-annealing-lr 0.001 1e-6 step 100000)))
+(step-decay-lr 0.1 0.1 epoch 30)            ; reduce 10x every 30 epochs
+(exponential-decay-lr 0.01 0.95 epoch)       ; 5% decay per epoch</code></pre>
+<hr />
+<h2 id="7-cnn-operations">7. CNN Operations</h2>
+<p>Three convolution operations, two pooling operations, and two normalization layers.</p>
+<h3 id="convolutions">Convolutions</h3>
+<p><strong>Conv1d</strong> (<code>tensor_codegen.cpp</code>): <code>(conv1d input kernel stride)</code>. Output: <code>L_out = floor((L_in - K) / stride) + 1</code>. Direct convolution.</p>
+<p><strong>Conv2d</strong> (<code>tensor_codegen.cpp</code>): <code>(conv2d input kernel stride)</code>. Kernel must be &gt;= 2D. <code>H_out = floor((H_in - K_h) / stride) + 1</code>. Runtime guard on rank.</p>
+<p><strong>Conv3d</strong> (<code>tensor_codegen.cpp</code>): <code>(conv3d input kernel [stride] [padding])</code>. Both tensors must be &gt;= 3D. Six nested loops (3 output + 3 kernel dimensions).</p>
+<pre class="scheme"><code>(conv1d signal #(0.25 0.5 0.25) 1)              ; 1D smoothing
+(conv2d image (make-tensor (list 3 3) 0.0) 1)   ; 2D feature extraction</code></pre>
+<h3 id="pooling">Pooling</h3>
+<p><strong>Max Pool 2D</strong> (<code>tensor_codegen.cpp</code>): <code>(max-pool2d input kernel-size stride)</code>. Selects maximum within each window. Preserves strongest activations.</p>
+<p><strong>Avg Pool 2D</strong> (<code>tensor_codegen.cpp</code>): <code>(avg-pool2d input kernel-size stride)</code>. Mean within each window. Smoother downsampling.</p>
+<h3 id="normalization">Normalization</h3>
+<p><strong>Batch Norm</strong> (<code>tensor_codegen.cpp</code>): <code>(batch-norm input gamma beta epsilon [axis])</code>. <code>y = gamma * (x - mean) / sqrt(var + eps) + beta</code>. Normalizes across batch dimension. 5-argument form delegates to runtime for axis-aware normalization.</p>
+<p><strong>Layer Norm</strong> (<code>tensor_codegen.cpp</code>): <code>(layer-norm input gamma beta epsilon [axis])</code>. Same formula but normalizes across the feature dimension (per-sample). Standard for transformers. Independent of batch size.</p>
+<hr />
+<h2 id="8-transformer-operations">8. Transformer Operations</h2>
+<p>Complete building blocks for encoder-decoder, decoder-only, and encoder-only architectures.</p>
+<h3 id="scaled-dot-product-attention">Scaled Dot-Product Attention</h3>
+<p><strong>Signature:</strong> <code>(scaled-dot-attention Q K V [mask])</code> <strong>Implementation:</strong> <code>tensor_codegen.cpp</code></p>
+<pre><code>Attention(Q, K, V) = softmax(Q * K^T / sqrt(d_k)) * V</code></pre>
+<p><code>d_k</code> inferred from Q’s last dimension. Optional mask uses additive convention (masked positions set to <code>-1e9</code>). Supports both causal and padding masking.</p>
+<h3 id="multi-head-attention">Multi-Head Attention</h3>
+<p><strong>Signature:</strong> <code>(multi-head-attention Q K V num-heads W_Q W_K W_V W_O [mask])</code> <strong>Implementation:</strong> <code>tensor_codegen.cpp</code></p>
+<p>Projects Q/K/V through learned weight matrices, splits into <code>num-heads</code> parallel heads, applies scaled dot-product attention independently, concatenates, and projects through W_O.</p>
+<pre class="scheme"><code>(define W-Q (make-tensor (list 512 512) 0.0))
+(xavier-uniform! W-Q 512 512)
+;; ... similarly for W-K, W-V, W-O
+(multi-head-attention Q K V 8 W-Q W-K W-V W-O mask)</code></pre>
+<h3 id="positional-encoding">Positional Encoding</h3>
+<p><strong>Signature:</strong> <code>(positional-encoding max-len d-model)</code> – <code>tensor_codegen.cpp</code></p>
+<p>Sinusoidal encodings from Vaswani et al. (2017): <code>PE(pos,2i) = sin(pos/10000^(2i/d))</code>, <code>PE(pos,2i+1) = cos(pos/10000^(2i/d))</code>. Returns <code>[max-len, d-model]</code> tensor added to input embeddings.</p>
+<h3 id="rotary-position-embedding-rope">Rotary Position Embedding (RoPE)</h3>
+<p><strong>Signature:</strong> <code>(rotary-embedding x seq-positions dim)</code> – <code>tensor_codegen.cpp</code></p>
+<p>Su et al. (2021). Encodes position through rotation of feature pairs. Standard in modern LLMs (LLaMA, Mistral) for superior length generalization.</p>
+<h3 id="masking">Masking</h3>
+<p><strong><code>(causal-mask seq-len)</code></strong> (<code>tensor_codegen.cpp</code>): Lower-triangular additive mask, upper triangle set to <code>-1e9</code>. For autoregressive decoders.</p>
+<p><strong><code>(padding-mask lengths max-len)</code></strong> (<code>tensor_codegen.cpp</code>): Creates mask from sequence lengths. Positions beyond actual length are masked.</p>
+<h3 id="feed-forward-network">Feed-Forward Network</h3>
+<p><strong>Signature:</strong> <code>(feed-forward x W1 b1 W2 b2)</code> – <code>tensor_codegen.cpp</code></p>
+<p>Position-wise FFN: <code>W2 * relu(W1 * x + b1) + b2</code>. Fused two-layer linear transform.</p>
+<h3 id="embedding">Embedding</h3>
+<p><strong>Signature:</strong> <code>(embedding indices weights)</code> – <code>tensor_codegen.cpp</code></p>
+<p>Lookup table: maps integer indices to dense vectors. Weight matrix must be 2D <code>[vocab-size, embed-dim]</code>; runtime guards validate the rank and every index (<code>0 &lt;= i &lt; vocab-size</code>), raising a catchable condition rather than reading outside the weight buffer.</p>
+<p>The index operand is classified by its runtime value, so a tensor, a <code>#(...)</code> literal, any Scheme vector (however constructed) and a numeric list are all accepted and give identical results.</p>
+<pre class="scheme"><code>(define embed-weights (make-tensor (list 10000 256) 0.0))
+(xavier-uniform! embed-weights 10000 256)
+(embedding #(42 17 256) embed-weights)   ; =&gt; 3 x 256 tensor
+
+;; A computed index vector works the same way — no conversion needed
+(define ids (make-vector 3 0))
+(vector-set! ids 0 42) (vector-set! ids 1 17) (vector-set! ids 2 256)
+(embedding ids embed-weights)            ; =&gt; the same 3 x 256 tensor</code></pre>
+<hr />
+<h2 id="9-data-loading">9. Data Loading</h2>
+<p>Batched iteration with optional shuffling for SGD-based training.</p>
+<p><strong><code>(make-dataloader data batch-size [shuffle])</code></strong> (<code>tensor_codegen.cpp</code>): Creates dataloader (64-byte struct: position, batch size, length, shuffle index array).</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Function</th>
+<th>Signature</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dataloader-next</code></td>
+<td><code>(dataloader-next loader)</code></td>
+<td>Returns next batch, advances cursor</td>
+</tr>
+<tr>
+<td><code>dataloader-has-next?</code></td>
+<td><code>(dataloader-has-next? loader)</code></td>
+<td><code>#t</code> if batches remain</td>
+</tr>
+<tr>
+<td><code>dataloader-reset!</code></td>
+<td><code>(dataloader-reset! loader)</code></td>
+<td>Resets cursor; re-shuffles if enabled</td>
+</tr>
+<tr>
+<td><code>dataloader-length</code></td>
+<td><code>(dataloader-length loader)</code></td>
+<td>Total number of batches</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>(train-test-split data ratio [shuffle])</code></strong> (<code>tensor_codegen.cpp</code>): Returns pair of tensors. Ratio specifies training fraction (e.g., 0.8 for 80/20 split).</p>
+<pre class="scheme"><code>(define loader (make-dataloader training-data 32 #t))
+(let loop ()
+  (when (dataloader-has-next? loader)
+    (let ((batch (dataloader-next loader)))
+      ;; process batch
+      (loop))))</code></pre>
+<hr />
+<h2 id="10-linear-algebra">10. Linear Algebra</h2>
+<p>Seven matrix decomposition and solver operations for numerical linear algebra. These compile to LLVM IR loops over tensor element arrays — no LAPACK dependency required (though cBLAS dispatch is used for matmul via the cost model).</p>
+<h3 id="decompositions">Decompositions</h3>
+<p><strong>LU Decomposition</strong> (<code>tensor_codegen.cpp</code>): <code>(tensor-lu A)</code>. Factorizes <code>A = P * L * U</code> via partial pivoting. Returns a list <code>(L U P)</code> where P is a permutation vector. O(n^3) for n x n matrix. Foundation for determinant and solve.</p>
+<p><strong>Cholesky Decomposition</strong> (<code>tensor_codegen.cpp</code>): <code>(tensor-cholesky A)</code>. Factorizes symmetric positive-definite <code>A = L * L^T</code>. Returns lower-triangular L. Half the cost of LU. Raises error if A is not positive-definite (diagonal element becomes non-positive during factorization).</p>
+<p><strong>QR Decomposition</strong> (<code>tensor_codegen.cpp</code>): <code>(tensor-qr A)</code>. Factorizes <code>A = Q * R</code> via modified Gram-Schmidt. Returns list <code>(Q R)</code>. Used for least-squares and eigenvalue algorithms.</p>
+<p><strong>SVD</strong> (<code>tensor_codegen.cpp</code>): <code>(tensor-svd A)</code>. Singular Value Decomposition <code>A = U * S * V^T</code>. Returns list <code>(U S V)</code> where S is a vector of singular values. Iterative algorithm with convergence threshold.</p>
+<h3 id="solvers">Solvers</h3>
+<p><strong>Linear Solve</strong> (<code>tensor_codegen.cpp</code>): <code>(tensor-solve A b)</code>. Solves <code>Ax = b</code> via LU decomposition with forward/backward substitution. Returns x.</p>
+<p><strong>Determinant</strong> (<code>tensor_codegen.cpp</code>): <code>(tensor-det A)</code>. Computes det(A) via LU decomposition as product of diagonal elements of U, adjusted for permutation sign.</p>
+<p><strong>Matrix Inverse</strong> (<code>tensor_codegen.cpp</code>): <code>(tensor-inverse A)</code>. Computes A^(-1) by solving <code>A * X = I</code> column by column via LU.</p>
+<pre class="scheme"><code>(define A #(#(4.0 3.0) #(6.0 3.0)))
+(define b #(10.0 12.0))
+(tensor-solve A b)                ; =&gt; #(1.0 2.0)
+(tensor-det A)                    ; =&gt; -6.0
+(tensor-inverse A)                ; =&gt; #(#(-0.5 0.5) #(1.0 -0.667))
+
+(define L (tensor-cholesky (tensor-dot (tensor-transpose A) A)))
+(define (svd-result) (tensor-svd A))   ; =&gt; (U S V)</code></pre>
+<hr />
+<h2 id="11-einstein-summation">11. Einstein Summation</h2>
+<p><strong>Signature:</strong> <code>(einsum spec A B)</code> – <code>tensor_codegen.cpp</code></p>
+<p>General tensor contraction using Einstein summation convention. The <code>spec</code> string encodes index patterns following NumPy/PyTorch notation:</p>
+<pre class="scheme"><code>(einsum &quot;ij,jk-&gt;ik&quot; A B)         ; matrix multiply
+(einsum &quot;ij-&gt;ji&quot; A)               ; transpose
+(einsum &quot;ii-&gt;&quot; A)                 ; trace
+(einsum &quot;ij,ij-&gt;&quot; A B)            ; Frobenius inner product
+(einsum &quot;ijk,ikl-&gt;ijl&quot; A B)      ; batched matmul</code></pre>
+<p>The codegen parses the spec string at compile time, extracts index dimensions from operand shapes, and generates nested loops with the correct contraction pattern. Supports up to rank-16 operands (matching the XLA backend limit).</p>
+<hr />
+<h2 id="12-training-loop-example">12. Training Loop Example</h2>
+<p>End-to-end two-layer network: initialization, forward pass, loss, gradient clipping, Adam update, and cosine-annealed learning rate with warmup.</p>
+<pre class="scheme"><code>;; Two-layer classifier: 784 -&gt; 256 (GELU) -&gt; 10 (softmax)
+
+;; Weights
+(define W1 (make-tensor (list 784 256) 0.0))
+(define b1 (make-tensor (list 256) 0.0))
+(define W2 (make-tensor (list 256 10) 0.0))
+(define b2 (make-tensor (list 10) 0.0))
+(kaiming-normal! W1 784)
+(xavier-uniform! W2 256 10)
+
+;; Adam state
+(define m-W1 (make-tensor (list 784 256) 0.0))
+(define v-W1 (make-tensor (list 784 256) 0.0))
+(define m-W2 (make-tensor (list 256 10) 0.0))
+(define v-W2 (make-tensor (list 256 10) 0.0))
+
+;; Data
+(define loader (make-dataloader training-data 32 #t))
+
+(define (train epochs)
+  (let epoch-loop ((epoch 0))
+    (when (&lt; epoch epochs)
+      (define total-steps (* epochs (dataloader-length loader)))
+      (dataloader-reset! loader)
+      (let batch-loop ((t (+ (* epoch (dataloader-length loader)) 1)))
+        (when (dataloader-has-next? loader)
+          (define batch (dataloader-next loader))
+          (define x (car batch))
+          (define y (cdr batch))
+
+          ;; LR: warmup then cosine decay
+          (define lr (if (&lt; t 1000)
+                         (linear-warmup-lr 0.001 t 1000)
+                         (cosine-annealing-lr 0.001 1e-6 t total-steps)))
+
+          ;; Forward
+          (define probs (softmax (tensor+ (matmul (gelu (tensor+ (matmul x W1) b1)) W2) b2)))
+          (define loss (cross-entropy-loss probs y))
+
+          ;; Backward (AD). `gradient` takes (function vector); flatten the
+          ;; parameter list into a single tensor and the lambda picks the
+          ;; relevant slices back out.
+          (define grads (gradient loss (vector W1 b1 W2 b2)))
+
+          ;; Clip and update
+          (when (check-grad-health (list-ref grads 0))
+            (clip-grad-norm! (list-ref grads 0) 1.0)
+            (clip-grad-norm! (list-ref grads 2) 1.0)
+            (adam-step! W1 (list-ref grads 0) lr m-W1 v-W1 t)
+            (adam-step! W2 (list-ref grads 2) lr m-W2 v-W2 t))
+
+          (batch-loop (+ t 1))))
+      (epoch-loop (+ epoch 1)))))
+
+(train 100)</code></pre>
+<h3 id="design-principles">Design Principles</h3>
+<ol type="1">
+<li><strong>No framework boilerplate.</strong> Tensors, activations, losses, and optimizers are all first-class compiler builtins – no imports, no session management.</li>
+<li><strong>Arena allocation.</strong> Intermediate tensors are arena-allocated and automatically reclaimed. No GC overhead in the training loop.</li>
+<li><strong>Compiled SIMD.</strong> Every activation compiles to dual SIMD/scalar loops. ARM64 NEON processes 2 doubles/cycle; x86 AVX processes 4 doubles/cycle.</li>
+<li><strong>In-place mutation.</strong> Optimizers and initializers mutate tensors directly, avoiding allocation in the inner loop.</li>
+<li><strong>Composable scheduling.</strong> LR schedulers are pure functions returning scalars, enabling arbitrary composition without callback registrations.</li>
+</ol>
+<hr />
+<h2 id="appendix-complete-builtin-reference">Appendix: Complete Builtin Reference</h2>
+<p><strong>Activation Functions (14):</strong> <code>relu</code> <code>sigmoid</code> <code>softmax</code> <code>gelu</code> <code>leaky-relu</code> <code>silu</code> <code>elu</code> <code>selu</code> <code>mish</code> <code>hard-swish</code> <code>hard-sigmoid</code> <code>softplus</code> <code>celu</code> <code>dropout</code></p>
+<p><strong>Loss Functions (14):</strong> <code>mse-loss</code> <code>mae-loss</code> <code>cross-entropy-loss</code> <code>bce-loss</code> <code>binary-cross-entropy-loss</code> <code>huber-loss</code> <code>kl-div-loss</code> <code>hinge-loss</code> <code>smooth-l1-loss</code> <code>focal-loss</code> <code>triplet-loss</code> <code>contrastive-loss</code> <code>label-smoothing-loss</code> <code>cosine-embedding-loss</code></p>
+<p><strong>Optimizers (5) + Gradient Utilities (3):</strong> <code>sgd-step!</code> <code>adam-step!</code> <code>adamw-step!</code> <code>rmsprop-step!</code> <code>adagrad-step!</code> <code>zero-grad!</code> <code>clip-grad-norm!</code> <code>check-grad-health</code></p>
+<p><strong>Weight Initializers (5):</strong> <code>xavier-uniform!</code> <code>xavier-normal!</code> <code>kaiming-uniform!</code> <code>kaiming-normal!</code> <code>lecun-normal!</code></p>
+<p><strong>Learning Rate Schedulers (4):</strong> <code>linear-warmup-lr</code> <code>step-decay-lr</code> <code>exponential-decay-lr</code> <code>cosine-annealing-lr</code></p>
+<p><strong>CNN Operations (7):</strong> <code>conv1d</code> <code>conv2d</code> <code>conv3d</code> <code>max-pool2d</code> <code>avg-pool2d</code> <code>batch-norm</code> <code>layer-norm</code></p>
+<p><strong>Transformer Operations (8):</strong> <code>scaled-dot-attention</code> <code>multi-head-attention</code> <code>positional-encoding</code> <code>rotary-embedding</code> <code>causal-mask</code> <code>padding-mask</code> <code>feed-forward</code> <code>embedding</code></p>
+<p><strong>Data Loading (6):</strong> <code>make-dataloader</code> <code>dataloader-next</code> <code>dataloader-reset!</code> <code>dataloader-length</code> <code>dataloader-has-next?</code> <code>train-test-split</code></p>
+<p><strong>Linear Algebra (7):</strong> <code>tensor-lu</code> <code>tensor-det</code> <code>tensor-inverse</code> <code>tensor-solve</code> <code>tensor-cholesky</code> <code>tensor-qr</code> <code>tensor-svd</code></p>
+<p><strong>Einstein Summation (1):</strong> <code>einsum</code></p>

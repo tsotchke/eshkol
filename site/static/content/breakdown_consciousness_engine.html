@@ -1,0 +1,1070 @@
+<h1 id="eshkol-consciousness-engine--technical-reference">Eshkol Consciousness Engine — Technical Reference</h1>
+<p>This document is the canonical reference for the v1.1-accelerate consciousness engine: the unification + factor-graph + global-workspace runtime stack that ships as a set of compiler builtins under <code>lib/core/{logic,inference,workspace}.{h,cpp}</code> and is wired into LLVM codegen by <code>lib/backend/logic_workspace_codegen.cpp</code>.</p>
+<p>The text below is grounded in source. Every formula, struct field, and heap-subtype number is traceable to a specific line of the implementation; the source citations are inline as <code>lib/core/inference.cpp §&lt;symbol&gt;</code>.</p>
+<hr />
+<h2 id="1-overview">1. Overview</h2>
+<p>Three independently-developed paradigms from artificial intelligence and cognitive science compose the engine:</p>
+<ol type="1">
+<li><strong>Symbolic logic programming.</strong> A first-order substrate built on Robinson’s resolution principle (J. A. Robinson, <em>A machine-oriented logic based on the resolution principle</em>, Journal of the ACM 12(1), 1965). It provides logic variables, immutable substitutions, unification with occurs-check, and a knowledge base of ground facts.</li>
+<li><strong>Active inference.</strong> A probabilistic substrate built on sum-product belief propagation over factor graphs (Kschischang, Frey, Loeliger, <em>Factor graphs and the sum-product algorithm</em>, IEEE Trans. Inf. Theory 47(2), 2001) and on the variational free-energy principle (K. Friston, <em>The free-energy principle: a unified brain theory?</em>, Nature Reviews Neuroscience 11(2), 2010). It provides discrete factor graphs in log-space, loopy BP, variational free energy, expected free energy, evidence clamping, and online CPT learning.</li>
+<li><strong>Global Workspace Theory.</strong> An attentional substrate inspired by B. J. Baars, <em>A Cognitive Theory of Consciousness</em> (Cambridge, 1988), and the computational reformulation of Y. Bengio, <em>The consciousness prior</em> (arXiv:1709.08568, 2017). It provides a shared content tensor, a roster of cognitive specialist modules implemented as Eshkol closures, salience-based softmax competition, and broadcast of the winner.</li>
+</ol>
+<p>The three components compose: logic provides the symbolic substrate (predicates, terms, queries), inference provides the probabilistic substrate (beliefs, evidence, action selection), and the workspace provides the attentional substrate (which hypothesis wins access to working memory this cycle).</p>
+<h3 id="11-source-files">1.1 Source files</h3>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 17%" />
+<col style="width: 36%" />
+<col style="width: 39%" />
+<col style="width: 6%" />
+</colgroup>
+<thead>
+<tr>
+<th>Component</th>
+<th>Header</th>
+<th>Implementation</th>
+<th>Lines</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Logic engine</td>
+<td><code>inc/eshkol/core/logic.h</code></td>
+<td><code>lib/core/logic.cpp</code></td>
+<td>413 / 1,505</td>
+</tr>
+<tr>
+<td>Active inference</td>
+<td><code>inc/eshkol/core/inference.h</code></td>
+<td><code>lib/core/inference.cpp</code></td>
+<td>289 / 1,258</td>
+</tr>
+<tr>
+<td>Global workspace</td>
+<td><code>inc/eshkol/core/workspace.h</code></td>
+<td><code>lib/core/workspace.cpp</code></td>
+<td>188 / 354</td>
+</tr>
+<tr>
+<td>Auxiliary builtins</td>
+<td>—</td>
+<td><code>lib/core/logic_builtins.cpp</code></td>
+<td>209</td>
+</tr>
+<tr>
+<td>LLVM codegen</td>
+<td><code>inc/eshkol/backend/logic_workspace_codegen.h</code></td>
+<td><code>lib/backend/logic_workspace_codegen.cpp</code></td>
+<td>725</td>
+</tr>
+<tr>
+<td>Op dispatch</td>
+<td><code>lib/backend/llvm_codegen.cpp</code> §<code>codegenOperation</code></td>
+<td>(lines 8648–8697)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Type predicates</td>
+<td><code>lib/backend/llvm_codegen.cpp</code> (lines 32223–32430)</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Parser keywords</td>
+<td><code>lib/frontend/parser.cpp</code> (lines 985–1011) and §<code>TOKEN_SYMBOL</code> (line 888)</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Tagged-value type</td>
+<td><code>inc/eshkol/eshkol.h</code> (lines 87, 351–356) and <code>lib/backend/type_system.cpp</code> §<code>createStructTypes</code></td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<h3 id="12-vocabulary-of-cited-identifiers">1.2 Vocabulary of cited identifiers</h3>
+<p>Throughout this document, identifiers in the form <code>eshkol_…</code> denote C runtime functions or structures. Identifiers in CamelCase (<code>LogicWorkspaceCodegen::codegenWalk</code>) denote C++ codegen methods. Hyphenated identifiers in Scheme code (<code>fg-add-factor!</code>) are user-facing builtins.</p>
+<hr />
+<h2 id="2-type-system-integration">2. Type system integration</h2>
+<p>The engine introduces one new value type tag and six new heap subtypes into Eshkol’s 16-byte tagged value system. The numeric values below are verified against <code>inc/eshkol/eshkol.h</code>.</p>
+<h3 id="21-tagged-value-layout">2.1 Tagged-value layout</h3>
+<p>The tagged value is a 16-byte C struct (<code>inc/eshkol/eshkol.h</code> line 140; LLVM mirror at <code>lib/backend/type_system.cpp</code> lines 54–60):</p>
+<pre class="c"><code>struct eshkol_tagged_value {
+    uint8_t  type;        // offset 0 — eshkol_value_type_t
+    uint8_t  flags;       // offset 1 — exactness, ports, etc.
+    uint16_t reserved;    // offset 2 — future use
+    /* implicit 4 bytes padding for 8-byte alignment of data union */
+    union { int64_t int_val; double double_val; uint64_t ptr_val;
+            uint64_t raw_val; } data;   // offset 8
+};</code></pre>
+<p>The five-field LLVM <code>StructType</code> <code>{i8, i8, i16, i32, i64}</code> exposes the data slot at field index <strong>4</strong> (not 3); this is the discipline that the codegen predicate functions use (<code>codegenLogicVarPred</code>, <code>codegenSubstPred</code>, <code>codegenKBPred</code>, <code>codegenFactPred</code>, <code>codegenFactorGraphPred</code>, <code>codegenWorkspacePred</code> — <code>lib/backend/llvm_codegen.cpp</code> lines 32223–32430).</p>
+<h3 id="22-new-value-type-tag">2.2 New value-type tag</h3>
+<table>
+<thead>
+<tr>
+<th>Tag</th>
+<th>Value</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ESHKOL_VALUE_LOGIC_VAR</code></td>
+<td>10</td>
+<td><code>inc/eshkol/eshkol.h</code> line 87</td>
+</tr>
+</tbody>
+</table>
+<p>Logic variables fit entirely in a single tagged value: the type byte is 10 and <code>data.int_val</code> is the variable ID. There is no heap object for the variable itself; the name lives in a static intern pool managed by <code>eshkol_make_logic_var</code> (<code>lib/core/logic.cpp</code> lines 125–151).</p>
+<h3 id="23-new-heap-subtypes">2.3 New heap subtypes</h3>
+<p>All six subtypes are members of the <code>heap_subtype_t</code> enum in <code>inc/eshkol/eshkol.h</code> (lines 337–360):</p>
+<table>
+<colgroup>
+<col style="width: 38%" />
+<col style="width: 7%" />
+<col style="width: 14%" />
+<col style="width: 38%" />
+</colgroup>
+<thead>
+<tr>
+<th>Subtype</th>
+<th>Value</th>
+<th>Source line</th>
+<th>Backing struct</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>HEAP_SUBTYPE_SUBSTITUTION</code></td>
+<td>12</td>
+<td>line 351</td>
+<td><code>eshkol_substitution_t</code></td>
+</tr>
+<tr>
+<td><code>HEAP_SUBTYPE_FACT</code></td>
+<td>13</td>
+<td>line 352</td>
+<td><code>eshkol_fact_t</code></td>
+</tr>
+<tr>
+<td><em>(reserved for RULE)</em></td>
+<td>14</td>
+<td>line 353</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>HEAP_SUBTYPE_KNOWLEDGE_BASE</code></td>
+<td>15</td>
+<td>line 354</td>
+<td><code>eshkol_knowledge_base_t</code></td>
+</tr>
+<tr>
+<td><code>HEAP_SUBTYPE_FACTOR_GRAPH</code></td>
+<td>16</td>
+<td>line 355</td>
+<td><code>eshkol_factor_graph_t</code></td>
+</tr>
+<tr>
+<td><code>HEAP_SUBTYPE_WORKSPACE</code></td>
+<td>17</td>
+<td>line 356</td>
+<td><code>eshkol_workspace_t</code></td>
+</tr>
+</tbody>
+</table>
+<p>Value <code>14</code> is reserved for the rule heap subtype slated for v1.2 backward chaining. The non-monotonic gap is intentional and load-bearing for forward source compatibility.</p>
+<h3 id="24-object-header">2.4 Object header</h3>
+<p>Every heap object carries an 8-byte <code>eshkol_object_header_t</code> prefix (<code>inc/eshkol/eshkol.h</code> lines 322–327):</p>
+<pre class="c"><code>struct eshkol_object_header {
+    uint8_t  subtype;     // distinguishes heap kinds
+    uint8_t  flags;       // GC / linear / shared / pinned / external
+    uint16_t ref_count;   // 0 = not ref-counted
+    uint32_t size;        // object size in bytes (excluding header)
+};</code></pre>
+<p>The macro <code>ESHKOL_GET_HEADER(data_ptr)</code> recovers the header by subtracting 8 bytes from the data pointer (<code>inc/eshkol/eshkol.h</code> line 446). Every consciousness-engine runtime predicate (e.g., <code>eshkol_is_logic_var</code>, the <code>codegen…Pred</code> family) uses this offset-by-8 pattern to read the subtype byte.</p>
+<h3 id="25-llvm-dispatch-sketch">2.5 LLVM dispatch sketch</h3>
+<p>When a Scheme program calls <code>(factor-graph? x)</code>, the LLVM IR that codegen emits is (paraphrased from <code>lib/backend/llvm_codegen.cpp</code> §<code>codegenFactorGraphPred</code>, lines 32358–32393):</p>
+<pre><code>%type   = extractvalue {i8,i8,i16,i32,i64} %x_tagged, 0
+%isheap = icmp eq i8 %type, 8                          ; ESHKOL_VALUE_HEAP_PTR
+br i1 %isheap, label %check_fg_sub, label %not_fg
+check_fg_sub:
+  %data    = extractvalue {i8,…} %x_tagged, 4
+  %dataptr = inttoptr i64 %data to ptr
+  %hdrptr  = getelementptr i8, ptr %dataptr, i64 -8
+  %sub     = load i8, ptr %hdrptr
+  %is_fg   = icmp eq i8 %sub, 16                       ; HEAP_SUBTYPE_FACTOR_GRAPH
+  br label %fg_merge
+not_fg:
+  br label %fg_merge
+fg_merge:
+  %pred = phi i1 [ %is_fg, %check_fg_sub ], [ false, %not_fg ]</code></pre>
+<p>The same pattern (offset 0 for the type byte, offset 4 for the data field, offset −8 from data for the header) is repeated for the other predicates.</p>
+<hr />
+<h2 id="3-the-compiler-builtins">3. The compiler builtins</h2>
+<p>The Eshkol parser maps a fixed set of identifier strings to dedicated AST operation codes (<code>lib/frontend/parser.cpp</code> lines 985–1011). Each operation code is then dispatched by <code>LLVMCodegen::codegenOperation</code> (<code>lib/backend/llvm_codegen.cpp</code> lines 8648–8697) to a codegen method, the bulk of which live in <code>LogicWorkspaceCodegen</code> and the six predicates of which remain in <code>llvm_codegen.cpp</code>.</p>
+<p>This table is the authoritative inventory of consciousness-engine builtins. The leading tutorial doc and project memory cite “22 builtins”; in fact the parser emits <strong>24</strong> dedicated op codes plus a further <strong>3</strong> that route through the name-dispatched <code>SystemCodegen</code> fallback (<code>fg-marginal</code>, <code>fg-entropy</code>, <code>kb-retract!</code>).</p>
+<h3 id="31-logic-and-kb-builtins">3.1 Logic and KB builtins</h3>
+<table>
+<colgroup>
+<col style="width: 12%" />
+<col style="width: 3%" />
+<col style="width: 18%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 15%" />
+</colgroup>
+<thead>
+<tr>
+<th>Builtin</th>
+<th>Arity</th>
+<th>Parser op</th>
+<th>Codegen method</th>
+<th>Runtime helper</th>
+<th>Returns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>make-substitution</code></td>
+<td>0</td>
+<td><code>ESHKOL_MAKE_SUBST_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenMakeSubst</code></td>
+<td><code>eshkol_make_substitution_tagged</code></td>
+<td>substitution</td>
+</tr>
+<tr>
+<td><code>unify</code></td>
+<td>3</td>
+<td><code>ESHKOL_UNIFY_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenUnify</code></td>
+<td><code>eshkol_unify_tagged</code></td>
+<td>substitution or null</td>
+</tr>
+<tr>
+<td><code>walk</code></td>
+<td>2</td>
+<td><code>ESHKOL_WALK_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenWalk</code></td>
+<td><code>eshkol_walk_tagged</code></td>
+<td>term</td>
+</tr>
+<tr>
+<td><code>make-fact</code></td>
+<td>1+</td>
+<td><code>ESHKOL_MAKE_FACT_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenMakeFact</code></td>
+<td><code>eshkol_make_fact_tagged</code></td>
+<td>fact</td>
+</tr>
+<tr>
+<td><code>make-kb</code></td>
+<td>0</td>
+<td><code>ESHKOL_MAKE_KB_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenMakeKB</code></td>
+<td><code>eshkol_make_kb_tagged</code></td>
+<td>knowledge base</td>
+</tr>
+<tr>
+<td><code>kb-assert!</code></td>
+<td>2</td>
+<td><code>ESHKOL_KB_ASSERT_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenKBAssert</code></td>
+<td><code>eshkol_kb_assert_tagged</code></td>
+<td>null</td>
+</tr>
+<tr>
+<td><code>kb-query</code></td>
+<td>2</td>
+<td><code>ESHKOL_KB_QUERY_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenKBQuery</code></td>
+<td><code>eshkol_kb_query_tagged</code></td>
+<td>list of substitutions</td>
+</tr>
+<tr>
+<td><code>kb-query-prefix</code></td>
+<td>2</td>
+<td><code>ESHKOL_KB_QUERY_PREFIX_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenKBQueryPrefix</code></td>
+<td><code>eshkol_kb_query_prefix_tagged</code></td>
+<td>list of substitutions</td>
+</tr>
+<tr>
+<td><code>logic-var?</code></td>
+<td>1</td>
+<td><code>ESHKOL_LOGIC_VAR_PRED_OP</code></td>
+<td><code>LLVMCodegen::codegenLogicVarPred</code></td>
+<td>inline IR (no runtime call)</td>
+<td>bool</td>
+</tr>
+<tr>
+<td><code>substitution?</code></td>
+<td>1</td>
+<td><code>ESHKOL_SUBSTITUTION_PRED_OP</code></td>
+<td><code>LLVMCodegen::codegenSubstPred</code></td>
+<td>inline IR</td>
+<td>bool</td>
+</tr>
+<tr>
+<td><code>kb?</code></td>
+<td>1</td>
+<td><code>ESHKOL_KB_PRED_OP</code></td>
+<td><code>LLVMCodegen::codegenKBPred</code></td>
+<td>inline IR</td>
+<td>bool</td>
+</tr>
+<tr>
+<td><code>fact?</code></td>
+<td>1</td>
+<td><code>ESHKOL_FACT_PRED_OP</code></td>
+<td><code>LLVMCodegen::codegenFactPred</code></td>
+<td>inline IR</td>
+<td>bool</td>
+</tr>
+</tbody>
+</table>
+<h3 id="32-active-inference-builtins">3.2 Active inference builtins</h3>
+<table>
+<colgroup>
+<col style="width: 12%" />
+<col style="width: 3%" />
+<col style="width: 18%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 15%" />
+</colgroup>
+<thead>
+<tr>
+<th>Builtin</th>
+<th>Arity</th>
+<th>Parser op</th>
+<th>Codegen method</th>
+<th>Runtime helper</th>
+<th>Returns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>make-factor-graph</code></td>
+<td>2</td>
+<td><code>ESHKOL_MAKE_FACTOR_GRAPH_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenMakeFactorGraph</code></td>
+<td><code>eshkol_make_factor_graph_tagged</code></td>
+<td>factor graph</td>
+</tr>
+<tr>
+<td><code>fg-add-factor!</code></td>
+<td>3</td>
+<td><code>ESHKOL_FG_ADD_FACTOR_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenFGAddFactor</code></td>
+<td><code>eshkol_fg_add_factor_tagged</code></td>
+<td>null (mutates fg)</td>
+</tr>
+<tr>
+<td><code>fg-infer!</code></td>
+<td>2</td>
+<td><code>ESHKOL_FG_INFER_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenFGInfer</code></td>
+<td><code>eshkol_fg_infer_tagged</code></td>
+<td>tensor of probabilities</td>
+</tr>
+<tr>
+<td><code>fg-observe!</code></td>
+<td>3</td>
+<td><code>ESHKOL_FG_OBSERVE_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenFGObserve</code></td>
+<td><code>eshkol_fg_observe_tagged</code></td>
+<td>bool</td>
+</tr>
+<tr>
+<td><code>fg-update-cpt!</code></td>
+<td>3</td>
+<td><code>ESHKOL_FG_UPDATE_CPT_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenFGUpdateCPT</code></td>
+<td><code>eshkol_fg_update_cpt_tagged</code></td>
+<td>factor graph (mutated)</td>
+</tr>
+<tr>
+<td><code>free-energy</code></td>
+<td>2</td>
+<td><code>ESHKOL_FREE_ENERGY_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenFreeEnergy</code></td>
+<td><code>eshkol_free_energy_tagged</code></td>
+<td>double</td>
+</tr>
+<tr>
+<td><code>expected-free-energy</code></td>
+<td>3</td>
+<td><code>ESHKOL_EXPECTED_FREE_ENERGY_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenEFE</code></td>
+<td><code>eshkol_efe_tagged</code></td>
+<td>double</td>
+</tr>
+<tr>
+<td><code>factor-graph?</code></td>
+<td>1</td>
+<td><code>ESHKOL_FACTOR_GRAPH_PRED_OP</code></td>
+<td><code>LLVMCodegen::codegenFactorGraphPred</code></td>
+<td>inline IR</td>
+<td>bool</td>
+</tr>
+</tbody>
+</table>
+<h3 id="33-global-workspace-builtins">3.3 Global workspace builtins</h3>
+<table>
+<colgroup>
+<col style="width: 12%" />
+<col style="width: 3%" />
+<col style="width: 18%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 15%" />
+</colgroup>
+<thead>
+<tr>
+<th>Builtin</th>
+<th>Arity</th>
+<th>Parser op</th>
+<th>Codegen method</th>
+<th>Runtime helper</th>
+<th>Returns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>make-workspace</code></td>
+<td>2</td>
+<td><code>ESHKOL_MAKE_WORKSPACE_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenMakeWorkspace</code></td>
+<td><code>eshkol_make_workspace_tagged</code></td>
+<td>workspace</td>
+</tr>
+<tr>
+<td><code>ws-register!</code></td>
+<td>3</td>
+<td><code>ESHKOL_WS_REGISTER_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenWSRegister</code></td>
+<td><code>eshkol_ws_register_tagged</code></td>
+<td>null (mutates ws)</td>
+</tr>
+<tr>
+<td><code>ws-step!</code></td>
+<td>1</td>
+<td><code>ESHKOL_WS_STEP_OP</code></td>
+<td><code>LogicWorkspaceCodegen::codegenWSStep</code></td>
+<td><code>eshkol_ws_make_content_tensor</code> + <code>eshkol_ws_step_finalize</code> (inline IR closure loop)</td>
+<td>workspace (mutated)</td>
+</tr>
+<tr>
+<td><code>workspace?</code></td>
+<td>1</td>
+<td><code>ESHKOL_WORKSPACE_PRED_OP</code></td>
+<td><code>LLVMCodegen::codegenWorkspacePred</code></td>
+<td>inline IR</td>
+<td>bool</td>
+</tr>
+</tbody>
+</table>
+<h3 id="34-auxiliary-builtins-name-dispatched">3.4 Auxiliary builtins (name-dispatched)</h3>
+<p><code>fg-marginal</code>, <code>fg-entropy</code>, and <code>kb-retract!</code> do not get dedicated AST operation codes; they reach codegen via the function-name fallback in <code>LLVMCodegen::codegenOperation</code>’s call-handling branch (<code>lib/backend/llvm_codegen.cpp</code> lines 12271–12273) which routes through <code>SystemCodegen</code> (<code>lib/backend/system_codegen.cpp</code> lines 1521–1523). The runtime implementations live in <code>lib/core/logic_builtins.cpp</code> lines 21–162.</p>
+<table>
+<colgroup>
+<col style="width: 13%" />
+<col style="width: 28%" />
+<col style="width: 28%" />
+<col style="width: 28%" />
+</colgroup>
+<thead>
+<tr>
+<th>Builtin</th>
+<th>Codegen method</th>
+<th>Runtime helper</th>
+<th>Returns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>fg-marginal</code></td>
+<td><code>SystemCodegen::fgMarginal</code></td>
+<td><code>eshkol_fg_marginal_tagged</code></td>
+<td>tensor of probabilities</td>
+</tr>
+<tr>
+<td><code>fg-entropy</code></td>
+<td><code>SystemCodegen::fgEntropy</code></td>
+<td><code>eshkol_fg_entropy_tagged</code></td>
+<td>double</td>
+</tr>
+<tr>
+<td><code>kb-retract!</code></td>
+<td><code>SystemCodegen::kbRetract</code></td>
+<td><code>eshkol_kb_retract_tagged</code></td>
+<td>bool</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="4-logic-engine">4. Logic engine</h2>
+<h3 id="41-logic-variables">4.1 Logic variables</h3>
+<p>A logic variable is a parser primitive: when <code>tokenize</code> returns <code>TOKEN_SYMBOL</code> and the string starts with <code>?</code> and has length &gt; 1 (<code>lib/frontend/parser.cpp</code> lines 888–899), the AST node is rewritten to <code>ESHKOL_LOGIC_VAR_OP</code> with <code>logic_var_op.name</code> copied and <code>logic_var_op.var_id</code> initialised by the call <code>eshkol_make_logic_var(token.value.c_str())</code>. The leading <code>?</code> is the canonical R7RS-compatible cue — <code>?</code> is a valid identifier-start character under R7RS lexical rules, so no grammar change is required.</p>
+<p>The registry (<code>lib/core/logic.cpp</code> lines 21–151) provides deduplication: distinct textual occurrences of <code>?x</code> resolve to the same <code>var_id</code>. Two structures guard concurrent use:</p>
+<ul>
+<li>A <code>std::mutex g_var_mutex</code> serialises the <code>find-or-register</code> critical section of <code>eshkol_make_logic_var</code>.</li>
+<li>A <code>std::atomic&lt;uint64_t&gt; g_var_count</code> is the monotonic ID counter, and a parallel <code>std::atomic&lt;size_t&gt; g_var_name_pool_offset</code> tracks the static name pool, using <code>compare_exchange_weak</code> to allocate contiguous slots without locking.</li>
+</ul>
+<p>Capacity is <code>LOGIC_VAR_MAX = 65536</code> (line 29) and per-name storage is fixed at 64 bytes (line 40) for a total of 4 MiB of static pool. Names longer than 63 characters are truncated (line 109).</p>
+<p>The companion function <code>eshkol_intern_predicate</code> (lines 76–105) maintains a second pool of 64 KiB / 1024 slots for fact-predicate canonical pointers; this is what makes pointer equality work in <code>eshkol_unify</code>’s structural case (see §4.6 below).</p>
+<p>The runtime predicate <code>eshkol_is_logic_var(const eshkol_tagged_value_t*)</code> (lines 159–162) is the canonical type test:</p>
+<pre class="c"><code>bool eshkol_is_logic_var(const eshkol_tagged_value_t* tv) {
+    if (!tv) return false;
+    return tv-&gt;type == ESHKOL_VALUE_LOGIC_VAR;
+}</code></pre>
+<p>For test isolation, <code>eshkol_logic_registry_reset</code> (lines 62–74) drops both the variable-name and predicate intern tables and is wired to <code>(reset-tests!)</code>. It is documented as not thread-safe.</p>
+<h3 id="42-substitutions">4.2 Substitutions</h3>
+<p>A substitution is a flat, immutable mapping from variable IDs to terms. The struct (<code>inc/eshkol/core/logic.h</code> lines 40–45):</p>
+<pre class="c"><code>struct eshkol_substitution {
+    uint32_t num_bindings;
+    uint32_t capacity;
+    /* Followed by: uint64_t var_ids[capacity] */
+    /* Followed by: eshkol_tagged_value_t terms[capacity] */
+};</code></pre>
+<p>Two macros recover the parallel arrays (lines 48, 51):</p>
+<pre class="c"><code>SUBST_VAR_IDS(s) ≡ (uint64_t*)((uint8_t*)s + sizeof(eshkol_substitution_t))
+SUBST_TERMS(s)   ≡ (eshkol_tagged_value_t*)((uint8_t*)s
+                     + sizeof(eshkol_substitution_t)
+                     + s-&gt;capacity * sizeof(uint64_t))</code></pre>
+<p>Parallel arrays — rather than an array of <code>{id, term}</code> pairs — keep the var-ID scan cache-dense: an <code>n</code>-binding lookup touches <code>8n</code> bytes of var IDs before any term load.</p>
+<p><code>eshkol_make_substitution(arena, capacity)</code> (lines 207–211) defaults to capacity 8 when zero is requested. <code>eshkol_extend_subst</code> (lines 213–250) is the only mutator and is <strong>copy-on-extend</strong>: it allocates a fresh substitution with at least double the old capacity, <code>memcpy</code>s the existing bindings, appends the new <code>(var_id, term)</code> pair, and returns the new substitution. The old substitution is never modified; the arena reclaims it when reset. This discipline enables backtracking through failed unification branches without any undo bookkeeping.</p>
+<p><code>eshkol_subst_lookup</code> (lines 252–263) is a linear scan over the var-ID array. For the substitution sizes typical of consciousness-engine workloads (single-digit to low-double-digit bindings per query branch) this is uniformly faster than a hash; predicate-indexed and hashed lookup are slated for v1.2.</p>
+<h3 id="43-walk">4.3 Walk</h3>
+<p>The walk operation resolves a term through a substitution by chasing variable bindings to a fixed point. The shallow variant (<code>eshkol_walk</code>, <code>lib/core/logic.cpp</code> lines 267–287):</p>
+<p><span class="math display">$$
+\textsc{walk}(t, \sigma) \;=\; \begin{cases}
+\textsc{walk}(\sigma(v), \sigma) &amp; \text{if } t \text{ is a logic var } v \text{ and } v \in \mathrm{dom}(\sigma) \\
+t &amp; \text{otherwise}
+\end{cases}
+$$</span></p>
+<p>A <code>null</code> substitution short-circuits the loop, returning <code>t</code> as-is.</p>
+<p>The deep variant <code>eshkol_walk_deep</code> (lines 289–338) extends this recursively into compound structures: when the shallow walk yields a fact, the deep walk constructs a fresh fact (in the arena) whose arguments are themselves deep-walked. A depth limit of <code>WALK_DEEP_MAX_DEPTH = 10000</code> (line 289) guards against pathological chains, emitting a warning and returning the term unchanged at the limit.</p>
+<h3 id="44-occurs-check">4.4 Occurs check</h3>
+<p>The occurs check (<code>lib/core/logic.cpp</code> lines 342–372) is mandatory in <code>eshkol_unify</code>: it prevents the construction of circular bindings such as <span class="math inline">{?<em>x</em> ↦ <em>f</em>(?<em>x</em>)}</span> that would cause <code>walk</code> to loop indefinitely. The algorithm:</p>
+<p><span class="math display">$$
+\textsc{occurs}(v, t, \sigma) \;=\; \begin{cases}
+\mathrm{true} &amp; \text{if } \textsc{walk}(t,\sigma) \text{ is the logic var } v \\
+\bigvee_{i} \textsc{occurs}(v, t.\mathrm{args}[i], \sigma) &amp; \text{if } \textsc{walk}(t,\sigma) \text{ is a fact} \\
+\mathrm{false} &amp; \text{otherwise}
+\end{cases}
+$$</span></p>
+<p>A depth limit of <code>OCCURS_CHECK_MAX_DEPTH = 1000</code> (line 342) caps the recursion. At the limit the check returns <code>false</code> rather than overflowing the stack — this is a soundness-vs-safety tradeoff the implementer explicitly chose; in practice, no production query has been observed to reach this depth.</p>
+<h3 id="45-tagged-value-equality-for-unification">4.5 Tagged-value equality for unification</h3>
+<p>Before dispatching, <code>eshkol_unify</code> reduces both terms via <code>eshkol_walk</code> and then tests equality. Equality for unification is <strong>structural</strong> under <code>(equal? …)</code> semantics with one extension: two <code>ESHKOL_VALUE_LOGIC_VAR</code> tagged values are equal iff their <code>var_id</code> fields are equal (<code>lib/core/logic.cpp</code> lines 383–391):</p>
+<pre class="c"><code>static bool tagged_values_equal(const eshkol_tagged_value_t* a,
+                                const eshkol_tagged_value_t* b) {
+    if (a-&gt;type == ESHKOL_VALUE_LOGIC_VAR &amp;&amp; b-&gt;type == ESHKOL_VALUE_LOGIC_VAR) {
+        return a-&gt;data.int_val == b-&gt;data.int_val;
+    }
+    return eshkol_deep_equal(a, b);
+}</code></pre>
+<p><code>eshkol_deep_equal</code> lives in <code>lib/core/runtime_deep_equal.cpp</code> and recurses through cons cells, strings (by content), bignums (by numeric value), tensors, and vectors; for everything else it falls back to bit-pattern equality of the tagged value.</p>
+<h3 id="46-unification">4.6 Unification</h3>
+<p><code>eshkol_unify(arena, t1, t2, subst)</code> (<code>lib/core/logic.cpp</code> lines 395–462) implements Robinson’s unification with the Martelli–Montanari refinement (walk both terms before any case dispatch). It runs in <span class="math inline"><em>O</em>(<em>n</em> ⋅ <em>m</em>)</span> time where <span class="math inline"><em>n</em></span> is the total size of both terms and <span class="math inline"><em>m</em></span> is the number of bindings in <code>subst</code>, plus the occurs-check contribution which is bounded by the same term traversal.</p>
+<p>The full case analysis:</p>
+<pre><code>unify(t1, t2, σ):
+    w1 = walk(t1, σ)
+    w2 = walk(t2, σ)
+    if tagged_values_equal(w1, w2):              return σ
+    if w1 is LOGIC_VAR:
+        if occurs(w1.var_id, w2, σ):             return NULL
+        return extend(σ, w1.var_id, w2)
+    if w2 is LOGIC_VAR:
+        if occurs(w2.var_id, w1, σ):             return NULL
+        return extend(σ, w2.var_id, w1)
+    if w1, w2 are HEAP_PTR with subtype FACT:
+        if w1.predicate ≠ w2.predicate:          return NULL
+        if w1.arity ≠ w2.arity:                  return NULL
+        σ&#39; = σ
+        for i in 0..w1.arity-1:
+            σ&#39; = unify(w1.args[i], w2.args[i], σ&#39;)
+            if σ&#39; is NULL:                       return NULL
+        return σ&#39;
+    return NULL</code></pre>
+<p>Predicate equality is <strong>pointer comparison</strong> (line 436), which works because every predicate symbol routes through <code>eshkol_intern_predicate</code>. A defensive fallback (lines 437–442) performs a <code>strcmp</code> if either side has an un-interned predicate (observed in <code>kb-load</code> scenarios when predicates are reconstructed from on-disk serialisations).</p>
+<p>The substitution is threaded left-to-right through the argument list: binding <span class="math inline">{?<em>x</em> ↦ <em>a</em><em>l</em><em>i</em><em>c</em><em>e</em>}</span> that emerges from arg 0 is visible to the recursive call on arg 1. Failure on any argument discards every binding accumulated so far simply by returning <code>NULL</code> — the caller continues to hold the original <code>σ</code>, and arena allocations made on the failed branch are recovered by the next arena reset.</p>
+<h4 id="461-worked-example">4.6.1 Worked example</h4>
+<p>Unify <span class="math inline">(<em>p</em><em>a</em><em>r</em><em>e</em><em>n</em><em>t</em> ?<em>x</em> (<em>c</em><em>h</em><em>i</em><em>l</em><em>d</em> ?<em>y</em>))</span> with <span class="math inline">(<em>p</em><em>a</em><em>r</em><em>e</em><em>n</em><em>t</em> <em>a</em><em>l</em><em>i</em><em>c</em><em>e</em> (<em>c</em><em>h</em><em>i</em><em>l</em><em>d</em> <em>b</em><em>o</em><em>b</em>))</span> under <span class="math inline"><em>σ</em><sub>0</sub> = {}</span>:</p>
+<ol type="1">
+<li>Both heads are facts with the same interned predicate <code>parent</code> and arity 2 — enter the structural case.</li>
+<li>Recurse on arg 0: walk <span class="math inline">?<em>x</em></span> → <span class="math inline">?<em>x</em></span>, walk <span class="math inline"><em>a</em><em>l</em><em>i</em><em>c</em><em>e</em></span> → <span class="math inline"><em>a</em><em>l</em><em>i</em><em>c</em><em>e</em></span>. Case “w1 is logic var” applies. Occurs check: does <span class="math inline">?<em>x</em></span> appear in <span class="math inline"><em>a</em><em>l</em><em>i</em><em>c</em><em>e</em></span>? No. Extend: <span class="math inline"><em>σ</em><sub>1</sub> = {?<em>x</em> ↦ <em>a</em><em>l</em><em>i</em><em>c</em><em>e</em>}</span>.</li>
+<li>Recurse on arg 1: walk both yields two fresh facts with predicate <code>child</code>, arity 1. Structural case.</li>
+<li>Recurse on <code>child</code>’s arg 0: walk <span class="math inline">?<em>y</em></span> → <span class="math inline">?<em>y</em></span>, walk <span class="math inline"><em>b</em><em>o</em><em>b</em></span> → <span class="math inline"><em>b</em><em>o</em><em>b</em></span>. Extend: <span class="math inline"><em>σ</em><sub>2</sub> = {?<em>x</em> ↦ <em>a</em><em>l</em><em>i</em><em>c</em><em>e</em>, ?<em>y</em> ↦ <em>b</em><em>o</em><em>b</em>}</span>.</li>
+</ol>
+<p>Result <span class="math inline"><em>σ</em><sub>2</sub></span>. Now <span class="math inline">$\textsc{walk}(?x, \sigma_2) = \mathit{alice}$</span>, <span class="math inline">$\textsc{walk}(?y, \sigma_2) = \mathit{bob}$</span>.</p>
+<h3 id="47-facts">4.7 Facts</h3>
+<p>The fact struct (<code>inc/eshkol/core/logic.h</code> lines 60–65):</p>
+<pre class="c"><code>struct eshkol_fact {
+    uint64_t predicate;    /* Pointer to interned symbol (HEAP_SUBTYPE_SYMBOL) */
+    uint32_t arity;
+    uint32_t _pad;
+    /* Followed by: eshkol_tagged_value_t args[arity] */
+};</code></pre>
+<p>with the macro <code>FACT_ARGS(f)</code> recovering the trailing argument array (line 68). <code>eshkol_make_fact</code> (lines 466–480) arena-allocates the fact with header subtype 13 and <code>memcpy</code>s the caller’s argument array.</p>
+<p>The <code>eshkol_make_fact_tagged</code> wrapper (lines 703–735) is what codegen actually calls; it interns the predicate string before constructing the fact, so two facts whose Scheme-level predicate symbol prints the same will compare equal under <code>f1.predicate == f2.predicate</code>.</p>
+<h3 id="48-knowledge-base">4.8 Knowledge base</h3>
+<p>The KB struct (<code>inc/eshkol/core/logic.h</code> lines 77–81):</p>
+<pre class="c"><code>struct eshkol_knowledge_base {
+    uint32_t num_facts;
+    uint32_t capacity;
+    eshkol_fact_t** facts;    /* Arena-allocated array of fact pointers */
+};</code></pre>
+<p>Initial capacity is <code>KB_INITIAL_CAPACITY = 16</code> (<code>lib/core/logic.cpp</code> line 484). <code>eshkol_kb_assert</code> (lines 505–521) appends a fact pointer and doubles the array (via fresh arena allocation + <code>memcpy</code>) when full.</p>
+<p><code>eshkol_kb_retract_tagged</code> (<code>lib/core/logic_builtins.cpp</code> lines 124–162) removes a fact by <strong>pointer identity</strong>: it scans the array, finds the matching pointer, and shifts the tail down by one. There is no structural-equality fallback — the caller must retain the fact pointer that was originally asserted.</p>
+<h3 id="49-kb-query">4.9 KB query</h3>
+<p><code>eshkol_kb_query</code> (<code>lib/core/logic.cpp</code> lines 523–596) performs a linear scan over <code>kb-&gt;facts</code>, attempting to unify the query pattern’s arguments against each fact’s arguments under a shared base substitution. The algorithm:</p>
+<pre><code>kb-query(kb, pattern, σ₀):
+    result = ()
+    σ₀ = σ₀ or make-substitution(arena, 8)
+    for fact in kb.facts:
+        if pattern.predicate ≠ 0 and fact.predicate ≠ 0 and
+           pattern.predicate ≠ fact.predicate: continue
+        if pattern.arity ≠ fact.arity: continue
+        σ = σ₀
+        success = true
+        for j in 0..pattern.arity-1:
+            σ = unify(pattern.args[j], fact.args[j], σ)
+            if σ is NULL: success = false; break
+        if success:
+            result = cons(σ, result)            ; arena CONS cell
+    return result</code></pre>
+<p>The result is a cons list of every matching substitution, built in reverse order with no final reversal. Each cons cell is arena-allocated with <code>HEAP_SUBTYPE_CONS</code> (lines 573–574). The caller can <code>for-each</code> through the list and <code>walk</code> the query’s logic variables in each substitution to retrieve concrete bindings.</p>
+<p>The variant <code>eshkol_kb_query_prefix</code> (lines 603–664) relaxes the arity check to <code>pattern.arity &lt;= fact.arity</code>, unifying only the first <code>pattern.arity</code> argument positions. This supports KBs with provenance-extended fact tails (e.g., where a fact’s last argument is a source citation that the pattern does not need to match).</p>
+<p>The cost is <span class="math inline"><em>O</em>(<em>N</em> ⋅ <em>k</em> ⋅ <em>u</em>)</span> where <span class="math inline"><em>N</em></span> is the number of facts, <span class="math inline"><em>k</em></span> is the average pattern arity, and <span class="math inline"><em>u</em></span> is the cost of unification per argument pair. For a KB of a few thousand facts and small arities this is empirically negligible compared to surrounding work.</p>
+<p>Predicate indexing (an inverted index from predicate symbol to facts asserting it) is planned for v1.2 to bring the cost to <span class="math inline"><em>O</em>(<em>N</em><sub><em>p</em></sub> ⋅ <em>k</em> ⋅ <em>u</em>)</span> where <span class="math inline"><em>N</em><sub><em>p</em></sub></span> is the number of facts sharing the queried predicate.</p>
+<hr />
+<h2 id="5-active-inference">5. Active inference</h2>
+<p>The active-inference subsystem is structured around three concepts: the factor graph (a discrete generative model), loopy belief propagation (sum-product in log-space), and free-energy functionals (variational and expected). All computation happens in log-probability space using the log-sum-exp identity to avoid underflow.</p>
+<h3 id="51-factor-graph">5.1 Factor graph</h3>
+<p>The struct (<code>inc/eshkol/core/inference.h</code> lines 55–67):</p>
+<pre class="c"><code>struct eshkol_factor_graph {
+    uint32_t num_vars;         /* |V| */
+    uint32_t num_factors;      /* current factor count */
+    uint32_t max_factors;      /* factor-array capacity (starts at 16) */
+    uint32_t _pad;
+    double** beliefs;          /* beliefs[v][s] = log q(X_v = s) */
+    uint32_t* var_dims;        /* var_dims[v] = |state space of X_v| */
+    eshkol_factor_t** factors; /* factor array */
+    double** msg_fv;           /* factor-to-variable messages */
+    double** msg_vf;           /* variable-to-factor messages */
+    uint32_t total_messages;   /* sum of factor arities */
+    bool* observed;            /* observed[v] = true → clamped */
+};</code></pre>
+<p>Construction is <code>eshkol_make_factor_graph</code> (<code>lib/core/inference.cpp</code> lines 149–194). Beliefs are initialised uniformly in log-space to <span class="math inline">log (1/<em>d</em><sub><em>v</em></sub>)</span> where <span class="math inline"><em>d</em><sub><em>v</em></sub></span> is the variable’s state-space size (lines 175–181); <code>safe_dim</code> (line 177) coerces a zero dimension to 1 to avoid <code>log(0)</code>. Message arrays are deferred: <code>msg_fv</code> and <code>msg_vf</code> are <code>NULL</code> until the first call to <code>eshkol_fg_infer</code>, at which point <code>allocate_messages</code> (lines 253–293) populates them. The <code>observed</code> bool array stays <code>NULL</code> until the first <code>fg-observe!</code> call.</p>
+<h3 id="52-factor">5.2 Factor</h3>
+<p>The factor struct (<code>inc/eshkol/core/inference.h</code> lines 37–43):</p>
+<pre class="c"><code>struct eshkol_factor {
+    uint32_t num_vars;         /* arity */
+    uint32_t cpt_size;         /* ∏ dims */
+    double*  cpt;              /* log-probability tensor (row-major) */
+    uint32_t* dims;            /* per-variable state-space size */
+    /* Followed by: uint32_t var_indices[num_vars] */
+};</code></pre>
+<p>Factor objects do not get their own heap subtype; they are arena-allocated raw via <code>arena_allocate_aligned</code> (<code>lib/core/inference.cpp</code> lines 128–137) and live as raw pointers inside the factor graph’s <code>factors</code> array. Variable indices live inline after the struct, recovered by the macro <code>FACTOR_VAR_INDICES(f)</code> (line 46).</p>
+<p>The CPT is <strong>flat, row-major, log-space</strong>. For a factor over variables with state-space sizes <span class="math inline"><em>d</em><sub>0</sub>, <em>d</em><sub>1</sub>, …, <em>d</em><sub><em>n</em> − 1</sub></span>, the flat index of the configuration <span class="math inline">(<em>s</em><sub>0</sub>, <em>s</em><sub>1</sub>, …, <em>s</em><sub><em>n</em> − 1</sub>)</span> is</p>
+<p><span class="math display">$$
+\mathrm{idx}(s_0, \dots, s_{n-1}) \;=\; \sum_{k=0}^{n-1} s_k \cdot \prod_{j=k+1}^{n-1} d_j.
+$$</span></p>
+<p>The implementation decodes a flat index back into per-variable states by repeated modular reduction (<code>lib/core/inference.cpp</code> §<code>compute_factor_to_var_message</code>, lines 333–337):</p>
+<pre class="c"><code>uint32_t remaining = config;
+for (int32_t k = (int32_t)f-&gt;num_vars - 1; k &gt;= 0; k--) {
+    state[k] = remaining % f-&gt;dims[k];
+    remaining /= f-&gt;dims[k];
+}</code></pre>
+<h3 id="53-log-space-arithmetic">5.3 Log-space arithmetic</h3>
+<p>All probabilities are stored as natural-log values; messages and CPTs that would underflow as raw probabilities remain in range. Three primitives (<code>lib/core/inference.cpp</code> lines 91–124):</p>
+<ul>
+<li><p><code>LOG_ZERO = -1e30</code> (line 91) is the sentinel for <span class="math inline">log 0</span>. It is chosen finite, rather than <code>-INFINITY</code>, so that arithmetic on it does not propagate <code>NaN</code>.</p></li>
+<li><p>Pairwise log-sum-exp (lines 94–99):</p>
+<p><span class="math display">logsumexp2(<em>a</em>, <em>b</em>) = max (<em>a</em>, <em>b</em>) + log (1 + exp (−|<em>a</em> − <em>b</em>|)).</span></p>
+<p>Both <code>LOG_ZERO + 1.0</code> short-circuits suppress contributions that are computationally indistinguishable from zero.</p></li>
+<li><p>Array log-sum-exp (lines 102–114):</p>
+<p><span class="math display">logsumexp(<strong>x</strong>) = <em>m</em> + log (∑<sub><em>i</em></sub>exp (<em>x</em><sub><em>i</em></sub> − <em>m</em>)),  <em>m</em> = max<sub><em>i</em></sub><em>x</em><sub><em>i</em></sub>.</span></p></li>
+<li><p>In-place log-normalisation (lines 117–124):</p>
+<p><span class="math display">log_normalize(<strong>x</strong>):  <em>x</em><sub><em>i</em></sub> ← <em>x</em><sub><em>i</em></sub> − logsumexp(<strong>x</strong>).</span></p>
+<p>After this operation, <span class="math inline">∑<sub><em>i</em></sub>exp (<em>x</em><sub><em>i</em></sub>) = 1</span> up to floating-point.</p></li>
+</ul>
+<h3 id="54-sum-product-belief-propagation">5.4 Sum-product belief propagation</h3>
+<p><code>eshkol_fg_infer</code> (<code>lib/core/inference.cpp</code> lines 396–481) implements loopy belief propagation with the standard sum-product algorithm, entirely in log-space. The message schedule is <strong>synchronous flooding</strong>: all variable-to-factor messages are updated, then all factor-to-variable messages, then beliefs, then a convergence test.</p>
+<h4 id="541-message-index">5.4.1 Message index</h4>
+<p>Messages are stored in flat arrays <code>msg_fv[]</code> and <code>msg_vf[]</code> indexed by the helper <code>get_msg_idx(fg, fi, vi)</code> (lines 296–303):</p>
+<p><span class="math display">msgidx(<em>f</em><sub><em>i</em></sub>, <em>v</em><sub><em>i</em></sub>) = <em>v</em><sub><em>i</em></sub> + ∑<sub><em>j</em> &lt; <em>i</em></sub>|ne(<em>f</em><sub><em>j</em></sub>)|.</span></p>
+<p>This is computed by linear scan over the factors preceding <span class="math inline"><em>f</em><sub><em>i</em></sub></span>, which is <span class="math inline"><em>O</em>(<em>F</em>)</span> per index but acceptable for the factor counts expected in v1.1 (≤ 32 typical).</p>
+<h4 id="542-factor-to-variable-message">5.4.2 Factor-to-variable message</h4>
+<p>Implemented by <code>compute_factor_to_var_message</code> (<code>lib/core/inference.cpp</code> lines 312–356):</p>
+<p><span class="math display"><em>m</em><sub><em>f</em> → <em>v</em></sub>(<em>x</em><sub><em>v</em></sub>) = log   ∑<sub><strong>x</strong><sub>∖<em>v</em></sub></sub>exp  [log <em>f</em>(<strong>x</strong>)+  ∑<sub><em>u</em> ∈ ne(<em>f</em>) \ <em>v</em></sub><em>m</em><sub><em>u</em> → <em>f</em></sub>(<em>x</em><sub><em>u</em></sub>)].</span></p>
+<p>Concretely:</p>
+<ol type="1">
+<li>Initialise the output message to <code>LOG_ZERO</code> for every target state (lines 321–323).</li>
+<li>Enumerate every flat configuration of the factor’s joint state space (<span class="math inline">∏<em>d</em><sub><em>k</em></sub></span> configurations) (lines 331–352).</li>
+<li>For each configuration, accumulate the log-CPT entry plus the incoming variable-to-factor messages for every variable other than the target (lines 340–347).</li>
+<li>Merge into the target state’s output bin via <code>logsumexp2</code> (lines 350–351).</li>
+<li>Log-normalise (line 355).</li>
+</ol>
+<p>This is the most expensive operation; its cost per call is <span class="math inline"><em>O</em>(∏<sub><em>k</em></sub><em>d</em><sub><em>k</em></sub> ⋅ |ne(<em>f</em>)|)</span>.</p>
+<h4 id="543-variable-to-factor-message">5.4.3 Variable-to-factor message</h4>
+<p>Implemented by <code>compute_var_to_factor_message</code> (<code>lib/core/inference.cpp</code> lines 363–394):</p>
+<p><span class="math display"><em>m</em><sub><em>v</em> → <em>f</em></sub>(<em>x</em><sub><em>v</em></sub>) = ∑<sub><em>g</em> ∈ ne(<em>v</em>) \ <em>f</em></sub><em>m</em><sub><em>g</em> → <em>v</em></sub>(<em>x</em><sub><em>v</em></sub>).</span></p>
+<p>That is, log-sum (= probability-product) all factor-to-variable messages reaching <span class="math inline"><em>v</em></span>, <strong>except</strong> from the target factor <span class="math inline"><em>f</em></span> itself. The implementation walks every factor in the graph, locates each factor’s edges that connect to <span class="math inline"><em>v</em></span>, and accumulates (lines 378–391). Log-normalisation closes (line 393).</p>
+<h4 id="544-belief-update">5.4.4 Belief update</h4>
+<p>After the two message passes complete, beliefs are recomputed as the log-product of all incoming factor messages (<code>lib/core/inference.cpp</code> lines 448–472):</p>
+<p><span class="math display"><em>b</em>(<em>x</em><sub><em>v</em></sub>) = ∑<sub><em>f</em> ∈ ne(<em>v</em>)</sub><em>m</em><sub><em>f</em> → <em>v</em></sub>(<em>x</em><sub><em>v</em></sub>),</span></p>
+<p>then log-normalised. Crucially, <strong>observed variables are skipped</strong> (line 452): their beliefs were clamped by <code>fg-observe!</code> and must not be overwritten by message-driven updates. This is the BP-equivalent of classical evidence-clamping in junction trees.</p>
+<h4 id="545-convergence">5.4.5 Convergence</h4>
+<p>The main loop tracks <code>max_delta</code> (lines 405, 421–423, 440–443): the maximum absolute change of any message component across the current iteration. When <code>max_delta &lt; tolerance</code> (default <span class="math inline">10<sup>−6</sup></span>, see <code>eshkol_fg_infer_tagged</code> line 768), the function sets <code>converged = true</code> and returns. Otherwise, after <code>max_iterations</code> passes (default 20, line 763), it returns with whatever beliefs were last produced.</p>
+<p>For tree-structured factor graphs, this algorithm is exact and converges in <span class="math inline"><em>O</em>(diameter)</span> iterations. For graphs with cycles, the algorithm is “loopy BP” — convergence is not guaranteed in general, but in practice the messages stabilise on most well-posed models within a few dozen iterations.</p>
+<p>The schedule is synchronous (flooding). Asynchronous and priority-scheduled variants (residual BP, tree-reweighted BP) would likely improve convergence on highly loopy graphs; they are deferred.</p>
+<h3 id="55-variational-free-energy">5.5 Variational free energy</h3>
+<p><code>eshkol_free_energy(fg, observations, num_obs)</code> (<code>lib/core/inference.cpp</code> lines 485–557) returns the scalar</p>
+<p><span class="math display"><em>F</em> = 𝔼<sub><em>q</em></sub>[log <em>q</em>(<em>s</em>)] − 𝔼<sub><em>q</em></sub>[log <em>p</em>(<em>o</em>, <em>s</em>)],</span></p>
+<p>with <span class="math inline"><em>q</em></span> approximated by the <strong>mean-field</strong> product of current beliefs:</p>
+<p><span class="math display"><em>q</em>(<em>s</em><sub>0</sub>, <em>s</em><sub>1</sub>, …, <em>s</em><sub><em>n</em> − 1</sub>) ≈ ∏<sub><em>v</em></sub><em>q</em>(<em>s</em><sub><em>v</em></sub>) = ∏<sub><em>v</em></sub>exp (beliefs[<em>v</em>][<em>s</em><sub><em>v</em></sub>]).</span></p>
+<p>Three terms enter the implementation:</p>
+<ol type="1">
+<li><p><strong>Entropy</strong> (lines 502–511): the negative-entropy term of <span class="math inline"><em>F</em></span>, computed as the sum of marginal entropies under the mean-field factorisation:</p>
+<p><span class="math display">−<em>H</em>(<em>q</em>) = ∑<sub><em>v</em></sub>∑<sub><em>s</em></sub><em>q</em>(<em>x</em><sub><em>v</em></sub> = <em>s</em>)log <em>q</em>(<em>x</em><sub><em>v</em></sub> = <em>s</em>).</span></p>
+<p>The guard <code>q &gt; 1e-30</code> (line 507) prevents <span class="math inline">0log 0 = NaN</span>.</p></li>
+<li><p><strong>Expected log-joint</strong> (lines 513–537): the model accuracy term,</p>
+<p><span class="math display">𝔼<sub><em>q</em></sub>[log <em>p</em>(<em>s</em>)] = ∑<sub><em>f</em></sub>∑<sub><strong>x</strong></sub><em>q</em>(<strong>x</strong>) ⋅ log <em>f</em>(<strong>x</strong>).</span></p>
+<p>For each factor and each configuration, the implementation decodes the configuration, computes <span class="math inline">log <em>q</em>(<strong>x</strong>) = ∑<sub><em>k</em></sub>beliefs[<em>v</em><sub><em>k</em></sub>][<em>s</em><sub><em>k</em></sub>]</span> (lines 522–530), exponentiates, and accumulates against the log-CPT entry.</p></li>
+<li><p><strong>Observation contribution</strong> (lines 540–551): when an observation tensor is provided as flat pairs <span class="math inline">(<em>v</em><em>a</em><em>r</em><em>_</em><em>i</em><em>d</em><em>x</em>, <em>o</em><em>b</em><em>s</em><em>_</em><em>s</em><em>t</em><em>a</em><em>t</em><em>e</em>)</span> (so a tensor of length <span class="math inline">2<em>N</em><sub><em>o</em></sub></span> for <span class="math inline"><em>N</em><sub><em>o</em></sub></span> observations), each observation adds <span class="math inline">beliefs[<em>v</em>][<em>o</em><sub><em>v</em></sub>]</span> to the expected log-joint. This is the analytic form of the surprise term <span class="math inline">log <em>p</em>(<em>o</em> ∣ <em>s</em>)</span> when the observation likelihood is treated as a one-hot indicator at the clamped state.</p></li>
+</ol>
+<p>The final scalar is</p>
+<p><span class="math display"><em>F</em> =  − <em>H</em>(<em>q</em>) − 𝔼<sub><em>q</em></sub>[log <em>p</em>(<em>o</em>, <em>s</em>)].</span></p>
+<p><strong>Observation format.</strong> The observations tensor is a 1-D tensor of <span class="math inline">2<em>N</em><sub><em>o</em></sub></span> doubles: <code>#(var0_idx var0_state var1_idx var1_state …)</code>. The tagged wrapper <code>eshkol_free_energy_tagged</code> (lines 812–847) infers <span class="math inline"><em>N</em><sub><em>o</em></sub> = ⌊total_elements/2⌋</span> (line 834) and ignores any trailing element if the count is odd.</p>
+<h3 id="56-expected-free-energy">5.6 Expected free energy</h3>
+<p><code>eshkol_expected_free_energy(arena, fg, action_var, action_state)</code> (<code>lib/core/inference.cpp</code> lines 559–632) returns the prospective quantity used to compare candidate actions:</p>
+<p><span class="math display"><em>G</em>(<em>a</em>) = 𝔼<sub><em>q</em>(<em>o</em>, <em>s</em> ∣ <em>a</em>)</sub>[log <em>q</em>(<em>s</em> ∣ <em>a</em>) − log <em>p</em>(<em>o</em>, <em>s</em>)].</span></p>
+<p>The Friston decomposition into pragmatic (goal-seeking, <span class="math inline">−log <em>p</em></span>) and epistemic (uncertainty-reducing, <span class="math inline">+log <em>q</em></span>) terms is implemented directly. For every factor that involves the action variable (lines 583–598), the implementation enumerates only the configurations in which <code>action_var</code> takes <code>action_state</code> (line 611), computes the mean-field <span class="math inline">log <em>q</em></span> over the <em>non-action</em> variables in that factor (lines 614–619), and accumulates:</p>
+<p><span class="math display"><em>G</em> += <em>q</em>(<strong>x</strong><sub>∖<em>a</em></sub>) ⋅ [log <em>q</em>(<strong>x</strong><sub>∖<em>a</em></sub>) − log <em>f</em>(<strong>x</strong>)].</span></p>
+<p>Or in code (line 624–626):</p>
+<pre class="c"><code>double q = exp(log_q);
+if (q &gt; 1e-30) {
+    efe -= q * f-&gt;cpt[config];    // pragmatic:  -q · log p
+    efe += q * log_q;              // epistemic:  +q · log q
+}</code></pre>
+<p>Lower <span class="math inline"><em>G</em>(<em>a</em>)</span> indicates a preferred action; an active-inference agent selects <span class="math inline"><em>a</em><sup>*</sup> = arg min<sub><em>a</em></sub><em>G</em>(<em>a</em>)</span>.</p>
+<h3 id="57-evidence-clamping-with-fg-observe">5.7 Evidence clamping with <code>fg-observe!</code></h3>
+<p><code>eshkol_fg_observe_tagged</code> (<code>lib/core/inference.cpp</code> lines 982–1029) applies hard evidence to a variable. After validation (lines 994–1012) it:</p>
+<ol type="1">
+<li>Clamps the variable’s log-beliefs (lines 1014–1018): the observed state gets <span class="math inline">log 1 = 0</span>, every other state gets <span class="math inline">−10<sup>30</sup></span>.</li>
+<li>Lazily allocates the <code>observed</code> boolean array if it is <code>NULL</code> (lines 1021–1023), then sets <code>observed[var_id] = true</code> (line 1025). The BP loop honours this flag and skips message-driven updates to clamped variables (§5.4.4).</li>
+</ol>
+<p>The function returns a boolean <code>#t</code> if the clamp was applied, <code>#f</code> if validation failed. The implementation note (line 451) is explicit that this clamp must match the VM path in <code>vm_inference.c</code> line 388 for AOT and VM agreement.</p>
+<h3 id="58-online-cpt-learning-with-fg-update-cpt">5.8 Online CPT learning with <code>fg-update-cpt!</code></h3>
+<p><code>eshkol_fg_update_cpt_tagged</code> (<code>lib/core/inference.cpp</code> lines 885–962) enables online model revision: the caller supplies a new tensor or vector of <span class="math inline">|cpt|</span> log-probabilities, the function overwrites the factor’s CPT element-by-element, and — critically — resets the message arrays:</p>
+<pre class="c"><code>fg-&gt;msg_fv = NULL;
+fg-&gt;msg_vf = NULL;</code></pre>
+<p>(lines 956–957). The next call to <code>fg-infer!</code> will re-enter <code>allocate_messages</code> (§5.4) and start from uniform messages. Without this reset, BP would resume from messages computed under the previous CPT and could converge to a wrong fixed point or oscillate.</p>
+<p>The function accepts the new CPT as either a homogeneous tensor (<code>#(…)</code>, the fast path) or a heterogeneous vector (<code>(vector …)</code>, the ergonomic path when building CPTs from computed per-element expressions — <code>extract_doubles_from_vector</code> handles the mixed <code>INT64</code>/<code>DOUBLE</code> element types and the exactness-flag masking, lines 65–87).</p>
+<h3 id="59-marginal-extraction-fg-marginal-and-entropy-fg-entropy">5.9 Marginal extraction (<code>fg-marginal</code>) and entropy (<code>fg-entropy</code>)</h3>
+<p><code>eshkol_fg_marginal_tagged</code> (<code>lib/core/logic_builtins.cpp</code> lines 21–79) extracts the marginal belief vector for a single variable as a 1-D tensor of probabilities. It (i) walks the log-beliefs, (ii) subtracts the max for numerical stability, (iii) exponentiates, (iv) sums and normalises, and (v) returns the result as a tensor of <code>var_dims[v]</code> doubles.</p>
+<p><code>eshkol_fg_entropy_tagged</code> (lines 81–122) computes the Shannon entropy of the same marginal:</p>
+<p><span class="math display"><em>H</em><sub><em>v</em></sub> =  − ∑<sub><em>s</em></sub><em>q</em>(<em>x</em><sub><em>v</em></sub> = <em>s</em>)log <em>q</em>(<em>x</em><sub><em>v</em></sub> = <em>s</em>).</span></p>
+<p>It uses a fixed-size stack array <code>probs[256]</code> (line 108), which caps the supported per-variable state space at 256 for this builtin specifically.</p>
+<h3 id="510-tagged-value-dispatch-for-inference-builtins">5.10 Tagged-value dispatch for inference builtins</h3>
+<p>Every active-inference builtin reaches the runtime through an <code>_tagged</code> wrapper that accepts pointers to caller-stack tagged-value slots and writes its result through a final <code>result</code> pointer (LLVM <code>sret</code>-style convention). For example, <code>eshkol_fg_infer_tagged</code> (<code>lib/core/inference.cpp</code> lines 744–810) unpacks <code>max_iters_tv</code> (default 20), runs <code>eshkol_fg_infer</code> with a hardcoded tolerance of <span class="math inline">10<sup>−6</sup></span> (line 768), then allocates a fresh 1-D <code>HEAP_SUBTYPE_TENSOR</code> tagged value (lines 778–810), exponentiates every belief (converting back from log-space), and packs the flat result.</p>
+<p>The total length of the returned belief tensor is <span class="math inline">∑<sub><em>v</em></sub><em>d</em><sub><em>v</em></sub></span>, in the order <span class="math inline">[<em>q</em><sub>0, 0</sub>, …, <em>q</em><sub>0, <em>d</em><sub>0</sub> − 1</sub>, <em>q</em><sub>1, 0</sub>, …, <em>q</em><sub><em>N</em> − 1, <em>d</em><sub><em>N</em> − 1</sub> − 1</sub>]</span> (lines 772–775, 799–806).</p>
+<hr />
+<h2 id="6-global-workspace">6. Global workspace</h2>
+<p>The global workspace is the engine’s attentional substrate. Its job is to take a roster of competing “specialist” modules, run them all on the current shared content, then arbitrate among their proposals using softmax over salience and broadcast the winner.</p>
+<h3 id="61-workspace-and-module-structures">6.1 Workspace and module structures</h3>
+<p>The module struct (<code>inc/eshkol/core/workspace.h</code> lines 40–44):</p>
+<pre class="c"><code>struct eshkol_workspace_module {
+    char* name;                        /* arena-allocated string */
+    eshkol_tagged_value_t process_fn;  /* closure tagged value (16 bytes) */
+    double salience;                   /* last computed normalised salience */
+};</code></pre>
+<p>A module is therefore <strong>32 bytes</strong> on a 64-bit ABI: 8 bytes for the name pointer + 16 bytes for the closure tagged value + 8 bytes for the salience double. The codegen layer hard-codes this 32-byte stride when walking the module array (see §6.4 below).</p>
+<p>The workspace struct (<code>inc/eshkol/core/workspace.h</code> lines 58–65):</p>
+<pre class="c"><code>struct eshkol_workspace {
+    uint32_t num_modules;
+    uint32_t max_modules;
+    uint32_t dim;                      /* content vector dimension */
+    uint32_t step_count;               /* cognitive cycle counter */
+    double*  content;                  /* shared content buffer */
+    /* Followed by: eshkol_workspace_module_t modules[max_modules] */
+};</code></pre>
+<p>The trailing module array is recovered by the macro <code>WS_MODULES(ws)</code> at offset <code>sizeof(eshkol_workspace_t)</code> from the struct base. The content buffer is allocated separately via <code>arena_allocate_aligned</code> (<code>lib/core/workspace.cpp</code> lines 44–46) and pointer-stored into <code>content</code> — it is <em>not</em> inline.</p>
+<p>Construction (<code>eshkol_make_workspace</code>, lines 26–49) zeros the content buffer; the workspace begins each life with a quiescent shared state.</p>
+<h3 id="62-module-registration">6.2 Module registration</h3>
+<p><code>eshkol_ws_register</code> (<code>lib/core/workspace.cpp</code> lines 51–70) appends a module. It arena-allocates a fresh copy of the name string (lines 60–64) and stores the caller’s <code>process_fn</code> tagged value verbatim. Modules can be registered up to <code>max_modules</code> (the static capacity set at construction); past that the call is a no-op (line 54).</p>
+<p>The Scheme protocol for a module is:</p>
+<pre class="scheme"><code>(lambda (content-tensor)
+  (cons salience-score                ; double
+        proposal-tensor))             ; tensor of dimension ws.dim</code></pre>
+<p>with no other shape constraints.</p>
+<h3 id="63-the-cognitive-cycle-in-c">6.3 The cognitive cycle in C</h3>
+<p>The actual <code>ws-step!</code> implementation is split across LLVM codegen and two C helpers. The C side does two things:</p>
+<h4 id="631-wrapping-content-into-a-tensor">6.3.1 Wrapping content into a tensor</h4>
+<p><code>eshkol_ws_make_content_tensor</code> (<code>lib/core/workspace.cpp</code> lines 171–211) wraps the workspace’s raw <code>double*</code> content as a 1-D tensor tagged value so that Eshkol closures can receive it. The tensor uses the canonical Eshkol layout:</p>
+<pre class="c"><code>struct ws_tensor_layout {
+    uint64_t* dimensions;     /* points at a one-entry array {dim} */
+    uint64_t  num_dimensions; /* = 1 */
+    int64_t*  elements;       /* double bit patterns as int64 */
+    uint64_t  total_elements; /* = dim */
+};</code></pre>
+<p>(lines 164–169). The helper performs a <strong>copy</strong>: it allocates a fresh <code>int64_t[dim]</code> and writes each double as its bit pattern via a <code>union { double; int64_t; }</code> cast (lines 203–207). Mutations of the tensor by a module therefore do not leak back into the workspace.</p>
+<h4 id="632-result-aggregation-and-broadcast">6.3.2 Result aggregation and broadcast</h4>
+<p><code>eshkol_ws_step_finalize</code> (<code>lib/core/workspace.cpp</code> lines 213–296) consumes the <code>tagged_value[num_modules]</code> array of per-module results and performs the softmax competition. The implementation:</p>
+<ol type="1">
+<li><p><strong>Result extraction</strong> (lines 222–254). Each result is expected to be a heap pointer to a cons cell — that is, two adjacent <code>eshkol_tagged_value_t</code>s (a 32-byte object). The <code>car</code> yields the salience (double; an <code>INT64</code> is promoted to double; any other type produces salience 0) and the <code>cdr</code> yields a pointer to a tensor. Invalid results receive salience <span class="math inline">−10<sup>30</sup></span> and proposal <code>NULL</code>, which softmax then maps to effectively zero weight.</p></li>
+<li><p><strong>Softmax normalisation</strong> (lines 258–270). Two stack arrays of length 16 (<code>salience[16]</code>, <code>exp_sal[16]</code>) cap the per-step module count at 16. The softmax is the standard max-subtracting form:</p>
+<p><span class="math display">$$
+\sigma(z_i) \;=\; \frac{\exp(z_i - \max_j z_j)}{\sum_k \exp(z_k - \max_j z_j)}.
+$$</span></p>
+<p>The implicit temperature is <span class="math inline"><em>T</em> = 1.0</span>; clients control the effective temperature by scaling the salience values their closures return.</p></li>
+<li><p><strong>Winner selection</strong> (lines 271–282). The module with the largest normalised salience is the winner. Each module’s <code>salience</code> field is updated with its normalised value, exposing the post-softmax distribution for downstream inspection.</p></li>
+<li><p><strong>Broadcast</strong> (lines 284–293). The winner’s proposal tensor is copied into <code>ws-&gt;content</code>. The copy is performed element-by-element through the same <code>union { int64_t; double; }</code> cast used for content wrapping; the post-copy <code>ws-&gt;content</code> then contains genuine doubles. If the proposal tensor is shorter than <code>ws-&gt;dim</code>, only the available elements are copied; if longer, the tail is dropped (line 287).</p></li>
+<li><p><strong>Step counter</strong> <code>ws-&gt;step_count</code> is incremented (line 295).</p></li>
+</ol>
+<h3 id="64-codegen-emitted-closure-loop">6.4 Codegen-emitted closure loop</h3>
+<p><code>LogicWorkspaceCodegen::codegenWSStep</code> (<code>lib/backend/logic_workspace_codegen.cpp</code> lines 536–661) is the LLVM IR side. It must live in IR rather than C because Eshkol closures cannot be called from plain C — they require the closure calling convention managed by <code>codegenClosureCall</code>. The emitted IR:</p>
+<ol type="1">
+<li><p><strong>Extracts</strong> the workspace pointer from the tagged value (<code>ExtractValue</code> at field index 4, <code>IntToPtr</code>, lines 547–549).</p></li>
+<li><p><strong>Early-exits</strong> if <code>num_modules == 0</code> (lines 555–564). This branch short-circuits to the merge block without calling any helpers; the no-modules workspace passes through unchanged.</p></li>
+<li><p><strong>Loads <code>dim</code> and <code>content</code></strong> from the workspace struct at <code>+8</code> and <code>+16</code> byte offsets (lines 568–576). These hard-coded offsets reflect the struct layout in §6.1.</p></li>
+<li><p><strong>Calls</strong> <code>eshkol_ws_make_content_tensor</code> (lines 580–586), passing the arena, the raw <code>content</code> double pointer, the dim, and a stack <code>result_a</code> slot.</p></li>
+<li><p><strong>Allocates</strong> a 16-slot <code>results_arr</code> for the per-module return values (line 590–591). The cap of 16 here is the same as the cap in <code>eshkol_ws_step_finalize</code>.</p></li>
+<li><p><strong>Loops</strong> over modules via the alloca/store/load pattern (lines 598–611). The loop counter is a stack <code>i32</code>; the loop is <em>not</em> PHI-based because <code>codegenClosureCall</code> synthesises many internal basic blocks that would corrupt PHI predecessors (this is the design lesson recorded in <code>project memory &gt; closure-in-loop PHI bug</code>).</p></li>
+<li><p><strong>Indexes</strong> into the module array at offset <code>+24 + 32·i</code> from the workspace base (the <code>+24</code> skips the workspace header struct; <code>+8</code> within the module skips the <code>name*</code> to reach <code>process_fn</code>) (lines 615–627).</p></li>
+<li><p><strong>Invokes</strong> the module closure via <code>codegenClosureCall</code> with <code>content_tv</code> as the single argument (lines 629–630), storing the result in <code>results_arr[i]</code>.</p></li>
+<li><p><strong>Calls</strong> <code>eshkol_ws_step_finalize</code> after the loop (lines 644–649) with the workspace pointer, the results array, and the module count.</p></li>
+<li><p><strong>Returns</strong> the original <code>ws_tv</code> so that <code>(ws-step! ws)</code> is expression-friendly (line 660).</p></li>
+</ol>
+<p>The 32-byte module stride and 24-byte workspace header offsets are load-bearing: any change to <code>eshkol_workspace_t</code> or <code>eshkol_workspace_module_t</code> requires a corresponding update here.</p>
+<h3 id="65-sequential-pseudocode-for-the-full-cycle">6.5 Sequential pseudocode for the full cycle</h3>
+<pre class="text"><code>ws-step!(ws):
+    if ws.num_modules == 0: return ws
+    content_tv = eshkol_ws_make_content_tensor(ws.content, ws.dim)
+    for i in 0..ws.num_modules-1:
+        results[i] = invoke_closure(ws.modules[i].process_fn, [content_tv])
+    eshkol_ws_step_finalize(ws, results, ws.num_modules):
+        for i in 0..n-1:
+            (salience[i], proposals[i]) = (car results[i], cdr results[i])
+        z = salience - max(salience)
+        p = exp(z) / sum(exp(z))
+        ws.modules[i].salience = p[i]  for each i
+        winner = argmax(p)
+        ws.content[0..ws.dim-1] = proposals[winner][0..min(ws.dim, |prop|)-1]
+        ws.step_count += 1
+    return ws</code></pre>
+<hr />
+<h2 id="7-codegen-architecture">7. Codegen architecture</h2>
+<p>The dispatch flow for any consciousness-engine call is:</p>
+<pre><code>Scheme source
+   │
+   ▼
+parser.cpp                 line 985: operation_for_string(op_text)
+   │                       returns one of ESHKOL_*_OP
+   ▼
+AST node {type=ESHKOL_OP,  operation.op=ESHKOL_FG_INFER_OP, ...}
+   │
+   ▼
+LLVMCodegen::codegenOperation       lib/backend/llvm_codegen.cpp line 8648
+   │                       switch on op → logic_workspace_-&gt;codegen…(op)
+   ▼
+LogicWorkspaceCodegen::codegen…     lib/backend/logic_workspace_codegen.cpp
+   │                       emits IR: alloca tagged slots for inputs,
+   │                       alloca result slot, declare external runtime fn,
+   │                       CreateCall, load result
+   ▼
+extern &quot;C&quot; eshkol_*_tagged          lib/core/{logic,inference,workspace}.cpp
+   │                       unpacks inputs from tagged slots,
+   │                       dispatches to plain-C implementation,
+   │                       writes result to caller&#39;s slot
+   ▼
+eshkol_fg_infer / eshkol_unify / …  same files
+   │                       core algorithm
+   ▼
+arena_allocate_with_header  lib/core/runtime_object_alloc.cpp
+                            attaches 8-byte object header with
+                            subtype = HEAP_SUBTYPE_FACTOR_GRAPH, etc.</code></pre>
+<p>The codegen layer’s only contribution to performance is the <code>getOrDeclareRuntimeFunc</code> helper (lines 82–88), which memoises the LLVM <code>Function*</code> declaration of each runtime symbol, and the <code>allocaAndStore</code> / <code>loadResult</code> helpers (lines 96–110) that follow the bignum <code>alloca → store → call → load</code> pattern verbatim. There is no special calling convention — every runtime function is declared with <code>ExternalLinkage</code> and the platform default C ABI.</p>
+<p>The six type-predicates (<code>logic-var?</code>, <code>substitution?</code>, <code>kb?</code>, <code>fact?</code>, <code>factor-graph?</code>, <code>workspace?</code>) are the only consciousness- engine builtins whose IR does not call into the runtime: they read the 16-byte tagged value, compare the type byte against <code>ESHKOL_VALUE_HEAP_PTR</code>, dereference the data pointer at offset −8 to read the header subtype byte, compare to the relevant <code>HEAP_SUBTYPE_*</code> constant, and PHI-merge the result. This avoids a runtime dispatch round-trip for what is otherwise a four-instruction test.</p>
+<h3 id="71-closure-call-protocol-for-ws-step">7.1 Closure-call protocol for <code>ws-step!</code></h3>
+<p><code>ws-step!</code> is unique among the engine builtins because it invokes caller-supplied closures. The path is:</p>
+<ol type="1">
+<li><code>LogicWorkspaceCodegen::codegenWSStep</code> (§6.4) reads the workspace pointer and content buffer directly from the tagged value’s data field.</li>
+<li>It calls <code>eshkol_ws_make_content_tensor</code> to produce a tagged tensor.</li>
+<li>Per-module, it calls <code>closure_cb_(fn_tv, {content_tv}, "ws-step-module", cb_context_)</code> — the <code>closure_cb_</code> is <code>LLVMCodegen::codegenClosureCall</code> registered via <code>LogicWorkspaceCodegen::setCodegenClosureCallCallback</code> during subsystem wiring.</li>
+<li>Each module’s result tagged value is stored into a stack array indexed by the loop counter.</li>
+<li>After the loop, the C helper <code>eshkol_ws_step_finalize</code> performs the softmax and broadcast.</li>
+</ol>
+<p>The reason the loop body cannot be in plain C is that <code>closure_cb_</code> emits the full closure calling convention (extract function pointer and environment pointer from the callable tagged value, call with trampoline, handle multi-value returns, etc.). The C ABI has no mechanism for invoking those.</p>
+<h3 id="72-arena-allocation-discipline">7.2 Arena allocation discipline</h3>
+<p>All consciousness-engine heap allocations route through <code>arena_allocate_with_header</code> (declared at <code>lib/core/logic.cpp</code> line 167, <code>lib/core/inference.cpp</code> line 24, <code>lib/core/workspace.cpp</code> line 20):</p>
+<pre class="c"><code>void* arena_allocate_with_header(arena_t* arena, size_t data_size,
+                                  uint8_t subtype, uint8_t flags);</code></pre>
+<p>This prepends the 8-byte object header and returns the data pointer (i.e., the pointer the caller will store in the tagged value’s data field). The arena owns the memory; no <code>free()</code> is ever called on these objects. When the arena is reset (between test runs, between REPL forms, etc.), every object becomes invalid at once.</p>
+<p>This discipline interacts with the substitution-as-immutable design (§4.2) and the BP message reset on <code>fg-update-cpt!</code> (§5.8) — in both cases, “stale” allocations are simply allowed to leak until the next arena reset, with no explicit lifetime management.</p>
+<hr />
+<h2 id="8-worked-examples">8. Worked examples</h2>
+<h3 id="81-knowledge-base-query">8.1 Knowledge-base query</h3>
+<pre class="scheme"><code>(define kb (make-kb))
+(kb-assert! kb (make-fact &#39;parent &#39;alice &#39;bob))
+(kb-assert! kb (make-fact &#39;parent &#39;alice &#39;charlie))
+(kb-assert! kb (make-fact &#39;parent &#39;bob   &#39;dave))
+
+;; Bare ?child is parsed as ESHKOL_VALUE_LOGIC_VAR with a fresh var_id.
+(define results
+  (kb-query kb (make-fact &#39;parent &#39;alice ?child)))
+
+;; results :: (cons subst (cons subst &#39;()))
+;; — one substitution per matching fact, in reverse insertion order.
+
+(for-each
+  (lambda (subst)
+    (display (walk ?child subst)) (newline))
+  results)
+;; → charlie
+;; → bob</code></pre>
+<p>Trace at the runtime level:</p>
+<ol type="1">
+<li><code>(make-kb)</code> calls <code>eshkol_make_kb_tagged</code> which arena-allocates an <code>eshkol_knowledge_base_t</code> with <code>HEAP_SUBTYPE_KNOWLEDGE_BASE</code> and a 16-pointer <code>facts</code> array.</li>
+<li>Each <code>(kb-assert! …)</code> calls <code>eshkol_kb_assert_tagged</code>, which appends the fact pointer to <code>kb-&gt;facts</code> (no doubling needed at 3 facts).</li>
+<li><code>(kb-query …)</code> calls <code>eshkol_kb_query_tagged</code> which calls <code>eshkol_kb_query</code>. For each of the 3 facts:
+<ul>
+<li>First fact <code>(parent alice bob)</code>: predicate match, arity match, unify <code>'alice</code> with <code>'alice</code> (atom equality), then <code>?child</code> with <code>'bob</code> → extend to <span class="math inline">{?<em>c</em><em>h</em><em>i</em><em>l</em><em>d</em> ↦ <em>b</em><em>o</em><em>b</em>}</span>. Prepend.</li>
+<li>Second fact <code>(parent alice charlie)</code>: same predicate, succeeds with <span class="math inline">{?<em>c</em><em>h</em><em>i</em><em>l</em><em>d</em> ↦ <em>c</em><em>h</em><em>a</em><em>r</em><em>l</em><em>i</em><em>e</em>}</span>. Prepend.</li>
+<li>Third fact <code>(parent bob dave)</code>: predicate match, arity match, unify <code>'alice</code> with <code>'bob</code> — atoms not equal, fail. Skip.</li>
+</ul></li>
+<li>Result list (head → last successful): <code>subst{?child → charlie} → subst{?child → bob} → ()</code>.</li>
+</ol>
+<h3 id="82-factor-graph-inference-with-explicit-numbers">8.2 Factor-graph inference with explicit numbers</h3>
+<p>A three-variable Bayes net Weather → Sprinkler → GrassWet, all binary:</p>
+<pre class="scheme"><code>(define fg (make-factor-graph 3 #(2 2 2)))
+
+;; Prior over Weather: P(sunny)=0.6, P(rainy)=0.4
+(fg-add-factor! fg #(0)
+  #(-0.510826  -0.916291))                 ;; log 0.6, log 0.4
+
+;; P(Sprinkler | Weather): 4 entries, indexed by (weather, sprinkler)
+;; weather=sunny: P(spr=on)=0.4, P(spr=off)=0.6
+;; weather=rainy: P(spr=on)=0.01,P(spr=off)=0.99
+(fg-add-factor! fg #(0 1)
+  #(-0.916291 -0.510826                     ;; sunny → spr ∈ {on, off}
+    -4.605170 -0.010050))                   ;; rainy → spr ∈ {on, off}
+
+;; P(GrassWet | Sprinkler, Weather): 8 entries
+(fg-add-factor! fg #(1 0 2)
+  #(-2.302585 -0.105361                     ;; spr=on,  sunny: wet ∈ {0.1, 0.9}
+    -0.051293 -2.995732                     ;; spr=on,  rainy: wet ∈ {0.95, 0.05}
+    -0.693147 -0.693147                     ;; spr=off, sunny: uniform
+    -0.020203 -3.912023))                   ;; spr=off, rainy: wet ∈ {0.98, 0.02}
+
+(fg-infer! fg 50)
+;; → tensor of 6 probabilities:
+;;   [P(W=sunny), P(W=rainy),
+;;    P(S=on),    P(S=off),
+;;    P(G=wet),   P(G=dry)]</code></pre>
+<p>To observe that the grass is wet and recompute:</p>
+<pre class="scheme"><code>(fg-observe! fg 2 0)                         ;; var 2 (Grass) state 0 (wet)
+(fg-infer! fg 50)                            ;; messages reset, BP rerun
+(display (fg-marginal fg 0))                 ;; updated belief on Weather
+(newline)</code></pre>
+<p>The expected behaviour: <span class="math inline"><em>P</em>(<em>W</em> = <em>r</em><em>a</em><em>i</em><em>n</em><em>y</em>)</span> rises above its prior <span class="math inline">0.4</span>, since the observation of wet grass is more consistent with rain than with the prior balance of sprinkler activity.</p>
+<h3 id="83-workspace-with-hand-checkable-salience">8.3 Workspace with hand-checkable salience</h3>
+<p>A 2-D content vector, two modules, no learning:</p>
+<pre class="scheme"><code>(define ws (make-workspace 2 2))
+
+;; Module A returns salience 2.0 and proposes #(1 0).
+(ws-register! ws &quot;A&quot;
+  (lambda (content) (cons 2.0 #(1.0 0.0))))
+
+;; Module B returns salience 1.0 and proposes #(0 1).
+(ws-register! ws &quot;B&quot;
+  (lambda (content) (cons 1.0 #(0.0 1.0))))
+
+(ws-step! ws)</code></pre>
+<p>Hand-check the softmax: salience vector <span class="math inline">[2.0, 1.0]</span>.</p>
+<ul>
+<li><span class="math inline">max  = 2.0</span>; <span class="math inline"><em>z</em> = [0, −1]</span>; <span class="math inline">exp <em>z</em> = [1, <em>e</em><sup>−1</sup>]</span>.</li>
+<li><span class="math inline">∑ = 1 + <em>e</em><sup>−1</sup> ≈ 1.36788</span>.</li>
+<li><span class="math inline"><em>p</em><sub><em>A</em></sub> ≈ 0.7311</span>, <span class="math inline"><em>p</em><sub><em>B</em></sub> ≈ 0.2689</span>.</li>
+<li>Winner: module A. Broadcast: <code>ws.content = #(1.0 0.0)</code>.</li>
+<li><code>ws.step_count = 1</code>.</li>
+</ul>
+<p>After the call, <code>(modules[0].salience, modules[1].salience) ≈ (0.7311, 0.2689)</code> — exposed for inspection but not directly readable from Scheme (no accessor exists in v1.1).</p>
+<hr />
+<h2 id="9-performance-characteristics">9. Performance characteristics</h2>
+<h3 id="91-logic-engine">9.1 Logic engine</h3>
+<ul>
+<li><strong>Variable interning:</strong> <span class="math inline"><em>O</em>(<em>n</em>)</span> on the variable count for the first-time <code>eshkol_make_logic_var(name)</code> (linear scan against the registry); <span class="math inline"><em>O</em>(1)</span> for the subsequent name pool write under compare-exchange. With 65536-slot capacity and 64-byte slots, the registry occupies 4 MiB of static memory.</li>
+<li><strong>Substitution lookup:</strong> <span class="math inline"><em>O</em>(<em>k</em>)</span> linear scan over <span class="math inline"><em>k</em></span> bindings.</li>
+<li><strong>Substitution extend:</strong> <span class="math inline"><em>O</em>(<em>k</em>)</span> for the copy plus an arena allocation; capacity doubling amortises the work over multiple extends.</li>
+<li><strong>Unification:</strong> <span class="math inline"><em>O</em>(<em>n</em> ⋅ <em>m</em>)</span> in the worst case for terms of total size <span class="math inline"><em>n</em></span> over a substitution with <span class="math inline"><em>m</em></span> bindings; in practice dominated by the term traversal, since <span class="math inline"><em>m</em></span> is small (single-digit bindings per branch).</li>
+<li><strong>Occurs check:</strong> <span class="math inline"><em>O</em>(<em>n</em>)</span> in the term size, with <code>OCCURS_CHECK_MAX_DEPTH = 1000</code> imposing a hard cap.</li>
+<li><strong><code>kb-query</code>:</strong> <span class="math inline"><em>O</em>(<em>N</em> ⋅ <em>k</em> ⋅ <em>u</em>)</span> where <span class="math inline"><em>N</em> = |kb|</span>, <span class="math inline"><em>k</em></span> is average arity, <span class="math inline"><em>u</em></span> is unification cost per pair. Predicate indexing would reduce <span class="math inline"><em>N</em></span> to <span class="math inline"><em>N</em><sub><em>p</em></sub></span> (number of facts sharing the queried predicate).</li>
+<li><strong><code>kb-retract!</code>:</strong> <span class="math inline"><em>O</em>(<em>N</em>)</span> for the pointer scan plus <span class="math inline"><em>O</em>(<em>N</em>)</span> for the shift.</li>
+</ul>
+<h3 id="92-active-inference">9.2 Active inference</h3>
+<ul>
+<li><strong>Belief initialisation:</strong> <span class="math inline"><em>O</em>(∑<sub><em>v</em></sub><em>d</em><sub><em>v</em></sub>)</span>.</li>
+<li><strong>Per BP iteration:</strong> Variable-to-factor: <span class="math inline"><em>O</em>(∑<sub><em>f</em></sub>|ne(<em>f</em>)|⋅<em>d</em><sub>max</sub> ⋅ <em>F</em>)</span> in the worst case (the inner factor scan in <code>compute_var_to_factor_message</code>). Factor-to-variable: <span class="math inline"><em>O</em>(∑<sub><em>f</em></sub>|ne(<em>f</em>)|⋅∏<sub><em>k</em></sub><em>d</em><sub><em>k</em></sub>)</span>, dominated by the configuration enumeration of each factor’s joint state space. Belief update: <span class="math inline"><em>O</em>(∑<sub><em>v</em></sub><em>d</em><sub><em>v</em></sub> ⋅ |ne(<em>v</em>)|)</span>.</li>
+<li><strong>Convergence:</strong> in <span class="math inline"> ≤ 20</span> iterations by default; reduced by tight <code>tolerance</code>. Tree-structured graphs converge in <span class="math inline"><em>O</em>(diameter)</span> iterations; loopy graphs may not converge, but the iteration cap guarantees termination.</li>
+<li><strong>Free energy:</strong> <span class="math inline"><em>O</em>(∑<sub><em>v</em></sub><em>d</em><sub><em>v</em></sub> + ∑<sub><em>f</em></sub>∏<sub><em>k</em></sub><em>d</em><sub><em>k</em></sub>)</span> — dominated by factor-config enumeration.</li>
+<li><strong>Expected free energy:</strong> <span class="math inline"><em>O</em>(∑<sub><em>f</em> : <em>a</em> ∈ ne(<em>f</em>)</sub>∏<sub><em>k</em></sub><em>d</em><sub><em>k</em></sub>)</span> — only factors containing the action variable contribute.</li>
+<li><strong>Marginal/entropy:</strong> <span class="math inline"><em>O</em>(<em>d</em><sub><em>v</em></sub>)</span> per variable.</li>
+</ul>
+<h3 id="93-global-workspace">9.3 Global workspace</h3>
+<ul>
+<li><strong>Per <code>ws-step!</code>:</strong> <span class="math inline"><em>O</em>(<em>M</em> ⋅ <em>c</em><sub>module</sub>)</span> where <span class="math inline"><em>M</em></span> is the module count and <span class="math inline"><em>c</em><sub>module</sub></span> is the per-module closure cost. The softmax is <span class="math inline"><em>O</em>(<em>M</em>)</span>.</li>
+<li><strong>Tensor wrapping:</strong> <span class="math inline"><em>O</em>(<em>d</em>)</span> copy of doubles into int64 bit patterns.</li>
+<li><strong>Broadcast:</strong> <span class="math inline"><em>O</em>(min (<em>d</em><sub>ws</sub>, <em>d</em><sub>proposal</sub>))</span> element-by-element copy.</li>
+</ul>
+<h3 id="94-copy-vs-pointer-tradeoffs">9.4 Copy-vs-pointer tradeoffs</h3>
+<ul>
+<li>The substitution is <strong>copied</strong> on every extend; this trades arena traffic for backtracking simplicity.</li>
+<li>The content tensor passed to each module is <strong>copied</strong> from <code>ws-&gt;content</code> once per <code>ws-step!</code>. Modules can mutate the tensor they receive without corrupting workspace state. The cost is one per-cycle <code>8 · dim</code>-byte arena allocation plus an element-by-element bit-pattern copy.</li>
+<li>The winner’s proposal is <strong>copied</strong> into <code>ws-&gt;content</code>; the proposal tensor itself is not retained beyond the broadcast.</li>
+<li>BP messages are <strong>owned</strong> by the factor graph; <code>fg-update-cpt!</code> nulls the pointers to force reallocation but does not free.</li>
+<li>The KB stores <strong>pointers</strong> to facts and shares them across queries; <code>kb-retract!</code> removes a pointer but does not free the fact (the arena does, in bulk, at reset).</li>
+</ul>
+<hr />
+<h2 id="10-limitations-and-deferred-work">10. Limitations and deferred work</h2>
+<p>The implementation flags several limitations either in source comments or in the project memory; this section enumerates them.</p>
+<h3 id="101-deferred-features">10.1 Deferred features</h3>
+<ul>
+<li><strong>Predicate indexing for <code>kb-query</code></strong>: the header note at <code>inc/eshkol/core/logic.h</code> line 75 (<code>v1.2 will add predicate indexing for O(1) lookup</code>) acknowledges that the current <span class="math inline"><em>O</em>(<em>N</em>)</span> linear scan is intentional for v1.1.</li>
+<li><strong>Rule heap subtype</strong>: heap subtype 14 is reserved (<code>inc/eshkol/eshkol.h</code> line 353) for v1.2 backward chaining.</li>
+<li><strong>Asynchronous BP schedule</strong>: the synchronous flooding schedule may converge slowly on highly loopy graphs. Residual BP, tree-reweighted BP, and priority schedules are unimplemented.</li>
+<li><strong>Continuous variables</strong>: only discrete factor graphs are supported. Gaussian belief propagation, expectation propagation, and particle approximations are unimplemented.</li>
+<li><strong>Mixed-time inference</strong>: there is no explicit support for unrolled temporal models; the user must replicate variables across time manually.</li>
+<li><strong>Per-module temperature</strong>: the workspace softmax uses an implicit <span class="math inline"><em>T</em> = 1.0</span> that is not user-configurable. Clients must pre-scale their salience returns to achieve a desired sharpness.</li>
+<li><strong>More than 16 modules per workspace</strong> in a single step: the <code>eshkol_ws_step_finalize</code> stack arrays cap at 16, and the codegen <code>MAX_WS_MODULES</code> constant matches this. Registering more than 16 modules is allowed at construction (subject to <code>max_modules</code>), but only the first 16 indices will be processed per cycle.</li>
+<li><strong>Per-variable cap of 256 states for <code>fg-entropy</code></strong>: the stack <code>probs[256]</code> array in <code>eshkol_fg_entropy_tagged</code> imposes this limit (<code>lib/core/logic_builtins.cpp</code> line 108). Variables with more states will be silently truncated.</li>
+<li><strong>Module return-value robustness</strong>: <code>eshkol_ws_step_finalize</code> recognises only cons cells whose <code>car</code> is <code>DOUBLE</code> or <code>INT64</code> for salience. Any other shape collapses to salience 0 (lines 240–244). There is no diagnostic emitted.</li>
+<li><strong>Occurs-check ceiling</strong>: at depth 1000 the check returns <code>false</code> rather than failing safely; pathological terms could theoretically pass through. No occurrence has been observed in practice.</li>
+</ul>
+<h3 id="102-concurrency">10.2 Concurrency</h3>
+<ul>
+<li>The logic-variable registry is thread-safe (mutex + atomics) for <code>eshkol_make_logic_var</code>.</li>
+<li>The predicate intern pool is thread-safe via <code>g_pred_mutex</code>.</li>
+<li><code>eshkol_logic_registry_reset</code> is explicitly <strong>not</strong> thread-safe and must be called from the main thread between test batches.</li>
+<li>All other state (substitutions, KBs, factor graphs, workspaces) is arena-resident and inherits the arena’s thread-locality model. No internal locking is provided.</li>
+</ul>
+<h3 id="103-serialisation">10.3 Serialisation</h3>
+<p><code>kb-save</code>, <code>kb-load</code>, <code>tensor-save</code>, <code>tensor-load</code>, <code>model-save</code>, <code>model-load</code> are exposed by <code>LogicWorkspaceCodegen</code> (lines 288–350) and reach C runtime functions (<code>eshkol_kb_save_tagged</code>, <code>eshkol_tensor_save_tagged</code>, etc., declared in <code>system_builtins.c</code>) but are outside the scope of this document.</p>
+<h3 id="104-test-isolation-caveat">10.4 Test isolation caveat</h3>
+<p><code>eshkol_logic_registry_reset</code> (<code>lib/core/logic.cpp</code> lines 62–74) is the only mechanism for clearing the global variable-name and predicate-intern pools between test runs. Without calling <code>(reset-tests!)</code> between batches, var IDs and predicate canonical pointers from a previous run will persist and can produce stale unification hits or false-positive <code>eq?</code> matches across test boundaries — a bug pattern documented in audit #194.</p>
+<hr />
+<h2 id="11-references">11. References</h2>
+<ul>
+<li>Baars, B. J. (1988). <em>A Cognitive Theory of Consciousness</em>. Cambridge University Press.</li>
+<li>Bengio, Y. (2017). <em>The consciousness prior</em>. arXiv:1709.08568.</li>
+<li>Friston, K. (2010). The free-energy principle: a unified brain theory? <em>Nature Reviews Neuroscience</em>, 11(2), 127–138.</li>
+<li>Kschischang, F. R., Frey, B. J., &amp; Loeliger, H.-A. (2001). Factor graphs and the sum-product algorithm. <em>IEEE Transactions on Information Theory</em>, 47(2), 498–519.</li>
+<li>Martelli, A., &amp; Montanari, U. (1982). An efficient unification algorithm. <em>ACM Transactions on Programming Languages and Systems</em>, 4(2), 258–282.</li>
+<li>Pearl, J. (1988). <em>Probabilistic Reasoning in Intelligent Systems</em>. Morgan Kaufmann.</li>
+<li>Robinson, J. A. (1965). A machine-oriented logic based on the resolution principle. <em>Journal of the ACM</em>, 12(1), 23–41.</li>
+<li>Russell, S., &amp; Norvig, P. (2010). <em>Artificial Intelligence: A Modern Approach</em> (3rd ed.). Pearson. [Background reference for unification and probabilistic inference.]</li>
+<li>Yedidia, J. S., Freeman, W. T., &amp; Weiss, Y. (2003). Understanding belief propagation and its generalizations. In G. Lakemeyer &amp; B. Nebel (Eds.), <em>Exploring Artificial Intelligence in the New Millennium</em>. Morgan Kaufmann.</li>
+</ul>

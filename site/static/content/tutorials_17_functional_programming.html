@@ -1,0 +1,101 @@
+<h1 id="tutorial-17-functional-programming-patterns">Tutorial 17: Functional Programming Patterns</h1>
+<p>Eshkol is a functional-first language. This tutorial covers closures, higher-order patterns, composition, and currying.</p>
+<hr />
+<h2 id="closures">Closures</h2>
+<p>A closure captures variables from its enclosing scope:</p>
+<pre class="scheme"><code>(define (make-counter start)
+  (let ((count start))
+    (lambda ()
+      (set! count (+ count 1))
+      count)))
+
+(define c (make-counter 0))
+(display (c))  ;; =&gt; 1
+(display (c))  ;; =&gt; 2
+(display (c))  ;; =&gt; 3
+
+;; Each counter is independent
+(define c2 (make-counter 100))
+(display (c2))  ;; =&gt; 101
+(display (c))   ;; =&gt; 4 (c still has its own state)</code></pre>
+<hr />
+<h2 id="function-composition">Function Composition</h2>
+<pre class="scheme"><code>(require core.functional.compose)
+
+;; compose: (compose f g) =&gt; (lambda (x) (f (g x)))
+(define inc-then-double
+  (compose (lambda (x) (* x 2))
+           (lambda (x) (+ x 1))))
+
+(display (inc-then-double 3))  ;; =&gt; 8 ((3+1)*2)
+(display (inc-then-double 5))  ;; =&gt; 12 ((5+1)*2)
+
+;; pipe: left-to-right composition (opposite of compose)
+;; (pipe f g h) =&gt; (lambda (x) (h (g (f x))))</code></pre>
+<hr />
+<h2 id="currying">Currying</h2>
+<pre class="scheme"><code>(require core.functional.curry)
+(require core.functional.flip)
+
+;; curry2: convert a two-argument function to a chain of single-argument
+;; functions (curry3 does the same for three arguments)
+(define add (lambda (a b) (+ a b)))
+(define add5 ((curry2 add) 5))
+(display (add5 10))  ;; =&gt; 15
+(display (add5 20))  ;; =&gt; 25
+
+;; flip: swap the first two arguments
+(define div (lambda (a b) (/ a b)))
+(define div-by (flip div))
+(display (div-by 2 10))  ;; =&gt; 5 (10/2)</code></pre>
+<hr />
+<h2 id="higher-order-patterns">Higher-Order Patterns</h2>
+<h3 id="apply-a-function-n-times">Apply a function N times</h3>
+<pre class="scheme"><code>(define (apply-n f n x)
+  (if (= n 0) x
+      (apply-n f (- n 1) (f x))))
+
+(define double (lambda (x) (* x 2)))
+(display (apply-n double 5 1))  ;; =&gt; 32 (2^5)</code></pre>
+<h3 id="memoisation">Memoisation</h3>
+<pre class="scheme"><code>(define (memoize f)
+  (let ((cache (make-hash-table)))
+    (lambda args
+      (let ((key (car args)))
+        (if (hash-table-exists? cache key)
+            (hash-table-ref cache key)
+            (let ((result (f key)))
+              (hash-table-set! cache key result)
+              result))))))
+
+(define fib
+  (memoize (lambda (n)
+    (if (&lt; n 2) n
+        (+ (fib (- n 1)) (fib (- n 2)))))))
+
+(display (fib 40))  ;; instant (memoised)</code></pre>
+<h3 id="church-encoding-functions-all-the-way-down">Church encoding (functions all the way down)</h3>
+<pre class="scheme"><code>;; Booleans as functions
+(define TRUE (lambda (t f) t))
+(define FALSE (lambda (t f) f))
+(define IF (lambda (b t f) (b t f)))
+
+(display (IF TRUE &quot;yes&quot; &quot;no&quot;))   ;; =&gt; yes
+(display (IF FALSE &quot;yes&quot; &quot;no&quot;))  ;; =&gt; no</code></pre>
+<hr />
+<h2 id="first-class-functions-everywhere">First-Class Functions Everywhere</h2>
+<p>Functions are values. Pass them, return them, store them:</p>
+<pre class="scheme"><code>;; Store functions in a list
+(define ops (list + - * /))
+(display ((car ops) 3 4))        ;; =&gt; 7
+(display ((cadr ops) 10 3))      ;; =&gt; 7
+(display ((caddr ops) 6 7))      ;; =&gt; 42
+
+;; Return functions from functions
+(define (make-adder n) (lambda (x) (+ x n)))
+(define add10 (make-adder 10))
+(display (add10 32))  ;; =&gt; 42
+
+;; Map with first-class functions
+(require core.list.higher_order)
+(display (map add10 &#39;(1 2 3 4 5)))  ;; =&gt; (11 12 13 14 15)</code></pre>
