@@ -1693,9 +1693,9 @@ Partial:
 
 ### Headers
 
-* `inc/eshkol/eshkol.h` — tagged value layout (lines 130–150),
-  type/subtype constants (lines 70–113, 337–360), helper macros
-  (lines 446–558).
+* `inc/eshkol/eshkol.h` — tagged value layout (lines 242–252),
+  type/subtype constants (lines 115–164, 810–839), helper macros
+  (lines 570–729).
 * `inc/eshkol/core/bignum.h` — bignum API.
 * `inc/eshkol/core/rational.h` — rational API.
 * `inc/eshkol/backend/arithmetic_codegen.h` — codegen surface for

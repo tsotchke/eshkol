@@ -38,18 +38,21 @@ on:
       - 'src/**'
       - 'exe/**'
       - 'CMakeLists.txt'
-      - 'ROADMAP.md'
-      - 'CONTRIBUTING.md'
-      - 'ANNOUNCEMENT.md'
-      - 'docs/ESHKOL_LANGUAGE_GUIDE.md'
-      - 'docs/ESHKOL_QUICK_REFERENCE.md'
-      - 'docs/COMPLETE_LANGUAGE_SPECIFICATION.md'
-      - 'docs/API_REFERENCE.md'
-      - 'docs/FEATURE_MATRIX.md'
-      - 'docs/QUICKSTART.md'
+      # Published documentation: any page site/pages.json lists. The list
+      # is the source, so the filter covers the trees it draws from.
+      - 'site/pages.json'
+      - 'docs/**'
+      - '*.md'
+      - 'tests/coverage/release_record.json'
+      - 'tests/coverage/coverage_policy.json'
+      - 'tests/vm_parity/PARITY.tsv'
+      - 'web/eshkol-repl.js'
+      - '.github/workflows/release.yml'
       - 'scripts/build-site.sh'
       - 'scripts/build-site-content.sh'
+      - 'scripts/build_site_content.py'
       - 'scripts/verify_site_release.py'
+      - 'scripts/site_smoke.py'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -105,6 +108,9 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          python3 scripts/verify_site_release.py --self-test
+          python3 scripts/build_site_content.py --self-test
+          python3 scripts/build_site_content.py --check
           python3 scripts/verify_site_release.py
           test -s site/static/eshkol-site.wasm
           test -s site/static/eshkol-vm.wasm
@@ -138,6 +144,17 @@ jobs:
             }
           );
           NODE
+
+      # The committed bundle must render in a real browser engine: the
+      # homepage, the downloads page, both documentation views and pages
+      # opened from the sidebar, a #page= address and an in-page link, with
+      # no console error. External hosts are stubbed inside the test.
+      - name: Browser smoke test
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 -m pip install --quiet playwright==1.59.0
+          python3 scripts/site_smoke.py --channel chrome
 
       # ---------- Stage + upload the GitHub Pages artefact ----------
       #

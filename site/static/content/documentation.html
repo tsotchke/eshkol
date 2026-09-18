@@ -1,0 +1,286 @@
+<h1 id="writing-eshkol-documentation">Writing Eshkol Documentation</h1>
+<p>How the documentation is organised, where a new page goes, how a page gets its facts, how examples are executed, and what each documentation gate checks. The decision record behind this system is <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0019-evergreen-documentation-architecture.md" target="_blank" rel="noopener noreferrer">ADR 0019 — Evergreen documentation architecture</a>.</p>
+<p>The short version: <strong>a fact has one source, an example runs, a page says what is true now, and a change updates its pages in the same pull request.</strong></p>
+<h2 id="contents">Contents</h2>
+<ol type="1">
+<li><a href="/docs#page=documentation&amp;1-where-a-page-goes" data-url="/content/documentation.html">Where a page goes</a></li>
+<li><a href="/docs#page=documentation&amp;2-front-matter" data-url="/content/documentation.html">Front matter</a></li>
+<li><a href="/docs#page=documentation&amp;3-evergreen-wording" data-url="/content/documentation.html">Evergreen wording</a></li>
+<li><a href="/docs#page=documentation&amp;4-facts-come-from-sources" data-url="/content/documentation.html">Facts come from sources</a></li>
+<li><a href="/docs#page=documentation&amp;5-examples-are-executed" data-url="/content/documentation.html">Examples are executed</a></li>
+<li><a href="/docs#page=documentation&amp;6-accounting-for-a-pull-request" data-url="/content/documentation.html">Accounting for a pull request</a></li>
+<li><a href="/docs#page=documentation&amp;7-historical-pages" data-url="/content/documentation.html">Historical pages</a></li>
+<li><a href="/docs#page=documentation&amp;8-when-the-page-and-the-code-disagree" data-url="/content/documentation.html">When the page and the code disagree</a></li>
+<li><a href="/docs#page=documentation&amp;9-the-gates-and-how-to-run-them" data-url="/content/documentation.html">The gates, and how to run them</a></li>
+<li><a href="/docs#page=documentation&amp;10-the-v140-plan" data-url="/content/documentation.html">The v1.4.0 plan</a></li>
+</ol>
+<h2 id="1-where-a-page-goes">1. Where a page goes</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Its one job</th>
+<th>Location</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tutorial</code></td>
+<td>Teach by doing, in order. The reader types what the page says.</td>
+<td><code>docs/tutorials/</code></td>
+</tr>
+<tr>
+<td><code>guide</code></td>
+<td>Help a user do one task or understand one subsystem as a user.</td>
+<td><code>docs/guide/</code></td>
+</tr>
+<tr>
+<td><code>reference</code></td>
+<td>Be complete and exact. Generated where a machine source exists.</td>
+<td><code>docs/reference/</code>, <code>docs/api/</code></td>
+</tr>
+<tr>
+<td><code>explanation</code></td>
+<td>Say why it works this way: architecture, design, decisions.</td>
+<td><code>docs/breakdown/</code>, <code>docs/design/</code>, <code>docs/design/adr/</code></td>
+</tr>
+<tr>
+<td><code>project</code></td>
+<td>Speak for the project: release copy, policies, process.</td>
+<td>repository root, <code>docs/*.md</code>, <code>docs/platform/</code></td>
+</tr>
+<tr>
+<td><code>report</code></td>
+<td>Record a dated measurement, audit or review.</td>
+<td><code>docs/reports/</code>, dated files under <code>docs/design/</code></td>
+</tr>
+</tbody>
+</table>
+<p>Decide the kind first. If a draft is doing two jobs (a reference table inside a tutorial, a design argument inside a reference page), split it and link the halves. Then:</p>
+<ol type="1">
+<li>Create the page with <a href="/docs#page=documentation&amp;2-front-matter" data-url="/content/documentation.html">front matter</a>.</li>
+<li>Link it from <a href="https://github.com/tsotchke/eshkol/blob/master/docs/README.md" target="_blank" rel="noopener noreferrer"><code>docs/README.md</code></a>, and from the pages a reader would arrive from. No page is an orphan; <code>icc unreferenced-docs</code> reports zero.</li>
+<li>A new Architecture Decision Record takes the next free number (one number per record, never reused), goes in the <a href="/docs#page=design_adr_index" data-url="/content/design_adr_index.html">ADR index</a>, and is registered with <code>icc adr import-markdown --repo &lt;alias&gt; --dir docs/design/adr</code>.</li>
+</ol>
+<h2 id="2-front-matter">2. Front matter</h2>
+<p>Every page you create or substantially edit starts with this block, before the title:</p>
+<pre class="yaml"><code>---
+kind: guide            # tutorial | guide | reference | explanation | project | report
+status: current        # current | historical | superseded
+owner-area: types      # the subsystem that owns the page
+since: v1.3.5          # the release in which the page first shipped
+sources:               # machine sources and source files the page&#39;s facts come from
+  - lib/types/type_relation.cpp
+---</code></pre>
+<ul>
+<li><code>owner-area</code> is one of <code>language</code>, <code>types</code>, <code>ad</code>, <code>tensors</code>, <code>stdlib</code>, <code>runtime</code>, <code>vm</code>, <code>memory</code>, <code>build</code>, <code>platform</code>, <code>web</code>, <code>gpu</code>, <code>quantum</code>, <code>agent</code>, <code>testing</code>, <code>release</code>, <code>docs</code>, <code>project</code>.</li>
+<li><code>since</code> is a release tag. For an existing page it is the first release that contains the file.</li>
+<li><code>sources</code> lists repository paths that exist: the manifests the page renders figures from, and the source files whose behaviour it describes. Write <code>sources: []</code> when there are none. This list is what connects a code change to the page.</li>
+<li>A <code>superseded</code> page adds <code>superseded-by: &lt;path&gt;</code>. A <code>report</code> is <code>historical</code> or <code>superseded</code>, never <code>current</code>.</li>
+</ul>
+<p>Pages without front matter are valid and are counted. The count lives in <code>tests/coverage/doc_front_matter_baseline.json</code> and can only go down: when you add front matter to a page, lower the baseline with <code>python3 scripts/check_doc_front_matter.py --update-baseline</code>.</p>
+<h2 id="3-evergreen-wording">3. Evergreen wording</h2>
+<p>Tutorials, guides, reference and explanation pages describe <strong>what is true now</strong>, in the present tense. They carry no release narrative: not “new in”, “recently”, “now fixed”, “no longer”, “this release adds”, and no account of how something used to misbehave. That material belongs in <code>CHANGELOG.md</code>, <code>RELEASE_NOTES.md</code>, <code>ANNOUNCEMENT.md</code> and <a href="/docs#page=upgrading" data-url="/content/upgrading.html"><code>UPGRADING.md</code></a>.</p>
+<p>Where provenance helps the reader, annotate the statement: “(since v1.3.5)”.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Instead of</th>
+<th>Write</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>“The checker now descends into <code>cond</code> bodies.”</td>
+<td>“The checker examines every <code>cond</code> body (since v1.3.5).”</td>
+</tr>
+<tr>
+<td>“Previously this crashed; it has been fixed.”</td>
+<td>State the behaviour. The fix is a <code>CHANGELOG.md</code> line.</td>
+</tr>
+<tr>
+<td>“New in v1.3.5: <code>json-get-in</code> takes a default.”</td>
+<td>“<code>(json-get-in obj path [default])</code>” with the default described.</td>
+</tr>
+</tbody>
+</table>
+<p>The front-matter gate enforces a fixed list of release-narrative phrases (“new in v”, “what’s new”, “recently”, “refreshed candidate”, “release candidate”, “this release adds”, “in this release”) on every evergreen page that carries front matter; the rest of this section is the reviewer’s rule. A line that must keep such a phrase (a quotation, a heading of a historical table) carries <code>&lt;!-- evergreen: allow &lt;reason&gt; --&gt;</code>.</p>
+<h2 id="4-facts-come-from-sources">4. Facts come from sources</h2>
+<p>A number, date, tag or status that more than one page states is rendered from its source, never retyped.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Fact</th>
+<th>Source</th>
+<th>How a page states it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Release tag, previous tag, date, status, CTest and VM-parity totals</td>
+<td><code>tests/coverage/release_record.json</code></td>
+<td>Write the claim once, then <code>python3 scripts/check_surface_counts.py --sync</code> rewrites every graded statement; a <code>&lt;!-- release-record:KEY --&gt;</code> span renders a record value in place</td>
+</tr>
+<tr>
+<td>Language constructs, builtin count</td>
+<td><code>tests/coverage/coverage_policy.json</code>, <code>tests/coverage/language_surface.json</code></td>
+<td>Graded by <code>check_surface_counts.py</code> in every registered document</td>
+</tr>
+<tr>
+<td>Public C and C++ API</td>
+<td>Doxygen comments in <code>inc/eshkol/**/*.h</code></td>
+<td><code>python3 scripts/gen_api_docs.py</code>; never edit <code>docs/api/</code> by hand</td>
+</tr>
+<tr>
+<td>Language surface manifest</td>
+<td>the builtin tables</td>
+<td><code>python3 scripts/gen_language_surface.py</code></td>
+</tr>
+<tr>
+<td>Test suite inventory</td>
+<td>the registered suites</td>
+<td><code>python3 scripts/check_test_coverage.py</code></td>
+</tr>
+<tr>
+<td>Source line counts cited in prose</td>
+<td><code>wc -l</code> at the commit</td>
+<td>Graded as typed claims by <code>scripts/check_doc_claims_residual.py</code></td>
+</tr>
+<tr>
+<td>Silent-wrong ledger aggregate</td>
+<td><code>.icc/ledger/entries/*.yaml</code></td>
+<td><code>python3 scripts/gen_silent_wrong_ledger.py</code></td>
+</tr>
+<tr>
+<td>Browser import glue</td>
+<td><code>scripts/wasm_flat_ad_imports.fragment.js</code>, <code>scripts/wasm_core_import_keys.json</code></td>
+<td><code>python3 scripts/generate_wasm_import_glue.py --write</code>, verified by <code>--check</code></td>
+</tr>
+<tr>
+<td>Site pages</td>
+<td>the Markdown sources</td>
+<td><code>scripts/build-site-content.sh</code>; never edit <code>site/static/content/</code> by hand</td>
+</tr>
+</tbody>
+</table>
+<p>Do not quote a figure from memory, from a previous release’s notes or from another page. Measure it, or cite the manifest that holds it. A figure in a dated measurement (“measured on the v1.3.4 cut”) is a historical statement: say what it was measured on, and leave it alone afterwards.</p>
+<h2 id="5-examples-are-executed">5. Examples are executed</h2>
+<p>Every fenced <code>scheme</code> block in a gated scope is run by <code>scripts/doc_audit/check_doc_examples.py</code> on the JIT (<code>eshkol-run -r</code>, which is what the REPL runs) and as an AOT binary, in CI and in the release evidence run. The gated scopes are the entries of <code>GATED_SCOPES</code> in <code>scripts/doc_audit/extract_examples.py</code>: <code>docs/tutorials</code>, and the guides that have joined page by page.</p>
+<pre class="sh"><code>python3 scripts/doc_audit/check_doc_examples.py --eshkol-run build/eshkol-run \
+    --only docs/guide/GRADUAL_TYPING.md</code></pre>
+<p>An example must exit 0 within its time limit without writing an error diagnostic, and what it prints must be what the page says:</p>
+<ul>
+<li><code>;; =&gt; value</code> on the line of a form, or on the line under it, is compared with the value the build shows. The annotation names a value, so <code>12.0</code> matches a printed <code>12</code> and <code>"abc"</code> matches <code>abc</code>.</li>
+<li>A block that starts with <code>&gt;</code> is a REPL transcript: the lines under each input are its expected output.</li>
+<li>A bare, <code>text</code> or <code>output</code> fence directly under an example is its exact standard output. Show compiler diagnostics (standard error) in a <code>console</code> fence, which is not compared, and take the text from a real run.</li>
+</ul>
+<p>A block is tried on its own and then after the page’s earlier examples, so a later example may use an earlier definition.</p>
+<h3 id="markers">Markers</h3>
+<p>When an example cannot be checked, say so in an HTML comment on the line above its fence. The rendered page does not change.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Marker</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>&lt;!-- doc-example: skip &lt;reason&gt;: &lt;why&gt; --&gt;</code></td>
+<td>Not executed.</td>
+</tr>
+<tr>
+<td><code>&lt;!-- doc-example: run-only &lt;reason&gt;: &lt;why&gt; --&gt;</code></td>
+<td>Executed and must exit 0; its output is not compared.</td>
+</tr>
+<tr>
+<td><code>&lt;!-- doc-example: known-defect &lt;LEDGER-ID&gt;: &lt;what the page promises&gt; --&gt;</code></td>
+<td>The page states the designed behaviour and the build does not deliver it yet. The ledger entry must be open. The example is still run, and the gate fails the day it passes, so the marker cannot outlive the defect.</td>
+</tr>
+<tr>
+<td><code>&lt;!-- doc-example: file &lt;name&gt;: &lt;what it is&gt; --&gt;</code></td>
+<td>The block is also written next to the page’s later examples as <code>&lt;name&gt;</code>, for <code>require</code>, <code>load</code> or file I/O. Not an exclusion.</td>
+</tr>
+<tr>
+<td><code>&lt;!-- doc-example: output stdout: &lt;what it is&gt; --&gt;</code></td>
+<td>On a <code>text</code> fence further down the page: it is the standard output of the nearest example above it.</td>
+</tr>
+</tbody>
+</table>
+<p><code>&lt;reason&gt;</code> is one of <code>pseudo-code</code>, <code>fragment</code>, <code>platform-specific</code>, <code>nondeterministic</code>, <code>interactive</code>, <code>external-resource</code>. Nothing is skipped by heuristic. Every marked example is printed with its reason on every run, and the number of marked examples per file is ratcheted in <code>scripts/doc_audit/example_gate_baseline.json</code> in both directions: after removing a marker, lower it with <code>--update-baseline</code>.</p>
+<h3 id="putting-a-page-or-a-directory-under-the-gate">Putting a page or a directory under the gate</h3>
+<ol type="1">
+<li>Make every example on the page pass, or mark it, using <code>--only &lt;page&gt;</code>.</li>
+<li>Add the path to a scope in <code>GATED_SCOPES</code> (<code>scripts/doc_audit/extract_examples.py</code>). A path is a directory or a single file; a new scope is one more key.</li>
+<li>Record it: <code>python3 scripts/doc_audit/check_doc_examples.py --eshkol-run build/eshkol-run --scope &lt;scope&gt; --update-baseline</code>, and review the diff of <code>example_gate_baseline.json</code>.</li>
+</ol>
+<p>Nothing else names a documentation path. CI runs every gated scope, and the change classifier (<code>scripts/ci_change_class.py</code>) reads the same table, so a pull request that touches only a gated page is classified <code>tests-only</code> and the lanes that execute the examples run for it.</p>
+<p>Outside the gated scopes the rule is the same and you are the gate: run every sample you add or change on the JIT and as an AOT binary, and paste what it printed.</p>
+<h2 id="6-accounting-for-a-pull-request">6. Accounting for a pull request</h2>
+<p><code>scripts/check_changelog_completeness.py</code> walks the merged pull requests between the release record’s <code>previous_tag</code> and <code>HEAD</code>. Each one must be in exactly one of two places:</p>
+<ul>
+<li>referenced as <code>#N</code> in the <code>CHANGELOG.md</code> section for the release (or in <code>[Unreleased]</code>), if a user could observe the change: language, library, runtime, tooling, build, packaging, documentation a user reads, examples, benchmarks;</li>
+<li>listed in <code>tests/coverage/changelog_no_user_facing_change.json</code> with a class and a specific reason, if no user could: CI wiring, a test-only change, release machinery, an integration merge.</li>
+</ul>
+<p>The changelog line is part of the change. Write it in the pull request that makes the change: <code>Added</code> for a capability, <code>Changed</code> for behaviour a user will notice, <code>Fixed</code> for a correction, stated plainly. Release copy (<code>README.md</code>, <code>RELEASE_NOTES.md</code>, <code>ANNOUNCEMENT.md</code>, the press sheets, the site) states what is true and carries no account of defects.</p>
+<h2 id="7-historical-pages">7. Historical pages</h2>
+<p>A dated report, an audit and a superseded design are records. Do not bring their figures up to date: mark the page instead.</p>
+<pre class="yaml"><code>---
+kind: report
+status: historical
+owner-area: testing
+since: v1.3.5
+sources: []
+---</code></pre>
+<p>A current page that links to a historical or superseded page says so on the same line (“the dated audit of 2026-08-25”, “superseded by …”). When a later document corrects a figure, the correction is propagated to every current page that cites it; <code>icc citation-binding</code> and <code>icc supersession-propagation</code> list the citations still to fix.</p>
+<h2 id="8-when-the-page-and-the-code-disagree">8. When the page and the code disagree</h2>
+<p>Decide which one is the design before touching either.</p>
+<ul>
+<li>The page is wrong about what exists (a signature, a flag, a count, a path): fix the page.</li>
+<li>The page states the designed behaviour and the implementation lags: the page stays as written. File the gap as a ledger entry under <code>.icc/ledger/entries/</code>, and if an executed example shows it, mark that example <code>known-defect</code> with the entry’s id.</li>
+</ul>
+<p>A page is never edited down to match a defect.</p>
+<h2 id="9-the-gates-and-how-to-run-them">9. The gates, and how to run them</h2>
+<p>Build-free, from the repository root:</p>
+<pre class="sh"><code>python3 scripts/check_surface_counts.py --no-trace        # counts, dates, tag and status against their sources
+python3 scripts/check_changelog_completeness.py --no-trace # every merged pull request is accounted for
+python3 scripts/check_doc_front_matter.py --no-trace      # front matter, evergreen wording, historical links, unmarked-page ratchet
+python3 scripts/gen_api_docs.py --check                   # docs/api/ matches the headers
+python3 scripts/gen_language_surface.py --check           # the surface manifest matches the builtin tables
+python3 scripts/check_ledger_integrity.py                 # ledger entries are well-formed
+python3 scripts/check_test_coverage.py                    # the suite inventory is current
+python3 scripts/check_disclosure.py --base origin/master --head HEAD   # nothing private in the diff</code></pre>
+<p>Each has a <code>--self-test</code> that proves it can fail. With a build:</p>
+<pre class="sh"><code>python3 scripts/doc_audit/check_doc_examples.py --eshkol-run build/eshkol-run</code></pre>
+<p>With the repository’s code index (ICC), after <code>icc reindex</code>:</p>
+<pre class="sh"><code>icc doc-typed-claims --repo &lt;alias&gt;                      # counts, line figures and paths against the tree
+python3 scripts/check_doc_claims_residual.py --icc-bin &lt;icc&gt; --repo &lt;alias&gt;
+icc citation-binding --repo &lt;alias&gt;                      # withdrawn figures still cited as current
+icc supersession-propagation --repo &lt;alias&gt;              # corrections not yet propagated
+icc unreferenced-docs --repo &lt;alias&gt;                     # orphan pages
+icc doc-coverage --repo &lt;alias&gt;                          # public symbols without documentation</code></pre>
+<p>A wrong typed claim is corrected in the text. Only a finding the detector misattributes (a cross-repository citation, an aggregate bound to the wrong file) or a dated historical statement goes in <code>.icc/doc-claims-allowlist.yaml</code>, with a reason in the style of the existing entries.</p>
+<h2 id="10-the-v140-plan">10. The v1.4.0 plan</h2>
+<p>Recorded in ADR 0019 and listed here so that a contributor can pick one up.</p>
+<p><strong>Generated references.</strong> A CLI reference for every binary harvested from its <code>--help</code>; an environment-variable registry harvested from the <code>getenv</code> call sites; a diagnostics catalogue harvested from the compiler’s messages; a stdlib export index harvested from <code>provide</code> forms. Each gets a <code>--check</code> freshness gate like <code>gen_api_docs.py</code>.</p>
+<p><strong>The doc-impact gate.</strong> The <code>sources</code> lists and the doc-symbol graph map each public symbol, builtin, flag, environment variable and diagnostic to its pages. A pull request that changes one of them touches the mapped pages or carries a reasoned “no documentation impact” entry.</p>
+<p><strong>Coverage.</strong> The example gate over <code>docs/guide</code>, <code>docs/reference</code> and the README samples; front matter on every page; the ADR registry gate; typed claims, citations and supersessions as a required check.</p>
+<p><strong>Pages.</strong> Guides, in priority order from user questions and the feature inventory: tensors and a training loop; exact arithmetic and the numeric tower; memory, regions and long-running programs; parallel programming; modules and packages; the REPL and machine mode; embedding in C and C++; Python bindings; the agent FFI; the bytecode VM and when to use it; WebAssembly and the web platform; GPU backends; quantum backends; logic and knowledge bases; debugging and reading diagnostics; performance and profiling; testing Eshkol programs. Reference: file formats (ESKM); the ABI and embedding API; the generated references above. Project: governance and support policy (supported platforms, host compilers, deprecation policy, versioning).</p>

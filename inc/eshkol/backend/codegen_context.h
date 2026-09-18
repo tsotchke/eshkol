@@ -195,7 +195,7 @@ public:
     /** Get the lambda name a function returns (or empty string) */
     std::string getFunctionReturnsLambda(const std::string& funcName) const;
 
-    // === Container Slot Store Boundary (ADR-0016) ===
+    // === Container Slot Store Boundary (ADR-0020) ===
     //
     // Invariant: a value stored into a container slot is a value of the slot's
     // declared representation. These three emitters are the only way compiled

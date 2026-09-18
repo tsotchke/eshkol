@@ -1531,7 +1531,7 @@ Eshkol's standard library provides 25 modules with 180+ functions. Access via:
 **Core Modules** (25):
 - `core.io` - File I/O, ports, display
 - `core.strings` - String manipulation
-- `core.json` - JSON parsing/generation
+- `core.json` - JSON parsing/generation: `json-parse`, `json-try-parse`, `json-stringify`, `json-get`, and nested path access with `(json-get-in obj keys)` (returns `#f` when a step is missing) or `(json-get-in obj keys default)` (returns `default` instead); see [stdlib/json.md](reference/stdlib/json.md)
 - `core.data.base64` - Base64 encoding
 - `core.data.csv` - CSV processing
 - `core.operators.arithmetic` - +, -, *, /, mod, quotient, gcd, lcm
@@ -6779,7 +6779,7 @@ eshkol-run -r <file.esk>         (JIT run file)
 ;; $ ./myprogram
 
 ;; JIT evaluate an expression
-;; $ eshkol-run -e '(+ 1 2 3)'
+;; $ eshkol-run -e '(display (+ 1 2 3))'
 ;; 6
 
 ;; Compile to WebAssembly
@@ -7316,7 +7316,7 @@ for composability and custom pipelines.
 
 **Codebase Size**: ~329,100 lines of production C++
 **Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 47,107 lines
-**Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — 1,867-line dispatcher plus 22,355 lines across thirteen per-domain `tensor_*_codegen.cpp` modules
+**Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — 2,012-line dispatcher plus 23,389 lines across thirteen per-domain `tensor_*_codegen.cpp` modules
 **Compiler Modules**: 36 specialized code generators
 **Test Suite**: 37 suites, 528 self-reported tests
 **Verified Operations**: 555+ builtins, 300+ standard library functions

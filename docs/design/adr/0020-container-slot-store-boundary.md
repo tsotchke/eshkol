@@ -1,4 +1,14 @@
-# ADR-0016: One store boundary for every container slot
+---
+kind: explanation
+status: current
+owner-area: runtime
+since: v1.3.5
+sources:
+  - lib/core/runtime_vector_mutation.cpp
+  - inc/eshkol/backend/codegen_context.h
+  - .icc/ledger/entries/SW-179.yaml
+---
+# ADR-0020: One store boundary for every container slot
 
 **Status:** Accepted
 **Ledger:** SW-179

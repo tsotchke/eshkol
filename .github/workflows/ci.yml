@@ -643,6 +643,8 @@ jobs:
           python3 scripts/gate_compiler_architecture.py --self-test
           python3 scripts/gate_public_api_linkage.py --self-test
           python3 scripts/check_surface_counts.py --self-test
+          python3 scripts/check_changelog_completeness.py --self-test
+          python3 scripts/check_doc_front_matter.py --self-test
           python3 scripts/check_self_verdicts.py --self-test
           python3 scripts/check_build_fingerprint.py --self-test
           python3 scripts/doc_audit/check_results_schema.py --self-test
@@ -817,6 +819,52 @@ jobs:
       - name: Generated API docs (docs/api/) are up to date with tracked headers
         shell: bash
         run: python3 scripts/gen_api_docs.py --check
+
+      # Motivating incident (v1.3.5-evolve): the release's documentation sweep
+      # ran on 2026-09-11 and dozens of pull requests merged after it; the
+      # changelog described few of them and nothing noticed, because no gate
+      # connected "a pull request merged" with "the release section accounts
+      # for it". This gate walks <previous_tag>..HEAD (both tags come from
+      # tests/coverage/release_record.json), derives every merged pull request
+      # number from the commit subjects, and fails unless each one is
+      # referenced in the changelog section for the release (or in
+      # [Unreleased]) or listed with a class and a reason in
+      # tests/coverage/changelog_no_user_facing_change.json. It lives in THIS
+      # job, not beside check_surface_counts.py in pillars-readiness, for two
+      # reasons: it needs the full history and the release tags, which this
+      # job's `fetch-depth: 0` checkout provides and that job's default
+      # shallow checkout does not (the gate fails closed, NO_DATA, on a shallow
+      # clone rather than passing over an empty range); and this job runs on
+      # docs-only pull requests, which is exactly where a changelog edit
+      # lands, while pillars-readiness is skipped for them. A pull request's
+      # own number is not in the history until it merges, so it is passed as
+      # --pending-pr: the pull request may account for itself in advance
+      # without its ledger entry being graded stale.
+      - name: Changelog accounts for every merged pull request in the release range
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          pending=()
+          if [ -n "${PR_NUMBER:-}" ]; then pending=(--pending-pr "$PR_NUMBER"); fi
+          python3 scripts/check_changelog_completeness.py ${pending[@]+"${pending[@]}"}
+
+      # Documentation pages declare what they are in a front-matter block
+      # (kind, status, owner-area, since, sources; docs/DOCUMENTATION.md and
+      # ADR 0019). A block nobody checks decays like the prose it replaced, so
+      # this gate validates every block, refuses release narrative ("new in
+      # v", "recently", "in this release", ...) outside code fences in current
+      # tutorial/guide/reference/explanation pages unless the line carries
+      # `<!-- evergreen: allow <reason> -->`, fails a current page that links
+      # to a historical or superseded page without saying so on the line, and
+      # ratchets the count of pages with no block in
+      # tests/coverage/doc_front_matter_baseline.json (it can only go down).
+      # Build-free and history-free, and it belongs in this job because this
+      # job runs on docs-only pull requests, which is where pages change.
+      - name: Documentation front matter, evergreen wording and historical links
+        shell: bash
+        run: python3 scripts/check_doc_front_matter.py
 
       # 2026-08-28: a squash-merge commit body is assembled out of the PR's
       # own branch commit messages, and nothing in review treats commit prose

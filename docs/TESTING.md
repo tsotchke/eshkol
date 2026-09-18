@@ -1,3 +1,16 @@
+---
+kind: guide
+status: current
+owner-area: testing
+since: v1.3.0-evolve
+sources:
+  - CMakeLists.txt
+  - .icc/completion-oracles.yaml
+  - .github/workflows/ci.yml
+  - tests/coverage/release_record.json
+  - tests/vm_parity/ENGINE_PARITY_BASELINE.json
+  - scripts/doc_audit/example_gate_baseline.json
+---
 # Testing & Adversarial Harnesses
 
 Eshkol's correctness is defended by two layers of automated tests:
@@ -11,7 +24,7 @@ Eshkol's correctness is defended by two layers of automated tests:
    readiness oracle consumes, so a green release requires them to pass.
 
 Every root-cause fix ships with a dedicated regression gate wired into the
-readiness oracle. The v1.3.4-evolve cycle added, among others:
+readiness oracle. The gates of this kind include, since v1.3.4:
 `iter_scope_partial_reclaim` (resident-loop flat RSS with persistent mutation),
 `resident_longrun_flat` (SW-57: the same claim measured at two tick horizons and
 gated on the *slope*, on the arena's exact byte counter rather than peak RSS —
@@ -21,7 +34,7 @@ see `tests/memory/resident_longrun_flat_gate.sh`),
 exact/fast GEMM correctness gates, `i128` native+VM parity, and the
 `31_tensor_matmul` VM-parity corpus.
 
-The v1.3.5-evolve cycle adds the assurance-gate family (every
+Since v1.3.5 the set also includes the assurance-gate family (every
 `scripts/check_*.py` and `scripts/gate_*.py`, each with its own `--self-test`),
 the VM region-evacuator memory gates
 (`tests/memory/vm_region_flat_rss_test.sh`,
@@ -38,7 +51,13 @@ baselines (`scripts/run_node_identity_gate.py`,
 (`tests/typesystem/qubit_linearity_engine_parity_gate.sh`), the continuations
 suite (`scripts/run_continuation_tests.sh`), and the GPU correctness gate with
 its must-fail canary (`tests/gpu/gpu_correctness_gate.sh`,
-`tests/gpu/gate_canary_must_fail.esk`). Each is described below.
+`tests/gpu/gate_canary_must_fail.esk`), the language-coverage hook-guard and
+determinism tests, the documentation example gate
+(`scripts/doc_audit/check_doc_examples.py`), the release-record consistency
+gate (`scripts/check_surface_counts.py`), the changelog completeness gate
+(`scripts/check_changelog_completeness.py`), the documentation front-matter
+gate (`scripts/check_doc_front_matter.py`), and the release invariant probes
+(`scripts/run_release_invariant_probes.sh`). Each is described below.
 
 All harnesses honor the `BUILD_DIR` environment variable (default `build/`), so
 you can point them at any built tree:
@@ -54,12 +73,12 @@ cmake --build build --target eshkol-run stdlib -j
 ## The CTest gate
 
 `scripts/run_ctest_gate.sh` runs the CTest suite and turns its verdicts into
-oracle evidence. Until it existed, no completion-oracle criterion anywhere
-consumed a CTest *result* — the only `ctest` mentions in
-`.icc/completion-oracles.yaml` were `action:` strings, and the `test_evidence`
-criteria are index-level ("the tests exist and are runnable"). A pillar could
-therefore ship with a perfectly good CTest gate and still be unmeasured by the
-target that judges the release cut.
+oracle evidence. It is how a completion-oracle criterion consumes a CTest
+*result*: otherwise `.icc/completion-oracles.yaml` names `ctest` only in
+`action:` strings, and the `test_evidence` criteria are index-level ("the
+tests exist and are runnable"). Without it, a pillar could ship with a
+perfectly good CTest gate and still be unmeasured by the target that judges
+the release cut.
 
 ```bash
 BUILD_DIR=build scripts/run_ctest_gate.sh
@@ -100,7 +119,7 @@ them before returning. This gate belongs in the assurance-gates job because a
 zero-match CTest selector otherwise exits successfully and can make a
 criterion vacuous.
 
-Eight criteria are wired as of v1.3.4-evolve. Five read CTest directly — the
+Eight criteria are wired this way (since v1.3.4). Five read CTest directly — the
 `ctest_suite_green` whole-suite roll-up plus the
 `fixed_point_exact_accumulation_gate`, `exact_input_ad_identity_gate`,
 `runtime_closure_arity_spread_gate`, `define_library_same_unit_gate` and
@@ -108,9 +127,11 @@ Eight criteria are wired as of v1.3.4-evolve. Five read CTest directly — the
 harnesses that judge the same cut: `vm_surface_regression_suite` (kind
 `vm_surface`), `vm_parity_gate` (kind `vm_parity`) and `event_loop_works`
 (kind `eshkol_smoke`). The release evidence, regenerated at the tagged commit,
-is <!-- release-record:ctest -->the full CTest suite<!-- /release-record --> (superseding the 541/541, 198/198 and 183/183 figures, each
-correct on the earlier commit it was measured on); the
-value-position and compound-accessor regression is green.
+is <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->; the
+value-position and compound-accessor regression is green. Superseded CTest
+figures that older documents quote: 541/541 and 198/198, each measured on an
+earlier commit; and 183/183, superseded by 190/190 for the v1.3.4-evolve cut
+(remeasured on 2026-08-25 against `4bf871a0`).
 
 ### ABI semantic inventory dependency
 
@@ -224,12 +245,32 @@ VM-supported nor consciously waived in `tests/vm_parity/PARITY.tsv`. A
 VM-vs-native differential over `tests/vm_parity/corpus/` then keeps shared
 symbols honest. Full write-up in [VM_PARITY.md](VM_PARITY.md).
 
-Measured at the v1.3.5-evolve release commit: the differential is
-<!-- release-record:vm-parity-figure -->**340/340**<!-- /release-record --> (superseding the 338/338 of the 2026-09-11 cut, the 188/188 of commit
-`afbaaf5b` and the 184/184 before it, which counted the corpus differential
-rather than the full manifest gate) and the manifest is **961 rows — 604 `vm-supported`, 46
-`native-only-justified`, 311 `gap`**; verified behavioral divergences remain
+At the v1.3.5-evolve release commit the differential is
+<!-- release-record:vm-parity-figure -->**340/340**<!-- /release-record --> and the manifest is **961 rows — 604 `vm-supported`, 46
+`native-only-justified`, 311 `gap`**; verified behavioral divergences are
 explicit `gap` rows with reproducible programs under `tests/vm_parity/found/`.
+Superseded figures that older documents quote: 338/338 (the 2026-09-11
+documentation cut) and 188/188 (commit `afbaaf5b`); 184/184 is superseded by
+188/188, because it counted the corpus differential rather than the full
+manifest gate.
+
+**Engine differential floors are exact.** `scripts/run_engine_parity_coverage.py`
+measures how many language-surface constructs have differential evidence
+(native and VM both ran the program and agreed) and grades the result against
+the floors in `tests/vm_parity/ENGINE_PARITY_BASELINE.json`. Each floor is
+stored as its integer counts (`differential_floor_numerator` /
+`differential_floor_denominator`, and the `high_risk_` pair) beside the
+unrounded float they divide to. `scripts/check_engine_parity_threshold.py`
+defines `exact_fraction()` and `record_fraction()`, the coverage runner
+imports them, and every comparison is a `fractions.Fraction` comparison
+(integer cross-multiplication, no epsilon). A float that disagrees with its
+own counts is rejected as a malformed baseline, as is a floor above the
+corpus ceiling; a baseline or trace that carries only floats is read at the
+float's exact binary value. Failure messages print counts, for example
+`154/473 (32.56%)`. The recorded floors are 321/1,139 overall and 155/473
+high-risk, with 5 dispositioned divergent programs and 215 programs that ran
+clean on both engines. `check_engine_parity_threshold.py --self-test` runs in
+the `assurance-gates` CI job (since v1.3.5).
 
 ```bash
 BUILD_DIR=build scripts/run_vm_parity.sh
@@ -371,6 +412,45 @@ are not yet fixed are quarantined (tracked-open) and recorded under
 
 ---
 
+## Language-coverage instrumentation
+
+With `ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR` set, the compiler instruments every
+executed operation node and the runtime writes one record per site the first
+time it runs; `scripts/run_language_coverage.sh` turns those records into the
+executable language-coverage figure. The instrumentation records each site
+once (since v1.3.5):
+
+- **Native code.** Each instrumented site owns a private `i8` guard global.
+  Generated code loads it, compares it with 0 and branches, with the branch
+  weighted as unlikely, into a block that sets the guard and calls the
+  `eshkol_language_coverage_exec_op` and `exec_call` hooks. The unsynchronised
+  store is a benign race: the runtime still deduplicates records, so a race
+  costs at most a redundant hook call, never a lost or duplicated record.
+- **Fork.** The runtime detects a fork through a `pthread_atfork` child
+  handler that bumps a generation counter, not through a per-call `getpid()`;
+  a forked child gets its own trace stream.
+- **VM.** The native-dispatch, call and form markers consult direct-mapped
+  first-sighting tables (4,096 slots each, keyed by the builtin row or the
+  31-bit head-symbol hash) before entering the runtime. A colliding key only
+  costs a later redundant call; it cannot suppress a record.
+- **Exit.** `emergency-exit` flushes coverage before `_exit`, which bypasses
+  C++ destructors.
+
+Two CTests hold these properties, and `scripts/run_language_coverage.sh` runs
+both as part of the language-coverage gate:
+
+| CTest | Script | What it proves |
+|---|---|---|
+| `language_coverage_hook_guard_test` | `scripts/test_language_coverage_hook_guard.py` | A program run with 7 and with 20,000 loop iterations enters the coverage hooks the same number of times and writes the same record set, under the JIT, AOT and the VM (counted through `ESHKOL_LANGUAGE_COVERAGE_HOOK_STATS`, never by wall-clock time), and every generated hook call in the IR sits behind its guard |
+| `language_coverage_determinism_test` | `scripts/test_language_coverage_determinism.py` | A corpus of forms that lower into synthesised AST nodes (internal defines, body sequences, named let, `do`, `case`, record types, macro output), run twice under the JIT and AOT into fresh directories, writes identical sorted record sets, and every record's line and column lies inside the file it names |
+
+The determinism property rests on the frontend rule that every AST node is
+born with the location of the form it came from, and on the reader keeping
+its position per input stream; see
+[ESHKOL_V1_ARCHITECTURE.md](ESHKOL_V1_ARCHITECTURE.md#source-locations-and-node-identity).
+
+---
+
 ## ICC readiness oracle
 
 Each harness writes JSON-L trace events under `scripts/icc_traces/`. The oracle
@@ -505,7 +585,9 @@ each gate CAN fail before it reports that nothing failed.
   language-surface counts quoted across README, FEATURE_MATRIX, the
   architecture model and every `docs/reference/*/INDEX.md`. It reads the
   canonical totals from `tests/coverage/coverage_policy.json` and
-  `tests/coverage/language_surface.json` and fails on any mismatch.
+  `tests/coverage/language_surface.json` and fails on any mismatch. It also
+  grades the release-facing documents against the release record; see
+  [Release evidence and documentation gates](#release-evidence-and-documentation-gates).
 - **`scripts/check_package_manifest.py`** and
   **`scripts/check_diagnostic_corpus.py`** check packaging-manifest and
   diagnostic-corpus integrity.
@@ -530,6 +612,126 @@ each gate CAN fail before it reports that nothing failed.
   against `.icc/ad-carrier-manifest.yaml`. It is structural, not comparative:
   an output differential can only compare what two carriers compute, never
   which carrier computed it.
+
+### Release evidence and documentation gates
+
+- **Evidence paths are absolute before first use** (#695).
+  `scripts/lib/evidence_paths.sh` fixes the meaning of a relative evidence
+  path once: a relative `TRACE_DIR` or `ICC_TRACE_DIR` is relative to the
+  repository root and is made absolute (`eshkol_evidence_abs_var`) before any
+  producer uses it, because tools change directory (`ctest --test-dir build
+  --output-junit P` resolves a relative `P` inside `build/`). Every script
+  that reads either variable from its environment sources the helper.
+  `tests/toolchain/test_v1_3_release_evidence_recipe.py` checks that every
+  environment-reading script normalises before use, the helper's contract,
+  and the producers' own prologue against a stub `ctest` given a relative
+  `TRACE_DIR`; `scripts/run_v1_3_release_producers.sh` runs it first.
+- **The release record is the single source of release facts** (#696).
+  `tests/coverage/release_record.json` holds the tag, the previous tag, the
+  release date, the status label and the CTest and VM-parity totals.
+  `scripts/check_surface_counts.py` grades the release-facing documents and
+  the generated site pages against it: every stated release date (and any
+  stated weekday against the calendar), the roadmap heading and ladder row,
+  pre-release wording once the status is `SHIPPED`, and every
+  `<!-- release-record:KEY -->...<!-- /release-record -->` span, which must
+  equal the record's rendering of `KEY` (`ctest`, `ctest-cell`, `vm-parity`,
+  `vm-parity-figure`). A null total renders as a sentence without a number.
+  `--sync` rewrites every graded claim from the record; `--require-complete`
+  fails while a total is unrecorded. Totals quoted in these documents go
+  through such a span, so they cannot drift from the record.
+- **Changelog completeness.** `scripts/check_changelog_completeness.py` is a
+  build-free gate: every pull request merged in `<previous_tag>..HEAD` (both
+  tags from the release record; numbers derived from commit subjects, no
+  network) must be referenced by the changelog section for the release (or
+  `[Unreleased]`) or listed, with a class from a closed set and a specific
+  reason, in `tests/coverage/changelog_no_user_facing_change.json`. The
+  ledger is graded as strictly as the changelog (stale, duplicate, redundant,
+  unsorted or wrong-release entries fail). A shallow clone reads `NO_DATA`,
+  never a pass. It runs, with `--self-test`, in the `assurance-gates` CI job,
+  which checks out full history; a pull request passes its own number as
+  `--pending-pr`.
+- **Documentation examples execute** (#697).
+  `scripts/doc_audit/check_doc_examples.py` runs every fenced example in the
+  scopes named by `GATED_SCOPES` in `scripts/doc_audit/extract_examples.py`
+  on the JIT (`eshkol-run -r`) and as an AOT binary, with a per-example time
+  limit, and compares every `;; =>` annotation and pasted output block with
+  what the build printed. It composes the existing `scripts/doc_audit/`
+  harness (`extract_examples.py`, `check_expected.py`,
+  `check_output_blocks.py`, `run_examples.py`); it names no documentation
+  path itself, so a page joins the gate by an entry in `GATED_SCOPES` and a
+  baseline refresh. Nothing is skipped by heuristic: an example that cannot
+  run carries an HTML-comment marker on the line above its fence,
+  `<!-- doc-example: KIND TOKEN: text -->`, where `KIND` is `skip` (not
+  executed; the token is a reason from a closed set), `run-only` (executed,
+  must exit 0, output not compared), `known-defect` (the token names an open
+  ledger entry; the example still runs, and the gate fails the day it
+  passes), `file` (the block is also a file that later examples on the page
+  read; not an exclusion) or `output` (`output stdout:` marks a pasted output
+  block further from its example). An unparseable marker is a failure. The
+  number of marked examples per file is ratcheted in
+  `scripts/doc_audit/example_gate_baseline.json` in both directions: a count
+  above the baseline fails, and a count below it fails until the baseline is
+  lowered with `--update-baseline`. CTest registers `doc_example_gate_selftest`
+  and `doc_example_gate_tutorials`; the completion oracle reads criterion
+  `doc_examples_tutorials_clean`; CI runs the self-test in `assurance-gates`
+  and the gate itself on one Linux and one macOS lane; and
+  `scripts/run_v1_3_release_producers.sh` runs it for release evidence.
+- **Documentation front matter.** `scripts/check_doc_front_matter.py` is a
+  build-free gate over every tracked page under `docs/` (except the generated
+  `docs/api/`) and the root project pages. A page that opens with a front
+  matter block must use exactly the keys `kind`, `status`, `owner-area`,
+  `since` and `sources` (plus `superseded-by` when and only when the status is
+  `superseded`), with values from closed sets and paths that exist; a
+  `report` page is never `current`. A current tutorial, guide, reference or
+  explanation page may not carry release narrative outside code fences
+  unless the line is marked `<!-- evergreen: allow <reason> -->`, and a
+  current page that links to a historical or superseded page says so on the
+  same line. The count of pages without a block is ratcheted in
+  `tests/coverage/doc_front_matter_baseline.json` and can only go down. It
+  runs, with `--self-test`, in `assurance-gates`, and the oracle reads
+  criterion `doc_front_matter_valid`
+  ([ADR 0019](design/adr/0019-evergreen-documentation-architecture.md)).
+- **Release invariants are measured before grading** (#693,
+  [ADR 0014](design/adr/0014-release-invariant-contracts.md)).
+  `scripts/run_release_invariant_probes.sh` runs four probes (ABI layout pin,
+  object-header ratchet, closed-enum dispatch, AD exactness with its live
+  finite-difference counter) and writes `test_result` receipts before the
+  ICC architecture grade; the VM parity gate supplies its own aggregate
+  receipt. `test_release_invariant_contracts`, `test_release_probe_receipts`
+  and `wasm_flat_ad_import_test` are CTests. The browser flat-AD WASM import
+  glue is generated from one fragment and one core-key manifest
+  (`scripts/generate_wasm_import_glue.py`, `scripts/wasm_core_import_keys.json`),
+  and the import test checks its freshness, its required keys and its
+  runtime behavior.
+- **Measured outcomes are distinct from infrastructure failure.** A smoke or
+  release probe emits a `test_result` receipt only for a measured `PASS` or
+  `FAIL`; an infrastructure failure (a signal from the environment, a
+  harness timeout) is counted as `INFRA`, reported as "no verdict obtained",
+  and emits no result that could be read as a verdict
+  (`scripts/lib/icc_probe.sh`, on the taxonomy in
+  `scripts/lib/harness_outcome.sh`).
+- **Continuation engines fail closed.** `scripts/run_continuation_tests.sh`
+  normalises each expected and actual transcript and fails the case when a
+  normalisation fails, on the expected transcript and on each of the JIT, AOT
+  and VM transcripts, so two failed normalisations can never compare equal as
+  empty strings. The `continuation_normalizer_failure` CTest
+  (`tests/continuations/normalizer_failure_test.sh`) injects each failure and
+  requires the runner to report it.
+- **Harnesses honour `BUILD_DIR`.** Test harnesses resolve the compiler, the
+  VM and the runtime from the selected build directory and pair a copied
+  compiler with its own runtime, so a run measures the build it names.
+- **Checked scratch writes** (#700). `scripts/lib/checked_write.sh` gives
+  test and gate scripts one rule for generated files and scratch paths:
+  `eshkol_install_tmp` and `eshkol_install_checked` write a here-doc or
+  generated program to a private temp file beside the target and install it
+  with one `mv` only if it is present and non-empty, so a reader sees the old
+  file or the complete new one; `eshkol_require_output_file_path` requires an
+  absolute, non-symlinked path before a redirect; `eshkol_checked_rm` refuses
+  an empty path, a relative path or `/`; `eshkol_resolve_trusted_command` and
+  `eshkol_command_available` resolve a command through `PATH` and require a
+  regular executable file. `.icc/modularity-justifications.json` records the
+  accepted justification for every source file above the 2,000-line
+  modularity threshold, each tied to an ADR or a tracked boundary task.
 
 ### Pillar harnesses armed in CI (#470, ADR-0010 section 2.5)
 
@@ -681,7 +883,11 @@ list, it classifies the change as one of:
 - **`tests-only`** — every changed file is under `tests/`, or is a script
   CI actually runs as a test (discovered from real `add_test`/
   `add_custom_target` COMMAND arguments in `CMakeLists.txt` and real
-  workflow `test_command`/`run:` references — never a hand-typed list).
+  workflow `test_command`/`run:` references — never a hand-typed list), or
+  is a markdown page under a scope named in `GATED_SCOPES`
+  (`scripts/doc_audit/extract_examples.py`, read with `ast.literal_eval`).
+  A gated page is a test input, not inert prose, so a change to it runs the
+  lanes that execute the documentation example gate.
   This class now drives a REDUCED lane set rather than the full matrix —
   see "CI: the lane plan" below.
 - **`full`** — anything else, including every `.github/workflows/**`

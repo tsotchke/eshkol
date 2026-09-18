@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2382/5274 public symbols documented (45.2%), 2892 undocumented.
+**Coverage:** 2466/5274 public symbols documented (46.8%), 2808 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,16 +16,16 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-336/869 symbols documented.
+420/869 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`abi_fingerprint.h`](abi_fingerprint.md) | 58 | 14 |
-| [`agent_capabilities.h`](agent_capabilities.md) | 37 | 0 |
+| [`agent_capabilities.h`](agent_capabilities.md) | 37 | 37 |
 | [`agent_http.h`](agent_http.md) | 27 | 0 |
 | [`agent_platform.h`](agent_platform.md) | 2 | 0 |
 | [`builtin_libraries.h`](builtin_libraries.md) | 3 | 1 |
-| [`eshkol.h`](eshkol.md) | 377 | 170 |
+| [`eshkol.h`](eshkol.md) | 377 | 217 |
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |

@@ -5400,7 +5400,7 @@ static int vm_vecref_tensor_path(VM* vm, Value tensor_val, Value idx_val) {
  * native does NOT special-case N-D row addressing here — `idx` is always
  * bounds-checked against the FLAT total element count regardless of rank,
  * and the value is converted to the slot's double by vm_tensor_slot_value(),
- * the VM half of the ADR-0016 slot store boundary (a value with no
+ * the VM half of the ADR-0020 slot store boundary (a value with no
  * real-number representation raises instead of being stored as 0.0).
  *
  * Returns 1 on success (caller still pushes the void result, matching the
@@ -10347,7 +10347,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_raise_error_msg(vm, "tensor-set!: index must be an integer, list or vector");
             break;
         }
-        /* ADR-0016 slot store boundary: MS-04 / SW-166 made an exact rational
+        /* ADR-0020 slot store boundary: MS-04 / SW-166 made an exact rational
          * or bignum convert to its correctly-rounded double here; a value with
          * no real-number representation is now refused rather than stored as
          * the 0.0 as_number_vm() answers for it. */

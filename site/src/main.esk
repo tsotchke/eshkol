@@ -58,6 +58,49 @@
 (extern i32 web-set-timeout i32 i32 :real web_set_timeout)
 
 ;; ═══════════════════════════════════════════════════════════
+;; RELEASE FACTS
+;; ═══════════════════════════════════════════════════════════
+;;
+;; release-tag is the one place this file names a release. Every heading,
+;; download URL, install snippet and status line below is derived from it, so
+;; cutting a release changes one line here.
+;;
+;; tests/coverage/release_record.json is the source of truth for the tag.
+;; scripts/verify_site_release.py evaluates this block and fails when the tag
+;; differs from the record, when a derived URL names an asset the release
+;; workflow does not publish, or when a release tag or download URL is written
+;; anywhere else in this file. Keep the block to (define name "literal") and
+;; (define name (string-append ...)) over names defined above it: that is the
+;; subset the verifier evaluates.
+
+;; BEGIN RELEASE FACTS
+(define release-tag "v1.3.5-evolve")
+(define release-download-base
+  (string-append "https://github.com/tsotchke/eshkol/releases/download/" release-tag "/"))
+(define release-linux-asset
+  (string-append "eshkol-" release-tag "-linux-x64-lite.tar.gz"))
+(define release-checksums-asset "SHA256SUMS.txt")
+(define release-whats-new-heading
+  (string-append "What's new in " release-tag))
+(define release-publication-heading
+  (string-append release-tag " Publication"))
+(define release-downloads-summary
+  (string-append "Install Eshkol on macOS, Linux, Windows, or build from source. " release-tag " provides 15 platform packages plus SHA256SUMS.txt in a 16-file release payload."))
+(define release-linux-install-html
+  (string-append
+    "<code style='color:#606078'># " release-tag ", Linux x64 Lite</code>\n"
+    "<code style='color:#22c55e'>$</code> curl -LO " release-download-base release-linux-asset "\n"
+    "<code style='color:#22c55e'>$</code> curl -LO " release-download-base release-checksums-asset "\n"
+    "<code style='color:#22c55e'>$</code> sha256sum -c " release-checksums-asset " --ignore-missing\n"
+    "<code style='color:#22c55e'>$</code> tar xzf " release-linux-asset))
+(define release-vm-banner-html
+  (string-append
+    "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>" release-tag "</span>\n"
+    "<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n"
+    "<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
+;; END RELEASE FACTS
+
+;; ═══════════════════════════════════════════════════════════
 ;; COMPONENT LIBRARY
 ;; ═══════════════════════════════════════════════════════════
 
@@ -497,7 +540,7 @@
 
     (body-html section "<strong style='color:#a78bfa'>Autonomous Agents.</strong> Build systems that reason about their own uncertainty. The consciousness engine gives you knowledge bases with Prolog-style unification, factor graphs with belief propagation, and global workspace theory for competing cognitive modules.")
 
-    (body-html section "<strong style='color:#a78bfa'>Full-Stack Applications.</strong> Compile to a native executable, or target WebAssembly for the browser. This whole website is one Eshkol source file compiled to WASM. It uses 97 browser-host bindings: DOM, events, canvas, timers, fetch, localStorage, and window. Hash-based routing and a live bytecode REPL come from that same file -- all one language.")
+    (body-html section "<strong style='color:#a78bfa'>Full-Stack Applications.</strong> Compile to a native executable, or target WebAssembly for the browser. This whole website is one Eshkol source file compiled to WASM. The web platform provides 97 browser-host bindings: DOM, events, canvas, timers, fetch, localStorage, and window. Pathname routing and a live bytecode REPL come from that same file -- all one language.")
 
     section))
 
@@ -599,19 +642,65 @@
 
     section))
 
-(define (render-v12-features parent)
+(define (render-whats-new parent)
   (let ((section (create-section parent)))
-    (section-heading section "What's new in v1.3.4-evolve")
-    (body-html section "<strong style='color:#a78bfa'>Resident correctness.</strong> Run an Eshkol daemon for 100,000 ticks and its memory stays flat. Every defect that long-duration resident workloads surfaced is fixed at the architectural root: automatic per-iteration reclamation, race-free parallel-map, exact gradients through every callable form, and floats that round-trip to the identical double. High-precision numerics, a Moonlab v1.2.0 quantum pin, and a linear Qubit type land alongside them.")
+    (section-heading section release-whats-new-heading)
+    (body-html section "<strong style='color:#a78bfa'>Sixteen thousand levels deep.</strong> Feed the compiler a source file sixteen thousand parentheses deep on an eight-megabyte stack and it compiles it, through the JIT and through AOT. That is not a metaphor for robustness. Parsing, type synthesis, and lowering run on an explicit continuation stack, so native stack use is independent of how deeply a program nests. The rest of the release applies that discipline to answers: dense tensor gradients, a bytecode VM that reclaims memory, multi-shot continuations on every engine, and a numeric tower that stays exact.")
+
+    (let ((grid (create-grid-3 section)))
+      (render-feature-card grid
+        "A parser with no recursion budget"
+        "A child parse suspends into a heap-allocated coroutine frame and resumes through a linked continuation stack. Expressions, quasiquote, match and syntax-rules patterns, types, and import sets nest as far as memory allows. Two gates hold the line under an 8 MiB stack limit, through JIT and AOT, on Linux x64 and macOS ARM64. 16,000 levels.")
+
+      (render-feature-card grid
+        "Dense tensor autodiff"
+        "matmul, tensor-sum, and tensor-mean each record exactly one dense node under differentiation. A registry row bridges scalarized operands by identity scatter and performs no arithmetic, so the scalar and dense lowerings return byte-identical gradients. A 6x6 matmul costs the same per operation as a 2x2.")
+
+      (render-feature-card grid
+        "The bytecode VM reclaims memory"
+        "with-region reclaims on the VM by marking from the root set and sweeping at arena-block granularity. Nothing moves, so eq?, shared structure, and cycles hold. Peak RSS is 33 MB at 1,000 iterations and 34 MB at 16,000, against 304 MB with the evacuator disabled. Sixteen times the work for one megabyte."))
+
+    (let ((grid2 (create-grid-3 section)))
+      (render-feature-card grid2
+        "Multi-shot continuations, three engines"
+        "Invoke a captured continuation any number of times, from any dynamic extent, after the procedure that captured it has returned. Native code keeps a durable copy of the live stack and restores it to the same addresses. The VM snapshots control and leaves the store alone. Generators, coroutines, and amb-style backtracking run on the JIT, AOT, and the VM, and dynamic-wind reroots per R7RS 6.10.")
+
+      (render-feature-card grid2
+        "Exactness follows the value"
+        "(sqrt 4/9) answers 2/3, and it is exact?. (expt 2/3 -3) is 27/8. (derivative (lambda (x) (* x x)) 1/3) returns 2/3 on the VM as on native code. Roots are taken over the rationals when one exists, and the derivative carrier reads the runtime exactness of its point, not the shape of the source.")
+
+      (render-feature-card grid2
+        "tensor-apply calls the callable you passed"
+        "Both operands evaluate once, and the resolved callable runs on each scalar in row-major order through the same dispatcher as an ordinary lambda application. Gradients, differentiable captures, and Hessians flow through user procedures. LLVM JIT, LLVM AOT, VM source execution, and emitted bytecode each report all 31 ordered assertions."))
+
+    (let ((grid3 (create-grid-3 section)))
+      (render-feature-card grid3
+        "Enclosures that are proved, not sampled"
+        "A rigorous layer sits under the validated interval arithmetic and Taylor models, behind an explicit rigorous? flag. fl-next-up and fl-next-down carry nextafter into native code and the VM alike. Exact operands stay exact, every Taylor-model remainder comes from a proven derivative bound, and interval endpoints round outward by exactly one step.")
+
+      (render-feature-card grid3
+        "One constant-curvature geometry"
+        "Distance, the exponential and logarithmic maps, and geodesic attention share one implementation and one set of reverse rules. Curvature series use a degree-10 branch with cancellation-free derivatives, witnessed against binary128 across a 1,067-binade sweep. Antipode detection is exact over a 4.16-million-case rational sweep, with no tolerance band anywhere in it.")
+
+      (render-feature-card grid3
+        "Gates measured against deliberate mutations"
+        "The assurance runner executes the closed-enum gate twelve times in an isolated source projection, with zero, one, and two dispatcher case labels removed. Every baseline passes and every treatment is rejected. At the release commit the gate finds 34 exhaustive AST operation switches, one callable dispatch site, and zero findings."))
+
+    section))
+
+(define (render-foundation parent)
+  (let ((section (create-section parent)))
+    (section-heading section "The foundation it runs on")
+    (body-html section "<strong style='color:#a78bfa'>Resident correctness.</strong> Run an Eshkol daemon for 100,000 ticks and its memory stays flat. Automatic per-iteration reclamation, race-free parallel-map, exact gradients through every callable form, and floats that round-trip to the identical double carry every release since they landed.")
 
     (let ((grid (create-grid-3 section)))
       (render-feature-card grid
         "Memory that stays flat"
-        "A tick loop that mutates persistent state used to leak about 3,366 bytes per iteration, roughly 355 MB over 100,000 ticks. A per-loop nursery region now reclaims it. The same loop sits flat at 34 MB, byte-for-byte identical to its explicit with-region twin.")
+        "A per-loop nursery region reclaims every iteration of a tick loop that mutates persistent state. Over 100,000 ticks the loop sits flat at 34 MB, byte-for-byte identical to its explicit with-region twin.")
 
       (render-feature-card grid
         "Declared language surface"
-        "The generated language-surface manifest declares 1,115 constructs. Release gates measure runtime coverage on the exact release candidate.")
+        "The generated language-surface manifest declares 1,115 constructs. Every one earned its row by running: execution-backed coverage is 1,115/1,115 declared constructs on the exact release commit.")
 
       (render-feature-card grid
         "Portable release packages"
@@ -624,7 +713,7 @@
 
       (render-feature-card grid2
         "Verified VM subset"
-        "961 parity rows: 604 vm-supported, 46 native-only-justified, 311 gap. Differential gates compare each release candidate with its reference engines.")
+        "961 parity rows: 604 vm-supported, 46 native-only-justified, 311 gap. The VM parity differential runs 340/340, and differential gates compare each release with its reference engines.")
 
       (render-feature-card grid2
         "Heterogeneous dispatch"
@@ -633,7 +722,7 @@
     (let ((grid3 (create-grid-3 section)))
       (render-feature-card grid3
         "Race-free parallel-map"
-        "A closure that allocates and returns a collection used to hand back dangling structure past the parallel threshold. On a pool worker, scope reclamation now degrades to commit-only. ThreadSanitizer reports zero arena data races where it previously reported dozens.")
+        "A closure that allocates and returns a collection is safe past the parallel threshold. On a pool worker, scope reclamation degrades to commit-only, so nothing a worker hands back outlives its arena. ThreadSanitizer reports zero arena data races.")
 
       (render-feature-card grid3
         "Floats that round-trip"
@@ -641,7 +730,7 @@
 
       (render-feature-card grid3
         "Permanent release oracles"
-        "Nothing here is a one-off check. CTest, the aggregate suite, reference and generative differentials, WebAssembly import equality, Taylor JIT+AOT equivalence, and ICC architecture checks run as repeatable release gates. Readiness is evaluated only from fresh evidence on the exact release candidate."))
+        "Nothing here is a one-off check. CTest, the aggregate suite, reference and generative differentials, WebAssembly import equality, Taylor JIT+AOT equivalence, and architecture invariants run as repeatable release gates. Readiness is evaluated only from fresh evidence on the exact release commit."))
 
     section))
 
@@ -750,7 +839,8 @@
   (render-hero content)
   (render-app-cards content)
   (render-pillars content)
-  (render-v12-features content)
+  (render-whats-new content)
+  (render-foundation content)
   (render-sdnc content)
   (render-code-showcase content)
   (render-what-you-can-build content)
@@ -1069,24 +1159,6 @@
     (render-footer page)))
 
 ;; ═══════════════════════════════════════════════════════════
-;; PAGE: DOCS
-;; ═══════════════════════════════════════════════════════════
-
-(define (render-sidebar-group parent title)
-  (let ((group (create-div parent)))
-    (web-add-class group "docs-sidebar-group")
-    (let ((t (create-text "div" title group)))
-      (web-add-class t "docs-sidebar-group-title"))
-    group))
-
-(define (render-sidebar-item parent label url)
-  (let ((item (create-text "a" label parent)))
-    (web-add-class item "docs-sidebar-item")
-    (web-set-attribute item "href" url)
-    (web-set-attribute item "data-url" url)
-    item))
-
-;; ═══════════════════════════════════════════════════════════
 ;; PAGE: TUTORIALS
 ;; ═══════════════════════════════════════════════════════════
 
@@ -1101,51 +1173,16 @@
       (let ((sidebar (create-div layout)))
         (web-add-class sidebar "docs-sidebar")
 
-        ;; Getting Started
-        (let ((g1 (render-sidebar-group sidebar "GETTING STARTED")))
-          (render-sidebar-item g1 "First 5 Minutes" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/00_FIRST_5_MINUTES.md")
-          (render-sidebar-item g1 "Why Eshkol?" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/WHY_ESHKOL.md")
-          (render-sidebar-item g1 "Cookbook" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/COOKBOOK.md"))
-
-        ;; Feature Tutorials
-        (let ((gt (render-sidebar-group sidebar "FEATURE TUTORIALS")))
-          (render-sidebar-item gt "Autodiff & ML" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/01_AUTODIFF_AND_ML.md")
-          (render-sidebar-item gt "Bytecode VM" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/02_BYTECODE_VM.md")
-          (render-sidebar-item gt "Weight Transformer" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/03_WEIGHT_MATRIX_TRANSFORMER.md")
-          (render-sidebar-item gt "Consciousness Engine" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/04_CONSCIOUSNESS_ENGINE.md")
-          (render-sidebar-item gt "Signal Processing" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/05_SIGNAL_PROCESSING.md")
-          (render-sidebar-item gt "Exact Arithmetic" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/06_EXACT_ARITHMETIC.md")
-          (render-sidebar-item gt "Parallel Computing" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/07_PARALLEL_COMPUTING.md")
-          (render-sidebar-item gt "Continuations" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/08_CONTINUATIONS_AND_EXCEPTIONS.md")
-          (render-sidebar-item gt "Module System" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/09_MODULE_SYSTEM.md")
-          (render-sidebar-item gt "Macros" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/10_MACROS.md")
-          (render-sidebar-item gt "Tensors" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md")
-          (render-sidebar-item gt "Lists" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/12_LISTS.md")
-          (render-sidebar-item gt "Strings & I/O" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/13_STRINGS_AND_IO.md")
-          (render-sidebar-item gt "Data Formats" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/14_DATA_FORMATS.md")
-          (render-sidebar-item gt "Pattern Matching" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/15_PATTERN_MATCHING.md")
-          (render-sidebar-item gt "Hash Tables" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/16_HASH_TABLES.md")
-          (render-sidebar-item gt "Functional Programming" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/17_FUNCTIONAL_PROGRAMMING.md")
-          (render-sidebar-item gt "Web Platform" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/18_WEB_PLATFORM.md")
-          (render-sidebar-item gt "GPU Acceleration" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/19_GPU_ACCELERATION.md")
-          (render-sidebar-item gt "Bitwise & System" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/20_BITWISE_AND_SYSTEM.md"))
-
-        ;; Project Tutorials
-        (let ((gp (render-sidebar-group sidebar "PROJECT TUTORIALS")))
-          (render-sidebar-item gp "Neural Network" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/21_PROJECT_NEURAL_NETWORK.md")
-          (render-sidebar-item gp "Expert System" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/22_PROJECT_EXPERT_SYSTEM.md")
-          (render-sidebar-item gp "Data Pipeline" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/23_PROJECT_DATA_PIPELINE.md")
-          (render-sidebar-item gp "Optimisation" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/24_PROJECT_OPTIMISATION.md")
-          (render-sidebar-item gp "Interpreter" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/25_PROJECT_INTERPRETER.md")
-          (render-sidebar-item gp "Self-Improving" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/26_PROJECT_SELF_IMPROVING.md")))
+        ;; Generated from site/pages.json by scripts/build-site-content.sh.
+        (web-load-content "/content/nav-tutorials.html" sidebar))
 
       ;; Content area
       (let ((doc-area (create-div layout)))
         (web-add-class doc-area "doc-content")
         (web-set-attribute doc-area "id" "tutorial-content-area")
 
-        ;; Load First 5 Minutes by default
-        (web-load-content "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/00_FIRST_5_MINUTES.md" doc-area)))))
+        ;; The view's default page; "#page=<slug>" in the address selects another.
+        (web-load-content "/content/tutorials_00_first_5_minutes.html" doc-area)))))
 
 ;; ═══════════════════════════════════════════════════════════
 ;; PAGE: DOCS
@@ -1163,56 +1200,8 @@
       (let ((sidebar (create-div layout)))
         (web-add-class sidebar "docs-sidebar")
 
-        ;; Language
-        (let ((g2 (render-sidebar-group sidebar "LANGUAGE")))
-          (render-sidebar-item g2 "Language Guide" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/ESHKOL_LANGUAGE_GUIDE.md")
-          (render-sidebar-item g2 "Automatic Differentiation" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/guide/AUTOMATIC_DIFFERENTIATION.md")
-          (render-sidebar-item g2 "Language Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/reference/language/INDEX.md")
-          (render-sidebar-item g2 "Language Specification" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/COMPLETE_LANGUAGE_SPECIFICATION.md"))
-
-        ;; Reference
-        (let ((g3 (render-sidebar-group sidebar "REFERENCE")))
-          (render-sidebar-item g3 "API Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/API_REFERENCE.md")
-          (render-sidebar-item g3 "Standard Library API" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/STDLIB_V1_2_API.md")
-          (render-sidebar-item g3 "Feature Matrix" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/FEATURE_MATRIX.md")
-          (render-sidebar-item g3 "Quick Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/ESHKOL_QUICK_REFERENCE.md")
-          (render-sidebar-item g3 "Known Issues" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/KNOWN_ISSUES.md")
-          (render-sidebar-item g3 "FAQ" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/FAQ.md"))
-
-        ;; Architecture
-        (let ((g4 (render-sidebar-group sidebar "ARCHITECTURE")))
-          (render-sidebar-item g4 "Architecture Overview" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/ESHKOL_V1_ARCHITECTURE.md")
-          (render-sidebar-item g4 "Compiler Architecture" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/COMPILER_ARCHITECTURE.md")
-          (render-sidebar-item g4 "Memory Management" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/MEMORY_MANAGEMENT.md")
-          (render-sidebar-item g4 "Type System" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/TYPE_SYSTEM.md"))
-
-        ;; Topics
-        (let ((g5 (render-sidebar-group sidebar "TOPICS")))
-          (render-sidebar-item g5 "Automatic Differentiation" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/AUTODIFF.md")
-          (render-sidebar-item g5 "Vector Operations" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/VECTOR_OPERATIONS.md")
-          (render-sidebar-item g5 "Machine Learning" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/MACHINE_LEARNING.md")
-          (render-sidebar-item g5 "GPU Acceleration" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/GPU_ACCELERATION.md")
-          (render-sidebar-item g5 "Consciousness Engine" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/CONSCIOUSNESS_ENGINE.md")
-          (render-sidebar-item g5 "Bytecode VM" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/BYTECODE_VM.md")
-          (render-sidebar-item g5 "Agent FFI" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/AGENT_FFI.md")
-          (render-sidebar-item g5 "Parallel Computing" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/PARALLEL_COMPUTING.md")
-          (render-sidebar-item g5 "Scheme Compatibility" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/SCHEME_COMPATIBILITY.md"))
-
-        ;; Paper Artefact
-        (let ((gs (render-sidebar-group sidebar "PAPER ARTEFACT")))
-          (render-sidebar-item gs "SDNC Paper" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/SDNC.md")
-          (render-sidebar-item gs "Computable Transformer" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/COMPUTABLE_TRANSFORMER.md")
-          (render-sidebar-item gs "VM as Weight Matrices" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md"))
-
-        ;; Announcements
-        (let ((ga (render-sidebar-group sidebar "ANNOUNCEMENTS")))
-          (render-sidebar-item ga "v1.3.0-evolve: Arbitrary-Order AD" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ANNOUNCEMENT.md"))
-
-        ;; Project
-        (let ((g6 (render-sidebar-group sidebar "PROJECT")))
-          (render-sidebar-item g6 "Roadmap" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ROADMAP.md")
-          (render-sidebar-item g6 "Changelog" "https://raw.githubusercontent.com/tsotchke/eshkol/master/CHANGELOG.md")
-          (render-sidebar-item g6 "Contributing" "https://raw.githubusercontent.com/tsotchke/eshkol/master/CONTRIBUTING.md")))
+        ;; Generated from site/pages.json by scripts/build-site-content.sh.
+        (web-load-content "/content/nav-docs.html" sidebar))
 
       ;; Content area
       (let ((doc-area (create-div layout)))
@@ -1220,12 +1209,8 @@
         (web-set-attribute doc-area "id" "doc-content-area")
         (style! doc-area "minHeight" "600px")
 
-        ;; Load Language Guide by default
-        (web-load-content "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/ESHKOL_LANGUAGE_GUIDE.md" doc-area)
-
-        (let ((hint (create-text "p" "Select a document from the sidebar to load it." doc-area)))
-          (style! hint "color" "#71717a")
-          (style! hint "fontStyle" "italic"))))))
+        ;; The view's default page; "#page=<slug>" in the address selects another.
+        (web-load-content "/content/eshkol_language_guide.html" doc-area)))))
 
 ;; ═══════════════════════════════════════════════════════════
 ;; PAGE: DOWNLOADS
@@ -1233,10 +1218,10 @@
 
 (define (render-downloads-page content)
   (let ((page (create-section content)))
-    (create-page-header page "Downloads" "Install Eshkol on macOS, Linux, Windows, or build from source. v1.3.5-evolve provides 15 platform packages plus SHA256SUMS.txt in a 16-file release payload.")
+    (create-page-header page "Downloads" release-downloads-summary)
 
     ;; ── Publication status ──────────────────────────────────────
-    (section-subheading page "v1.3.5-evolve Publication")
+    (section-subheading page release-publication-heading)
     (let ((status (create-text "p" "Checking release status and available downloads." page)))
       (web-set-attribute status "id" "release-status")
       (style! status "color" "#a1a1aa"))
@@ -1254,8 +1239,7 @@
     ;; ── Linux ──────────────────────────────────────────────────
     (section-subheading page "Linux")
     (body-text page "Choose the x64 or ARM64 archive and the Lite, XLA, or CUDA 12.4 tier. Verify it against SHA256SUMS.txt before extraction.")
-    (create-code-block page
-      "<code style='color:#606078'># Valid after the v1.3.4-evolve tag is published</code>\n<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/download/v1.3.4-evolve/eshkol-v1.3.4-evolve-linux-x64-lite.tar.gz\n<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/download/v1.3.4-evolve/SHA256SUMS.txt\n<code style='color:#22c55e'>$</code> sha256sum -c SHA256SUMS.txt --ignore-missing\n<code style='color:#22c55e'>$</code> tar xzf eshkol-v1.3.4-evolve-linux-x64-lite.tar.gz")
+    (create-code-block page release-linux-install-html)
 
     ;; ── Windows ────────────────────────────────────────────────
     (section-subheading page "Windows")
@@ -1388,8 +1372,7 @@
         (style! output "whiteSpace" "pre-wrap")
 
         ;; Welcome message
-        (web-set-inner-html output
-          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.3.5-evolve</span>\n<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
+        (web-set-inner-html output release-vm-banner-html))
 
       ;; Terminal input area
       (let ((input-row (create-div terminal)))
@@ -1442,7 +1425,7 @@
     (let ((stats (create-grid-4 page)))
       (let ((s1 (create-card stats)))
         (web-add-class s1 "text-center")
-        (let ((v (create-text "div" "302KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "287KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "Site WASM" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-card stats)))

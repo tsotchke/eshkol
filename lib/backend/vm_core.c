@@ -1289,7 +1289,7 @@ static double as_number_vm(VM* vm, Value v) {
     return 0.0;
 }
 
-/** @brief The VM half of the container slot store boundary (ADR-0016).
+/** @brief The VM half of the container slot store boundary (ADR-0020).
  *
  * A tensor slot holds a real number. Every VM mutator that writes a Scheme
  * value into a tensor -- vector-set! on a tensor operand and both tensor-set!

@@ -107,7 +107,7 @@ tensor from a Scheme value: `tensor`, `make-tensor`, `tensor-set!`, and
 A tensor answers `vector?`, so `vector-set!`, `vector-fill!` and `vector-copy!`
 accept one — including a numeric `#(…)` literal. They share a single store
 boundary with `tensor-set!`
-([ADR-0016](../../design/adr/0016-container-slot-store-boundary.md)): the value
+([ADR-0020](../../design/adr/0020-container-slot-store-boundary.md)): the value
 is converted to the slot's representation, or the store is refused.
 
 ```scheme

@@ -198,7 +198,7 @@ eshkol-run hello.esk -o hello
 
 ```bash
 # Evaluate an expression directly (no binary produced)
-eshkol-run -e '(+ 1 2 3)'
+eshkol-run -e '(display (+ 1 2 3))'
 # Output: 6
 
 # JIT-run a file (no binary produced)
@@ -312,7 +312,7 @@ eshkol-run program.esk -i
 cat program.ll
 
 # Quick one-liner evaluation
-eshkol-run -e '(map (lambda (x) (* x x)) (list 1 2 3 4 5))'
+eshkol-run -e '(display (map (lambda (x) (* x x)) (list 1 2 3 4 5)))'
 
 # Compile to WebAssembly
 eshkol-run program.esk --wasm -o program.wasm

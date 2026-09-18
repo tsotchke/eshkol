@@ -39,3 +39,10 @@ xavier-uniform!
 xavier-normal!
 xavierUniform
 xavierNormal
+# The same initializers named in prose by the published API reference and ML guide.
+Xavier uniform
+Xavier normal
+variance compared to Xavier
+# The public GPU generation sm_72 targets, named in the release notes' CUDA architecture list (see Jetson Xavier above).
+code keeps Xavier and current RTX
+code preserves Xavier through current RTX

@@ -163,6 +163,28 @@ into one constructor without one of them lying about what it proved).
   operands to be rigorous and to share order/center/radius, checked
   explicitly (error otherwise) — a stricter precondition than the
   validated `tm-add`/`tm-mul`, which only document the requirement.
+- `(tm-scale-const tm s)` — multiply a rigorous model by a fixed **point**
+  scalar `s` (an ordinary number of either sign, not an interval): every
+  polynomial coefficient is multiplied by `s` and the remainder by `s`
+  through `ia-scale`, while order, center and radius are kept. With exact
+  coefficients and an exact `s` the result stays exact, so it is the cheap
+  way to write `c · g` without building a constant model and paying for a
+  `tm*` product. It returns a rigorous model and does no operand checking
+  of its own: pass it a model built by this section's constructors.
+
+  ```scheme
+  (require core.ad.taylor_models)
+
+  (define xv (tm-var 0 1 2))                  ; x on [-1,1], order 2
+  (define sq (tm* xv xv))                     ; x^2
+  (define half (tm-scale-const sq 1/2))       ; x^2 / 2
+  (display (tm-coeffs sq)) (newline)          ; => (0 0 1)
+  (display (tm-coeffs half)) (newline)        ; => (0 0 1/2)
+  (display (tm-remainder half)) (newline)     ; => (0 . 0)
+  (display (tm-bound half)) (newline)         ; => (-1/2 . 1/2)
+  (display (tm-prove-bound half -1/2 1/2)) (newline)       ; => #t
+  (display (tm-bound (tm-scale-const sq -3))) (newline)    ; => (-3 . 3)
+  ```
 - `(tm-compose outer inner)` — general substitution: requires
   `(tm-bound inner)` to fall entirely inside `outer`'s declared domain
   (checked, error otherwise — this **is** the soundness precondition of

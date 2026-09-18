@@ -1,0 +1,102 @@
+<h1 id="project-build-a-data-analysis-pipeline">Project: Build a Data Analysis Pipeline</h1>
+<p>A complete program that reads data, processes it with higher-order functions, computes statistics, and outputs results.</p>
+<hr />
+<h2 id="the-complete-program">The Complete Program</h2>
+<pre class="scheme"><code>;; ═══════════════════════════════════════════════════════
+;; Data Analysis Pipeline
+;; Uses: lists, fold, map, filter, exact arithmetic
+;; ═══════════════════════════════════════════════════════
+
+(require core.list.higher_order)
+
+;; --- Dataset: exam scores ---
+(define scores &#39;(85 92 78 95 88 73 91 87 69 94 82 76 90 83 97))
+
+;; --- Basic statistics ---
+
+(define n (length scores))
+
+;; Mean
+(define total (fold-left + 0 scores))
+(define mean (/ total n))
+(display &quot;Count: &quot;) (display n) (newline)
+(display &quot;Sum: &quot;) (display total) (newline)
+(display &quot;Mean: &quot;) (display (exact-&gt;inexact mean)) (newline)
+
+;; Min and Max
+(define (list-min lst)
+  (fold-left (lambda (a b) (if (&lt; a b) a b)) (car lst) (cdr lst)))
+(define (list-max lst)
+  (fold-left (lambda (a b) (if (&gt; a b) a b)) (car lst) (cdr lst)))
+
+(display &quot;Min: &quot;) (display (list-min scores)) (newline)
+(display &quot;Max: &quot;) (display (list-max scores)) (newline)
+
+;; Variance and standard deviation
+(define (square-diff x) (* (- x mean) (- x mean)))
+(define variance (/ (fold-left + 0 (map square-diff scores)) n))
+(display &quot;Variance: &quot;) (display (exact-&gt;inexact variance)) (newline)
+(display &quot;Std Dev: &quot;) (display (sqrt (exact-&gt;inexact variance))) (newline)
+
+;; --- Filtering and grouping ---
+
+;; Students who passed (&gt;= 80)
+(define passed (filter (lambda (s) (&gt;= s 80)) scores))
+(display &quot;Passed (&gt;= 80): &quot;) (display passed) (newline)
+(display &quot;Pass rate: &quot;)
+(display (exact-&gt;inexact (/ (length passed) n)))
+(newline)
+
+;; Grade distribution
+(define (grade score)
+  (cond ((&gt;= score 90) &#39;A)
+        ((&gt;= score 80) &#39;B)
+        ((&gt;= score 70) &#39;C)
+        (else &#39;F)))
+
+(define grades (map grade scores))
+(display &quot;Grades: &quot;) (display grades) (newline)
+
+;; Count each grade
+(define (count-grade g)
+  (length (filter (lambda (x) (eq? x g)) grades)))
+
+(display &quot;A: &quot;) (display (count-grade &#39;A)) (newline)
+(display &quot;B: &quot;) (display (count-grade &#39;B)) (newline)
+(display &quot;C: &quot;) (display (count-grade &#39;C)) (newline)
+(display &quot;F: &quot;) (display (count-grade &#39;F)) (newline)
+
+;; --- Normalisation ---
+
+(define min-score (list-min scores))
+(define max-score (list-max scores))
+(define range (- max-score min-score))
+
+(define (normalise x)
+  (exact-&gt;inexact (/ (- x min-score) range)))
+
+(define normalised (map normalise scores))
+(display &quot;Normalised: &quot;) (display normalised) (newline)
+
+;; --- Dot product for correlation ---
+(define (dot a b) (fold-left + 0 (map * a b)))
+
+;; Hours studied (hypothetical data, same length as scores)
+(define hours &#39;(5 8 4 9 7 3 8 6 2 9 5 4 7 6 10))
+
+(display &quot;Score-Hours dot product: &quot;)
+(display (dot scores hours))
+(newline)
+
+(display &quot;Pipeline complete.&quot;)
+(newline)</code></pre>
+<hr />
+<h2 id="key-concepts-demonstrated">Key Concepts Demonstrated</h2>
+<ol type="1">
+<li><strong>fold-left</strong> for reductions (sum, min, max, variance)</li>
+<li><strong>map</strong> for transformations (grading, normalisation)</li>
+<li><strong>filter</strong> for selection (passing students)</li>
+<li><strong>Exact arithmetic</strong> — integer sums stay exact, <code>exact-&gt;inexact</code> for display</li>
+<li><strong>Higher-order composition</strong> — small functions composed via map/fold</li>
+<li><strong>Multi-list map</strong> — <code>(map * a b)</code> for element-wise products</li>
+</ol>

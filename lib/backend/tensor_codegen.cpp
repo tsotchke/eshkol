@@ -1232,7 +1232,7 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
         ctx_.builder().SetInsertPoint(bounds_ok);
     }
 
-    // ADR-0016 slot store boundary: the value is converted to the slot's
+    // ADR-0020 slot store boundary: the value is converted to the slot's
     // declared representation (dtype-reduced f64) or refused with a catchable
     // error; a DOUBLE into an f64 tensor is stored inline.
     if (new_value->getType() != ctx_.taggedValueType()) {

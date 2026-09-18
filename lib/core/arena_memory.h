@@ -884,7 +884,7 @@ void eshkol_region_write_barrier_range(const void* dst,
                                        eshkol_tagged_value_t* slots,
                                        uint64_t n);
 
-// The container slot store boundary (docs/design/adr/0016-container-slot-store-boundary.md).
+// The container slot store boundary (docs/design/adr/0020-container-slot-store-boundary.md).
 //
 // Eshkol exposes two sequence representations through the R7RS vector API: a
 // Scheme vector (inline 16-byte tagged slots, any value) and a tensor (a dense

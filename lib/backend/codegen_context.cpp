@@ -66,7 +66,7 @@ llvm::Value* CodegenContext::emitRegionWriteBarrier(llvm::Value* dst_ptr,
     return builder_.CreateLoad(tv_ty, out_slot, "wb_result");
 }
 
-// === Container Slot Store Boundary (ADR-0016) ===
+// === Container Slot Store Boundary (ADR-0020) ===
 
 llvm::Value* CodegenContext::spillTaggedToEntrySlot(llvm::Value* tagged_value,
                                                     const char* name) {

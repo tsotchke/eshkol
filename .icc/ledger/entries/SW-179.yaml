@@ -43,7 +43,7 @@ root_cause: >-
   rationals or bignums; the VM's vector-set! tensor path stored 0 for an exact
   rational and every VM tensor writer stored 0 for a non-number.
 fix: >-
-  ADR-0016, one store boundary. Invariant: a value stored into a container
+  ADR-0020, one store boundary. Invariant: a value stored into a container
   slot is a value of the slot's declared representation. encode_tensor_slot()
   in lib/core/runtime_vector_mutation.cpp is the only code that writes a
   Scheme value into a tensor slot: a real number of any exactness becomes the

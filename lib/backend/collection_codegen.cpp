@@ -2062,7 +2062,7 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
  * and raises an ESHKOL_EXCEPTION_ERROR on failure; then:
  *  - Vector path (proven inline): stores the full 16-byte tagged value into
  *    `elements[idx]` behind the region write barrier.
- *  - Tensor path: CodegenContext::emitTensorSlotStore, the ADR-0016 slot store
+ *  - Tensor path: CodegenContext::emitTensorSlotStore, the ADR-0020 slot store
  *    boundary, which converts the value to the slot's declared representation
  *    (a real number of any exactness becomes the tensor's dtype-reduced f64)
  *    or raises a catchable error. The value's payload bits are never
@@ -2107,7 +2107,7 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
         }
     }
 
-    // ADR-0016 slot store boundary. A Scheme vector (HEAP_PTR +
+    // ADR-0020 slot store boundary. A Scheme vector (HEAP_PTR +
     // HEAP_SUBTYPE_VECTOR) slot holds any tagged value unchanged and is stored
     // inline. A tensor operand -- a numeric #(...) literal or a builtin-returned
     // tensor -- is stored through emitTensorSlotStore, which converts the value
@@ -2213,7 +2213,7 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
  * overlapping source/destination ranges, e.g. copying within the same
  * vector). `start` defaults to 0 and `end` defaults to `from`'s length.
  * Both operands may be a Scheme vector or a tensor-backed `#(...)` literal:
- * the copy runs in the runtime half of the ADR-0016 slot store boundary
+ * the copy runs in the runtime half of the ADR-0020 slot store boundary
  * (eshkol_vector_copy_mutating), which validates every value against the
  * destination's slot representation before the destination is modified.
  *
@@ -2720,7 +2720,7 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
 /**
  * @brief Emit IR for `(vector-fill! v val)`.
  *
- * Routed through the ADR-0016 slot store boundary
+ * Routed through the ADR-0020 slot store boundary
  * (CodegenContext::emitSequenceFill): the runtime resolves whether the operand
  * is a Scheme vector or a tensor-backed `#(...)` literal, converts `val` once
  * to the slot's declared representation, and stores it into every slot. A
@@ -2757,7 +2757,7 @@ llvm::Value* CollectionCodegen::vectorFill(const eshkol_operations_t* op) {
         return nullptr;
     }
 
-    // ADR-0016 slot store boundary: the runtime resolves the operand's
+    // ADR-0020 slot store boundary: the runtime resolves the operand's
     // representation (Scheme vector or tensor-backed #(...) literal), converts
     // the value once to the slot's declared representation, fills every slot,
     // and runs the region write barrier for tagged destinations.

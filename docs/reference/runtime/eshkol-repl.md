@@ -104,7 +104,7 @@ first line of input:
   (see below) and for a driver's own process bookkeeping. Never assume this
   equals the pid the driver's own spawn call returned; on some platforms —
   and always if the driver has gone through a shell — they can differ.
-- `eshkol_version` (string) — `eshkol --version`'s version string, for
+- `eshkol_version` (string) — `eshkol-run --version`'s version string, for
   diagnostics; not part of the compatibility contract (see below).
 
 ### `"op":"eval"` — evaluate one top-level form

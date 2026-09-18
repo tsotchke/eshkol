@@ -9,8 +9,8 @@ suites** and **1,020/1,020** individual tests; <!-- release-record:ctest -->the 
 **1,115/1,115**; <!-- release-record:vm-parity -->VM parity differential **340/340**<!-- /release-record -->
 over a **961-row** manifest (604
 `vm-supported`, 46 `native-only-justified`, 311 `gap`) plus its
-gap-disposition sidecar, superseding the earlier 338/338, 194/194 and 188/188 figures,
-which were correct over the smaller corpus they were measured on; runtime smoke probes **87/87**; Taylor monomorphization equivalence **441/441** under both JIT and AOT; qLLM oracle gate **12/12** across six exporters. The Release workflow
+gap-disposition sidecar (the 338/338, 194/194 and 188/188 figures that older
+documents quote are superseded: each was measured over a smaller corpus); runtime smoke probes **87/87**; Taylor monomorphization equivalence **441/441** under both JIT and AOT; qLLM oracle gate **12/12** across six exporters. The Release workflow
 regenerates these figures from the tagged commit, and the ICC readiness verdict
 is bound to that exact checkout: publication requires `ready` at 100.
 The scheduled pillar lanes carry the SICP full-book gate at **88/88** probes
@@ -22,19 +22,32 @@ See [TESTING.md](TESTING.md) for how each gate is run and
 **Additional verification**: `scripts/run_all_tests.sh` passes every suite and
 its self-reported individual tests; the v1.2 edge/security suite, the standalone
 VM source suite, the VM C API suite, CTest, and the stress tests all pass. The
-v1.3.4-evolve cycle added regression gates for iter-scope partial reclamation
+regression gates include, since v1.3.4, iter-scope partial reclamation
 (`iter_scope_partial_reclaim`), the `parallel-map` scope-reclaim race
 (`parallel_map_scope_reclaim_race`), the 25-check gradient-through-callable
 suite, the Ozaki-II exact/fast GEMM correctness gates, `i128` native+VM parity,
 and the tensor-matmul VM parity corpus (`31_tensor_matmul`).
 
-The v1.3.5-evolve cycle adds the assurance-gate family (every
+Since v1.3.5 they also include the assurance-gate family (every
 `scripts/check_*.py` and `scripts/gate_*.py`, each self-testing), the VM
 region-evacuator memory gates, the leak-detector self-test and leak audit, the
 closed-enum exhaustive-dispatch gate, the AD exactness and one-pass gradient
 gates, the AD carrier gate, the node-identity and object-ABI baselines, the
-linear-`Qubit` engine-parity gate, the continuations suite, and the GPU
-correctness gate with its must-fail canary. See
+linear-`Qubit` engine-parity gate, the continuations suite with its
+fail-closed normalisation check (`continuation_normalizer_failure`), the GPU
+correctness gate with its must-fail canary, the language-coverage hook-guard
+and determinism tests (`language_coverage_hook_guard_test`,
+`language_coverage_determinism_test`), the exact engine-parity floors
+(`tests/vm_parity/ENGINE_PARITY_BASELINE.json`, 321/1,139 overall and 155/473
+high-risk), the documentation example gate over the scopes in
+`GATED_SCOPES` (`doc_example_gate_selftest`, `doc_example_gate_tutorials`),
+the release-record consistency gate (`scripts/check_surface_counts.py`), the
+changelog completeness gate (`scripts/check_changelog_completeness.py`), the
+documentation front-matter gate (`scripts/check_doc_front_matter.py`), the
+release evidence-path recipe test
+(`tests/toolchain/test_v1_3_release_evidence_recipe.py`), and the release
+invariant probes and receipt contracts (`test_release_invariant_contracts`,
+`test_release_probe_receipts`, `wasm_flat_ad_import_test`). See
 [TESTING.md](TESTING.md).
 
 ---

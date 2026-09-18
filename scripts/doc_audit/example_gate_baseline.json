@@ -2,6 +2,14 @@
   "note": "Marked (not fully checked) examples per file. Counts may only go down; see scripts/doc_audit/check_doc_examples.py.",
   "schema": "eshkol.doc_example_gate_baseline.v1",
   "scopes": {
+    "guides": {
+      "marked": {},
+      "marked_total": {
+        "known-defect": 0,
+        "run-only": 0,
+        "skip": 0
+      }
+    },
     "tutorials": {
       "marked": {
         "docs/tutorials/05_SIGNAL_PROCESSING.md": {
@@ -30,6 +38,14 @@
         "known-defect": 6,
         "run-only": 1,
         "skip": 3
+      }
+    },
+    "upgrading": {
+      "marked": {},
+      "marked_total": {
+        "known-defect": 0,
+        "run-only": 0,
+        "skip": 0
       }
     }
   }

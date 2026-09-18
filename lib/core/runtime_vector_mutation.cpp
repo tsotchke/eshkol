@@ -5,7 +5,7 @@
  *
  * Representation-aware R7RS vector mutation helpers.
  *
- * This file is the container slot store boundary (ADR-0016). A sequence is
+ * This file is the container slot store boundary (ADR-0020). A sequence is
  * either a Scheme vector (inline 16-byte tagged slots) or a tensor (a dense
  * numeric carrier whose slot representation is declared by its dtype). Every
  * mutator -- vector-set!, vector-fill!, vector-copy!, tensor-set! -- reaches a

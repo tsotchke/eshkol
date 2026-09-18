@@ -36,6 +36,7 @@ it is called out explicitly.
 | 14 | Numeric tower: exact/inexact/rational/bignum/complex | [numeric-tower.md](numeric-tower.md) |
 | 15 | Capability policy (`core.capabilities`) | [capabilities.md](capabilities.md) |
 | 16 | Native 128-bit integers (`i128`): distinct wrapping fixed-width type | [i128.md](i128.md) |
+| 17 | Type annotations and the gradual checker: what is checked where, function types, branch joins, loop typing, diagnostics | [../../guide/GRADUAL_TYPING.md](../../guide/GRADUAL_TYPING.md) |
 
 ## Known-issue conventions
 

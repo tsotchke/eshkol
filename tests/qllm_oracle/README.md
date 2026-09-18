@@ -450,8 +450,8 @@ fills that contract wrongly.
 change.** The producers are reachable from C, which is the external-tensor bridge
 path. They are not reachable from `(gradient (lambda (W) … (embedding idx W)))`,
 because no *compiled* Eshkol program can create an `AD_NODE_TENSOR_*` node at
-all. `lib/backend/llvm_codegen.cpp` (see the block comment above
-`kDenseTensorADNodesEnabled`) enumerates three independent unfinished pieces, and
+all. `lib/backend/autodiff_codegen.cpp` (see `denseTensorADNodesEnabled()` and its
+header comment in `inc/eshkol/backend/autodiff_codegen.h`) enumerates three independent unfinished pieces, and
 flipping the flag SIGSEGVs rather than producing a slower-but-correct gradient:
 
 1. `recordADNodeTensor` leaves `tensor_gradient` NULL, while the reverse pass
