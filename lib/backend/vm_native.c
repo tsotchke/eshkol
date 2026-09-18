@@ -10059,6 +10059,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 "use the native backend");
             break;
         }
+        /* A complex evaluation point needs a complex-valued perturbation;
+         * derivative is defined over the reals (ADR-0025). Refused exactly as
+         * the native engine refuses it, instead of seeding the point's real
+         * reading and answering a derivative of 0. */
+        if (x_val.type == VAL_COMPLEX) {
+            vm_raise_error_msg(vm, "derivative: evaluation point is not a real number (a complex point); "
+                                   "derivative differentiates with respect to a real parameter");
+            break;
+        }
         /* Create dual number: x + 1ε
          *
          * ESH-0393: seeded via as_number_vm(), not as_number(). as_number()
