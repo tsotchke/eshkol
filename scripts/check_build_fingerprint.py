@@ -31,7 +31,9 @@ This gate reads that file and fails on either of two independent conditions:
      matches the binary now present at `path`. Either the binary was rebuilt
      or replaced after the harness ran (so the harness's evidence is about a
      binary that no longer exists — re-run it), or the binary was deleted
-     outright.
+     outright. Only the latest record per harness and binary is judged: a
+     harness replaces its own evidence on every run, so re-running it is the
+     remedy and supersedes its earlier records.
 
   2. STALE BINARY — for every real binary named `--binary` (default:
      eshkol-run) found under `--build-dir`, the binary's own mtime is older
@@ -250,6 +252,23 @@ def load_fingerprint_events(trace_dir: str) -> list[dict]:
     return events
 
 
+def effective_events(events: list[dict]) -> list[dict]:
+    """The record that still describes evidence on disk, per harness and binary.
+
+    A harness truncates its own trace at start, so each invocation replaces the
+    evidence of the one before it; the fingerprint file is append-only. The
+    latest record for a (harness, path) pair is therefore the only one whose
+    evidence still exists. An earlier record is superseded, not violated: the
+    harness was re-run, which is exactly the remedy check 1 asks for.
+    Unparseable records are never superseded."""
+    latest: dict[tuple[str, str], int] = {}
+    for idx, rec in enumerate(events):
+        if "_parse_error" not in rec:
+            latest[(str(rec.get("harness", "")), str(rec.get("path", "")))] = idx
+    keep = set(latest.values())
+    return [rec for idx, rec in enumerate(events) if "_parse_error" in rec or idx in keep]
+
+
 def run_check(
     repo_root: str,
     trace_dir: str,
@@ -260,7 +279,7 @@ def run_check(
     checked_binaries: list[str] = []
     checked_events = 0
 
-    events = load_fingerprint_events(trace_dir)
+    events = effective_events(load_fingerprint_events(trace_dir))
     for rec in events:
         if "_parse_error" in rec:
             errors.append(f"unparseable fingerprint record: {rec['_parse_error']}")
@@ -383,7 +402,27 @@ def _e2e_fixture(tmp_dir: str) -> tuple[bool, str]:
     if not errs or "does not exist" not in errs[0]:
         return False, f"expected a 'does not exist' identity error, got: {errs}"
 
-    return True, "identity check correctly PASSes on a match and FAILs on mutation/deletion"
+    # Case 4: the harness is re-run against the rebuilt binary. Its new record
+    # supersedes the old one; a different harness's stale record still fails.
+    with open(binary_path, "wb") as fh:
+        fh.write(b"fake binary content v3 -- REBUILT AGAIN")
+    fp3 = current_fingerprint(binary_path)
+    assert fp3 is not None
+    rerun = dict(event, size=fp3["size"], mtime=fp3["mtime"], sha256=fp3["sha256"])
+    with open(fingerprint_file, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rerun) + "\n")
+    live = effective_events(load_fingerprint_events(trace_dir))
+    if len(live) != 1 or check_identity(live[0], fp3):
+        return False, f"a re-run must supersede the same harness's earlier record, got: {live}"
+    other = dict(event, harness="other_harness")
+    with open(fingerprint_file, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(other) + "\n")
+    live = effective_events(load_fingerprint_events(trace_dir))
+    stale = [e for rec in live for e in check_identity(rec, fp3)]
+    if len(live) != 2 or not stale:
+        return False, "another harness's stale record must still fail after an unrelated re-run"
+
+    return True, "identity check PASSes on a match, FAILs on mutation/deletion, and honours re-run supersession"
 
 
 def self_test() -> bool:

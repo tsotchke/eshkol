@@ -559,7 +559,10 @@ each gate CAN fail before it reports that nothing failed.
   `scripts/run_vm_parity.sh`.
 - **`scripts/check_build_fingerprint.py`** records the binary a harness
   actually measured, so a trace cannot be credited to a build it did not come
-  from.
+  from. The latest record per harness and binary is the one judged: a harness
+  replaces its own evidence on every run, so re-running it against the
+  current binary clears the gate, while another harness's stale record still
+  fails it.
 - **`scripts/check_evidence_staleness.py --require-trace-dir`** runs last,
   after the gates above have deposited fresh evidence in
   `scripts/icc_traces/`. `--require-trace-dir` turns an empty or absent trace
