@@ -8265,6 +8265,86 @@ static Value vm_force_promise_value(VM* vm, Value initial) {
  * @return 1 when @p a was complex and a result (or a fatal error) has been
  *         pushed/recorded; 0 when the caller must handle @p a itself.
  */
+/* ── The complex/derivative boundary (ADR-0025) ──
+ *
+ * The VM's forward carrier is a first-order dual. A real value entering a
+ * complex operation is lifted here, and only here: a dual becomes a complex
+ * with a tangent in its real part, so the derivative survives. A carrier this
+ * representation cannot hold (a Taylor tower, a hyper-dual) is refused with a
+ * message instead of being read as its primal. */
+static int vm_real_with_tangent(VM* vm, Value v, double* primal, double* tangent, const char* who) {
+    *tangent = 0.0;
+    if (v.type == VAL_HYPER_DUAL) {
+        char msg[200];
+        snprintf(msg, sizeof msg, "%s: a second-order derivative cannot pass through a complex number on the VM; use the native backend", who);
+        vm_raise_error_msg(vm, msg);
+        return 0;
+    }
+    if (v.type == VAL_DUAL) {
+        VmDual d = vm_dual_operand(vm, v);
+        if (vm_dual_is_taylor(&d)) {
+            char msg[200];
+            snprintf(msg, sizeof msg, "%s: a higher-order derivative cannot pass through a complex number on the VM; use the native backend", who);
+            vm_raise_error_msg(vm, msg);
+            return 0;
+        }
+        *primal = d.primal;
+        *tangent = d.tangent;
+        return 1;
+    }
+    *primal = as_number(v);
+    return 1;
+}
+
+static int vm_complex_operand(VM* vm, Value v, VmComplex* out, const char* who) {
+    memset(out, 0, sizeof *out);
+    if (v.type == VAL_COMPLEX) {
+        *out = *(VmComplex*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        return 1;
+    }
+    return vm_real_with_tangent(vm, v, &out->real, &out->dreal, who);
+}
+
+/* A real result with a tangent is a dual; without one, a plain float. */
+static Value vm_real_result(VM* vm, double value, double tangent) {
+    return tangent != 0.0 ? vm_make_dual_val(vm, value, tangent) : FLOAT_VAL(value);
+}
+
+/* A real elementary function f with derivative fp at x, applied to a real
+ * operand that may carry a first-order tangent: pushes f(x), with tangent
+ * fp(x) dx when one is present. The one rule for every real function the VM
+ * has no dual kernel for, so none of them reads a dual as its primal. */
+static void vm_push_real_unary(VM* vm, Value a, double (*f)(double), double (*fp)(double), const char* who) {
+    double x, dx;
+    if (!vm_real_with_tangent(vm, a, &x, &dx, who)) return;
+    vm_push(vm, vm_real_result(vm, f(x), dx != 0.0 ? fp(x) * dx : 0.0));
+}
+
+static double vm_d_atan(double x)  { return 1.0 / (1.0 + x * x); }
+static double vm_d_asin(double x)  { return 1.0 / sqrt(1.0 - x * x); }
+static double vm_d_acos(double x)  { return -1.0 / sqrt(1.0 - x * x); }
+static double vm_d_sinh(double x)  { return cosh(x); }
+static double vm_d_cosh(double x)  { return sinh(x); }
+
+/* Push a complex result, or raise the operation's no-derivative message. */
+static void vm_push_complex_result(VM* vm, VmComplex* result) {
+    if (!result) {
+        if (vm_complex_d_error) {
+            const char* msg = vm_complex_d_error;
+            vm_complex_d_error = NULL;
+            vm_raise_error_msg(vm, msg);
+        } else {
+            vm->error = 1;
+        }
+        return;
+    }
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return; }
+    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
+    vm->heap.objects[ptr]->opaque.ptr = result;
+    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+}
+
 static int vm_math_complex_dispatch(VM* vm, Value a, int fid) {
     VmComplex z;
     VmComplex* result = NULL;
@@ -8286,12 +8366,8 @@ static int vm_math_complex_dispatch(VM* vm, Value a, int fid) {
         case 722: result = vm_complex_tanh(&vm->heap.regions, &z); break;
         default: return 0;
     }
-    if (!result) { vm->error = 1; return 1; }
-    ptr = heap_alloc(&vm->heap);
-    if (ptr < 0) { vm->error = 1; return 1; }
-    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
-    vm->heap.objects[ptr]->opaque.ptr = result;
-    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+    (void)ptr;
+    vm_push_complex_result(vm, result);
     return 1;
 }
 
@@ -8574,9 +8650,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (vm_tag_is_exact_number(a) && a.type != VAL_RATIONAL) { vm_push(vm, a); break; }
         if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 344); break; }
         vm_push(vm, number_val_contagious1(a, trunc(as_number_vm(vm,a)))); break; }
-    case 29: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 29)) break; vm_push(vm, FLOAT_VAL(asin(as_number_vm(vm,a)))); break; }
-    case 30: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 30)) break; vm_push(vm, FLOAT_VAL(acos(as_number_vm(vm,a)))); break; }
-    case 31: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 31)) break; vm_push(vm, FLOAT_VAL(atan(as_number_vm(vm,a)))); break; }
+    case 29: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 29)) break; vm_push_real_unary(vm, a, asin, vm_d_asin, "asin"); break; }
+    case 30: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 30)) break; vm_push_real_unary(vm, a, acos, vm_d_acos, "acos"); break; }
+    case 31: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 31)) break; vm_push_real_unary(vm, a, atan, vm_d_atan, "atan"); break; }
     case 32: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,382); break; }
         /* Task #113: a complex base OR exponent promotes both and takes the
@@ -9179,43 +9255,48 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 314: case 315: case 316: case 317: case 318: case 319: {
         if (fid == 300) { /* make-rectangular */
             Value imag = vm_pop(vm), real = vm_pop(vm);
-            VmComplex* z = vm_complex_new(&vm->heap.regions, as_number(real), as_number(imag));
-            int32_t ptr = heap_alloc(&vm->heap);
-            if (ptr < 0 || !z) { vm->error = 1; break; }
-            vm->heap.objects[ptr]->type = HEAP_COMPLEX;
-            vm->heap.objects[ptr]->opaque.ptr = z;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+            /* ADR-0025: a derivative entering a complex number is kept. */
+            double re, dre, im, dim;
+            if (!vm_real_with_tangent(vm, real, &re, &dre, "make-rectangular") ||
+                !vm_real_with_tangent(vm, imag, &im, &dim, "make-rectangular")) break;
+            vm_push_complex_result(vm, vm_complex_new_d(&vm->heap.regions, re, im, dre, dim));
         } else if (fid == 301) { /* make-polar */
             /* Arguments are pushed left-to-right, so angle is on top.  This
              * must be handled before the unary complex-operation path: that
              * path used to pop angle as the magnitude and then magnitude as
              * the angle, silently constructing the wrong complex number. */
             Value angle = vm_pop(vm), magnitude = vm_pop(vm);
-            VmComplex* z = vm_make_polar(&vm->heap.regions,
-                                          as_number(magnitude),
-                                          as_number(angle));
-            int32_t ptr = heap_alloc(&vm->heap);
-            if (ptr < 0 || !z) { vm->error = 1; break; }
-            vm->heap.objects[ptr]->type = HEAP_COMPLEX;
-            vm->heap.objects[ptr]->opaque.ptr = z;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+            double m, dm, t, dt;
+            if (!vm_real_with_tangent(vm, magnitude, &m, &dm, "make-polar") ||
+                !vm_real_with_tangent(vm, angle, &t, &dt, "make-polar")) break;
+            /* d(m cos t) = dm cos t - m sin t dt;  d(m sin t) = dm sin t + m cos t dt */
+            vm_push_complex_result(vm, vm_complex_new_d(&vm->heap.regions,
+                m * cos(t), m * sin(t),
+                dm * cos(t) - m * sin(t) * dt,
+                dm * sin(t) + m * cos(t) * dt));
         } else if (fid == 302) { /* real-part */
             Value z_val = vm_pop(vm);
             if (z_val.type == VAL_COMPLEX) {
                 VmComplex* z = (VmComplex*)vm->heap.objects[z_val.as.ptr]->opaque.ptr;
-                vm_push(vm, FLOAT_VAL(z->real));
+                vm_push(vm, vm_real_result(vm, z->real, z->dreal));
+            } else if (z_val.type == VAL_DUAL || z_val.type == VAL_HYPER_DUAL) {
+                vm_push(vm, z_val);   /* a real carrier is its own real part */
             } else { vm_push(vm, FLOAT_VAL(as_number(z_val))); }
         } else if (fid == 303) { /* imag-part */
             Value z_val = vm_pop(vm);
             if (z_val.type == VAL_COMPLEX) {
                 VmComplex* z = (VmComplex*)vm->heap.objects[z_val.as.ptr]->opaque.ptr;
-                vm_push(vm, FLOAT_VAL(z->imag));
+                vm_push(vm, vm_real_result(vm, z->imag, z->dimag));
             } else { vm_push(vm, FLOAT_VAL(0.0)); }
         } else if (fid == 304) { /* magnitude */
             Value z_val = vm_pop(vm);
             if (z_val.type == VAL_COMPLEX) {
                 VmComplex* z = (VmComplex*)vm->heap.objects[z_val.as.ptr]->opaque.ptr;
-                vm_push(vm, FLOAT_VAL(vm_complex_magnitude(z)));
+                double dm = vm_complex_magnitude_tangent(z);
+                if (vm_complex_d_error) { const char* msg = vm_complex_d_error; vm_complex_d_error = NULL; vm_raise_error_msg(vm, msg); break; }
+                vm_push(vm, vm_real_result(vm, vm_complex_magnitude(z), dm));
+            } else if (z_val.type == VAL_DUAL) {
+                vm_push(vm, z_val); vm_dispatch_native(vm, 35);   /* abs keeps the tangent */
             } else { vm_push(vm, FLOAT_VAL(fabs(as_number(z_val)))); }
         } else if (fid == 317) { /* complex? */
             Value v = vm_pop(vm);
@@ -9225,9 +9306,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int is_binary = (fid >= 307 && fid <= 310) || fid == 318 || fid == 319;
             if (is_binary) {
                 Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-                VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
-                if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-                if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+                VmComplex a_z, b_z;
+                if (!vm_complex_operand(vm, a_val, &a_z, "complex arithmetic") ||
+                    !vm_complex_operand(vm, b_val, &b_z, "complex arithmetic")) break;
                 VmComplex* result = NULL;
                 switch (fid) {
                     case 307: result = vm_complex_add(&vm->heap.regions, &a_z, &b_z); break;
@@ -9237,21 +9318,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     case 318: result = vm_complex_expt(&vm->heap.regions, &a_z, &b_z); break;
                     case 319: vm_push(vm, BOOL_VAL(a_z.real == b_z.real && a_z.imag == b_z.imag)); break;
                 }
-                if (fid != 319) {
-                    if (!result) { vm->error = 1; break; }
-                    int32_t ptr = heap_alloc(&vm->heap);
-                    if (ptr < 0) { vm->error = 1; break; }
-                    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
-                    vm->heap.objects[ptr]->opaque.ptr = result;
-                    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
-                }
+                if (fid != 319) vm_push_complex_result(vm, result);
             } else {
                 Value a_val = vm_pop(vm);
-                VmComplex a_z = {as_number(a_val), 0};
-                if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
+                if (fid == 306 && (a_val.type == VAL_DUAL || a_val.type == VAL_HYPER_DUAL)) {
+                    vm_push(vm, a_val);   /* the conjugate of a real carrier is itself */
+                    break;
+                }
+                VmComplex a_z;
+                if (!vm_complex_operand(vm, a_val, &a_z, "complex operation")) break;
                 VmComplex* result = NULL;
                 switch (fid) {
-                    case 305: vm_push(vm, FLOAT_VAL(vm_complex_angle(&a_z))); break;
+                    case 305: {
+                        double da = vm_complex_angle_tangent(&a_z);
+                        if (vm_complex_d_error) { const char* msg = vm_complex_d_error; vm_complex_d_error = NULL; vm_raise_error_msg(vm, msg); break; }
+                        vm_push(vm, vm_real_result(vm, vm_complex_angle(&a_z), da));
+                        break;
+                    }
                     case 306: result = vm_complex_conjugate(&vm->heap.regions, &a_z); break;
                     case 311: result = vm_complex_sqrt(&vm->heap.regions, &a_z); break;
                     case 312: result = vm_complex_exp(&vm->heap.regions, &a_z); break;
@@ -9260,14 +9343,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     case 315: result = vm_complex_cos(&vm->heap.regions, &a_z); break;
                     case 316: result = vm_complex_tan(&vm->heap.regions, &a_z); break;
                 }
-                if (fid != 305) {
-                    if (!result) { vm->error = 1; break; }
-                    int32_t ptr = heap_alloc(&vm->heap);
-                    if (ptr < 0) { vm->error = 1; break; }
-                    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
-                    vm->heap.objects[ptr]->opaque.ptr = result;
-                    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
-                }
+                if (fid != 305) vm_push_complex_result(vm, result);
             }
         }
         break;
@@ -16090,7 +16166,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 250: { /* atan2 */
         Value x = vm_pop(vm), y = vm_pop(vm);
-        vm_push(vm, FLOAT_VAL(atan2(as_number(y), as_number(x))));
+        /* d atan2(y, x) = (x dy - y dx) / (x^2 + y^2) */
+        double xv, dx, yv, dy;
+        if (!vm_real_with_tangent(vm, y, &yv, &dy, "atan2") ||
+            !vm_real_with_tangent(vm, x, &xv, &dx, "atan2")) break;
+        double r2 = xv * xv + yv * yv;
+        if ((dx != 0.0 || dy != 0.0) && r2 == 0.0) {
+            vm_raise_error_msg(vm, "atan2: not differentiable at (0, 0)");
+            break;
+        }
+        vm_push(vm, vm_real_result(vm, atan2(yv, xv),
+                                   (dx != 0.0 || dy != 0.0) ? (xv * dy - yv * dx) / r2 : 0.0));
         break;
     }
     /* Directed rounding (certified enclosures, docs/reference/stdlib/
@@ -16344,8 +16430,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Math extensions (720-746)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 720: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 720)) break; vm_push(vm, FLOAT_VAL(cosh(as_number(a)))); break; }
-    case 721: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 721)) break; vm_push(vm, FLOAT_VAL(sinh(as_number(a)))); break; }
+    case 720: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 720)) break; vm_push_real_unary(vm, a, cosh, vm_d_cosh, "cosh"); break; }
+    case 721: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 721)) break; vm_push_real_unary(vm, a, sinh, vm_d_sinh, "sinh"); break; }
     case 722: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 722)) break;
         if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 387); break; }
         vm_push(vm, FLOAT_VAL(tanh(as_number(a)))); break; }

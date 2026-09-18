@@ -79,6 +79,12 @@
 typedef struct {
     double real;
     double imag;
+    /* Forward-mode tangent of the value (ADR-0025): d(real) and d(imag) with
+     * respect to the one perturbation the VM's dual carries. Zero for a
+     * complex number no derivative flows through. The payload stays plain
+     * doubles, so the heap walkers need no case for it. */
+    double dreal;
+    double dimag;
 } VmComplex;
 
 /* ── Bignum (sign-magnitude, base 2^32 limbs, little-endian) ── */
