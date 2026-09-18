@@ -2,7 +2,7 @@ id: SW-186
 bucket: SILENT-WRONG
 family: vm/operand-stack-tracking
 status: fixed
-closed_at: "PENDING"
+closed_at: "90f0b37c"
 title: "VM: a let (or any binder) as an operand of list, vector or apply evaluated to (), because the binder's locals were allocated over the operands already pushed"
 repro: >-
   (display (list 'a (let ((v (vector 1 2))) (vector-set! v 0 9) v)))

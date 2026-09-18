@@ -2,7 +2,7 @@ id: SW-187
 bucket: SILENT-WRONG
 family: vm/closure-capture-of-let-local
 status: fixed
-closed_at: "PENDING"
+closed_at: "90f0b37c"
 title: "VM: a closure created inside a top-level let held an open reference to the let's local, which the let retired and the next define reused, so (f) answered f itself"
 repro: >-
   (define f (let ((v 1)) (lambda () v))) (display (f))

@@ -1352,7 +1352,7 @@ the source changes; the verification record for the tagged commit is the
   reports it as `value_type: "unspecified"` (it said `null`). Tests:
   `tests/core/unspecified_value_test.esk` (three native lanes),
   `tests/vm_parity/corpus/86_binder_in_operand_and_void.esk`, the piped REPL
-  test and the EREPL v1 self test.
+  test and the EREPL v1 self test. (#709)
 
 - **VM: a binder as an operand, and a closure escaping a top-level let
   (ledger SW-186, SW-187).** `(list 'a (let ((v 5)) v))` printed `(a ())` on
@@ -1369,7 +1369,7 @@ the source changes; the verification record for the tagged commit is the
   into the closure -- when the scope that owns the slot retires it. The parity corpus
   program above proves native and VM agree on a binder in every operand
   position and on a vector escaping a `let` through a list, `cons`, a return,
-  a nested `let`, `vector-set!` into another vector and closure capture.
+  a nested `let`, `vector-set!` into another vector and closure capture. (#709)
 
 - **Every ML activation takes a number or a tensor, from one dispatch point
   (#705).** `relu` and `sigmoid` accepted either; `softplus`, `gelu`,
