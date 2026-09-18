@@ -464,7 +464,7 @@ The parallel runtime (`lib/backend/parallel_codegen.cpp`) passes closures to wor
 For `parallel-map`, the task struct decomposes the closure into raw integer fields:
 
 ```c
-struct llvm_parallel_map_task {
+struct eshkol_parallel_map_task {
     uint64_t closure_ptr;   // pointer to closure struct (from fn.data.ptr_val)
     uint64_t item_type;     // item type field (i64-extended from i8)
     uint64_t item_data;     // item data field (raw_val)

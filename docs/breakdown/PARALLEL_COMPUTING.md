@@ -543,7 +543,7 @@ project memory and confirmed against current source, was:
    compile contention, but actually a symptom of the next layer.
 
 The root cause was at the C/LLVM task-boundary in `parallel_codegen.cpp`
-§`llvm_parallel_map_task` and the matching reconstruction in
+§`eshkol_parallel_map_task` and the matching reconstruction in
 `parallel_llvm_codegen.cpp` §`generateMapWorker`. The C-side struct decomposes
 each tagged value into i64 fields, so no aggregate crosses the C/LLVM
 boundary. The old code packed only the `type` byte (low 8 bits of `item_type
@@ -587,7 +587,7 @@ item = ctx_.builder().CreateInsertValue(item, item_data, {4});      // data
 
 The same `{type, flags}` packing is now used for `parallel_fold_task`
 (`arg1_type`, `arg2_type` — see `parallel_llvm_codegen.cpp` §`generateFoldWorker`
-lines 978–1000) and `parallel_filter_task` (lines 1097–1107).
+lines 621–738) and the filter worker, which reuses the map-task layout (§`generateFilterWorker`, lines 745–841).
 
 With the flags-byte issue fixed, the default at the codegen gate was flipped
 from opt-in to default-on. The current gate in

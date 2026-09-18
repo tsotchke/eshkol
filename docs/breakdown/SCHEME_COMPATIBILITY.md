@@ -458,7 +458,7 @@ Eshkol implements `call-with-current-continuation` (aliased as `call/cc`) using 
   invoked any number of times, from any dynamic extent, including after the
   procedure that captured it has returned. This is what generators,
   coroutines and `amb`-style backtracking need.
-- The continuation object is a CALLABLE heap value with `HEAP_SUBTYPE_CONTINUATION`.
+- The continuation object is a CALLABLE heap value with `CALLABLE_SUBTYPE_CONTINUATION`.
 - Escape-only continuations keep the zero-overhead `setjmp`/`longjmp` path.
   The compiler recognises a capture whose continuation cannot outlive its
   frame and omits the stack copy entirely, so early return and
@@ -581,7 +581,7 @@ int64 → bignum → rational → double → complex
 
 ### Exactness Semantics
 
-R7RS requires that exact operations on exact arguments produce exact results. Eshkol tracks exactness via the `ESHKOL_FLAG_EXACT` bit in the tagged value's flags field:
+R7RS requires that exact operations on exact arguments produce exact results. Eshkol tracks exactness via the `ESHKOL_VALUE_EXACT_FLAG` bit in the tagged value's flags field:
 
 ```scheme
 ;; Exact + exact = exact

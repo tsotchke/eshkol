@@ -300,7 +300,7 @@ R7RS-compliant numeric tower with automatic precision promotion:
 - **double**: IEEE 754 64-bit floats (inexact)
 - **complex**: Heap-allocated `{real:f64, imag:f64}` with Smith's formula division
 
-Exactness tracking via `ESHKOL_FLAG_EXACT` in the tagged value flags byte. R7RS semantics: exact + exact = exact, exact + inexact = inexact.
+Exactness tracking via `ESHKOL_VALUE_EXACT_FLAG` in the tagged value flags byte. R7RS semantics: exact + exact = exact, exact + inexact = inexact.
 
 ### First-Class Continuations
 
