@@ -1353,6 +1353,10 @@ the source changes; the verification record for the tagged commit is the
   `tests/core/unspecified_value_test.esk` (three native lanes),
   `tests/vm_parity/corpus/86_binder_in_operand_and_void.esk`, the piped REPL
   test and the EREPL v1 self test. (#709)
+- The build fingerprint gate judges the latest record per harness and binary.
+  Re-running a harness against a rebuilt binary now clears the gate, as its
+  own message instructs; a stale record from any other harness still fails it.
+  The self test covers both. (#710)
 
 - **VM: a binder as an operand, and a closure escaping a top-level let
   (ledger SW-189, SW-190).** `(list 'a (let ((v 5)) v))` printed `(a ())` on
