@@ -1,80 +1,33 @@
-<h1 id="automatic-differentiation-in-eshkol">Automatic Differentiation
-in Eshkol</h1>
-<p><em>A user guide to the v1.3.5-evolve Taylor-tower AD
-system.</em></p>
-<p>Eshkol differentiates programs, not just formulas.
-<code>derivative</code>, <code>gradient</code>, <code>jacobian</code>
-and friends are <strong>compiler primitives</strong> — you write
-ordinary Scheme and the compiler emits the exact derivative alongside
-the value. There is no tracer, no graph-building DSL, and no separate
-“differentiable” dialect: the same <code>(* x x)</code> you evaluate is
-the one that gets differentiated.</p>
+<h1 id="automatic-differentiation-in-eshkol">Automatic Differentiation in Eshkol</h1>
+<p><em>A user guide to the v1.3.5-evolve Taylor-tower AD system.</em></p>
+<p>Eshkol differentiates programs, not just formulas. <code>derivative</code>, <code>gradient</code>, <code>jacobian</code> and friends are <strong>compiler primitives</strong> — you write ordinary Scheme and the compiler emits the exact derivative alongside the value. There is no tracer, no graph-building DSL, and no separate “differentiable” dialect: the same <code>(* x x)</code> you evaluate is the one that gets differentiated.</p>
 <p>What makes Eshkol’s AD unusual:</p>
 <ul>
-<li><strong>Arbitrary order.</strong> Not just first and second
-derivatives — the <em>n</em>-th derivative for any <em>n</em>, computed
-by truncated-Taylor recurrences that cost O(<em>n</em>²), never the 2ⁿ
-blow-up of nested dual numbers.</li>
-<li><strong>Exact when it can be.</strong> Differentiate a polynomial or
-rational function at an exact point and the derivative comes back as an
-exact <code>bignum</code> or <code>rational</code> — zero floating-point
-error. No double-only framework (JAX, PyTorch, Zygote) offers this.</li>
-<li><strong>Validated when you need a guarantee.</strong> Taylor models
-return a Taylor polynomial <em>plus an interval remainder</em>, so you
-get an enclosure of a function over a whole domain, not just a point
-estimate — and beneath the validated (sampled-remainder) family there is
-a <strong>proof-backed</strong> one,
-<code>core.ad.rigorous_interval</code> /
-<code>core.ad.rigorous_taylor_models</code>, whose every enclosure is
-derived rather than sampled. See <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">certified
-enclosures</a>.</li>
-<li><strong>A property of the language.</strong> Derivatives flow
-through <code>if</code>/<code>cond</code>, loops, recursion, closures,
-and <code>map</code>/<code>fold</code>; through tensors (matmul/conv2d/
-activations); through the reverse tape; and they nest without
-perturbation confusion.</li>
+<li><strong>Arbitrary order.</strong> Not just first and second derivatives — the <em>n</em>-th derivative for any <em>n</em>, computed by truncated-Taylor recurrences that cost O(<em>n</em>²), never the 2ⁿ blow-up of nested dual numbers.</li>
+<li><strong>Exact when it can be.</strong> Differentiate a polynomial or rational function at an exact point and the derivative comes back as an exact <code>bignum</code> or <code>rational</code> — zero floating-point error. No double-only framework (JAX, PyTorch, Zygote) offers this.</li>
+<li><strong>Validated when you need a guarantee.</strong> Taylor models return a Taylor polynomial <em>plus an interval remainder</em>, so you get an enclosure of a function over a whole domain, not just a point estimate — and beneath the validated (sampled-remainder) family there is a <strong>proof-backed</strong> one, <code>core.ad.rigorous_interval</code> / <code>core.ad.rigorous_taylor_models</code>, whose every enclosure is derived rather than sampled. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">certified enclosures</a>.</li>
+<li><strong>A property of the language.</strong> Derivatives flow through <code>if</code>/<code>cond</code>, loops, recursion, closures, and <code>map</code>/<code>fold</code>; through tensors (matmul/conv2d/ activations); through the reverse tape; and they nest without perturbation confusion.</li>
 </ul>
-<p>This guide is example-driven. <strong>Every snippet below was run
-with <code>./build/eshkol-run -r &lt;file&gt;</code> and the output
-shown is the real output</strong> — no invented numbers. Snippets that
-<code>(require core.ad.*)</code> a library module were run with a
-library search path (<code>-L build</code>); this is noted where it
-applies. Nothing here needs the JIT run cache turned off — the cached
-(<code>-r</code>, AOT) and uncached (in-process JIT) routes are gated
-byte-identical. The design and proofs behind all of this live in <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/design/AD_TAYLOR_TOWER.md" target="_blank" rel="noopener noreferrer"><code>docs/design/AD_TAYLOR_TOWER.md</code></a>.</p>
+<p>This guide is example-driven. <strong>Every snippet below was run with <code>./build/eshkol-run -r &lt;file&gt;</code> and the output shown is the real output</strong> — no invented numbers. Snippets that <code>(require core.ad.*)</code> a library module were run with a library search path (<code>-L build</code>); this is noted where it applies. Nothing here needs the JIT run cache turned off — the cached (<code>-r</code>, AOT) and uncached (in-process JIT) routes are gated byte-identical. The design and proofs behind all of this live in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/AD_TAYLOR_TOWER.md" target="_blank" rel="noopener noreferrer"><code>docs/design/AD_TAYLOR_TOWER.md</code></a>.</p>
 <hr />
 <h2 id="table-of-contents">Table of contents</h2>
 <ol type="1">
 <li><a href="/docs#page=guide_automatic_differentiation&amp;1-the-classic-operators" data-url="/content/guide_automatic_differentiation.html">The classic operators</a></li>
-<li><a href="/docs#page=guide_automatic_differentiation&amp;2-arbitrary-order--the-tower" data-url="/content/guide_automatic_differentiation.html">Arbitrary order — the
-tower</a></li>
-<li><a href="/docs#page=guide_automatic_differentiation&amp;3-exact-coefficients-bignum--rational" data-url="/content/guide_automatic_differentiation.html">Exact coefficients
-(bignum &amp; rational)</a></li>
-<li><a href="/docs#page=guide_automatic_differentiation&amp;4-multivariate-mixed-partials-guw" data-url="/content/guide_automatic_differentiation.html">Multivariate mixed
-partials (GUW)</a></li>
-<li><a href="/docs#page=guide_automatic_differentiation&amp;5-tensor-ad--towers-of-tensors" data-url="/content/guide_automatic_differentiation.html">Tensor AD — towers of
-tensors</a></li>
-<li><a href="/docs#page=guide_automatic_differentiation&amp;6-validated-ad--taylor-models" data-url="/content/guide_automatic_differentiation.html">Validated AD — Taylor
-models</a></li>
-<li><a href="/docs#page=guide_automatic_differentiation&amp;7-sparse-high-order--sparse-hessians" data-url="/content/guide_automatic_differentiation.html">Sparse high-order —
-sparse Hessians</a></li>
-<li><a href="/docs#page=guide_automatic_differentiation&amp;8-reverse-mode--checkpointing" data-url="/content/guide_automatic_differentiation.html">Reverse mode &amp;
-checkpointing</a></li>
-<li><a href="/docs#page=guide_automatic_differentiation&amp;9-differentiable-control-flow" data-url="/content/guide_automatic_differentiation.html">Differentiable control
-flow</a></li>
-<li><a href="/docs#page=guide_automatic_differentiation&amp;10-tower-numerics--odes-roots-inversion" data-url="/content/guide_automatic_differentiation.html">Tower numerics —
-ODEs, roots, inversion</a></li>
-<li><a href="/docs#page=guide_automatic_differentiation&amp;11-perturbation-safety--how-it-works" data-url="/content/guide_automatic_differentiation.html">Perturbation safety
-&amp; how it works</a></li>
+<li><a href="/docs#page=guide_automatic_differentiation&amp;2-arbitrary-order--the-tower" data-url="/content/guide_automatic_differentiation.html">Arbitrary order — the tower</a></li>
+<li><a href="/docs#page=guide_automatic_differentiation&amp;3-exact-coefficients-bignum--rational" data-url="/content/guide_automatic_differentiation.html">Exact coefficients (bignum &amp; rational)</a></li>
+<li><a href="/docs#page=guide_automatic_differentiation&amp;4-multivariate-mixed-partials-guw" data-url="/content/guide_automatic_differentiation.html">Multivariate mixed partials (GUW)</a></li>
+<li><a href="/docs#page=guide_automatic_differentiation&amp;5-tensor-ad--towers-of-tensors" data-url="/content/guide_automatic_differentiation.html">Tensor AD — towers of tensors</a></li>
+<li><a href="/docs#page=guide_automatic_differentiation&amp;6-validated-ad--taylor-models" data-url="/content/guide_automatic_differentiation.html">Validated AD — Taylor models</a></li>
+<li><a href="/docs#page=guide_automatic_differentiation&amp;7-sparse-high-order--sparse-hessians" data-url="/content/guide_automatic_differentiation.html">Sparse high-order — sparse Hessians</a></li>
+<li><a href="/docs#page=guide_automatic_differentiation&amp;8-reverse-mode--checkpointing" data-url="/content/guide_automatic_differentiation.html">Reverse mode &amp; checkpointing</a></li>
+<li><a href="/docs#page=guide_automatic_differentiation&amp;9-differentiable-control-flow" data-url="/content/guide_automatic_differentiation.html">Differentiable control flow</a></li>
+<li><a href="/docs#page=guide_automatic_differentiation&amp;10-tower-numerics--odes-roots-inversion" data-url="/content/guide_automatic_differentiation.html">Tower numerics — ODEs, roots, inversion</a></li>
+<li><a href="/docs#page=guide_automatic_differentiation&amp;11-perturbation-safety--how-it-works" data-url="/content/guide_automatic_differentiation.html">Perturbation safety &amp; how it works</a></li>
 <li><a href="/docs#page=guide_automatic_differentiation&amp;12-api-quick-reference" data-url="/content/guide_automatic_differentiation.html">API quick reference</a></li>
 </ol>
 <hr />
 <h2 id="1-the-classic-operators">1. The classic operators</h2>
-<p>These are the first-class AD builtins — always available, no
-<code>require</code> needed. They cover scalar derivatives, gradients,
-and the standard vector-calculus operators.</p>
+<p>These are the first-class AD builtins — always available, no <code>require</code> needed. They cover scalar derivatives, gradients, and the standard vector-calculus operators.</p>
 <h3 id="derivative--ℝ--ℝ"><code>derivative</code> — ℝ → ℝ</h3>
 <pre class="scheme"><code>(display (derivative (lambda (x) (* x x)) 3.0)) (newline)
 
@@ -84,19 +37,14 @@ and the standard vector-calculus operators.</p>
 <p>Output:</p>
 <pre><code>6
 1</code></pre>
-<p><code>(derivative f x)</code> gives <code>f'(x)</code> directly;
-<code>(derivative f)</code> gives a new function you can apply at many
-points.</p>
+<p><code>(derivative f x)</code> gives <code>f'(x)</code> directly; <code>(derivative f)</code> gives a new function you can apply at many points.</p>
 <h3 id="gradient--ℝⁿ--ℝ"><code>gradient</code> — ℝⁿ → ℝ</h3>
 <pre class="scheme"><code>(define (f v) (+ (* (vector-ref v 0) (vector-ref v 0))
                  (* (vector-ref v 1) (vector-ref v 1))))
 (display (gradient f #(2.0 3.0))) (newline)</code></pre>
 <p>Output:</p>
 <pre><code>#(4 6)</code></pre>
-<p>∇(x²+y²) = (2x, 2y) = (4, 6). <code>gradient</code> uses reverse
-mode, so the whole gradient costs one backward pass regardless of the
-input dimension — the right tool for scalar loss functions of many
-parameters.</p>
+<p>∇(x²+y²) = (2x, 2y) = (4, 6). <code>gradient</code> uses reverse mode, so the whole gradient costs one backward pass regardless of the input dimension — the right tool for scalar loss functions of many parameters.</p>
 <h3 id="jacobian--ℝⁿ--ℝᵐ"><code>jacobian</code> — ℝⁿ → ℝᵐ</h3>
 <pre class="scheme"><code>(define (f v) (vector (* 2 (vector-ref v 0))
                       (+ (vector-ref v 0) (vector-ref v 1))))
@@ -104,15 +52,13 @@ parameters.</p>
 <p>Output:</p>
 <pre><code>#((2 0) (1 1))</code></pre>
 <p>Row <em>i</em> is ∇fᵢ. Here f = (2x, x+y) so J = [[2,0],[1,1]].</p>
-<h3 id="hessian--second-derivatives-ℝⁿ--ℝ"><code>hessian</code> — second
-derivatives, ℝⁿ → ℝ</h3>
+<h3 id="hessian--second-derivatives-ℝⁿ--ℝ"><code>hessian</code> — second derivatives, ℝⁿ → ℝ</h3>
 <pre class="scheme"><code>(define (f v) (+ (* (vector-ref v 0) (vector-ref v 0))
                  (* (vector-ref v 1) (vector-ref v 1))))
 (display (hessian f #(1.0 1.0))) (newline)</code></pre>
 <p>Output:</p>
 <pre><code>#((2 0) (0 2))</code></pre>
-<h3 id="divergence-and-curl"><code>divergence</code> and
-<code>curl</code></h3>
+<h3 id="divergence-and-curl"><code>divergence</code> and <code>curl</code></h3>
 <pre class="scheme"><code>(define (F v) v)                                  ; identity field
 (display (divergence F #(1.0 2.0 3.0))) (newline) ; ∇·F = 3
 
@@ -121,8 +67,7 @@ derivatives, ℝⁿ → ℝ</h3>
 <p>Output:</p>
 <pre><code>3
 #(0 0 -2)</code></pre>
-<h3 id="laplacian-and-directional-derivative"><code>laplacian</code> and
-<code>directional-derivative</code></h3>
+<h3 id="laplacian-and-directional-derivative"><code>laplacian</code> and <code>directional-derivative</code></h3>
 <pre class="scheme"><code>(define (f v) (+ (* (vector-ref v 0) (vector-ref v 0))
                  (* (vector-ref v 1) (vector-ref v 1))))
 (display (laplacian f #(1.0 2.0))) (newline)             ; ∇²f = 2+2 = 4
@@ -132,26 +77,12 @@ derivatives, ℝⁿ → ℝ</h3>
 <p>Output:</p>
 <pre><code>4
 3</code></pre>
-<p><strong>When to use:</strong> these are the everyday operators —
-optimization gradients, Jacobians of vector maps, Hessians for Newton
-steps, and the vector-calculus trio
-(<code>divergence</code>/<code>curl</code>/<code>laplacian</code>) for
-physics/PDE work.</p>
+<p><strong>When to use:</strong> these are the everyday operators — optimization gradients, Jacobians of vector maps, Hessians for Newton steps, and the vector-calculus trio (<code>divergence</code>/<code>curl</code>/<code>laplacian</code>) for physics/PDE work.</p>
 <hr />
-<h2 id="2-arbitrary-order--the-tower">2. Arbitrary order — the
-tower</h2>
-<p>The headline capability. <code>(derivative-n f x k)</code> returns
-the exact <em>k</em>-th derivative <code>f⁽ᵏ⁾(x)</code> for
-<strong>any</strong> <code>k</code>, and <code>(taylor f x k)</code>
-returns the whole truncated Taylor series — the coefficients
-<code>c[0..k]</code> of <code>f(x + t) = Σ cₖ·tᵏ</code>. The two are
-linked by <code>f⁽ⁿ⁾(x) = n!·cₙ</code>.</p>
-<p>Under the hood this is Taylor-mode AD: a coefficient array propagated
-by closed recurrences (Cauchy convolution for <code>*</code>, coupled
-recurrences for <code>sin</code>/<code>cos</code>, etc.). Cost is O(k²)
-in the order — never the 2ᵏ explosion of stacked dual numbers.</p>
-<h3 id="derivative-n--the-n-th-derivative"><code>derivative-n</code> —
-the <em>n</em>-th derivative</h3>
+<h2 id="2-arbitrary-order--the-tower">2. Arbitrary order — the tower</h2>
+<p>The headline capability. <code>(derivative-n f x k)</code> returns the exact <em>k</em>-th derivative <code>f⁽ᵏ⁾(x)</code> for <strong>any</strong> <code>k</code>, and <code>(taylor f x k)</code> returns the whole truncated Taylor series — the coefficients <code>c[0..k]</code> of <code>f(x + t) = Σ cₖ·tᵏ</code>. The two are linked by <code>f⁽ⁿ⁾(x) = n!·cₙ</code>.</p>
+<p>Under the hood this is Taylor-mode AD: a coefficient array propagated by closed recurrences (Cauchy convolution for <code>*</code>, coupled recurrences for <code>sin</code>/<code>cos</code>, etc.). Cost is O(k²) in the order — never the 2ᵏ explosion of stacked dual numbers.</p>
+<h3 id="derivative-n--the-n-th-derivative"><code>derivative-n</code> — the <em>n</em>-th derivative</h3>
 <pre class="scheme"><code>(define (f x) (* x x x x x))          ; x^5
 
 (display (derivative-n f 2.0 3)) (newline)   ; f&#39;&#39;&#39;(2)
@@ -163,13 +94,8 @@ the <em>n</em>-th derivative</h3>
 120
 0
 1.6487212707001282</code></pre>
-<p>For x⁵: f‴ = 60x² = 240 at x=2; f⁽⁵⁾ = 120 (constant); f⁽⁶⁾ and up
-are 0. The 8th derivative of sin at 0 cycles back to 0; every derivative
-of exp is exp, so d⁸exp(0.5) = e^{0.5} ≈ 1.64872. Note
-<code>derivative-n</code> reaches order 8 and beyond, where the old
-fixed 4-component jet returned a flat 0.</p>
-<h3 id="taylor--the-coefficient-series"><code>taylor</code> — the
-coefficient series</h3>
+<p>For x⁵: f‴ = 60x² = 240 at x=2; f⁽⁵⁾ = 120 (constant); f⁽⁶⁾ and up are 0. The 8th derivative of sin at 0 cycles back to 0; every derivative of exp is exp, so d⁸exp(0.5) = e^{0.5} ≈ 1.64872. Note <code>derivative-n</code> reaches order 8 and beyond, where the old fixed 4-component jet returned a flat 0.</p>
+<h3 id="taylor--the-coefficient-series"><code>taylor</code> — the coefficient series</h3>
 <pre class="scheme"><code>(define e05 (exp 0.5))
 (define cs (taylor (lambda (x) (exp x)) 0.5 4))   ; c[0..4]
 (display cs) (newline)
@@ -181,29 +107,12 @@ coefficient series</h3>
 <pre><code>(1.6487212707001282 1.6487212707001282 0.8243606353500641 0.27478687845002137 0.06869671961250534)
 1.6487212707001282
 1.6487212707001282</code></pre>
-<p>The coefficients of exp about 0.5 are <code>e^{0.5}/n!</code>:
-<code>1.64872, 1.64872, 0.824361, 0.274787, 0.0686967</code>.
-Multiplying c₄ by 4! recovers the 4th derivative, confirming
-<code>f⁽ⁿ⁾ = n!·cₙ</code>.</p>
-<p><strong>Call form:</strong> both are
-<code>(derivative-n f x k)</code> and <code>(taylor f x k)</code> —
-plain positional arguments, <code>k</code> an integer order,
-<code>x</code> the evaluation point. (There is no <code>#:order</code>
-keyword form; the design sketch’s keyword syntax was dropped for
-implementation reasons — see the <code>taylor_numerics</code> module
-header.)</p>
-<p><strong>When to use:</strong> any high-order derivative — series
-expansions, stiff-ODE coefficients, higher-order optimization, physics
-requiring <code>f⁗</code> and beyond.</p>
+<p>The coefficients of exp about 0.5 are <code>e^{0.5}/n!</code>: <code>1.64872, 1.64872, 0.824361, 0.274787, 0.0686967</code>. Multiplying c₄ by 4! recovers the 4th derivative, confirming <code>f⁽ⁿ⁾ = n!·cₙ</code>.</p>
+<p><strong>Call form:</strong> both are <code>(derivative-n f x k)</code> and <code>(taylor f x k)</code> — plain positional arguments, <code>k</code> an integer order, <code>x</code> the evaluation point. (There is no <code>#:order</code> keyword form; the design sketch’s keyword syntax was dropped for implementation reasons — see the <code>taylor_numerics</code> module header.)</p>
+<p><strong>When to use:</strong> any high-order derivative — series expansions, stiff-ODE coefficients, higher-order optimization, physics requiring <code>f⁗</code> and beyond.</p>
 <hr />
-<h2 id="3-exact-coefficients-bignum--rational">3. Exact coefficients
-(bignum &amp; rational)</h2>
-<p>If you seed the tower at an <strong>exact</strong> point (an integer
-or rational, not a double) and the function uses only exact-preserving
-operations (<code>+ - * /</code> and non-negative integer
-<code>expt</code>), the derivatives come back <strong>exact</strong> —
-arbitrary precision, zero floating error. This is a capability JAX and
-PyTorch simply do not have.</p>
+<h2 id="3-exact-coefficients-bignum--rational">3. Exact coefficients (bignum &amp; rational)</h2>
+<p>If you seed the tower at an <strong>exact</strong> point (an integer or rational, not a double) and the function uses only exact-preserving operations (<code>+ - * /</code> and non-negative integer <code>expt</code>), the derivatives come back <strong>exact</strong> — arbitrary precision, zero floating error. This is a capability JAX and PyTorch simply do not have.</p>
 <pre class="scheme"><code>(define (x30 x) (expt x 30))
 (display (derivative-n x30 7 0)) (newline)    ; 7^30 -- exact bignum
 (display (exact? (derivative-n x30 7 0))) (newline)
@@ -219,30 +128,12 @@ PyTorch simply do not have.</p>
 96597172674395391805128210
 7680
 #t</code></pre>
-<p><code>7³⁰</code> is a 26-digit integer, far past
-<code>INT64_MAX</code> — this genuinely exercises the bignum substrate,
-not just int64. <code>1/(1-x)</code> at <code>x = 1/2</code>
-differentiates through exact <strong>rational</strong> division
-(<code>w₀ = 1 - 1/2 = 1/2</code>) and lands on the exact integer
-<code>5!·2⁶ = 7680</code>. <code>(exact? …)</code> confirms the result
-carries the exact tag.</p>
-<p>The moment a transcendental
-(<code>exp</code>/<code>log</code>/<code>sin</code>/<code>cos</code>/…)
-enters, the tower gracefully demotes to the ordinary double series —
-R7RS exactness contagion, applied to arbitrary-order AD.</p>
-<p><strong>When to use:</strong> exact high-order derivatives of
-polynomials and rational functions — symbolic-quality coefficients
-(combinatorial generating functions, exact Taylor tables, verified
-numerics) without a computer-algebra system.</p>
+<p><code>7³⁰</code> is a 26-digit integer, far past <code>INT64_MAX</code> — this genuinely exercises the bignum substrate, not just int64. <code>1/(1-x)</code> at <code>x = 1/2</code> differentiates through exact <strong>rational</strong> division (<code>w₀ = 1 - 1/2 = 1/2</code>) and lands on the exact integer <code>5!·2⁶ = 7680</code>. <code>(exact? …)</code> confirms the result carries the exact tag.</p>
+<p>The moment a transcendental (<code>exp</code>/<code>log</code>/<code>sin</code>/<code>cos</code>/…) enters, the tower gracefully demotes to the ordinary double series — R7RS exactness contagion, applied to arbitrary-order AD.</p>
+<p><strong>When to use:</strong> exact high-order derivatives of polynomials and rational functions — symbolic-quality coefficients (combinatorial generating functions, exact Taylor tables, verified numerics) without a computer-algebra system.</p>
 <hr />
-<h2 id="4-multivariate-mixed-partials-guw">4. Multivariate mixed
-partials (GUW)</h2>
-<p>For mixed partials of order ≥ 3 in several variables, load
-<code>core.ad.guw</code>. It implements the Griewank–Utke–Walther
-directional-interpolation method: it propagates univariate Taylor towers
-along a set of directions and solves a small linear system to recover
-the full symmetric derivative tensor — no new AD primitive, just
-orchestration over <code>taylor</code>.</p>
+<h2 id="4-multivariate-mixed-partials-guw">4. Multivariate mixed partials (GUW)</h2>
+<p>For mixed partials of order ≥ 3 in several variables, load <code>core.ad.guw</code>. It implements the Griewank–Utke–Walther directional-interpolation method: it propagates univariate Taylor towers along a set of directions and solves a small linear system to recover the full symmetric derivative tensor — no new AD primitive, just orchestration over <code>taylor</code>.</p>
 <pre class="scheme"><code>(require core.ad.guw)
 
 (define (f v)
@@ -259,33 +150,16 @@ orchestration over <code>taylor</code>.</p>
 
 ;; the full symmetric order-3 tensor, as (multi-index . value) pairs
 (display (gradient-n f xs 3)) (newline)</code></pre>
-<p>Run with <code>./build/eshkol-run -r ex.esk -L build</code>.
-Output:</p>
+<p>Run with <code>./build/eshkol-run -r ex.esk -L build</code>. Output:</p>
 <pre><code>5.301178820923195
 4.602357641846413
 (((0 3) . -0.8775825618903729) ((1 2) . 4.602357641846413) ((2 1) . 5.301178820923195) ((3 0) . 1.390302179763711))</code></pre>
-<p><code>mixed-partial</code> takes a list of variable indices <em>with
-repetition</em>: <code>(0 0 1)</code> is ∂³f/∂x²∂y.
-<code>gradient-n f xs 3</code> returns the whole order-3 tensor as
-<code>(β . value)</code> pairs, where β is the multi-index
-<code>(dx dy)</code>: <code>(3 0)</code> is ∂³/∂x³, <code>(2 1)</code>
-is ∂³/∂x²∂y (matching the <code>mixed-partial</code> call above), and so
-on.</p>
-<p>Both <code>mixed-partial</code> and <code>gradient-n</code> require
-order ≥ 3; use <code>gradient</code>/ <code>hessian</code> for orders 1
-and 2, which stay on the fast jet path.</p>
-<p><strong>When to use:</strong> third- and higher-order sensitivities
-across multiple variables — higher-order optimization, moment
-expansions, sensitivity analysis.</p>
+<p><code>mixed-partial</code> takes a list of variable indices <em>with repetition</em>: <code>(0 0 1)</code> is ∂³f/∂x²∂y. <code>gradient-n f xs 3</code> returns the whole order-3 tensor as <code>(β . value)</code> pairs, where β is the multi-index <code>(dx dy)</code>: <code>(3 0)</code> is ∂³/∂x³, <code>(2 1)</code> is ∂³/∂x²∂y (matching the <code>mixed-partial</code> call above), and so on.</p>
+<p>Both <code>mixed-partial</code> and <code>gradient-n</code> require order ≥ 3; use <code>gradient</code>/ <code>hessian</code> for orders 1 and 2, which stay on the fast jet path.</p>
+<p><strong>When to use:</strong> third- and higher-order sensitivities across multiple variables — higher-order optimization, moment expansions, sensitivity analysis.</p>
 <hr />
-<h2 id="5-tensor-ad--towers-of-tensors">5. Tensor AD — towers of
-tensors</h2>
-<p>High-order AD is not just for scalars.
-<code>core.ad.tensor_tower</code> generalizes the Taylor coefficients
-from scalars to <strong>tensors</strong>, so you can take high-order
-derivatives of tensor computations (elementwise chains, matmul, conv2d,
-sigmoid/tanh activations). The series index and the tensor axes are
-orthogonal and compose cleanly.</p>
+<h2 id="5-tensor-ad--towers-of-tensors">5. Tensor AD — towers of tensors</h2>
+<p>High-order AD is not just for scalars. <code>core.ad.tensor_tower</code> generalizes the Taylor coefficients from scalars to <strong>tensors</strong>, so you can take high-order derivatives of tensor computations (elementwise chains, matmul, conv2d, sigmoid/tanh activations). The series index and the tensor axes are orthogonal and compose cleanly.</p>
 <pre class="scheme"><code>(require stdlib)
 (require core.ad.tensor_tower)
 
@@ -297,31 +171,16 @@ orthogonal and compose cleanly.</p>
 (display (tt-nth-derivative sc 0)) (newline)   ; h(t0)  = sum(A)*t0^3
 (display (tt-nth-derivative sc 1)) (newline)   ; h&#39;(t0) = 3*sum(A)*t0^2
 (display (tensor-sum A)) (newline)             ; sum(A)</code></pre>
-<p>Run with <code>./build/eshkol-run -r ex.esk -L build</code>.
-Output:</p>
+<p>Run with <code>./build/eshkol-run -r ex.esk -L build</code>. Output:</p>
 <pre><code>36.84749999999999
 65.025
 7.5</code></pre>
-<p>sum(A) = 2+3−1.5+4 = 7.5. h(t) = 7.5·t³ so h(1.7) = 7.5·4.913 =
-36.8475 and h′(1.7) = 22.5·1.7² = 65.025 — exactly the tensor-tower
-results. The module also provides <code>tt-matmul-cauchy</code> and
-<code>tt-conv2d-cauchy</code> for bilinear ops (matmul, conv2d) and
-<code>tt-sigmoid</code>/<code>tt-tanh</code> for activations, so the
-same machinery differentiates the ML path to arbitrary order.</p>
-<p><strong>When to use:</strong> high-order derivatives through
-tensor/neural-network computations — curvature of losses over
-conv/attention layers, higher-order tensor sensitivities.</p>
+<p>sum(A) = 2+3−1.5+4 = 7.5. h(t) = 7.5·t³ so h(1.7) = 7.5·4.913 = 36.8475 and h′(1.7) = 22.5·1.7² = 65.025 — exactly the tensor-tower results. The module also provides <code>tt-matmul-cauchy</code> and <code>tt-conv2d-cauchy</code> for bilinear ops (matmul, conv2d) and <code>tt-sigmoid</code>/<code>tt-tanh</code> for activations, so the same machinery differentiates the ML path to arbitrary order.</p>
+<p><strong>When to use:</strong> high-order derivatives through tensor/neural-network computations — curvature of losses over conv/attention layers, higher-order tensor sensitivities.</p>
 <hr />
-<h2 id="6-validated-ad--taylor-models">6. Validated AD — Taylor
-models</h2>
-<p>A <strong>Taylor model</strong> is a Taylor polynomial plus an
-interval remainder bounding the truncation error over a whole domain
-box. Instead of “the value at a point,” you get an enclosure of the
-function over an interval — the foundation of validated numerics and
-verified global optimization. Load
-<code>core.ad.taylor_models</code>.</p>
-<p>Eshkol ships <strong>two</strong> layers under that one require, and
-they differ in where the remainder comes from:</p>
+<h2 id="6-validated-ad--taylor-models">6. Validated AD — Taylor models</h2>
+<p>A <strong>Taylor model</strong> is a Taylor polynomial plus an interval remainder bounding the truncation error over a whole domain box. Instead of “the value at a point,” you get an enclosure of the function over an interval — the foundation of validated numerics and verified global optimization. Load <code>core.ad.taylor_models</code>.</p>
+<p>Eshkol ships <strong>two</strong> layers under that one require, and they differ in where the remainder comes from:</p>
 <table>
 <colgroup>
 <col style="width: 33%" />
@@ -337,26 +196,18 @@ they differ in where the remainder comes from:</p>
 </thead>
 <tbody>
 <tr>
-<td><code>core.ad.taylor_models</code> (<code>taylor-model</code>,
-<code>tm-range</code>, <code>tm-eval</code>)</td>
+<td><code>core.ad.taylor_models</code> (<code>taylor-model</code>, <code>tm-range</code>, <code>tm-eval</code>)</td>
 <td>epsilon-widened / sampled</td>
 <td>validated numerics, error budgets, tightening a search</td>
 </tr>
 <tr>
-<td><code>core.ad.rigorous_taylor_models</code> (<code>tm-var</code>,
-<code>tm+</code>, <code>tm*</code>, <code>tm-exp</code>,
-<code>tm-bound</code>, <code>tm-prove-bound</code>)</td>
+<td><code>core.ad.rigorous_taylor_models</code> (<code>tm-var</code>, <code>tm+</code>, <code>tm*</code>, <code>tm-exp</code>, <code>tm-bound</code>, <code>tm-prove-bound</code>)</td>
 <td><strong>derived</strong>, with an a-priori bound at every step</td>
 <td>a claim you intend to stand on as a proof</td>
 </tr>
 </tbody>
 </table>
-<p>This section is the validated layer. For the proof-backed one —
-directed rounding, outward-rounded interval arithmetic, and Makino-Berz
-rigorous Taylor models — see <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">certified
-enclosures</a>, and use <code>tm-rigorous?</code> to tell which kind of
-model a value is.</p>
+<p>This section is the validated layer. For the proof-backed one — directed rounding, outward-rounded interval arithmetic, and Makino-Berz rigorous Taylor models — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">certified enclosures</a>, and use <code>tm-rigorous?</code> to tell which kind of model a value is.</p>
 <pre class="scheme"><code>(require core.ad.taylor_models)
 
 ;; a guaranteed enclosure of exp(x) over x in [-0.5, 0.5]
@@ -367,27 +218,13 @@ model a value is.</p>
 
 ;; the enclosure at a point always contains the true value
 (display (interval-contains? (tm-eval tm 0.25) (exp 0.25))) (newline)</code></pre>
-<p>Run with <code>./build/eshkol-run -r ex.esk -L build</code>.
-Output:</p>
+<p>Run with <code>./build/eshkol-run -r ex.esk -L build</code>. Output:</p>
 <pre><code>0.35127015921830285
 1.648729840781697
 #t</code></pre>
-<p><code>(taylor-model f center radius k)</code> builds an
-order-<code>k</code> model over
-<code>[center−radius, center+radius]</code>. <code>tm-range</code>
-returns a guaranteed <code>[lo, hi]</code> enclosing every value of exp
-on <code>[-0.5, 0.5]</code> — and indeed
-<code>0.35127 ≤ e^{-0.5}=0.6065</code> and
-<code>e^{0.5}=1.6487 ≤ 1.64873</code>, with the enclosure sound (it
-contains the true range). <code>tm-eval</code> gives a point enclosure
-that provably contains the true value. Enclosures tighten as the order
-<code>k</code> grows and as the radius shrinks.</p>
-<p><strong>When to use:</strong> when you need an enclosure rather than
-a point estimate — error budgets, verified global optimization, ODE
-enclosures, robust handling of catastrophic cancellation.</p>
-<p>When the claim has to be a <em>proof</em>, take the same shape
-through the rigorous family instead, where every remainder is derived
-rather than sampled:</p>
+<p><code>(taylor-model f center radius k)</code> builds an order-<code>k</code> model over <code>[center−radius, center+radius]</code>. <code>tm-range</code> returns a guaranteed <code>[lo, hi]</code> enclosing every value of exp on <code>[-0.5, 0.5]</code> — and indeed <code>0.35127 ≤ e^{-0.5}=0.6065</code> and <code>e^{0.5}=1.6487 ≤ 1.64873</code>, with the enclosure sound (it contains the true range). <code>tm-eval</code> gives a point enclosure that provably contains the true value. Enclosures tighten as the order <code>k</code> grows and as the radius shrinks.</p>
+<p><strong>When to use:</strong> when you need an enclosure rather than a point estimate — error budgets, verified global optimization, ODE enclosures, robust handling of catastrophic cancellation.</p>
+<p>When the claim has to be a <em>proof</em>, take the same shape through the rigorous family instead, where every remainder is derived rather than sampled:</p>
 <pre class="scheme"><code>(require core.ad.taylor_models)
 
 (define rtm (tm-exp (tm-var 0 1/4 6) 6))   ; exp on [-1/4, 1/4], order 6
@@ -395,27 +232,15 @@ rather than sampled:</p>
 (display (tm-bound rtm)) (newline)
 (display (tm-prove-bound rtm 0 2)) (newline)
 (display (tm-prove-bound rtm 0 1)) (newline)</code></pre>
-<p>Run with <code>./build/eshkol-run -r ex.esk -L build</code>.
-Output:</p>
+<p>Run with <code>./build/eshkol-run -r ex.esk -L build</code>. Output:</p>
 <pre><code>#t
 (0.7159745469364677 . 1.2840254530635327)
 #t
 #f</code></pre>
-<p><code>tm-bound</code> is the certified enclosure;
-<code>tm-prove-bound</code> answers <code>#t</code> only when that
-enclosure <em>proves</em> the containment, so the second query — which
-asks whether exp stays inside <code>[0,1]</code> on that domain, and it
-does not — correctly refuses. A refusal is never a claim that the bound
-is false; it is a claim that this model does not prove it.</p>
+<p><code>tm-bound</code> is the certified enclosure; <code>tm-prove-bound</code> answers <code>#t</code> only when that enclosure <em>proves</em> the containment, so the second query — which asks whether exp stays inside <code>[0,1]</code> on that domain, and it does not — correctly refuses. A refusal is never a claim that the bound is false; it is a claim that this model does not prove it.</p>
 <hr />
-<h2 id="7-sparse-high-order--sparse-hessians">7. Sparse high-order —
-sparse Hessians</h2>
-<p>Many functions are <em>partially separable</em>: their Hessian is
-mostly zero (banded, block, or stencil structure).
-<code>core.ad.sparse_guw</code> recovers such a Hessian using distance-2
-graph coloring, so the number of AD passes tracks the
-<em>bandwidth</em>, not the dimension — recovering an m×m Hessian in a
-handful of passes instead of m of them.</p>
+<h2 id="7-sparse-high-order--sparse-hessians">7. Sparse high-order — sparse Hessians</h2>
+<p>Many functions are <em>partially separable</em>: their Hessian is mostly zero (banded, block, or stencil structure). <code>core.ad.sparse_guw</code> recovers such a Hessian using distance-2 graph coloring, so the number of AD passes tracks the <em>bandwidth</em>, not the dimension — recovering an m×m Hessian in a handful of passes instead of m of them.</p>
 <pre class="scheme"><code>(require core.ad.sparse_guw)
 
 ;; banded f = sum(x_i^2) + sum(x_i * x_{i+1}): only 3 AD passes needed, not m
@@ -436,33 +261,17 @@ handful of passes instead of m of them.</p>
 (display (sparse-hessian-ref sp 0 1)) (newline)   ; H_01 = 1
 (display (sparse-hessian-ref sp 0 2)) (newline)   ; H_02 = 0 (structural zero)
 (display (sparse-hessian-colors sp)) (newline)    ; AD passes used</code></pre>
-<p>Run with <code>./build/eshkol-run -r ex.esk -L build</code>.
-Output:</p>
+<p>Run with <code>./build/eshkol-run -r ex.esk -L build</code>. Output:</p>
 <pre><code>2
 1
 0
 3</code></pre>
-<p>The Hessian is <code>H_ii = 2</code>, <code>H_{i,i+1} = 1</code>,
-everything else 0. <code>sparse-hessian</code> probes the structure
-automatically, recovers it in <strong>3 colors (AD passes)</strong> —
-independent of the dimension <code>m</code> — and gives CSR accessors
-(<code>sparse-hessian-row-ptr</code>/<code>-col-idx</code>/<code>-values</code>).
-A fully-dense function is detected and falls back to the dense path. (An
-explicit <code>sparse-hessian-pat</code> lets you supply a known
-sparsity pattern instead of probing.)</p>
-<p><strong>When to use:</strong> large partially-separable Hessians —
-banded/block problems, finite-element stencils, structured ML
-second-order methods — where a dense Hessian would be prohibitively
-expensive.</p>
+<p>The Hessian is <code>H_ii = 2</code>, <code>H_{i,i+1} = 1</code>, everything else 0. <code>sparse-hessian</code> probes the structure automatically, recovers it in <strong>3 colors (AD passes)</strong> — independent of the dimension <code>m</code> — and gives CSR accessors (<code>sparse-hessian-row-ptr</code>/<code>-col-idx</code>/<code>-values</code>). A fully-dense function is detected and falls back to the dense path. (An explicit <code>sparse-hessian-pat</code> lets you supply a known sparsity pattern instead of probing.)</p>
+<p><strong>When to use:</strong> large partially-separable Hessians — banded/block problems, finite-element stencils, structured ML second-order methods — where a dense Hessian would be prohibitively expensive.</p>
 <hr />
-<h2 id="8-reverse-mode--checkpointing">8. Reverse mode &amp;
-checkpointing</h2>
-<h3 id="reverse-over-taylor-high-order-gradients">Reverse-over-Taylor:
-high-order gradients</h3>
-<p><code>gradient</code> (reverse mode) composes with
-<code>derivative-n</code> (the high-order forward tower): you can take
-the gradient, with respect to outer parameters, of a quantity that is
-itself a high-order derivative.</p>
+<h2 id="8-reverse-mode--checkpointing">8. Reverse mode &amp; checkpointing</h2>
+<h3 id="reverse-over-taylor-high-order-gradients">Reverse-over-Taylor: high-order gradients</h3>
+<p><code>gradient</code> (reverse mode) composes with <code>derivative-n</code> (the high-order forward tower): you can take the gradient, with respect to outer parameters, of a quantity that is itself a high-order derivative.</p>
 <pre class="scheme"><code>;; d/dv [ d^3/dt^3 sin(v*t) ]  at t0 = 0.4, then differentiated in v at v0 = 0.6
 (define (g v) (derivative-n (lambda (t) (sin (* v t))) 0.4 3))
 (display (g 0.6)) (newline)          ; f&#39;&#39;&#39;(t) = -v^3 cos(v t)
@@ -470,20 +279,9 @@ itself a high-order derivative.</p>
 <p>Output:</p>
 <pre><code>-0.20980900256803836
 -1.0285075059168876</code></pre>
-<p><code>g(v)</code> is the 3rd <code>t</code>-derivative of
-<code>sin(v·t)</code>, which analytically is <code>−v³cos(v·t)</code>;
-at v=0.6, t=0.4 that is <code>−0.209809</code>. Wrapping it in
-<code>gradient</code> differentiates <em>that</em> with respect to
-<code>v</code>, giving <code>−1.02851</code>. Before v1.3 this returned
-a flat 0 (the reverse tape “swallowed” the tower); the seed-tangent dual
-tower fixes it. This is exact, not finite-difference.</p>
-<h3 id="checkpointed-reverse-for-deep-graphs">Checkpointed reverse for
-deep graphs</h3>
-<p>A naive reverse pass over a deep, high-order graph stores O(N·K) tape
-data. <code>core.ad.checkpoint</code> implements Griewank binomial
-checkpointing over tower-valued tapes, so peak memory scales like
-O(√N·K) instead — rematerializing segments during the backward sweep
-rather than storing them all.</p>
+<p><code>g(v)</code> is the 3rd <code>t</code>-derivative of <code>sin(v·t)</code>, which analytically is <code>−v³cos(v·t)</code>; at v=0.6, t=0.4 that is <code>−0.209809</code>. Wrapping it in <code>gradient</code> differentiates <em>that</em> with respect to <code>v</code>, giving <code>−1.02851</code>. Before v1.3 this returned a flat 0 (the reverse tape “swallowed” the tower); the seed-tangent dual tower fixes it. This is exact, not finite-difference.</p>
+<h3 id="checkpointed-reverse-for-deep-graphs">Checkpointed reverse for deep graphs</h3>
+<p>A naive reverse pass over a deep, high-order graph stores O(N·K) tape data. <code>core.ad.checkpoint</code> implements Griewank binomial checkpointing over tower-valued tapes, so peak memory scales like O(√N·K) instead — rematerializing segments during the backward sweep rather than storing them all.</p>
 <pre class="scheme"><code>(require core.ad.checkpoint)
 
 (define t0 0.3) (define v0 0.8)
@@ -498,27 +296,15 @@ rather than storing them all.</p>
 (display dv-dense) (newline)
 (display dv-ckpt) (newline)
 (display (checkpoint-block-size n)) (newline)   ; ~sqrt(100)</code></pre>
-<p>Run with <code>./build/eshkol-run -r ex.esk -L build</code>.
-Output:</p>
+<p>Run with <code>./build/eshkol-run -r ex.esk -L build</code>. Output:</p>
 <pre><code>-3.3100685786916897e-08
 -3.310068578691689e-08
 10</code></pre>
-<p>The checkpointed gradient is <strong>identical</strong> to the dense
-one, but its block size is √100 = 10, and (as the module’s own test
-measures) peak tape memory grows sub-linearly — for an N=200 chain,
-dense peaks at ~9600 tape nodes while checkpointed peaks at ~740.</p>
-<p><strong>When to use:</strong> high-order gradients through deep
-chains / long loops / ML-scale graphs where storing the full tape is too
-expensive.</p>
+<p>The checkpointed gradient is <strong>identical</strong> to the dense one, but its block size is √100 = 10, and (as the module’s own test measures) peak tape memory grows sub-linearly — for an N=200 chain, dense peaks at ~9600 tape nodes while checkpointed peaks at ~740.</p>
+<p><strong>When to use:</strong> high-order gradients through deep chains / long loops / ML-scale graphs where storing the full tape is too expensive.</p>
 <hr />
-<h2 id="9-differentiable-control-flow">9. Differentiable control
-flow</h2>
-<p>Towers flow through ordinary Scheme control flow —
-<code>if</code>/<code>cond</code>/<code>case</code> branches, named-let
-loops, recursion (including mutual tail recursion), and
-<code>map</code>/<code>fold</code> over closures — because a tower is
-just a tagged heap value that the control-flow machinery threads through
-unchanged.</p>
+<h2 id="9-differentiable-control-flow">9. Differentiable control flow</h2>
+<p>Towers flow through ordinary Scheme control flow — <code>if</code>/<code>cond</code>/<code>case</code> branches, named-let loops, recursion (including mutual tail recursion), and <code>map</code>/<code>fold</code> over closures — because a tower is just a tagged heap value that the control-flow machinery threads through unchanged.</p>
 <pre class="scheme"><code>;; f(x) = x^3 for x &gt; 0, -x otherwise (a kink at x=0)
 (define (branch-f x) (if (&gt; x 0) (* x x x) (- x)))
 
@@ -532,76 +318,23 @@ unchanged.</p>
 12
 12
 6</code></pre>
-<p>The predicate <code>(&gt; x 0)</code> works on a tower-valued
-<code>x</code> (branching on its primal coefficient), and AD
-differentiates whichever arm the primal actually selects.</p>
-<p><strong>The kink policy:</strong> at a branch point, Eshkol
-differentiates <em>the arm the primal predicate selects</em> — the
-standard forward-mode subderivative convention used by JAX, PyTorch
-autograd, Stan, and Julia’s ForwardDiff. At an exact kink (a predicate
-boundary) this yields one of the one-sided derivatives,
-deterministically; it is never an average and never the wrong arm’s
-derivative smuggled in. Differentiate strictly away from kinks and you
-get the true derivative of the locally smooth piece.</p>
-<p><strong>When to use:</strong> differentiating real programs —
-data-dependent branches, loops, recursive definitions — not just
-straight-line kernels.</p>
-<h3
-id="9a-comparisons-and-branch-selection-act-on-the-carriers-primal">9a.
-Comparisons and branch selection act on the carrier’s primal</h3>
-<p>Every numeric comparison (<code>&lt;</code>, <code>&gt;</code>,
-<code>&lt;=</code>, <code>&gt;=</code>, <code>=</code>) and every
-branch-relevant builtin (<code>min</code>, <code>max</code>,
-<code>abs</code>, and the numeric predicates
-<code>zero?</code>/<code>positive?</code>/
-<code>negative?</code>/<code>even?</code>/<code>odd?</code>) dispatches
-on the CARRIER’s primal, whether the carrier is a forward-mode dual
-(<code>derivative</code>), an arbitrary-order Taylor tower
-(<code>derivative-n</code>/<code>taylor</code>), or a reverse-mode AD
-node (<code>gradient</code>) — and regardless of what the OTHER
-operand’s exactness happens to be. This holds even when the other
-operand is an exact rational or bignum:</p>
+<p>The predicate <code>(&gt; x 0)</code> works on a tower-valued <code>x</code> (branching on its primal coefficient), and AD differentiates whichever arm the primal actually selects.</p>
+<p><strong>The kink policy:</strong> at a branch point, Eshkol differentiates <em>the arm the primal predicate selects</em> — the standard forward-mode subderivative convention used by JAX, PyTorch autograd, Stan, and Julia’s ForwardDiff. At an exact kink (a predicate boundary) this yields one of the one-sided derivatives, deterministically; it is never an average and never the wrong arm’s derivative smuggled in. Differentiate strictly away from kinks and you get the true derivative of the locally smooth piece.</p>
+<p><strong>When to use:</strong> differentiating real programs — data-dependent branches, loops, recursive definitions — not just straight-line kernels.</p>
+<h3 id="9a-comparisons-and-branch-selection-act-on-the-carriers-primal">9a. Comparisons and branch selection act on the carrier’s primal</h3>
+<p>Every numeric comparison (<code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code>, <code>&gt;=</code>, <code>=</code>) and every branch-relevant builtin (<code>min</code>, <code>max</code>, <code>abs</code>, and the numeric predicates <code>zero?</code>/<code>positive?</code>/ <code>negative?</code>/<code>even?</code>/<code>odd?</code>) dispatches on the CARRIER’s primal, whether the carrier is a forward-mode dual (<code>derivative</code>), an arbitrary-order Taylor tower (<code>derivative-n</code>/<code>taylor</code>), or a reverse-mode AD node (<code>gradient</code>) — and regardless of what the OTHER operand’s exactness happens to be. This holds even when the other operand is an exact rational or bignum:</p>
 <pre class="scheme"><code>(define w 2/5)
 (define (bump t) (if (&lt; t w) (* t t t) 0))   ; a compactly-supported kink
 
 (derivative-n bump 1/10 1)   ; =&gt; 3/100  (the (* t t t) arm; 3*(1/10)^2)
 (taylor bump 1/10 1)         ; =&gt; (1/1000 3/100)</code></pre>
-<p><code>min</code>, <code>max</code>, and <code>abs</code> compose the
-same way — differentiating whichever operand’s primal is selected, or
-propagating the <code>|x|</code> kink (<code>d|x|/dx = sign(x)</code>)
-through every coefficient of a tower — even when compared or combined
-against an exact rational or bignum literal:</p>
+<p><code>min</code>, <code>max</code>, and <code>abs</code> compose the same way — differentiating whichever operand’s primal is selected, or propagating the <code>|x|</code> kink (<code>d|x|/dx = sign(x)</code>) through every coefficient of a tower — even when compared or combined against an exact rational or bignum literal:</p>
 <pre class="scheme"><code>(derivative-n (lambda (t) (abs (- t 1/2))) 1/10 1)         ; =&gt; -1  (t &lt; 1/2 arm)
 (derivative-n (lambda (t) (min t 3/10)) 1/10 1)             ; =&gt; 1   (t &lt; 3/10 arm)</code></pre>
-<p><strong>The failure mode this closes (SW-158):</strong> comparing a
-live carrier against an exact operand used to be able to let the exact
-operand’s representation (rational or bignum) steal the dispatch and
-read the carrier’s raw heap-pointer bits as if they were an exact
-number, instead of extracting its primal — silently sending the branch
-down the wrong side and answering a flat 0 from
-<code>derivative</code>/<code>derivative-n</code>/<code>taylor</code>,
-indistinguishable from a genuine stationary point. The fix tests every
-AD carrier kind (dual, tower, AD node) <em>before</em> the exact-number
-tower in
-<code>&lt;</code>/<code>&gt;</code>/<code>&lt;=</code>/<code>&gt;=</code>/<code>=</code>,
-<code>min</code>, <code>max</code>, <code>abs</code>, and the numeric
-predicates, on both the native backend and the bytecode VM’s first-order
-(dual) comparisons — matching the priority order
-<code>+</code>/<code>-</code>/<code>*</code>/<code>/</code>/<code>expt</code>
-already used. See
-<code>tests/ad/conditional_differentiand_test.esk</code> for the full
-matrix (<code>if</code>/
-<code>cond</code>/<code>case</code>/<code>when</code>/<code>unless</code>,
-every comparison predicate, exact and inexact seeds, and negative
-controls confirming a genuinely constant branch still differentiates to
-exact <code>0</code>).</p>
+<p><strong>The failure mode this closes (SW-158):</strong> comparing a live carrier against an exact operand used to be able to let the exact operand’s representation (rational or bignum) steal the dispatch and read the carrier’s raw heap-pointer bits as if they were an exact number, instead of extracting its primal — silently sending the branch down the wrong side and answering a flat 0 from <code>derivative</code>/<code>derivative-n</code>/<code>taylor</code>, indistinguishable from a genuine stationary point. The fix tests every AD carrier kind (dual, tower, AD node) <em>before</em> the exact-number tower in <code>&lt;</code>/<code>&gt;</code>/<code>&lt;=</code>/<code>&gt;=</code>/<code>=</code>, <code>min</code>, <code>max</code>, <code>abs</code>, and the numeric predicates, on both the native backend and the bytecode VM’s first-order (dual) comparisons — matching the priority order <code>+</code>/<code>-</code>/<code>*</code>/<code>/</code>/<code>expt</code> already used. See <code>tests/ad/conditional_differentiand_test.esk</code> for the full matrix (<code>if</code>/ <code>cond</code>/<code>case</code>/<code>when</code>/<code>unless</code>, every comparison predicate, exact and inexact seeds, and negative controls confirming a genuinely constant branch still differentiates to exact <code>0</code>).</p>
 <hr />
-<h2 id="10-tower-numerics--odes-roots-inversion">10. Tower numerics —
-ODEs, roots, inversion</h2>
-<p>Once the tower is first-class, the same kernel powers general
-numerical methods. <code>core.ad.taylor_numerics</code> exposes three: a
-Taylor-series ODE integrator, Householder-family root finding, and local
-functional inversion — all built purely on <code>taylor</code>.</p>
+<h2 id="10-tower-numerics--odes-roots-inversion">10. Tower numerics — ODEs, roots, inversion</h2>
+<p>Once the tower is first-class, the same kernel powers general numerical methods. <code>core.ad.taylor_numerics</code> exposes three: a Taylor-series ODE integrator, Householder-family root finding, and local functional inversion — all built purely on <code>taylor</code>.</p>
 <pre class="scheme"><code>(require core.ad.taylor_numerics)
 
 ;; ODE: y&#39; = -y, y(0) = 1  =&gt;  y(1) = exp(-1)
@@ -614,45 +347,22 @@ functional inversion — all built purely on <code>taylor</code>.</p>
 
 ;; local functional inverse of f(x) = x + x^2 around x0 = 0
 (display (taylor-inverse-series (lambda (x) (+ x (* x x))) 0.0 5)) (newline)</code></pre>
-<p>Run with <code>./build/eshkol-run -r ex.esk -L build</code>.
-Output:</p>
+<p>Run with <code>./build/eshkol-run -r ex.esk -L build</code>. Output:</p>
 <pre><code>0.3678794411714533
 0.36787944117144233
 1.4142135623730951
 1.4142135623730951
 (0 1 -1 2 -5 14)</code></pre>
 <ul>
-<li><strong><code>taylor-ode-solve f y0 t0 t1 k n</code></strong>
-integrates <code>y' = f(t,y)</code> from <code>t0</code> to
-<code>t1</code> in <code>n</code> steps of Taylor order <code>k</code>.
-For <code>y' = -y, y(0)=1</code> it matches
-<code>exp(-1) = 0.367879</code> at order 8 / 10 steps.</li>
-<li><strong><code>taylor-root f x0 k</code></strong> refines a root by
-series reversion: <code>k=1</code> is Newton (quadratic),
-<code>k=2</code> is Halley (cubic), general <code>k</code> gives
-order-(k+1) convergence. Solving <code>x²−2=0</code> from
-<code>x0=1</code> lands on <code>√2 = 1.41421</code>.</li>
-<li><strong><code>taylor-inverse-series f x0 k</code></strong> returns
-the Taylor coefficients of the local inverse <code>f⁻¹</code> about
-<code>f(x0)</code>. For <code>f(x)=x+x²</code> the inverse series
-coefficients are <code>(0 1 -1 2 -5 14)</code> — the
-Catalan-number-flavored reversion of <code>x+x²</code>.</li>
+<li><strong><code>taylor-ode-solve f y0 t0 t1 k n</code></strong> integrates <code>y' = f(t,y)</code> from <code>t0</code> to <code>t1</code> in <code>n</code> steps of Taylor order <code>k</code>. For <code>y' = -y, y(0)=1</code> it matches <code>exp(-1) = 0.367879</code> at order 8 / 10 steps.</li>
+<li><strong><code>taylor-root f x0 k</code></strong> refines a root by series reversion: <code>k=1</code> is Newton (quadratic), <code>k=2</code> is Halley (cubic), general <code>k</code> gives order-(k+1) convergence. Solving <code>x²−2=0</code> from <code>x0=1</code> lands on <code>√2 = 1.41421</code>.</li>
+<li><strong><code>taylor-inverse-series f x0 k</code></strong> returns the Taylor coefficients of the local inverse <code>f⁻¹</code> about <code>f(x0)</code>. For <code>f(x)=x+x²</code> the inverse series coefficients are <code>(0 1 -1 2 -5 14)</code> — the Catalan-number-flavored reversion of <code>x+x²</code>.</li>
 </ul>
-<p><strong>When to use:</strong> high-accuracy ODE stepping, fast
-high-order root polishing, and series inversion / analytic continuation
-— all reusing the AD kernel.</p>
+<p><strong>When to use:</strong> high-accuracy ODE stepping, fast high-order root polishing, and series inversion / analytic continuation — all reusing the AD kernel.</p>
 <hr />
-<h2 id="11-perturbation-safety--how-it-works">11. Perturbation safety
-&amp; how it works</h2>
-<h3
-id="nested-differentiation-is-safe-from-perturbation-confusion">Nested
-differentiation is safe from perturbation confusion</h3>
-<p>Nested <code>derivative</code>/<code>derivative-n</code> is the
-classic <em>perturbation-confusion</em> trap (Siskind–Pearlmutter): a
-naive implementation lets an inner differentiation leak into an outer
-one, silently producing the wrong answer. Eshkol tags each
-differentiation context with a distinct epoch, so this cannot
-happen.</p>
+<h2 id="11-perturbation-safety--how-it-works">11. Perturbation safety &amp; how it works</h2>
+<h3 id="nested-differentiation-is-safe-from-perturbation-confusion">Nested differentiation is safe from perturbation confusion</h3>
+<p>Nested <code>derivative</code>/<code>derivative-n</code> is the classic <em>perturbation-confusion</em> trap (Siskind–Pearlmutter): a naive implementation lets an inner differentiation leak into an outer one, silently producing the wrong answer. Eshkol tags each differentiation context with a distinct epoch, so this cannot happen.</p>
 <pre class="scheme"><code>;; The inner derivative (w.r.t. y, at y=3) is a CONSTANT wrt the outer x.
 ;; Perturbation confusion would let the inner epoch leak into the outer one.
 (display
@@ -663,113 +373,50 @@ happen.</p>
 (newline)</code></pre>
 <p>Output:</p>
 <pre><code>8</code></pre>
-<p>The inner <code>(derivative-n (lambda (y) (* y y y)) 3.0 1)</code> is
-<code>3y²|_{y=3} = 27</code>, a constant with respect to <code>x</code>.
-So the outer function is <code>x² + 27</code> and its derivative at
-<code>x=4</code> is <code>2·4 = 8</code> — exactly what comes back. A
-confusion bug would corrupt this to something else.</p>
-<h3
-id="the-outer-variable-may-be-captured-and-any-operator-may-be-either-pass">The
-outer variable may be captured, and any operator may be either pass</h3>
-<p>Safety is not limited to the case where the outer variable arrives as
-the inner pass’s evaluation <em>point</em>. It may equally be
-<strong>captured</strong> by the inner differentiand, and any of
-<code>derivative</code>, <code>derivative-n</code> and
-<code>taylor</code> may be the outer or the inner pass. All nine
-pairings agree:</p>
+<p>The inner <code>(derivative-n (lambda (y) (* y y y)) 3.0 1)</code> is <code>3y²|_{y=3} = 27</code>, a constant with respect to <code>x</code>. So the outer function is <code>x² + 27</code> and its derivative at <code>x=4</code> is <code>2·4 = 8</code> — exactly what comes back. A confusion bug would corrupt this to something else.</p>
+<h3 id="the-outer-variable-may-be-captured-and-any-operator-may-be-either-pass">The outer variable may be captured, and any operator may be either pass</h3>
+<p>Safety is not limited to the case where the outer variable arrives as the inner pass’s evaluation <em>point</em>. It may equally be <strong>captured</strong> by the inner differentiand, and any of <code>derivative</code>, <code>derivative-n</code> and <code>taylor</code> may be the outer or the inner pass. All nine pairings agree:</p>
 <pre class="scheme"><code>;; d/da d/db (a·b) = 1, with `a` captured by the inner lambda.
 (derivative   (lambda (a) (derivative   (lambda (b) (* a b)) 1.0))       2.0)
 (derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1)
 (derivative   (lambda (a) (list-ref (taylor (lambda (b) (* a b)) 1.0 1) 1)) 2.0)
 ;; =&gt; 1, 1, 1</code></pre>
-<p>Two passes compose by putting the enclosing one on a
-<strong>first-order companion series</strong> that rides alongside the
-inner pass’s value series, so exactly one enclosing level can be carried
-at a time. That is the v1.3.5 ceiling, and it is a property of the
-carrier rather than of the mathematics.</p>
-<p><strong>Below the ceiling</strong> — any depth of first-order passes,
-and one pass of order ≥ 2 with one enclosing first-order pass in either
-position — nesting is exact:</p>
+<p>Two passes compose by putting the enclosing one on a <strong>first-order companion series</strong> that rides alongside the inner pass’s value series, so exactly one enclosing level can be carried at a time. That is the v1.3.5 ceiling, and it is a property of the carrier rather than of the mathematics.</p>
+<p><strong>Below the ceiling</strong> — any depth of first-order passes, and one pass of order ≥ 2 with one enclosing first-order pass in either position — nesting is exact:</p>
 <pre class="scheme"><code>;; depth 3, all first order: d/dx d/dy d/dz (x^2 y^2 z^2) at (2,3,4)
 (display (derivative (lambda (x) (derivative (lambda (y) (derivative (lambda (z) (* x x y y z z)) 4.0)) 3.0)) 2.0)) (newline)
 ;; one order-2 pass under one first-order pass: d/da [d2/db2 (a^2 b^3)] at b=1/2, a=1/3
 (display (derivative (lambda (a) (derivative-n (lambda (b) (* a a b b b)) 1/2 2)) 1/3)) (newline)</code></pre>
 <pre><code>192
 2</code></pre>
-<p><strong>At the ceiling</strong>, two passes both of order ≥ 2
-<strong>raise</strong> rather than answering a number:</p>
+<p><strong>At the ceiling</strong>, two passes both of order ≥ 2 <strong>raise</strong> rather than answering a number:</p>
 <pre><code>unsupported nested differentiation: an order-2 `derivative-n`/`taylor` pass
 inside another differentiation of order 2 or higher</code></pre>
-<p>and an enclosing level with second- or higher-order dependence
-reaching an inner pass through a <strong>capture</strong> raises its own
-diagnostic:</p>
+<p>and an enclosing level with second- or higher-order dependence reaching an inner pass through a <strong>capture</strong> raises its own diagnostic:</p>
 <pre><code>unsupported nested differentiation: an enclosing differentiation reaches this
 pass through a CAPTURED variable and carries second- or higher-order dependence</code></pre>
-<p>Rewrite the outer pass as a first-order <code>derivative</code>, or
-take the higher-order term with a single
-<code>(derivative-n f x k)</code>.</p>
+<p>Rewrite the outer pass as a first-order <code>derivative</code>, or take the higher-order term with a single <code>(derivative-n f x k)</code>.</p>
 <blockquote>
-<p><strong>Known limitation (ledger SW-154): two enclosing levels over a
-pass of order ≥ 2 is not supported in v1.3.5.</strong> On the
-<strong>exact</strong> tier that shape raises
-(<code>unsupported inexact/non-rational Taylor hyperdual operation</code>).
-On the <strong>inexact</strong> tier it currently answers <code>0</code>
-rather than raising, so it is a silent wrong answer — do not rely on
-it:</p>
+<p><strong>Known limitation (ledger SW-154): two enclosing levels over a pass of order ≥ 2 is not supported in v1.3.5.</strong> On the <strong>exact</strong> tier that shape raises (<code>unsupported inexact/non-rational Taylor hyperdual operation</code>). On the <strong>inexact</strong> tier it currently answers <code>0</code> rather than raising, so it is a silent wrong answer — do not rely on it:</p>
 <pre class="scheme"><code>;; the analytic answer is 2
 (display (derivative (lambda (a)
            (derivative (lambda (b)
              (derivative-n (lambda (c) (* a b c c)) 1.0 2)) 1.0)) 1.0)) (newline)</code></pre>
 <pre><code>0</code></pre>
-<p>The shape is pinned, unregistered, in
-<code>tests/ad/nested_towers_matrix_test.esk</code>. Lifting the ceiling
-is the ESH-0413 carrier rewrite, which replaces the carrier this
-release’s exact-coefficient tier is built on — the two cannot both be in
-force — and is <strong>v1.4</strong> work.</p>
+<p>The shape is pinned, unregistered, in <code>tests/ad/nested_towers_matrix_test.esk</code>. Lifting the ceiling is the ESH-0413 carrier rewrite, which replaces the carrier this release’s exact-coefficient tier is built on — the two cannot both be in force — and is <strong>v1.4</strong> work.</p>
 </blockquote>
-<p>Exactness through a nested pass depends on which carrier the
-composition lands on: the first-order companion series carries doubles,
-so a first-order pass over a first-order pass returns an inexact value
-even from an exact seed, while a first-order pass over
-<code>derivative-n</code> stays on the exact tier and returns an exact
-one.</p>
+<p>Exactness through a nested pass depends on which carrier the composition lands on: the first-order companion series carries doubles, so a first-order pass over a first-order pass returns an inexact value even from an exact seed, while a first-order pass over <code>derivative-n</code> stays on the exact tier and returns an exact one.</p>
 <pre class="scheme"><code>(display (derivative (lambda (x) (derivative   (lambda (y) (* x x y y))   1/2))   1/3)) (newline)
 (display (derivative (lambda (a) (derivative-n (lambda (b) (* a a b b b)) 1/2 2)) 1/3)) (newline)</code></pre>
 <pre><code>0.6666666666666666
 2</code></pre>
-<p>Gated by <code>tests/ad/nested_operator_matrix_test.esk</code> (the
-captured-variable matrix, JIT + AOT) and
-<code>tests/ad/ad_carrier_nesting_test.esk</code> (the point matrix).
-The full table, with the verified output of every row, is in <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md#nesting-ceiling-sw-154" target="_blank" rel="noopener noreferrer">the AD
-support matrix</a>.</p>
-<h3 id="how-it-works-in-one-paragraph">How it works (in one
-paragraph)</h3>
-<p>The single computational kernel is <strong>truncated-Taylor
-arithmetic</strong>: a function’s behavior near <code>x₀</code> is
-represented by its Taylor coefficients <code>c[0..K]</code>, and each
-primitive operation has a closed recurrence that maps input coefficient
-arrays to output ones — Cauchy convolution for multiplication, coupled
-recurrences for <code>sin</code>/<code>cos</code>, divided recurrences
-for <code>/</code> and <code>log</code>, and so on. Because these
-recurrences are O(K²), high-order AD is <em>polynomial</em> in the
-order, not the 2ᴷ blow-up of stacking dual numbers. When the order
-<code>K</code> is a literal at the call site (the common case in a
-compiler), the entire tower is emitted as unrolled, stack-allocated,
-branch-free IR — no heap allocation in the AD hot loop. Each active
-differentiation context carries a distinct <strong>epoch tag</strong> in
-the tower’s header so nested derivatives never cross-contaminate. Order
-≤ 2 keeps the existing fast 4-component jet byte-for-byte; the tower
-only appears when order ≥ 3 is requested.</p>
-<p>For the full design — the recurrence table, the compile-time
-monomorphization, the FP-contraction policy that makes
-<code>mono ≡ runtime</code> bit-exact, the exact and tensor coefficient
-layouts, and the Taylor-model remainder arithmetic — see <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/design/AD_TAYLOR_TOWER.md" target="_blank" rel="noopener noreferrer"><code>docs/design/AD_TAYLOR_TOWER.md</code></a>.</p>
+<p>Gated by <code>tests/ad/nested_operator_matrix_test.esk</code> (the captured-variable matrix, JIT + AOT) and <code>tests/ad/ad_carrier_nesting_test.esk</code> (the point matrix). The full table, with the verified output of every row, is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md#nesting-ceiling-sw-154" target="_blank" rel="noopener noreferrer">the AD support matrix</a>.</p>
+<h3 id="how-it-works-in-one-paragraph">How it works (in one paragraph)</h3>
+<p>The single computational kernel is <strong>truncated-Taylor arithmetic</strong>: a function’s behavior near <code>x₀</code> is represented by its Taylor coefficients <code>c[0..K]</code>, and each primitive operation has a closed recurrence that maps input coefficient arrays to output ones — Cauchy convolution for multiplication, coupled recurrences for <code>sin</code>/<code>cos</code>, divided recurrences for <code>/</code> and <code>log</code>, and so on. Because these recurrences are O(K²), high-order AD is <em>polynomial</em> in the order, not the 2ᴷ blow-up of stacking dual numbers. When the order <code>K</code> is a literal at the call site (the common case in a compiler), the entire tower is emitted as unrolled, stack-allocated, branch-free IR — no heap allocation in the AD hot loop. Each active differentiation context carries a distinct <strong>epoch tag</strong> in the tower’s header so nested derivatives never cross-contaminate. Order ≤ 2 keeps the existing fast 4-component jet byte-for-byte; the tower only appears when order ≥ 3 is requested.</p>
+<p>For the full design — the recurrence table, the compile-time monomorphization, the FP-contraction policy that makes <code>mono ≡ runtime</code> bit-exact, the exact and tensor coefficient layouts, and the Taylor-model remainder arithmetic — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/AD_TAYLOR_TOWER.md" target="_blank" rel="noopener noreferrer"><code>docs/design/AD_TAYLOR_TOWER.md</code></a>.</p>
 <hr />
 <h2 id="12-api-quick-reference">12. API quick reference</h2>
-<h3 id="built-in-operators-no-require">Built-in operators (no
-<code>require</code>)</h3>
+<h3 id="built-in-operators-no-require">Built-in operators (no <code>require</code>)</h3>
 <table>
 <colgroup>
 <col style="width: 25%" />
@@ -802,8 +449,7 @@ href="https://github.com/tsotchke/eshkol/blob/master/docs/design/AD_TAYLOR_TOWER
 <td><code>taylor</code></td>
 <td>ℝ→ℝ</td>
 <td><code>(taylor f x k)</code></td>
-<td>coefficient list <code>c[0..k]</code>;
-<code>f⁽ⁿ⁾ = n!·cₙ</code></td>
+<td>coefficient list <code>c[0..k]</code>; <code>f⁽ⁿ⁾ = n!·cₙ</code></td>
 </tr>
 <tr>
 <td><code>gradient</code></td>
@@ -849,19 +495,9 @@ href="https://github.com/tsotchke/eshkol/blob/master/docs/design/AD_TAYLOR_TOWER
 </tr>
 </tbody>
 </table>
-<p>Points are vectors (<code>#(…)</code> or <code>(vector …)</code>).
-Exact seeds (integer/rational) yield exact
-<code>derivative-n</code>/<code>taylor</code> results for
-polynomial/rational functions, and exact
-<code>derivative</code>/<code>gradient</code>/<code>hessian</code>
-results at a scalar point.</p>
-<h3 id="exact-vs-inexact-seeds-per-operator">Exact vs inexact seeds, per
-operator</h3>
-<p><code>derivative-n</code> and <code>taylor</code> carry exact
-coefficients (section 3), and <code>derivative</code>,
-<code>gradient</code> and <code>hessian</code> reach the <strong>same
-exact tier</strong> at an exact point by running the same tower
-pass:</p>
+<p>Points are vectors (<code>#(…)</code> or <code>(vector …)</code>). Exact seeds (integer/rational) yield exact <code>derivative-n</code>/<code>taylor</code> results for polynomial/rational functions, and exact <code>derivative</code>/<code>gradient</code>/<code>hessian</code> results at a scalar point.</p>
+<h3 id="exact-vs-inexact-seeds-per-operator">Exact vs inexact seeds, per operator</h3>
+<p><code>derivative-n</code> and <code>taylor</code> carry exact coefficients (section 3), and <code>derivative</code>, <code>gradient</code> and <code>hessian</code> reach the <strong>same exact tier</strong> at an exact point by running the same tower pass:</p>
 <pre class="scheme"><code>(derivative (lambda (x) (* x x)) 1/3)       ;; =&gt; 2/3     (exact? =&gt; #t)
 (gradient   (lambda (x) (* x x x)) 2/5)     ;; =&gt; 12/25   (exact? =&gt; #t)
 (hessian    (lambda (x) (expt x 4)) 1/3)    ;; =&gt; 4/3     (exact? =&gt; #t)
@@ -877,8 +513,7 @@ pass:</p>
 <tr>
 <th>Seed</th>
 <th><code>derivative-n</code> / <code>taylor</code></th>
-<th><code>derivative</code>, <code>gradient</code>, <code>hessian</code>
-(scalar point)</th>
+<th><code>derivative</code>, <code>gradient</code>, <code>hessian</code> (scalar point)</th>
 <th>the remaining operators above</th>
 </tr>
 </thead>
@@ -915,79 +550,16 @@ pass:</p>
 </tr>
 </tbody>
 </table>
-<p>The exact tier is an <strong>identity with the tower</strong> —
-<code>(derivative f x)</code> equals <code>(derivative-n f x 1)</code>
-and <code>(hessian f x)</code> equals <code>(derivative-n f x 2)</code>
-at an exact scalar <code>x</code>, in value and in exactness — and where
-an operator still coerces, the contract remains that <strong>an exact
-seed never disagrees with the same operator applied at
-<code>(exact-&gt;inexact point)</code></strong>. An inexact point is
-never promoted. Gated by <code>tests/ad/exact_point_ad_test.esk</code>
-(JIT + AOT) and the <code>exactpoint</code> adversarial family.</p>
-<p><strong>Exactness is a property of the carrier at run time, not of
-the differentiand’s source text.</strong> Earlier builds decided the
-route with a static whitelist over the body and the point expression,
-and fell back to the (always inexact) jet path the moment either one
-merely <em>looked</em> unprovable — a composed call a few frames deep, a
-reference to a top-level <code>define</code>d constant instead of an
-inline literal, or a point expression built from anything but a bare
-literal, a variable, or a small arithmetic-primitive set, even when the
-computation was in fact exact. None of that changes whether a value is
-exact; only the point’s tag at run time does. The route is now: evaluate
-the point once, and if it is exact — an int64, bignum, or rational —
-take the tower pass, whatever the differentiand’s shape; ordinary R7RS
-exact/inexact contagion through the tower’s own arithmetic
-(<code>+ - * /</code>, non-negative-integer <code>expt</code>, and any
-top-level define reached through them) does the rest, demoting to
-<code>f64</code> only where a value ITSELF turns inexact (a
-transcendental, or an inexact operand actually participating). A
-composed call several frames deep (<code>(derivative Q x)</code> where
-<code>Q</code> calls a helper that itself calls another), a top-level
-constant referenced instead of inlined, a point built from
-<code>(car …)</code>, <code>(vector-ref …)</code>,
-<code>(hash-ref …)</code>, a loop variable, or a function call, and a
-differentiand given as a bare lambda, a variable, a function-call
-expression that computes a closure (<code>(derivative (mk 3) x)</code>),
-a let-bound closure, or a composition
-(<code>(derivative (compose f g) x)</code>) are all exactly as exact as
-the same computation inlined by hand. The exact route still defers to
-the (unchanged) jet path when the function cannot be resolved to a
-callable at all, or when another differentiation is already live —
-including a nested differentiation. Nesting is free of perturbation
-confusion on every operator pairing, and composes up to the carrier
-ceiling described in section 11. Where two passes land on the
-first-order companion series — a companion of doubles — an exact seed
-keeps its <em>value</em> through the nested pass but spends its
-exactness; where the composition stays on the exact tier (a first-order
-pass over <code>derivative-n</code>, for one) the answer comes back
-exact. A body that only calls other top-level definitions is accepted:
-<code>(derivative (lambda (s) (h 1/5 s)) 1/3)</code> where
-<code>(define (h a b) (* a b b))</code> is exactly <code>2/15</code>,
-the same answer <code>(derivative-n … 1)</code> gives. Vector-point
-<code>gradient</code>/<code>hessian</code> and the remaining operators
-need one tower pass per component and are build items. See <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/operators.md#exact-vs-inexact-seeds" target="_blank" rel="noopener noreferrer">../reference/ad/operators.md</a>
-for the per-point-form detail, including why <code>(tensor 1/3)</code>
-cannot express an exact seed (its storage is homogeneous
-<code>double</code>) while <code>#(1/3)</code> now does.</p>
-<p><code>gradient</code> is exact reverse-mode AD <strong>however the
-callable is reached</strong> — named directly, passed in through a
-function parameter, wrapped, or applied in curried form.
-<code>(gradient f point)</code> where <code>f</code> arrives through a
-parameter, and the curried <code>((gradient f) point)</code>, are
-byte-identical to the direct call for scalar multi-argument, vector, and
-non-polynomial losses (JIT and AOT). There is no finite-difference
-fallback anywhere in the gradient path.</p>
+<p>The exact tier is an <strong>identity with the tower</strong> — <code>(derivative f x)</code> equals <code>(derivative-n f x 1)</code> and <code>(hessian f x)</code> equals <code>(derivative-n f x 2)</code> at an exact scalar <code>x</code>, in value and in exactness — and where an operator still coerces, the contract remains that <strong>an exact seed never disagrees with the same operator applied at <code>(exact-&gt;inexact point)</code></strong>. An inexact point is never promoted. Gated by <code>tests/ad/exact_point_ad_test.esk</code> (JIT + AOT) and the <code>exactpoint</code> adversarial family.</p>
+<p><strong>Exactness is a property of the carrier at run time, not of the differentiand’s source text.</strong> Earlier builds decided the route with a static whitelist over the body and the point expression, and fell back to the (always inexact) jet path the moment either one merely <em>looked</em> unprovable — a composed call a few frames deep, a reference to a top-level <code>define</code>d constant instead of an inline literal, or a point expression built from anything but a bare literal, a variable, or a small arithmetic-primitive set, even when the computation was in fact exact. None of that changes whether a value is exact; only the point’s tag at run time does. The route is now: evaluate the point once, and if it is exact — an int64, bignum, or rational — take the tower pass, whatever the differentiand’s shape; ordinary R7RS exact/inexact contagion through the tower’s own arithmetic (<code>+ - * /</code>, non-negative-integer <code>expt</code>, and any top-level define reached through them) does the rest, demoting to <code>f64</code> only where a value ITSELF turns inexact (a transcendental, or an inexact operand actually participating). A composed call several frames deep (<code>(derivative Q x)</code> where <code>Q</code> calls a helper that itself calls another), a top-level constant referenced instead of inlined, a point built from <code>(car …)</code>, <code>(vector-ref …)</code>, <code>(hash-ref …)</code>, a loop variable, or a function call, and a differentiand given as a bare lambda, a variable, a function-call expression that computes a closure (<code>(derivative (mk 3) x)</code>), a let-bound closure, or a composition (<code>(derivative (compose f g) x)</code>) are all exactly as exact as the same computation inlined by hand. The exact route still defers to the (unchanged) jet path when the function cannot be resolved to a callable at all, or when another differentiation is already live — including a nested differentiation. Nesting is free of perturbation confusion on every operator pairing, and composes up to the carrier ceiling described in section 11. Where two passes land on the first-order companion series — a companion of doubles — an exact seed keeps its <em>value</em> through the nested pass but spends its exactness; where the composition stays on the exact tier (a first-order pass over <code>derivative-n</code>, for one) the answer comes back exact. A body that only calls other top-level definitions is accepted: <code>(derivative (lambda (s) (h 1/5 s)) 1/3)</code> where <code>(define (h a b) (* a b b))</code> is exactly <code>2/15</code>, the same answer <code>(derivative-n … 1)</code> gives. Vector-point <code>gradient</code>/<code>hessian</code> and the remaining operators need one tower pass per component and are build items. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/operators.md#exact-vs-inexact-seeds" target="_blank" rel="noopener noreferrer">../reference/ad/operators.md</a> for the per-point-form detail, including why <code>(tensor 1/3)</code> cannot express an exact seed (its storage is homogeneous <code>double</code>) while <code>#(1/3)</code> now does.</p>
+<p><code>gradient</code> is exact reverse-mode AD <strong>however the callable is reached</strong> — named directly, passed in through a function parameter, wrapped, or applied in curried form. <code>(gradient f point)</code> where <code>f</code> arrives through a parameter, and the curried <code>((gradient f) point)</code>, are byte-identical to the direct call for scalar multi-argument, vector, and non-polynomial losses (JIT and AOT). There is no finite-difference fallback anywhere in the gradient path.</p>
 <pre class="scheme"><code>(define (loss x y) (+ (* x x) (* y y)))
 (define (apply-grad f pt) (gradient f pt))
 (apply-grad loss (vector 3.0 4.0))   ; through a wrapper
 ((gradient loss) (vector 3.0 4.0))   ; curried
 ;; =&gt; #(6 8) — identical to (gradient loss (vector 3.0 4.0))</code></pre>
-<p>See <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/architecture.md#callable-arity-recovery--gradient-through-wrappers-and-curried-forms" target="_blank" rel="noopener noreferrer">../reference/ad/architecture.md</a>
-for the arity-recovery mechanism.</p>
-<h3 id="library-modules-require-coreadname">Library modules
-(<code>(require core.ad.&lt;name&gt;)</code>)</h3>
+<p>See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/architecture.md#callable-arity-recovery--gradient-through-wrappers-and-curried-forms" target="_blank" rel="noopener noreferrer">../reference/ad/architecture.md</a> for the arity-recovery mechanism.</p>
+<h3 id="library-modules-require-coreadname">Library modules (<code>(require core.ad.&lt;name&gt;)</code>)</h3>
 <table>
 <colgroup>
 <col style="width: 33%" />
@@ -1004,98 +576,54 @@ for the arity-recovery mechanism.</p>
 <tbody>
 <tr>
 <td><code>core.ad.guw</code></td>
-<td><code>taylor-propagate</code>, <code>mixed-partial</code>,
-<code>gradient-n</code></td>
+<td><code>taylor-propagate</code>, <code>mixed-partial</code>, <code>gradient-n</code></td>
 <td>multivariate mixed partials, order ≥ 3</td>
 </tr>
 <tr>
 <td><code>core.ad.tensor_tower</code></td>
-<td><code>tt-from-scalar-series</code>, <code>tt-matmul-cauchy</code>,
-<code>tt-conv2d-cauchy</code>, <code>tt-sigmoid</code>,
-<code>tt-tanh</code>, <code>tt-sum</code>,
-<code>tt-nth-derivative</code>, …</td>
+<td><code>tt-from-scalar-series</code>, <code>tt-matmul-cauchy</code>, <code>tt-conv2d-cauchy</code>, <code>tt-sigmoid</code>, <code>tt-tanh</code>, <code>tt-sum</code>, <code>tt-nth-derivative</code>, …</td>
 <td>high-order AD through tensor computations</td>
 </tr>
 <tr>
 <td><code>core.ad.taylor_models</code></td>
-<td><code>taylor-model</code>, <code>tm-range</code>,
-<code>tm-eval</code>, <code>tm-coeffs</code>, <code>tm-remainder</code>,
-…</td>
+<td><code>taylor-model</code>, <code>tm-range</code>, <code>tm-eval</code>, <code>tm-coeffs</code>, <code>tm-remainder</code>, …</td>
 <td>validated AD (rigorous enclosures)</td>
 </tr>
 <tr>
 <td><code>core.ad.interval</code></td>
-<td><code>interval-of</code>, <code>interval-lo/-hi</code>,
-<code>interval-contains?</code>, <code>interval-width</code>, …</td>
+<td><code>interval-of</code>, <code>interval-lo/-hi</code>, <code>interval-contains?</code>, <code>interval-width</code>, …</td>
 <td>outward-rounded interval arithmetic (used by Taylor models)</td>
 </tr>
 <tr>
 <td><code>core.ad.sparse_guw</code></td>
-<td><code>sparse-hessian</code>, <code>sparse-hessian-pat</code>,
-<code>sparse-hessian-ref</code>, <code>sparse-hessian-colors</code>,
-<code>sparse-hessian-row-ptr/-col-idx/-values</code>,
-<code>sparse-hessian-dense?</code></td>
+<td><code>sparse-hessian</code>, <code>sparse-hessian-pat</code>, <code>sparse-hessian-ref</code>, <code>sparse-hessian-colors</code>, <code>sparse-hessian-row-ptr/-col-idx/-values</code>, <code>sparse-hessian-dense?</code></td>
 <td>colored sparse-Hessian recovery</td>
 </tr>
 <tr>
 <td><code>core.ad.checkpoint</code></td>
-<td><code>dense-gradient</code>, <code>checkpointed-gradient</code>,
-<code>dense-tower-reverse</code>,
-<code>checkpointed-tower-reverse</code>,
-<code>checkpoint-block-size</code></td>
+<td><code>dense-gradient</code>, <code>checkpointed-gradient</code>, <code>dense-tower-reverse</code>, <code>checkpointed-tower-reverse</code>, <code>checkpoint-block-size</code></td>
 <td>Griewank-checkpointed high-order reverse</td>
 </tr>
 <tr>
 <td><code>core.ad.taylor_numerics</code></td>
-<td><code>taylor-ode-solve</code>, <code>taylor-root</code>,
-<code>taylor-inverse-series</code>, <code>taylor-eval</code></td>
+<td><code>taylor-ode-solve</code>, <code>taylor-root</code>, <code>taylor-inverse-series</code>, <code>taylor-eval</code></td>
 <td>series-based ODE / root / inversion</td>
 </tr>
 <tr>
 <td><code>core.ad.tape</code></td>
-<td><code>make-tape</code>, <code>tape-input</code>,
-<code>tape-mul</code>/<code>-add</code>/…, <code>tape-gradient</code>,
-<code>tape-node-count</code>, …</td>
+<td><code>make-tape</code>, <code>tape-input</code>, <code>tape-mul</code>/<code>-add</code>/…, <code>tape-gradient</code>, <code>tape-node-count</code>, …</td>
 <td>explicit reverse-mode tape (Scheme level)</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Running module examples:</strong> because these modules are
-loaded via <code>require</code>, run them with the build directory on
-the library path:</p>
+<p><strong>Running module examples:</strong> because these modules are loaded via <code>require</code>, run them with the build directory on the library path:</p>
 <pre><code>./build/eshkol-run -r your-file.esk -L build</code></pre>
-<p>The built-in-operator examples in §1–§2 need only
-<code>./build/eshkol-run -r your-file.esk</code>.</p>
+<p>The built-in-operator examples in §1–§2 need only <code>./build/eshkol-run -r your-file.esk</code>.</p>
 <h3 id="further-reading">Further reading</h3>
 <ul>
-<li><a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/design/AD_TAYLOR_TOWER.md" target="_blank" rel="noopener noreferrer"><code>docs/design/AD_TAYLOR_TOWER.md</code></a>
-— the full Taylor-tower design (P0–P12): representation, recurrences,
-monomorphization, exact/tensor/validated coefficient tiers, and every
-phase’s correctness gate.</li>
-<li><a href="/docs#page=api_reference" data-url="/content/api_reference.html"><code>docs/API_REFERENCE.md</code></a>
-— the built-in AD operators in the context of the whole language
-surface.</li>
-<li><a
-href="/docs#page=reference_ad" data-url="/content/reference_ad.html"><code>docs/reference/ad/INDEX.md</code></a>
-— the machine-verified AD operator reference and support matrix.</li>
-<li><a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/tape.md" target="_blank" rel="noopener noreferrer"><code>docs/reference/ad/tape.md</code></a>
-— the <strong>explicit reverse-mode tape builtins</strong>
-(<code>ad-tape-new</code>, <code>ad-var</code>, <code>ad-mul</code>,
-<code>ad-backward</code>, <code>ad-gradient</code>, …) and the AD
-instrumentation counters. These are the low-level counterpart to the
-operators in §1: you record the graph by hand and run one reverse sweep
-yourself. The same page documents
-<code>(ad-finite-difference-evals)</code> and
-<code>(ad-note-finite-difference!)</code>, which are what make “no
-finite-difference fallback anywhere in the gradient path” a measurement
-a program can perform on itself rather than a claim it has to take on
-trust.</li>
-<li><a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/ad_tape.md" target="_blank" rel="noopener noreferrer"><code>docs/reference/stdlib/ad_tape.md</code></a>
-— the pure-Scheme <code>core.ad.tape</code> module listed in the table
-above: a separate tape that records an explicit backward closure per
-operation, so custom ops and vector-valued nodes differentiate alongside
-the builtin ones.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/AD_TAYLOR_TOWER.md" target="_blank" rel="noopener noreferrer"><code>docs/design/AD_TAYLOR_TOWER.md</code></a> — the full Taylor-tower design (P0–P12): representation, recurrences, monomorphization, exact/tensor/validated coefficient tiers, and every phase’s correctness gate.</li>
+<li><a href="/docs#page=api_reference" data-url="/content/api_reference.html"><code>docs/API_REFERENCE.md</code></a> — the built-in AD operators in the context of the whole language surface.</li>
+<li><a href="/docs#page=reference_ad" data-url="/content/reference_ad.html"><code>docs/reference/ad/INDEX.md</code></a> — the machine-verified AD operator reference and support matrix.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/tape.md" target="_blank" rel="noopener noreferrer"><code>docs/reference/ad/tape.md</code></a> — the <strong>explicit reverse-mode tape builtins</strong> (<code>ad-tape-new</code>, <code>ad-var</code>, <code>ad-mul</code>, <code>ad-backward</code>, <code>ad-gradient</code>, …) and the AD instrumentation counters. These are the low-level counterpart to the operators in §1: you record the graph by hand and run one reverse sweep yourself. The same page documents <code>(ad-finite-difference-evals)</code> and <code>(ad-note-finite-difference!)</code>, which are what make “no finite-difference fallback anywhere in the gradient path” a measurement a program can perform on itself rather than a claim it has to take on trust.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/ad_tape.md" target="_blank" rel="noopener noreferrer"><code>docs/reference/stdlib/ad_tape.md</code></a> — the pure-Scheme <code>core.ad.tape</code> module listed in the table above: a separate tape that records an explicit backward closure per operation, so custom ops and vector-valued nodes differentiate alongside the builtin ones.</li>
 </ul>

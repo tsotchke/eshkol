@@ -1,8 +1,5 @@
-<h1 id="tutorial-7-parallel-computing">Tutorial 7: Parallel
-Computing</h1>
-<p>Eshkol provides three parallel primitives backed by a work-stealing
-thread pool. All three compose with the rest of the language — closures,
-autodiff, exact arithmetic.</p>
+<h1 id="tutorial-7-parallel-computing">Tutorial 7: Parallel Computing</h1>
+<p>Eshkol provides three parallel primitives backed by a work-stealing thread pool. All three compose with the rest of the language — closures, autodiff, exact arithmetic.</p>
 <hr />
 <h2 id="part-1-parallel-map">Part 1: parallel-map</h2>
 <p>Apply a function to each element of a list in parallel:</p>
@@ -13,12 +10,9 @@ autodiff, exact arithmetic.</p>
 ;; Parallel map (work-stealing thread pool)
 (define result (parallel-map (lambda (x) (* x x)) &#39;(1 2 3 4 5 6 7 8)))
 ;; =&gt; (1 4 9 16 25 36 49 64) — same result, uses all cores</code></pre>
-<p><code>parallel-map</code> splits the list across available cores,
-maps the function in parallel, and reassembles results in order. The
-function must be pure (no side effects) for correctness.</p>
+<p><code>parallel-map</code> splits the list across available cores, maps the function in parallel, and reassembles results in order. The function must be pure (no side effects) for correctness.</p>
 <h3 id="when-to-use">When to Use</h3>
-<p>Parallel map pays off when the per-element computation is
-expensive:</p>
+<p>Parallel map pays off when the per-element computation is expensive:</p>
 <pre class="scheme"><code>;; Expensive computation — benefits from parallelism
 (define (heavy-compute x)
   (let loop ((i 0) (acc 0.0))
@@ -27,9 +21,7 @@ expensive:</p>
         (loop (+ i 1) (+ acc (sin (* i 0.001)))))))
 
 (define results (parallel-map heavy-compute &#39;(1 2 3 4 5 6 7 8)))</code></pre>
-<p>For cheap operations (addition, multiplication), the overhead of
-thread scheduling exceeds the benefit. Use regular <code>map</code> for
-those.</p>
+<p>For cheap operations (addition, multiplication), the overhead of thread scheduling exceeds the benefit. Use regular <code>map</code> for those.</p>
 <hr />
 <h2 id="part-2-parallel-fold">Part 2: parallel-fold</h2>
 <p>Parallel reduction with an associative binary operator:</p>
@@ -41,11 +33,7 @@ those.</p>
 ;; Product (careful with overflow — will promote to bignum)
 (define product (parallel-fold * 1 &#39;(1 2 3 4 5 6 7 8 9 10)))
 ;; =&gt; 3628800</code></pre>
-<p>The operator MUST be associative:
-<code>(op (op a b) c) = (op a (op b c))</code>. Addition,
-multiplication, min, max are all associative. Subtraction is NOT —
-<code>parallel-fold</code> with <code>-</code> will give wrong
-results.</p>
+<p>The operator MUST be associative: <code>(op (op a b) c) = (op a (op b c))</code>. Addition, multiplication, min, max are all associative. Subtraction is NOT — <code>parallel-fold</code> with <code>-</code> will give wrong results.</p>
 <hr />
 <h2 id="part-3-futures">Part 3: Futures</h2>
 <p>Futures represent asynchronous computations:</p>
@@ -63,8 +51,7 @@ results.</p>
 (define result (force f))
 (display result)
 (newline)</code></pre>
-<p>Futures are useful when you have independent computations that can
-overlap:</p>
+<p>Futures are useful when you have independent computations that can overlap:</p>
 <pre class="scheme"><code>;; Something slow enough to be worth running in the background
 (define (heavy-compute seed)
   (let loop ((i 0) (acc seed))
@@ -83,15 +70,10 @@ overlap:</p>
 <h2 id="thread-pool-architecture">Thread Pool Architecture</h2>
 <p>All three primitives use the same work-stealing thread pool:</p>
 <ul>
-<li><strong>Thread count</strong> = number of CPU cores
-(auto-detected)</li>
-<li><strong>Work stealing</strong> — idle threads steal tasks from busy
-threads’ queues</li>
-<li><strong>Arena memory</strong> — each thread has its own arena
-region, merged on join</li>
-<li><strong>No GC pressure</strong> — parallel computation is
-deterministic, zero GC</li>
+<li><strong>Thread count</strong> = number of CPU cores (auto-detected)</li>
+<li><strong>Work stealing</strong> — idle threads steal tasks from busy threads’ queues</li>
+<li><strong>Arena memory</strong> — each thread has its own arena region, merged on join</li>
+<li><strong>No GC pressure</strong> — parallel computation is deterministic, zero GC</li>
 </ul>
 <hr />
-<p><em>Next: Tutorial 8 — Control Flow (call/cc, continuations,
-exceptions)</em></p>
+<p><em>Next: Tutorial 8 — Control Flow (call/cc, continuations, exceptions)</em></p>

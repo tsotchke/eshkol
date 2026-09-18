@@ -1,7 +1,5 @@
 <h1 id="tutorial-5-signal-processing">Tutorial 5: Signal Processing</h1>
-<p>Eshkol includes a complete signal processing library — FFT, window
-functions, and digital filter design — all integrated with the autodiff
-system so you can differentiate through signal processing chains.</p>
+<p>Eshkol includes a complete signal processing library — FFT, window functions, and digital filter design — all integrated with the autodiff system so you can differentiate through signal processing chains.</p>
 <hr />
 <h2 id="part-1-fft-and-inverse-fft">Part 1: FFT and Inverse FFT</h2>
 <pre class="scheme"><code>;; Create a signal: 3 Hz + 7 Hz sine waves, 32 samples
@@ -27,8 +25,7 @@ system so you can differentiate through signal processing chains.</p>
 (define recovered (ifft spectrum))</code></pre>
 <hr />
 <h2 id="part-2-window-functions">Part 2: Window Functions</h2>
-<p>Window functions reduce spectral leakage when analysing finite-length
-signals. Four are built in:</p>
+<p>Window functions reduce spectral leakage when analysing finite-length signals. Four are built in:</p>
 <pre class="scheme"><code>;; Generate a 64-sample window
 (define ham (hamming-window 64))
 (define han (hann-window 64))
@@ -84,10 +81,8 @@ signals. Four are built in:</p>
 <pre class="scheme"><code>;; General convolution of two sequences
 (define result (convolve signal coeffs))</code></pre>
 <hr />
-<h2 id="part-4-iir--butterworth-filters">Part 4: IIR / Butterworth
-Filters</h2>
-<p>Design classic Butterworth filters for lowpass, highpass, or
-bandpass:</p>
+<h2 id="part-4-iir--butterworth-filters">Part 4: IIR / Butterworth Filters</h2>
+<p>Design classic Butterworth filters for lowpass, highpass, or bandpass:</p>
 <pre class="scheme"><code>;; Design a 4th-order Butterworth lowpass filter.
 ;; Cutoffs are normalised so that 1.0 is the Nyquist frequency: a 100 Hz
 ;; cutoff at a 1000 Hz sample rate (Nyquist 500 Hz) is 100/500 = 0.2.
@@ -96,12 +91,9 @@ bandpass:</p>
 ;; The design is a pair (b-coeffs . a-coeffs); apply it with iir-filter
 (define smoothed (iir-filter (car lp) (cdr lp) signal))
 (display (vector-length smoothed))   ;; =&gt; 32</code></pre>
-<p>The filter design uses the bilinear transform from the analog
-prototype, computing poles on the Butterworth circle and mapping to the
-z-plane.</p>
+<p>The filter design uses the bilinear transform from the analog prototype, computing poles on the Butterworth circle and mapping to the z-plane.</p>
 <hr />
-<h2 id="part-5-integration-with-autodiff">Part 5: Integration with
-Autodiff</h2>
+<h2 id="part-5-integration-with-autodiff">Part 5: Integration with Autodiff</h2>
 <p>All signal processing functions compose with Eshkol’s autodiff:</p>
 <!-- doc-example: known-defect SW-180: the derivative with respect to the cutoff is 73.81; the build answers 0 because the filter design runs through complex arithmetic -->
 <pre class="scheme"><code>;; How does the output power change with respect to filter cutoff?

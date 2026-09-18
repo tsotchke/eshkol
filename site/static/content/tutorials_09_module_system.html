@@ -1,6 +1,5 @@
 <h1 id="tutorial-9-the-module-system">Tutorial 9: The Module System</h1>
-<p>Eshkol uses <code>require</code> and <code>provide</code> for module
-loading with dependency resolution and cycle detection.</p>
+<p>Eshkol uses <code>require</code> and <code>provide</code> for module loading with dependency resolution and cycle detection.</p>
 <hr />
 <h2 id="part-1-using-modules">Part 1: Using Modules</h2>
 <pre class="scheme"><code>;; Load the standard library
@@ -18,8 +17,7 @@ loading with dependency resolution and cycle detection.</p>
 (require core.functional.curry)    ;; curry, flip</code></pre>
 <hr />
 <h2 id="part-2-creating-modules">Part 2: Creating Modules</h2>
-<p>A module is an <code>.esk</code> file with a <code>provide</code>
-declaration listing its exports:</p>
+<p>A module is an <code>.esk</code> file with a <code>provide</code> declaration listing its exports:</p>
 <!-- doc-example: file mylib.esk: the module the next example requires -->
 <pre class="scheme"><code>;;; mylib.esk — a custom library
 
@@ -68,22 +66,16 @@ declaration listing its exports:</p>
 </tbody>
 </table>
 <hr />
-<h2 id="part-4-available-standard-library-modules">Part 4: Available
-Standard Library Modules</h2>
+<h2 id="part-4-available-standard-library-modules">Part 4: Available Standard Library Modules</h2>
 <h3 id="lists">Lists</h3>
 <ul>
-<li><code>core.list.higher_order</code> — map, fold, fold-left,
-fold-right, filter, for-each, any, every</li>
-<li><code>core.list.transform</code> — take, drop, append, reverse,
-partition, list-copy</li>
+<li><code>core.list.higher_order</code> — map, fold, fold-left, fold-right, filter, for-each, any, every</li>
+<li><code>core.list.transform</code> — take, drop, append, reverse, partition, list-copy</li>
 <li><code>core.list.sort</code> — sort (merge sort)</li>
-<li><code>core.list.search</code> — member, assoc, list-ref,
-list-tail</li>
+<li><code>core.list.search</code> — member, assoc, list-ref, list-tail</li>
 <li><code>core.list.query</code> — count-if, find, length</li>
-<li><code>core.list.generate</code> — iota, range, make-list, repeat,
-zip</li>
-<li><code>core.list.convert</code> — list-&gt;vector,
-vector-&gt;list</li>
+<li><code>core.list.generate</code> — iota, range, make-list, repeat, zip</li>
+<li><code>core.list.convert</code> — list-&gt;vector, vector-&gt;list</li>
 <li><code>core.list.compound</code> — caar, cadr, cdar, cddr, etc.</li>
 </ul>
 <h3 id="functional">Functional</h3>
@@ -105,10 +97,8 @@ vector-&gt;list</li>
 <h3 id="operators">Operators</h3>
 <ul>
 <li><code>core.operators.arithmetic</code> — +, -, *, /</li>
-<li><code>core.operators.compare</code> — &lt;, &gt;, &lt;=, &gt;=,
-=</li>
-<li><code>core.logic.predicates</code> — null?, pair?, number?,
-etc.</li>
+<li><code>core.operators.compare</code> — &lt;, &gt;, &lt;=, &gt;=, =</li>
+<li><code>core.logic.predicates</code> — null?, pair?, number?, etc.</li>
 <li><code>core.logic.boolean</code> — and, or, not</li>
 <li><code>core.logic.types</code> — type predicates</li>
 </ul>

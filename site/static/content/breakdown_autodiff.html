@@ -1,38 +1,25 @@
-<h1 id="automatic-differentiation-in-eshkol">Automatic Differentiation
-in Eshkol</h1>
+<h1 id="automatic-differentiation-in-eshkol">Automatic Differentiation in Eshkol</h1>
 <h2 id="table-of-contents">Table of Contents</h2>
 <ul>
 <li><a href="/docs#page=breakdown_autodiff&amp;overview" data-url="/content/breakdown_autodiff.html">Overview</a></li>
 <li><a href="/docs#page=breakdown_autodiff&amp;three-ad-modes" data-url="/content/breakdown_autodiff.html">Three AD Modes</a></li>
-<li><a href="/docs#page=breakdown_autodiff&amp;symbolic-differentiation" data-url="/content/breakdown_autodiff.html">Symbolic
-Differentiation</a></li>
-<li><a href="/docs#page=breakdown_autodiff&amp;forward-mode-ad-dual-numbers" data-url="/content/breakdown_autodiff.html">Forward-Mode AD (Dual
-Numbers)</a></li>
-<li><a href="/docs#page=breakdown_autodiff&amp;reverse-mode-ad-computational-graph" data-url="/content/breakdown_autodiff.html">Reverse-Mode AD
-(Computational Graph)</a></li>
-<li><a href="/docs#page=breakdown_autodiff&amp;vector-calculus-operations" data-url="/content/breakdown_autodiff.html">Vector Calculus
-Operations</a></li>
-<li><a href="/docs#page=breakdown_autodiff&amp;implementation-architecture" data-url="/content/breakdown_autodiff.html">Implementation
-Architecture</a></li>
+<li><a href="/docs#page=breakdown_autodiff&amp;symbolic-differentiation" data-url="/content/breakdown_autodiff.html">Symbolic Differentiation</a></li>
+<li><a href="/docs#page=breakdown_autodiff&amp;forward-mode-ad-dual-numbers" data-url="/content/breakdown_autodiff.html">Forward-Mode AD (Dual Numbers)</a></li>
+<li><a href="/docs#page=breakdown_autodiff&amp;reverse-mode-ad-computational-graph" data-url="/content/breakdown_autodiff.html">Reverse-Mode AD (Computational Graph)</a></li>
+<li><a href="/docs#page=breakdown_autodiff&amp;vector-calculus-operations" data-url="/content/breakdown_autodiff.html">Vector Calculus Operations</a></li>
+<li><a href="/docs#page=breakdown_autodiff&amp;implementation-architecture" data-url="/content/breakdown_autodiff.html">Implementation Architecture</a></li>
 <li><a href="/docs#page=breakdown_autodiff&amp;usage-examples" data-url="/content/breakdown_autodiff.html">Usage Examples</a></li>
-<li><a href="/docs#page=breakdown_autodiff&amp;performance-characteristics" data-url="/content/breakdown_autodiff.html">Performance
-Characteristics</a></li>
+<li><a href="/docs#page=breakdown_autodiff&amp;performance-characteristics" data-url="/content/breakdown_autodiff.html">Performance Characteristics</a></li>
 </ul>
 <hr />
 <h2 id="overview">Overview</h2>
-<p>Eshkol provides <strong>three automatic differentiation
-modes</strong> for computing exact derivatives:</p>
+<p>Eshkol provides <strong>three automatic differentiation modes</strong> for computing exact derivatives:</p>
 <ol type="1">
-<li><strong>Symbolic Differentiation</strong> - Compile-time AST
-transformation (12 rules)</li>
-<li><strong>Forward-Mode AD</strong> - Runtime dual numbers for
-efficient single-variable derivatives</li>
-<li><strong>Reverse-Mode AD</strong> - Computational graph with
-backpropagation for many-input functions</li>
+<li><strong>Symbolic Differentiation</strong> - Compile-time AST transformation (12 rules)</li>
+<li><strong>Forward-Mode AD</strong> - Runtime dual numbers for efficient single-variable derivatives</li>
+<li><strong>Reverse-Mode AD</strong> - Computational graph with backpropagation for many-input functions</li>
 </ol>
-<p>All three modes compute <strong>exact derivatives</strong> (not
-numerical approximations) by systematically applying the chain rule to
-elementary operations.</p>
+<p>All three modes compute <strong>exact derivatives</strong> (not numerical approximations) by systematically applying the chain rule to elementary operations.</p>
 <hr />
 <h2 id="three-ad-modes">Three AD Modes</h2>
 <h3 id="mode-selection">Mode Selection</h3>
@@ -55,10 +42,8 @@ elementary operations.</p>
 ;; Returns: #(6.0 8.0) (gradient at (3.0, 4.0))</code></pre>
 <hr />
 <h2 id="symbolic-differentiation">Symbolic Differentiation</h2>
-<p><strong>Implementation:</strong> <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a></p>
-<p>Symbolic differentiation transforms ASTs at
-<strong>compile-time</strong> using 12 differentiation rules:</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a></p>
+<p>Symbolic differentiation transforms ASTs at <strong>compile-time</strong> using 12 differentiation rules:</p>
 <h3 id="differentiation-rules">Differentiation Rules</h3>
 <table>
 <thead>
@@ -131,8 +116,7 @@ href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codege
 </tr>
 </tbody>
 </table>
-<h3 id="example-symbolic-differentiation">Example: Symbolic
-Differentiation</h3>
+<h3 id="example-symbolic-differentiation">Example: Symbolic Differentiation</h3>
 <pre class="scheme"><code>;; Input function
 (define f (lambda (x) (* x x)))
 
@@ -145,22 +129,16 @@ Differentiation</h3>
 (diff g &#39;x)
 ;; Returns: (lambda (x) (+ (* 3 (* x x)) 2))</code></pre>
 <hr />
-<h2 id="forward-mode-ad-dual-numbers">Forward-Mode AD (Dual
-Numbers)</h2>
-<p><strong>Implementation:</strong> <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a></p>
-<p>Forward-mode AD uses <strong>dual numbers</strong> to compute
-derivatives in a single forward pass. Each dual number stores both the
-function value and its derivative:</p>
+<h2 id="forward-mode-ad-dual-numbers">Forward-Mode AD (Dual Numbers)</h2>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a></p>
+<p>Forward-mode AD uses <strong>dual numbers</strong> to compute derivatives in a single forward pass. Each dual number stores both the function value and its derivative:</p>
 <h3 id="dual-number-structure">Dual Number Structure</h3>
 <pre class="c"><code>typedef struct eshkol_dual_number {
     double value;       // f(x) - the function value
     double derivative;  // f&#39;(x) - the derivative value
     double e2, e12, ep, ep1, ep2, ep12;  // nested/mixed-mode slots
 } eshkol_dual_number_t;  // 64 bytes</code></pre>
-<p><strong>Tagged value type:</strong> <a
-href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>ESHKOL_VALUE_DUAL_NUMBER</code></a>
-(type = 6)</p>
+<p><strong>Tagged value type:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>ESHKOL_VALUE_DUAL_NUMBER</code></a> (type = 6)</p>
 <h3 id="dual-number-arithmetic">Dual Number Arithmetic</h3>
 <p>Each operation propagates both value and derivative:</p>
 <pre class="c"><code>// Addition: (f + g)&#39; = f&#39; + g&#39;
@@ -181,16 +159,11 @@ dual_div(a, b) = {a.value / b.value, (a.deriv * b.value - a.value * b.deriv) / (
 ;; 2. Evaluate (* x x) with dual arithmetic:
 ;;    result = {value: 9.0, deriv: 6.0}
 ;; 3. Extract derivative: 6.0</code></pre>
-<p><strong>Best for:</strong> Functions with <strong>1 input, many
-outputs</strong> (e.g., f: ℝ → ℝⁿ)</p>
+<p><strong>Best for:</strong> Functions with <strong>1 input, many outputs</strong> (e.g., f: ℝ → ℝⁿ)</p>
 <hr />
-<h2 id="reverse-mode-ad-computational-graph">Reverse-Mode AD
-(Computational Graph)</h2>
-<p><strong>Implementation:</strong> <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a></p>
-<p>Reverse-mode AD builds a <strong>computational graph</strong> during
-the forward pass, then propagates gradients backward from outputs to
-inputs. This is the foundation of neural network training.</p>
+<h2 id="reverse-mode-ad-computational-graph">Reverse-Mode AD (Computational Graph)</h2>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a></p>
+<p>Reverse-mode AD builds a <strong>computational graph</strong> during the forward pass, then propagates gradients backward from outputs to inputs. This is the foundation of neural network training.</p>
 <h3 id="ad-node-structure">AD Node Structure</h3>
 <pre class="c"><code>typedef struct ad_node {
     ad_node_type_t type;     // Operation type (see enum below)
@@ -201,14 +174,7 @@ inputs. This is the foundation of neural network training.</p>
     size_t id;              // Unique node ID for topological sorting
 } ad_node_t;</code></pre>
 <h3 id="ad-node-types">AD Node Types</h3>
-<p>The operation type is a small integer drawn from a contiguous opcode
-range. The canonical numbering lives in
-<code>lib/backend/autodiff_codegen.cpp</code> and
-<code>inc/eshkol/backend/autodiff_codegen.h</code>; the table below
-covers the elementary opcodes (0–11) and indicates the ranges occupied
-by activation functions and tensor primitives. New ML opcodes are
-appended as the framework adds operations, so this table can lag — refer
-to the source for the authoritative enum.</p>
+<p>The operation type is a small integer drawn from a contiguous opcode range. The canonical numbering lives in <code>lib/backend/autodiff_codegen.cpp</code> and <code>inc/eshkol/backend/autodiff_codegen.h</code>; the table below covers the elementary opcodes (0–11) and indicates the ranges occupied by activation functions and tensor primitives. New ML opcodes are appended as the framework adds operations, so this table can lag — refer to the source for the authoritative enum.</p>
 <pre class="c"><code>typedef enum {
     /* Core arithmetic and transcendentals (0–11) */
     AD_NODE_CONSTANT       = 0,   /* Constant value (no gradient) */
@@ -252,9 +218,7 @@ to the source for the authoritative enum.</p>
     ad_node_t** variables;   // Input variable nodes
     size_t num_variables;    // Number of input variables
 } ad_tape_t;</code></pre>
-<p><strong>Nested gradient support:</strong> 32-level tape stack for
-computing higher-order derivatives (implementation: <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a>)</p>
+<p><strong>Nested gradient support:</strong> 32-level tape stack for computing higher-order derivatives (implementation: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a>)</p>
 <h3 id="example-reverse-mode-ad">Example: Reverse-Mode AD</h3>
 <pre class="scheme"><code>;; Compute gradient of f(x, y) = x² + y² at (3.0, 4.0)
 (gradient (lambda (v)
@@ -278,14 +242,11 @@ href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codege
 ;;   y2_node.gradient += 1.0
 ;;   x_node.gradient += 2 * x_node.value * 1.0 = 6.0
 ;;   y_node.gradient += 2 * y_node.value * 1.0 = 8.0</code></pre>
-<p><strong>Best for:</strong> Functions with <strong>many inputs, 1
-output</strong> (e.g., f: ℝⁿ → ℝ)</p>
+<p><strong>Best for:</strong> Functions with <strong>many inputs, 1 output</strong> (e.g., f: ℝⁿ → ℝ)</p>
 <hr />
 <h2 id="vector-calculus-operations">Vector Calculus Operations</h2>
-<p>Eshkol provides high-level vector calculus operators built on
-reverse-mode AD:</p>
-<h3 id="scalar-field-operators-ℝⁿ--ℝ">Scalar Field Operators (ℝⁿ →
-ℝ)</h3>
+<p>Eshkol provides high-level vector calculus operators built on reverse-mode AD:</p>
+<h3 id="scalar-field-operators-ℝⁿ--ℝ">Scalar Field Operators (ℝⁿ → ℝ)</h3>
 <table>
 <colgroup>
 <col style="width: 20%" />
@@ -322,8 +283,7 @@ reverse-mode AD:</p>
 </tr>
 </tbody>
 </table>
-<h3 id="vector-field-operators-ℝⁿ--ℝᵐ">Vector Field Operators (ℝⁿ →
-ℝᵐ)</h3>
+<h3 id="vector-field-operators-ℝⁿ--ℝᵐ">Vector Field Operators (ℝⁿ → ℝᵐ)</h3>
 <table>
 <colgroup>
 <col style="width: 20%" />
@@ -376,26 +336,20 @@ reverse-mode AD:</p>
 (jacobian F (vector 3.0 4.0))
 ;; Returns: #(#(6.0 0.0)    ; [∂F₁/∂x, ∂F₁/∂y]
 ;;           #(0.0 8.0))    ; [∂F₂/∂x, ∂F₂/∂y]</code></pre>
-<h3 id="example-higher-order-derivatives">Example: Higher-Order
-Derivatives</h3>
-<p>Nested higher-order differentiation is exact by nesting the
-<strong>scalar</strong> <code>derivative</code> operator (see #75, #84,
-#95):</p>
+<h3 id="example-higher-order-derivatives">Example: Higher-Order Derivatives</h3>
+<p>Nested higher-order differentiation is exact by nesting the <strong>scalar</strong> <code>derivative</code> operator (see #75, #84, #95):</p>
 <pre class="scheme"><code>;; Second derivative: f&#39;&#39;(x) = d²/dx² (x³) = 6x
 (derivative (lambda (x)
               (derivative (lambda (y) (* y y y)) x))
             2.0)
 ;; Returns: 12   ; f&#39;&#39;(2) = 6*2 = 12</code></pre>
-<p>Nesting the <strong>vector</strong> <code>gradient</code> operator is
-exact too, as of v1.3.4-evolve:</p>
+<p>Nesting the <strong>vector</strong> <code>gradient</code> operator is exact too, as of v1.3.4-evolve:</p>
 <pre class="scheme"><code>;; gradient of gradient at a vector point
 (gradient (lambda (v)
             (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 0))) v) 0))
           (vector 2.0))
 ;; Returns: #(12)</code></pre>
-<p>Four AD cells that were open through v1.3.3 are closed on this build,
-each confirmed by re-running its own minimal repro under <a
-href="https://github.com/tsotchke/eshkol/tree/master/tests/ad_oracle/found" target="_blank" rel="noopener noreferrer"><code>tests/ad_oracle/found/</code></a>:</p>
+<p>Four AD cells that were open through v1.3.3 are closed on this build, each confirmed by re-running its own minimal repro under <a href="https://github.com/tsotchke/eshkol/tree/master/tests/ad_oracle/found" target="_blank" rel="noopener noreferrer"><code>tests/ad_oracle/found/</code></a>:</p>
 <table>
 <colgroup>
 <col style="width: 37%" />
@@ -413,37 +367,26 @@ href="https://github.com/tsotchke/eshkol/tree/master/tests/ad_oracle/found" targ
 <tr>
 <td>ESH-0096</td>
 <td>vector-param gradient-of-gradient returned zeros</td>
-<td>direct nested form returns <code>#(12)</code> (1-D) /
-<code>#(8 6)</code> (2-D); the <em>curried</em> route
-(<code>(jacobian (gradient f) point)</code>) now answers the Hessian
-too, via forward-over-reverse, identically to
-<code>(hessian f point)</code> (SW-05 closed). Only a point
-<em>computed</em> from the enclosing pass’s variables still raises
-(loud, never a silent zero)</td>
+<td>direct nested form returns <code>#(12)</code> (1-D) / <code>#(8 6)</code> (2-D); the <em>curried</em> route (<code>(jacobian (gradient f) point)</code>) now answers the Hessian too, via forward-over-reverse, identically to <code>(hessian f point)</code> (SW-05 closed). Only a point <em>computed</em> from the enclosing pass’s variables still raises (loud, never a silent zero)</td>
 </tr>
 <tr>
 <td>ESH-0095</td>
-<td><code>hessian</code>/<code>laplacian</code> SIGSEGV at a
-<code>tensor</code>/<code>#(…)</code> point</td>
+<td><code>hessian</code>/<code>laplacian</code> SIGSEGV at a <code>tensor</code>/<code>#(…)</code> point</td>
 <td>every point form returns the same answer</td>
 </tr>
 <tr>
 <td>ESH-0078</td>
-<td>second-order gradient through a <strong>named</strong> inner
-function returned zeros</td>
+<td>second-order gradient through a <strong>named</strong> inner function returned zeros</td>
 <td>agrees with the inline-lambda form</td>
 </tr>
 <tr>
 <td>ESH-0097</td>
-<td>vector-param AD capturing a local failed IR verification
-(<code>PtrToInt</code>)</td>
+<td>vector-param AD capturing a local failed IR verification (<code>PtrToInt</code>)</td>
 <td>returns <code>#(4.42 0)</code></td>
 </tr>
 </tbody>
 </table>
-<p>See <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md" target="_blank" rel="noopener noreferrer">reference/ad/support-matrix.md</a>
-for the per-cell oracle evidence.</p>
+<p>See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md" target="_blank" rel="noopener noreferrer">reference/ad/support-matrix.md</a> for the per-cell oracle evidence.</p>
 <hr />
 <h2 id="implementation-architecture">Implementation Architecture</h2>
 <h3 id="source-files">Source Files</h3>
@@ -465,37 +408,32 @@ for the per-cell oracle evidence.</p>
 <tbody>
 <tr>
 <td><strong>AD Codegen</strong></td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a></td>
 <td>14,545</td>
 <td>All 3 AD modes, vector calculus</td>
 </tr>
 <tr>
 <td><strong>AD Runtime</strong></td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h:1011-1080</code></a></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h:1011-1080</code></a></td>
 <td>70</td>
 <td>AD node structures, tape definition</td>
 </tr>
 <tr>
 <td><strong>Dual Numbers</strong></td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h:212-215</code></a></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h:212-215</code></a></td>
 <td>4</td>
 <td>Forward-mode dual number struct</td>
 </tr>
 <tr>
 <td><strong>Type System</strong></td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/type_system.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/type_system.cpp</code></a></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/type_system.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/type_system.cpp</code></a></td>
 <td>187</td>
 <td>AD type generation (dual_t, ad_node_t)</td>
 </tr>
 </tbody>
 </table>
 <h3 id="ad-mode-detection">AD Mode Detection</h3>
-<p>The compiler automatically selects the AD mode based on the operator
-used:</p>
+<p>The compiler automatically selects the AD mode based on the operator used:</p>
 <pre class="cpp"><code>// lib/backend/autodiff_codegen.cpp
 case ESHKOL_DIFF_OP:       → Symbolic differentiation
 case ESHKOL_DERIVATIVE_OP: → Forward or reverse (auto-selected)
@@ -504,8 +442,7 @@ case ESHKOL_JACOBIAN_OP:   → Reverse-mode (always)
 case ESHKOL_HESSIAN_OP:    → Nested reverse-mode
 // ... other vector calculus operators</code></pre>
 <h3 id="tape-management">Tape Management</h3>
-<p><strong>Tape Stack:</strong> 32-level nested gradient support for
-computing derivatives of derivatives:</p>
+<p><strong>Tape Stack:</strong> 32-level nested gradient support for computing derivatives of derivatives:</p>
 <pre class="cpp"><code>// Global tape stack (lib/backend/autodiff_codegen.cpp)
 static ad_tape_t* g_ad_tape_stack[32];
 static int g_ad_tape_depth = 0;
@@ -551,8 +488,7 @@ void pop_ad_tape() { g_ad_tape_depth--; }</code></pre>
 (define initial (vector 0.0 0.0))
 (define step1 (gd-step initial 0.1))
 ;; step1 ≈ #(0.4 0.6)  ; Move toward minimum (2, 3)</code></pre>
-<h3 id="example-3-neural-network-backpropagation">Example 3: Neural
-Network Backpropagation</h3>
+<h3 id="example-3-neural-network-backpropagation">Example 3: Neural Network Backpropagation</h3>
 <pre class="scheme"><code>;; Simple 2-layer network
 (define (forward inputs weights1 weights2)
   (let* ((hidden (tensor-dot inputs weights1))
@@ -657,8 +593,7 @@ Network Backpropagation</h3>
 <tr>
 <td><strong>Forward</strong></td>
 <td>O(1)</td>
-<td>Just mixed-mode dual jets (64 bytes each; simple duals use the first
-two fields)</td>
+<td>Just mixed-mode dual jets (64 bytes each; simple duals use the first two fields)</td>
 </tr>
 <tr>
 <td><strong>Reverse</strong></td>
@@ -678,9 +613,7 @@ two fields)</td>
 (gradient (lambda (v) (+ (vref v 0) (vref v 1))) (vector 1.0 2.0))</code></pre>
 <hr />
 <h2 id="ad-aware-execution">AD-Aware Execution</h2>
-<p><strong>Critical feature:</strong> Eshkol automatically switches
-between <strong>AD mode</strong> and <strong>normal mode</strong> based
-on argument types:</p>
+<p><strong>Critical feature:</strong> Eshkol automatically switches between <strong>AD mode</strong> and <strong>normal mode</strong> based on argument types:</p>
 <pre class="scheme"><code>;; Same function works with BOTH regular values AND AD values
 (define (f x) (* x x))
 
@@ -691,14 +624,10 @@ on argument types:</p>
 ;; AD execution (creates computational graph)
 (gradient (lambda (v) (f (vref v 0))) (vector 3.0))
 ;; Returns: #(6.0)</code></pre>
-<p><strong>Implementation:</strong> Closures check argument types at
-runtime and dispatch to the appropriate code path (<a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/function_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/function_codegen.cpp</code></a>).</p>
+<p><strong>Implementation:</strong> Closures check argument types at runtime and dispatch to the appropriate code path (<a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/function_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/function_codegen.cpp</code></a>).</p>
 <hr />
 <h2 id="integration-with-tensors">Integration with Tensors</h2>
-<p>Autodiff works seamlessly with tensor operations. The <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>vref</code></a>
-operation creates AD nodes when in AD mode:</p>
+<p>Autodiff works seamlessly with tensor operations. The <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>vref</code></a> operation creates AD nodes when in AD mode:</p>
 <pre class="scheme"><code>;; Gradient of tensor sum
 (gradient (lambda (t)
             (+ (+ (vref t 0) (vref t 1))
@@ -708,15 +637,8 @@ operation creates AD nodes when in AD mode:</p>
 <hr />
 <h2 id="v11-ad-extensions">v1.1 AD Extensions</h2>
 <h3 id="1-tensor-backward-pass">1. Tensor Backward Pass</h3>
-<p>Eshkol v1.1 introduces a full reverse-mode backward pass for tensor
-operations, implemented in <code>lib/backend/tensor_backward.cpp</code>
-with its header at <code>inc/eshkol/backend/tensor_backward.h</code>.
-The design follows the PyTorch autograd convention: each backward
-function receives the upstream gradient (<code>grad_out</code>) and
-tensors saved during the forward pass (<code>saved_*</code>), and writes
-computed input gradients into pre-allocated output buffers.</p>
-<p><strong>Supported operations with dedicated backward
-functions:</strong></p>
+<p>Eshkol v1.1 introduces a full reverse-mode backward pass for tensor operations, implemented in <code>lib/backend/tensor_backward.cpp</code> with its header at <code>inc/eshkol/backend/tensor_backward.h</code>. The design follows the PyTorch autograd convention: each backward function receives the upstream gradient (<code>grad_out</code>) and tensors saved during the forward pass (<code>saved_*</code>), and writes computed input gradients into pre-allocated output buffers.</p>
+<p><strong>Supported operations with dedicated backward functions:</strong></p>
 <table>
 <colgroup>
 <col style="width: 33%" />
@@ -734,21 +656,17 @@ functions:</strong></p>
 <tr>
 <td>Structural</td>
 <td>transpose, reshape, positional encoding</td>
-<td><code>eshkol_backward_transpose</code>,
-<code>eshkol_backward_reshape</code>,
-<code>eshkol_backward_positional_encoding</code></td>
+<td><code>eshkol_backward_transpose</code>, <code>eshkol_backward_reshape</code>, <code>eshkol_backward_positional_encoding</code></td>
 </tr>
 <tr>
 <td>Reduction</td>
 <td>sum, mean</td>
-<td><code>eshkol_backward_sum</code>,
-<code>eshkol_backward_mean</code></td>
+<td><code>eshkol_backward_sum</code>, <code>eshkol_backward_mean</code></td>
 </tr>
 <tr>
 <td>Pooling</td>
 <td>max pool 2D, avg pool 2D</td>
-<td><code>eshkol_backward_maxpool2d</code>,
-<code>eshkol_backward_avgpool2d</code></td>
+<td><code>eshkol_backward_maxpool2d</code>, <code>eshkol_backward_avgpool2d</code></td>
 </tr>
 <tr>
 <td>Convolution</td>
@@ -758,8 +676,7 @@ functions:</strong></p>
 <tr>
 <td>Normalization</td>
 <td>batch norm, layer norm</td>
-<td><code>eshkol_backward_batchnorm</code>,
-<code>eshkol_backward_layernorm</code></td>
+<td><code>eshkol_backward_batchnorm</code>, <code>eshkol_backward_layernorm</code></td>
 </tr>
 <tr>
 <td>Linear algebra</td>
@@ -769,362 +686,84 @@ functions:</strong></p>
 <tr>
 <td>Attention</td>
 <td>single-head, multi-head (causal and non-causal)</td>
-<td><code>eshkol_backward_attention</code> (native path),
-<code>tensor_attention_backward</code> (qLLM-bridge path) — both
-exact</td>
+<td><code>eshkol_backward_attention</code> (native path), <code>tensor_attention_backward</code> (qLLM-bridge path) — both exact</td>
 </tr>
 <tr>
 <td>Embedding</td>
 <td>embedding lookup</td>
-<td><code>tensor_embedding_backward</code> — exact indexed
-scatter-add</td>
+<td><code>tensor_embedding_backward</code> — exact indexed scatter-add</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Matmul backward</strong> implements the standard matrix
-calculus rules: for a forward pass <code>C = A @ B</code> where A is
-(M,K), B is (K,N), and C is (M,N), the backward pass computes
-<code>dA = grad_C @ B^T</code> and <code>dB = A^T @ grad_C</code>. Both
-input matrices are saved during the forward pass in the
-<code>ad_node_t.saved_tensors</code> array.</p>
-<p><strong>Attention backward</strong> is exact on both implementations,
-and the two are checked directly against each other by
-<code>ctest -R tensor_backward_dual_impl_gradcheck</code> (SW-12). The
-adjoint of <code>O = softmax(Q K^T * scale) V</code> is</p>
+<p><strong>Matmul backward</strong> implements the standard matrix calculus rules: for a forward pass <code>C = A @ B</code> where A is (M,K), B is (K,N), and C is (M,N), the backward pass computes <code>dA = grad_C @ B^T</code> and <code>dB = A^T @ grad_C</code>. Both input matrices are saved during the forward pass in the <code>ad_node_t.saved_tensors</code> array.</p>
+<p><strong>Attention backward</strong> is exact on both implementations, and the two are checked directly against each other by <code>ctest -R tensor_backward_dual_impl_gradcheck</code> (SW-12). The adjoint of <code>O = softmax(Q K^T * scale) V</code> is</p>
 <ul>
 <li><code>d_V = attn^T @ grad_out</code></li>
 <li><code>d_attn = grad_out @ V^T</code></li>
-<li><code>d_scores[i][j] = attn[i][j] * (d_attn[i][j] - dot(attn[i], d_attn[i])) * scale</code>
-(the softmax Jacobian <code>diag(y) - y y^T</code> applied row-wise, one
-row dot product per row, so the rule is O(seq^2) not O(seq^3))</li>
-<li><code>d_Q = d_scores @ K</code>,
-<code>d_K = d_scores^T @ Q</code></li>
+<li><code>d_scores[i][j] = attn[i][j] * (d_attn[i][j] - dot(attn[i], d_attn[i])) * scale</code> (the softmax Jacobian <code>diag(y) - y y^T</code> applied row-wise, one row dot product per row, so the rule is O(seq^2) not O(seq^3))</li>
+<li><code>d_Q = d_scores @ K</code>, <code>d_K = d_scores^T @ Q</code></li>
 </ul>
-<p><code>eshkol_backward_attention</code>
-(<code>lib/backend/tensor_backward.cpp</code>) is the raw-buffer kernel
-for the native <code>AD_NODE_ATTENTION</code> path, BLAS-accelerated
-when <code>ESHKOL_BLAS_ENABLED</code>.
-<code>tensor_attention_backward</code>
-(<code>lib/bridge/tensor_backward.cpp</code>) is the independently
-written node-based rule for the qLLM-bridge
-<code>AD_NODE_TENSOR_ATTENTION</code> path; it applies the same adjoint
-per <code>(batch, head)</code> column slice of the
-<code>[batch, seq, dim]</code> operands.</p>
-<p><strong>Causal masking</strong> is carried by the attention weights
-the forward retains, not by a mask test in the backward.
-<code>ad_tensor_attention</code>
-(<code>lib/bridge/qllm_bridge.cpp</code>) writes the dense
-<code>[batch, num_heads, seq, seq]</code> weight matrix into
-<code>node-&gt;saved_tensors[0]</code> with masked entries left at
-exactly zero, and records
-<code>[num_heads, head_dim, causal, scale_bits]</code> in the node’s
-<code>params</code>. Every term of the adjoint carries a factor
-<code>attn[i][j]</code>, so masked positions contribute exactly zero
-while the summations still run over the full range — which keeps the
-accumulation order identical between the causal and non-causal cases and
-identical to the native kernel’s, as the bit-for-bit
-gradient-determinism rule requires. The backward cross-checks the
-recorded <code>causal</code> flag against the retained weights and
-refuses if they disagree.</p>
-<p>Multi-head backprop through the projection weights
-<code>(W_Q, W_K, W_V, W_O)</code> is a separate rule,
-<code>eshkol_backward_multihead_attention</code>, on the native
-path.</p>
-<p><strong>Embedding backward</strong> is the exact indexed scatter-add
-(<code>tensor_embedding_backward</code> at
-<code>lib/bridge/tensor_backward.cpp</code>, ESH-0230). The forward
-<code>y[i,:] = W[idx[i],:]</code> is a gather, so its adjoint is
-<code>dW[idx[i],:] += dy[i,:]</code>. Two properties of that adjoint are
-load-bearing and are asserted by
-<code>ctest -R tensor_embedding_backward_gradcheck</code>:</p>
+<p><code>eshkol_backward_attention</code> (<code>lib/backend/tensor_backward.cpp</code>) is the raw-buffer kernel for the native <code>AD_NODE_ATTENTION</code> path, BLAS-accelerated when <code>ESHKOL_BLAS_ENABLED</code>. <code>tensor_attention_backward</code> (<code>lib/bridge/tensor_backward.cpp</code>) is the independently written node-based rule for the qLLM-bridge <code>AD_NODE_TENSOR_ATTENTION</code> path; it applies the same adjoint per <code>(batch, head)</code> column slice of the <code>[batch, seq, dim]</code> operands.</p>
+<p><strong>Causal masking</strong> is carried by the attention weights the forward retains, not by a mask test in the backward. <code>ad_tensor_attention</code> (<code>lib/bridge/qllm_bridge.cpp</code>) writes the dense <code>[batch, num_heads, seq, seq]</code> weight matrix into <code>node-&gt;saved_tensors[0]</code> with masked entries left at exactly zero, and records <code>[num_heads, head_dim, causal, scale_bits]</code> in the node’s <code>params</code>. Every term of the adjoint carries a factor <code>attn[i][j]</code>, so masked positions contribute exactly zero while the summations still run over the full range — which keeps the accumulation order identical between the causal and non-causal cases and identical to the native kernel’s, as the bit-for-bit gradient-determinism rule requires. The backward cross-checks the recorded <code>causal</code> flag against the retained weights and refuses if they disagree.</p>
+<p>Multi-head backprop through the projection weights <code>(W_Q, W_K, W_V, W_O)</code> is a separate rule, <code>eshkol_backward_multihead_attention</code>, on the native path.</p>
+<p><strong>Embedding backward</strong> is the exact indexed scatter-add (<code>tensor_embedding_backward</code> at <code>lib/bridge/tensor_backward.cpp</code>, ESH-0230). The forward <code>y[i,:] = W[idx[i],:]</code> is a gather, so its adjoint is <code>dW[idx[i],:] += dy[i,:]</code>. Two properties of that adjoint are load-bearing and are asserted by <code>ctest -R tensor_embedding_backward_gradcheck</code>:</p>
 <ul>
-<li><strong>Duplicate indices accumulate.</strong> A weight row looked
-up <em>k</em> times receives the sum of all <em>k</em> upstream rows.
-Assigning instead of accumulating is the classic scatter-add bug and it
-under-counts every repeated token — the common case in real text — while
-leaving the gradient the right shape and order of magnitude.</li>
-<li><strong>Unselected rows are exactly zero.</strong> The adjoint of a
-gather is genuinely sparse; a rule that spreads the upstream gradient
-across other rows is wrong, not approximate.</li>
+<li><strong>Duplicate indices accumulate.</strong> A weight row looked up <em>k</em> times receives the sum of all <em>k</em> upstream rows. Assigning instead of accumulating is the classic scatter-add bug and it under-counts every repeated token — the common case in real text — while leaving the gradient the right shape and order of magnitude.</li>
+<li><strong>Unselected rows are exactly zero.</strong> The adjoint of a gather is genuinely sparse; a rule that spreads the upstream gradient across other rows is wrong, not approximate.</li>
 </ul>
-<p>The lookup indices reach the rule through the AD node itself:
-<code>input1</code> is the weight node
-<code>[vocab_size, d_model]</code>, <code>input2</code> is the index
-node whose <code>tensor_value</code> holds the <code>num_indices</code>
-f64 lookup indices, and <code>params</code> carries
-<code>[num_indices, d_model, vocab_size]</code>. Because the index
-operand is integer-valued the map is piecewise constant in it, so
-<code>input2</code> receives no gradient — its
-<code>tensor_gradient</code> is deliberately left untouched rather than
-seeded with a zero that would read as “differentiated, came out zero”. A
-missing index operand, a fractional index, or an index outside
-<code>[0, vocab_size)</code> each raise rather than scatter into the
-wrong row.</p>
-<p>Historical note: before ESH-0230 this rule had no way to see the
-indices. It originally scattered everything into row 0 (a wrong gradient
-behind a one-shot stderr warning), and was later changed to refuse
-outright. Both are gone.</p>
-<p><strong>Fréchet mean backward — implicit differentiation, and a
-mandatory residual gate.</strong> The weighted Fréchet (Karcher) mean on
-the Poincaré ball is not given by a formula. It is the minimiser of the
-weighted variance, equivalently the solution of the stationarity
-condition</p>
+<p>The lookup indices reach the rule through the AD node itself: <code>input1</code> is the weight node <code>[vocab_size, d_model]</code>, <code>input2</code> is the index node whose <code>tensor_value</code> holds the <code>num_indices</code> f64 lookup indices, and <code>params</code> carries <code>[num_indices, d_model, vocab_size]</code>. Because the index operand is integer-valued the map is piecewise constant in it, so <code>input2</code> receives no gradient — its <code>tensor_gradient</code> is deliberately left untouched rather than seeded with a zero that would read as “differentiated, came out zero”. A missing index operand, a fractional index, or an index outside <code>[0, vocab_size)</code> each raise rather than scatter into the wrong row.</p>
+<p>Historical note: before ESH-0230 this rule had no way to see the indices. It originally scattered everything into row 0 (a wrong gradient behind a one-shot stderr warning), and was later changed to refuse outright. Both are gone.</p>
+<p><strong>Fréchet mean backward — implicit differentiation, and a mandatory residual gate.</strong> The weighted Fréchet (Karcher) mean on the Poincaré ball is not given by a formula. It is the minimiser of the weighted variance, equivalently the solution of the stationarity condition</p>
 <pre><code>F(mu; X, w) = sum_i w_i log_mu(x_i) = 0</code></pre>
-<p>so there are two different things one could differentiate: the
-mathematical object <code>mu*(X, w)</code> defined by that condition, or
-the fixed-point iteration that approximates it. <strong>They are not the
-same function.</strong> The unrolled derivative carries the iteration’s
-transient, and depends on the starting point and the iteration count —
-neither of which is a property of the Fréchet mean. The derivative of
-the mathematical object is the implicit one, so
-<code>tensor_frechet_mean_backward</code>
-(<code>lib/bridge/tensor_backward.cpp</code>) differentiates the
-condition:</p>
+<p>so there are two different things one could differentiate: the mathematical object <code>mu*(X, w)</code> defined by that condition, or the fixed-point iteration that approximates it. <strong>They are not the same function.</strong> The unrolled derivative carries the iteration’s transient, and depends on the starting point and the iteration count — neither of which is a property of the Fréchet mean. The derivative of the mathematical object is the implicit one, so <code>tensor_frechet_mean_backward</code> (<code>lib/bridge/tensor_backward.cpp</code>) differentiates the condition:</p>
 <pre><code>A dmu + sum_j (dF/dx_j) dx_j + sum_j (dF/dw_j) dw_j = 0,   A = dF/dmu</code></pre>
-<p>giving, in reverse mode from an upstream <code>g = dL/dmu</code>, one
-linear solve regardless of the number of points:</p>
+<p>giving, in reverse mode from an upstream <code>g = dL/dmu</code>, one linear solve regardless of the number of points:</p>
 <pre><code>solve A^T z = g
 dL/dx_j = -w_j (d log_mu(x_j)/d x_j)^T z
 dL/dw_j = -&lt;log_mu(x_j), z&gt;</code></pre>
-<p>The two Jacobian blocks come from differentiating
-<code>log_mu(x) = k(mu) * phi(|u|) * u</code> with
-<code>u = (-mu) (+)_c x</code> through Möbius addition; both blocks are
-produced from one shared set of intermediates so a sign error cannot
-survive in one while the other checks out.</p>
-<p><strong>The residual gate is not optional.</strong> Every line above
-assumes <code>F(mu*) = 0</code>. At a point that has not converged the
-implicit function theorem does not apply, and the formulas still return
-a smooth, plausible, wrong vector — the worst failure class available,
-because nothing downstream can distinguish it from a gradient. The rule
-therefore recomputes the stationarity residual from the retained
-<code>mu*</code>, points and weights, and refuses when it is not at the
-fixed point. Recomputing rather than trusting a residual stored by the
-forward is deliberate: a stored residual can be stale with respect to
-the operands actually on the node. The bar is</p>
+<p>The two Jacobian blocks come from differentiating <code>log_mu(x) = k(mu) * phi(|u|) * u</code> with <code>u = (-mu) (+)_c x</code> through Möbius addition; both blocks are produced from one shared set of intermediates so a sign error cannot survive in one while the other checks out.</p>
+<p><strong>The residual gate is not optional.</strong> Every line above assumes <code>F(mu*) = 0</code>. At a point that has not converged the implicit function theorem does not apply, and the formulas still return a smooth, plausible, wrong vector — the worst failure class available, because nothing downstream can distinguish it from a gradient. The rule therefore recomputes the stationarity residual from the retained <code>mu*</code>, points and weights, and refuses when it is not at the fixed point. Recomputing rather than trusting a residual stored by the forward is deliberate: a stored residual can be stale with respect to the operands actually on the node. The bar is</p>
 <pre><code>lambda_mu |F| &lt;= tol * sum_i w_i * (1 + lambda_mu * max_i |log_mu(x_i)|),
 lambda_mu = 2 / (1 - c |mu|^2)</code></pre>
-<p>relative to the terms being cancelled, with an absolute floor,
-because a purely relative bar divides by rounding noise in the most
-exact case available (every point coincident with the mean, so every log
-is zero).</p>
-<p><strong>Both sides of that bar are measured in Riemannian units, and
-that is not cosmetic.</strong> The logs are stored in ambient ball
-coordinates; the tangent space at <code>mu</code> carries the conformal
-metric <code>lambda_mu^2 &lt;.,.&gt;</code>, so the invariant length of
-a tangent vector <code>v</code> is <code>lambda_mu |v|</code>. The
-factor cancels out of the relative term but <em>not</em> out of the
-floor — and the floor is the whole reason the bar is not purely
-relative. Scaled in ambient coordinates, <code>lambda_mu</code> diverges
-at the ball boundary, every <code>|log|</code> collapses toward zero,
-the floor swamps the relative term, and the bar degenerates to
-<code>|F|_ambient &lt;= tol * sum_i w_i</code>, which a mean wrong by a
-whole unit of hyperbolic distance satisfies comfortably. Measured, not
-feared: with the ambient scale the forward accepted means wrong by
-<code>8.8e-8</code> (points <code>1e-9</code> inside the boundary) and
-<code>7.6e-6</code> (points one ulp inside) as converged, and the
-backward would then have differentiated them. In Riemannian units the
-<code>1</code> is one unit of hyperbolic distance, so the floor still
-protects the coincident-point case while the relative term stays live
-near the boundary. The forward (<code>vm_frechet_mean_compute</code>,
-<code>lib/backend/vm_geometric.c</code>) applies the identical scale at
-the identical default tolerance: the forward’s gate is what makes the
-backward’s gate satisfiable, so the two must not drift apart.</p>
-<p>Because the derivative is only available at a converged fixed point,
-the <code>frechet-mean</code> forward is computed in
-<strong>f64</strong>, in both the portable and the linked-library build.
-An fp32 mean carries <code>|mu - mu*| ~ 1e-7</code> and so a
-stationarity residual around <code>1e-7</code> relative — two orders
-above the <code>1e-9</code> gate — which would make the exact derivative
-unavailable by construction. The forward also gates its own convergence
-and raises a catchable Scheme error rather than returning a near-answer
-that would be laundered into a wrong gradient
-(<code>tests/vm/frechet_mean_surface_regression.esk</code>).</p>
-<p><strong>Where f64 runs out, the forward refuses.</strong> Ambient
-ball coordinates cannot resolve hyperbolic position near the boundary:
-<code>u = (-mu) (+)_c x</code> is formed by cancellation, so a
-<code>mu</code> and an <code>x</code> more than roughly 19 units of
-hyperbolic distance apart drive <code>|u|</code> to <code>1</code> in
-f64 even though both are strictly interior points, and
-<code>artanh</code> then has no value. The log map used to clamp to
-<code>1 - 1e-15</code> and hand back a fabricated magnitude of ~17.6,
-which the iteration converged on and reported as success; it now reports
-that no finite log exists and the caller raises. Two further honesty
-gates go with it: the iterate must stay strictly inside the ball (on the
-boundary <code>k = (1 - c|mu|^2)/sqrt(c)</code> is zero, so every log
-evaluates to zero and a zero residual would not mean stationarity), and
-acceptance requires <strong>two consecutive</strong> sub-tolerance
-iterates rather than one. The last is not defensive padding — the
-residual has an evaluation noise floor of its own near the boundary, and
-on points <code>1e-9</code> inside it the residual oscillated between
-<code>2.4e-7</code> and <code>4.9e-6</code> for 131 iterations before
-producing a single <code>9.86e-10</code> draw by rounding luck, which a
-one-sample test accepted; the accepted mean was wrong by
-<code>3.0e-8</code>. A run whose residual stops improving is now
-declared stagnant and refused, and the reported mean is the best iterate
-seen rather than the last. Net effect, measured on points at
-<code>+/-x0</code> with weights <code>2:1</code>, whose mean has the
-closed form <code>tanh(artanh(x0)/3)</code>: accepted out to
-<code>x0 = 1 - 1e-6</code> with relative error <code>8e-16</code> to
-<code>2.3e-12</code>, and refused from <code>x0 = 1 - 1e-7</code>
-inward, where it previously returned wrong answers of up to
-<code>7.4e-5</code>.</p>
-<p>Verified by <code>ctest -R frechet_mean_backward_gradcheck</code>:
-the implicit gradient against central finite differences of an
-independently written forward converged to the last bit
-(<code>3.8e-11</code> on the points, <code>6.9e-12</code> on the
-weights, against a <code>1e-6</code> bar), the Euclidean
-<code>K = 0</code> limit against its closed form, a check that the
-implicit answer genuinely <em>differs</em> from the one-step-unrolled
-one (by <code>7.8e-2</code>, so the choice above is a real decision and
-not a restatement), a check that measures both candidate residual scales
-on one near-boundary triple and asserts the ambient one would have
-passed (<code>9.7e-12</code>) where the Riemannian one does not
-(<code>7.6e-8</code>), and seven refusal paths.</p>
-<p><strong>Integration with the forward-mode dual number
-system:</strong> Eshkol’s AD architecture is a hybrid. Forward-mode uses
-dual numbers (struct <code>{double primal, double tangent}</code>) for
-scalar derivatives and is implemented entirely in LLVM IR generation
-(<code>autodiff_codegen.cpp</code>). Reverse-mode uses a tape-based
-computational graph with <code>ad_node_t</code> nodes. The key bridge is
-the <code>propagateGradient</code> function in
-<code>autodiff_codegen.cpp</code>, which implements a two-path
-dispatch:</p>
+<p>relative to the terms being cancelled, with an absolute floor, because a purely relative bar divides by rounding noise in the most exact case available (every point coincident with the mean, so every log is zero).</p>
+<p><strong>Both sides of that bar are measured in Riemannian units, and that is not cosmetic.</strong> The logs are stored in ambient ball coordinates; the tangent space at <code>mu</code> carries the conformal metric <code>lambda_mu^2 &lt;.,.&gt;</code>, so the invariant length of a tangent vector <code>v</code> is <code>lambda_mu |v|</code>. The factor cancels out of the relative term but <em>not</em> out of the floor — and the floor is the whole reason the bar is not purely relative. Scaled in ambient coordinates, <code>lambda_mu</code> diverges at the ball boundary, every <code>|log|</code> collapses toward zero, the floor swamps the relative term, and the bar degenerates to <code>|F|_ambient &lt;= tol * sum_i w_i</code>, which a mean wrong by a whole unit of hyperbolic distance satisfies comfortably. Measured, not feared: with the ambient scale the forward accepted means wrong by <code>8.8e-8</code> (points <code>1e-9</code> inside the boundary) and <code>7.6e-6</code> (points one ulp inside) as converged, and the backward would then have differentiated them. In Riemannian units the <code>1</code> is one unit of hyperbolic distance, so the floor still protects the coincident-point case while the relative term stays live near the boundary. The forward (<code>vm_frechet_mean_compute</code>, <code>lib/backend/vm_geometric.c</code>) applies the identical scale at the identical default tolerance: the forward’s gate is what makes the backward’s gate satisfiable, so the two must not drift apart.</p>
+<p>Because the derivative is only available at a converged fixed point, the <code>frechet-mean</code> forward is computed in <strong>f64</strong>, in both the portable and the linked-library build. An fp32 mean carries <code>|mu - mu*| ~ 1e-7</code> and so a stationarity residual around <code>1e-7</code> relative — two orders above the <code>1e-9</code> gate — which would make the exact derivative unavailable by construction. The forward also gates its own convergence and raises a catchable Scheme error rather than returning a near-answer that would be laundered into a wrong gradient (<code>tests/vm/frechet_mean_surface_regression.esk</code>).</p>
+<p><strong>Where f64 runs out, the forward refuses.</strong> Ambient ball coordinates cannot resolve hyperbolic position near the boundary: <code>u = (-mu) (+)_c x</code> is formed by cancellation, so a <code>mu</code> and an <code>x</code> more than roughly 19 units of hyperbolic distance apart drive <code>|u|</code> to <code>1</code> in f64 even though both are strictly interior points, and <code>artanh</code> then has no value. The log map used to clamp to <code>1 - 1e-15</code> and hand back a fabricated magnitude of ~17.6, which the iteration converged on and reported as success; it now reports that no finite log exists and the caller raises. Two further honesty gates go with it: the iterate must stay strictly inside the ball (on the boundary <code>k = (1 - c|mu|^2)/sqrt(c)</code> is zero, so every log evaluates to zero and a zero residual would not mean stationarity), and acceptance requires <strong>two consecutive</strong> sub-tolerance iterates rather than one. The last is not defensive padding — the residual has an evaluation noise floor of its own near the boundary, and on points <code>1e-9</code> inside it the residual oscillated between <code>2.4e-7</code> and <code>4.9e-6</code> for 131 iterations before producing a single <code>9.86e-10</code> draw by rounding luck, which a one-sample test accepted; the accepted mean was wrong by <code>3.0e-8</code>. A run whose residual stops improving is now declared stagnant and refused, and the reported mean is the best iterate seen rather than the last. Net effect, measured on points at <code>+/-x0</code> with weights <code>2:1</code>, whose mean has the closed form <code>tanh(artanh(x0)/3)</code>: accepted out to <code>x0 = 1 - 1e-6</code> with relative error <code>8e-16</code> to <code>2.3e-12</code>, and refused from <code>x0 = 1 - 1e-7</code> inward, where it previously returned wrong answers of up to <code>7.4e-5</code>.</p>
+<p>Verified by <code>ctest -R frechet_mean_backward_gradcheck</code>: the implicit gradient against central finite differences of an independently written forward converged to the last bit (<code>3.8e-11</code> on the points, <code>6.9e-12</code> on the weights, against a <code>1e-6</code> bar), the Euclidean <code>K = 0</code> limit against its closed form, a check that the implicit answer genuinely <em>differs</em> from the one-step-unrolled one (by <code>7.8e-2</code>, so the choice above is a real decision and not a restatement), a check that measures both candidate residual scales on one near-boundary triple and asserts the ambient one would have passed (<code>9.7e-12</code>) where the Riemannian one does not (<code>7.6e-8</code>), and seven refusal paths.</p>
+<p><strong>Integration with the forward-mode dual number system:</strong> Eshkol’s AD architecture is a hybrid. Forward-mode uses dual numbers (struct <code>{double primal, double tangent}</code>) for scalar derivatives and is implemented entirely in LLVM IR generation (<code>autodiff_codegen.cpp</code>). Reverse-mode uses a tape-based computational graph with <code>ad_node_t</code> nodes. The key bridge is the <code>propagateGradient</code> function in <code>autodiff_codegen.cpp</code>, which implements a two-path dispatch:</p>
 <ol type="1">
-<li><strong>Tensor gradient fast path</strong>: If
-<code>ad_node_t.tensor_gradient</code> is non-null (set by
-<code>eshkol_seed_tensor_gradient</code> at the output node), the node
-was recorded as a tensor operation. The
-<code>eshkol_tensor_backward_dispatch</code> C runtime function reads
-the node’s type, saved tensors, params, and shape/ndim, then dispatches
-to the appropriate <code>eshkol_backward_*</code> function.</li>
-<li><strong>Scalar gradient path</strong>: For nodes without tensor
-gradients, inline LLVM IR implements the scalar chain rule (add, sub,
-mul, div, sin, cos, exp, log, pow, neg, and activation functions relu,
-sigmoid, tanh, gelu, leaky_relu, silu).</li>
+<li><strong>Tensor gradient fast path</strong>: If <code>ad_node_t.tensor_gradient</code> is non-null (set by <code>eshkol_seed_tensor_gradient</code> at the output node), the node was recorded as a tensor operation. The <code>eshkol_tensor_backward_dispatch</code> C runtime function reads the node’s type, saved tensors, params, and shape/ndim, then dispatches to the appropriate <code>eshkol_backward_*</code> function.</li>
+<li><strong>Scalar gradient path</strong>: For nodes without tensor gradients, inline LLVM IR implements the scalar chain rule (add, sub, mul, div, sin, cos, exp, log, pow, neg, and activation functions relu, sigmoid, tanh, gelu, leaky_relu, silu).</li>
 </ol>
-<p>The backward pass traverses the tape in reverse order (last node
-first), using <code>arena_tape_get_node</code> to retrieve nodes by
-index. Gradient accumulation into input nodes is handled by
-<code>eshkol_accumulate_tensor_grad</code>, which lazily allocates the
-<code>tensor_gradient</code> buffer on first access and performs
-element-wise <code>+=</code> accumulation, correctly handling the case
-where a tensor feeds into multiple downstream operations.</p>
-<p><strong>Activation function backward</strong> (relu, sigmoid, tanh,
-gelu, leaky_relu, silu) is handled at the scalar level by
-<code>propagateGradient</code> in <code>autodiff_codegen.cpp</code>
-using inline LLVM IR, not by <code>tensor_backward.cpp</code>.
-Geometric/hyperbolic ops (AD_NODE types 33-40: hyperbolic distance,
-Poincare exp/log map, tangent projection, geodesic attention, Mobius
-add/matmul, gyrovector space) also use scalar backward in the codegen
-and are not dispatched through the tensor backward runtime. If a tensor
-node’s type does not match any case in the dispatcher’s switch
-statement, its gradient is silently dropped.</p>
-<h3 id="2-numeric-type-interactions-with-ad">2. Numeric Type
-Interactions with AD</h3>
-<p><strong>Exact integers, bignums, and rationals:</strong> Exact
-numeric points use tagged coefficient carriers rather than being forced
-through <code>double</code>. Native Taylor towers keep exact
-coefficients in <code>eshkol_tagged_value_t</code> arrays. When a Taylor
-result crosses a reverse tape, <code>ad_node_t::exact_value</code> and
-<code>ad_node_t::exact_gradient</code> are authoritative sidecars; all
-public gradient and Jacobian readback sites use the tagged loader. The
-VM mirrors this with <code>VmDual::exact_coeff</code>,
-<code>exact_tangent_coeff</code>, <code>eprimal</code>, and
-<code>etangent</code>. Addition, subtraction, multiplication, division,
-and integer powers preserve these exact carriers. Operations that have
-no exact representation, including the transcendental functions,
-deliberately demote to the inexact coefficient path.</p>
-<p><strong>Complex numbers and AD:</strong> Eshkol does not implement
-Wirtinger derivatives. Complex numbers (type tag 7, heap-allocated
-<code>{real: f64, imag: f64}</code>) exist as a first-class numeric
-type, but the AD system does not create complex-valued dual numbers. The
-<code>convertToDual</code> function handles INT64, DOUBLE, and HEAP_PTR
-(bignum via <code>eshkol_bignum_to_double</code>), but there is no
-complex-to-dual conversion. If a complex value enters an AD context, it
-would fall through to the bignum path (also HEAP_PTR), which calls
-<code>eshkol_bignum_to_double</code> and would produce incorrect results
-for complex values. This is a known limitation; Wirtinger calculus
-support is not present in v1.1.</p>
-<p><strong>Exactness boundary:</strong> Exactness is contagious only
-while every participating operand and operation is exact-preserving.
-Mixing an inexact operand into a calculation selects the inexact result
-carrier, and a transcendental always does so. This boundary is shared by
-native and VM arithmetic; it is not decided independently at each
-projection site.</p>
+<p>The backward pass traverses the tape in reverse order (last node first), using <code>arena_tape_get_node</code> to retrieve nodes by index. Gradient accumulation into input nodes is handled by <code>eshkol_accumulate_tensor_grad</code>, which lazily allocates the <code>tensor_gradient</code> buffer on first access and performs element-wise <code>+=</code> accumulation, correctly handling the case where a tensor feeds into multiple downstream operations.</p>
+<p><strong>Activation function backward</strong> (relu, sigmoid, tanh, gelu, leaky_relu, silu) is handled at the scalar level by <code>propagateGradient</code> in <code>autodiff_codegen.cpp</code> using inline LLVM IR, not by <code>tensor_backward.cpp</code>. Geometric/hyperbolic ops (AD_NODE types 33-40: hyperbolic distance, Poincare exp/log map, tangent projection, geodesic attention, Mobius add/matmul, gyrovector space) also use scalar backward in the codegen and are not dispatched through the tensor backward runtime. If a tensor node’s type does not match any case in the dispatcher’s switch statement, its gradient is silently dropped.</p>
+<h3 id="2-numeric-type-interactions-with-ad">2. Numeric Type Interactions with AD</h3>
+<p><strong>Exact integers, bignums, and rationals:</strong> Exact numeric points use tagged coefficient carriers rather than being forced through <code>double</code>. Native Taylor towers keep exact coefficients in <code>eshkol_tagged_value_t</code> arrays. When a Taylor result crosses a reverse tape, <code>ad_node_t::exact_value</code> and <code>ad_node_t::exact_gradient</code> are authoritative sidecars; all public gradient and Jacobian readback sites use the tagged loader. The VM mirrors this with <code>VmDual::exact_coeff</code>, <code>exact_tangent_coeff</code>, <code>eprimal</code>, and <code>etangent</code>. Addition, subtraction, multiplication, division, and integer powers preserve these exact carriers. Operations that have no exact representation, including the transcendental functions, deliberately demote to the inexact coefficient path.</p>
+<p><strong>Complex numbers and AD:</strong> Eshkol does not implement Wirtinger derivatives. Complex numbers (type tag 7, heap-allocated <code>{real: f64, imag: f64}</code>) exist as a first-class numeric type, but the AD system does not create complex-valued dual numbers. The <code>convertToDual</code> function handles INT64, DOUBLE, and HEAP_PTR (bignum via <code>eshkol_bignum_to_double</code>), but there is no complex-to-dual conversion. If a complex value enters an AD context, it would fall through to the bignum path (also HEAP_PTR), which calls <code>eshkol_bignum_to_double</code> and would produce incorrect results for complex values. This is a known limitation; Wirtinger calculus support is not present in v1.1.</p>
+<p><strong>Exactness boundary:</strong> Exactness is contagious only while every participating operand and operation is exact-preserving. Mixing an inexact operand into a calculation selects the inexact result carrier, and a transcendental always does so. This boundary is shared by native and VM arithmetic; it is not decided independently at each projection site.</p>
 <h3 id="3-parallel-tape-management">3. Parallel Tape Management</h3>
-<p>The AD tape uses <strong>per-thread isolation</strong> via
-<code>thread_local</code> storage in
-<code>lib/core/runtime_autodiff.cpp</code> (declared in
-<code>lib/core/arena_memory.h</code>):</p>
+<p>The AD tape uses <strong>per-thread isolation</strong> via <code>thread_local</code> storage in <code>lib/core/runtime_autodiff.cpp</code> (declared in <code>lib/core/arena_memory.h</code>):</p>
 <pre class="c"><code>// thread_local: AD tape state is per-thread to prevent corruption under parallel autodiff
 thread_local ad_tape_t* __ad_tape_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH] = {nullptr};
 thread_local uint64_t __ad_tape_depth = 0;</code></pre>
-<p>This means each thread in the parallel thread pool maintains its own
-independent tape stack, supporting up to 32 levels
-(<code>ESHKOL_ARENA_MAX_TAPE_DEPTH</code>) of nested gradient
-computation per thread. The outer AD node stack is also
-thread-local:</p>
+<p>This means each thread in the parallel thread pool maintains its own independent tape stack, supporting up to 32 levels (<code>ESHKOL_ARENA_MAX_TAPE_DEPTH</code>) of nested gradient computation per thread. The outer AD node stack is also thread-local:</p>
 <pre class="c"><code>thread_local void* __outer_ad_node_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH] = {nullptr};
 thread_local uint64_t __outer_ad_node_depth = 0;</code></pre>
-<p>However, the global AD tape pointer (<code>__current_ad_tape</code>)
-and the global AD mode flag (<code>__ad_mode_active</code>), also in
-<code>runtime_autodiff.cpp</code>, are <strong>not</strong> thread-local
-– they are plain global variables:</p>
+<p>However, the global AD tape pointer (<code>__current_ad_tape</code>) and the global AD mode flag (<code>__ad_mode_active</code>), also in <code>runtime_autodiff.cpp</code>, are <strong>not</strong> thread-local – they are plain global variables:</p>
 <pre class="c"><code>ad_tape_t* __current_ad_tape = nullptr;
 bool __ad_mode_active = false;</code></pre>
-<p>This creates a potential issue: if <code>parallel-map</code> maps a
-gradient function, each worker thread gets its own tape stack (correct),
-but <code>__current_ad_tape</code> and <code>__ad_mode_active</code> are
-shared across all threads (potentially racy). In the LLVM codegen layer,
-these are exposed as global variables (<code>__current_ad_tape</code>
-via <code>GlobalVariable</code>), and the tape stack is used for nested
-gradients within a single thread.</p>
-<p><strong>When <code>parallel-map</code> maps a gradient
-function:</strong> The closure containing the gradient computation is
-dispatched to worker threads via the LLVM-generated
-<code>__eshkol_call_unary_closure</code> dispatcher. Each worker
-thread’s <code>thread_local</code> tape stack is independent, so tape
-operations within the gradient function are thread-safe. However, the
-shared <code>__ad_mode_active</code> flag could see torn reads/writes if
-gradient functions run concurrently on the thread pool. In practice,
-this works because <code>__ad_mode_active</code> is set before
-dispatching and cleared after all workers complete, but it is not
-formally thread-safe.</p>
+<p>This creates a potential issue: if <code>parallel-map</code> maps a gradient function, each worker thread gets its own tape stack (correct), but <code>__current_ad_tape</code> and <code>__ad_mode_active</code> are shared across all threads (potentially racy). In the LLVM codegen layer, these are exposed as global variables (<code>__current_ad_tape</code> via <code>GlobalVariable</code>), and the tape stack is used for nested gradients within a single thread.</p>
+<p><strong>When <code>parallel-map</code> maps a gradient function:</strong> The closure containing the gradient computation is dispatched to worker threads via the LLVM-generated <code>__eshkol_call_unary_closure</code> dispatcher. Each worker thread’s <code>thread_local</code> tape stack is independent, so tape operations within the gradient function are thread-safe. However, the shared <code>__ad_mode_active</code> flag could see torn reads/writes if gradient functions run concurrently on the thread pool. In practice, this works because <code>__ad_mode_active</code> is set before dispatching and cleared after all workers complete, but it is not formally thread-safe.</p>
 <h3 id="4-gpu-gradient-flow">4. GPU Gradient Flow</h3>
-<p>In v1.1, the backward pass uses the same three-tier dispatch as the
-forward pass. The cost model in <code>blas_backend.cpp</code> dispatches
-tensor operations through a hierarchy: SIMD (small tensors) -&gt;
-cBLAS/Accelerate AMX (medium) -&gt; Metal GPU (large). The backward pass
-in <code>tensor_backward.cpp</code> calls back into these same dispatch
-paths for matmul and element-wise operations.</p>
-<p>The specific flow for a backward pass: 1. <strong>Forward</strong>:
-<code>tensor_matmul</code> detects matrix size and dispatches to the
-appropriate backend (SIMD, cBLAS, or Metal GPU). The result is always in
-CPU memory (GPU results are copied back). 2. <strong>Tape
-recording</strong>: The forward pass records an <code>ad_node_t</code>
-with type <code>AD_NODE_MATMUL</code>, saving both input tensors in
-<code>saved_tensors</code> (CPU pointers). 3. <strong>Backward</strong>:
-<code>eshkol_tensor_backward_dispatch</code> calls
-<code>eshkol_backward_matmul</code>, which computes gradient matmuls via
-<code>tensor_matmul</code> — re-entering the cost-model dispatch. Large
-gradient matmuls therefore use cBLAS or GPU acceleration, not scalar
-loops.</p>
-<p>The saved tensors (<code>saved_A</code>, <code>saved_B</code> for
-matmul) are CPU-resident pointers, so GPU backward dispatch involves the
-same copy-to-GPU / compute / copy-back flow as the forward pass.</p>
-<p>The <code>eshkol_accumulate_tensor_grad</code> function performs
-gradient accumulation as a simple <code>+=</code> loop with no atomic
-operations, so backward pass parallelism across independent tape nodes
-is not yet implemented.</p>
+<p>In v1.1, the backward pass uses the same three-tier dispatch as the forward pass. The cost model in <code>blas_backend.cpp</code> dispatches tensor operations through a hierarchy: SIMD (small tensors) -&gt; cBLAS/Accelerate AMX (medium) -&gt; Metal GPU (large). The backward pass in <code>tensor_backward.cpp</code> calls back into these same dispatch paths for matmul and element-wise operations.</p>
+<p>The specific flow for a backward pass: 1. <strong>Forward</strong>: <code>tensor_matmul</code> detects matrix size and dispatches to the appropriate backend (SIMD, cBLAS, or Metal GPU). The result is always in CPU memory (GPU results are copied back). 2. <strong>Tape recording</strong>: The forward pass records an <code>ad_node_t</code> with type <code>AD_NODE_MATMUL</code>, saving both input tensors in <code>saved_tensors</code> (CPU pointers). 3. <strong>Backward</strong>: <code>eshkol_tensor_backward_dispatch</code> calls <code>eshkol_backward_matmul</code>, which computes gradient matmuls via <code>tensor_matmul</code> — re-entering the cost-model dispatch. Large gradient matmuls therefore use cBLAS or GPU acceleration, not scalar loops.</p>
+<p>The saved tensors (<code>saved_A</code>, <code>saved_B</code> for matmul) are CPU-resident pointers, so GPU backward dispatch involves the same copy-to-GPU / compute / copy-back flow as the forward pass.</p>
+<p>The <code>eshkol_accumulate_tensor_grad</code> function performs gradient accumulation as a simple <code>+=</code> loop with no atomic operations, so backward pass parallelism across independent tape nodes is not yet implemented.</p>
 <hr />
 <h2 id="see-also">See Also</h2>
 <ul>
-<li><a href="/docs#page=breakdown_vector_operations" data-url="/content/breakdown_vector_operations.html">Vector Operations</a> - Tensor
-operations, <code>vref</code>, linear algebra</li>
-<li><a href="/docs#page=breakdown_type_system" data-url="/content/breakdown_type_system.html">Type System</a> - Dual number type, AD node
-type</li>
-<li><a href="/docs#page=breakdown_memory_management" data-url="/content/breakdown_memory_management.html">Memory Management</a> - Tape
-allocation, node lifecycle</li>
-<li><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a> - Complete AD
-function reference</li>
+<li><a href="/docs#page=breakdown_vector_operations" data-url="/content/breakdown_vector_operations.html">Vector Operations</a> - Tensor operations, <code>vref</code>, linear algebra</li>
+<li><a href="/docs#page=breakdown_type_system" data-url="/content/breakdown_type_system.html">Type System</a> - Dual number type, AD node type</li>
+<li><a href="/docs#page=breakdown_memory_management" data-url="/content/breakdown_memory_management.html">Memory Management</a> - Tape allocation, node lifecycle</li>
+<li><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a> - Complete AD function reference</li>
 </ul>

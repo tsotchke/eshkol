@@ -1,19 +1,10 @@
-<h1
-id="eshkol-a-scientific-computing-language-with-first-class-automatic-differentiation">Eshkol:
-A Scientific Computing Language with First-Class Automatic
-Differentiation</h1>
+<h1 id="eshkol-a-scientific-computing-language-with-first-class-automatic-differentiation">Eshkol: A Scientific Computing Language with First-Class Automatic Differentiation</h1>
 <p align="center">
-<em>Scheme-like syntax meets LLVM performance with built-in calculus,
-GPU acceleration, and a consciousness engine</em>
+<em>Scheme-like syntax meets LLVM performance with built-in calculus, GPU acceleration, and a consciousness engine</em>
 </p>
 <hr />
 <h2 id="executive-summary">Executive Summary</h2>
-<p><strong>Eshkol</strong> is a functional programming language built
-for scientific computing and machine learning. It pairs the elegance of
-Scheme with native code compiled through LLVM. Three things set it
-apart: <strong>automatic differentiation as a first-class language
-primitive</strong>, <strong>GPU-accelerated tensor operations</strong>,
-and an <strong>active inference consciousness engine</strong>.</p>
+<p><strong>Eshkol</strong> is a functional programming language built for scientific computing and machine learning. It pairs the elegance of Scheme with native code compiled through LLVM. Three things set it apart: <strong>automatic differentiation as a first-class language primitive</strong>, <strong>GPU-accelerated tensor operations</strong>, and an <strong>active inference consciousness engine</strong>.</p>
 <h3 id="key-differentiators">Key Differentiators</h3>
 <table>
 <colgroup>
@@ -125,14 +116,11 @@ and an <strong>active inference consciousness engine</strong>.</p>
 <li><a href="/docs#page=eshkol_language_guide&amp;getting-started" data-url="/content/eshkol_language_guide.html">Getting Started</a></li>
 <li><a href="/docs#page=eshkol_language_guide&amp;language-overview" data-url="/content/eshkol_language_guide.html">Language Overview</a></li>
 <li><a href="/docs#page=eshkol_language_guide&amp;core-features" data-url="/content/eshkol_language_guide.html">Core Features</a></li>
-<li><a href="/docs#page=eshkol_language_guide&amp;automatic-differentiation" data-url="/content/eshkol_language_guide.html">Automatic
-Differentiation</a></li>
-<li><a href="/docs#page=eshkol_language_guide&amp;tensor--matrix-operations" data-url="/content/eshkol_language_guide.html">Tensor &amp; Matrix
-Operations</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;automatic-differentiation" data-url="/content/eshkol_language_guide.html">Automatic Differentiation</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;tensor--matrix-operations" data-url="/content/eshkol_language_guide.html">Tensor &amp; Matrix Operations</a></li>
 <li><a href="/docs#page=eshkol_language_guide&amp;exact-arithmetic" data-url="/content/eshkol_language_guide.html">Exact Arithmetic</a></li>
 <li><a href="/docs#page=eshkol_language_guide&amp;complex-numbers" data-url="/content/eshkol_language_guide.html">Complex Numbers</a></li>
-<li><a href="/docs#page=eshkol_language_guide&amp;continuations--exception-handling" data-url="/content/eshkol_language_guide.html">Continuations &amp;
-Exception Handling</a></li>
+<li><a href="/docs#page=eshkol_language_guide&amp;continuations--exception-handling" data-url="/content/eshkol_language_guide.html">Continuations &amp; Exception Handling</a></li>
 <li><a href="/docs#page=eshkol_language_guide&amp;parallel-primitives" data-url="/content/eshkol_language_guide.html">Parallel Primitives</a></li>
 <li><a href="/docs#page=eshkol_language_guide&amp;gpu-acceleration" data-url="/content/eshkol_language_guide.html">GPU Acceleration</a></li>
 <li><a href="/docs#page=eshkol_language_guide&amp;consciousness-engine" data-url="/content/eshkol_language_guide.html">Consciousness Engine</a></li>
@@ -174,8 +162,7 @@ cmake .. &amp;&amp; make -j8
 (display (derivative f 3.0))  ;; -&gt; 6</code></pre>
 <hr />
 <h2 id="language-overview">Language Overview</h2>
-<p>Eshkol uses <strong>S-expression syntax</strong> familiar to
-Lisp/Scheme programmers:</p>
+<p>Eshkol uses <strong>S-expression syntax</strong> familiar to Lisp/Scheme programmers:</p>
 <pre class="scheme"><code>;; Variables
 (define x 42)
 (define pi 3.14159)
@@ -268,12 +255,7 @@ Lisp/Scheme programmers:</p>
 <tr>
 <td>Symbol</td>
 <td><code>'foo</code>, <code>'\|weird sym\|</code></td>
-<td>Interned identifier. R7RS 7.1.1 vertical-line syntax
-(<code>\|...\|</code>) reads a symbol verbatim between bars — the one
-spelling that can contain whitespace, start with a digit, or reuse
-punctuation another token claims — as of v1.3.5 (#462).
-<code>write</code> emits bars only when a name cannot be spelled bare;
-<code>display</code> never bars.</td>
+<td>Interned identifier. R7RS 7.1.1 vertical-line syntax (<code>\|...\|</code>) reads a symbol verbatim between bars — the one spelling that can contain whitespace, start with a digit, or reuse punctuation another token claims — as of v1.3.5 (#462). <code>write</code> emits bars only when a name cannot be spelled bare; <code>display</code> never bars.</td>
 </tr>
 <tr>
 <td>List</td>
@@ -333,115 +315,40 @@ punctuation another token claims — as of v1.3.5 (#462).
 </tbody>
 </table>
 <h3 id="1052-built-in-functions">1,052 Built-in Functions</h3>
-<p>Eshkol v1.3.5-evolve ships 1,052 built-in functions. They span
-arithmetic, math, strings, lists, vectors, tensors, automatic
-differentiation, vector calculus, exact arithmetic, complex numbers,
-continuations, parallel primitives, GPU operations, signal processing,
-logic programming, active inference, and web platform APIs.</p>
-<p><strong>Arithmetic:</strong> <code>+</code>, <code>-</code>,
-<code>*</code>, <code>/</code>, <code>abs</code>, <code>floor</code>,
-<code>ceiling</code>, <code>round</code>, <code>truncate</code>,
-<code>modulo</code>, <code>remainder</code>, <code>quotient</code>,
-<code>gcd</code>, <code>lcm</code>, <code>min</code>, <code>max</code>,
-<code>expt</code>, <code>exact-&gt;inexact</code>,
-<code>inexact-&gt;exact</code></p>
-<p><strong>Math:</strong> <code>sin</code>, <code>cos</code>,
-<code>tan</code>, <code>asin</code>, <code>acos</code>,
-<code>atan</code>, <code>sinh</code>, <code>cosh</code>,
-<code>tanh</code>, <code>exp</code>, <code>log</code>,
-<code>log10</code>, <code>sqrt</code>, <code>pow</code>,
-<code>fl-next-up</code>, <code>fl-next-down</code> (directed rounding —
-the next representable double above / below its argument; the primitive
-beneath certified enclosures)</p>
-<p><strong>Comparison:</strong> <code>&lt;</code>, <code>&gt;</code>,
-<code>=</code>, <code>&lt;=</code>, <code>&gt;=</code>,
-<code>eq?</code>, <code>eqv?</code>, <code>equal?</code></p>
-<p><strong>Lists:</strong> <code>cons</code>, <code>car</code>,
-<code>cdr</code>, <code>list</code>, <code>append</code>,
-<code>reverse</code>, <code>length</code>, <code>map</code>,
-<code>filter</code>, <code>fold</code>, <code>member</code>,
-<code>assoc</code>, + 30 compound accessors (<code>caar</code>,
-<code>cadr</code>, <code>caddr</code>, …)</p>
-<p><strong>Strings:</strong> <code>string-append</code>,
-<code>substring</code> (2-arg <code>(substring s start)</code> or 3-arg
-<code>(substring s start end)</code>), <code>string-length</code>,
-<code>string-byte-length</code> (UTF-8 byte count,
-vs. <code>string-length</code>’s codepoint count),
-<code>string-&gt;list</code>, <code>number-&gt;string</code>,
-<code>string-&gt;number</code>, <code>string-for-each</code>,
-<code>string-map</code>, <code>string-fill!</code></p>
-<p><strong>Vectors:</strong> <code>vector</code>,
-<code>make-vector</code>, <code>vector-ref</code>,
-<code>vector-set!</code>, <code>vector-length</code>,
-<code>vector-for-each</code>, <code>vector-map</code> (multi-vector:
-<code>(vector-map f v1 v2 ...)</code>), <code>vector-copy</code>
-(<code>(vector-copy v)</code>/<code>(vector-copy v start)</code>/<code>(vector-copy v start end)</code>,
-also accepts <code>#(...)</code> tensor literals),
-<code>vector-copy!</code></p>
-<p><strong>I/O:</strong> <code>display</code>, <code>newline</code>,
-<code>printf</code>, <code>open-input-file</code>,
-<code>open-output-file</code>, <code>read-line</code>,
-<code>write-string</code>, <code>read-char</code>,
-<code>peek-char</code>, <code>close-port</code></p>
-<p><strong>Exact Arithmetic:</strong> <code>exact?</code>,
-<code>inexact?</code>, <code>exact-&gt;inexact</code>,
-<code>inexact-&gt;exact</code>, <code>numerator</code>,
-<code>denominator</code>, <code>rationalize</code>, and exact
-<code>sqrt</code>/<code>expt</code> wherever an exact result exists</p>
-<p><strong>Complex:</strong> <code>make-rectangular</code>,
-<code>make-polar</code>, <code>real-part</code>, <code>imag-part</code>,
-<code>magnitude</code>, <code>angle</code></p>
-<p><strong>Continuations:</strong> <code>call/cc</code>,
-<code>call-with-current-continuation</code>, <code>dynamic-wind</code>,
-<code>guard</code>, <code>raise</code>,
-<code>with-exception-handler</code>, <code>values</code>,
-<code>call-with-values</code></p>
-<p><strong>Parallel:</strong> <code>parallel-map</code>,
-<code>parallel-fold</code>, <code>parallel-filter</code>,
-<code>parallel-for-each</code>, <code>future</code>, <code>force</code>,
-<code>parallel-execute</code></p>
-<p><strong>GPU:</strong> <code>gpu-matmul</code>,
-<code>gpu-elementwise</code>, <code>gpu-reduce</code>,
-<code>gpu-softmax</code>, <code>gpu-transpose</code></p>
-<p><strong>Signal Processing:</strong> <code>fft</code>,
-<code>ifft</code>, <code>convolve</code>, <code>fir-filter</code>,
-<code>iir-filter</code>, <code>butterworth-lowpass</code>,
-<code>hamming-window</code>, <code>hann-window</code></p>
-<p><strong>Consciousness Engine:</strong> <code>unify</code>,
-<code>walk</code>, <code>make-substitution</code>,
-<code>make-fact</code>, <code>make-kb</code>, <code>kb-assert!</code>,
-<code>kb-query</code>, <code>make-factor-graph</code>,
-<code>fg-add-factor!</code>, <code>fg-infer!</code>,
-<code>fg-update-cpt!</code>, <code>free-energy</code>,
-<code>expected-free-energy</code>, <code>make-workspace</code>,
-<code>ws-register!</code>, <code>ws-step!</code></p>
-<p><strong>Web Platform:</strong> <code>web-create-element</code>,
-<code>web-set-text-content</code>, <code>web-add-event-listener</code>,
-<code>web-canvas-*</code></p>
+<p>Eshkol v1.3.5-evolve ships 1,052 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.</p>
+<p><strong>Arithmetic:</strong> <code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>, <code>abs</code>, <code>floor</code>, <code>ceiling</code>, <code>round</code>, <code>truncate</code>, <code>modulo</code>, <code>remainder</code>, <code>quotient</code>, <code>gcd</code>, <code>lcm</code>, <code>min</code>, <code>max</code>, <code>expt</code>, <code>exact-&gt;inexact</code>, <code>inexact-&gt;exact</code></p>
+<p><strong>Math:</strong> <code>sin</code>, <code>cos</code>, <code>tan</code>, <code>asin</code>, <code>acos</code>, <code>atan</code>, <code>sinh</code>, <code>cosh</code>, <code>tanh</code>, <code>exp</code>, <code>log</code>, <code>log10</code>, <code>sqrt</code>, <code>pow</code>, <code>fl-next-up</code>, <code>fl-next-down</code> (directed rounding — the next representable double above / below its argument; the primitive beneath certified enclosures)</p>
+<p><strong>Comparison:</strong> <code>&lt;</code>, <code>&gt;</code>, <code>=</code>, <code>&lt;=</code>, <code>&gt;=</code>, <code>eq?</code>, <code>eqv?</code>, <code>equal?</code></p>
+<p><strong>Lists:</strong> <code>cons</code>, <code>car</code>, <code>cdr</code>, <code>list</code>, <code>append</code>, <code>reverse</code>, <code>length</code>, <code>map</code>, <code>filter</code>, <code>fold</code>, <code>member</code>, <code>assoc</code>, + 30 compound accessors (<code>caar</code>, <code>cadr</code>, <code>caddr</code>, …)</p>
+<p><strong>Strings:</strong> <code>string-append</code>, <code>substring</code> (2-arg <code>(substring s start)</code> or 3-arg <code>(substring s start end)</code>), <code>string-length</code>, <code>string-byte-length</code> (UTF-8 byte count, vs. <code>string-length</code>’s codepoint count), <code>string-&gt;list</code>, <code>number-&gt;string</code>, <code>string-&gt;number</code>, <code>string-for-each</code>, <code>string-map</code>, <code>string-fill!</code></p>
+<p><strong>Vectors:</strong> <code>vector</code>, <code>make-vector</code>, <code>vector-ref</code>, <code>vector-set!</code>, <code>vector-length</code>, <code>vector-for-each</code>, <code>vector-map</code> (multi-vector: <code>(vector-map f v1 v2 ...)</code>), <code>vector-copy</code> (<code>(vector-copy v)</code>/<code>(vector-copy v start)</code>/<code>(vector-copy v start end)</code>, also accepts <code>#(...)</code> tensor literals), <code>vector-copy!</code></p>
+<p><strong>I/O:</strong> <code>display</code>, <code>newline</code>, <code>printf</code>, <code>open-input-file</code>, <code>open-output-file</code>, <code>read-line</code>, <code>write-string</code>, <code>read-char</code>, <code>peek-char</code>, <code>close-port</code></p>
+<p><strong>Exact Arithmetic:</strong> <code>exact?</code>, <code>inexact?</code>, <code>exact-&gt;inexact</code>, <code>inexact-&gt;exact</code>, <code>numerator</code>, <code>denominator</code>, <code>rationalize</code>, and exact <code>sqrt</code>/<code>expt</code> wherever an exact result exists</p>
+<p><strong>Complex:</strong> <code>make-rectangular</code>, <code>make-polar</code>, <code>real-part</code>, <code>imag-part</code>, <code>magnitude</code>, <code>angle</code></p>
+<p><strong>Continuations:</strong> <code>call/cc</code>, <code>call-with-current-continuation</code>, <code>dynamic-wind</code>, <code>guard</code>, <code>raise</code>, <code>with-exception-handler</code>, <code>values</code>, <code>call-with-values</code></p>
+<p><strong>Parallel:</strong> <code>parallel-map</code>, <code>parallel-fold</code>, <code>parallel-filter</code>, <code>parallel-for-each</code>, <code>future</code>, <code>force</code>, <code>parallel-execute</code></p>
+<p><strong>GPU:</strong> <code>gpu-matmul</code>, <code>gpu-elementwise</code>, <code>gpu-reduce</code>, <code>gpu-softmax</code>, <code>gpu-transpose</code></p>
+<p><strong>Signal Processing:</strong> <code>fft</code>, <code>ifft</code>, <code>convolve</code>, <code>fir-filter</code>, <code>iir-filter</code>, <code>butterworth-lowpass</code>, <code>hamming-window</code>, <code>hann-window</code></p>
+<p><strong>Consciousness Engine:</strong> <code>unify</code>, <code>walk</code>, <code>make-substitution</code>, <code>make-fact</code>, <code>make-kb</code>, <code>kb-assert!</code>, <code>kb-query</code>, <code>make-factor-graph</code>, <code>fg-add-factor!</code>, <code>fg-infer!</code>, <code>fg-update-cpt!</code>, <code>free-energy</code>, <code>expected-free-energy</code>, <code>make-workspace</code>, <code>ws-register!</code>, <code>ws-step!</code></p>
+<p><strong>Web Platform:</strong> <code>web-create-element</code>, <code>web-set-text-content</code>, <code>web-add-event-listener</code>, <code>web-canvas-*</code></p>
 <hr />
 <h2 id="automatic-differentiation">Automatic Differentiation</h2>
 <h3 id="the-killer-feature">The Killer Feature</h3>
-<p>Eshkol provides <strong>three modes of automatic
-differentiation</strong> as built-in language primitives:</p>
-<h4 id="1-symbolic-differentiation-diff">1. Symbolic Differentiation
-(<code>diff</code>)</h4>
+<p>Eshkol provides <strong>three modes of automatic differentiation</strong> as built-in language primitives:</p>
+<h4 id="1-symbolic-differentiation-diff">1. Symbolic Differentiation (<code>diff</code>)</h4>
 <p>Compile-time expression transformation:</p>
 <pre class="scheme"><code>(diff (* x x) x)           ;; -&gt; (* 2 x)
 (diff (sin (* x x)) x)     ;; -&gt; (* (cos (* x x)) (* 2 x))
 (diff (+ (* x x) (* 3 x)) x)  ;; -&gt; (+ (* 2 x) 3)</code></pre>
-<h4 id="2-forward-mode-ad-derivative">2. Forward-Mode AD
-(<code>derivative</code>)</h4>
+<h4 id="2-forward-mode-ad-derivative">2. Forward-Mode AD (<code>derivative</code>)</h4>
 <p>Numerical derivatives using dual numbers:</p>
 <pre class="scheme"><code>(define f (lambda (x) (* x x x)))  ;; f(x) = x^3
 (derivative f 2.0)                  ;; -&gt; 12 (f&#39;(x) = 3x^2)
 
 (define g (lambda (x) (sin (* x x))))
 (derivative g 1.0)                  ;; -&gt; 1.0806046117362795 (2x*cos(x^2))</code></pre>
-<h4 id="3-reverse-mode-ad-gradient-jacobian-hessian">3. Reverse-Mode AD
-(<code>gradient</code>, <code>jacobian</code>,
-<code>hessian</code>)</h4>
-<p>Computation graph-based differentiation for multivariate
-functions:</p>
+<h4 id="3-reverse-mode-ad-gradient-jacobian-hessian">3. Reverse-Mode AD (<code>gradient</code>, <code>jacobian</code>, <code>hessian</code>)</h4>
+<p>Computation graph-based differentiation for multivariate functions:</p>
 <pre class="scheme"><code>;; Gradient of f(x,y) = x^2 + y^2
 (define f (lambda (v)
   (+ (* (vref v 0) (vref v 0))
@@ -460,12 +367,7 @@ functions:</p>
 
 ;; Hessian matrix (second derivatives)
 (hessian f (vector 1.0 1.0))  ;; -&gt; #((2 0) (0 2))</code></pre>
-<p>An inexact result with no fractional part prints without a decimal
-point, so the <code>6</code>, <code>8</code> and <code>2</code> above
-are the doubles 6.0, 8.0 and 2.0 — ask <code>exact?</code> if the
-distinction matters. See <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md" target="_blank" rel="noopener noreferrer">the numeric tower
-reference</a>.</p>
+<p>An inexact result with no fractional part prints without a decimal point, so the <code>6</code>, <code>8</code> and <code>2</code> above are the doubles 6.0, 8.0 and 2.0 — ask <code>exact?</code> if the distinction matters. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md" target="_blank" rel="noopener noreferrer">the numeric tower reference</a>.</p>
 <h3 id="vector-calculus-operators">Vector Calculus Operators</h3>
 <p>Built-in operators for physics and engineering:</p>
 <pre class="scheme"><code>;; Divergence: div(F)
@@ -485,32 +387,16 @@ reference</a>.</p>
 
 ;; Directional derivative: D_u f
 (directional-derivative f (vector 3.0 4.0) (vector 1.0 0.0))  ;; -&gt; 6</code></pre>
-<h3 id="arbitrary-order-ad-taylor-towers">Arbitrary-Order AD: Taylor
-Towers</h3>
-<p>Everything above differentiates once (or, with nesting, a small fixed
-number of times). The Taylor-tower engine computes
-<strong>every</strong> derivative up to an arbitrary order
-<code>k</code> in a single pass, exactly where the arithmetic allows it.
-See the <a href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic
-Differentiation guide</a> for the full walkthrough of all 13 phases
-(P0-P12: no-heap monomorphization, multivariate mixed partials,
-reverse-over-Taylor, exact bignum/rational coefficients, tensor towers,
-validated Taylor models, sparse tensors, differentiable control flow,
-checkpointed reverse-mode, and tower-based numerics).</p>
+<h3 id="arbitrary-order-ad-taylor-towers">Arbitrary-Order AD: Taylor Towers</h3>
+<p>Everything above differentiates once (or, with nesting, a small fixed number of times). The Taylor-tower engine computes <strong>every</strong> derivative up to an arbitrary order <code>k</code> in a single pass, exactly where the arithmetic allows it. See the <a href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic Differentiation guide</a> for the full walkthrough of all 13 phases (P0-P12: no-heap monomorphization, multivariate mixed partials, reverse-over-Taylor, exact bignum/rational coefficients, tensor towers, validated Taylor models, sparse tensors, differentiable control flow, checkpointed reverse-mode, and tower-based numerics).</p>
 <pre class="scheme"><code>;; The k-th derivative of f at x, for any order k -- no require needed
 (derivative-n (lambda (y) (* y y y)) 3.0 1)   ;; -&gt; 27 (f&#39;(x) = 3x^2 at x=3)
 
 ;; All K+1 Taylor coefficients c[0..K] where c[n] = f^(n)(x)/n!
 (taylor (lambda (x) (exp x)) 0.5 4)
 ;; -&gt; (1.64872 1.64872 0.824361 0.274787 0.0686967)</code></pre>
-<p>Coefficients come back <strong>exact</strong> (arbitrary-precision
-integer/rational, not <code>double</code>) when <code>x</code> is exact
-and <code>f</code> only uses exact-preserving arithmetic
-(<code>+ - * /</code>, non-negative-integer <code>expt</code>) – most
-autodiff systems only ever produce floating-point derivatives.</p>
-<p>Beyond order and exactness, <code>core.ad.guw</code> recovers
-arbitrary-order mixed partial derivatives of a multivariate
-function:</p>
+<p>Coefficients come back <strong>exact</strong> (arbitrary-precision integer/rational, not <code>double</code>) when <code>x</code> is exact and <code>f</code> only uses exact-preserving arithmetic (<code>+ - * /</code>, non-negative-integer <code>expt</code>) – most autodiff systems only ever produce floating-point derivatives.</p>
+<p>Beyond order and exactness, <code>core.ad.guw</code> recovers arbitrary-order mixed partial derivatives of a multivariate function:</p>
 <pre class="scheme"><code>(require core.ad.guw)
 (define (f xs) (* (vref xs 0) (* (vref xs 1) (vref xs 1))))  ;; f(x,y) = x*y^2
 
@@ -519,25 +405,12 @@ function:</p>
 
 ;; The full order-&gt;=3 symmetric derivative tensor, as (multi-index . value) pairs
 (gradient-n f (vector 2.0 3.0) 3)</code></pre>
-<p>And <code>core.ad.taylor_models</code> gives
-<strong>validated</strong> AD – a Taylor polynomial paired with an
-interval remainder, so <code>tm-range</code>/<code>tm-eval</code> return
-an enclosure rather than a point estimate:</p>
+<p>And <code>core.ad.taylor_models</code> gives <strong>validated</strong> AD – a Taylor polynomial paired with an interval remainder, so <code>tm-range</code>/<code>tm-eval</code> return an enclosure rather than a point estimate:</p>
 <pre class="scheme"><code>(require core.ad.taylor_models)
 (define tm (taylor-model (lambda (x) (sin x)) 0.0 0.1 4))
 (tm-range tm)      ;; -&gt; (-0.10016700000000073 . 0.10016700000000073)
 (tm-eval tm 0.05)  ;; -&gt; (0.04997883333333298 . 0.049979500000000364)</code></pre>
-<p>That family’s remainder is <strong>sampled</strong>, so its enclosure
-is validated rather than proved. Beneath it sits a proof-backed layer
-reached from the same require – <code>core.ad.rigorous_interval</code>
-and <code>core.ad.rigorous_taylor_models</code>, built on the
-directed-rounding builtins <code>fl-next-up</code> /
-<code>fl-next-down</code>, where every remainder is derived with an
-a-priori bound at each step and <code>tm-prove-bound</code> /
-<code>tm-prove-nonzero</code> answer <code>#t</code> only when the
-enclosure proves the claim. Use <code>tm-rigorous?</code> to tell which
-kind of model you are holding. See <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">reference/stdlib/certified-enclosures.md</a>.</p>
+<p>That family’s remainder is <strong>sampled</strong>, so its enclosure is validated rather than proved. Beneath it sits a proof-backed layer reached from the same require – <code>core.ad.rigorous_interval</code> and <code>core.ad.rigorous_taylor_models</code>, built on the directed-rounding builtins <code>fl-next-up</code> / <code>fl-next-down</code>, where every remainder is derived with an a-priori bound at each step and <code>tm-prove-bound</code> / <code>tm-prove-nonzero</code> answer <code>#t</code> only when the enclosure proves the claim. Use <code>tm-rigorous?</code> to tell which kind of model you are holding. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">reference/stdlib/certified-enclosures.md</a>.</p>
 <hr />
 <h2 id="tensor--matrix-operations">Tensor &amp; Matrix Operations</h2>
 <h3 id="creation">Creation</h3>
@@ -586,14 +459,8 @@ href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certi
 (display output)  ;; -&gt; 0.65</code></pre>
 <hr />
 <h2 id="exact-arithmetic">Exact Arithmetic</h2>
-<p>Eshkol implements the full R7RS numeric tower with
-arbitrary-precision integers (bignums) and exact rational numbers. Exact
-arithmetic preserves precision through all operations – no
-floating-point rounding errors – and the native engine and the bytecode
-VM answer identically across the whole tower, bignum-backed rationals
-included.</p>
-<h3 id="bignums-arbitrary-precision-integers">Bignums (Arbitrary
-Precision Integers)</h3>
+<p>Eshkol implements the full R7RS numeric tower with arbitrary-precision integers (bignums) and exact rational numbers. Exact arithmetic preserves precision through all operations – no floating-point rounding errors – and the native engine and the bytecode VM answer identically across the whole tower, bignum-backed rationals included.</p>
+<h3 id="bignums-arbitrary-precision-integers">Bignums (Arbitrary Precision Integers)</h3>
 <pre class="scheme"><code>;; Bignums are created automatically when values exceed 64-bit range
 (define huge (expt 2 256))
 ;; -&gt; 115792089237316195423570985008687907853269984665640564039457584007913129639936
@@ -627,8 +494,7 @@ Precision Integers)</h3>
 
 ;; Mixed exact/inexact: result is inexact (R7RS rule)
 (+ 1/3 0.5)           ;; -&gt; 0.8333... (inexact)</code></pre>
-<h3 id="exactness-predicates-and-conversion">Exactness Predicates and
-Conversion</h3>
+<h3 id="exactness-predicates-and-conversion">Exactness Predicates and Conversion</h3>
 <pre class="scheme"><code>;; Predicates
 (exact? 42)            ;; -&gt; #t
 (exact? 1/3)           ;; -&gt; #t
@@ -643,46 +509,29 @@ Conversion</h3>
 ;; number-&gt;string / string-&gt;number with bignums
 (number-&gt;string (expt 2 128))
 (string-&gt;number &quot;99999999999999999999999&quot;)  ;; -&gt; bignum</code></pre>
-<h3 id="exact-roots-and-exact-expt">Exact Roots and Exact
-<code>expt</code></h3>
-<p>Exactness is decided by the <strong>value</strong>, not by which
-operator was called: when an exact result exists over the rationals it
-is the answer, and the inexact path is used only when it does not.</p>
+<h3 id="exact-roots-and-exact-expt">Exact Roots and Exact <code>expt</code></h3>
+<p>Exactness is decided by the <strong>value</strong>, not by which operator was called: when an exact result exists over the rationals it is the answer, and the inexact path is used only when it does not.</p>
 <pre class="scheme"><code>(sqrt 4/9)             ;; -&gt; 2/3   exact
 (sqrt 16)              ;; -&gt; 4     exact
 (expt 8 1/3)           ;; -&gt; 2     exact rational exponent with an exact root
 (expt 2/3 -3)          ;; -&gt; 27/8  rational base, negative exponent
 (expt 1/3 50)          ;; -&gt; 1/717897987691852588770249
 (sqrt 2)               ;; -&gt; 1.4142135623730951   (no exact root)</code></pre>
-<h3 id="exactness-survives-literals-quotes-and-vectors">Exactness
-Survives Literals, Quotes and Vectors</h3>
+<h3 id="exactness-survives-literals-quotes-and-vectors">Exactness Survives Literals, Quotes and Vectors</h3>
 <pre class="scheme"><code>#(1/2 3 1.5 123456789012345678901234567890)   ;; every element keeps its kind
 &#39;123456789012345678901234567890               ;; exact, quoted or evaluated
 `(x ,(/ 1 3))                                 ;; -&gt; (x 1/3)
 (tensor 1/2 2/3)                              ;; -&gt; #(0.5 0.6666666666666666)</code></pre>
-<p>A <strong>tensor</strong> is a dense <code>f64</code> carrier by
-construction, so an exact element is converted once, explicitly, at
-construction. A Scheme <code>#(...)</code> vector keeps it exact.</p>
-<h3 id="exactness-under-differentiation">Exactness Under
-Differentiation</h3>
-<p>The AD exactness tier reads the <strong>runtime</strong> value the
-carrier holds, not the shape of the source, so the same arithmetic stays
-exact whether the constant is an inline literal, a top-level
-<code>define</code>, or the value of an expression:</p>
+<p>A <strong>tensor</strong> is a dense <code>f64</code> carrier by construction, so an exact element is converted once, explicitly, at construction. A Scheme <code>#(...)</code> vector keeps it exact.</p>
+<h3 id="exactness-under-differentiation">Exactness Under Differentiation</h3>
+<p>The AD exactness tier reads the <strong>runtime</strong> value the carrier holds, not the shape of the source, so the same arithmetic stays exact whether the constant is an inline literal, a top-level <code>define</code>, or the value of an expression:</p>
 <pre class="scheme"><code>(define c 1/5)
 (derivative (lambda (x) (* x x)) 1/3)       ;; -&gt; 2/3   exact
 (derivative (lambda (x) (* c x x)) 1/3)     ;; -&gt; 2/15  exact</code></pre>
-<p>See <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md" target="_blank" rel="noopener noreferrer">reference/language/numeric-tower.md</a>
-for the whole tower and <a
-href="/docs#page=reference_ad" data-url="/content/reference_ad.html">reference/ad/INDEX.md</a> for the exactness
-tier, including the one nesting shape that is not supported in
-v1.3.5.</p>
+<p>See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md" target="_blank" rel="noopener noreferrer">reference/language/numeric-tower.md</a> for the whole tower and <a href="/docs#page=reference_ad" data-url="/content/reference_ad.html">reference/ad/INDEX.md</a> for the exactness tier, including the one nesting shape that is not supported in v1.3.5.</p>
 <hr />
 <h2 id="complex-numbers">Complex Numbers</h2>
-<p>Eshkol supports complex numbers as a first-class numeric type, with
-heap-allocated <code>{real:f64, imag:f64}</code> representation and
-Smith’s formula for numerically stable division.</p>
+<p>Eshkol supports complex numbers as a first-class numeric type, with heap-allocated <code>{real:f64, imag:f64}</code> representation and Smith’s formula for numerically stable division.</p>
 <h3 id="creation-1">Creation</h3>
 <pre class="scheme"><code>;; Rectangular form
 (make-rectangular 3.0 4.0)     ;; -&gt; 3+4i
@@ -690,9 +539,7 @@ Smith’s formula for numerically stable division.</p>
 ;; Polar form
 (make-polar 5.0 0.9273)        ;; -&gt; 2.9999808719721477+4.000014345949428i
                                ;;    (3+4i, up to the rounding of the angle)</code></pre>
-<p>A component with no fractional part prints without a decimal point,
-and a zero real part or a unit imaginary part is elided, so
-<code>3+4i</code> above is the pair of doubles 3.0 and 4.0.</p>
+<p>A component with no fractional part prints without a decimal point, and a zero real part or a unit imaginary part is elided, so <code>3+4i</code> above is the pair of doubles 3.0 and 4.0.</p>
 <h3 id="accessors">Accessors</h3>
 <pre class="scheme"><code>(define z (make-rectangular 3.0 4.0))
 
@@ -716,16 +563,8 @@ and a zero real part or a unit imaginary part is elided, so
 (sqrt (make-rectangular -1.0 0.0)) ;; -&gt; +i   (zero real part elided; +/-1 imaginary prints as +i/-i)
 (exp (make-rectangular 0.0 3.14159)) ;; -&gt; -0.9999999999964793+2.65358979335273e-06i</code></pre>
 <hr />
-<h2 id="continuations--exception-handling">Continuations &amp; Exception
-Handling</h2>
-<p>Eshkol implements first-class continuations (<code>call/cc</code>),
-dynamic wind guards, and structured exception handling following R7RS
-semantics. Continuations are multi-shot and re-entrant on every engine
-(native JIT, native AOT, bytecode VM): a captured continuation may be
-invoked any number of times, including after the capturing procedure has
-returned, which is what generators, coroutines and
-<code>amb</code>-style backtracking need. Escape-only captures keep the
-zero-overhead <code>setjmp</code>/<code>longjmp</code> path.</p>
+<h2 id="continuations--exception-handling">Continuations &amp; Exception Handling</h2>
+<p>Eshkol implements first-class continuations (<code>call/cc</code>), dynamic wind guards, and structured exception handling following R7RS semantics. Continuations are multi-shot and re-entrant on every engine (native JIT, native AOT, bytecode VM): a captured continuation may be invoked any number of times, including after the capturing procedure has returned, which is what generators, coroutines and <code>amb</code>-style backtracking need. Escape-only captures keep the zero-overhead <code>setjmp</code>/<code>longjmp</code> path.</p>
 <h3 id="first-class-continuations">First-Class Continuations</h3>
 <pre class="scheme"><code>;; call/cc captures the current continuation
 (call/cc (lambda (k)
@@ -763,8 +602,7 @@ zero-overhead <code>setjmp</code>/<code>longjmp</code> path.</p>
       (lambda () #t)
       (lambda () (thunk port))
       (lambda () (close-port port)))))</code></pre>
-<h3 id="structured-exception-handling">Structured Exception
-Handling</h3>
+<h3 id="structured-exception-handling">Structured Exception Handling</h3>
 <pre class="scheme"><code>;; guard provides try/catch-like exception handling
 (guard (exn
         ((string? exn) (string-append &quot;caught: &quot; exn))
@@ -791,9 +629,7 @@ Handling</h3>
 (guard (e (#t (error-object? e))) (raise &quot;plain&quot;)) ;; -&gt; #f: a raised non-error value</code></pre>
 <hr />
 <h2 id="parallel-primitives">Parallel Primitives</h2>
-<p>Eshkol v1.1 provides built-in parallel execution primitives that
-automatically distribute work across available CPU cores. No threading
-libraries or manual synchronization required.</p>
+<p>Eshkol v1.1 provides built-in parallel execution primitives that automatically distribute work across available CPU cores. No threading libraries or manual synchronization required.</p>
 <h3 id="parallel-map-filter-fold">Parallel Map, Filter, Fold</h3>
 <pre class="scheme"><code>;; parallel-map: apply function to list elements in parallel
 (parallel-map (lambda (x) (* x x)) (list 1 2 3 4 5 6 7 8))
@@ -823,27 +659,17 @@ libraries or manual synchronization required.</p>
   (lambda () (train-model-b data))
   (lambda () (train-model-c data)))</code></pre>
 <h3 id="performance">Performance</h3>
-<p>Parallel primitives use work-stealing thread pools and are optimized
-for scientific computing workloads. For small collections, they
-automatically fall back to sequential execution to avoid overhead.</p>
+<p>Parallel primitives use work-stealing thread pools and are optimized for scientific computing workloads. For small collections, they automatically fall back to sequential execution to avoid overhead.</p>
 <hr />
 <h2 id="gpu-acceleration">GPU Acceleration</h2>
-<p>Eshkol v1.1 features automatic hardware dispatch for tensor
-operations. The runtime measures actual hardware throughput and routes
-computations to the fastest available backend: SIMD, Apple
-Accelerate/BLAS, Metal (macOS), or CUDA (Linux/Windows).</p>
+<p>Eshkol v1.1 features automatic hardware dispatch for tensor operations. The runtime measures actual hardware throughput and routes computations to the fastest available backend: SIMD, Apple Accelerate/BLAS, Metal (macOS), or CUDA (Linux/Windows).</p>
 <h3 id="automatic-dispatch">Automatic Dispatch</h3>
 <pre class="scheme"><code>;; matmul automatically selects the fastest backend
 ;; SIMD for small matrices, BLAS for medium, GPU for large
 (define A (rand 4096 4096))
 (define B (rand 4096 4096))
 (define C (matmul A B))  ;; dispatches to BLAS (~1.2 TFLOPS on Apple Silicon AMX)</code></pre>
-<p>The cost model uses measured peak throughput: -
-<strong>SIMD</strong>: Small matrices, low overhead - <strong>Apple
-Accelerate (AMX)</strong>: ~1.1 TFLOPS measured, best for most matrix
-sizes - <strong>Metal (macOS)</strong>: ~200 GFLOPS in simulated
-float64, used when GPU genuinely outperforms - <strong>CUDA
-(Linux)</strong>: Native float64 on NVIDIA GPUs</p>
+<p>The cost model uses measured peak throughput: - <strong>SIMD</strong>: Small matrices, low overhead - <strong>Apple Accelerate (AMX)</strong>: ~1.1 TFLOPS measured, best for most matrix sizes - <strong>Metal (macOS)</strong>: ~200 GFLOPS in simulated float64, used when GPU genuinely outperforms - <strong>CUDA (Linux)</strong>: Native float64 on NVIDIA GPUs</p>
 <h3 id="explicit-gpu-operations">Explicit GPU Operations</h3>
 <pre class="scheme"><code>;; Force GPU execution for specific operations
 (gpu-matmul A B)                    ;; GPU matrix multiply
@@ -851,32 +677,20 @@ float64, used when GPU genuinely outperforms - <strong>CUDA
 (gpu-reduce + M)                    ;; Full-tensor GPU reduction: + mean max min
 (gpu-softmax v)                     ;; Softmax on GPU
 (gpu-transpose M)                   ;; Transpose on GPU</code></pre>
-<p>Explicit GPU operations are aliases over the tensor runtime dispatch
-path. They return the same shapes as the corresponding tensor operations
-and fall back to CPU when the selected GPU backend is unavailable.</p>
+<p>Explicit GPU operations are aliases over the tensor runtime dispatch path. They return the same shapes as the corresponding tensor operations and fall back to CPU when the selected GPU backend is unavailable.</p>
 <h3 id="metal-backend-macos">Metal Backend (macOS)</h3>
-<p>The Metal backend uses simulated float64 via double-single arithmetic
-with correctly rounded intermediate results. Key implementation
-details:</p>
+<p>The Metal backend uses simulated float64 via double-single arithmetic with correctly rounded intermediate results. Key implementation details:</p>
 <ul>
-<li>Software float64 on GPU with 0x3FF rounding mask (IEEE 754
-compliant)</li>
+<li>Software float64 on GPU with 0x3FF rounding mask (IEEE 754 compliant)</li>
 <li>Fused multiply-add support for numerical stability</li>
-<li>Automatic memory management bridging arena allocator to Metal
-buffers</li>
+<li>Automatic memory management bridging arena allocator to Metal buffers</li>
 </ul>
 <h3 id="cuda-backend-linux">CUDA Backend (Linux)</h3>
-<p>Native float64 support on NVIDIA GPUs with automatic kernel
-generation for element-wise, reduction, and matrix operations.</p>
+<p>Native float64 support on NVIDIA GPUs with automatic kernel generation for element-wise, reduction, and matrix operations.</p>
 <hr />
 <h2 id="consciousness-engine">Consciousness Engine</h2>
-<p>Eshkol v1.1 includes a built-in <strong>active inference
-consciousness engine</strong> implementing the Global Workspace Theory
-with probabilistic factor graphs and free energy minimization. This
-provides logic programming, probabilistic reasoning, and cognitive
-modeling as native language features.</p>
-<h3 id="logic-variables-and-unification">Logic Variables and
-Unification</h3>
+<p>Eshkol v1.1 includes a built-in <strong>active inference consciousness engine</strong> implementing the Global Workspace Theory with probabilistic factor graphs and free energy minimization. This provides logic programming, probabilistic reasoning, and cognitive modeling as native language features.</p>
+<h3 id="logic-variables-and-unification">Logic Variables and Unification</h3>
 <pre class="scheme"><code>;; Logic variables use ?name syntax (R7RS compatible)
 (define s (make-substitution))
 
@@ -911,8 +725,7 @@ Unification</h3>
 (logic-var? &quot;?x&quot;)           ;; -&gt; #f  (a string is a string)
 (substitution? s)           ;; -&gt; #t
 (kb? kb)                    ;; -&gt; #t</code></pre>
-<h3 id="factor-graphs-and-probabilistic-inference">Factor Graphs and
-Probabilistic Inference</h3>
+<h3 id="factor-graphs-and-probabilistic-inference">Factor Graphs and Probabilistic Inference</h3>
 <pre class="scheme"><code>;; Create a factor graph: 3 binary variables.
 ;; Signature: (make-factor-graph num-vars dims-tensor)
 (define fg (make-factor-graph 3 #(2 2 2)))
@@ -961,8 +774,7 @@ Probabilistic Inference</h3>
 
 ;; Type predicate
 (workspace? ws)             ;; -&gt; #t</code></pre>
-<h3 id="example-bayesian-sensor-fusion">Example: Bayesian Sensor
-Fusion</h3>
+<h3 id="example-bayesian-sensor-fusion">Example: Bayesian Sensor Fusion</h3>
 <pre class="scheme"><code>;; Two noisy sensors observing the same binary state.
 ;; 3 binary variables: latent state + 2 sensor readings.
 (define fg (make-factor-graph 3 #(2 2 2)))
@@ -981,9 +793,7 @@ Fusion</h3>
 ;; Posterior belief in state 0 is much higher than either sensor alone</code></pre>
 <hr />
 <h2 id="signal-processing">Signal Processing</h2>
-<p>Eshkol v1.1 includes a built-in signal processing library for
-spectral analysis, filtering, and windowing – compiled to native code
-with no interpreter overhead.</p>
+<p>Eshkol v1.1 includes a built-in signal processing library for spectral analysis, filtering, and windowing – compiled to native code with no interpreter overhead.</p>
 <h3 id="fft-and-spectral-analysis">FFT and Spectral Analysis</h3>
 <pre class="scheme"><code>;; Fast Fourier Transform
 (define signal #(1.0 0.0 -1.0 0.0 1.0 0.0 -1.0 0.0))
@@ -1020,8 +830,7 @@ with no interpreter overhead.</p>
 (define result (convolve signal kernel))</code></pre>
 <hr />
 <h2 id="web-platform">Web Platform</h2>
-<p>Eshkol can compile to WebAssembly for browser deployment, with a DOM
-API for building interactive web applications.</p>
+<p>Eshkol can compile to WebAssembly for browser deployment, with a DOM API for building interactive web applications.</p>
 <h3 id="wasm-compilation">WASM Compilation</h3>
 <pre class="bash"><code># Compile to WebAssembly
 eshkol-run program.esk --wasm -o program.wasm
@@ -1136,8 +945,7 @@ eshkol-run program.esk --wasm -o program.wasm
 ;; Quasiquoted vector literals work the same way
 `#(1 ,(+ 1 1) 3)              ;; -&gt; #(1 2 3)
 `#(1 ,@(list 2 3) 4)          ;; -&gt; #(1 2 3 4)</code></pre>
-<h3 id="hygienic-macros-syntax-rules">Hygienic Macros
-(<code>syntax-rules</code>)</h3>
+<h3 id="hygienic-macros-syntax-rules">Hygienic Macros (<code>syntax-rules</code>)</h3>
 <pre class="scheme"><code>;; A simple macro
 (define-syntax my-when
   (syntax-rules ()
@@ -1154,10 +962,8 @@ eshkol-run program.esk --wasm -o program.wasm
 (my-flatten (1 2) (3 4 5))    ;; -&gt; (1 2 3 4 5)</code></pre>
 <hr />
 <h2 id="memory-model">Memory Model</h2>
-<h3 id="arena-allocation-no-garbage-collection">Arena Allocation (No
-Garbage Collection)</h3>
-<p>Eshkol uses <strong>arena-based memory management</strong> for
-deterministic, low-latency performance:</p>
+<h3 id="arena-allocation-no-garbage-collection">Arena Allocation (No Garbage Collection)</h3>
+<p>Eshkol uses <strong>arena-based memory management</strong> for deterministic, low-latency performance:</p>
 <pre><code>+------------------------------------------+
 |              Arena Allocator              |
 +------------------------------------------+
@@ -1167,15 +973,7 @@ deterministic, low-latency performance:</p>
 |  Scope Stack: [scope1] -&gt; [scope2] -&gt; ... |
 |  (Push on function entry, pop on exit)    |
 +------------------------------------------+</code></pre>
-<p><strong>Benefits:</strong> - <strong>No GC pauses</strong> - Critical
-for real-time applications - <strong>Cache-friendly</strong> -
-Sequential allocation - <strong>Deterministic cleanup</strong> - Memory
-freed when scope exits, on both engines; the bytecode VM has no
-automatic per-loop nursery, so a resident VM loop needs an explicit
-<code>with-region</code> — see <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/memory-model.md#which-engine-reclaims" target="_blank" rel="noopener noreferrer">memory
-model</a> - <strong>Fast allocation</strong> - O(1) bump-pointer
-allocation</p>
+<p><strong>Benefits:</strong> - <strong>No GC pauses</strong> - Critical for real-time applications - <strong>Cache-friendly</strong> - Sequential allocation - <strong>Deterministic cleanup</strong> - Memory freed when scope exits, on both engines; the bytecode VM has no automatic per-loop nursery, so a resident VM loop needs an explicit <code>with-region</code> — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/memory-model.md#which-engine-reclaims" target="_blank" rel="noopener noreferrer">memory model</a> - <strong>Fast allocation</strong> - O(1) bump-pointer allocation</p>
 <h3 id="tagged-value-system">Tagged Value System</h3>
 <p>Every runtime value is a 16-byte tagged structure:</p>
 <pre class="c"><code>struct eshkol_tagged_value {
@@ -1189,13 +987,10 @@ allocation</p>
         void* ptr_val;
     } data;              // Field index {4} in LLVM IR
 };</code></pre>
-<p>This enables <strong>polymorphic operations</strong> with runtime
-type dispatch:</p>
+<p>This enables <strong>polymorphic operations</strong> with runtime type dispatch:</p>
 <pre class="scheme"><code>(list 1 2.5 &quot;hello&quot; (lambda (x) x) 1/3 ?x)  ;; Mixed-type list supported!</code></pre>
 <h3 id="stack-configuration">Stack Configuration</h3>
-<p>Deep recursion is supported via configurable stack sizes: - Default:
-512MB stack via linker flags - Maximum recursion depth: 100,000 frames -
-Override via <code>ESHKOL_STACK_SIZE</code> environment variable</p>
+<p>Deep recursion is supported via configurable stack sizes: - Default: 512MB stack via linker flags - Maximum recursion depth: 100,000 frames - Override via <code>ESHKOL_STACK_SIZE</code> environment variable</p>
 <hr />
 <h2 id="c-interoperability">C Interoperability</h2>
 <h3 id="foreign-function-interface">Foreign Function Interface</h3>
@@ -1222,11 +1017,9 @@ Override via <code>ESHKOL_STACK_SIZE</code> environment variable</p>
 <li><strong>Tab completion</strong> for all 1,052 builtins</li>
 <li><strong>Syntax highlighting</strong> with ANSI colors</li>
 <li><strong>Command history</strong> (persistent across sessions)</li>
-<li><strong>Multi-line input</strong> with balanced parenthesis
-detection</li>
+<li><strong>Multi-line input</strong> with balanced parenthesis detection</li>
 <li><strong>JIT compilation</strong> via LLVM ORC</li>
-<li><strong>Full stdlib access</strong> (precompiled .o + .bc metadata,
-237 functions, 305 globals)</li>
+<li><strong>Full stdlib access</strong> (precompiled .o + .bc metadata, 237 functions, 305 globals)</li>
 </ul>
 <h3 id="repl-commands">REPL Commands</h3>
 <pre><code>:help      Show help
@@ -1283,8 +1076,7 @@ Goodbye!</code></pre>
   (display &quot;) = &quot;)
   (display (fibonacci i))
   (newline))</code></pre>
-<h3 id="gradient-descent-optimization">Gradient Descent
-Optimization</h3>
+<h3 id="gradient-descent-optimization">Gradient Descent Optimization</h3>
 <pre class="scheme"><code>;; Minimize f(x,y) = (x-3)^2 + (y-4)^2
 (define (loss v)
   (+ (* (- (vref v 0) 3.0) (- (vref v 0) 3.0))
@@ -1327,8 +1119,7 @@ Optimization</h3>
 (define training-y (list 2.0 4.0 6.0 8.0 10.0))
 
 ;; After training: w ~ 2.0, b ~ 0.0</code></pre>
-<h3 id="parallel-monte-carlo-pi-estimation">Parallel Monte Carlo Pi
-Estimation</h3>
+<h3 id="parallel-monte-carlo-pi-estimation">Parallel Monte Carlo Pi Estimation</h3>
 <pre class="scheme"><code>;; Estimate pi using parallel random sampling
 (require stdlib)
 
@@ -1526,163 +1317,75 @@ Estimation</h3>
 |      |      | CUDA |
 +------+------+------+</code></pre>
 <h3 id="type-system">Type System</h3>
-<p>Eshkol uses a <strong>polymorphic tagged value system</strong> at
-runtime:</p>
+<p>Eshkol uses a <strong>polymorphic tagged value system</strong> at runtime:</p>
 <ul>
-<li><strong>18+ value types</strong>: NULL, INT64, DOUBLE, CONS_PTR,
-DUAL_NUMBER, AD_NODE_PTR, TENSOR_PTR, LAMBDA_SEXPR, STRING_PTR, CHAR,
-VECTOR_PTR, SYMBOL, CLOSURE_PTR, COMPLEX, HEAP_PTR
-(bignum/rational/port), LOGIC_VAR, and heap subtypes for SUBSTITUTION,
-FACT, KNOWLEDGE_BASE, FACTOR_GRAPH, WORKSPACE</li>
-<li><strong>Full numeric tower</strong>: Integer -&gt; Bignum -&gt;
-Rational -&gt; Real -&gt; Complex</li>
-<li><strong>Exactness tracking</strong>: R7RS-compatible exact/inexact
-number distinction</li>
-<li><strong>Mixed-type lists</strong>: Heterogeneous data fully
-supported</li>
-<li><strong>Homoiconicity</strong>: Lambda S-expressions preserved for
-metaprogramming</li>
+<li><strong>18+ value types</strong>: NULL, INT64, DOUBLE, CONS_PTR, DUAL_NUMBER, AD_NODE_PTR, TENSOR_PTR, LAMBDA_SEXPR, STRING_PTR, CHAR, VECTOR_PTR, SYMBOL, CLOSURE_PTR, COMPLEX, HEAP_PTR (bignum/rational/port), LOGIC_VAR, and heap subtypes for SUBSTITUTION, FACT, KNOWLEDGE_BASE, FACTOR_GRAPH, WORKSPACE</li>
+<li><strong>Full numeric tower</strong>: Integer -&gt; Bignum -&gt; Rational -&gt; Real -&gt; Complex</li>
+<li><strong>Exactness tracking</strong>: R7RS-compatible exact/inexact number distinction</li>
+<li><strong>Mixed-type lists</strong>: Heterogeneous data fully supported</li>
+<li><strong>Homoiconicity</strong>: Lambda S-expressions preserved for metaprogramming</li>
 </ul>
-<h4 id="static-type-checking-strict-mode">Static type checking (strict
-mode)</h4>
-<p>On top of the runtime tagged-value system, Eshkol has an optional
-static type checker (gradual typing: warnings, not errors — programs run
-regardless). Strict mode accepts idiomatic dynamic-but-validated code
-without escape hatches:</p>
+<h4 id="static-type-checking-strict-mode">Static type checking (strict mode)</h4>
+<p>On top of the runtime tagged-value system, Eshkol has an optional static type checker (gradual typing: warnings, not errors — programs run regardless). Strict mode accepts idiomatic dynamic-but-validated code without escape hatches:</p>
 <ul>
-<li><p><strong>Checked ascription
-<code>(the &lt;type&gt; expr)</code>.</strong> Asserts that
-<code>expr</code> has type <code>&lt;type&gt;</code> as a
-<strong>trusted assertion to the checker</strong> — it narrows the
-checker’s view of <code>expr</code> to <code>&lt;type&gt;</code>. It is
-a pure <strong>runtime no-op</strong>: the emitted IR is byte-identical
-to <code>expr</code> alone (no runtime tag check, no cost), so
-<code>(the &lt;type&gt; expr)</code> and <code>expr</code> compute
-exactly the same value.</p>
-<p>Trusted is not unexamined. The checker still derives the type of
-<code>expr</code>, and if it is <strong>provably disjoint</strong> from
-<code>&lt;type&gt;</code> — no value inhabits both — it reports the
-ascription instead of adopting it: a warning under gradual typing, fatal
-under <code>--strict-types</code>, and nothing extra in the emitted code
-either way. Narrowing, widening, and moving between members of the
-numeric tower are all accepted.</p>
+<li><p><strong>Checked ascription <code>(the &lt;type&gt; expr)</code>.</strong> Asserts that <code>expr</code> has type <code>&lt;type&gt;</code> as a <strong>trusted assertion to the checker</strong> — it narrows the checker’s view of <code>expr</code> to <code>&lt;type&gt;</code>. It is a pure <strong>runtime no-op</strong>: the emitted IR is byte-identical to <code>expr</code> alone (no runtime tag check, no cost), so <code>(the &lt;type&gt; expr)</code> and <code>expr</code> compute exactly the same value.</p>
+<p>Trusted is not unexamined. The checker still derives the type of <code>expr</code>, and if it is <strong>provably disjoint</strong> from <code>&lt;type&gt;</code> — no value inhabits both — it reports the ascription instead of adopting it: a warning under gradual typing, fatal under <code>--strict-types</code>, and nothing extra in the emitted code either way. Narrowing, widening, and moving between members of the numeric tower are all accepted.</p>
 <pre class="scheme"><code>(the number (car mixed-list))   ; tell the checker this element is a number
 (the real 1)                    ; fine — the numeric tower is flat
 (the string (+ 1 2))            ; reported: no value is both Int64 and String</code></pre></li>
-<li><p><strong>Predicate-guarded narrowing.</strong> Inside a branch
-guarded by one of eight type predicates, the checker narrows the tested
-value to that type. The eight predicates are <code>number?</code>,
-<code>integer?</code>, <code>string?</code>, <code>symbol?</code>,
-<code>pair?</code>, <code>null?</code>, <code>vector?</code>, and
-<code>procedure?</code>. Narrowing is honored across both
-<code>if</code> and <code>and</code>, and is <strong>cancelled</strong>
-at a <code>set!</code> of the narrowed variable.</p>
+<li><p><strong>Predicate-guarded narrowing.</strong> Inside a branch guarded by one of eight type predicates, the checker narrows the tested value to that type. The eight predicates are <code>number?</code>, <code>integer?</code>, <code>string?</code>, <code>symbol?</code>, <code>pair?</code>, <code>null?</code>, <code>vector?</code>, and <code>procedure?</code>. Narrowing is honored across both <code>if</code> and <code>and</code>, and is <strong>cancelled</strong> at a <code>set!</code> of the narrowed variable.</p>
 <pre class="scheme"><code>(if (number? x) (+ x 1) 0)      ; x is number in the then-branch
 (and (pair? p) (car p))         ; p is a pair for (car p)</code></pre></li>
-<li><p><strong>Sum-type annotations on named-let parameters</strong> are
-honored, so a <code>named-let</code> accumulator declared as a sum type
-keeps that type across iterations.</p></li>
-<li><p><strong>Numeric-tower join for recursive accumulators.</strong> A
-recursive accumulator is given the least-upper-bound (join) of the
-numeric types that flow into it, rather than being rejected when it
-widens (e.g. integer accumulator that later takes a rational or real
-value).</p></li>
-<li><p><strong>Linear <code>Qubit</code> type.</strong> A first-class
-linear type whose values must be used exactly once.
-<code>define</code>/<code>lambda</code> parameters and <code>let</code>
-bindings may declare a linear type, and double-use (a clone) and drop
-are both <strong>compile-time type errors</strong> — the compile exits
-nonzero and writes no artifact, in the default mode and not only under
-<code>--strict-types</code> — giving quantum-register operations a
-no-cloning guarantee at the type level rather than by convention.
-<code>--unsafe</code> remains the documented escape hatch. The judgment
-is a static worst-case-path analysis: it accepts a qubit consumed once
-in each mutually exclusive branch of an <code>if</code>,
-<code>cond</code>, <code>case</code> or <code>match</code>, walks
-<code>when</code>, <code>unless</code>, <code>do</code>,
-<code>guard</code> and <code>set!</code>, follows aliases through
-<code>let</code>, through an immediately applied <code>lambda</code> and
-through a <code>set!</code> move, and rejects a bare linear reference
-stored into an untyped container. For a body it cannot decide — a loop
-whose body names the qubit, a <code>guard</code> whose handler does,
-<code>call/cc</code> — it says so on stderr, naming the form, and rules
-neither way. The same rule is enforced on the bytecode VM, which runs
-the same judgment rather than a second implementation of it. See <a
-href="/docs#page=complete_language_specification" data-url="/content/complete_language_specification.html">the specification, 3.6.8</a>
-for the exact enforced and unenforced sets.</p></li>
+<li><p><strong>Sum-type annotations on named-let parameters</strong> are honored, so a <code>named-let</code> accumulator declared as a sum type keeps that type across iterations.</p></li>
+<li><p><strong>Numeric-tower join for recursive accumulators.</strong> A recursive accumulator is given the least-upper-bound (join) of the numeric types that flow into it, rather than being rejected when it widens (e.g. integer accumulator that later takes a rational or real value).</p></li>
+<li><p><strong>Linear <code>Qubit</code> type.</strong> A first-class linear type whose values must be used exactly once. <code>define</code>/<code>lambda</code> parameters and <code>let</code> bindings may declare a linear type, and double-use (a clone) and drop are both <strong>compile-time type errors</strong> — the compile exits nonzero and writes no artifact, in the default mode and not only under <code>--strict-types</code> — giving quantum-register operations a no-cloning guarantee at the type level rather than by convention. <code>--unsafe</code> remains the documented escape hatch. The judgment is a static worst-case-path analysis: it accepts a qubit consumed once in each mutually exclusive branch of an <code>if</code>, <code>cond</code>, <code>case</code> or <code>match</code>, walks <code>when</code>, <code>unless</code>, <code>do</code>, <code>guard</code> and <code>set!</code>, follows aliases through <code>let</code>, through an immediately applied <code>lambda</code> and through a <code>set!</code> move, and rejects a bare linear reference stored into an untyped container. For a body it cannot decide — a loop whose body names the qubit, a <code>guard</code> whose handler does, <code>call/cc</code> — it says so on stderr, naming the form, and rules neither way. The same rule is enforced on the bytecode VM, which runs the same judgment rather than a second implementation of it. See <a href="/docs#page=complete_language_specification" data-url="/content/complete_language_specification.html">the specification, 3.6.8</a> for the exact enforced and unenforced sets.</p></li>
 </ul>
 <hr />
 <h2 id="why-eshkol">Why Eshkol?</h2>
-<h3 id="for-machine-learning-researchers">For Machine Learning
-Researchers</h3>
+<h3 id="for-machine-learning-researchers">For Machine Learning Researchers</h3>
 <ul>
-<li><strong>First-class autodiff</strong>: No library imports, no tape
-management</li>
-<li><strong>Vector calculus operators</strong>: Built-in gradient,
-jacobian, hessian, divergence, curl, laplacian</li>
-<li><strong>Native performance</strong>: LLVM compilation, no
-interpreter overhead</li>
-<li><strong>GPU acceleration</strong>: Automatic dispatch to fastest
-available hardware</li>
-<li><strong>Active inference</strong>: Built-in consciousness engine for
-cognitive modeling</li>
+<li><strong>First-class autodiff</strong>: No library imports, no tape management</li>
+<li><strong>Vector calculus operators</strong>: Built-in gradient, jacobian, hessian, divergence, curl, laplacian</li>
+<li><strong>Native performance</strong>: LLVM compilation, no interpreter overhead</li>
+<li><strong>GPU acceleration</strong>: Automatic dispatch to fastest available hardware</li>
+<li><strong>Active inference</strong>: Built-in consciousness engine for cognitive modeling</li>
 </ul>
 <h3 id="for-scientific-computing">For Scientific Computing</h3>
 <ul>
-<li><strong>Exact arithmetic</strong>: Full numeric tower – bignums,
-rationals, complex numbers</li>
-<li><strong>Matrix operations</strong>: Comprehensive linear algebra
-with hardware acceleration</li>
-<li><strong>Signal processing</strong>: Built-in FFT, filters,
-windowing</li>
-<li><strong>Math library</strong>: Integration, root finding,
-eigenvalues, ODE solvers</li>
+<li><strong>Exact arithmetic</strong>: Full numeric tower – bignums, rationals, complex numbers</li>
+<li><strong>Matrix operations</strong>: Comprehensive linear algebra with hardware acceleration</li>
+<li><strong>Signal processing</strong>: Built-in FFT, filters, windowing</li>
+<li><strong>Math library</strong>: Integration, root finding, eigenvalues, ODE solvers</li>
 </ul>
 <h3 id="for-real-time-systems">For Real-Time Systems</h3>
 <ul>
-<li><strong>No GC pauses</strong>: Arena allocation with deterministic
-cleanup</li>
-<li><strong>Predictable latency</strong>: No stop-the-world garbage
-collection</li>
-<li><strong>Efficient memory</strong>: 16-byte aligned tagged
-values</li>
-<li><strong>Parallel primitives</strong>: Built-in concurrent
-execution</li>
+<li><strong>No GC pauses</strong>: Arena allocation with deterministic cleanup</li>
+<li><strong>Predictable latency</strong>: No stop-the-world garbage collection</li>
+<li><strong>Efficient memory</strong>: 16-byte aligned tagged values</li>
+<li><strong>Parallel primitives</strong>: Built-in concurrent execution</li>
 </ul>
-<h3 id="for-functional-programming-enthusiasts">For Functional
-Programming Enthusiasts</h3>
+<h3 id="for-functional-programming-enthusiasts">For Functional Programming Enthusiasts</h3>
 <ul>
-<li><strong>Scheme heritage</strong>: Familiar S-expression syntax, R7RS
-compatible</li>
-<li><strong>First-class functions</strong>: Closures with proper lexical
-scoping</li>
-<li><strong>First-class continuations</strong>: call/cc, dynamic-wind,
-guard/raise</li>
-<li><strong>Homoiconicity</strong>: Code as data, metaprogramming
-ready</li>
-<li><strong>Interactive development</strong>: Full-featured REPL with
-JIT</li>
+<li><strong>Scheme heritage</strong>: Familiar S-expression syntax, R7RS compatible</li>
+<li><strong>First-class functions</strong>: Closures with proper lexical scoping</li>
+<li><strong>First-class continuations</strong>: call/cc, dynamic-wind, guard/raise</li>
+<li><strong>Homoiconicity</strong>: Code as data, metaprogramming ready</li>
+<li><strong>Interactive development</strong>: Full-featured REPL with JIT</li>
 </ul>
 <h3 id="for-systems-programmers">For Systems Programmers</h3>
 <ul>
 <li><strong>C FFI</strong>: Direct foreign function calls</li>
 <li><strong>LLVM backend</strong>: Native code generation</li>
 <li><strong>Library mode</strong>: Compile as shared libraries</li>
-<li><strong>Low-level control</strong>: Arena memory, no hidden
-allocations</li>
-<li><strong>WebAssembly</strong>: Compile to WASM for browser
-deployment</li>
+<li><strong>Low-level control</strong>: Arena memory, no hidden allocations</li>
+<li><strong>WebAssembly</strong>: Compile to WASM for browser deployment</li>
 </ul>
 <h3 id="for-ai-researchers">For AI Researchers</h3>
 <ul>
-<li><strong>Logic programming</strong>: Unification, knowledge bases,
-query</li>
-<li><strong>Probabilistic reasoning</strong>: Factor graphs, belief
-propagation</li>
-<li><strong>Active inference</strong>: Free energy minimization,
-expected free energy for action selection</li>
-<li><strong>Global workspace</strong>: Cognitive architecture with
-softmax competition</li>
+<li><strong>Logic programming</strong>: Unification, knowledge bases, query</li>
+<li><strong>Probabilistic reasoning</strong>: Factor graphs, belief propagation</li>
+<li><strong>Active inference</strong>: Free energy minimization, expected free energy for action selection</li>
+<li><strong>Global workspace</strong>: Cognitive architecture with softmax competition</li>
 </ul>
 <hr />
 <h2 id="comparison-with-alternatives">Comparison with Alternatives</h2>
@@ -1807,45 +1510,26 @@ softmax competition</li>
 <hr />
 <h2 id="roadmap">Roadmap</h2>
 <ul class="task-list">
-<li><label><input type="checkbox" checked="" />Core language
-implementation</label></li>
-<li><label><input type="checkbox" checked="" />LLVM code
-generation</label></li>
-<li><label><input type="checkbox" checked="" />Automatic differentiation
-(3 modes)</label></li>
-<li><label><input type="checkbox" checked="" />Vector calculus
-operators</label></li>
-<li><label><input type="checkbox" checked="" />Interactive REPL with
-JIT</label></li>
-<li><label><input type="checkbox" checked="" />Standard
-library</label></li>
+<li><label><input type="checkbox" checked="" />Core language implementation</label></li>
+<li><label><input type="checkbox" checked="" />LLVM code generation</label></li>
+<li><label><input type="checkbox" checked="" />Automatic differentiation (3 modes)</label></li>
+<li><label><input type="checkbox" checked="" />Vector calculus operators</label></li>
+<li><label><input type="checkbox" checked="" />Interactive REPL with JIT</label></li>
+<li><label><input type="checkbox" checked="" />Standard library</label></li>
 <li><label><input type="checkbox" checked="" />Math library</label></li>
-<li><label><input type="checkbox" checked="" />Exact arithmetic
-(bignums, rationals)</label></li>
-<li><label><input type="checkbox" checked="" />Complex
-numbers</label></li>
-<li><label><input type="checkbox" checked="" />First-class continuations
-(call/cc, dynamic-wind, guard/raise)</label></li>
-<li><label><input type="checkbox" checked="" />GPU acceleration
-(Metal/CUDA) – automatic hardware dispatch</label></li>
-<li><label><input type="checkbox" checked="" />Logic programming and
-knowledge bases</label></li>
-<li><label><input type="checkbox" checked="" />Active inference
-consciousness engine</label></li>
-<li><label><input type="checkbox" checked="" />Signal processing (FFT,
-filters, windows)</label></li>
-<li><label><input type="checkbox" checked="" />Parallel primitives
-(parallel-map, future/force)</label></li>
-<li><label><input type="checkbox" checked="" />WebAssembly compilation
-target</label></li>
-<li><label><input type="checkbox" checked="" />LSP server for IDE
-integration</label></li>
-<li><label><input type="checkbox" checked="" />Package manager
-(eshkol-pkg)</label></li>
-<li><label><input type="checkbox" />Distributed computing
-(multi-node)</label></li>
-<li><label><input type="checkbox" />Debugger
-(step/break/inspect)</label></li>
+<li><label><input type="checkbox" checked="" />Exact arithmetic (bignums, rationals)</label></li>
+<li><label><input type="checkbox" checked="" />Complex numbers</label></li>
+<li><label><input type="checkbox" checked="" />First-class continuations (call/cc, dynamic-wind, guard/raise)</label></li>
+<li><label><input type="checkbox" checked="" />GPU acceleration (Metal/CUDA) – automatic hardware dispatch</label></li>
+<li><label><input type="checkbox" checked="" />Logic programming and knowledge bases</label></li>
+<li><label><input type="checkbox" checked="" />Active inference consciousness engine</label></li>
+<li><label><input type="checkbox" checked="" />Signal processing (FFT, filters, windows)</label></li>
+<li><label><input type="checkbox" checked="" />Parallel primitives (parallel-map, future/force)</label></li>
+<li><label><input type="checkbox" checked="" />WebAssembly compilation target</label></li>
+<li><label><input type="checkbox" checked="" />LSP server for IDE integration</label></li>
+<li><label><input type="checkbox" checked="" />Package manager (eshkol-pkg)</label></li>
+<li><label><input type="checkbox" />Distributed computing (multi-node)</label></li>
+<li><label><input type="checkbox" />Debugger (step/break/inspect)</label></li>
 </ul>
 <hr />
 <h2 id="getting-involved">Getting Involved</h2>
@@ -1859,6 +1543,5 @@ integration</label></li>
 <p>MIT License - Copyright (C) tsotchke</p>
 <hr />
 <p align="center">
-<strong>Eshkol v1.3.5</strong>: Where functional programming meets
-scientific computing, GPU acceleration, and machine consciousness.
+<strong>Eshkol v1.3.5</strong>: Where functional programming meets scientific computing, GPU acceleration, and machine consciousness.
 </p>

@@ -1,12 +1,5 @@
-<h1 id="tutorial-4-the-consciousness-engine">Tutorial 4: The
-Consciousness Engine</h1>
-<p>Eshkol’s consciousness engine integrates three computational
-frameworks — logic programming, active inference, and global workspace
-theory — into a small set of compiler builtins. This tutorial shows you
-how to use each one. Every form below matches the actual argument shape
-the compiler expects (see
-<code>lib/backend/logic_workspace_codegen.cpp</code> and
-<code>lib/core/{logic,inference,workspace}.cpp</code>).</p>
+<h1 id="tutorial-4-the-consciousness-engine">Tutorial 4: The Consciousness Engine</h1>
+<p>Eshkol’s consciousness engine integrates three computational frameworks — logic programming, active inference, and global workspace theory — into a small set of compiler builtins. This tutorial shows you how to use each one. Every form below matches the actual argument shape the compiler expects (see <code>lib/backend/logic_workspace_codegen.cpp</code> and <code>lib/core/{logic,inference,workspace}.cpp</code>).</p>
 <hr />
 <h2 id="part-1-logic-programming">Part 1: Logic Programming</h2>
 <h3 id="knowledge-bases-and-facts">Knowledge Bases and Facts</h3>
@@ -29,11 +22,9 @@ the compiler expects (see
 (display (kb-query kb (make-fact &#39;parent ?p &#39;charlie)))
 (newline)
 ;; =&gt; ({?p -&gt; bob})</code></pre>
-<p>The <code>?variable</code> syntax creates logic variables. Queries
-find all facts in the KB that unify with the pattern.</p>
+<p>The <code>?variable</code> syntax creates logic variables. Queries find all facts in the KB that unify with the pattern.</p>
 <h3 id="unification">Unification</h3>
-<p>Unification is the core operation — it finds a substitution that
-makes two terms equal:</p>
+<p>Unification is the core operation — it finds a substitution that makes two terms equal:</p>
 <pre class="scheme"><code>;; Unify a logic variable with a value
 (define s1 (unify ?x 42 (make-substitution)))
 (display (walk ?x s1))
@@ -61,15 +52,9 @@ makes two terms equal:</p>
 (fact? (make-fact &#39;a &#39;b)) ;; =&gt; #t</code></pre>
 <hr />
 <h2 id="part-2-active-inference">Part 2: Active Inference</h2>
-<p>Active inference models the world as a factor graph and uses belief
-propagation to infer hidden states from observations.</p>
+<p>Active inference models the world as a factor graph and uses belief propagation to infer hidden states from observations.</p>
 <h3 id="factor-graphs">Factor Graphs</h3>
-<p>A factor graph has a fixed number of variables; each variable has a
-fixed number of discrete states; factors connect groups of variables and
-carry a conditional probability table (CPT). The signature is
-<code>(make-factor-graph num-vars dims-tensor)</code> — two arguments —
-where <code>dims-tensor</code> gives the number of states for each
-variable.</p>
+<p>A factor graph has a fixed number of variables; each variable has a fixed number of discrete states; factors connect groups of variables and carry a conditional probability table (CPT). The signature is <code>(make-factor-graph num-vars dims-tensor)</code> — two arguments — where <code>dims-tensor</code> gives the number of states for each variable.</p>
 <pre class="scheme"><code>;; Three variables, each with two discrete states.
 (define fg (make-factor-graph 3 #(2 2 2)))
 
@@ -86,15 +71,9 @@ variable.</p>
 
 ;; Run loopy belief propagation for 10 iterations.
 (fg-infer! fg 10)</code></pre>
-<p>After <code>fg-infer!</code>, each variable’s belief vector is
-converged (modulo the iteration bound). The runtime stores beliefs
-internally; you read them out indirectly through
-<code>free-energy</code> and <code>expected-free-energy</code>, or
-directly through <code>fg-marginal</code> (a system builtin, not in the
-core 22).</p>
+<p>After <code>fg-infer!</code>, each variable’s belief vector is converged (modulo the iteration bound). The runtime stores beliefs internally; you read them out indirectly through <code>free-energy</code> and <code>expected-free-energy</code>, or directly through <code>fg-marginal</code> (a system builtin, not in the core 22).</p>
 <h3 id="free-energy">Free Energy</h3>
-<p>Free energy quantifies surprise — how much the model’s predictions
-diverge from the observed evidence:</p>
+<p>Free energy quantifies surprise — how much the model’s predictions diverge from the observed evidence:</p>
 <pre class="scheme"><code>;; Observations are encoded as #(var-index observed-state) pairs.
 ;; Passing a single 2-element tensor #(0 0) is read as: variable 0 was
 ;; observed in state 0.
@@ -111,34 +90,18 @@ diverge from the observed evidence:</p>
 (define efe (expected-free-energy fg 0 0))
 (display efe)
 (newline)</code></pre>
-<p>The pair format keeps observation specifications terse: a state
-vector over every variable would force you to encode “unobserved” with a
-sentinel, whereas a list of pairs only mentions the variables that were
-actually clamped.</p>
+<p>The pair format keeps observation specifications terse: a state vector over every variable would force you to encode “unobserved” with a sentinel, whereas a list of pairs only mentions the variables that were actually clamped.</p>
 <h3 id="learning-with-cpt-updates">Learning with CPT Updates</h3>
-<p><code>fg-update-cpt!</code> rewrites the CPT of an existing factor
-(referenced by its insertion index — the same order in which
-<code>fg-add-factor!</code> was called). After updating a factor, the
-message cache is reset so the next <code>fg-infer!</code> reconverges
-from the new CPT.</p>
+<p><code>fg-update-cpt!</code> rewrites the CPT of an existing factor (referenced by its insertion index — the same order in which <code>fg-add-factor!</code> was called). After updating a factor, the message cache is reset so the next <code>fg-infer!</code> reconverges from the new CPT.</p>
 <pre class="scheme"><code>;; Update factor 0&#39;s CPT in light of new evidence.
 (fg-update-cpt! fg 0 #(0.95 0.05 0.15 0.85))
 
 ;; Re-run inference — beliefs reconverge with the updated factor.
 (fg-infer! fg 10)</code></pre>
-<p><code>fg-observe!</code> is the related primitive for clamping a
-variable to a specific observed state (closer in spirit to “evidence”
-than “learning”); it also resets the message cache so subsequent
-<code>fg-infer!</code> calls see the clamp.</p>
+<p><code>fg-observe!</code> is the related primitive for clamping a variable to a specific observed state (closer in spirit to “evidence” than “learning”); it also resets the message cache so subsequent <code>fg-infer!</code> calls see the clamp.</p>
 <hr />
-<h2 id="part-3-global-workspace-theory">Part 3: Global Workspace
-Theory</h2>
-<p>The workspace implements a cognitive architecture where specialised
-modules compete for global broadcast via softmax competition. The
-signature is <code>(make-workspace dim max-modules)</code> —
-<code>dim</code> is the dimensionality of each module’s content vector;
-<code>max-modules</code> is the maximum number of modules the workspace
-can hold (the runtime hard-caps at 16, regardless of what you pass).</p>
+<h2 id="part-3-global-workspace-theory">Part 3: Global Workspace Theory</h2>
+<p>The workspace implements a cognitive architecture where specialised modules compete for global broadcast via softmax competition. The signature is <code>(make-workspace dim max-modules)</code> — <code>dim</code> is the dimensionality of each module’s content vector; <code>max-modules</code> is the maximum number of modules the workspace can hold (the runtime hard-caps at 16, regardless of what you pass).</p>
 <h3 id="creating-a-workspace">Creating a Workspace</h3>
 <pre class="scheme"><code>;; A workspace with 3-element content vectors, capacity for up to 4 modules.
 (define ws (make-workspace 3 4))
@@ -197,16 +160,8 @@ can hold (the runtime hard-caps at 16, regardless of what you pass).</p>
     (cons 0.5 #(0.5))))
 (ws-step! ws)</code></pre>
 <hr />
-<h2 id="the-consciousness-engine-builtins">The Consciousness Engine
-Builtins</h2>
-<p>The user-visible 22-builtin surface (logic + inference + workspace,
-plus predicates). Two further primitives — <code>fg-observe!</code> and
-<code>kb-query-prefix</code> — are emitted by the parser as dedicated
-ops too, and <code>fg-marginal</code>, <code>fg-entropy</code>,
-<code>kb-retract!</code> reach the runtime through
-<code>SystemCodegen</code>; refer to
-<code>docs/breakdown/CONSCIOUSNESS_ENGINE.md</code> for the full
-surface.</p>
+<h2 id="the-consciousness-engine-builtins">The Consciousness Engine Builtins</h2>
+<p>The user-visible 22-builtin surface (logic + inference + workspace, plus predicates). Two further primitives — <code>fg-observe!</code> and <code>kb-query-prefix</code> — are emitted by the parser as dedicated ops too, and <code>fg-marginal</code>, <code>fg-entropy</code>, <code>kb-retract!</code> reach the runtime through <code>SystemCodegen</code>; refer to <code>docs/breakdown/CONSCIOUSNESS_ENGINE.md</code> for the full surface.</p>
 <table>
 <colgroup>
 <col style="width: 33%" />
@@ -254,8 +209,7 @@ surface.</p>
 <tr>
 <td><code>kb-query</code></td>
 <td>2</td>
-<td>Query a KB with a fact pattern; returns one substitution per
-matching fact</td>
+<td>Query a KB with a fact pattern; returns one substitution per matching fact</td>
 </tr>
 <tr>
 <td><code>logic-var?</code></td>

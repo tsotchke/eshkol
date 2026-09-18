@@ -1,8 +1,5 @@
-<h1 id="tutorial-10-macros-and-metaprogramming">Tutorial 10: Macros and
-Metaprogramming</h1>
-<p>Eshkol supports R7RS hygienic macros via <code>syntax-rules</code>.
-Macros transform code at compile time — they let you extend the
-language’s syntax without runtime cost.</p>
+<h1 id="tutorial-10-macros-and-metaprogramming">Tutorial 10: Macros and Metaprogramming</h1>
+<p>Eshkol supports R7RS hygienic macros via <code>syntax-rules</code>. Macros transform code at compile time — they let you extend the language’s syntax without runtime cost.</p>
 <hr />
 <h2 id="part-1-basic-macros">Part 1: Basic Macros</h2>
 <pre class="scheme"><code>;; Define a macro that swaps two variables
@@ -18,13 +15,9 @@ language’s syntax without runtime cost.</p>
 (swap! x y)
 (display x)  ;; =&gt; 2
 (display y)  ;; =&gt; 1</code></pre>
-<p>The <code>syntax-rules</code> form specifies patterns and templates.
-When the compiler sees <code>(swap! x y)</code>, it expands it to the
-<code>let</code> expression at compile time. No function call overhead
-at runtime.</p>
+<p>The <code>syntax-rules</code> form specifies patterns and templates. When the compiler sees <code>(swap! x y)</code>, it expands it to the <code>let</code> expression at compile time. No function call overhead at runtime.</p>
 <hr />
-<h2 id="part-2-pattern-matching-in-macros">Part 2: Pattern Matching in
-Macros</h2>
+<h2 id="part-2-pattern-matching-in-macros">Part 2: Pattern Matching in Macros</h2>
 <pre class="scheme"><code>;; A &#39;when&#39; macro — executes body only if condition is true
 (define-syntax when
   (syntax-rules ()
@@ -46,8 +39,7 @@ Macros</h2>
   (display &quot;not equal&quot;)
   (newline))
 ;; =&gt; not equal</code></pre>
-<p>The <code>...</code> (ellipsis) matches zero or more expressions in
-patterns and repeats them in templates.</p>
+<p>The <code>...</code> (ellipsis) matches zero or more expressions in patterns and repeats them in templates.</p>
 <hr />
 <h2 id="part-3-multi-clause-macros">Part 3: Multi-Clause Macros</h2>
 <pre class="scheme"><code>;; A &#39;cond&#39; replacement with arrow syntax
@@ -60,35 +52,25 @@ patterns and repeats them in templates.</p>
        (if t (proc t) (my-cond rest ...))))
     ((my-cond (test expr ...) rest ...)
      (if test (begin expr ...) (my-cond rest ...)))))</code></pre>
-<p>Literal identifiers (<code>else</code>, <code>=&gt;</code>) are
-listed after <code>syntax-rules</code> and matched exactly in
-patterns.</p>
+<p>Literal identifiers (<code>else</code>, <code>=&gt;</code>) are listed after <code>syntax-rules</code> and matched exactly in patterns.</p>
 <hr />
 <h2 id="part-4-hygiene">Part 4: Hygiene</h2>
-<p>Hygienic macros prevent accidental variable capture. The
-<code>tmp</code> in <code>swap!</code> above cannot conflict with user
-code:</p>
+<p>Hygienic macros prevent accidental variable capture. The <code>tmp</code> in <code>swap!</code> above cannot conflict with user code:</p>
 <pre class="scheme"><code>(define tmp 42)
 (define a 1)
 (define b 2)
 (swap! a b)
 ;; tmp is still 42 — the macro&#39;s tmp is distinct
 (display tmp)  ;; =&gt; 42</code></pre>
-<p>This is guaranteed by the R7RS specification. Eshkol’s macro expander
-renames internal variables to prevent capture.</p>
+<p>This is guaranteed by the R7RS specification. Eshkol’s macro expander renames internal variables to prevent capture.</p>
 <hr />
 <h2 id="part-5-homoiconicity">Part 5: Homoiconicity</h2>
-<p>Every Eshkol function can display its own source code because the
-compiler preserves s-expression metadata:</p>
+<p>Every Eshkol function can display its own source code because the compiler preserves s-expression metadata:</p>
 <pre class="scheme"><code>(define (square x) (* x x))
 
 ;; The function IS its own source code
 (display square)
 ;; =&gt; (lambda (x) (* x x))</code></pre>
-<p>This is possible because Eshkol stores the s-expression
-representation alongside the compiled code. Functions are data, data is
-code — the Lisp way.</p>
+<p>This is possible because Eshkol stores the s-expression representation alongside the compiled code. Functions are data, data is code — the Lisp way.</p>
 <hr />
-<p><em>All tutorials are available at <a
-href="https://eshkol.ai/docs">eshkol.ai/docs</a> and in the
-<code>docs/tutorials/</code> directory of the repository.</em></p>
+<p><em>All tutorials are available at <a href="https://eshkol.ai/docs">eshkol.ai/docs</a> and in the <code>docs/tutorials/</code> directory of the repository.</em></p>

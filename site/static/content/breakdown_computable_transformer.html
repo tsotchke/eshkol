@@ -1,127 +1,41 @@
-<h1
-id="the-computable-transformer-programs-as-neural-network-weights">The
-Computable Transformer: Programs as Neural Network Weights</h1>
+<h1 id="the-computable-transformer-programs-as-neural-network-weights">The Computable Transformer: Programs as Neural Network Weights</h1>
 <blockquote>
-<p>Companion architectural specification for the Self-Differentiating
-Neural Computer (<code>docs/SDNC.md</code>). The implementation log of
-which opcodes are encoded into which weights, and on what bounded
-preconditions, lives in
-<code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md</code>.</p>
+<p>Companion architectural specification for the Self-Differentiating Neural Computer (<code>docs/SDNC.md</code>). The implementation log of which opcodes are encoded into which weights, and on what bounded preconditions, lives in <code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md</code>.</p>
 </blockquote>
-<h2 id="1-the-claim-in-one-paragraph">1. The claim, in one
-paragraph</h2>
-<p>A six-layer, 12-million-parameter transformer can be made
-bit-identical to a canonical 83-instruction bytecode interpreter —
-including its 19-opcode reverse-mode automatic-differentiation extension
-— by writing its weights out analytically from the instruction-set
-specification, rather than fitting them by gradient descent. The state
-vector <span class="math inline"><em>x</em> ∈ ℝ<sup>256</sup></span> is
-the VM state. One forward pass is one bytecode cycle: <span
-class="math inline"><em>x</em><sub><em>t</em> + 1</sub> = <em>F</em>(<em>x</em><sub><em>t</em></sub>)</span>,
-where <span class="math inline"><em>F</em></span> is a stack of
-attention and feed-forward blocks with linear/sigmoid/square
-non-linearities. The backward pass through the <em>same</em> weights
-computes reverse-mode gradients on the in-state AD tape. No layer of
-<span class="math inline"><em>F</em></span> contains a single trained
-parameter; every weight is the constructively determined solution to a
-linear (or piecewise-linear) system derived from the ISA’s small-step
-semantics.</p>
-<p>This is a <em>constructive proof of Turing-completeness modulo
-bounded heap</em>: within a fixed live-cell budget, the transformer
-evaluates any term of the canonical ISA exactly. It does so on a single
-set of weights, regardless of program. The program is data; the network
-is the universal interpreter.</p>
-<h2 id="2-the-constructive-proof-argument">2. The constructive-proof
-argument</h2>
-<p>Most claims that a particular neural architecture is “Turing
-complete” are existence proofs: a universal approximation theorem or a
-machine-construction argument that takes parameters as free variables.
-The SDNC takes the constructive route that has been pioneered by RASP
-(Weiss et al. 2021), Tracr (Lindner et al. 2023), Looped Transformers
-(Giannou et al. 2023), and Differentiable Forth (Bošnjak et al. 2017):
-one exhibits a concrete weight assignment and proves that the resulting
-forward pass evaluates a specified semantics. The novelties here,
-relative to the prior art, are:</p>
+<h2 id="1-the-claim-in-one-paragraph">1. The claim, in one paragraph</h2>
+<p>A six-layer, 12-million-parameter transformer can be made bit-identical to a canonical 83-instruction bytecode interpreter — including its 19-opcode reverse-mode automatic-differentiation extension — by writing its weights out analytically from the instruction-set specification, rather than fitting them by gradient descent. The state vector <span class="math inline"><em>x</em> ∈ ℝ<sup>256</sup></span> is the VM state. One forward pass is one bytecode cycle: <span class="math inline"><em>x</em><sub><em>t</em> + 1</sub> = <em>F</em>(<em>x</em><sub><em>t</em></sub>)</span>, where <span class="math inline"><em>F</em></span> is a stack of attention and feed-forward blocks with linear/sigmoid/square non-linearities. The backward pass through the <em>same</em> weights computes reverse-mode gradients on the in-state AD tape. No layer of <span class="math inline"><em>F</em></span> contains a single trained parameter; every weight is the constructively determined solution to a linear (or piecewise-linear) system derived from the ISA’s small-step semantics.</p>
+<p>This is a <em>constructive proof of Turing-completeness modulo bounded heap</em>: within a fixed live-cell budget, the transformer evaluates any term of the canonical ISA exactly. It does so on a single set of weights, regardless of program. The program is data; the network is the universal interpreter.</p>
+<h2 id="2-the-constructive-proof-argument">2. The constructive-proof argument</h2>
+<p>Most claims that a particular neural architecture is “Turing complete” are existence proofs: a universal approximation theorem or a machine-construction argument that takes parameters as free variables. The SDNC takes the constructive route that has been pioneered by RASP (Weiss et al. 2021), Tracr (Lindner et al. 2023), Looped Transformers (Giannou et al. 2023), and Differentiable Forth (Bošnjak et al. 2017): one exhibits a concrete weight assignment and proves that the resulting forward pass evaluates a specified semantics. The novelties here, relative to the prior art, are:</p>
 <ol type="1">
-<li><strong>The semantics is a <em>real</em> bytecode</strong>, not a
-DSL chosen to make the compilation easy. The 83-opcode ISA comes from
-the production Eshkol compiler (<code>lib/backend/vm_core.c</code>) and
-is the same one consumed by the reference C interpreter
-(<code>lib/backend/vm_run.c</code>, computed-goto dispatch).</li>
-<li><strong>Reverse-mode AD is in the ISA</strong>. Nineteen opcodes
-(<code>OP_AD_VAR=64 … OP_AD_COS=82</code>) record nodes onto a
-64-dimensional in-state tape, walk it backwards, and accumulate
-gradients via the same weight matrices. Differentiating a program is one
-extra dispatch state (<code>S_AD_IS_BACKWARD=1</code>), not a separate
-engine.</li>
-<li><strong>Bit-identity in float32</strong>, not approximate agreement.
-Every step of every program in the verifier set has every byte of its
-256-float state vector equal across three implementations (reference C,
-simulated weights, and matrix matmul). The proof is empirical at this
-point but is supported by an analytic gate-saturation argument
-(<code>lib/backend/weight_matrices.c §SCALE comment lines 59-84</code>).</li>
-<li><strong>One transformer block iterated against itself.</strong>
-Layers 0-5 are fixed; the dispatch loop runs
-<code>forward_with_weights</code> (forward mode) or
-<code>backward_with_weights</code> (backward mode) repeatedly until
-<code>S_HALT=1</code>. This puts the construction in the same family as
-the Looped Transformers result of Giannou et al., but with the loop
-unrolled at the bytecode level rather than buried in a learned position
-counter.</li>
+<li><strong>The semantics is a <em>real</em> bytecode</strong>, not a DSL chosen to make the compilation easy. The 83-opcode ISA comes from the production Eshkol compiler (<code>lib/backend/vm_core.c</code>) and is the same one consumed by the reference C interpreter (<code>lib/backend/vm_run.c</code>, computed-goto dispatch).</li>
+<li><strong>Reverse-mode AD is in the ISA</strong>. Nineteen opcodes (<code>OP_AD_VAR=64 … OP_AD_COS=82</code>) record nodes onto a 64-dimensional in-state tape, walk it backwards, and accumulate gradients via the same weight matrices. Differentiating a program is one extra dispatch state (<code>S_AD_IS_BACKWARD=1</code>), not a separate engine.</li>
+<li><strong>Bit-identity in float32</strong>, not approximate agreement. Every step of every program in the verifier set has every byte of its 256-float state vector equal across three implementations (reference C, simulated weights, and matrix matmul). The proof is empirical at this point but is supported by an analytic gate-saturation argument (<code>lib/backend/weight_matrices.c §SCALE comment lines 59-84</code>).</li>
+<li><strong>One transformer block iterated against itself.</strong> Layers 0-5 are fixed; the dispatch loop runs <code>forward_with_weights</code> (forward mode) or <code>backward_with_weights</code> (backward mode) repeatedly until <code>S_HALT=1</code>. This puts the construction in the same family as the Looped Transformers result of Giannou et al., but with the loop unrolled at the bytecode level rather than buried in a learned position counter.</li>
 </ol>
-<p>The intellectual lineage is documented in
-<code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md §10</code> and
-at the head of <code>lib/backend/weight_matrices.c</code>; this document
-focuses on the architecture itself.</p>
+<p>The intellectual lineage is documented in <code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md §10</code> and at the head of <code>lib/backend/weight_matrices.c</code>; this document focuses on the architecture itself.</p>
 <h2 id="3-the-transformer">3. The transformer</h2>
 <h3 id="31-architectural-constants">3.1 Architectural constants</h3>
-<p>All five constants are defined together in
-<code>weight_matrices.c §53-58</code>:</p>
+<p>All five constants are defined together in <code>weight_matrices.c §53-58</code>:</p>
 <pre class="c"><code>#define D 256        /* state-vector dimension, transformer d_model */
 #define H 16         /* attention heads */
 #define HD 2         /* head dimension */
 #define N_LAYERS 6
 #define FFN_DIM 2304 /* per-layer FFN hidden width */
 #define SCALE 300.0f /* softmax/sigmoid saturation temperature */</code></pre>
-<p>A direct count from the <code>InterpreterWeights</code> struct
-(<code>weight_matrices.c §2969-2982</code>) gives, per layer:</p>
+<p>A direct count from the <code>InterpreterWeights</code> struct (<code>weight_matrices.c §2969-2982</code>) gives, per layer:</p>
 <ul>
-<li>four <span class="math inline"><em>D</em> × <em>D</em></span>
-attention projection matrices <span
-class="math inline"><em>W</em><sub><em>Q</em></sub>, <em>W</em><sub><em>K</em></sub>, <em>W</em><sub><em>V</em></sub>, <em>W</em><sub><em>O</em></sub></span>:
-<span class="math inline">4 ⋅ 256<sup>2</sup> = 262 144</span>
-parameters</li>
-<li>one <span class="math inline"><em>D</em></span>-dimensional
-attention bias <span
-class="math inline"><em>b</em><sub><em>Q</em></sub></span>: <span
-class="math inline">256</span></li>
-<li>two <span
-class="math inline"><em>D</em> × <em>F</em><em>F</em><em>N</em></span>
-FFN matrices <code>ff_up</code>, <code>ff_gate</code>: <span
-class="math inline">2 ⋅ 256 ⋅ 2304 = 1 179 648</span></li>
-<li>one <span
-class="math inline"><em>F</em><em>F</em><em>N</em> × <em>D</em></span>
-FFN matrix <code>ff_down</code>: <span
-class="math inline">2304 ⋅ 256 = 589 824</span></li>
-<li>two <span
-class="math inline"><em>F</em><em>F</em><em>N</em></span>-dimensional
-FFN biases: <span class="math inline">2 ⋅ 2304 = 4 608</span></li>
-<li>one <span class="math inline"><em>D</em></span>-dimensional residual
-bias: <span class="math inline">256</span></li>
-<li>a single integer <code>ff_type[L]</code> selecting the layer’s
-activation</li>
+<li>four <span class="math inline"><em>D</em> × <em>D</em></span> attention projection matrices <span class="math inline"><em>W</em><sub><em>Q</em></sub>, <em>W</em><sub><em>K</em></sub>, <em>W</em><sub><em>V</em></sub>, <em>W</em><sub><em>O</em></sub></span>: <span class="math inline">4 ⋅ 256<sup>2</sup> = 262 144</span> parameters</li>
+<li>one <span class="math inline"><em>D</em></span>-dimensional attention bias <span class="math inline"><em>b</em><sub><em>Q</em></sub></span>: <span class="math inline">256</span></li>
+<li>two <span class="math inline"><em>D</em> × <em>F</em><em>F</em><em>N</em></span> FFN matrices <code>ff_up</code>, <code>ff_gate</code>: <span class="math inline">2 ⋅ 256 ⋅ 2304 = 1 179 648</span></li>
+<li>one <span class="math inline"><em>F</em><em>F</em><em>N</em> × <em>D</em></span> FFN matrix <code>ff_down</code>: <span class="math inline">2304 ⋅ 256 = 589 824</span></li>
+<li>two <span class="math inline"><em>F</em><em>F</em><em>N</em></span>-dimensional FFN biases: <span class="math inline">2 ⋅ 2304 = 4 608</span></li>
+<li>one <span class="math inline"><em>D</em></span>-dimensional residual bias: <span class="math inline">256</span></li>
+<li>a single integer <code>ff_type[L]</code> selecting the layer’s activation</li>
 </ul>
-<p>Per-layer total: <span class="math inline">2 036 736</span>. Across
-six layers and the six <code>ff_type</code> integers: <span
-class="math inline"><strong>12</strong> <strong>220</strong> <strong>422</strong></span>
-parameters. This matches the <code>tab_params.tex</code> cell emitted by
-<code>gen_paper_tables.py §38-67</code> from the exported QLMW file, and
-the comment at the top of <code>weight_matrices.c §13</code>.</p>
+<p>Per-layer total: <span class="math inline">2 036 736</span>. Across six layers and the six <code>ff_type</code> integers: <span class="math inline"><strong>12</strong> <strong>220</strong> <strong>422</strong></span> parameters. This matches the <code>tab_params.tex</code> cell emitted by <code>gen_paper_tables.py §38-67</code> from the exported QLMW file, and the comment at the top of <code>weight_matrices.c §13</code>.</p>
 <h3 id="32-the-six-layer-schedule">3.2 The six-layer schedule</h3>
-<p><code>weight_matrices.c §10-19</code> documents the schedule; the
-explicit forward-pass driver is <code>forward_with_weights</code> at
-line 5347 and the backward pass at <code>backward_with_weights</code>
-line 5339.</p>
+<p><code>weight_matrices.c §10-19</code> documents the schedule; the explicit forward-pass driver is <code>forward_with_weights</code> at line 5347 and the backward pass at <code>backward_with_weights</code> line 5339.</p>
 <table>
 <colgroup>
 <col style="width: 4%" />
@@ -139,218 +53,74 @@ line 5339.</p>
 <tr>
 <td>0</td>
 <td>Gaussian self-attention</td>
-<td><strong>Instruction fetch.</strong> Query <span
-class="math inline"><em>q</em> = SCALE ⋅ onehot(<em>P</em><em>C</em>)</span>;
-values carry <span
-class="math inline">(<em>o</em><em>p</em><em>c</em><em>o</em><em>d</em><em>e</em>, <em>o</em><em>p</em><em>e</em><em>r</em><em>a</em><em>n</em><em>d</em>)</span>.</td>
+<td><strong>Instruction fetch.</strong> Query <span class="math inline"><em>q</em> = SCALE ⋅ onehot(<em>P</em><em>C</em>)</span>; values carry <span class="math inline">(<em>o</em><em>p</em><em>c</em><em>o</em><em>d</em><em>e</em>, <em>o</em><em>p</em><em>e</em><em>r</em><em>a</em><em>n</em><em>d</em>)</span>.</td>
 </tr>
 <tr>
 <td>1</td>
 <td>Square FFN</td>
-<td><strong>Polarisation products.</strong> Computes <span
-class="math inline"><em>T</em><em>O</em><em>S</em> ⋅ <em>S</em><em>O</em><em>S</em></span>
-and the four AD cross-products that backward needs.</td>
+<td><strong>Polarisation products.</strong> Computes <span class="math inline"><em>T</em><em>O</em><em>S</em> ⋅ <em>S</em><em>O</em><em>S</em></span> and the four AD cross-products that backward needs.</td>
 </tr>
 <tr>
 <td>2</td>
 <td>Gated sigmoid FFN</td>
-<td><strong>Preprocess.</strong> Address resolution; comparison flags;
-type-tag indicators; AD parent loads; cursor load.</td>
+<td><strong>Preprocess.</strong> Address resolution; comparison flags; type-tag indicators; AD parent loads; cursor load.</td>
 </tr>
 <tr>
 <td>3</td>
 <td>Gated sigmoid FFN</td>
-<td><strong>Dispatch.</strong> Per-opcode gate × value pairs. The
-arithmetic, control flow, arena and forward AD live here.</td>
+<td><strong>Dispatch.</strong> Per-opcode gate × value pairs. The arithmetic, control flow, arena and forward AD live here.</td>
 </tr>
 <tr>
 <td>4</td>
 <td>Gated sigmoid FFN</td>
-<td><strong>Writeback.</strong> Tape append; arena-cell mutation;
-parent-load for backward.</td>
+<td><strong>Writeback.</strong> Tape append; arena-cell mutation; parent-load for backward.</td>
 </tr>
 <tr>
 <td>5</td>
 <td>Gated sigmoid FFN</td>
-<td><strong>Gradient writeback.</strong> Backward-only; runs
-<em>twice</em> per backward cycle (gradient compute → write-back).</td>
+<td><strong>Gradient writeback.</strong> Backward-only; runs <em>twice</em> per backward cycle (gradient compute → write-back).</td>
 </tr>
 </tbody>
 </table>
-<p>Layer 5 is unusual: the matrix-mode driver calls
-<code>apply_ffn_layer(w, 5, x)</code> twice in succession
-(<code>weight_matrices.c §5343-5344</code>) so that the gradient rule
-dispatch (pass 1) and the indexed write-back (pass 2) share weights but
-execute as separate compute steps. This is the only place where the flat
-six-layer schedule departs from a strict feedforward stack, and it is
-the looped-transformer pattern (Giannou et al. 2023) applied to one
-layer rather than the whole network.</p>
-<h3 id="33-layer-by-layer-specification">3.3 Layer-by-layer
-specification</h3>
-<p><strong>Layer 0 — Attention as one-hot positional lookup.</strong>
-The instruction at position <span class="math inline"><em>p</em></span>
-is embedded by <code>embed_instruction</code> (line 338) as</p>
-<p><span
-class="math display"><em>e</em><sub><em>p</em></sub> = (<em>p</em>,  − <em>p</em><sup>2</sup>/2, 0, …, 0, <em>o</em><em>p</em><sub><em>p</em></sub>, <em>o</em><em>p</em><em>e</em><em>r</em><em>a</em><em>n</em><em>d</em><sub><em>p</em></sub>, 0, …) ∈ ℝ<sup>256</sup></span></p>
-<p>with the opcode and operand placed at fixed lanes
-(<code>S_OPCODE=16</code>, <code>S_OPERAND=17</code>). The query
-projection multiplies the state’s <code>S_PC</code> by SCALE; the key
-projection passes positional features through unchanged. A
-two-dimensional head with embedding <span
-class="math inline">(<em>p</em>, −<em>p</em><sup>2</sup>/2)</span> and
-query <span
-class="math inline">(SCALE ⋅ <em>P</em><em>C</em>, SCALE)</span> gives
-the inner product</p>
+<p>Layer 5 is unusual: the matrix-mode driver calls <code>apply_ffn_layer(w, 5, x)</code> twice in succession (<code>weight_matrices.c §5343-5344</code>) so that the gradient rule dispatch (pass 1) and the indexed write-back (pass 2) share weights but execute as separate compute steps. This is the only place where the flat six-layer schedule departs from a strict feedforward stack, and it is the looped-transformer pattern (Giannou et al. 2023) applied to one layer rather than the whole network.</p>
+<h3 id="33-layer-by-layer-specification">3.3 Layer-by-layer specification</h3>
+<p><strong>Layer 0 — Attention as one-hot positional lookup.</strong> The instruction at position <span class="math inline"><em>p</em></span> is embedded by <code>embed_instruction</code> (line 338) as</p>
+<p><span class="math display"><em>e</em><sub><em>p</em></sub> = (<em>p</em>,  − <em>p</em><sup>2</sup>/2, 0, …, 0, <em>o</em><em>p</em><sub><em>p</em></sub>, <em>o</em><em>p</em><em>e</em><em>r</em><em>a</em><em>n</em><em>d</em><sub><em>p</em></sub>, 0, …) ∈ ℝ<sup>256</sup></span></p>
+<p>with the opcode and operand placed at fixed lanes (<code>S_OPCODE=16</code>, <code>S_OPERAND=17</code>). The query projection multiplies the state’s <code>S_PC</code> by SCALE; the key projection passes positional features through unchanged. A two-dimensional head with embedding <span class="math inline">(<em>p</em>, −<em>p</em><sup>2</sup>/2)</span> and query <span class="math inline">(SCALE ⋅ <em>P</em><em>C</em>, SCALE)</span> gives the inner product</p>
 <p><span class="math display">$$
-\langle q,\, e_p\rangle = \mathrm{SCALE}\cdot p\cdot PC -
-\tfrac{\mathrm{SCALE}}{2}\cdot p^2
-= -\tfrac{\mathrm{SCALE}}{2}\,(p-PC)^2 + \tfrac{\mathrm{SCALE}}{2}\cdot
-PC^2.
+\langle q,\, e_p\rangle = \mathrm{SCALE}\cdot p\cdot PC - \tfrac{\mathrm{SCALE}}{2}\cdot p^2
+= -\tfrac{\mathrm{SCALE}}{2}\,(p-PC)^2 + \tfrac{\mathrm{SCALE}}{2}\cdot PC^2.
 $$</span></p>
-<p>The unwanted <span
-class="math inline"><em>P</em><em>C</em><sup>2</sup></span> term is
-constant across keys, so the softmax peaks at <span
-class="math inline"><em>p</em> = <em>P</em><em>C</em></span> with a
-<em>Gaussian</em> falloff. SCALE = 300 makes the off-peak contribution
-underflow to literal float32 zero (peak-to-adjacent gap <span
-class="math inline"> ≈ 106</span>, denormals start at <span
-class="math inline">exp (−87)</span>). The attention is bit-exactly
-one-hot, and the value <span
-class="math inline"><em>W</em><sub><em>V</em></sub><em>e</em><sub><em>P</em><em>C</em></sub> = (<em>o</em><em>p</em><sub><em>P</em><em>C</em></sub>, <em>o</em><em>p</em><em>e</em><em>r</em><em>a</em><em>n</em><em>d</em><sub><em>P</em><em>C</em></sub>)</span>
-is written into the residual stream at
-<code>S_OPCODE</code>/<code>S_OPERAND</code>.</p>
-<p><strong>Layer 1 — Polarisation products.</strong> The matrix-mode
-forward path cannot multiply two state dimensions directly: every layer
-is either linear or gate-times-linear with no quadratic up-projection.
-The trick is the polarisation identity</p>
+<p>The unwanted <span class="math inline"><em>P</em><em>C</em><sup>2</sup></span> term is constant across keys, so the softmax peaks at <span class="math inline"><em>p</em> = <em>P</em><em>C</em></span> with a <em>Gaussian</em> falloff. SCALE = 300 makes the off-peak contribution underflow to literal float32 zero (peak-to-adjacent gap <span class="math inline"> ≈ 106</span>, denormals start at <span class="math inline">exp (−87)</span>). The attention is bit-exactly one-hot, and the value <span class="math inline"><em>W</em><sub><em>V</em></sub><em>e</em><sub><em>P</em><em>C</em></sub> = (<em>o</em><em>p</em><sub><em>P</em><em>C</em></sub>, <em>o</em><em>p</em><em>e</em><em>r</em><em>a</em><em>n</em><em>d</em><sub><em>P</em><em>C</em></sub>)</span> is written into the residual stream at <code>S_OPCODE</code>/<code>S_OPERAND</code>.</p>
+<p><strong>Layer 1 — Polarisation products.</strong> The matrix-mode forward path cannot multiply two state dimensions directly: every layer is either linear or gate-times-linear with no quadratic up-projection. The trick is the polarisation identity</p>
 <p><span class="math display">$$
 a\cdot b = \tfrac{1}{2}(a+b)^2 - \tfrac{1}{2}a^2 - \tfrac{1}{2}b^2,
 $$</span></p>
-<p>which a square-activation FFN computes natively.
-<code>layer1_ffn</code> at line 1244 produces four AD cross-products
-(<span class="math inline"><em>g</em> ⋅ <em>r</em></span>, <span
-class="math inline"><em>g</em> ⋅ <em>ℓ</em></span>, <span
-class="math inline"><em>ℓ</em> ⋅ <em>r</em></span>, <span
-class="math inline"><em>g</em> ⋅ <em>s</em></span>) plus the plain <span
-class="math inline"><em>T</em><em>O</em><em>S</em> ⋅ <em>S</em><em>O</em><em>S</em></span>
-product needed by <code>OP_MUL</code> and the comparison ops. The
-reference C interpreter (<code>ad_backward_step</code> at line 1027) was
-originally written with direct <code>grad * saved</code>
-multiplications; bit-identity required rewriting it to use polarisation
-arithmetic (<code>POLARIZATION_PRODUCT</code> macro, lines 1064-1096)
-because direct multiplication and polarisation are equal mathematically
-but differ by 1-13 ULPs in float32. This is the most subtle of the five
-bit-identity fixes; it is documented in commit <code>7301dc4</code> and
-in <code>docs/SDNC.md §5</code>.</p>
-<p><strong>Layer 2 — Preprocess.</strong> <code>layer2_ffn</code> (line
-1258) is the workhorse. It emits:</p>
+<p>which a square-activation FFN computes natively. <code>layer1_ffn</code> at line 1244 produces four AD cross-products (<span class="math inline"><em>g</em> ⋅ <em>r</em></span>, <span class="math inline"><em>g</em> ⋅ <em>ℓ</em></span>, <span class="math inline"><em>ℓ</em> ⋅ <em>r</em></span>, <span class="math inline"><em>g</em> ⋅ <em>s</em></span>) plus the plain <span class="math inline"><em>T</em><em>O</em><em>S</em> ⋅ <em>S</em><em>O</em><em>S</em></span> product needed by <code>OP_MUL</code> and the comparison ops. The reference C interpreter (<code>ad_backward_step</code> at line 1027) was originally written with direct <code>grad * saved</code> multiplications; bit-identity required rewriting it to use polarisation arithmetic (<code>POLARIZATION_PRODUCT</code> macro, lines 1064-1096) because direct multiplication and polarisation are equal mathematically but differ by 1-13 ULPs in float32. This is the most subtle of the five bit-identity fixes; it is documented in commit <code>7301dc4</code> and in <code>docs/SDNC.md §5</code>.</p>
+<p><strong>Layer 2 — Preprocess.</strong> <code>layer2_ffn</code> (line 1258) is the workhorse. It emits:</p>
 <ul>
-<li>one-hot indicator gates for the seven type tags
-(<code>S_TYPE_IS_NUM…S_TYPE_IS_NIL</code>, lines 1297-1303), so that
-Layer 3 can implement type predicates as a single
-<code>add_gated_pair</code> rather than a two-layer composition;</li>
-<li>the four-slot <code>MEM</code>-indexed load for
-<code>OP_GET_LOCAL</code> (lines 1261-1262) and the four-slot store
-delta for <code>OP_SET_LOCAL</code> (lines 1264-1265);</li>
-<li><code>S_CMP_EQ</code>, <code>S_CMP_LT</code>,
-<code>S_ABS_DELTA</code> precomputes (lines 1288-1291);</li>
-<li>exact-integer DIV and MOD lookups (lines 1273-1286) for the bounded
-denominator/numerator ranges <span
-class="math inline">1 ≤ <em>d</em> ≤ 16</span>, <span
-class="math inline">0 ≤ <em>v</em> ≤ 21</span> with <span
-class="math inline"><em>d</em> ∈ {3, 4}</span> for MOD;</li>
-<li>the AD cursor load (lines 1310-1320): when
-<code>S_AD_IS_BACKWARD&gt;0.5</code>, the eight tape fields at slot
-<code>S_AD_CURSOR</code> are copied to the <code>S_AD_CUR_*</code>
-register lanes via one-hot indicators;</li>
-<li>the AD forward parent load (lines 1340-1348): when the opcode is a
-binary AD op, the values at tape slots <code>S_TOS</code> and
-<code>S_SOS</code> are loaded into <code>S_AD_LEFT_VALUE</code> /
-<code>S_AD_RIGHT_VALUE</code> for Layer 1’s polarisation products to
-consume next cycle;</li>
-<li>the cursor decrement and completion check (lines 1352-1371): if
-<code>S_AD_CURSOR == 0</code> pre-decrement,
-<code>S_AD_IS_BACKWARD</code> and <code>S_AD_MODE</code> are cleared in
-the same cycle.</li>
+<li>one-hot indicator gates for the seven type tags (<code>S_TYPE_IS_NUM…S_TYPE_IS_NIL</code>, lines 1297-1303), so that Layer 3 can implement type predicates as a single <code>add_gated_pair</code> rather than a two-layer composition;</li>
+<li>the four-slot <code>MEM</code>-indexed load for <code>OP_GET_LOCAL</code> (lines 1261-1262) and the four-slot store delta for <code>OP_SET_LOCAL</code> (lines 1264-1265);</li>
+<li><code>S_CMP_EQ</code>, <code>S_CMP_LT</code>, <code>S_ABS_DELTA</code> precomputes (lines 1288-1291);</li>
+<li>exact-integer DIV and MOD lookups (lines 1273-1286) for the bounded denominator/numerator ranges <span class="math inline">1 ≤ <em>d</em> ≤ 16</span>, <span class="math inline">0 ≤ <em>v</em> ≤ 21</span> with <span class="math inline"><em>d</em> ∈ {3, 4}</span> for MOD;</li>
+<li>the AD cursor load (lines 1310-1320): when <code>S_AD_IS_BACKWARD&gt;0.5</code>, the eight tape fields at slot <code>S_AD_CURSOR</code> are copied to the <code>S_AD_CUR_*</code> register lanes via one-hot indicators;</li>
+<li>the AD forward parent load (lines 1340-1348): when the opcode is a binary AD op, the values at tape slots <code>S_TOS</code> and <code>S_SOS</code> are loaded into <code>S_AD_LEFT_VALUE</code> / <code>S_AD_RIGHT_VALUE</code> for Layer 1’s polarisation products to consume next cycle;</li>
+<li>the cursor decrement and completion check (lines 1352-1371): if <code>S_AD_CURSOR == 0</code> pre-decrement, <code>S_AD_IS_BACKWARD</code> and <code>S_AD_MODE</code> are cleared in the same cycle.</li>
 </ul>
-<p>The cursor-completion check is what fix (4) in the bit-identity bug
-sequence resolved (commit <code>7301dc4</code>): the original indicator
-was <code>indicator(cursor, -1.0)</code>, which fires the cycle
-<em>after</em> the cursor has gone negative; the corrected
-<code>indicator(cursor, 0.0)</code> fires on the cycle that processes
-the last live node, matching the reference VM’s
-<code>ad_backward_step</code> exactly.</p>
-<p><strong>Layer 3 — Dispatch.</strong> <code>layer3_ffn</code> (line
-1374) is one big block of gated indicator pairs, one per opcode-operand
-combination. The mechanical primitive is <code>add_gated_pair</code>
-(<code>weight_matrices.c §2988-3009</code>):</p>
+<p>The cursor-completion check is what fix (4) in the bit-identity bug sequence resolved (commit <code>7301dc4</code>): the original indicator was <code>indicator(cursor, -1.0)</code>, which fires the cycle <em>after</em> the cursor has gone negative; the corrected <code>indicator(cursor, 0.0)</code> fires on the cycle that processes the last live node, matching the reference VM’s <code>ad_backward_step</code> exactly.</p>
+<p><strong>Layer 3 — Dispatch.</strong> <code>layer3_ffn</code> (line 1374) is one big block of gated indicator pairs, one per opcode-operand combination. The mechanical primitive is <code>add_gated_pair</code> (<code>weight_matrices.c §2988-3009</code>):</p>
 <pre class="c"><code>static int add_gated_pair(InterpreterWeights* w, int L, int n,
                           int op_id,
                           int ud1, float us1, int ud2, float us2,
                           int ud3, float us3, int ud4, float us4,
                           float ubias,
                           int out_dim, float coeff);</code></pre>
-<p><code>op_id</code> is the opcode discriminator: the gate row places
-SCALE at the <code>S_OPCODE</code> column, <span
-class="math inline">−SCALE</span> at <code>S_HALT</code>, and a bias of
-<span class="math inline">SCALE ⋅ (−op_id ± 0.5)</span>. The two
-sign-conjugate neurons combine to form a difference-of-sigmoids
-approximation of <span
-class="math inline"><strong>1</strong>[<em>o</em><em>p</em><em>c</em><em>o</em><em>d</em><em>e</em> = op_id]</span>
-that saturates exactly in float32 as long as <span
-class="math inline">SCALE &gt; 40</span> (sigmoid clamp at <span
-class="math inline">|<em>x</em>| &gt; 20</span>). The up projection
-draws a linear combination of state dimensions into the gate value; the
-down projection writes the residual delta.</p>
-<p>For the four-dimensional bounded arithmetic family
-(<code>OP_ADD</code> through <code>OP_GE</code>), each opcode is exactly
-<em>one</em> pair: gate on <code>S_OPCODE==op_id</code>, up-project
-<code>TOS + SOS</code> or <code>TOS - SOS</code>, write residual delta
-into <code>S_TOS</code>. Forty-three of the 64 base opcodes fit this
-shape directly. The remainder use the family extensions
-<code>add_gated_opcode_index</code> (additional integer state in the
-gate, e.g. <code>OP_POPN</code> with operand <span
-class="math inline"> ∈ {1, 2, 3}</span>) and
-<code>add_gated_opcode_two_indices</code> (two integer states,
-e.g. bounded <code>AD_POW</code> indexed by base × exponent).</p>
-<p><strong>Layer 4 — Writeback.</strong> Layer 3 mutates only the
-working stack registers (<code>S_TOS…S_R3</code>) and the comparison
-flags; the AD tape and the Zone E arena need a separate write step
-because their target slot is a function of <code>S_AD_TAPE_LEN</code> or
-<code>S_ARENA_NEXT</code>, not of the opcode. Layer 4 implements both:
-for each tape slot <span class="math inline"><em>i</em> ∈ [0, 8)</span>
-and each of the eight tape fields, two sign-conjugate neurons fire when
-<code>S_AD_TAPE_LEN == i</code> <em>and</em>
-<code>S_AD_IS_FORWARD == 1</code>. The dual-input AND is the central
-trick (<code>weight_matrices.c §4880-4951</code>): the gate contribution
-from <code>S_AD_IS_FORWARD</code> is <span
-class="math inline">10 ⋅ SCALE</span>, not <span
-class="math inline">SCALE</span>, so that high values of
-<code>S_AD_TAPE_LEN</code> (up to 7) cannot reopen the gate when
-<code>S_AD_IS_FORWARD = 0</code>. Fixes (2) and (3) in the bit-identity
-sequence (commit <code>7301dc4</code>) corrected exactly this: the
-original code omitted <code>S_AD_IS_FORWARD</code> from the gate, so the
-forward tape-write fired during backward whenever
-<code>TL == slot</code>, scribbling <code>AD_CUR_VALUE</code> into
-<code>tape[1]</code> every backward cycle for single-<code>AD_VAR</code>
-programs.</p>
-<p><strong>Layer 5 — Gradient writeback.</strong> Backward-only. Runs in
-two passes because the gradient rule (which determines
-<code>S_AD_LEFT_GRAD_NEW</code> and <code>S_AD_RIGHT_GRAD_NEW</code>)
-and the parent-tape write (which accumulates those deltas into
-<code>tape[S_AD_CUR_LEFT]</code> and <code>tape[S_AD_CUR_RIGHT]</code>)
-cannot share the same weight matrix without a separator: the rule
-depends on <code>S_AD_CUR_OP</code> and the write depends on the
-<em>result</em> of the rule. The two-pass solution is structurally
-identical to the looped attention head pattern. The cursor decrement and
-the <code>indicator(cursor, 0.0)</code> completion gate also live in
-Layer 5 (<code>weight_matrices.c §3737-3779</code>), with the dual-input
-AND pattern from Layer 4 used again to prevent re-opening the cursor
-gate when the backward flag is cleared.</p>
-<h2 id="4-the-state-vector-d_textmodel--256">4. The state vector (<span
-class="math inline"><em>d</em><sub>model</sub> = 256</span>)</h2>
-<p>Layout from the enum declaration in
-<code>weight_matrices.c §136-264</code>:</p>
+<p><code>op_id</code> is the opcode discriminator: the gate row places SCALE at the <code>S_OPCODE</code> column, <span class="math inline">−SCALE</span> at <code>S_HALT</code>, and a bias of <span class="math inline">SCALE ⋅ (−op_id ± 0.5)</span>. The two sign-conjugate neurons combine to form a difference-of-sigmoids approximation of <span class="math inline"><strong>1</strong>[<em>o</em><em>p</em><em>c</em><em>o</em><em>d</em><em>e</em> = op_id]</span> that saturates exactly in float32 as long as <span class="math inline">SCALE &gt; 40</span> (sigmoid clamp at <span class="math inline">|<em>x</em>| &gt; 20</span>). The up projection draws a linear combination of state dimensions into the gate value; the down projection writes the residual delta.</p>
+<p>For the four-dimensional bounded arithmetic family (<code>OP_ADD</code> through <code>OP_GE</code>), each opcode is exactly <em>one</em> pair: gate on <code>S_OPCODE==op_id</code>, up-project <code>TOS + SOS</code> or <code>TOS - SOS</code>, write residual delta into <code>S_TOS</code>. Forty-three of the 64 base opcodes fit this shape directly. The remainder use the family extensions <code>add_gated_opcode_index</code> (additional integer state in the gate, e.g. <code>OP_POPN</code> with operand <span class="math inline"> ∈ {1, 2, 3}</span>) and <code>add_gated_opcode_two_indices</code> (two integer states, e.g. bounded <code>AD_POW</code> indexed by base × exponent).</p>
+<p><strong>Layer 4 — Writeback.</strong> Layer 3 mutates only the working stack registers (<code>S_TOS…S_R3</code>) and the comparison flags; the AD tape and the Zone E arena need a separate write step because their target slot is a function of <code>S_AD_TAPE_LEN</code> or <code>S_ARENA_NEXT</code>, not of the opcode. Layer 4 implements both: for each tape slot <span class="math inline"><em>i</em> ∈ [0, 8)</span> and each of the eight tape fields, two sign-conjugate neurons fire when <code>S_AD_TAPE_LEN == i</code> <em>and</em> <code>S_AD_IS_FORWARD == 1</code>. The dual-input AND is the central trick (<code>weight_matrices.c §4880-4951</code>): the gate contribution from <code>S_AD_IS_FORWARD</code> is <span class="math inline">10 ⋅ SCALE</span>, not <span class="math inline">SCALE</span>, so that high values of <code>S_AD_TAPE_LEN</code> (up to 7) cannot reopen the gate when <code>S_AD_IS_FORWARD = 0</code>. Fixes (2) and (3) in the bit-identity sequence (commit <code>7301dc4</code>) corrected exactly this: the original code omitted <code>S_AD_IS_FORWARD</code> from the gate, so the forward tape-write fired during backward whenever <code>TL == slot</code>, scribbling <code>AD_CUR_VALUE</code> into <code>tape[1]</code> every backward cycle for single-<code>AD_VAR</code> programs.</p>
+<p><strong>Layer 5 — Gradient writeback.</strong> Backward-only. Runs in two passes because the gradient rule (which determines <code>S_AD_LEFT_GRAD_NEW</code> and <code>S_AD_RIGHT_GRAD_NEW</code>) and the parent-tape write (which accumulates those deltas into <code>tape[S_AD_CUR_LEFT]</code> and <code>tape[S_AD_CUR_RIGHT]</code>) cannot share the same weight matrix without a separator: the rule depends on <code>S_AD_CUR_OP</code> and the write depends on the <em>result</em> of the rule. The two-pass solution is structurally identical to the looped attention head pattern. The cursor decrement and the <code>indicator(cursor, 0.0)</code> completion gate also live in Layer 5 (<code>weight_matrices.c §3737-3779</code>), with the dual-input AND pattern from Layer 4 used again to prevent re-opening the cursor gate when the backward flag is cleared.</p>
+<h2 id="4-the-state-vector-d_textmodel--256">4. The state vector (<span class="math inline"><em>d</em><sub>model</sub> = 256</span>)</h2>
+<p>Layout from the enum declaration in <code>weight_matrices.c §136-264</code>:</p>
 <table>
 <colgroup>
 <col style="width: 10%" />
@@ -368,14 +138,12 @@ class="math inline"><em>d</em><sub>model</sub> = 256</span>)</h2>
 <tr>
 <td>0–15</td>
 <td>A</td>
-<td>Persistent:
-<code>PC, TOS, SOS, R2, R3, DEPTH, OUTPUT, HALT, MEM0..MEM3, SP, FP, HAS_OUT, CUR_CLOSURE</code></td>
+<td>Persistent: <code>PC, TOS, SOS, R2, R3, DEPTH, OUTPUT, HALT, MEM0..MEM3, SP, FP, HAS_OUT, CUR_CLOSURE</code></td>
 </tr>
 <tr>
 <td>16–31</td>
 <td>A’</td>
-<td>Per-cycle transients:
-<code>OPCODE, OPERAND, PRODUCT, LOADVAL, STORED0..3, ZOPER, ZPC1, CMP_EQ, CMP_LT, IS_CALL, IS_RET, IS_NATIVE, ABS_DELTA</code></td>
+<td>Per-cycle transients: <code>OPCODE, OPERAND, PRODUCT, LOADVAL, STORED0..3, ZOPER, ZPC1, CMP_EQ, CMP_LT, IS_CALL, IS_RET, IS_NATIVE, ABS_DELTA</code></td>
 </tr>
 <tr>
 <td>32–35</td>
@@ -385,8 +153,7 @@ class="math inline"><em>d</em><sub>model</sub> = 256</span>)</h2>
 <tr>
 <td>36–47</td>
 <td>B</td>
-<td>AD control: <code>TAPE_LEN, CURSOR, MODE</code>, current-node six
-fields, left/right parent values</td>
+<td>AD control: <code>TAPE_LEN, CURSOR, MODE</code>, current-node six fields, left/right parent values</td>
 </tr>
 <tr>
 <td>48–111</td>
@@ -406,46 +173,14 @@ fields, left/right parent values</td>
 <tr>
 <td>208–255</td>
 <td>E’</td>
-<td>Arena operation transients (write/read scratch, vector write window,
-list write window)</td>
+<td>Arena operation transients (write/read scratch, vector write window, list write window)</td>
 </tr>
 </tbody>
 </table>
-<p>The “two state vectors” framing — that <code>x</code> is
-<em>both</em> a VM state and a transformer residual stream — is more
-than a notational trick. Persistent dimensions (Zones A, A_t, B, C, E)
-must survive one forward pass; transient dimensions (A’, D, E’) must be
-zeroed at each cycle. The zeroing is mechanised by Layer 3’s universal
-reset pass at lines 1390-1394: each transient dimension <span
-class="math inline"><em>d</em></span> has its current value <span
-class="math inline"><em>x</em>[<em>d</em>]</span> subtracted off in the
-residual update, so the post-cycle state has those dimensions at zero.
-This is the same “clear with residual” pattern that classical Tracr uses
-(Lindner et al. 2023 §3.2), but applied to a much larger transient slice
-(Eshkol’s per-cycle scratch spans 96 of 256 dimensions).</p>
-<p>The Zone E arena, added when the artifact moved from <span
-class="math inline"><em>d</em><sub>model</sub> = 128</span> to <span
-class="math inline"><em>d</em><sub>model</sub> = 256</span>, is the
-construction that makes <code>cons</code>, <code>car</code>,
-<code>cdr</code>, vector and string reads, and bounded closures into
-matrix operations. Each of 16 cells stores
-<code>[kind, car_value, cdr_value, car_type, cdr_type]</code> (16 × 5 =
-80 dims). The free-list pointer <code>S_ARENA_NEXT</code> (dimension
-208) is a bump allocator: <code>OP_CONS</code> writes into
-<code>state[S_ARENA_NEXT..S_ARENA_NEXT+4]</code> and increments by 5.
-<code>OP_CAR</code>/<code>OP_CDR</code> are content-addressed reads via
-a SCALE-saturated indicator over the cell index in <code>S_TOS</code>.
-The full encoding scheme is the subject of
-<code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md §5</code>.</p>
+<p>The “two state vectors” framing — that <code>x</code> is <em>both</em> a VM state and a transformer residual stream — is more than a notational trick. Persistent dimensions (Zones A, A_t, B, C, E) must survive one forward pass; transient dimensions (A’, D, E’) must be zeroed at each cycle. The zeroing is mechanised by Layer 3’s universal reset pass at lines 1390-1394: each transient dimension <span class="math inline"><em>d</em></span> has its current value <span class="math inline"><em>x</em>[<em>d</em>]</span> subtracted off in the residual update, so the post-cycle state has those dimensions at zero. This is the same “clear with residual” pattern that classical Tracr uses (Lindner et al. 2023 §3.2), but applied to a much larger transient slice (Eshkol’s per-cycle scratch spans 96 of 256 dimensions).</p>
+<p>The Zone E arena, added when the artifact moved from <span class="math inline"><em>d</em><sub>model</sub> = 128</span> to <span class="math inline"><em>d</em><sub>model</sub> = 256</span>, is the construction that makes <code>cons</code>, <code>car</code>, <code>cdr</code>, vector and string reads, and bounded closures into matrix operations. Each of 16 cells stores <code>[kind, car_value, cdr_value, car_type, cdr_type]</code> (16 × 5 = 80 dims). The free-list pointer <code>S_ARENA_NEXT</code> (dimension 208) is a bump allocator: <code>OP_CONS</code> writes into <code>state[S_ARENA_NEXT..S_ARENA_NEXT+4]</code> and increments by 5. <code>OP_CAR</code>/<code>OP_CDR</code> are content-addressed reads via a SCALE-saturated indicator over the cell index in <code>S_TOS</code>. The full encoding scheme is the subject of <code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md §5</code>.</p>
 <h2 id="5-the-83-opcode-isa">5. The 83-opcode ISA</h2>
-<p>The canonical numbering — used by the production C compiler, the
-reference interpreter, the weight constructor, and the qLLM loader — is
-the enum at <code>lib/backend/vm_core.c §5-92</code>
-(<code>OP_NOP=0</code> through <code>OP_VOID=63</code>,
-<code>OP_COUNT=64</code> for the base set) and at
-<code>lib/backend/weight_matrices.c §102-131</code> (the 19-opcode AD
-extension <code>OP_AD_VAR=64</code> through <code>OP_AD_COS=82</code>,
-<code>OP_COUNT=83</code>).</p>
+<p>The canonical numbering — used by the production C compiler, the reference interpreter, the weight constructor, and the qLLM loader — is the enum at <code>lib/backend/vm_core.c §5-92</code> (<code>OP_NOP=0</code> through <code>OP_VOID=63</code>, <code>OP_COUNT=64</code> for the base set) and at <code>lib/backend/weight_matrices.c §102-131</code> (the 19-opcode AD extension <code>OP_AD_VAR=64</code> through <code>OP_AD_COS=82</code>, <code>OP_COUNT=83</code>).</p>
 <p>The opcode families and the count per family:</p>
 <table>
 <colgroup>
@@ -509,8 +244,7 @@ extension <code>OP_AD_VAR=64</code> through <code>OP_AD_COS=82</code>,
 <td>I/O &amp; halt</td>
 <td>35–37</td>
 <td>3</td>
-<td><code>PRINT, HALT, NATIVE_CALL</code> ← <em>only external
-boundary</em></td>
+<td><code>PRINT, HALT, NATIVE_CALL</code> ← <em>only external boundary</em></td>
 </tr>
 <tr>
 <td>Closure storage</td>
@@ -610,34 +344,12 @@ boundary</em></td>
 </tr>
 </tbody>
 </table>
-<p>Of these 83, the current artifact weight-encodes 82.
-<code>opcode-coverage.json</code> from
-<code>artifacts/paper/outputs/</code> lists exactly opcodes <span
-class="math inline">{0, 1, …, 36, 38, 39, …, 82}</span> as
-weight-implemented and zero opcodes as native-delegated; the missing
-index is 37, <code>OP_NATIVE_CALL</code>. This is the deliberate
-external boundary for host runtime services (the Eshkol runtime uses
-native IDs in the 300+ range for cons, display, tensor ops, the
-consciousness engine, geometric manifolds, and AD subsystem entry
-points; see <code>lib/backend/eshkol_compiler.c</code> and the
-<code>vm_native.c</code> dispatcher).</p>
+<p>Of these 83, the current artifact weight-encodes 82. <code>opcode-coverage.json</code> from <code>artifacts/paper/outputs/</code> lists exactly opcodes <span class="math inline">{0, 1, …, 36, 38, 39, …, 82}</span> as weight-implemented and zero opcodes as native-delegated; the missing index is 37, <code>OP_NATIVE_CALL</code>. This is the deliberate external boundary for host runtime services (the Eshkol runtime uses native IDs in the 300+ range for cons, display, tensor ops, the consciousness engine, geometric manifolds, and AD subsystem entry points; see <code>lib/backend/eshkol_compiler.c</code> and the <code>vm_native.c</code> dispatcher).</p>
 <h2 id="6-two-tiers-of-execution">6. Two tiers of execution</h2>
 <h3 id="61-tier-1--weight-encoded">6.1 Tier 1 — Weight-encoded</h3>
-<p>The arithmetic family, comparison family, control flow, type
-predicates, stack housekeeping, arena pair ops, bounded vector ops,
-bounded string reads, bounded closures, bounded escape continuations,
-the forward AD tape (record + unary saved-derivative table), and the
-full reverse-mode walk are computed by matrix multiplication alone.
-“Bounded” means: live-cell count ≤ 16, vector/string inline length ≤ 4,
-tape length ≤ 8, MEM register count = 4, escape-continuation arena cells
-= 4, integer divisor ≤ 16, modulus ∈ {3,4}, AD trig input ∈ [-4, 4], AD
-power base ≤ 8, exponent ≤ 4. The artifact’s verifier suite is
-constructed within these bounds and exercises every weight-implemented
-opcode.</p>
-<h3 id="62-tier-2--native-dispatch-boundary">6.2 Tier 2 — Native
-dispatch boundary</h3>
-<p><code>OP_NATIVE_CALL</code>, opcode 37, takes a native function ID as
-its operand. The Eshkol runtime maps these IDs to host C functions:</p>
+<p>The arithmetic family, comparison family, control flow, type predicates, stack housekeeping, arena pair ops, bounded vector ops, bounded string reads, bounded closures, bounded escape continuations, the forward AD tape (record + unary saved-derivative table), and the full reverse-mode walk are computed by matrix multiplication alone. “Bounded” means: live-cell count ≤ 16, vector/string inline length ≤ 4, tape length ≤ 8, MEM register count = 4, escape-continuation arena cells = 4, integer divisor ≤ 16, modulus ∈ {3,4}, AD trig input ∈ [-4, 4], AD power base ≤ 8, exponent ≤ 4. The artifact’s verifier suite is constructed within these bounds and exercises every weight-implemented opcode.</p>
+<h3 id="62-tier-2--native-dispatch-boundary">6.2 Tier 2 — Native dispatch boundary</h3>
+<p><code>OP_NATIVE_CALL</code>, opcode 37, takes a native function ID as its operand. The Eshkol runtime maps these IDs to host C functions:</p>
 <table>
 <colgroup>
 <col style="width: 14%" />
@@ -676,70 +388,25 @@ its operand. The Eshkol runtime maps these IDs to host C functions:</p>
 </tr>
 </tbody>
 </table>
-<p>These are <em>not</em> counted as failures of the
-constructive-equivalence claim. The claim is for the canonical VM/AD
-semantics, not the host runtime: <code>OP_NATIVE_CALL</code> carries an
-<em>opaque integer</em>, and the transformer correctly threads that
-integer through PC, operand fields, and the native-dispatch postprocess
-that runs in C. From the transformer’s perspective
-<code>OP_NATIVE_CALL</code> is a non-mutating opcode whose effect on the
-bounded state vector is determined entirely by the host runtime — the
-same way a real CPU treats a syscall.</p>
+<p>These are <em>not</em> counted as failures of the constructive-equivalence claim. The claim is for the canonical VM/AD semantics, not the host runtime: <code>OP_NATIVE_CALL</code> carries an <em>opaque integer</em>, and the transformer correctly threads that integer through PC, operand fields, and the native-dispatch postprocess that runs in C. From the transformer’s perspective <code>OP_NATIVE_CALL</code> is a non-mutating opcode whose effect on the bounded state vector is determined entirely by the host runtime — the same way a real CPU treats a syscall.</p>
 <h2 id="7-three-way-verification">7. Three-way verification</h2>
-<p>The verification harness lives in
-<code>lib/backend/weight_matrices.c</code> and is invoked by
-<code>scripts/paper/run_paper_suite.sh</code>. Three independent runners
-execute every program:</p>
+<p>The verification harness lives in <code>lib/backend/weight_matrices.c</code> and is invoked by <code>scripts/paper/run_paper_suite.sh</code>. Three independent runners execute every program:</p>
 <ol type="1">
-<li><strong><code>run_reference</code></strong>
-(<code>weight_matrices.c §execute_step</code> at line 411 and
-<code>run_reference</code> near line 1170): a direct C
-<code>switch</code> over the 83 opcodes, the same one used by the
-production VM.</li>
-<li><strong><code>run_simulated</code></strong> (around line 2570): C
-functions (<code>layer0_attention</code>, <code>layer1_ffn</code>,
-<code>layer2_ffn</code>, <code>layer3_ffn</code>,
-<code>layer4_ffn</code>, <code>layer5_ffn</code> for backward) that
-mirror what each weight-matrix layer computes, but execute it as plain
-arithmetic rather than going through matrix multiplication. Used as a
-diagnostic to isolate whether a divergence is in the <em>logic</em> of
-the layer functions or in the <em>encoding</em> of those logic functions
-into weights.</li>
-<li><strong><code>run_with_weights</code></strong> (line 5347,
-<code>forward_with_weights</code>): the real <span
-class="math inline"><em>W</em> ⋅ <em>x</em> + <em>b</em></span> matrix
-forward pass through the <code>InterpreterWeights</code> struct. Calls
-<code>apply_ffn_layer</code> and the Layer-0 attention block.</li>
+<li><strong><code>run_reference</code></strong> (<code>weight_matrices.c §execute_step</code> at line 411 and <code>run_reference</code> near line 1170): a direct C <code>switch</code> over the 83 opcodes, the same one used by the production VM.</li>
+<li><strong><code>run_simulated</code></strong> (around line 2570): C functions (<code>layer0_attention</code>, <code>layer1_ffn</code>, <code>layer2_ffn</code>, <code>layer3_ffn</code>, <code>layer4_ffn</code>, <code>layer5_ffn</code> for backward) that mirror what each weight-matrix layer computes, but execute it as plain arithmetic rather than going through matrix multiplication. Used as a diagnostic to isolate whether a divergence is in the <em>logic</em> of the layer functions or in the <em>encoding</em> of those logic functions into weights.</li>
+<li><strong><code>run_with_weights</code></strong> (line 5347, <code>forward_with_weights</code>): the real <span class="math inline"><em>W</em> ⋅ <em>x</em> + <em>b</em></span> matrix forward pass through the <code>InterpreterWeights</code> struct. Calls <code>apply_ffn_layer</code> and the Layer-0 attention block.</li>
 </ol>
-<p>For each test program, <code>test()</code> (line 5487) executes all
-three runners from a freshly reset state and compares the printed output
-to a hand- coded expectation. The pass count after a clean run is
-<strong>126 inline tests, 0 failed</strong> (from
-<code>scripts/paper/run_paper_suite.sh</code> log: see
-<code>build-paper.suite_trace.log</code> line 174).</p>
-<p>For per-step state agreement, the same binary writes JSONL trace
-files via <code>--trace-vm</code> and <code>--trace-transformer</code>
-flags. <code>compare_traces.py</code> (at
-<code>scripts/paper/compare_traces.py</code>) groups records by
-<code>(program_id, program, step)</code>, compares the eight fields
-<code>{pc, sp, tos, sos, registers, memory, tape, flags}</code>
-bit-identically for each weight-implemented step, and reports two
-metrics:</p>
+<p>For each test program, <code>test()</code> (line 5487) executes all three runners from a freshly reset state and compares the printed output to a hand- coded expectation. The pass count after a clean run is <strong>126 inline tests, 0 failed</strong> (from <code>scripts/paper/run_paper_suite.sh</code> log: see <code>build-paper.suite_trace.log</code> line 174).</p>
+<p>For per-step state agreement, the same binary writes JSONL trace files via <code>--trace-vm</code> and <code>--trace-transformer</code> flags. <code>compare_traces.py</code> (at <code>scripts/paper/compare_traces.py</code>) groups records by <code>(program_id, program, step)</code>, compares the eight fields <code>{pc, sp, tos, sos, registers, memory, tape, flags}</code> bit-identically for each weight-implemented step, and reports two metrics:</p>
 <pre class="json"><code>{
   &quot;status&quot;: &quot;ok&quot;,
   &quot;total_programs&quot;: 123,
   &quot;output_agreeing_programs&quot;: 123,
   &quot;fully_agreeing_programs&quot;: 123
 }</code></pre>
-<p>The 123-program traced suite is a subset of the 126 inline tests; the
-three excluded are inline-only diagnostics that do not produce a
-traceable program sequence.</p>
+<p>The 123-program traced suite is a subset of the 126 inline tests; the three excluded are inline-only diagnostics that do not produce a traceable program sequence.</p>
 <h2 id="8-qlmw-binary-format">8. QLMW binary format</h2>
-<p>After the verifier passes, the same binary serialises the
-<code>InterpreterWeights</code> struct to the path in
-<code>ESHKOL_WEIGHTS_OUT</code> via <code>export_weights_binary</code>
-(<code>weight_matrices.c §5462-5478</code>). The on-disk layout is
-fixed-endian little-endian, no padding:</p>
+<p>After the verifier passes, the same binary serialises the <code>InterpreterWeights</code> struct to the path in <code>ESHKOL_WEIGHTS_OUT</code> via <code>export_weights_binary</code> (<code>weight_matrices.c §5462-5478</code>). The on-disk layout is fixed-endian little-endian, no padding:</p>
 <pre class="text"><code>offset  bytes  field
   0       4   magic     = 0x514C4D57   (&quot;QLMW&quot;, little-endian &quot;WMLQ&quot;)
   4       4   version   = 3
@@ -749,162 +416,54 @@ fixed-endian little-endian, no padding:</p>
  20       4   n_heads   = 16
  24       4   head_dim  = 2
  28       …   raw InterpreterWeights struct (12,220,422 × 4 bytes + 6×4)</code></pre>
-<p>The total file size is <span
-class="math inline">28 + 6 × 2 036 736 × 4 + 6 × 4 = 28 + 48 881 664 + 24 = 48 881 716</span>
-bytes (verified by <code>gen_paper_tables.py §read_qlmw_header</code> at
-line 27 and the <code>stat.st_size - 28</code> derivation at line
-46).</p>
-<p>The QLMW format is consumed by <code>qllm_interpreter.c</code> (which
-loads the weights into a runtime tensor engine for
-Metal/CUDA-accelerated execution; see
-<code>qllm_interpreter.c §207</code> for the header parse) and by
-<code>qllm_backward.c</code> for training-mode use (QLMW v4 extends the
-file with optimiser state; see <code>qllm_backward.c §591-593</code>).
-Version 3 is the inference-only weight-export format used by the paper
-artifact.</p>
-<p>ESKB (<code>lib/backend/eskb_format.h</code>) is the
-<em>bytecode</em> binary container, not the weight container — magic
-<code>0x45534B42</code> (“ESKB”), version 2, section-based with CRC32
-integrity check. ESKB feeds the bytecode <em>compiler</em> path
-(<code>eshkol-run -B program.eskb</code>) and is independent of the QLMW
-weight artifact. The two formats coexist because the transformer needs
-both: ESKB to load the program tokens into Layer 0’s attention buffer,
-QLMW to know what the layers compute.</p>
-<h2 id="9-why-a-constructive-proof-matters">9. Why a constructive proof
-matters</h2>
-<p>There is a long-running tension in machine learning between
-<em>existence</em> and <em>construction</em>. The universal
-approximation theorem (Cybenko 1989, Hornik 1991) is an existence proof
-— for any continuous function, there exists a wide-enough network that
-approximates it. Turing-completeness of recurrent networks (Siegelmann
-&amp; Sontag 1995) and of transformers (Pérez et al. 2021, Wei et
-al. 2022) are existence proofs — for any computable function, there
-exist weights that compute it. None of these constructions are usable:
-the weights are either free variables in a proof, asymptotic in a width
-parameter, or known only up to a fitting procedure.</p>
-<p>A constructive equivalence is qualitatively different. It says:
-<em>here is a network, here is a program, here is the trace; you can run
-it.</em> The closest precedents are:</p>
+<p>The total file size is <span class="math inline">28 + 6 × 2 036 736 × 4 + 6 × 4 = 28 + 48 881 664 + 24 = 48 881 716</span> bytes (verified by <code>gen_paper_tables.py §read_qlmw_header</code> at line 27 and the <code>stat.st_size - 28</code> derivation at line 46).</p>
+<p>The QLMW format is consumed by <code>qllm_interpreter.c</code> (which loads the weights into a runtime tensor engine for Metal/CUDA-accelerated execution; see <code>qllm_interpreter.c §207</code> for the header parse) and by <code>qllm_backward.c</code> for training-mode use (QLMW v4 extends the file with optimiser state; see <code>qllm_backward.c §591-593</code>). Version 3 is the inference-only weight-export format used by the paper artifact.</p>
+<p>ESKB (<code>lib/backend/eskb_format.h</code>) is the <em>bytecode</em> binary container, not the weight container — magic <code>0x45534B42</code> (“ESKB”), version 2, section-based with CRC32 integrity check. ESKB feeds the bytecode <em>compiler</em> path (<code>eshkol-run -B program.eskb</code>) and is independent of the QLMW weight artifact. The two formats coexist because the transformer needs both: ESKB to load the program tokens into Layer 0’s attention buffer, QLMW to know what the layers compute.</p>
+<h2 id="9-why-a-constructive-proof-matters">9. Why a constructive proof matters</h2>
+<p>There is a long-running tension in machine learning between <em>existence</em> and <em>construction</em>. The universal approximation theorem (Cybenko 1989, Hornik 1991) is an existence proof — for any continuous function, there exists a wide-enough network that approximates it. Turing-completeness of recurrent networks (Siegelmann &amp; Sontag 1995) and of transformers (Pérez et al. 2021, Wei et al. 2022) are existence proofs — for any computable function, there exist weights that compute it. None of these constructions are usable: the weights are either free variables in a proof, asymptotic in a width parameter, or known only up to a fitting procedure.</p>
+<p>A constructive equivalence is qualitatively different. It says: <em>here is a network, here is a program, here is the trace; you can run it.</em> The closest precedents are:</p>
 <ul>
-<li><strong>Differentiable Forth</strong> (Bošnjak et al. 2017): a Forth
-interpreter whose primitive opcodes are encoded as differentiable
-subprograms with slot-and-sketch holes for the learned bits. The
-construction is modular, but the parameters in the holes are still
-trained.</li>
-<li><strong>RASP</strong> (Weiss et al. 2021): a language whose
-<code>select</code>/<code>aggregate</code> primitives map onto attention
-heads. Programs in RASP are guaranteed-compilable into transformer
-layers, but the compiler produces an architecture, not a frozen weight
-tensor.</li>
-<li><strong>Tracr</strong> (Lindner et al. 2023): the RASP-to-weights
-compiler. Programs in a domain-specific subset of RASP become explicit
-transformer weights — bit-identical in float32. Tracr is the direct
-technical ancestor of the SDNC: it proved that there exists a pipeline
-from program semantics to concrete weights with no intervening
-optimiser.</li>
-<li><strong>Looped Transformers</strong> (Giannou et al. 2023): a
-13-layer fixed-weight transformer that, run in a loop, emulates a small
-instruction-set computer including memory load/store. This is the
-closest existing analogue to the SDNC, but Giannou et al. work with a
-~5-opcode ISA and 4-bit operands.</li>
+<li><strong>Differentiable Forth</strong> (Bošnjak et al. 2017): a Forth interpreter whose primitive opcodes are encoded as differentiable subprograms with slot-and-sketch holes for the learned bits. The construction is modular, but the parameters in the holes are still trained.</li>
+<li><strong>RASP</strong> (Weiss et al. 2021): a language whose <code>select</code>/<code>aggregate</code> primitives map onto attention heads. Programs in RASP are guaranteed-compilable into transformer layers, but the compiler produces an architecture, not a frozen weight tensor.</li>
+<li><strong>Tracr</strong> (Lindner et al. 2023): the RASP-to-weights compiler. Programs in a domain-specific subset of RASP become explicit transformer weights — bit-identical in float32. Tracr is the direct technical ancestor of the SDNC: it proved that there exists a pipeline from program semantics to concrete weights with no intervening optimiser.</li>
+<li><strong>Looped Transformers</strong> (Giannou et al. 2023): a 13-layer fixed-weight transformer that, run in a loop, emulates a small instruction-set computer including memory load/store. This is the closest existing analogue to the SDNC, but Giannou et al. work with a ~5-opcode ISA and 4-bit operands.</li>
 </ul>
-<p>The SDNC pushes the construction to (a) a <em>production</em> ISA
-with 83 opcodes, (b) reverse-mode AD as an in-network capability, and
-(c) bit- identical agreement on the full per-step state vector rather
-than just on output. The bibliography in
-<code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md §10</code>
-records the papers consulted for each design decision.</p>
-<h2 id="10-bibliography-cached-locally">10. Bibliography (cached
-locally)</h2>
-<p>Each entry below corresponds to a paper consulted for a specific
-architectural decision. The bibliography file
-<code>research/vm-transformer-bib.bib</code> and the cached PDF store
-under <code>research/papers/content/objects/&lt;sha&gt;/</code> are
-referenced from
-<code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md §10</code>;
-both are gitignored (≈47 MB of cached PDF) but are reconstructible by
-re-fetching via the listed DOIs.</p>
-<p>Note - unverified: the <code>research/</code> tree was not located in
-the current working copy (the directory does not exist at the repository
-root). The 33-paper cache and bib file are referenced by
-<code>VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md §10</code> and by the
-<code>project_vm_transformer_memory_design.md</code> memory entry, but
-the directory may live in the <code>feature/vm-transformer-memory</code>
-worktree referenced at the top of that document rather than on master. A
-future editor should locate the worktree and re-anchor the
-citations.</p>
+<p>The SDNC pushes the construction to (a) a <em>production</em> ISA with 83 opcodes, (b) reverse-mode AD as an in-network capability, and (c) bit- identical agreement on the full per-step state vector rather than just on output. The bibliography in <code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md §10</code> records the papers consulted for each design decision.</p>
+<h2 id="10-bibliography-cached-locally">10. Bibliography (cached locally)</h2>
+<p>Each entry below corresponds to a paper consulted for a specific architectural decision. The bibliography file <code>research/vm-transformer-bib.bib</code> and the cached PDF store under <code>research/papers/content/objects/&lt;sha&gt;/</code> are referenced from <code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md §10</code>; both are gitignored (≈47 MB of cached PDF) but are reconstructible by re-fetching via the listed DOIs.</p>
+<p>Note - unverified: the <code>research/</code> tree was not located in the current working copy (the directory does not exist at the repository root). The 33-paper cache and bib file are referenced by <code>VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md §10</code> and by the <code>project_vm_transformer_memory_design.md</code> memory entry, but the directory may live in the <code>feature/vm-transformer-memory</code> worktree referenced at the top of that document rather than on master. A future editor should locate the worktree and re-anchor the citations.</p>
 <p>The papers most directly cited by the construction:</p>
 <ul>
-<li>Graves, Wayne &amp; Danihelka, <em>Neural Turing Machines</em>,
-2014. Content + location-addressable read/write heads (Layer 0
-attention, Zone E arena reads).</li>
-<li>Joulin &amp; Mikolov, <em>Inferring Algorithmic Patterns with
-Stack-Augmented Recurrent Networks</em>, 2015. Differentiable push/pop
-scalars (the bump-allocator pattern in Zone E).</li>
-<li>Grefenstette et al., <em>Learning to Transduce with Unbounded
-Memory</em>,
+<li>Graves, Wayne &amp; Danihelka, <em>Neural Turing Machines</em>, 2014. Content + location-addressable read/write heads (Layer 0 attention, Zone E arena reads).</li>
+<li>Joulin &amp; Mikolov, <em>Inferring Algorithmic Patterns with Stack-Augmented Recurrent Networks</em>, 2015. Differentiable push/pop scalars (the bump-allocator pattern in Zone E).</li>
+<li>Grefenstette et al., <em>Learning to Transduce with Unbounded Memory</em>,
 <ol start="2015" type="1">
 <li>Bit-stable scalar stack dynamics.</li>
 </ol></li>
-<li>Bošnjak et al., <em>Programming with a Differentiable Forth
-Interpreter</em>, 2017. Slot-and-sketch construction model; the
-<em>every opcode is a fixed function on the state</em> mental model used
-in <code>weight_matrices.c</code>.</li>
-<li>Dehghani et al., <em>Universal Transformer</em>, 2018. The
-shared-block iteration that lets Layer 5 run twice per backward
-cycle.</li>
-<li>Weiss, Goldberg &amp; Yahav, <em>Thinking Like Transformers</em>
-(RASP), 2021. <code>select</code> + <code>aggregate</code> map directly
-to attention heads; the type predicates and arena read attention are
-RASP aggregates.</li>
-<li>Lindner et al., <em>Tracr: Compiled Transformers as a Laboratory for
-Interpretability</em>, 2023. The direct ancestor compilation
-pipeline.</li>
-<li>Giannou et al., <em>Looped Transformers as Programmable
-Computers</em>,
+<li>Bošnjak et al., <em>Programming with a Differentiable Forth Interpreter</em>, 2017. Slot-and-sketch construction model; the <em>every opcode is a fixed function on the state</em> mental model used in <code>weight_matrices.c</code>.</li>
+<li>Dehghani et al., <em>Universal Transformer</em>, 2018. The shared-block iteration that lets Layer 5 run twice per backward cycle.</li>
+<li>Weiss, Goldberg &amp; Yahav, <em>Thinking Like Transformers</em> (RASP), 2021. <code>select</code> + <code>aggregate</code> map directly to attention heads; the type predicates and arena read attention are RASP aggregates.</li>
+<li>Lindner et al., <em>Tracr: Compiled Transformers as a Laboratory for Interpretability</em>, 2023. The direct ancestor compilation pipeline.</li>
+<li>Giannou et al., <em>Looped Transformers as Programmable Computers</em>,
 <ol start="2023" type="1">
 <li>Precedent for the 6→6+looped-Layer-5 schedule.</li>
 </ol></li>
-<li>Liu et al., <em>Transformers Learn Shortcuts to Automata</em>, 2022.
-Krohn-Rhodes decomposition justification for O(1) dispatch depth.</li>
+<li>Liu et al., <em>Transformers Learn Shortcuts to Automata</em>, 2022. Krohn-Rhodes decomposition justification for O(1) dispatch depth.</li>
 </ul>
-<h2 id="11-what-this-architecture-does-not-claim">11. What this
-architecture does <em>not</em> claim</h2>
+<h2 id="11-what-this-architecture-does-not-claim">11. What this architecture does <em>not</em> claim</h2>
 <ul>
-<li>It does <strong>not</strong> claim Turing-completeness for arbitrary
-unbounded programs. The arena bank caps live-cell count at 16; the AD
-tape caps at 8 nodes; the bytecode buffer caps at MAX_PROG instructions
-in the simulator and at the static buffer in the matrix forward path.
-Programs that exceed these bounds fall back to the production Eshkol VM,
-which has no bound but is not the SDNC.</li>
-<li>It does <strong>not</strong> claim that the transformer accelerates
-execution. The matrix forward pass is roughly <span
-class="math inline">10<sup>3</sup>×</span> slower than the C switch
-dispatcher per opcode cycle; the point is constructive equivalence, not
-throughput.</li>
-<li>It does <strong>not</strong> claim that <code>OP_NATIVE_CALL</code>
-is itself encoded as weights. Host runtime calls remain runtime
-calls.</li>
-<li>It does <strong>not</strong> claim bit-identical agreement on hosts
-with non-IEEE float32, non-FTZ denormal handling, or compilers that
-reorder floating point. The artifact’s CI matrix is x86_64 Linux with
-glibc and macOS arm64 with libSystem; both pass the SHA-256
-pinning.</li>
+<li>It does <strong>not</strong> claim Turing-completeness for arbitrary unbounded programs. The arena bank caps live-cell count at 16; the AD tape caps at 8 nodes; the bytecode buffer caps at MAX_PROG instructions in the simulator and at the static buffer in the matrix forward path. Programs that exceed these bounds fall back to the production Eshkol VM, which has no bound but is not the SDNC.</li>
+<li>It does <strong>not</strong> claim that the transformer accelerates execution. The matrix forward pass is roughly <span class="math inline">10<sup>3</sup>×</span> slower than the C switch dispatcher per opcode cycle; the point is constructive equivalence, not throughput.</li>
+<li>It does <strong>not</strong> claim that <code>OP_NATIVE_CALL</code> is itself encoded as weights. Host runtime calls remain runtime calls.</li>
+<li>It does <strong>not</strong> claim bit-identical agreement on hosts with non-IEEE float32, non-FTZ denormal handling, or compilers that reorder floating point. The artifact’s CI matrix is x86_64 Linux with glibc and macOS arm64 with libSystem; both pass the SHA-256 pinning.</li>
 </ul>
 <h2 id="12-cross-references">12. Cross-references</h2>
 <ul>
-<li><code>docs/SDNC.md</code> — the readable entrypoint to the paper
-artifact; what the SDNC is, how to reproduce it, and the bit-identity
-bug history.</li>
-<li><code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md</code> —
-the per-opcode-class encoding spec; what each of the 82 weight-encoded
-opcodes computes inside the gated FFN.</li>
-<li><code>docs/breakdown/BYTECODE_VM.md</code> — the ISA reference, with
-each opcode’s small-step semantics.</li>
-<li><code>docs/breakdown/AUTODIFF.md</code> — the reverse-mode AD design
-that the 19 AD opcodes implement.</li>
-<li><code>docs/tutorials/03_WEIGHT_MATRIX_TRANSFORMER.md</code> — a
-shorter, user-facing version of this document.</li>
+<li><code>docs/SDNC.md</code> — the readable entrypoint to the paper artifact; what the SDNC is, how to reproduce it, and the bit-identity bug history.</li>
+<li><code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md</code> — the per-opcode-class encoding spec; what each of the 82 weight-encoded opcodes computes inside the gated FFN.</li>
+<li><code>docs/breakdown/BYTECODE_VM.md</code> — the ISA reference, with each opcode’s small-step semantics.</li>
+<li><code>docs/breakdown/AUTODIFF.md</code> — the reverse-mode AD design that the 19 AD opcodes implement.</li>
+<li><code>docs/tutorials/03_WEIGHT_MATRIX_TRANSFORMER.md</code> — a shorter, user-facing version of this document.</li>
 </ul>
 <h2 id="13-source-files">13. Source files</h2>
 <table>
@@ -924,8 +483,7 @@ shorter, user-facing version of this document.</li>
 <tr>
 <td><code>lib/backend/vm_core.c</code></td>
 <td style="text-align: right;">1,447</td>
-<td>Canonical opcode enum, value representation, <code>MEM_SIZE</code>,
-etc.</td>
+<td>Canonical opcode enum, value representation, <code>MEM_SIZE</code>, etc.</td>
 </tr>
 <tr>
 <td><code>lib/backend/vm_run.c</code></td>

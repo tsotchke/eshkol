@@ -1,15 +1,8 @@
-<h1 id="project-self-improving-programs-and-machine-reasoning">Project:
-Self-Improving Programs and Machine Reasoning</h1>
-<p>Two programs that improve themselves: one through gradient descent
-(differentiable self-optimisation), one through active inference
-(belief-driven reasoning). Both demonstrate capabilities unique to
-Eshkol.</p>
+<h1 id="project-self-improving-programs-and-machine-reasoning">Project: Self-Improving Programs and Machine Reasoning</h1>
+<p>Two programs that improve themselves: one through gradient descent (differentiable self-optimisation), one through active inference (belief-driven reasoning). Both demonstrate capabilities unique to Eshkol.</p>
 <hr />
-<h2 id="program-1-a-function-that-learns-itself">Program 1: A Function
-That Learns Itself</h2>
-<p>This program starts with a bad approximation of <code>sin(x)</code>
-and uses autodiff to teach itself to be accurate. The parameters are
-part of the program — gradient descent literally rewrites them.</p>
+<h2 id="program-1-a-function-that-learns-itself">Program 1: A Function That Learns Itself</h2>
+<p>This program starts with a bad approximation of <code>sin(x)</code> and uses autodiff to teach itself to be accurate. The parameters are part of the program — gradient descent literally rewrites them.</p>
 <!-- doc-example: known-defect SW-183: the loss falls from 13.16 to 0.0112; under `eshkol-run -r` the gradient through the mapped point-error closure is 0 and the coefficients never change -->
 <pre class="scheme"><code>;; ═══════════════════════════════════════════════════════
 ;; Self-Improving Function Approximator
@@ -91,25 +84,12 @@ part of the program — gradient descent literally rewrites them.</p>
     (display &quot;  sin=&quot;) (display (sin x))
     (newline))
   xs)</code></pre>
-<h3 id="what-makes-this-self-improving">What Makes This
-Self-Improving</h3>
-<p>The program doesn’t just COMPUTE — it modifies its own behaviour. The
-coefficients <code>c1, c2, c3</code> are the program’s knowledge, and
-<code>(gradient loss-v (vector c1 c2 c3))</code> tells the program
-exactly how to change that knowledge to reduce error. After training,
-the <code>model</code> function produces different outputs than before —
-it has literally taught itself.</p>
-<p>In most languages, you’d need a framework for this. In Eshkol, it’s
-just <code>gradient</code> — the compiler differentiates through your
-code.</p>
+<h3 id="what-makes-this-self-improving">What Makes This Self-Improving</h3>
+<p>The program doesn’t just COMPUTE — it modifies its own behaviour. The coefficients <code>c1, c2, c3</code> are the program’s knowledge, and <code>(gradient loss-v (vector c1 c2 c3))</code> tells the program exactly how to change that knowledge to reduce error. After training, the <code>model</code> function produces different outputs than before — it has literally taught itself.</p>
+<p>In most languages, you’d need a framework for this. In Eshkol, it’s just <code>gradient</code> — the compiler differentiates through your code.</p>
 <hr />
-<h2 id="program-2-a-reasoning-agent-with-active-inference">Program 2: A
-Reasoning Agent with Active Inference</h2>
-<p>This program models an agent that: 1. Believes something about the
-world (prior beliefs in a factor graph) 2. Observes evidence 3. Updates
-its beliefs (belief propagation) 4. Measures its surprise (free energy)
-5. Adapts its model to reduce surprise (learning) 6. Shows its reasoning
-at each step</p>
+<h2 id="program-2-a-reasoning-agent-with-active-inference">Program 2: A Reasoning Agent with Active Inference</h2>
+<p>This program models an agent that: 1. Believes something about the world (prior beliefs in a factor graph) 2. Observes evidence 3. Updates its beliefs (belief propagation) 4. Measures its surprise (free energy) 5. Adapts its model to reduce surprise (learning) 6. Shows its reasoning at each step</p>
 <pre class="scheme"><code>;; ═══════════════════════════════════════════════════════
 ;; Active Inference Agent — A Thinking Process
 ;;
@@ -192,47 +172,23 @@ at each step</p>
 (newline) (newline)
 
 (display &quot;=== Reasoning complete ===&quot;) (newline)</code></pre>
-<h3 id="the-thinking-process-explained">The Thinking Process
-Explained</h3>
-<p>This isn’t just a classifier — it’s an agent that
-<strong>reasons</strong>:</p>
+<h3 id="the-thinking-process-explained">The Thinking Process Explained</h3>
+<p>This isn’t just a classifier — it’s an agent that <strong>reasons</strong>:</p>
 <ol type="1">
-<li><strong>Prior beliefs</strong> → the agent starts uncertain. Free
-energy is moderate.</li>
-<li><strong>Evidence integration</strong> → wet ground shifts beliefs
-toward rain. Free energy drops as the model better explains the
-evidence.</li>
-<li><strong>Converging evidence</strong> → umbrellas confirm rain. Free
-energy drops further. The agent becomes confident.</li>
-<li><strong>Decision under uncertainty</strong> → expected free energy
-predicts future surprise. High EFE means “this action leads to states my
-model can’t predict well” → the agent acts to minimise future
-surprise.</li>
+<li><strong>Prior beliefs</strong> → the agent starts uncertain. Free energy is moderate.</li>
+<li><strong>Evidence integration</strong> → wet ground shifts beliefs toward rain. Free energy drops as the model better explains the evidence.</li>
+<li><strong>Converging evidence</strong> → umbrellas confirm rain. Free energy drops further. The agent becomes confident.</li>
+<li><strong>Decision under uncertainty</strong> → expected free energy predicts future surprise. High EFE means “this action leads to states my model can’t predict well” → the agent acts to minimise future surprise.</li>
 </ol>
-<p>This is the Free Energy Principle: the agent’s “thinking” is the
-process of updating a generative model to minimise the divergence
-between predictions and observations.</p>
+<p>This is the Free Energy Principle: the agent’s “thinking” is the process of updating a generative model to minimise the divergence between predictions and observations.</p>
 <hr />
 <h2 id="why-this-matters">Why This Matters</h2>
-<h3 id="self-improving-programs-are-possible-because">Self-improving
-programs are possible because:</h3>
+<h3 id="self-improving-programs-are-possible-because">Self-improving programs are possible because:</h3>
 <ol type="1">
-<li><p><strong>Autodiff makes programs differentiable</strong> —
-gradients flow through any computation, so a program can ask “how should
-I change my parameters to do better?” and get an exact answer.</p></li>
-<li><p><strong>The consciousness engine makes programs that
-reason</strong> — factor graphs model uncertainty, belief propagation
-integrates evidence, free energy quantifies surprise, and CPT updates
-enable learning.</p></li>
-<li><p><strong>The weight matrix transformer takes this further</strong>
-— Eshkol programs literally ARE neural network weights. Optimising the
-weights optimises the program. A gradient step on the transformer
-creates a slightly different interpreter — one that might execute
-programs faster or more accurately.</p></li>
+<li><p><strong>Autodiff makes programs differentiable</strong> — gradients flow through any computation, so a program can ask “how should I change my parameters to do better?” and get an exact answer.</p></li>
+<li><p><strong>The consciousness engine makes programs that reason</strong> — factor graphs model uncertainty, belief propagation integrates evidence, free energy quantifies surprise, and CPT updates enable learning.</p></li>
+<li><p><strong>The weight matrix transformer takes this further</strong> — Eshkol programs literally ARE neural network weights. Optimising the weights optimises the program. A gradient step on the transformer creates a slightly different interpreter — one that might execute programs faster or more accurately.</p></li>
 </ol>
-<p>These three capabilities — differentiable execution, probabilistic
-reasoning, and programs-as-weights — are the foundation for machine
-intelligence that improves itself.</p>
+<p>These three capabilities — differentiable execution, probabilistic reasoning, and programs-as-weights — are the foundation for machine intelligence that improves itself.</p>
 <hr />
-<p><em>This is Tutorial 26 in the <a href="/tutorials#page=tutorials_index" data-url="/content/tutorials_index.html">Eshkol Tutorial
-Series</a>.</em></p>
+<p><em>This is Tutorial 26 in the <a href="/tutorials#page=tutorials_index" data-url="/content/tutorials_index.html">Eshkol Tutorial Series</a>.</em></p>

@@ -1,7 +1,5 @@
-<h1 id="tutorial-17-functional-programming-patterns">Tutorial 17:
-Functional Programming Patterns</h1>
-<p>Eshkol is a functional-first language. This tutorial covers closures,
-higher-order patterns, composition, and currying.</p>
+<h1 id="tutorial-17-functional-programming-patterns">Tutorial 17: Functional Programming Patterns</h1>
+<p>Eshkol is a functional-first language. This tutorial covers closures, higher-order patterns, composition, and currying.</p>
 <hr />
 <h2 id="closures">Closures</h2>
 <p>A closure captures variables from its enclosing scope:</p>
@@ -76,8 +74,7 @@ higher-order patterns, composition, and currying.</p>
         (+ (fib (- n 1)) (fib (- n 2)))))))
 
 (display (fib 40))  ;; instant (memoised)</code></pre>
-<h3 id="church-encoding-functions-all-the-way-down">Church encoding
-(functions all the way down)</h3>
+<h3 id="church-encoding-functions-all-the-way-down">Church encoding (functions all the way down)</h3>
 <pre class="scheme"><code>;; Booleans as functions
 (define TRUE (lambda (t f) t))
 (define FALSE (lambda (t f) f))
@@ -86,8 +83,7 @@ higher-order patterns, composition, and currying.</p>
 (display (IF TRUE &quot;yes&quot; &quot;no&quot;))   ;; =&gt; yes
 (display (IF FALSE &quot;yes&quot; &quot;no&quot;))  ;; =&gt; no</code></pre>
 <hr />
-<h2 id="first-class-functions-everywhere">First-Class Functions
-Everywhere</h2>
+<h2 id="first-class-functions-everywhere">First-Class Functions Everywhere</h2>
 <p>Functions are values. Pass them, return them, store them:</p>
 <pre class="scheme"><code>;; Store functions in a list
 (define ops (list + - * /))

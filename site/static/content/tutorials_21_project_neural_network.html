@@ -1,14 +1,9 @@
-<h1 id="project-train-a-neural-network-from-scratch">Project: Train a
-Neural Network from Scratch</h1>
-<p>A complete, runnable program that trains a neural network to learn
-XOR using only Eshkol’s autodiff — no frameworks, no libraries, no
-magic.</p>
-<p>Save this as <code>xor_nn.esk</code> and run with
-<code>eshkol-run xor_nn.esk -o xor_nn &amp;&amp; ./xor_nn</code>.</p>
+<h1 id="project-train-a-neural-network-from-scratch">Project: Train a Neural Network from Scratch</h1>
+<p>A complete, runnable program that trains a neural network to learn XOR using only Eshkol’s autodiff — no frameworks, no libraries, no magic.</p>
+<p>Save this as <code>xor_nn.esk</code> and run with <code>eshkol-run xor_nn.esk -o xor_nn &amp;&amp; ./xor_nn</code>.</p>
 <hr />
 <h2 id="the-problem">The Problem</h2>
-<p>XOR is the classic non-linear problem. A single neuron can’t learn it
-because XOR isn’t linearly separable. We need a hidden layer.</p>
+<p>XOR is the classic non-linear problem. A single neuron can’t learn it because XOR isn’t linearly separable. We need a hidden layer.</p>
 <pre><code>Input    Output
 0, 0  →  0
 0, 1  →  1
@@ -100,21 +95,14 @@ because XOR isn’t linearly separable. We need a hidden layer.</p>
 1 XOR 0 = 0.9924...
 1 XOR 1 = 0.0070...
 Final loss: 0.00025...</code></pre>
-<p>The first and last rows are close to 0, the middle two close to
-1.</p>
+<p>The first and last rows are close to 0, the middle two close to 1.</p>
 <hr />
 <h2 id="what-just-happened">What Just Happened</h2>
 <ol type="1">
-<li>We defined a neural network as a pure function
-(<code>forward</code>)</li>
-<li>We defined a loss function that measures error on all 4 XOR
-examples</li>
-<li>We called <code>(gradient loss ...)</code> which computed all 9
-partial derivatives <strong>automatically</strong> — the compiler
-propagated dual numbers through every multiplication, addition, sigmoid,
-and let-binding</li>
+<li>We defined a neural network as a pure function (<code>forward</code>)</li>
+<li>We defined a loss function that measures error on all 4 XOR examples</li>
+<li>We called <code>(gradient loss ...)</code> which computed all 9 partial derivatives <strong>automatically</strong> — the compiler propagated dual numbers through every multiplication, addition, sigmoid, and let-binding</li>
 <li>We ran gradient descent for 5000 steps</li>
 <li>The network learned XOR</li>
 </ol>
-<p>No backpropagation code. No computation graph. No framework. The
-compiler did all the calculus.</p>
+<p>No backpropagation code. No computation graph. No framework. The compiler did all the calculus.</p>

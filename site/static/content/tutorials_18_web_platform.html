@@ -1,18 +1,13 @@
-<h1 id="tutorial-18-web-platform-and-webassembly">Tutorial 18: Web
-Platform and WebAssembly</h1>
-<p>Eshkol compiles to WebAssembly for browser deployment. The eshkol.ai
-website itself is written in Eshkol and compiled to WASM.</p>
+<h1 id="tutorial-18-web-platform-and-webassembly">Tutorial 18: Web Platform and WebAssembly</h1>
+<p>Eshkol compiles to WebAssembly for browser deployment. The eshkol.ai website itself is written in Eshkol and compiled to WASM.</p>
 <hr />
 <h2 id="compiling-to-wasm">Compiling to WASM</h2>
 <pre class="bash"><code># Compile an Eshkol program to WebAssembly
 $ eshkol-run program.esk -w -o program.wasm</code></pre>
-<p>The <code>-w</code> flag targets the wasm32 backend. The output
-<code>.wasm</code> file can be loaded by any JavaScript runtime that
-supports WebAssembly.</p>
+<p>The <code>-w</code> flag targets the wasm32 backend. The output <code>.wasm</code> file can be loaded by any JavaScript runtime that supports WebAssembly.</p>
 <hr />
 <h2 id="the-browser-repl">The Browser REPL</h2>
-<p>The browser REPL at <a href="https://eshkol.ai">eshkol.ai</a> runs
-the bytecode VM compiled to WASM via Emscripten. It supports:</p>
+<p>The browser REPL at <a href="https://eshkol.ai">eshkol.ai</a> runs the bytecode VM compiled to WASM via Emscripten. It supports:</p>
 <ul>
 <li>All Scheme primitives (lists, strings, numbers, booleans)</li>
 <li>Exact arithmetic (bignums, rationals)</li>
@@ -32,8 +27,7 @@ the bytecode VM compiled to WASM via Emscripten. It supports:</p>
 ;; =&gt; 12.0</code></pre>
 <hr />
 <h2 id="dom-api-80-functions">DOM API (80+ Functions)</h2>
-<p>When compiling a full web application, Eshkol provides DOM bindings
-via <code>extern</code> declarations:</p>
+<p>When compiling a full web application, Eshkol provides DOM bindings via <code>extern</code> declarations:</p>
 <!-- doc-example: skip platform-specific: calls the browser DOM imports, which exist only in a WASM build running in a page -->
 <pre class="scheme"><code>;; Declare external DOM functions
 (extern i32 web-create-element ptr :real web_create_element)
@@ -48,9 +42,7 @@ via <code>extern</code> declarations:</p>
 (define h1 (web-create-element &quot;h1&quot;))
 (web-set-text-content h1 &quot;Hello from Eshkol!&quot;)
 (web-append-child 0 h1)  ;; 0 = document.body handle</code></pre>
-<p>The eshkol.ai website uses this API to build the entire UI —
-navigation, code blocks, the REPL, documentation viewer, download tables
-— all in Eshkol.</p>
+<p>The eshkol.ai website uses this API to build the entire UI — navigation, code blocks, the REPL, documentation viewer, download tables — all in Eshkol.</p>
 <hr />
 <h2 id="event-handling">Event Handling</h2>
 <!-- doc-example: skip platform-specific: calls the browser DOM imports, which exist only in a WASM build running in a page -->
@@ -84,7 +76,4 @@ navigation, code blocks, the REPL, documentation viewer, download tables
   → .wasm binary
   → loaded by eshkol-runtime.js
   → DOM bindings bridge JS ↔ WASM</code></pre>
-<p>The runtime (<code>eshkol-runtime.js</code>) provides: - Memory
-management (bump allocator for arena) - DOM API bridging (element
-creation, events, styles) - String marshalling (UTF-8 ↔︎ WASM linear
-memory) - The bytecode VM REPL (separate <code>eshkol-vm.js</code>)</p>
+<p>The runtime (<code>eshkol-runtime.js</code>) provides: - Memory management (bump allocator for arena) - DOM API bridging (element creation, events, styles) - String marshalling (UTF-8 ↔︎ WASM linear memory) - The bytecode VM REPL (separate <code>eshkol-vm.js</code>)</p>

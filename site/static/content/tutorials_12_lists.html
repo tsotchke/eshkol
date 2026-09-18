@@ -1,7 +1,5 @@
-<h1 id="tutorial-12-lists-and-higher-order-functions">Tutorial 12: Lists
-and Higher-Order Functions</h1>
-<p>Lists are the fundamental data structure in Eshkol. 60+ operations
-are built in, from basic cons/car/cdr to sorting and partitioning.</p>
+<h1 id="tutorial-12-lists-and-higher-order-functions">Tutorial 12: Lists and Higher-Order Functions</h1>
+<p>Lists are the fundamental data structure in Eshkol. 60+ operations are built in, from basic cons/car/cdr to sorting and partitioning.</p>
 <hr />
 <h2 id="creating-lists">Creating Lists</h2>
 <pre class="scheme"><code>(define xs (list 1 2 3 4 5))      ;; =&gt; (1 2 3 4 5)
@@ -109,8 +107,7 @@ are built in, from basic cons/car/cdr to sorting and partitioning.</p>
 (find odd? &#39;(2 4 5 6))        ;; =&gt; 5</code></pre>
 <hr />
 <h2 id="mixed-type-lists">Mixed-Type Lists</h2>
-<p>Lists can hold any type — integers, strings, booleans, nested lists,
-closures, even tensors:</p>
+<p>Lists can hold any type — integers, strings, booleans, nested lists, closures, even tensors:</p>
 <pre class="scheme"><code>(define mixed (list 1 &quot;hello&quot; #t 3.14 &#39;(nested) #(1 2 3)))
 (display (car mixed))          ;; =&gt; 1
 (display (cadr mixed))         ;; =&gt; hello

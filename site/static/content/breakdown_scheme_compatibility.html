@@ -1,10 +1,8 @@
-<h1 id="scheme-compatibility-in-eshkol">Scheme Compatibility in
-Eshkol</h1>
+<h1 id="scheme-compatibility-in-eshkol">Scheme Compatibility in Eshkol</h1>
 <h2 id="table-of-contents">Table of Contents</h2>
 <ul>
 <li><a href="/docs#page=breakdown_scheme_compatibility&amp;overview" data-url="/content/breakdown_scheme_compatibility.html">Overview</a></li>
-<li><a href="/docs#page=breakdown_scheme_compatibility&amp;r7rs-small-compliance-summary" data-url="/content/breakdown_scheme_compatibility.html">R7RS-small Compliance
-Summary</a></li>
+<li><a href="/docs#page=breakdown_scheme_compatibility&amp;r7rs-small-compliance-summary" data-url="/content/breakdown_scheme_compatibility.html">R7RS-small Compliance Summary</a></li>
 <li><a href="/docs#page=breakdown_scheme_compatibility&amp;core-language-forms" data-url="/content/breakdown_scheme_compatibility.html">Core Language Forms</a></li>
 <li><a href="/docs#page=breakdown_scheme_compatibility&amp;standard-procedures" data-url="/content/breakdown_scheme_compatibility.html">Standard Procedures</a></li>
 <li><a href="/docs#page=breakdown_scheme_compatibility&amp;continuation-semantics" data-url="/content/breakdown_scheme_compatibility.html">Continuation Semantics</a></li>
@@ -16,44 +14,20 @@ Summary</a></li>
 <li><a href="/docs#page=breakdown_scheme_compatibility&amp;records" data-url="/content/breakdown_scheme_compatibility.html">Records</a></li>
 <li><a href="/docs#page=breakdown_scheme_compatibility&amp;bytevectors" data-url="/content/breakdown_scheme_compatibility.html">Bytevectors</a></li>
 <li><a href="/docs#page=breakdown_scheme_compatibility&amp;tail-call-optimization" data-url="/content/breakdown_scheme_compatibility.html">Tail Call Optimization</a></li>
-<li><a href="/docs#page=breakdown_scheme_compatibility&amp;eshkol-extensions-beyond-r7rs" data-url="/content/breakdown_scheme_compatibility.html">Eshkol Extensions Beyond
-R7RS</a></li>
+<li><a href="/docs#page=breakdown_scheme_compatibility&amp;eshkol-extensions-beyond-r7rs" data-url="/content/breakdown_scheme_compatibility.html">Eshkol Extensions Beyond R7RS</a></li>
 <li><a href="/docs#page=breakdown_scheme_compatibility&amp;known-limitations" data-url="/content/breakdown_scheme_compatibility.html">Known Limitations</a></li>
 <li><a href="/docs#page=breakdown_scheme_compatibility&amp;migration-guide" data-url="/content/breakdown_scheme_compatibility.html">Migration Guide</a></li>
 <li><a href="/docs#page=breakdown_scheme_compatibility&amp;compatibility-testing" data-url="/content/breakdown_scheme_compatibility.html">Compatibility Testing</a></li>
 </ul>
 <hr />
 <h2 id="overview">Overview</h2>
-<p>Eshkol is a <strong>compiled Scheme-family language</strong> that
-implements approximately 95% of the R7RS-small standard while extending
-it with automatic differentiation, tensor computing, a consciousness
-engine, GPU acceleration, and other scientific computing capabilities.
-The compiler translates R7RS programs to native code via LLVM, producing
-standalone binaries with no runtime interpreter overhead.</p>
-<p>The R7RS-small standard defines 244 standard procedures and ~30
-special forms. Eshkol implements 232 of these procedures and all
-essential special forms. The missing procedures are concentrated in a
-small set of error introspection functions (<code>error-object?</code>,
-<code>error-object-message</code>, <code>error-object-irritants</code>)
-and one arithmetic function (<code>exact-integer-sqrt</code>). R7RS
-<code>define-library</code> and <code>import</code> forms lower through
-the existing <code>require</code>/<code>provide</code> module system,
-with strict library isolation still tracked as future module-privacy
-work.</p>
-<p>Most well-formed R7RS Scheme programs compile and run in Eshkol
-without modification.</p>
-<p><strong>Implementation references:</strong> - Parser: <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer">parser.cpp</a> (11,691 lines) -
-Code generation: <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a> (47,107
-lines) - Type checker: <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer">type_checker.cpp</a> (6,061
-lines)</p>
+<p>Eshkol is a <strong>compiled Scheme-family language</strong> that implements approximately 95% of the R7RS-small standard while extending it with automatic differentiation, tensor computing, a consciousness engine, GPU acceleration, and other scientific computing capabilities. The compiler translates R7RS programs to native code via LLVM, producing standalone binaries with no runtime interpreter overhead.</p>
+<p>The R7RS-small standard defines 244 standard procedures and ~30 special forms. Eshkol implements 232 of these procedures and all essential special forms. The missing procedures are concentrated in a small set of error introspection functions (<code>error-object?</code>, <code>error-object-message</code>, <code>error-object-irritants</code>) and one arithmetic function (<code>exact-integer-sqrt</code>). R7RS <code>define-library</code> and <code>import</code> forms lower through the existing <code>require</code>/<code>provide</code> module system, with strict library isolation still tracked as future module-privacy work.</p>
+<p>Most well-formed R7RS Scheme programs compile and run in Eshkol without modification.</p>
+<p><strong>Implementation references:</strong> - Parser: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer">parser.cpp</a> (11,691 lines) - Code generation: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a> (47,107 lines) - Type checker: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer">type_checker.cpp</a> (6,061 lines)</p>
 <hr />
-<h2 id="r7rs-small-compliance-summary">R7RS-small Compliance
-Summary</h2>
-<h3 id="section-by-section-compliance-matrix">Section-by-Section
-Compliance Matrix</h3>
+<h2 id="r7rs-small-compliance-summary">R7RS-small Compliance Summary</h2>
+<h3 id="section-by-section-compliance-matrix">Section-by-Section Compliance Matrix</h3>
 <table>
 <colgroup>
 <col style="width: 23%" />
@@ -71,30 +45,22 @@ Compliance Matrix</h3>
 </thead>
 <tbody>
 <tr>
-<td style="text-align: left;"><strong>4.1</strong> Primitive
-expressions</td>
-<td style="text-align: left;"><code>quote</code>, <code>lambda</code>,
-<code>if</code>, <code>set!</code>, <code>include</code></td>
+<td style="text-align: left;"><strong>4.1</strong> Primitive expressions</td>
+<td style="text-align: left;"><code>quote</code>, <code>lambda</code>, <code>if</code>, <code>set!</code>, <code>include</code></td>
 <td style="text-align: center;">Yes</td>
 <td style="text-align: left;">Full support</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>4.2.1</strong> Conditionals</td>
-<td style="text-align: left;"><code>cond</code>, <code>case</code>,
-<code>and</code>, <code>or</code>, <code>when</code>,
-<code>unless</code></td>
+<td style="text-align: left;"><code>cond</code>, <code>case</code>, <code>and</code>, <code>or</code>, <code>when</code>, <code>unless</code></td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;">Including <code>=&gt;</code> clause in
-<code>cond</code></td>
+<td style="text-align: left;">Including <code>=&gt;</code> clause in <code>cond</code></td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>4.2.2</strong> Binding</td>
-<td style="text-align: left;"><code>let</code>, <code>let*</code>,
-<code>letrec</code>, <code>letrec*</code>, <code>let-values</code>,
-<code>let*-values</code></td>
+<td style="text-align: left;"><code>let</code>, <code>let*</code>, <code>letrec</code>, <code>letrec*</code>, <code>let-values</code>, <code>let*-values</code></td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;"><code>letrec*</code> with correct R7RS
-semantics</td>
+<td style="text-align: left;"><code>letrec*</code> with correct R7RS semantics</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>4.2.3</strong> Sequencing</td>
@@ -104,43 +70,31 @@ semantics</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>4.2.4</strong> Iteration</td>
-<td style="text-align: left;"><code>do</code>, named
-<code>let</code></td>
+<td style="text-align: left;"><code>do</code>, named <code>let</code></td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;"><code>do</code> at <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a></td>
+<td style="text-align: left;"><code>do</code> at <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a></td>
 </tr>
 <tr>
-<td style="text-align: left;"><strong>4.2.5</strong> Delayed
-evaluation</td>
-<td style="text-align: left;"><code>delay</code>,
-<code>delay-force</code>, <code>force</code>, <code>make-promise</code>,
-<code>promise?</code></td>
+<td style="text-align: left;"><strong>4.2.5</strong> Delayed evaluation</td>
+<td style="text-align: left;"><code>delay</code>, <code>delay-force</code>, <code>force</code>, <code>make-promise</code>, <code>promise?</code></td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;">Full iterative forcing; see <a
-href="/docs#page=breakdown_scheme_compatibility&amp;promises" data-url="/content/breakdown_scheme_compatibility.html">Promises</a></td>
+<td style="text-align: left;">Full iterative forcing; see <a href="/docs#page=breakdown_scheme_compatibility&amp;promises" data-url="/content/breakdown_scheme_compatibility.html">Promises</a></td>
 </tr>
 <tr>
-<td style="text-align: left;"><strong>4.2.6</strong> Dynamic
-bindings</td>
-<td style="text-align: left;"><code>make-parameter</code>,
-<code>parameterize</code></td>
+<td style="text-align: left;"><strong>4.2.6</strong> Dynamic bindings</td>
+<td style="text-align: left;"><code>make-parameter</code>, <code>parameterize</code></td>
 <td style="text-align: center;">Yes</td>
 <td style="text-align: left;">Macro-transformed at parse time</td>
 </tr>
 <tr>
-<td style="text-align: left;"><strong>4.2.7</strong> Exception
-handling</td>
-<td style="text-align: left;"><code>guard</code>, <code>raise</code>,
-<code>raise-continuable</code></td>
+<td style="text-align: left;"><strong>4.2.7</strong> Exception handling</td>
+<td style="text-align: left;"><code>guard</code>, <code>raise</code>, <code>raise-continuable</code></td>
 <td style="text-align: center;">Note</td>
-<td style="text-align: left;"><code>guard</code>/<code>raise</code>
-full; <code>raise-continuable</code> missing</td>
+<td style="text-align: left;"><code>guard</code>/<code>raise</code> full; <code>raise-continuable</code> missing</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>4.2.8</strong> Quasiquotation</td>
-<td style="text-align: left;"><code>quasiquote</code>,
-<code>unquote</code>, <code>unquote-splicing</code></td>
+<td style="text-align: left;"><code>quasiquote</code>, <code>unquote</code>, <code>unquote-splicing</code></td>
 <td style="text-align: center;">Yes</td>
 <td style="text-align: left;"></td>
 </tr>
@@ -148,17 +102,13 @@ full; <code>raise-continuable</code> missing</td>
 <td style="text-align: left;"><strong>4.2.9</strong> Case-lambda</td>
 <td style="text-align: left;"><code>case-lambda</code></td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;">Macro-transformed to variadic
-dispatch</td>
+<td style="text-align: left;">Macro-transformed to variadic dispatch</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>4.3</strong> Macros</td>
-<td style="text-align: left;"><code>define-syntax</code>,
-<code>syntax-rules</code>, <code>let-syntax</code>,
-<code>letrec-syntax</code></td>
+<td style="text-align: left;"><code>define-syntax</code>, <code>syntax-rules</code>, <code>let-syntax</code>, <code>letrec-syntax</code></td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;">Hygienic; <code>syntax-case</code> not
-supported</td>
+<td style="text-align: left;">Hygienic; <code>syntax-case</code> not supported</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>5.1</strong> Programs</td>
@@ -170,37 +120,29 @@ supported</td>
 <td style="text-align: left;"><strong>5.2</strong> Import</td>
 <td style="text-align: left;"><code>import</code></td>
 <td style="text-align: center;">Note</td>
-<td style="text-align: left;">Lowers to <code>require</code>;
-<code>only</code>/<code>except</code>/<code>rename</code>/<code>prefix</code>
-import sets are parsed, with strict hiding still limited</td>
+<td style="text-align: left;">Lowers to <code>require</code>; <code>only</code>/<code>except</code>/<code>rename</code>/<code>prefix</code> import sets are parsed, with strict hiding still limited</td>
 </tr>
 <tr>
-<td style="text-align: left;"><strong>5.3</strong> Variable
-definitions</td>
-<td style="text-align: left;"><code>define</code>,
-<code>define-values</code></td>
+<td style="text-align: left;"><strong>5.3</strong> Variable definitions</td>
+<td style="text-align: left;"><code>define</code>, <code>define-values</code></td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;">Internal defines →
-<code>letrec*</code></td>
+<td style="text-align: left;">Internal defines → <code>letrec*</code></td>
 </tr>
 <tr>
-<td style="text-align: left;"><strong>5.4</strong> Syntax
-definitions</td>
+<td style="text-align: left;"><strong>5.4</strong> Syntax definitions</td>
 <td style="text-align: left;"><code>define-syntax</code></td>
 <td style="text-align: center;">Yes</td>
 <td style="text-align: left;"></td>
 </tr>
 <tr>
-<td style="text-align: left;"><strong>5.5</strong> Record type
-definitions</td>
+<td style="text-align: left;"><strong>5.5</strong> Record type definitions</td>
 <td style="text-align: left;"><code>define-record-type</code></td>
 <td style="text-align: center;">Yes</td>
 <td style="text-align: left;">See <a href="/docs#page=breakdown_scheme_compatibility&amp;records" data-url="/content/breakdown_scheme_compatibility.html">Records</a></td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>6.1</strong> Equivalence</td>
-<td style="text-align: left;"><code>eqv?</code>, <code>eq?</code>,
-<code>equal?</code></td>
+<td style="text-align: left;"><code>eqv?</code>, <code>eq?</code>, <code>equal?</code></td>
 <td style="text-align: center;">Yes</td>
 <td style="text-align: left;"></td>
 </tr>
@@ -208,28 +150,23 @@ definitions</td>
 <td style="text-align: left;"><strong>6.2</strong> Numbers</td>
 <td style="text-align: left;">Full numeric tower</td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;">See <a href="/docs#page=breakdown_scheme_compatibility&amp;numeric-tower" data-url="/content/breakdown_scheme_compatibility.html">Numeric
-Tower</a></td>
+<td style="text-align: left;">See <a href="/docs#page=breakdown_scheme_compatibility&amp;numeric-tower" data-url="/content/breakdown_scheme_compatibility.html">Numeric Tower</a></td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>6.3</strong> Booleans</td>
-<td style="text-align: left;"><code>not</code>, <code>boolean?</code>,
-<code>boolean=?</code></td>
+<td style="text-align: left;"><code>not</code>, <code>boolean?</code>, <code>boolean=?</code></td>
 <td style="text-align: center;">Yes</td>
 <td style="text-align: left;"></td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>6.4</strong> Pairs and lists</td>
-<td style="text-align: left;"><code>cons</code> through
-<code>assoc</code>/<code>member</code></td>
+<td style="text-align: left;"><code>cons</code> through <code>assoc</code>/<code>member</code></td>
 <td style="text-align: center;">Yes</td>
 <td style="text-align: left;">20+ procedures</td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>6.5</strong> Symbols</td>
-<td style="text-align: left;"><code>symbol?</code>,
-<code>symbol-&gt;string</code>, <code>string-&gt;symbol</code>,
-<code>symbol=?</code></td>
+<td style="text-align: left;"><code>symbol?</code>, <code>symbol-&gt;string</code>, <code>string-&gt;symbol</code>, <code>symbol=?</code></td>
 <td style="text-align: center;">Yes</td>
 <td style="text-align: left;"></td>
 </tr>
@@ -237,58 +174,43 @@ Tower</a></td>
 <td style="text-align: left;"><strong>6.6</strong> Characters</td>
 <td style="text-align: left;">18 character procedures</td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;">Including <code>char-upcase</code>,
-<code>char-downcase</code>, <code>char-foldcase</code></td>
+<td style="text-align: left;">Including <code>char-upcase</code>, <code>char-downcase</code>, <code>char-foldcase</code></td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>6.7</strong> Strings</td>
 <td style="text-align: left;">18+ string procedures</td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;">Including <code>string-upcase</code>,
-<code>string-downcase</code>, <code>string-for-each</code>,
-<code>string-map</code></td>
+<td style="text-align: left;">Including <code>string-upcase</code>, <code>string-downcase</code>, <code>string-for-each</code>, <code>string-map</code></td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>6.8</strong> Vectors</td>
 <td style="text-align: left;">10 vector procedures</td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;">Including <code>vector-for-each</code>,
-<code>vector-map</code>, <code>vector-fill!</code></td>
+<td style="text-align: left;">Including <code>vector-for-each</code>, <code>vector-map</code>, <code>vector-fill!</code></td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>6.9</strong> Bytevectors</td>
 <td style="text-align: left;">9 bytevector procedures</td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;">See <a
-href="/docs#page=breakdown_scheme_compatibility&amp;bytevectors" data-url="/content/breakdown_scheme_compatibility.html">Bytevectors</a></td>
+<td style="text-align: left;">See <a href="/docs#page=breakdown_scheme_compatibility&amp;bytevectors" data-url="/content/breakdown_scheme_compatibility.html">Bytevectors</a></td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>6.10</strong> Control</td>
-<td style="text-align: left;"><code>procedure?</code>,
-<code>apply</code>, <code>map</code>, <code>for-each</code>,
-<code>call/cc</code>, <code>values</code>,
-<code>dynamic-wind</code></td>
+<td style="text-align: left;"><code>procedure?</code>, <code>apply</code>, <code>map</code>, <code>for-each</code>, <code>call/cc</code>, <code>values</code>, <code>dynamic-wind</code></td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;">See <a
-href="/docs#page=breakdown_scheme_compatibility&amp;continuation-semantics" data-url="/content/breakdown_scheme_compatibility.html">Continuation Semantics</a></td>
+<td style="text-align: left;">See <a href="/docs#page=breakdown_scheme_compatibility&amp;continuation-semantics" data-url="/content/breakdown_scheme_compatibility.html">Continuation Semantics</a></td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>6.11</strong> Exceptions</td>
-<td style="text-align: left;"><code>with-exception-handler</code>,
-<code>raise</code>, <code>error</code></td>
+<td style="text-align: left;"><code>with-exception-handler</code>, <code>raise</code>, <code>error</code></td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;"><code>raise-continuable</code>
-missing</td>
+<td style="text-align: left;"><code>raise-continuable</code> missing</td>
 </tr>
 <tr>
-<td style="text-align: left;"><strong>6.12</strong> Environments and
-eval</td>
-<td style="text-align: left;"><code>eval</code>,
-<code>interaction-environment</code>,
-<code>scheme-report-environment</code></td>
+<td style="text-align: left;"><strong>6.12</strong> Environments and eval</td>
+<td style="text-align: left;"><code>eval</code>, <code>interaction-environment</code>, <code>scheme-report-environment</code></td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;">See <a href="/docs#page=breakdown_scheme_compatibility&amp;eval-and-environments" data-url="/content/breakdown_scheme_compatibility.html">Eval
-and Environments</a></td>
+<td style="text-align: left;">See <a href="/docs#page=breakdown_scheme_compatibility&amp;eval-and-environments" data-url="/content/breakdown_scheme_compatibility.html">Eval and Environments</a></td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>6.13</strong> I/O</td>
@@ -297,10 +219,8 @@ and Environments</a></td>
 <td style="text-align: left;">27+ I/O procedures</td>
 </tr>
 <tr>
-<td style="text-align: left;"><strong>6.14</strong> System
-interface</td>
-<td style="text-align: left;"><code>features</code>,
-<code>command-line</code>, <code>exit</code></td>
+<td style="text-align: left;"><strong>6.14</strong> System interface</td>
+<td style="text-align: left;"><code>features</code>, <code>command-line</code>, <code>exit</code></td>
 <td style="text-align: center;">Yes</td>
 <td style="text-align: left;"></td>
 </tr>
@@ -308,16 +228,13 @@ interface</td>
 </table>
 <h3 id="compliance-statistics">Compliance Statistics</h3>
 <ul>
-<li><strong>Special forms and derived expressions</strong>: 30/30
-(supported subset for R7RS libraries)</li>
-<li><strong>Standard procedures</strong>: 232/244 (95%) — missing 12
-procedures</li>
+<li><strong>Special forms and derived expressions</strong>: 30/30 (supported subset for R7RS libraries)</li>
+<li><strong>Standard procedures</strong>: 232/244 (95%) — missing 12 procedures</li>
 <li><strong>Overall R7RS-small compliance</strong>: ~95%</li>
 </ul>
 <hr />
 <h2 id="core-language-forms">Core Language Forms</h2>
-<h3 id="primitive-expression-types-r7rs-41">Primitive Expression Types
-(R7RS 4.1)</h3>
+<h3 id="primitive-expression-types-r7rs-41">Primitive Expression Types (R7RS 4.1)</h3>
 <p>All primitive expression types are fully supported:</p>
 <pre class="scheme"><code>;; Variable reference
 x
@@ -342,8 +259,7 @@ x
 ;; Quotation
 (quote (a b c))
 &#39;(a b c)</code></pre>
-<h3 id="derived-expression-types-r7rs-42">Derived Expression Types (R7RS
-4.2)</h3>
+<h3 id="derived-expression-types-r7rs-42">Derived Expression Types (R7RS 4.2)</h3>
 <pre class="scheme"><code>;; Conditionals
 (cond ((&gt; x 0) &quot;positive&quot;)
       ((= x 0) &quot;zero&quot;)
@@ -417,16 +333,7 @@ x
   (define (helper x) (* x 2))        ; internal define
   (define threshold 10)               ; internal define
   (map helper (filter (lambda (x) (&gt; x threshold)) data)))</code></pre>
-<p><strong>Implementation note:</strong> Internal definitions are
-transformed to <code>letrec*</code> by the parser (<a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer">parser.cpp</a>). Every internal
-define’s name joins one <code>letrec*</code> binding set no matter where
-in the body it appears, so all internal names share a single mutually
-visible recursive scope (interspersed defines are accepted, as in
-Racket/MIT/Guile/Chez). Side-effect order is preserved: a function
-define’s lambda is created in the <code>letrec*</code> head, while a
-value define that follows any body expression has its initializer
-evaluated at that source position rather than up front.</p>
+<p><strong>Implementation note:</strong> Internal definitions are transformed to <code>letrec*</code> by the parser (<a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer">parser.cpp</a>). Every internal define’s name joins one <code>letrec*</code> binding set no matter where in the body it appears, so all internal names share a single mutually visible recursive scope (interspersed defines are accepted, as in Racket/MIT/Guile/Chez). Side-effect order is preserved: a function define’s lambda is created in the <code>letrec*</code> head, while a value define that follows any body expression has its initializer evaluated at that source position rather than up front.</p>
 <hr />
 <h2 id="standard-procedures">Standard Procedures</h2>
 <h3 id="numeric-operations-r7rs-62">Numeric Operations (R7RS 6.2)</h3>
@@ -625,11 +532,8 @@ evaluated at that source position rather than up front.</p>
 <hr />
 <h2 id="continuation-semantics">Continuation Semantics</h2>
 <h3 id="callcc-r7rs-610">call/cc (R7RS 6.10)</h3>
-<p>Eshkol implements <code>call-with-current-continuation</code>
-(aliased as <code>call/cc</code>) using an exception-based model built
-on <code>setjmp</code>/<code>longjmp</code>.</p>
-<p><strong>Implementation:</strong> <code>codegenCallCC</code> in <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/llvm_codegen.cpp</a></p>
+<p>Eshkol implements <code>call-with-current-continuation</code> (aliased as <code>call/cc</code>) using an exception-based model built on <code>setjmp</code>/<code>longjmp</code>.</p>
+<p><strong>Implementation:</strong> <code>codegenCallCC</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/llvm_codegen.cpp</a></p>
 <pre class="scheme"><code>;; Basic continuation capture
 (call/cc (lambda (k) (k 42)))        ; =&gt; 42
 
@@ -649,47 +553,12 @@ href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cp
     (if (= n 0) &quot;done&quot;
         (if (= n 500000) (exit &quot;early!&quot;)
             (loop (- n 1)))))))       ; =&gt; &quot;early!&quot;</code></pre>
-<p><strong>Semantics:</strong> - Continuations are <strong>multi-shot
-and re-entrant</strong> on every engine — the <code>-r</code> JIT, the
-AOT compiler, and the bytecode VM. A captured continuation may be
-invoked any number of times, from any dynamic extent, including after
-the procedure that captured it has returned. This is what generators,
-coroutines and <code>amb</code>-style backtracking need. - The
-continuation object is a CALLABLE heap value with
-<code>HEAP_SUBTYPE_CONTINUATION</code>. - Escape-only continuations keep
-the zero-overhead <code>setjmp</code>/<code>longjmp</code> path. The
-compiler recognises a capture whose continuation cannot outlive its
-frame and omits the stack copy entirely, so early return and
-exception-style unwinding cost exactly what they always did. - A
-continuation that may outlive its frame carries a durable copy of the C
-stack it needs, restored to the original addresses before the jump. On
-the bytecode VM the equivalent snapshot covers the operand stack and
-call frames but deliberately excludes top-level binding slots, which are
-the store: <code>set!</code> and <code>define</code> effects survive
-re-entry rather than being rolled back with the control state. -
-<code>dynamic-wind</code> is rerooted, not merely unwound: re-entering a
-continuation captured inside a <code>dynamic-wind</code> whose extent
-was left re-runs that extent’s <code>before</code> thunk on the way back
-in.</p>
-<p><strong>Comparison with other Scheme implementations:</strong> -
-Racket/Chez Scheme: Full multi-shot continuations (can invoke the same
-continuation multiple times) - Gambit/Chicken: Full multi-shot via stack
-copying - Eshkol: Full multi-shot on every engine — stack copying on
-native, operand-stack/call-frame snapshotting on the bytecode VM — with
-escape-only captures kept on the zero-overhead setjmp/longjmp path</p>
-<p>Coroutines, generators and backtracking search are supported
-directly. Worked examples live in <code>tests/continuations/</code>: a
-producer/consumer generator, a McCarthy <code>amb</code> search that
-re-enters each choice point once per alternative, and a continuation
-captured inside <code>with-region</code> and resumed after the region
-exits. All are gated in CI on all three engines.</p>
+<p><strong>Semantics:</strong> - Continuations are <strong>multi-shot and re-entrant</strong> on every engine — the <code>-r</code> JIT, the AOT compiler, and the bytecode VM. A captured continuation may be invoked any number of times, from any dynamic extent, including after the procedure that captured it has returned. This is what generators, coroutines and <code>amb</code>-style backtracking need. - The continuation object is a CALLABLE heap value with <code>HEAP_SUBTYPE_CONTINUATION</code>. - Escape-only continuations keep the zero-overhead <code>setjmp</code>/<code>longjmp</code> path. The compiler recognises a capture whose continuation cannot outlive its frame and omits the stack copy entirely, so early return and exception-style unwinding cost exactly what they always did. - A continuation that may outlive its frame carries a durable copy of the C stack it needs, restored to the original addresses before the jump. On the bytecode VM the equivalent snapshot covers the operand stack and call frames but deliberately excludes top-level binding slots, which are the store: <code>set!</code> and <code>define</code> effects survive re-entry rather than being rolled back with the control state. - <code>dynamic-wind</code> is rerooted, not merely unwound: re-entering a continuation captured inside a <code>dynamic-wind</code> whose extent was left re-runs that extent’s <code>before</code> thunk on the way back in.</p>
+<p><strong>Comparison with other Scheme implementations:</strong> - Racket/Chez Scheme: Full multi-shot continuations (can invoke the same continuation multiple times) - Gambit/Chicken: Full multi-shot via stack copying - Eshkol: Full multi-shot on every engine — stack copying on native, operand-stack/call-frame snapshotting on the bytecode VM — with escape-only captures kept on the zero-overhead setjmp/longjmp path</p>
+<p>Coroutines, generators and backtracking search are supported directly. Worked examples live in <code>tests/continuations/</code>: a producer/consumer generator, a McCarthy <code>amb</code> search that re-enters each choice point once per alternative, and a continuation captured inside <code>with-region</code> and resumed after the region exits. All are gated in CI on all three engines.</p>
 <h3 id="dynamic-wind-r7rs-610">dynamic-wind (R7RS 6.10)</h3>
-<p><code>dynamic-wind</code> installs before/after thunks that execute
-on entry to and exit from a dynamic extent, including non-local exits
-via continuations.</p>
-<p><strong>Implementation:</strong> <code>codegenDynamicWind</code> in
-<a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/llvm_codegen.cpp</a></p>
+<p><code>dynamic-wind</code> installs before/after thunks that execute on entry to and exit from a dynamic extent, including non-local exits via continuations.</p>
+<p><strong>Implementation:</strong> <code>codegenDynamicWind</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/llvm_codegen.cpp</a></p>
 <pre class="scheme"><code>;; Resource cleanup on non-local exit
 (let ((port (open-input-file &quot;data.txt&quot;)))
   (dynamic-wind
@@ -702,10 +571,7 @@ href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cp
 ;; prints: entering
 ;; prints: cleanup done
 ;; =&gt; &quot;escaped!&quot;</code></pre>
-<p>The wind stack tracks nested <code>dynamic-wind</code> scopes. When a
-continuation is invoked, the runtime unwinds the current stack
-(executing “after” thunks) and rewinds to the continuation’s saved stack
-(executing “before” thunks).</p>
+<p>The wind stack tracks nested <code>dynamic-wind</code> scopes. When a continuation is invoked, the runtime unwinds the current stack (executing “after” thunks) and rewinds to the continuation’s saved stack (executing “before” thunks).</p>
 <h3 id="guardraise-r7rs-427">guard/raise (R7RS 4.2.7)</h3>
 <p>R7RS exception handling with <code>cond</code>-style clauses:</p>
 <pre class="scheme"><code>;; Exception handling with guard
@@ -724,53 +590,32 @@ continuation is invoked, the runtime unwinds the current stack
 ;; error procedure (R7RS 6.11)
 (error &quot;invalid argument&quot; &#39;foo 42)
 ;; Raises an error with message and irritants</code></pre>
-<p><strong>Implementation:</strong> <code>guard</code> is implemented as
-a parser transformation that wraps the body in a continuation capture.
-The guard clauses are evaluated in the dynamic environment of the guard
-expression, and if no clause matches, the exception is re-raised.</p>
+<p><strong>Implementation:</strong> <code>guard</code> is implemented as a parser transformation that wraps the body in a continuation capture. The guard clauses are evaluated in the dynamic environment of the guard expression, and if no clause matches, the exception is re-raised.</p>
 <hr />
 <h2 id="numeric-tower">Numeric Tower</h2>
-<p>Eshkol implements the full R7RS numeric tower with five numeric
-types, listed in order of increasing generality:</p>
+<p>Eshkol implements the full R7RS numeric tower with five numeric types, listed in order of increasing generality:</p>
 <pre><code>int64 → bignum → rational → double → complex
  (exact)  (exact)   (exact)  (inexact)  (inexact)</code></pre>
 <h3 id="type-hierarchy">Type Hierarchy</h3>
-<p><strong>int64</strong> (64-bit signed integer): The default exact
-integer representation. Values in the range [-2^63, 2^63-1] are stored
-as immediate values in the tagged value’s 64-bit data field.</p>
-<p><strong>bignum</strong> (arbitrary-precision integer): When an
-integer operation overflows int64, the result is automatically promoted
-to a bignum. Bignums are heap-allocated sign-magnitude representations
-with limb arrays. Operations dispatch through
-<code>eshkol_bignum_binary_tagged</code> and
-<code>eshkol_bignum_compare_tagged</code> runtime functions.</p>
+<p><strong>int64</strong> (64-bit signed integer): The default exact integer representation. Values in the range [-2^63, 2^63-1] are stored as immediate values in the tagged value’s 64-bit data field.</p>
+<p><strong>bignum</strong> (arbitrary-precision integer): When an integer operation overflows int64, the result is automatically promoted to a bignum. Bignums are heap-allocated sign-magnitude representations with limb arrays. Operations dispatch through <code>eshkol_bignum_binary_tagged</code> and <code>eshkol_bignum_compare_tagged</code> runtime functions.</p>
 <pre class="scheme"><code>(expt 2 100)                         ; =&gt; 1267650600228229401496703205376 (bignum)
 (* 9999999999999999999 9999999999999999999)  ; automatic promotion</code></pre>
-<p><strong>rational</strong> (exact fraction): Pairs of bignums
-representing numerator/denominator, always maintained in reduced form
-via GCD. Comparison uses cross-multiplication to avoid precision
-loss.</p>
+<p><strong>rational</strong> (exact fraction): Pairs of bignums representing numerator/denominator, always maintained in reduced form via GCD. Comparison uses cross-multiplication to avoid precision loss.</p>
 <pre class="scheme"><code>(/ 1 3)                              ; =&gt; 1/3 (exact rational)
 (+ 1/3 1/6)                          ; =&gt; 1/2
 (exact? (/ 1 3))                     ; =&gt; #t</code></pre>
-<p><strong>double</strong> (IEEE 754 64-bit float): The default inexact
-representation. Stored as int64 bit patterns in the tagged value data
-field.</p>
+<p><strong>double</strong> (IEEE 754 64-bit float): The default inexact representation. Stored as int64 bit patterns in the tagged value data field.</p>
 <pre class="scheme"><code>(exact-&gt;inexact 1/3)                 ; =&gt; 0.3333333333333333
 (inexact? 3.14)                      ; =&gt; #t</code></pre>
-<p><strong>complex</strong> (complex number): Heap-allocated struct
-containing two doubles (real and imaginary parts). Type tag
-<code>ESHKOL_VALUE_COMPLEX</code> (7). Division uses Smith’s formula to
-avoid overflow.</p>
+<p><strong>complex</strong> (complex number): Heap-allocated struct containing two doubles (real and imaginary parts). Type tag <code>ESHKOL_VALUE_COMPLEX</code> (7). Division uses Smith’s formula to avoid overflow.</p>
 <pre class="scheme"><code>(make-rectangular 3 4)               ; =&gt; 3+4i
 (magnitude 3+4i)                     ; =&gt; 5.0
 (angle 0+1i)                         ; =&gt; 1.5707963267948966
 (real-part 3+4i)                     ; =&gt; 3.0
 (imag-part 3+4i)                     ; =&gt; 4.0</code></pre>
 <h3 id="exactness-semantics">Exactness Semantics</h3>
-<p>R7RS requires that exact operations on exact arguments produce exact
-results. Eshkol tracks exactness via the <code>ESHKOL_FLAG_EXACT</code>
-bit in the tagged value’s flags field:</p>
+<p>R7RS requires that exact operations on exact arguments produce exact results. Eshkol tracks exactness via the <code>ESHKOL_FLAG_EXACT</code> bit in the tagged value’s flags field:</p>
 <pre class="scheme"><code>;; Exact + exact = exact
 (+ 1 2)                              ; =&gt; 3 (exact)
 (* 1/3 3)                            ; =&gt; 1 (exact)
@@ -784,12 +629,9 @@ bit in the tagged value’s flags field:</p>
 (inexact 1/3)                        ; =&gt; 0.3333...</code></pre>
 <hr />
 <h2 id="promises">Promises</h2>
-<p>Eshkol implements the full R7RS promise system (R7RS 4.2.5) with
-memoization and iterative forcing.</p>
-<p><strong>Implementation:</strong> <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a></p>
-<p>Promises are heap-allocated objects
-(<code>HEAP_SUBTYPE_PROMISE = 18</code>) with a 40-byte structure:</p>
+<p>Eshkol implements the full R7RS promise system (R7RS 4.2.5) with memoization and iterative forcing.</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a></p>
+<p>Promises are heap-allocated objects (<code>HEAP_SUBTYPE_PROMISE = 18</code>) with a 40-byte structure:</p>
 <pre><code>[forced:i64 | thunk:tagged_value | cached:tagged_value]</code></pre>
 <pre class="scheme"><code>;; Basic lazy evaluation
 (define p (delay (begin (display &quot;computing...&quot;) 42)))
@@ -809,19 +651,11 @@ href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cp
 
 (define (integers-from n)
   (cons (delay n) (delay-force (integers-from (+ n 1)))))</code></pre>
-<p>The parser desugars <code>delay</code> to
-<code>(%make-lazy-promise (lambda () expr))</code> and
-<code>delay-force</code> to
-<code>(%make-lazy-promise-force (lambda () expr))</code> (<a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer">parser.cpp</a>). The
-<code>delay-force</code> form enables iterative (non-recursive) forcing,
-preventing stack overflow on deeply chained promises.</p>
+<p>The parser desugars <code>delay</code> to <code>(%make-lazy-promise (lambda () expr))</code> and <code>delay-force</code> to <code>(%make-lazy-promise-force (lambda () expr))</code> (<a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer">parser.cpp</a>). The <code>delay-force</code> form enables iterative (non-recursive) forcing, preventing stack overflow on deeply chained promises.</p>
 <hr />
 <h2 id="eval-and-environments">Eval and Environments</h2>
-<p>Eshkol implements <code>eval</code> as a compiler-level builtin that
-compiles and executes S-expressions at runtime.</p>
-<p><strong>Implementation:</strong> <code>codegenEval</code> in <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/llvm_codegen.cpp</a></p>
+<p>Eshkol implements <code>eval</code> as a compiler-level builtin that compiles and executes S-expressions at runtime.</p>
+<p><strong>Implementation:</strong> <code>codegenEval</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/llvm_codegen.cpp</a></p>
 <pre class="scheme"><code>;; Basic eval
 (eval &#39;(+ 1 2))                      ; =&gt; 3
 
@@ -849,49 +683,24 @@ href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cp
 </thead>
 <tbody>
 <tr>
-<td
-style="text-align: left;"><code>(interaction-environment)</code></td>
-<td style="text-align: left;">Returns the current environment with all
-user-defined bindings</td>
+<td style="text-align: left;"><code>(interaction-environment)</code></td>
+<td style="text-align: left;">Returns the current environment with all user-defined bindings</td>
 </tr>
 <tr>
-<td
-style="text-align: left;"><code>(scheme-report-environment version)</code></td>
-<td style="text-align: left;">Returns an environment with all R7RS
-standard bindings (232 procedures)</td>
+<td style="text-align: left;"><code>(scheme-report-environment version)</code></td>
+<td style="text-align: left;">Returns an environment with all R7RS standard bindings (232 procedures)</td>
 </tr>
 <tr>
-<td
-style="text-align: left;"><code>(null-environment version)</code></td>
-<td style="text-align: left;">Returns an environment with only syntax
-keywords (no procedure bindings)</td>
+<td style="text-align: left;"><code>(null-environment version)</code></td>
+<td style="text-align: left;">Returns an environment with only syntax keywords (no procedure bindings)</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Implementation details:</strong> -
-<code>interaction-environment</code> (<a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a>) walks
-the symbol table to build an environment containing all
-currently-visible bindings. - <code>scheme-report-environment</code> (<a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a>)
-constructs an environment with the 232 R7RS standard procedures. -
-<code>null-environment</code> (<a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a>) creates
-an empty environment containing only syntax keywords.</p>
-<p>The runtime functions <code>eshkol_eval</code> and
-<code>eshkol_eval_env</code> handle the actual compilation and execution
-of the evaluated expression. Because Eshkol is a compiled language,
-<code>eval</code> involves a full compilation step (parse → type-check →
-codegen → execute), which makes it slower than in interpreted Scheme
-implementations but produces optimized native code.</p>
+<p><strong>Implementation details:</strong> - <code>interaction-environment</code> (<a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a>) walks the symbol table to build an environment containing all currently-visible bindings. - <code>scheme-report-environment</code> (<a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a>) constructs an environment with the 232 R7RS standard procedures. - <code>null-environment</code> (<a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a>) creates an empty environment containing only syntax keywords.</p>
+<p>The runtime functions <code>eshkol_eval</code> and <code>eshkol_eval_env</code> handle the actual compilation and execution of the evaluated expression. Because Eshkol is a compiled language, <code>eval</code> involves a full compilation step (parse → type-check → codegen → execute), which makes it slower than in interpreted Scheme implementations but produces optimized native code.</p>
 <hr />
 <h2 id="module-system">Module System</h2>
-<p>Eshkol’s native module system is
-<code>require</code>/<code>provide</code>. R7RS
-<code>define-library</code> and <code>import</code> forms are accepted
-as compatibility syntax and lower to that same module graph. This keeps
-module loading integrated with precompiled stdlib objects and LLVM’s
-<code>LinkOnceODRLinkage</code> for efficient linking.</p>
+<p>Eshkol’s native module system is <code>require</code>/<code>provide</code>. R7RS <code>define-library</code> and <code>import</code> forms are accepted as compatibility syntax and lower to that same module graph. This keeps module loading integrated with precompiled stdlib objects and LLVM’s <code>LinkOnceODRLinkage</code> for efficient linking.</p>
 <pre class="scheme"><code>;; Import a module
 (require stdlib)                      ; entire standard library
 (require core.list.transform)         ; specific sub-module
@@ -907,27 +716,12 @@ module loading integrated with precompiled stdlib objects and LLVM’s
 ;; Export symbols
 (provide my-function my-variable)</code></pre>
 <h3 id="precompiled-stdlib">Precompiled Stdlib</h3>
-<p>The standard library is compiled to a single object file
-(<code>stdlib.o</code>) using the <code>--shared-lib -c</code> flags
-(<code>-c</code> pins the object flavour; <code>--shared-lib</code>
-alone links a loadable shared library). All symbols use
-<code>LinkOnceODRLinkage</code>, which means: - If a user defines a
-function with the same name, the user’s definition wins (External
-linkage overrides LinkOnceODR). - No duplicate symbol errors at link
-time. - The linker keeps exactly one copy of each function.</p>
-<p>Module discovery is automatic: <code>collect_all_submodules()</code>
-recursively discovers all modules in the stdlib by parsing source files,
-so new stdlib directories work without hardcoded prefix checks.</p>
-<p><strong>Stdlib directories:</strong> <code>core/</code>,
-<code>math/</code>, <code>signal/</code>, <code>ml/</code>,
-<code>random/</code>, <code>web/</code>, <code>tensor/</code>,
-<code>quantum/</code></p>
+<p>The standard library is compiled to a single object file (<code>stdlib.o</code>) using the <code>--shared-lib -c</code> flags (<code>-c</code> pins the object flavour; <code>--shared-lib</code> alone links a loadable shared library). All symbols use <code>LinkOnceODRLinkage</code>, which means: - If a user defines a function with the same name, the user’s definition wins (External linkage overrides LinkOnceODR). - No duplicate symbol errors at link time. - The linker keeps exactly one copy of each function.</p>
+<p>Module discovery is automatic: <code>collect_all_submodules()</code> recursively discovers all modules in the stdlib by parsing source files, so new stdlib directories work without hardcoded prefix checks.</p>
+<p><strong>Stdlib directories:</strong> <code>core/</code>, <code>math/</code>, <code>signal/</code>, <code>ml/</code>, <code>random/</code>, <code>web/</code>, <code>tensor/</code>, <code>quantum/</code></p>
 <hr />
 <h2 id="macro-system">Macro System</h2>
-<p>Eshkol implements R7RS hygienic macros via <code>syntax-rules</code>
-pattern matching (<a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/macro_expander.cpp" target="_blank" rel="noopener noreferrer">macro_expander.cpp</a>,
-1,820 lines).</p>
+<p>Eshkol implements R7RS hygienic macros via <code>syntax-rules</code> pattern matching (<a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/macro_expander.cpp" target="_blank" rel="noopener noreferrer">macro_expander.cpp</a>, 1,820 lines).</p>
 <pre class="scheme"><code>;; Pattern-based macros
 (define-syntax my-if
   (syntax-rules ()
@@ -949,25 +743,12 @@ href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/macro_expander
   (let ((x 1) (y 2))
     (swap! x y)
     (list x y)))                      ; =&gt; (2 1)</code></pre>
-<p><strong>Hygiene:</strong> The macro expander maintains a symbol table
-that renames identifiers introduced by macros to avoid capture. This
-means macros are safe to use in any context without variable name
-collisions.</p>
-<p><strong>Supported forms:</strong> - <code>define-syntax</code> —
-top-level macro definition - <code>syntax-rules</code> — pattern-based
-transformer with <code>...</code> (ellipsis) for repetition -
-<code>let-syntax</code> — local macro bindings -
-<code>letrec-syntax</code> — recursive local macro bindings</p>
-<p><strong>Not supported:</strong> <code>syntax-case</code> (low-level
-macro system). Only <code>syntax-rules</code> is available. This covers
-the vast majority of practical macro patterns. Programs using
-<code>syntax-case</code> will need to be rewritten using
-<code>syntax-rules</code> or Eshkol’s other metaprogramming facilities
-(homoiconic S-expression manipulation).</p>
+<p><strong>Hygiene:</strong> The macro expander maintains a symbol table that renames identifiers introduced by macros to avoid capture. This means macros are safe to use in any context without variable name collisions.</p>
+<p><strong>Supported forms:</strong> - <code>define-syntax</code> — top-level macro definition - <code>syntax-rules</code> — pattern-based transformer with <code>...</code> (ellipsis) for repetition - <code>let-syntax</code> — local macro bindings - <code>letrec-syntax</code> — recursive local macro bindings</p>
+<p><strong>Not supported:</strong> <code>syntax-case</code> (low-level macro system). Only <code>syntax-rules</code> is available. This covers the vast majority of practical macro patterns. Programs using <code>syntax-case</code> will need to be rewritten using <code>syntax-rules</code> or Eshkol’s other metaprogramming facilities (homoiconic S-expression manipulation).</p>
 <hr />
 <h2 id="records">Records</h2>
-<p>R7RS <code>define-record-type</code> is fully supported. The parser
-transforms record definitions into vector operations at parse time.</p>
+<p>R7RS <code>define-record-type</code> is fully supported. The parser transforms record definitions into vector operations at parse time.</p>
 <pre class="scheme"><code>(define-record-type &lt;point&gt;
   (make-point x y)
   point?
@@ -983,12 +764,7 @@ transforms record definitions into vector operations at parse time.</p>
 ;; Records work with higher-order functions
 (define points (list (make-point 1 2) (make-point 3 4) (make-point 5 6)))
 (map point-x points)                 ; =&gt; (1 3 5)</code></pre>
-<p><strong>Implementation:</strong> The parser recognizes
-<code>define-record-type</code> and generates: - A constructor function
-that creates a tagged vector with a type discriminator - A predicate
-that checks the type discriminator - Accessor functions mapped to
-<code>vector-ref</code> at the appropriate index - Mutator functions
-mapped to <code>vector-set!</code> at the appropriate index</p>
+<p><strong>Implementation:</strong> The parser recognizes <code>define-record-type</code> and generates: - A constructor function that creates a tagged vector with a type discriminator - A predicate that checks the type discriminator - Accessor functions mapped to <code>vector-ref</code> at the appropriate index - Mutator functions mapped to <code>vector-set!</code> at the appropriate index</p>
 <hr />
 <h2 id="bytevectors">Bytevectors</h2>
 <p>Full R7RS 6.9 bytevector support:</p>
@@ -1015,15 +791,8 @@ mapped to <code>vector-set!</code> at the appropriate index</p>
 (string-&gt;utf8 &quot;Hello&quot;)              ; =&gt; bytevector of UTF-8 bytes</code></pre>
 <hr />
 <h2 id="tail-call-optimization">Tail Call Optimization</h2>
-<p>Eshkol implements proper tail calls as required by R7RS. Functions in
-tail position are compiled to loop-back branches rather than recursive
-calls, preventing stack overflow.</p>
-<p><strong>Implementation:</strong> The <code>TailCallContext</code> in
-<a
-href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/backend/binding_codegen.h" target="_blank" rel="noopener noreferrer">binding_codegen.h</a>
-tracks whether a call is in tail position. When TCO is active,
-<code>codegenCall</code> emits a branch back to the function entry point
-instead of a call instruction.</p>
+<p>Eshkol implements proper tail calls as required by R7RS. Functions in tail position are compiled to loop-back branches rather than recursive calls, preventing stack overflow.</p>
+<p><strong>Implementation:</strong> The <code>TailCallContext</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/backend/binding_codegen.h" target="_blank" rel="noopener noreferrer">binding_codegen.h</a> tracks whether a call is in tail position. When TCO is active, <code>codegenCall</code> emits a branch back to the function entry point instead of a call instruction.</p>
 <pre class="scheme"><code>;; This runs in O(1) stack space
 (define (loop n)
   (if (= n 0) &quot;done&quot;
@@ -1050,20 +819,12 @@ instead of a call instruction.</p>
               (if (= n 0) acc
                   (f (- n 1) (+ acc n))))))
   (f 1000000 0))                     ; =&gt; 500000500000</code></pre>
-<p><strong>Stack size:</strong> For deeply recursive non-tail calls,
-Eshkol provides a 512MB stack via linker flags. The maximum recursion
-depth defaults to 100,000 and can be overridden via the
-<code>ESHKOL_STACK_SIZE</code> environment variable.</p>
+<p><strong>Stack size:</strong> For deeply recursive non-tail calls, Eshkol provides a 512MB stack via linker flags. The maximum recursion depth defaults to 100,000 and can be overridden via the <code>ESHKOL_STACK_SIZE</code> environment variable.</p>
 <hr />
-<h2 id="eshkol-extensions-beyond-r7rs">Eshkol Extensions Beyond
-R7RS</h2>
-<p>Eshkol extends R7RS with capabilities designed for scientific
-computing, machine learning, and cognitive architectures. These
-extensions use standard Scheme syntax and do not conflict with R7RS
-programs.</p>
+<h2 id="eshkol-extensions-beyond-r7rs">Eshkol Extensions Beyond R7RS</h2>
+<p>Eshkol extends R7RS with capabilities designed for scientific computing, machine learning, and cognitive architectures. These extensions use standard Scheme syntax and do not conflict with R7RS programs.</p>
 <h3 id="automatic-differentiation">Automatic Differentiation</h3>
-<p>Three modes of automatic differentiation integrated into the
-compiler:</p>
+<p>Three modes of automatic differentiation integrated into the compiler:</p>
 <pre class="scheme"><code>;; Symbolic differentiation (compile-time AST transformation)
 (diff (lambda (x) (* x x x)) &#39;x)
 
@@ -1074,10 +835,8 @@ compiler:</p>
 (gradient (lambda (v) (+ (* (vref v 0) (vref v 0))
                          (* (vref v 1) (vref v 1))))
           #(3.0 4.0))                     ; =&gt; #(6.0 8.0)</code></pre>
-<h3 id="tensors-distinct-from-scheme-vectors">Tensors (Distinct from
-Scheme Vectors)</h3>
-<p>Homogeneous numeric arrays optimized for SIMD, GPU, and automatic
-differentiation:</p>
+<h3 id="tensors-distinct-from-scheme-vectors">Tensors (Distinct from Scheme Vectors)</h3>
+<p>Homogeneous numeric arrays optimized for SIMD, GPU, and automatic differentiation:</p>
 <pre class="scheme"><code>;; Scheme vector (heterogeneous, 16 bytes/element)
 (define v (vector 1 &quot;hello&quot; #t))
 
@@ -1086,19 +845,15 @@ differentiation:</p>
 (tensor-dot t t)                      ; =&gt; 14.0
 (tensor-add t t)                      ; =&gt; #(2.0 4.0 6.0)
 (reshape t #(3 1))                    ; =&gt; 3x1 matrix</code></pre>
-<h3 id="machine-learning-75-builtins">Machine Learning (75+
-Builtins)</h3>
-<p>Compiler-level ML operations with SIMD acceleration and GPU
-dispatch:</p>
+<h3 id="machine-learning-75-builtins">Machine Learning (75+ Builtins)</h3>
+<p>Compiler-level ML operations with SIMD acceleration and GPU dispatch:</p>
 <pre class="scheme"><code>(require ml)
 (relu #(-1.0 0.0 1.0))              ; =&gt; #(0.0 0.0 1.0)
 (softmax #(1.0 2.0 3.0))            ; =&gt; #(0.09 0.24 0.67)
 (adam-step params grads 0.001 m v t)  ; Adam optimizer step
 (conv2d input kernel 1 1)            ; 2D convolution</code></pre>
-<h3 id="consciousness-engine-22-builtins">Consciousness Engine (22
-Builtins)</h3>
-<p>Logic programming, active inference with factor graphs, and global
-workspace theory:</p>
+<h3 id="consciousness-engine-22-builtins">Consciousness Engine (22 Builtins)</h3>
+<p>Logic programming, active inference with factor graphs, and global workspace theory:</p>
 <pre class="scheme"><code>;; Logic programming
 (define s (make-substitution))
 (define s2 (unify ?x 42 s))
@@ -1147,8 +902,7 @@ workspace theory:</p>
       (scheme-report-environment 7))   ; =&gt; (1 3)</code></pre>
 <hr />
 <h2 id="known-limitations">Known Limitations</h2>
-<h3 id="genuinely-missing-r7rs-features">Genuinely Missing R7RS
-Features</h3>
+<h3 id="genuinely-missing-r7rs-features">Genuinely Missing R7RS Features</h3>
 <table>
 <colgroup>
 <col style="width: 22%" />
@@ -1169,22 +923,19 @@ Features</h3>
 <td style="text-align: left;"><code>raise-continuable</code></td>
 <td style="text-align: center;">6.11</td>
 <td style="text-align: center;">Missing</td>
-<td style="text-align: left;"><code>raise</code> works; continuable
-variant not needed for most programs</td>
+<td style="text-align: left;"><code>raise</code> works; continuable variant not needed for most programs</td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>error-object?</code></td>
 <td style="text-align: center;">6.11</td>
 <td style="text-align: center;">Missing</td>
-<td style="text-align: left;">Error objects are strings; introspection
-API not yet implemented</td>
+<td style="text-align: left;">Error objects are strings; introspection API not yet implemented</td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>error-object-message</code></td>
 <td style="text-align: center;">6.11</td>
 <td style="text-align: center;">Missing</td>
-<td style="text-align: left;">Use string operations on the error value
-directly</td>
+<td style="text-align: left;">Use string operations on the error value directly</td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>error-object-irritants</code></td>
@@ -1196,35 +947,25 @@ directly</td>
 <td style="text-align: left;"><code>exact-integer-sqrt</code></td>
 <td style="text-align: center;">6.2.6</td>
 <td style="text-align: center;">Missing</td>
-<td style="text-align: left;">Use
-<code>(inexact-&gt;exact (floor (sqrt n)))</code> as workaround</td>
+<td style="text-align: left;">Use <code>(inexact-&gt;exact (floor (sqrt n)))</code> as workaround</td>
 </tr>
 <tr>
 <td style="text-align: left;">Full R7RS library isolation</td>
 <td style="text-align: center;">5.6</td>
 <td style="text-align: center;">Limited</td>
-<td style="text-align: left;"><code>define-library</code>,
-<code>import</code>, <code>export</code>, <code>only</code>,
-<code>except</code>, <code>rename</code>, explicit-prefix imports, and
-bare-prefix imports over provided exports lower to the existing
-<code>require</code>/<code>provide</code> module graph; strict hiding
-remains future module-privacy work</td>
+<td style="text-align: left;"><code>define-library</code>, <code>import</code>, <code>export</code>, <code>only</code>, <code>except</code>, <code>rename</code>, explicit-prefix imports, and bare-prefix imports over provided exports lower to the existing <code>require</code>/<code>provide</code> module graph; strict hiding remains future module-privacy work</td>
 </tr>
 <tr>
 <td style="text-align: left;">Multi-shot continuations</td>
 <td style="text-align: center;">6.10</td>
 <td style="text-align: center;">Complete</td>
-<td style="text-align: left;">Re-entrant on native JIT, native AOT and
-the bytecode VM; escape-only captures keep the zero-overhead
-setjmp/longjmp path — see
-<code>docs/reference/language/continuations.md</code></td>
+<td style="text-align: left;">Re-entrant on native JIT, native AOT and the bytecode VM; escape-only captures keep the zero-overhead setjmp/longjmp path — see <code>docs/reference/language/continuations.md</code></td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>syntax-case</code></td>
 <td style="text-align: center;">—</td>
 <td style="text-align: center;">Missing</td>
-<td style="text-align: left;">Only <code>syntax-rules</code> supported
-(sufficient for most macros)</td>
+<td style="text-align: left;">Only <code>syntax-rules</code> supported (sufficient for most macros)</td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>char-ci=?</code> etc.</td>
@@ -1235,29 +976,13 @@ setjmp/longjmp path — see
 </tbody>
 </table>
 <h3 id="semantic-differences">Semantic Differences</h3>
-<p><strong>Memory model:</strong> Eshkol uses arena allocation instead
-of garbage collection. For most programs this is transparent, but
-programs that create cyclic data structures may accumulate memory until
-the enclosing region exits. Long-running programs with complex object
-graphs should scope that work with <code>with-region</code> or a
-<code>region-open</code>/<code>region-close</code> handle.</p>
-<p>The no-GC commitment is scoped to Eshkol’s own semantics: Eshkol
-values are never traced and no Eshkol program pauses for a collection.
-It does not exclude hosting a garbage-collected guest language, whose
-heap becomes a region with its own collector inside it. Planned; see <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0011-guest-collector-adapter.md" target="_blank" rel="noopener noreferrer">ADR-0011</a>.</p>
-<p><strong>Tail calls:</strong> Properly implemented. Mutual tail
-recursion, named-let loops, and letrec tail calls all run in O(1) stack
-space.</p>
-<p><strong>Number semantics:</strong> The full numeric tower is
-implemented. However, by default, arithmetic operations may use double
-precision when mixing exact and inexact numbers (R7RS: exact + inexact =
-inexact). Use explicit <code>exact</code> conversions to maintain
-precision.</p>
+<p><strong>Memory model:</strong> Eshkol uses arena allocation instead of garbage collection. For most programs this is transparent, but programs that create cyclic data structures may accumulate memory until the enclosing region exits. Long-running programs with complex object graphs should scope that work with <code>with-region</code> or a <code>region-open</code>/<code>region-close</code> handle.</p>
+<p>The no-GC commitment is scoped to Eshkol’s own semantics: Eshkol values are never traced and no Eshkol program pauses for a collection. It does not exclude hosting a garbage-collected guest language, whose heap becomes a region with its own collector inside it. Planned; see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0011-guest-collector-adapter.md" target="_blank" rel="noopener noreferrer">ADR-0011</a>.</p>
+<p><strong>Tail calls:</strong> Properly implemented. Mutual tail recursion, named-let loops, and letrec tail calls all run in O(1) stack space.</p>
+<p><strong>Number semantics:</strong> The full numeric tower is implemented. However, by default, arithmetic operations may use double precision when mixing exact and inexact numbers (R7RS: exact + inexact = inexact). Use explicit <code>exact</code> conversions to maintain precision.</p>
 <hr />
 <h2 id="migration-guide">Migration Guide</h2>
-<h3 id="from-r5rsr7rs-scheme-to-eshkol">From R5RS/R7RS Scheme to
-Eshkol</h3>
+<h3 id="from-r5rsr7rs-scheme-to-eshkol">From R5RS/R7RS Scheme to Eshkol</h3>
 <p><strong>Works without modification:</strong></p>
 <ul>
 <li>All list processing (cons, car, cdr, map, filter, fold, etc.)</li>
@@ -1308,23 +1033,18 @@ Eshkol</h3>
 </tr>
 <tr>
 <td style="text-align: left;">Multi-shot continuation</td>
-<td
-style="text-align: left;"><code>(call/cc (lambda (k) (k 1) (k 2)))</code></td>
-<td style="text-align: left;">Use explicit state; second
-<code>(k 2)</code> will not execute</td>
+<td style="text-align: left;"><code>(call/cc (lambda (k) (k 1) (k 2)))</code></td>
+<td style="text-align: left;">Use explicit state; second <code>(k 2)</code> will not execute</td>
 </tr>
 <tr>
 <td style="text-align: left;">Error introspection</td>
-<td
-style="text-align: left;"><code>(error-object-message exn)</code></td>
-<td style="text-align: left;">Treat <code>exn</code> as string
-directly</td>
+<td style="text-align: left;"><code>(error-object-message exn)</code></td>
+<td style="text-align: left;">Treat <code>exn</code> as string directly</td>
 </tr>
 </tbody>
 </table>
 <h3 id="leveraging-eshkol-extensions">Leveraging Eshkol Extensions</h3>
-<p>When porting Scheme code to Eshkol, consider enhancing it with
-Eshkol’s scientific computing capabilities:</p>
+<p>When porting Scheme code to Eshkol, consider enhancing it with Eshkol’s scientific computing capabilities:</p>
 <pre class="scheme"><code>;; Replace manual numerical differentiation with AD
 ;; Before (manual):
 (define (df f x) (/ (- (f (+ x 0.0001)) (f x)) 0.0001))
@@ -1348,8 +1068,7 @@ Eshkol’s scientific computing capabilities:</p>
 (parallel-map expensive-computation data)</code></pre>
 <hr />
 <h2 id="compatibility-testing">Compatibility Testing</h2>
-<p>Eshkol includes comprehensive test suites verifying Scheme
-compatibility:</p>
+<p>Eshkol includes comprehensive test suites verifying Scheme compatibility:</p>
 <pre class="bash"><code># Core language features
 ./scripts/run_features_tests.sh       # Special forms, control flow
 ./scripts/run_list_tests.sh           # List operations
@@ -1406,18 +1125,11 @@ compatibility:</p>
 <hr />
 <h2 id="see-also">See Also</h2>
 <ul>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/OVERVIEW.md" target="_blank" rel="noopener noreferrer">Language Overview</a> — Design philosophy and
-architecture</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/CONTINUATIONS.md" target="_blank" rel="noopener noreferrer">Continuations</a> — Deep dive on call/cc,
-dynamic-wind, guard/raise</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/EXACT_ARITHMETIC.md" target="_blank" rel="noopener noreferrer">Exact Arithmetic</a> — Numeric tower
-implementation details</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/MODULE_SYSTEM.md" target="_blank" rel="noopener noreferrer">Module System</a> — require/provide,
-precompiled stdlib</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/FUNCTION_COMPOSITION.md" target="_blank" rel="noopener noreferrer">Function Composition</a> —
-Closures and higher-order functions</li>
-<li><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a> — Complete function
-reference</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/GETTING_STARTED.md" target="_blank" rel="noopener noreferrer">Getting Started</a> — Installation and
-first programs</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/OVERVIEW.md" target="_blank" rel="noopener noreferrer">Language Overview</a> — Design philosophy and architecture</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/CONTINUATIONS.md" target="_blank" rel="noopener noreferrer">Continuations</a> — Deep dive on call/cc, dynamic-wind, guard/raise</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/EXACT_ARITHMETIC.md" target="_blank" rel="noopener noreferrer">Exact Arithmetic</a> — Numeric tower implementation details</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/MODULE_SYSTEM.md" target="_blank" rel="noopener noreferrer">Module System</a> — require/provide, precompiled stdlib</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/FUNCTION_COMPOSITION.md" target="_blank" rel="noopener noreferrer">Function Composition</a> — Closures and higher-order functions</li>
+<li><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a> — Complete function reference</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/GETTING_STARTED.md" target="_blank" rel="noopener noreferrer">Getting Started</a> — Installation and first programs</li>
 </ul>

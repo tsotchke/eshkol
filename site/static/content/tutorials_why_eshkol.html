@@ -1,9 +1,7 @@
 <h1 id="why-eshkol">Why Eshkol?</h1>
-<p>A side-by-side comparison showing what Eshkol does that other
-languages can’t — or make much harder.</p>
+<p>A side-by-side comparison showing what Eshkol does that other languages can’t — or make much harder.</p>
 <hr />
-<h2 id="1-derivatives-without-a-framework">1. Derivatives without a
-framework</h2>
+<h2 id="1-derivatives-without-a-framework">1. Derivatives without a framework</h2>
 <p><strong>Python (requires JAX):</strong></p>
 <pre class="python"><code>import jax
 import jax.numpy as jnp
@@ -46,18 +44,9 @@ f(5)  # 15 (works here, but not always in complex programs)</code></pre>
 ;; ALL callers see the new definition — even closures that
 ;; captured f by name. R7RS-correct dynamic name resolution.</code></pre>
 <hr />
-<h2 id="4-programs-as-neural-network-weights">4. Programs as neural
-network weights</h2>
-<p>No other language does this. Eshkol compiles programs to bytecode,
-encodes the canonical VM/AD ISA into a 6-layer transformer’s weight
-matrices, and executes programs as matrix multiplications. The current
-repository artifact verifies 126/126 inline programs and 123/123 traced
-programs across three execution paths, with every canonical opcode
-weight-covered except the deliberate <code>OP_NATIVE_CALL</code>
-boundary.</p>
-<p>This means: - Programs are differentiable (gradient descent on
-program behaviour) - The interpreter itself is a neural network - You
-can learn to improve the interpreter via backpropagation</p>
+<h2 id="4-programs-as-neural-network-weights">4. Programs as neural network weights</h2>
+<p>No other language does this. Eshkol compiles programs to bytecode, encodes the canonical VM/AD ISA into a 6-layer transformer’s weight matrices, and executes programs as matrix multiplications. The current repository artifact verifies 126/126 inline programs and 123/123 traced programs across three execution paths, with every canonical opcode weight-covered except the deliberate <code>OP_NATIVE_CALL</code> boundary.</p>
+<p>This means: - Programs are differentiable (gradient descent on program behaviour) - The interpreter itself is a neural network - You can learn to improve the interpreter via backpropagation</p>
 <hr />
 <h2 id="5-built-in-ai-reasoning">5. Built-in AI reasoning</h2>
 <p><strong>Python (requires multiple libraries):</strong></p>
@@ -78,19 +67,10 @@ can learn to improve the interpreter via backpropagation</p>
 ;; Bayesian inference in one line</code></pre>
 <hr />
 <h2 id="6-zero-garbage-collection">6. Zero garbage collection</h2>
-<p>Eshkol uses arena allocation with ownership-aware lexical regions
-(OALR). Memory is freed deterministically at scope exit — no GC pauses,
-no unpredictable latency spikes, no “GC took 200ms” in your ML training
-loop.</p>
-<p>This is the <strong>native engine</strong> (<code>eshkol-run</code>),
-which is what you compile and ship with. The bytecode VM runs the same
-programs to the same answers but does not reclaim yet, so use
-<code>eshkol-run</code> for anything long-running — see <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/memory-model.md#which-engine-reclaims" target="_blank" rel="noopener noreferrer">memory
-model</a>.</p>
+<p>Eshkol uses arena allocation with ownership-aware lexical regions (OALR). Memory is freed deterministically at scope exit — no GC pauses, no unpredictable latency spikes, no “GC took 200ms” in your ML training loop.</p>
+<p>This is the <strong>native engine</strong> (<code>eshkol-run</code>), which is what you compile and ship with. The bytecode VM runs the same programs to the same answers but does not reclaim yet, so use <code>eshkol-run</code> for anything long-running — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/memory-model.md#which-engine-reclaims" target="_blank" rel="noopener noreferrer">memory model</a>.</p>
 <hr />
-<h2 id="7-one-language-every-platform">7. One language, every
-platform</h2>
+<h2 id="7-one-language-every-platform">7. One language, every platform</h2>
 <table>
 <thead>
 <tr>
@@ -144,5 +124,4 @@ platform</h2>
 <hr />
 <h2 id="get-started">Get Started</h2>
 <pre class="bash"><code>brew tap tsotchke/eshkol &amp;&amp; brew install eshkol</code></pre>
-<p>Or just go to <a href="https://eshkol.ai">eshkol.ai</a> and start
-typing.</p>
+<p>Or just go to <a href="https://eshkol.ai">eshkol.ai</a> and start typing.</p>

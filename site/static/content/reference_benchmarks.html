@@ -1,26 +1,12 @@
 <h1 id="public-benchmarks--reference">Public Benchmarks — Reference</h1>
-<p>Eshkol’s performance and rigor claims were, until v1.3.5’s
-“benchmarks wave 1”, entirely self-reported. This page indexes the fix:
-a public, reproducible benchmark suite that measures only the axes where
-Eshkol claims something distinctive, that a stranger can run with one
-command and get numbers on their own hardware to compare against the
-reference numbers published here.</p>
-<p>The suite lives at <a
-href="https://github.com/tsotchke/eshkol/blob/master/bench/README.md" target="_blank" rel="noopener noreferrer"><code>bench/</code></a> — that README is
-the full reproduction guide (build flags, noise-control methodology,
-result JSON schema, and an explicit list of what is deliberately NOT
-benchmarked and why). This page is the doc-site pointer into it, in the
-same fan-out shape as the other <code>docs/reference/*/INDEX.md</code>
-pages.</p>
+<p>Eshkol’s performance and rigor claims were, until v1.3.5’s “benchmarks wave 1”, entirely self-reported. This page indexes the fix: a public, reproducible benchmark suite that measures only the axes where Eshkol claims something distinctive, that a stranger can run with one command and get numbers on their own hardware to compare against the reference numbers published here.</p>
+<p>The suite lives at <a href="https://github.com/tsotchke/eshkol/blob/master/bench/README.md" target="_blank" rel="noopener noreferrer"><code>bench/</code></a> — that README is the full reproduction guide (build flags, noise-control methodology, result JSON schema, and an explicit list of what is deliberately NOT benchmarked and why). This page is the doc-site pointer into it, in the same fan-out shape as the other <code>docs/reference/*/INDEX.md</code> pages.</p>
 <h2 id="run-it">Run it</h2>
 <pre class="sh"><code>cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DESHKOL_QUANTUM_ENABLED=ON -DESHKOL_BUILD_TESTS=ON -DESHKOL_BUILD_AGENT_FFI=ON
 cmake --build build --parallel
 bench/run_public_benchmarks.sh --build-dir build</code></pre>
-<p>Writes <code>bench/results/&lt;timestamp&gt;/results.json</code>
-(machine-readable) and <code>results.md</code> (human-readable), both
-derived from the same measurement run — see <a
-href="https://github.com/tsotchke/eshkol/blob/master/bench/README.md#result-format" target="_blank" rel="noopener noreferrer"><code>bench/README.md#result-format</code></a>.</p>
+<p>Writes <code>bench/results/&lt;timestamp&gt;/results.json</code> (machine-readable) and <code>results.md</code> (human-readable), both derived from the same measurement run — see <a href="https://github.com/tsotchke/eshkol/blob/master/bench/README.md#result-format" target="_blank" rel="noopener noreferrer"><code>bench/README.md#result-format</code></a>.</p>
 <h2 id="the-four-axes-wave-1">The four axes (wave 1)</h2>
 <table>
 <colgroup>
@@ -41,75 +27,38 @@ href="https://github.com/tsotchke/eshkol/blob/master/bench/README.md#result-form
 <tr>
 <td>1</td>
 <td>Exact-AD cost curves</td>
-<td><code>derivative-n</code> is O(k²) in derivative order
-(truncated-Taylor recurrence, not 2ᵏ nested duals);
-exact-at-exact-points returns exact rationals</td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/bench/axes/01_exact_ad.sh" target="_blank" rel="noopener noreferrer"><code>bench/axes/01_exact_ad.sh</code></a></td>
+<td><code>derivative-n</code> is O(k²) in derivative order (truncated-Taylor recurrence, not 2ᵏ nested duals); exact-at-exact-points returns exact rationals</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/bench/axes/01_exact_ad.sh" target="_blank" rel="noopener noreferrer"><code>bench/axes/01_exact_ad.sh</code></a></td>
 </tr>
 <tr>
 <td>2</td>
 <td>Ozaki-II CRT exact f64 GEMM</td>
-<td>Accuracy vs an exact-rational reference AND throughput, against the
-vendor BLAS baseline (Accelerate/AMX) on the SAME machine</td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/bench/axes/02_ozaki_gemm.sh" target="_blank" rel="noopener noreferrer"><code>bench/axes/02_ozaki_gemm.sh</code></a></td>
+<td>Accuracy vs an exact-rational reference AND throughput, against the vendor BLAS baseline (Accelerate/AMX) on the SAME machine</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/bench/axes/02_ozaki_gemm.sh" target="_blank" rel="noopener noreferrer"><code>bench/axes/02_ozaki_gemm.sh</code></a></td>
 </tr>
 <tr>
 <td>3</td>
 <td>Flat-RSS under resident load</td>
-<td>The native resident-loop and bytecode-VM <code>with-region</code>
-evacuator (PR #461) both hold flat peak RSS as a sweep of tick/iteration
-counts grows</td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/bench/axes/03_flat_rss.sh" target="_blank" rel="noopener noreferrer"><code>bench/axes/03_flat_rss.sh</code></a></td>
+<td>The native resident-loop and bytecode-VM <code>with-region</code> evacuator (PR #461) both hold flat peak RSS as a sweep of tick/iteration counts grows</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/bench/axes/03_flat_rss.sh" target="_blank" rel="noopener noreferrer"><code>bench/axes/03_flat_rss.sh</code></a></td>
 </tr>
 <tr>
 <td>4</td>
 <td>Differentiable quantum kernels</td>
-<td>H2 vibrational frequency from an exact 2nd-order AD Hessian; VQE H2
-energy + native adjoint gradient vs Moonlab’s exact oracle</td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/bench/axes/04_quantum_kernels.sh" target="_blank" rel="noopener noreferrer"><code>bench/axes/04_quantum_kernels.sh</code></a></td>
+<td>H2 vibrational frequency from an exact 2nd-order AD Hessian; VQE H2 energy + native adjoint gradient vs Moonlab’s exact oracle</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/bench/axes/04_quantum_kernels.sh" target="_blank" rel="noopener noreferrer"><code>bench/axes/04_quantum_kernels.sh</code></a></td>
 </tr>
 </tbody>
 </table>
-<p>Each script’s header comment names the exact claim it tests, the
-fixture it uses (existing shipped tests/examples where one already
-existed — <code>examples/h2_vibrational.esk</code>,
-<code>tests/quantum/vqe_test.esk</code> — otherwise a small generated
-<code>.esk</code> sweep modeled on the closest existing test in this
-repo), and the methodology behind the numbers.</p>
+<p>Each script’s header comment names the exact claim it tests, the fixture it uses (existing shipped tests/examples where one already existed — <code>examples/h2_vibrational.esk</code>, <code>tests/quantum/vqe_test.esk</code> — otherwise a small generated <code>.esk</code> sweep modeled on the closest existing test in this repo), and the methodology behind the numbers.</p>
 <h2 id="what-this-is-not">What this is not</h2>
-<p>This suite does not compare Eshkol against XLA/PyTorch/JAX on their
-own turf (dense float32 training throughput, ResNet-class model
-benchmarks, or a bare GEMM speed contest against XLA’s kernels). See <a
-href="https://github.com/tsotchke/eshkol/blob/master/bench/README.md#what-this-suite-does-not-benchmark-and-why" target="_blank" rel="noopener noreferrer"><code>bench/README.md</code>’s
-“What this suite does NOT benchmark, and why”</a> for the explicit,
-ratified list. It is a reproducibility artifact for claims this project
-actually makes, not a competitive benchmark suite.</p>
+<p>This suite does not compare Eshkol against XLA/PyTorch/JAX on their own turf (dense float32 training throughput, ResNet-class model benchmarks, or a bare GEMM speed contest against XLA’s kernels). See <a href="https://github.com/tsotchke/eshkol/blob/master/bench/README.md#what-this-suite-does-not-benchmark-and-why" target="_blank" rel="noopener noreferrer"><code>bench/README.md</code>’s “What this suite does NOT benchmark, and why”</a> for the explicit, ratified list. It is a reproducibility artifact for claims this project actually makes, not a competitive benchmark suite.</p>
 <h2 id="ci">CI</h2>
-<p>A <code>bench-smoke (not a measurement)</code> job in
-<code>.github/workflows/ci.yml</code> runs
-<code>bench/run_public_benchmarks.sh --smoke</code> on every PR touching
-<code>bench/**</code> — a fast harness-correctness check, never a
-performance gate. See <code>bench/README.md#ci</code>.</p>
+<p>A <code>bench-smoke (not a measurement)</code> job in <code>.github/workflows/ci.yml</code> runs <code>bench/run_public_benchmarks.sh --smoke</code> on every PR touching <code>bench/**</code> — a fast harness-correctness check, never a performance gate. See <code>bench/README.md#ci</code>.</p>
 <h2 id="see-also">See also</h2>
 <ul>
-<li><a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0007-performance-pgo-wpo.md" target="_blank" rel="noopener noreferrer"><code>docs/design/adr/0007-performance-pgo-wpo.md</code></a>
-— the “Result protocol” / “Noise controls” sections this suite’s
-methodology is a public subset of.</li>
-<li><a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/BENCHMARKING.md" target="_blank" rel="noopener noreferrer"><code>docs/breakdown/BENCHMARKING.md</code></a>
-— the pre-existing <code>benchmarks/*.esk</code> micro-benchmarks
-(matmul, activations, convolution, GPU vs CPU) this suite does not
-replace; those remain useful development-time perf probes, this suite is
-the public/reproducible claim-substantiation layer.</li>
-<li><a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/architecture.md" target="_blank" rel="noopener noreferrer"><code>docs/reference/ad/architecture.md</code></a>
-— the AD architecture axis 1 measures against.</li>
-<li><a
-href="/docs#page=breakdown_gpu_acceleration" data-url="/content/breakdown_gpu_acceleration.html"><code>docs/breakdown/GPU_ACCELERATION.md</code></a>
-— the Ozaki-II CRT GEMM design axis 2 measures against.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0007-performance-pgo-wpo.md" target="_blank" rel="noopener noreferrer"><code>docs/design/adr/0007-performance-pgo-wpo.md</code></a> — the “Result protocol” / “Noise controls” sections this suite’s methodology is a public subset of.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/BENCHMARKING.md" target="_blank" rel="noopener noreferrer"><code>docs/breakdown/BENCHMARKING.md</code></a> — the pre-existing <code>benchmarks/*.esk</code> micro-benchmarks (matmul, activations, convolution, GPU vs CPU) this suite does not replace; those remain useful development-time perf probes, this suite is the public/reproducible claim-substantiation layer.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/architecture.md" target="_blank" rel="noopener noreferrer"><code>docs/reference/ad/architecture.md</code></a> — the AD architecture axis 1 measures against.</li>
+<li><a href="/docs#page=breakdown_gpu_acceleration" data-url="/content/breakdown_gpu_acceleration.html"><code>docs/breakdown/GPU_ACCELERATION.md</code></a> — the Ozaki-II CRT GEMM design axis 2 measures against.</li>
 </ul>

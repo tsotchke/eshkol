@@ -293,7 +293,7 @@ def build(doc: dict, content_dir: Path = CONTENT_DIR, root: Path = ROOT) -> int:
     unresolved_total = 0
     for page in doc["published"]:
         result = subprocess.run(
-            [pandoc, str(root / page["file"]), "-f", PANDOC_READER, "-t", "html", "--no-highlight"],
+            [pandoc, str(root / page["file"]), "-f", PANDOC_READER, "-t", "html", "--no-highlight", "--wrap=none"],
             capture_output=True, text=True, encoding="utf-8",
         )
         if result.returncode != 0:

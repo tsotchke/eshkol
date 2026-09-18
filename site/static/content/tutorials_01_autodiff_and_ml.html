@@ -1,16 +1,9 @@
-<h1
-id="tutorial-1-automatic-differentiation-and-machine-learning">Tutorial
-1: Automatic Differentiation and Machine Learning</h1>
-<p>Learn to use Eshkol’s compiler-native automatic differentiation to
-build gradient-based machine learning from scratch. No libraries, no
-frameworks — the compiler itself computes derivatives.</p>
-<p><strong>Prerequisites:</strong> Eshkol installed
-(<code>brew install tsotchke/eshkol/eshkol</code> or from source).</p>
+<h1 id="tutorial-1-automatic-differentiation-and-machine-learning">Tutorial 1: Automatic Differentiation and Machine Learning</h1>
+<p>Learn to use Eshkol’s compiler-native automatic differentiation to build gradient-based machine learning from scratch. No libraries, no frameworks — the compiler itself computes derivatives.</p>
+<p><strong>Prerequisites:</strong> Eshkol installed (<code>brew install tsotchke/eshkol/eshkol</code> or from source).</p>
 <hr />
 <h2 id="part-1-your-first-derivative">Part 1: Your First Derivative</h2>
-<p>Eshkol computes derivatives at the compiler level. The
-<code>derivative</code> builtin takes a function and a point, and
-returns the derivative at that point.</p>
+<p>Eshkol computes derivatives at the compiler level. The <code>derivative</code> builtin takes a function and a point, and returns the derivative at that point.</p>
 <pre class="scheme"><code>;; f(x) = x^2
 (define (square x) (* x x))
 
@@ -21,15 +14,10 @@ returns the derivative at that point.</p>
 <p>Save as <code>deriv.esk</code> and run:</p>
 <pre class="bash"><code>$ eshkol-run deriv.esk -o deriv &amp;&amp; ./deriv
 4.0</code></pre>
-<p>This isn’t numerical (no epsilon, no finite differences). Eshkol uses
-<strong>forward-mode AD with dual numbers</strong>: the compiler
-transforms arithmetic to propagate both the value and its derivative
-simultaneously.</p>
+<p>This isn’t numerical (no epsilon, no finite differences). Eshkol uses <strong>forward-mode AD with dual numbers</strong>: the compiler transforms arithmetic to propagate both the value and its derivative simultaneously.</p>
 <hr />
-<h2 id="part-2-gradients-of-multivariate-functions">Part 2: Gradients of
-Multivariate Functions</h2>
-<p>For functions of multiple variables, <code>gradient</code> returns a
-vector of partial derivatives.</p>
+<h2 id="part-2-gradients-of-multivariate-functions">Part 2: Gradients of Multivariate Functions</h2>
+<p>For functions of multiple variables, <code>gradient</code> returns a vector of partial derivatives.</p>
 <pre class="scheme"><code>;; f takes a vector v = (x, y) and returns x^2 + x*y + y^2.
 ;; `gradient` is `(gradient function vector)` — the function consumes
 ;; one vector argument; partial derivatives are with respect to each component.
@@ -42,13 +30,10 @@ vector of partial derivatives.</p>
 (display (gradient f #(1.0 2.0)))
 (newline)
 ;; =&gt; #(4.0 5.0)</code></pre>
-<p>The gradient is returned as a tensor (vector). Each component is the
-partial derivative with respect to the corresponding argument.</p>
+<p>The gradient is returned as a tensor (vector). Each component is the partial derivative with respect to the corresponding argument.</p>
 <hr />
-<h2 id="part-3-higher-order-derivatives">Part 3: Higher-Order
-Derivatives</h2>
-<p>Eshkol supports nested differentiation up to 32 levels deep. You can
-differentiate a derivative to get second derivatives:</p>
+<h2 id="part-3-higher-order-derivatives">Part 3: Higher-Order Derivatives</h2>
+<p>Eshkol supports nested differentiation up to 32 levels deep. You can differentiate a derivative to get second derivatives:</p>
 <pre class="scheme"><code>;; f(x) = x^3
 (define (cube x) (* x x x))
 
@@ -62,8 +47,7 @@ differentiate a derivative to get second derivatives:</p>
 (display (derivative cube-prime 2.0))
 (newline)
 ;; =&gt; 12.0</code></pre>
-<p>Or use <code>hessian</code> directly for the matrix of second partial
-derivatives:</p>
+<p>Or use <code>hessian</code> directly for the matrix of second partial derivatives:</p>
 <pre class="scheme"><code>;; g(v) = x^2 * y + y^3, with v = (x, y).
 (define (g v)
   (let ((x (vector-ref v 0))
@@ -98,20 +82,11 @@ derivatives:</p>
 (display (curl R (vector 1.0 1.0 0.0)))
 (newline)
 ;; =&gt; #(0 0 2)</code></pre>
-<p>The field may equally be written with one parameter per coordinate —
-<code>(lambda (x y z) (vector (* x x) (* y y) (* z z)))</code> — and may
-return a <code>(list …)</code> instead of a <code>(vector …)</code>; see
-<a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/operators.md" target="_blank" rel="noopener noreferrer">the operator reference</a> for
-the full rule.</p>
-<p>Available operators: <code>derivative</code>, <code>gradient</code>,
-<code>jacobian</code>, <code>hessian</code>, <code>divergence</code>,
-<code>curl</code>, <code>laplacian</code>,
-<code>directional-derivative</code>.</p>
+<p>The field may equally be written with one parameter per coordinate — <code>(lambda (x y z) (vector (* x x) (* y y) (* z z)))</code> — and may return a <code>(list …)</code> instead of a <code>(vector …)</code>; see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/operators.md" target="_blank" rel="noopener noreferrer">the operator reference</a> for the full rule.</p>
+<p>Available operators: <code>derivative</code>, <code>gradient</code>, <code>jacobian</code>, <code>hessian</code>, <code>divergence</code>, <code>curl</code>, <code>laplacian</code>, <code>directional-derivative</code>.</p>
 <hr />
-<h2 id="part-5-gradient-descent-from-scratch">Part 5: Gradient Descent
-from Scratch</h2>
-<p>Now let’s use autodiff to train a model. We’ll fit a linear function
-<code>y = w*x</code> to data by minimizing squared error.</p>
+<h2 id="part-5-gradient-descent-from-scratch">Part 5: Gradient Descent from Scratch</h2>
+<p>Now let’s use autodiff to train a model. We’ll fit a linear function <code>y = w*x</code> to data by minimizing squared error.</p>
 <pre class="scheme"><code>;; Loss function: (w*x - y)^2
 (define (loss w x y)
   (let ((error (- (* w x) y)))
@@ -146,13 +121,9 @@ from Scratch</h2>
 (display w-final)
 (newline)
 ;; =&gt; ~2.0 (converges to the true slope)</code></pre>
-<p>The key insight:
-<code>(derivative (lambda (w) (loss w x y)) w)</code> computes the exact
-gradient of the loss with respect to <code>w</code>, automatically. No
-manual backprop, no computation graph — the compiler handles it.</p>
+<p>The key insight: <code>(derivative (lambda (w) (loss w x y)) w)</code> computes the exact gradient of the loss with respect to <code>w</code>, automatically. No manual backprop, no computation graph — the compiler handles it.</p>
 <hr />
-<h2 id="part-6-multi-parameter-models">Part 6: Multi-Parameter
-Models</h2>
+<h2 id="part-6-multi-parameter-models">Part 6: Multi-Parameter Models</h2>
 <p>For models with multiple parameters, use <code>gradient</code>:</p>
 <pre class="scheme"><code>;; Linear model: y = w1*x + w0 (slope + intercept)
 (define (predict w0 w1 x) (+ (* w1 x) w0))
@@ -226,11 +197,9 @@ Models</h2>
 
 ;; L-BFGS for second-order optimization
 (l-bfgs quad #(5.0 5.0))                           ;; =&gt; #(0 0)</code></pre>
-<p>These all compose with autodiff — you can differentiate through any
-of them.</p>
+<p>These all compose with autodiff — you can differentiate through any of them.</p>
 <hr />
-<h2 id="part-8-dot-product-and-linear-algebra">Part 8: Dot Product and
-Linear Algebra</h2>
+<h2 id="part-8-dot-product-and-linear-algebra">Part 8: Dot Product and Linear Algebra</h2>
 <pre class="scheme"><code>(require core.list.higher_order)
 
 ;; Dot product using fold-left + map
@@ -252,14 +221,9 @@ Linear Algebra</h2>
 <hr />
 <h2 id="whats-next">What’s Next</h2>
 <ul>
-<li><strong>Tutorial 2: The Bytecode VM</strong> — compile to portable
-bytecode, inspect, run on any platform</li>
-<li><strong>Tutorial 3: Weight Matrix Transformer</strong> — compile
-Eshkol programs into neural network weight matrices</li>
-<li><strong>Tutorial 4: Consciousness Engine</strong> — logic
-programming, active inference, and global workspace theory</li>
+<li><strong>Tutorial 2: The Bytecode VM</strong> — compile to portable bytecode, inspect, run on any platform</li>
+<li><strong>Tutorial 3: Weight Matrix Transformer</strong> — compile Eshkol programs into neural network weight matrices</li>
+<li><strong>Tutorial 4: Consciousness Engine</strong> — logic programming, active inference, and global workspace theory</li>
 </ul>
 <hr />
-<p><em>All examples in this tutorial can be run with
-<code>eshkol-run file.esk -o out &amp;&amp; ./out</code> or pasted into
-the browser REPL at <a href="https://eshkol.ai">eshkol.ai</a>.</em></p>
+<p><em>All examples in this tutorial can be run with <code>eshkol-run file.esk -o out &amp;&amp; ./out</code> or pasted into the browser REPL at <a href="https://eshkol.ai">eshkol.ai</a>.</em></p>

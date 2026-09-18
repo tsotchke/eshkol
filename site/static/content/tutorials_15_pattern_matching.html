@@ -1,7 +1,5 @@
 <h1 id="tutorial-15-pattern-matching">Tutorial 15: Pattern Matching</h1>
-<p>Eshkol provides <code>match</code> expressions for structural pattern
-matching — destructure data, dispatch on shape, and bind variables in
-one expression.</p>
+<p>Eshkol provides <code>match</code> expressions for structural pattern matching — destructure data, dispatch on shape, and bind variables in one expression.</p>
 <hr />
 <h2 id="basic-matching">Basic Matching</h2>
 <pre class="scheme"><code>;; Match on literal values
@@ -39,8 +37,7 @@ one expression.</p>
 ;; =&gt; 15</code></pre>
 <hr />
 <h2 id="guard-expressions-with-cond">Guard Expressions with cond</h2>
-<p>When <code>match</code> isn’t available, <code>cond</code> provides
-multi-way dispatch:</p>
+<p>When <code>match</code> isn’t available, <code>cond</code> provides multi-way dispatch:</p>
 <pre class="scheme"><code>(define (classify n)
   (cond
     ((&lt; n 0) &quot;negative&quot;)

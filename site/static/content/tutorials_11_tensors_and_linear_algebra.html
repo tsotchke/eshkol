@@ -1,7 +1,5 @@
-<h1 id="tutorial-11-tensors-and-linear-algebra">Tutorial 11: Tensors and
-Linear Algebra</h1>
-<p>Eshkol’s tensor system provides N-dimensional arrays of doubles with
-automatic SIMD vectorisation and optional GPU dispatch.</p>
+<h1 id="tutorial-11-tensors-and-linear-algebra">Tutorial 11: Tensors and Linear Algebra</h1>
+<p>Eshkol’s tensor system provides N-dimensional arrays of doubles with automatic SIMD vectorisation and optional GPU dispatch.</p>
 <hr />
 <h2 id="creating-tensors">Creating Tensors</h2>
 <pre class="scheme"><code>;; Tensor literal (homogeneous doubles, 8 bytes per element)
@@ -14,10 +12,7 @@ automatic SIMD vectorisation and optional GPU dispatch.</p>
 (define r (arange 10))         ;; #(0 1 2 3 4 5 6 7 8 9)
 (define ls (linspace 0.0 1.0 5)) ;; #(0.0 0.25 0.5 0.75 1.0)
 (define rnd (rand 3 3))        ;; 3x3 random uniform [0,1)</code></pre>
-<p><strong>Tensors vs Vectors:</strong> <code>#(1 2 3)</code> creates a
-tensor (homogeneous doubles, 8 bytes each).
-<code>(vector 1 "two" #t)</code> creates a heterogeneous vector (tagged
-values, 16 bytes each). Use tensors for numeric computation.</p>
+<p><strong>Tensors vs Vectors:</strong> <code>#(1 2 3)</code> creates a tensor (homogeneous doubles, 8 bytes each). <code>(vector 1 "two" #t)</code> creates a heterogeneous vector (tagged values, 16 bytes each). Use tensors for numeric computation.</p>
 <hr />
 <h2 id="element-access-and-mutation">Element Access and Mutation</h2>
 <!-- doc-example: known-defect SW-179: vector-set! of 99 shows #(99 20 30 40 50); the native engines store the integer bits and show 4.9e-322 -->
@@ -73,8 +68,7 @@ values, 16 bytes each). Use tensors for numeric computation.</p>
 (display (outer #(1 2) #(3 4)))  ;; =&gt; #((3 4) (6 8))</code></pre>
 <hr />
 <h2 id="gpu-acceleration">GPU Acceleration</h2>
-<p>When tensor sizes exceed a threshold, operations automatically
-dispatch to GPU (Metal on macOS, CUDA on Linux/Windows):</p>
+<p>When tensor sizes exceed a threshold, operations automatically dispatch to GPU (Metal on macOS, CUDA on Linux/Windows):</p>
 <pre class="scheme"><code>(define A (rand 64 64))
 (define B (rand 64 64))
 (define large-vector (rand 4096))
@@ -101,5 +95,4 @@ dispatch to GPU (Metal on macOS, CUDA on Linux/Windows):</p>
 (display (gradient quadratic-form #(1.0 2.0 3.0)))
 ;; =&gt; #(2.0 4.0 6.0)</code></pre>
 <hr />
-<p><em>All tensor operations compose with <code>parallel-map</code>,
-<code>fold-left</code>, and the rest of the language.</em></p>
+<p><em>All tensor operations compose with <code>parallel-map</code>, <code>fold-left</code>, and the rest of the language.</em></p>

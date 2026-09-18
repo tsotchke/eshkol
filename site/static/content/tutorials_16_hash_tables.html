@@ -1,9 +1,7 @@
 <h1 id="tutorial-16-hash-tables">Tutorial 16: Hash Tables</h1>
-<p>Eshkol provides mutable hash tables with FNV-1a hashing and open
-addressing — O(1) average lookup and insertion.</p>
+<p>Eshkol provides mutable hash tables with FNV-1a hashing and open addressing — O(1) average lookup and insertion.</p>
 <hr />
-<h2 id="creating-and-using-hash-tables">Creating and Using Hash
-Tables</h2>
+<h2 id="creating-and-using-hash-tables">Creating and Using Hash Tables</h2>
 <pre class="scheme"><code>;; Create an empty hash table
 (define ht (make-hash-table))
 
@@ -37,8 +35,4 @@ Tables</h2>
 ;; =&gt; (&quot;Alice&quot; 30)</code></pre>
 <hr />
 <h2 id="use-cases">Use Cases</h2>
-<p>Hash tables are ideal for: - Frequency counting:
-<code>(hash-table-set! ht word (+ 1 (or (hash-table-ref ht word) 0)))</code>
-- Memoisation: cache expensive computation results by input - Symbol
-tables: fast lookup by name - Graphs: adjacency lists keyed by node
-ID</p>
+<p>Hash tables are ideal for: - Frequency counting: <code>(hash-table-set! ht word (+ 1 (or (hash-table-ref ht word) 0)))</code> - Memoisation: cache expensive computation results by input - Symbol tables: fast lookup by name - Graphs: adjacency lists keyed by node ID</p>

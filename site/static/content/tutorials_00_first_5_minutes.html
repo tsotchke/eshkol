@@ -1,5 +1,4 @@
-<h1 id="your-first-5-minutes-with-eshkol">Your First 5 Minutes with
-Eshkol</h1>
+<h1 id="your-first-5-minutes-with-eshkol">Your First 5 Minutes with Eshkol</h1>
 <p>No theory, no background — just type and see what happens.</p>
 <hr />
 <h2 id="install-30-seconds">Install (30 seconds)</h2>
@@ -9,8 +8,7 @@ Eshkol</h1>
 <pre class="bash"><code># Download from GitHub Releases
 curl -LO https://github.com/tsotchke/eshkol/releases/latest
 # Extract and add to PATH</code></pre>
-<p><strong>No install — browser:</strong> Go to <a
-href="https://eshkol.ai">eshkol.ai</a> and type in the REPL.</p>
+<p><strong>No install — browser:</strong> Go to <a href="https://eshkol.ai">eshkol.ai</a> and type in the REPL.</p>
 <hr />
 <h2 id="hello-world-30-seconds">Hello World (30 seconds)</h2>
 <pre class="bash"><code>$ eshkol-repl
@@ -22,21 +20,17 @@ Hello, world!
 &gt; (square 7)
 49</code></pre>
 <hr />
-<h2 id="5-things-that-will-surprise-you">5 Things That Will Surprise
-You</h2>
+<h2 id="5-things-that-will-surprise-you">5 Things That Will Surprise You</h2>
 <h3 id="1-the-compiler-does-calculus">1. The compiler does calculus</h3>
 <pre class="scheme"><code>&gt; (derivative (lambda (x) (* x x x)) 2.0)
 12.0</code></pre>
-<p>That’s <code>d/dx(x^3)</code> at <code>x=2</code>. The answer is
-<code>3x^2 = 12</code>. No numerical approximation — the compiler
-computed the exact derivative.</p>
+<p>That’s <code>d/dx(x^3)</code> at <code>x=2</code>. The answer is <code>3x^2 = 12</code>. No numerical approximation — the compiler computed the exact derivative.</p>
 <h3 id="2-numbers-never-overflow">2. Numbers never overflow</h3>
 <pre class="scheme"><code>&gt; (expt 2 256)
 115792089237316195423570985008687907853269984665640564039457584007913129639936
 &gt; (* 999999999999999999 999999999999999999)
 999999999999999998000000000000000001</code></pre>
-<p>Integers automatically promote to arbitrary precision. No overflow,
-no truncation, no surprises.</p>
+<p>Integers automatically promote to arbitrary precision. No overflow, no truncation, no surprises.</p>
 <h3 id="3-fractions-stay-exact">3. Fractions stay exact</h3>
 <pre class="scheme"><code>&gt; (+ 1/3 1/6)
 1/2
@@ -60,11 +54,9 @@ Hello
 &gt; (define (greet) (display &quot;Hey!&quot;))
 &gt; (greet)
 Hey!</code></pre>
-<p>The REPL hot-reloads every definition. Functions, variables, lambdas
-— redefine and the change takes effect immediately.</p>
+<p>The REPL hot-reloads every definition. Functions, variables, lambdas — redefine and the change takes effect immediately.</p>
 <hr />
-<h2 id="your-first-program-2-minutes">Your First Program (2
-minutes)</h2>
+<h2 id="your-first-program-2-minutes">Your First Program (2 minutes)</h2>
 <p>Create a file called <code>hello.esk</code>:</p>
 <pre class="scheme"><code>(define (factorial n)
   (if (= n 0) 1
@@ -98,14 +90,11 @@ $ ./hello
 <tbody>
 <tr>
 <td>Learn the basics</td>
-<td><a href="/tutorials#page=tutorials_12_lists" data-url="/content/tutorials_12_lists.html">Tutorial 12: Lists</a>, <a
-href="/tutorials#page=tutorials_17_functional_programming" data-url="/content/tutorials_17_functional_programming.html">Tutorial 17: Functional
-Programming</a></td>
+<td><a href="/tutorials#page=tutorials_12_lists" data-url="/content/tutorials_12_lists.html">Tutorial 12: Lists</a>, <a href="/tutorials#page=tutorials_17_functional_programming" data-url="/content/tutorials_17_functional_programming.html">Tutorial 17: Functional Programming</a></td>
 </tr>
 <tr>
 <td>Do machine learning</td>
-<td><a href="/tutorials#page=tutorials_01_autodiff_and_ml" data-url="/content/tutorials_01_autodiff_and_ml.html">Tutorial 1: Autodiff and ML</a>, <a
-href="/tutorials#page=tutorials_21_project_neural_network" data-url="/content/tutorials_21_project_neural_network.html">Project: Neural Network</a></td>
+<td><a href="/tutorials#page=tutorials_01_autodiff_and_ml" data-url="/content/tutorials_01_autodiff_and_ml.html">Tutorial 1: Autodiff and ML</a>, <a href="/tutorials#page=tutorials_21_project_neural_network" data-url="/content/tutorials_21_project_neural_network.html">Project: Neural Network</a></td>
 </tr>
 <tr>
 <td>Build something for the web</td>
@@ -113,9 +102,7 @@ href="/tutorials#page=tutorials_21_project_neural_network" data-url="/content/tu
 </tr>
 <tr>
 <td>Understand the unique features</td>
-<td><a href="/tutorials#page=tutorials_03_weight_matrix_transformer" data-url="/content/tutorials_03_weight_matrix_transformer.html">Tutorial 3: Weight
-Transformer</a>, <a href="/tutorials#page=tutorials_04_consciousness_engine" data-url="/content/tutorials_04_consciousness_engine.html">Tutorial 4:
-Consciousness Engine</a></td>
+<td><a href="/tutorials#page=tutorials_03_weight_matrix_transformer" data-url="/content/tutorials_03_weight_matrix_transformer.html">Tutorial 3: Weight Transformer</a>, <a href="/tutorials#page=tutorials_04_consciousness_engine" data-url="/content/tutorials_04_consciousness_engine.html">Tutorial 4: Consciousness Engine</a></td>
 </tr>
 <tr>
 <td>See complete working programs</td>
@@ -123,8 +110,7 @@ Consciousness Engine</a></td>
 </tr>
 <tr>
 <td>Just explore</td>
-<td>Paste code into the REPL at <a
-href="https://eshkol.ai">eshkol.ai</a></td>
+<td>Paste code into the REPL at <a href="https://eshkol.ai">eshkol.ai</a></td>
 </tr>
 </tbody>
 </table>

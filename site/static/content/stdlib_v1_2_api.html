@@ -1,68 +1,27 @@
-<h1
-id="eshkol-standard-library--v12-scale-surfaces-api-reference">Eshkol
-Standard Library — v1.2-scale surfaces (API Reference)</h1>
-<p><strong>Version</strong>: current as of 1.3.5-evolve (original v1.2
-surfaces closed out 2026-05-20, base 2026-05-01)
-<strong>Audience</strong>: implementers and library authors writing
-against the public stdlib surface. <strong>Scope</strong>: this document
-covers the modules added or significantly expanded in the v1.2-scale
-cycle. For the <strong>complete, per-module v1.3.5 stdlib API
-reference</strong> — every provided symbol of every module with
-run-verified examples — see <a
-href="/docs#page=reference_stdlib" data-url="/content/reference_stdlib.html"><code>reference/stdlib/INDEX.md</code></a>.</p>
-<p>This document is a source-verified reference for the v1.2-scale
-public surfaces, still current in v1.3.5-evolve. Every signature,
-default, and edge case below is read directly from the implementing
-<code>.esk</code>, <code>.c</code>, or <code>.cpp</code> file; every
-example exercises only symbols listed in the corresponding
-<code>(provide …)</code> block or in the codegen builtin table. Where a
-feature listed in <a
-href="/docs#page=changelog" data-url="/content/changelog.html"><code>CHANGELOG.md</code></a> under the v1.2
-“finalises the v1.2 stdlib” line does not exist under its CHANGELOG
-name, the actual file and module name are given inline.</p>
+<h1 id="eshkol-standard-library--v12-scale-surfaces-api-reference">Eshkol Standard Library — v1.2-scale surfaces (API Reference)</h1>
+<p><strong>Version</strong>: current as of 1.3.5-evolve (original v1.2 surfaces closed out 2026-05-20, base 2026-05-01) <strong>Audience</strong>: implementers and library authors writing against the public stdlib surface. <strong>Scope</strong>: this document covers the modules added or significantly expanded in the v1.2-scale cycle. For the <strong>complete, per-module v1.3.5 stdlib API reference</strong> — every provided symbol of every module with run-verified examples — see <a href="/docs#page=reference_stdlib" data-url="/content/reference_stdlib.html"><code>reference/stdlib/INDEX.md</code></a>.</p>
+<p>This document is a source-verified reference for the v1.2-scale public surfaces, still current in v1.3.5-evolve. Every signature, default, and edge case below is read directly from the implementing <code>.esk</code>, <code>.c</code>, or <code>.cpp</code> file; every example exercises only symbols listed in the corresponding <code>(provide …)</code> block or in the codegen builtin table. Where a feature listed in <a href="/docs#page=changelog" data-url="/content/changelog.html"><code>CHANGELOG.md</code></a> under the v1.2 “finalises the v1.2 stdlib” line does not exist under its CHANGELOG name, the actual file and module name are given inline.</p>
 <hr />
 <h2 id="table-of-contents">Table of contents</h2>
 <ol type="1">
-<li><a href="/docs#page=stdlib_v1_2_api&amp;1-corejson_schema" data-url="/content/stdlib_v1_2_api.html"><code>core.json_schema</code></a> —
-JSON Schema Draft 7 subset validator</li>
-<li><a href="/docs#page=stdlib_v1_2_api&amp;2-corereflection" data-url="/content/stdlib_v1_2_api.html"><code>core.reflection</code></a> —
-<code>procedure-arity</code>, <code>type-name</code>,
-<code>describe</code></li>
-<li><a href="/docs#page=stdlib_v1_2_api&amp;3-time-api-codegen-builtins" data-url="/content/stdlib_v1_2_api.html">Time API (codegen
-builtins)</a> — ISO 8601 format/parse, monotonic clocks, timezone
-offset</li>
-<li><a href="/docs#page=stdlib_v1_2_api&amp;4-libagentregexesk" data-url="/content/stdlib_v1_2_api.html"><code>lib/agent/regex.esk</code></a> —
-PCRE2 regex with capture groups</li>
-<li><a href="/docs#page=stdlib_v1_2_api&amp;5-corecache" data-url="/content/stdlib_v1_2_api.html"><code>core.cache</code></a> — LRU cache +
-<code>memoize</code> family</li>
-<li><a
-href="/docs#page=stdlib_v1_2_api&amp;6-prng-make-prng--prng-random-codegen-builtins--librandomrandomesk" data-url="/content/stdlib_v1_2_api.html">PRNG:
-<code>make-prng</code> / <code>prng-random</code> (codegen builtins) +
-<code>lib/random/random.esk</code></a> — seedable, per-stream PRNG
-isolation</li>
-<li><a href="/docs#page=stdlib_v1_2_api&amp;7-corestreams" data-url="/content/stdlib_v1_2_api.html"><code>core.streams</code></a> — SRFI 41
-lazy streams</li>
-<li><a href="/docs#page=stdlib_v1_2_api&amp;8-coreargparse" data-url="/content/stdlib_v1_2_api.html"><code>core.argparse</code></a> — CLI
-argument parser</li>
-<li><a href="/docs#page=stdlib_v1_2_api&amp;9-coreurl" data-url="/content/stdlib_v1_2_api.html"><code>core.url</code></a> — RFC 3986
-percent-encoding + <code>url-parse</code> (system builtin)</li>
-<li><a
-href="/docs#page=stdlib_v1_2_api&amp;10-coredatabase64--base64url-variants" data-url="/content/stdlib_v1_2_api.html"><code>core.data.base64</code>
-— base64url variants</a></li>
-<li><a
-href="/docs#page=stdlib_v1_2_api&amp;11-call-with-values-finalisation-codegen-builtin" data-url="/content/stdlib_v1_2_api.html"><code>call-with-values</code>
-finalisation (codegen builtin)</a></li>
-<li><a href="/docs#page=stdlib_v1_2_api&amp;12-cross-references-and-module-loading" data-url="/content/stdlib_v1_2_api.html">Cross-references
-and module loading</a></li>
+<li><a href="/docs#page=stdlib_v1_2_api&amp;1-corejson_schema" data-url="/content/stdlib_v1_2_api.html"><code>core.json_schema</code></a> — JSON Schema Draft 7 subset validator</li>
+<li><a href="/docs#page=stdlib_v1_2_api&amp;2-corereflection" data-url="/content/stdlib_v1_2_api.html"><code>core.reflection</code></a> — <code>procedure-arity</code>, <code>type-name</code>, <code>describe</code></li>
+<li><a href="/docs#page=stdlib_v1_2_api&amp;3-time-api-codegen-builtins" data-url="/content/stdlib_v1_2_api.html">Time API (codegen builtins)</a> — ISO 8601 format/parse, monotonic clocks, timezone offset</li>
+<li><a href="/docs#page=stdlib_v1_2_api&amp;4-libagentregexesk" data-url="/content/stdlib_v1_2_api.html"><code>lib/agent/regex.esk</code></a> — PCRE2 regex with capture groups</li>
+<li><a href="/docs#page=stdlib_v1_2_api&amp;5-corecache" data-url="/content/stdlib_v1_2_api.html"><code>core.cache</code></a> — LRU cache + <code>memoize</code> family</li>
+<li><a href="/docs#page=stdlib_v1_2_api&amp;6-prng-make-prng--prng-random-codegen-builtins--librandomrandomesk" data-url="/content/stdlib_v1_2_api.html">PRNG: <code>make-prng</code> / <code>prng-random</code> (codegen builtins) + <code>lib/random/random.esk</code></a> — seedable, per-stream PRNG isolation</li>
+<li><a href="/docs#page=stdlib_v1_2_api&amp;7-corestreams" data-url="/content/stdlib_v1_2_api.html"><code>core.streams</code></a> — SRFI 41 lazy streams</li>
+<li><a href="/docs#page=stdlib_v1_2_api&amp;8-coreargparse" data-url="/content/stdlib_v1_2_api.html"><code>core.argparse</code></a> — CLI argument parser</li>
+<li><a href="/docs#page=stdlib_v1_2_api&amp;9-coreurl" data-url="/content/stdlib_v1_2_api.html"><code>core.url</code></a> — RFC 3986 percent-encoding + <code>url-parse</code> (system builtin)</li>
+<li><a href="/docs#page=stdlib_v1_2_api&amp;10-coredatabase64--base64url-variants" data-url="/content/stdlib_v1_2_api.html"><code>core.data.base64</code> — base64url variants</a></li>
+<li><a href="/docs#page=stdlib_v1_2_api&amp;11-call-with-values-finalisation-codegen-builtin" data-url="/content/stdlib_v1_2_api.html"><code>call-with-values</code> finalisation (codegen builtin)</a></li>
+<li><a href="/docs#page=stdlib_v1_2_api&amp;12-cross-references-and-module-loading" data-url="/content/stdlib_v1_2_api.html">Cross-references and module loading</a></li>
 </ol>
 <hr />
-<h2
-id="mapping-from-the-changelog-headline-to-the-on-disk-implementation">Mapping
-from the CHANGELOG headline to the on-disk implementation</h2>
+<h2 id="mapping-from-the-changelog-headline-to-the-on-disk-implementation">Mapping from the CHANGELOG headline to the on-disk implementation</h2>
 <p>The v1.2.0-scale release note reads:</p>
 <blockquote>
-<p>finalises the v1.2 stdlib (json_schema, reflection, time API, regex
-capture groups, memoization, PRNG seeding, lazy streams)</p>
+<p>finalises the v1.2 stdlib (json_schema, reflection, time API, regex capture groups, memoization, PRNG seeding, lazy streams)</p>
 </blockquote>
 <p>The actual layout is:</p>
 <table>
@@ -81,133 +40,76 @@ capture groups, memoization, PRNG seeding, lazy streams)</p>
 <tbody>
 <tr>
 <td><code>core.json_schema</code> validator</td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/json_schema.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/json_schema.esk</code></a></td>
-<td><code>(require core.json_schema)</code> (auto via
-<code>stdlib</code>)</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/json_schema.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/json_schema.esk</code></a></td>
+<td><code>(require core.json_schema)</code> (auto via <code>stdlib</code>)</td>
 </tr>
 <tr>
 <td>Reflection</td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/reflection.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/reflection.esk</code></a>
-+ codegen <code>procedure-arity</code></td>
-<td><code>(require core.reflection)</code> (auto via
-<code>stdlib</code>)</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/reflection.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/reflection.esk</code></a> + codegen <code>procedure-arity</code></td>
+<td><code>(require core.reflection)</code> (auto via <code>stdlib</code>)</td>
 </tr>
 <tr>
 <td>Time API</td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/system_builtins.c" target="_blank" rel="noopener noreferrer"><code>lib/core/system_builtins.c</code></a>
-(no <code>.esk</code> wrapper)</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/system_builtins.c" target="_blank" rel="noopener noreferrer"><code>lib/core/system_builtins.c</code></a> (no <code>.esk</code> wrapper)</td>
 <td>none — names are codegen builtins</td>
 </tr>
 <tr>
 <td>Regex capture groups</td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/agent/regex.esk" target="_blank" rel="noopener noreferrer"><code>lib/agent/regex.esk</code></a> +
-<code>lib/agent/c/agent_regex.c</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/agent/regex.esk" target="_blank" rel="noopener noreferrer"><code>lib/agent/regex.esk</code></a> + <code>lib/agent/c/agent_regex.c</code></td>
 <td><code>(load "lib/agent/regex.esk")</code> (force-loaded in JIT)</td>
 </tr>
 <tr>
 <td>Memoization / cache</td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/cache.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/cache.esk</code></a></td>
-<td><code>(require core.cache)</code> — <strong>NOT</strong>
-auto-loaded</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/cache.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/cache.esk</code></a></td>
+<td><code>(require core.cache)</code> — <strong>NOT</strong> auto-loaded</td>
 </tr>
 <tr>
 <td>PRNG seeding</td>
-<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/prng.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/prng.cpp</code></a> +
-<code>lib/random/random.esk</code></td>
-<td>codegen builtins; <code>(require random.random)</code> for
-high-level wrappers</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/prng.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/prng.cpp</code></a> + <code>lib/random/random.esk</code></td>
+<td>codegen builtins; <code>(require random.random)</code> for high-level wrappers</td>
 </tr>
 <tr>
 <td>Lazy streams</td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/streams.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/streams.esk</code></a></td>
-<td><code>(require core.streams)</code> (auto via
-<code>stdlib</code>)</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/streams.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/streams.esk</code></a></td>
+<td><code>(require core.streams)</code> (auto via <code>stdlib</code>)</td>
 </tr>
 <tr>
 <td>Argparse</td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/argparse.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/argparse.esk</code></a></td>
-<td><code>(require core.argparse)</code> — <strong>NOT</strong>
-auto-loaded</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/argparse.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/argparse.esk</code></a></td>
+<td><code>(require core.argparse)</code> — <strong>NOT</strong> auto-loaded</td>
 </tr>
 <tr>
 <td>URL</td>
-<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/url.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/url.esk</code></a> +
-system builtin <code>url-parse</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/url.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/url.esk</code></a> + system builtin <code>url-parse</code></td>
 <td><code>(require core.url)</code> (auto via <code>stdlib</code>)</td>
 </tr>
 <tr>
 <td>base64 / base64url</td>
-<td><a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/data/base64.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/data/base64.esk</code></a>
-+ <code>core.url</code> re-exports</td>
-<td><code>(require core.data.base64)</code> /
-<code>(require core.url)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/data/base64.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/data/base64.esk</code></a> + <code>core.url</code> re-exports</td>
+<td><code>(require core.data.base64)</code> / <code>(require core.url)</code></td>
 </tr>
 <tr>
 <td><code>call-with-values</code></td>
-<td>codegen builtin (<code>ESHKOL_CALL_WITH_VALUES_OP</code> in
-<code>parser.cpp</code> and <code>llvm_codegen.cpp</code>)</td>
+<td>codegen builtin (<code>ESHKOL_CALL_WITH_VALUES_OP</code> in <code>parser.cpp</code> and <code>llvm_codegen.cpp</code>)</td>
 <td>none — special form</td>
 </tr>
 </tbody>
 </table>
-<p>Modules from the brief that have <em>no separate file</em> in
-<code>lib/core/</code>:</p>
+<p>Modules from the brief that have <em>no separate file</em> in <code>lib/core/</code>:</p>
 <ul>
-<li><strong>Time API</strong> is <strong>not</strong> a
-<code>core.time</code> module — it ships as codegen builtins registered
-in <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/system_builtins.c" target="_blank" rel="noopener noreferrer"><code>lib/core/system_builtins.c</code></a>
-with the C trampolines around lines 313-561 and the LLVM dispatch around
-line 12124 of <code>lib/backend/llvm_codegen.cpp</code>. Documented in
-section 3.</li>
-<li><strong><code>core.regex</code></strong> is <strong>not</strong> in
-<code>lib/core/</code>. The capture-group-capable regex wrapper lives at
-<a href="https://github.com/tsotchke/eshkol/blob/master/lib/agent/regex.esk" target="_blank" rel="noopener noreferrer"><code>lib/agent/regex.esk</code></a>
-wrapping <code>lib/agent/c/agent_regex.c</code> (PCRE2). Documented in
-section 4.</li>
-<li><strong><code>core.random</code></strong> is <strong>not</strong> in
-<code>lib/core/</code>. The high-level RNG wrappers live at <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/random/random.esk" target="_blank" rel="noopener noreferrer"><code>lib/random/random.esk</code></a>;
-the per-stream isolation primitives (<code>make-prng</code>,
-<code>prng-random</code>, <code>prng-random-integer</code>,
-<code>prng?</code>) are codegen builtins backed by <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/prng.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/prng.cpp</code></a>.
-Documented in section 6.</li>
-<li><strong><code>core.control</code> (<code>call-with-values</code>
-finalisation)</strong>: there <em>is</em> a
-<code>lib/core/control/trampoline.esk</code>, but
-<code>call-with-values</code> itself is not in it — it is a
-parser-recognised special form with codegen in
-<code>llvm_codegen.cpp</code>. The v1.2 work was the named-consumer
-resolution fix listed in <code>CHANGELOG.md:758</code>. Documented in
-section 11.</li>
+<li><strong>Time API</strong> is <strong>not</strong> a <code>core.time</code> module — it ships as codegen builtins registered in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/system_builtins.c" target="_blank" rel="noopener noreferrer"><code>lib/core/system_builtins.c</code></a> with the C trampolines around lines 313-561 and the LLVM dispatch around line 12124 of <code>lib/backend/llvm_codegen.cpp</code>. Documented in section 3.</li>
+<li><strong><code>core.regex</code></strong> is <strong>not</strong> in <code>lib/core/</code>. The capture-group-capable regex wrapper lives at <a href="https://github.com/tsotchke/eshkol/blob/master/lib/agent/regex.esk" target="_blank" rel="noopener noreferrer"><code>lib/agent/regex.esk</code></a> wrapping <code>lib/agent/c/agent_regex.c</code> (PCRE2). Documented in section 4.</li>
+<li><strong><code>core.random</code></strong> is <strong>not</strong> in <code>lib/core/</code>. The high-level RNG wrappers live at <a href="https://github.com/tsotchke/eshkol/blob/master/lib/random/random.esk" target="_blank" rel="noopener noreferrer"><code>lib/random/random.esk</code></a>; the per-stream isolation primitives (<code>make-prng</code>, <code>prng-random</code>, <code>prng-random-integer</code>, <code>prng?</code>) are codegen builtins backed by <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/prng.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/prng.cpp</code></a>. Documented in section 6.</li>
+<li><strong><code>core.control</code> (<code>call-with-values</code> finalisation)</strong>: there <em>is</em> a <code>lib/core/control/trampoline.esk</code>, but <code>call-with-values</code> itself is not in it — it is a parser-recognised special form with codegen in <code>llvm_codegen.cpp</code>. The v1.2 work was the named-consumer resolution fix listed in <code>CHANGELOG.md:758</code>. Documented in section 11.</li>
 </ul>
 <hr />
 <h2 id="1-corejson_schema">1. <code>core.json_schema</code></h2>
-<p><strong>Source</strong>: <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/json_schema.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/json_schema.esk</code></a>.
-<strong>Auto-loaded</strong>: yes, via <code>(require stdlib)</code>.
-<strong>Direct import</strong>:
-<code>(require core.json_schema)</code>.</p>
-<p>A Draft-7-subset JSON Schema validator that operates on the output of
-<code>(json-parse …)</code>. The schema document is itself a parsed-JSON
-value (<code>hash-table</code> for objects, list for arrays, etc.). The
-grammar of supported keywords is documented at the head of the source
-file (lines 6-23).</p>
+<p><strong>Source</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/json_schema.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/json_schema.esk</code></a>. <strong>Auto-loaded</strong>: yes, via <code>(require stdlib)</code>. <strong>Direct import</strong>: <code>(require core.json_schema)</code>.</p>
+<p>A Draft-7-subset JSON Schema validator that operates on the output of <code>(json-parse …)</code>. The schema document is itself a parsed-JSON value (<code>hash-table</code> for objects, list for arrays, etc.). The grammar of supported keywords is documented at the head of the source file (lines 6-23).</p>
 <h3 id="provided-symbols">Provided symbols</h3>
 <pre class="scheme"><code>(provide json-schema-valid? json-schema-validate)</code></pre>
-<p>(Source: <code>lib/core/json_schema.esk:39</code>. Only two symbols
-are exported — predicate and error-list variant.)</p>
-<h3 id="supported-keywords-verbatim-from-source-lines-6-23">Supported
-keywords (verbatim from source lines 6-23)</h3>
+<p>(Source: <code>lib/core/json_schema.esk:39</code>. Only two symbols are exported — predicate and error-list variant.)</p>
+<h3 id="supported-keywords-verbatim-from-source-lines-6-23">Supported keywords (verbatim from source lines 6-23)</h3>
 <table>
 <colgroup>
 <col style="width: 18%" />
@@ -280,9 +182,7 @@ keywords (verbatim from source lines 6-23)</h3>
 <tr>
 <td><code>pattern</code></td>
 <td>string</td>
-<td><strong>substring containment</strong> only — no full regex
-(deliberately so <code>core.json_schema</code> does not depend on
-PCRE2)</td>
+<td><strong>substring containment</strong> only — no full regex (deliberately so <code>core.json_schema</code> does not depend on PCRE2)</td>
 </tr>
 <tr>
 <td><code>oneOf</code></td>
@@ -306,52 +206,26 @@ PCRE2)</td>
 </tr>
 </tbody>
 </table>
-<p>A schema of <code>#t</code> accepts every value; a schema of
-<code>#f</code> rejects every value (<code>json_schema.esk</code>). Both
-cases were added per Draft 6/7 boolean shorthand.</p>
-<h3
-id="json-schema-valid-schema-value--boolean"><code>(json-schema-valid? schema value)</code>
-→ boolean</h3>
-<p>Predicate form. Returns <code>#t</code> iff <code>value</code>
-validates against <code>schema</code>. Implemented in terms of
-<code>json-schema-validate</code> (line 364-365):</p>
+<p>A schema of <code>#t</code> accepts every value; a schema of <code>#f</code> rejects every value (<code>json_schema.esk</code>). Both cases were added per Draft 6/7 boolean shorthand.</p>
+<h3 id="json-schema-valid-schema-value--boolean"><code>(json-schema-valid? schema value)</code> → boolean</h3>
+<p>Predicate form. Returns <code>#t</code> iff <code>value</code> validates against <code>schema</code>. Implemented in terms of <code>json-schema-validate</code> (line 364-365):</p>
 <pre class="scheme"><code>(define (json-schema-valid? schema value)
   (null? (json-schema-validate schema value)))</code></pre>
 <p><strong>Edge cases</strong>:</p>
 <ul>
-<li>A non-<code>hash-table</code> schema (other than
-<code>#t</code>/<code>#f</code>) passes through as valid
-(<code>json_schema.esk</code>). This is deliberate so that callers can
-pass <code>'()</code> for “no constraint”.</li>
-<li>An empty array (<code>'()</code>) is treated as type
-<code>"array"</code> by <code>jsv-matches-type?</code> (line 65, 86) —
-i.e. <code>(json-schema-valid? '#hash(("type" . "array")) '())</code> is
-<code>#t</code>.</li>
+<li>A non-<code>hash-table</code> schema (other than <code>#t</code>/<code>#f</code>) passes through as valid (<code>json_schema.esk</code>). This is deliberate so that callers can pass <code>'()</code> for “no constraint”.</li>
+<li>An empty array (<code>'()</code>) is treated as type <code>"array"</code> by <code>jsv-matches-type?</code> (line 65, 86) — i.e. <code>(json-schema-valid? '#hash(("type" . "array")) '())</code> is <code>#t</code>.</li>
 </ul>
-<h3
-id="json-schema-validate-schema-value--list-of-strings"><code>(json-schema-validate schema value)</code>
-→ list of strings</h3>
-<p>Returns the full error list. Each error string carries a
-JSON-pointer-style path joined by <code>/</code>
-(<code>json_schema.esk</code>):</p>
+<h3 id="json-schema-validate-schema-value--list-of-strings"><code>(json-schema-validate schema value)</code> → list of strings</h3>
+<p>Returns the full error list. Each error string carries a JSON-pointer-style path joined by <code>/</code> (<code>json_schema.esk</code>):</p>
 <pre><code>&quot;/users/0/age: expected integer, got string&quot;</code></pre>
-<p>Empty list means valid. The path begins empty at the root and is
-extended via <code>path-extend</code> at each property or array
-index.</p>
+<p>Empty list means valid. The path begins empty at the root and is extended via <code>path-extend</code> at each property or array index.</p>
 <p><strong>Edge cases</strong>:</p>
 <ul>
-<li>The implementation distinguishes <code>hash-table</code> and
-<code>list</code> value types so a string is never misclassified as an
-array even though <code>(list? x)</code> is permissive on heap pointers
-(<code>json_schema.esk</code>, fix logged in
-<code>CHANGELOG.md:377-382</code>).</li>
-<li><code>validate-array-items</code> walks the cons chain recursively
-(line 298). For a long list (&gt;~10⁴ elements) this is
-<code>O(n)</code> stack frames; the validator does not use a
-trampoline.</li>
+<li>The implementation distinguishes <code>hash-table</code> and <code>list</code> value types so a string is never misclassified as an array even though <code>(list? x)</code> is permissive on heap pointers (<code>json_schema.esk</code>, fix logged in <code>CHANGELOG.md:377-382</code>).</li>
+<li><code>validate-array-items</code> walks the cons chain recursively (line 298). For a long list (&gt;~10⁴ elements) this is <code>O(n)</code> stack frames; the validator does not use a trampoline.</li>
 </ul>
-<h3 id="worked-example-a-user-record-schema">Worked example: a
-user-record schema</h3>
+<h3 id="worked-example-a-user-record-schema">Worked example: a user-record schema</h3>
 <pre class="scheme"><code>(require stdlib)                               ; auto-loads core.json_schema
 
 (define user-schema
@@ -370,52 +244,23 @@ user-record schema</h3>
 (display (json-schema-valid?    user-schema alice))      (newline)   ; #t
 (display (json-schema-validate  user-schema malformed))  (newline)
 ;; → (&quot;/email: string does not contain pattern \&quot;@\&quot;&quot;)</code></pre>
-<p>Round-trip path-bearing error reporting is exercised by
-<code>tests/v1_2_edge_cases/json_schema_test.esk:195-201</code>, which
-checks both that exactly one error is returned and that the error string
-contains both the JSON pointer <code>/users/0/score</code> and the
-keyword <code>minimum</code>.</p>
+<p>Round-trip path-bearing error reporting is exercised by <code>tests/v1_2_edge_cases/json_schema_test.esk:195-201</code>, which checks both that exactly one error is returned and that the error string contains both the JSON pointer <code>/users/0/score</code> and the keyword <code>minimum</code>.</p>
 <h3 id="cross-references">Cross-references</h3>
 <ul>
-<li>Object construction: see <code>(json-parse …)</code>,
-<code>(make-hash-table)</code> and <code>(hash-table-ref …)</code> in
-the main API reference.</li>
-<li>For pattern matching beyond substring containment, compile a PCRE2
-regex with <a href="/docs#page=stdlib_v1_2_api&amp;4-libagentregexesk" data-url="/content/stdlib_v1_2_api.html"><code>regex-compile</code></a>
-and check separately — the JSON Schema validator deliberately does not
-pull in <code>agent/regex.esk</code> to keep its dependency footprint to
-<code>core.list.*</code>, <code>core.strings</code>, and
-<code>core.json</code> (<code>json_schema.esk</code>).</li>
+<li>Object construction: see <code>(json-parse …)</code>, <code>(make-hash-table)</code> and <code>(hash-table-ref …)</code> in the main API reference.</li>
+<li>For pattern matching beyond substring containment, compile a PCRE2 regex with <a href="/docs#page=stdlib_v1_2_api&amp;4-libagentregexesk" data-url="/content/stdlib_v1_2_api.html"><code>regex-compile</code></a> and check separately — the JSON Schema validator deliberately does not pull in <code>agent/regex.esk</code> to keep its dependency footprint to <code>core.list.*</code>, <code>core.strings</code>, and <code>core.json</code> (<code>json_schema.esk</code>).</li>
 </ul>
 <hr />
 <h2 id="2-corereflection">2. <code>core.reflection</code></h2>
-<p><strong>Source</strong>: <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/reflection.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/reflection.esk</code></a>.
-<strong>Auto-loaded</strong>: yes, via <code>(require stdlib)</code>.
-<strong>Direct import</strong>:
-<code>(require core.reflection)</code>.</p>
-<p>Runtime reflection primitives. The module exposes two Scheme-level
-helpers; a third primitive, <code>(procedure-arity proc)</code>, is a
-<em>codegen</em> builtin implemented in
-<code>lib/backend/llvm_codegen.cpp</code> and not redefined here.</p>
+<p><strong>Source</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/reflection.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/reflection.esk</code></a>. <strong>Auto-loaded</strong>: yes, via <code>(require stdlib)</code>. <strong>Direct import</strong>: <code>(require core.reflection)</code>.</p>
+<p>Runtime reflection primitives. The module exposes two Scheme-level helpers; a third primitive, <code>(procedure-arity proc)</code>, is a <em>codegen</em> builtin implemented in <code>lib/backend/llvm_codegen.cpp</code> and not redefined here.</p>
 <h3 id="provided-symbols-1">Provided symbols</h3>
 <pre class="scheme"><code>(provide describe type-name)</code></pre>
 <p>(Source: <code>lib/core/reflection.esk:19</code>.)</p>
-<p>The codegen-builtin <code>procedure-arity</code> is documented
-alongside since it is part of the same v1.2 reflection surface (task
-#170) and is used by <code>describe</code>.</p>
-<h3 id="type-name-value--symbol"><code>(type-name value)</code> →
-symbol</h3>
-<p>Returns one of:
-<code>'integer 'real 'string 'symbol 'boolean 'pair 'null 'vector 'procedure 'char 'unknown</code>
-(source lines 30-42).</p>
-<p>Dispatch order is significant: <code>null?</code> is checked before
-<code>pair?</code> (because the empty list is a degenerate pair), and
-<code>boolean?</code> is checked before <code>integer?</code> (because
-<code>#f</code> is <em>not</em> counted as integer 0 in Eshkol). The
-last fallback <code>'unknown</code> is returned for heap subtypes the
-predicate chain doesn’t recognise (hash-tables, complex numbers,
-bignums, PRNG handles, tagged AD nodes, etc.).</p>
+<p>The codegen-builtin <code>procedure-arity</code> is documented alongside since it is part of the same v1.2 reflection surface (task #170) and is used by <code>describe</code>.</p>
+<h3 id="type-name-value--symbol"><code>(type-name value)</code> → symbol</h3>
+<p>Returns one of: <code>'integer 'real 'string 'symbol 'boolean 'pair 'null 'vector 'procedure 'char 'unknown</code> (source lines 30-42).</p>
+<p>Dispatch order is significant: <code>null?</code> is checked before <code>pair?</code> (because the empty list is a degenerate pair), and <code>boolean?</code> is checked before <code>integer?</code> (because <code>#f</code> is <em>not</em> counted as integer 0 in Eshkol). The last fallback <code>'unknown</code> is returned for heap subtypes the predicate chain doesn’t recognise (hash-tables, complex numbers, bignums, PRNG handles, tagged AD nodes, etc.).</p>
 <pre class="scheme"><code>(type-name 42)              ; → &#39;integer
 (type-name 3.14)            ; → &#39;real
 (type-name &quot;hello&quot;)         ; → &#39;string
@@ -425,11 +270,8 @@ bignums, PRNG handles, tagged AD nodes, etc.).</p>
 (type-name (list 1 2))      ; → &#39;pair
 (type-name (vector 1 2 3))  ; → &#39;vector
 (type-name (lambda (x) x))  ; → &#39;procedure</code></pre>
-<h3 id="describe-value--string"><code>(describe value)</code> →
-string</h3>
-<p>Returns a one-line human-readable description (source 62-91). The
-output format is fixed (regression-tested by
-<code>tests/v1_2_edge_cases/reflection_describe_test.esk</code>):</p>
+<h3 id="describe-value--string"><code>(describe value)</code> → string</h3>
+<p>Returns a one-line human-readable description (source 62-91). The output format is fixed (regression-tested by <code>tests/v1_2_edge_cases/reflection_describe_test.esk</code>):</p>
 <table>
 <colgroup>
 <col style="width: 14%" />
@@ -503,24 +345,11 @@ output format is fixed (regression-tested by
 </table>
 <p><strong>Edge cases</strong>:</p>
 <ul>
-<li>For lists, <code>(length value)</code> is invoked. On a circular
-list this loops forever; <code>describe</code> is <em>not</em> safe to
-call on shared mutable cons cycles.</li>
-<li>For procedures, <code>procedure-arity</code> returns the
-<em>fixed</em> parameter count. Variadic procedures count only
-parameters before the rest argument, so <code>(lambda rest ...)</code>
-returns <code>0</code> while <code>(lambda (head . rest) ...)</code>
-returns <code>1</code>.</li>
+<li>For lists, <code>(length value)</code> is invoked. On a circular list this loops forever; <code>describe</code> is <em>not</em> safe to call on shared mutable cons cycles.</li>
+<li>For procedures, <code>procedure-arity</code> returns the <em>fixed</em> parameter count. Variadic procedures count only parameters before the rest argument, so <code>(lambda rest ...)</code> returns <code>0</code> while <code>(lambda (head . rest) ...)</code> returns <code>1</code>.</li>
 </ul>
-<h3
-id="procedure-arity-proc--integer"><code>(procedure-arity proc)</code> →
-integer</h3>
-<p>Codegen builtin (<code>lib/backend/llvm_codegen.cpp</code>). Returns
-the fixed parameter count of any procedure value: top-level definitions,
-named lambdas, inline lambdas, stdlib builtins, imported functions, and
-aliases all answer correctly. Variadic procedures return the number of
-<em>fixed</em> parameters before the rest argument (the variadic
-<code>. rest</code> portion is not counted).</p>
+<h3 id="procedure-arity-proc--integer"><code>(procedure-arity proc)</code> → integer</h3>
+<p>Codegen builtin (<code>lib/backend/llvm_codegen.cpp</code>). Returns the fixed parameter count of any procedure value: top-level definitions, named lambdas, inline lambdas, stdlib builtins, imported functions, and aliases all answer correctly. Variadic procedures return the number of <em>fixed</em> parameters before the rest argument (the variadic <code>. rest</code> portion is not counted).</p>
 <pre class="scheme"><code>(define (zero) 42)
 (define (one x) x)
 (define (two a b) (+ a b))
@@ -537,19 +366,9 @@ aliases all answer correctly. Variadic procedures return the number of
 (procedure-arity car)                     ; → 1
 (procedure-arity fold-left)               ; → 3
 (procedure-arity imported-fold-left)      ; → 3</code></pre>
-<h3 id="record-fields--deferred"><code>record-fields</code> —
-deferred</h3>
-<p>The CHANGELOG and reflection.esk header
-(<code>lib/core/reflection.esk:10-15</code>, 93-109) both note
-<code>record-fields</code> as deferred. The current
-<code>define-record-type</code> expansion stores the record’s <em>type
-tag</em> in slot 0 of the underlying vector, but the field names exist
-only at parser-expansion time. A value-level reflection like
-<code>(record-fields some-record)</code> requires a runtime registry
-that has not yet been built — the file documents the implementation plan
-inline (~1 day of parser + small runtime helper work).</p>
-<h3 id="worked-example-a-generic-logger">Worked example: a generic
-logger</h3>
+<h3 id="record-fields--deferred"><code>record-fields</code> — deferred</h3>
+<p>The CHANGELOG and reflection.esk header (<code>lib/core/reflection.esk:10-15</code>, 93-109) both note <code>record-fields</code> as deferred. The current <code>define-record-type</code> expansion stores the record’s <em>type tag</em> in slot 0 of the underlying vector, but the field names exist only at parser-expansion time. A value-level reflection like <code>(record-fields some-record)</code> requires a runtime registry that has not yet been built — the file documents the implementation plan inline (~1 day of parser + small runtime helper work).</p>
+<h3 id="worked-example-a-generic-logger">Worked example: a generic logger</h3>
 <pre class="scheme"><code>(require stdlib)
 
 (define (log-arg name value)
@@ -570,107 +389,54 @@ logger</h3>
 (process (vector &#39;a &#39;b))   ; input = vector[2]      →  &#39;a</code></pre>
 <h3 id="cross-references-1">Cross-references</h3>
 <ul>
-<li><code>procedure-arity</code> is also the foundation for
-<code>core.functional.curry</code> (which reads arity to decide when to
-apply).</li>
-<li><code>describe</code> underpins the debugger’s “show me a value”
-feature in the REPL prompt.</li>
+<li><code>procedure-arity</code> is also the foundation for <code>core.functional.curry</code> (which reads arity to decide when to apply).</li>
+<li><code>describe</code> underpins the debugger’s “show me a value” feature in the REPL prompt.</li>
 </ul>
 <hr />
 <h2 id="3-time-api-codegen-builtins">3. Time API (codegen builtins)</h2>
-<p><strong>Source</strong>: <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/system_builtins.c" target="_blank" rel="noopener noreferrer"><code>lib/core/system_builtins.c</code></a>
-(lines 313-561 for the time block) + the LLVM dispatch in
-<code>lib/backend/llvm_codegen.cpp</code> (lines 12004-12131,
-return-type metadata at lines 1174-1183). <strong>Module require
-line</strong>: none — every name below is a codegen builtin and is
-available without <code>(require …)</code>. The
-<code>vm_prelude_cache.h</code> exports them to the standalone VM as
-well.</p>
-<p>There is <strong>no</strong> <code>core.time</code> module. The brief
-listed one; what actually ships is a flat set of nine codegen-builtin
-time primitives. They are listed in roughly the order they appear in
-<code>system_builtins.c</code>.</p>
+<p><strong>Source</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/system_builtins.c" target="_blank" rel="noopener noreferrer"><code>lib/core/system_builtins.c</code></a> (lines 313-561 for the time block) + the LLVM dispatch in <code>lib/backend/llvm_codegen.cpp</code> (lines 12004-12131, return-type metadata at lines 1174-1183). <strong>Module require line</strong>: none — every name below is a codegen builtin and is available without <code>(require …)</code>. The <code>vm_prelude_cache.h</code> exports them to the standalone VM as well.</p>
+<p>There is <strong>no</strong> <code>core.time</code> module. The brief listed one; what actually ships is a flat set of nine codegen-builtin time primitives. They are listed in roughly the order they appear in <code>system_builtins.c</code>.</p>
 <h3 id="conventions">Conventions</h3>
 <ul>
 <li>All “epoch” times use the Unix epoch (1970-01-01T00:00:00 UTC).</li>
-<li><code>format-iso8601</code> / <code>parse-iso8601</code> work in
-<strong>nanoseconds since epoch</strong> (<code>int64</code>), not
-milliseconds and not seconds. This is the granularity exposed by
-<code>current-time-ns</code>.</li>
-<li><code>current-timestamp</code> returns <strong>seconds since epoch
-as a <code>double</code></strong> (so it carries sub-second precision
-but is easier to compare against POSIX timestamps).</li>
-<li><code>monotonic-time-ms</code> is monotonic and not adjusted by NTP
-/ wall-clock changes; use it for elapsed-time measurement, never for
-absolute timestamps.</li>
+<li><code>format-iso8601</code> / <code>parse-iso8601</code> work in <strong>nanoseconds since epoch</strong> (<code>int64</code>), not milliseconds and not seconds. This is the granularity exposed by <code>current-time-ns</code>.</li>
+<li><code>current-timestamp</code> returns <strong>seconds since epoch as a <code>double</code></strong> (so it carries sub-second precision but is easier to compare against POSIX timestamps).</li>
+<li><code>monotonic-time-ms</code> is monotonic and not adjusted by NTP / wall-clock changes; use it for elapsed-time measurement, never for absolute timestamps.</li>
 </ul>
-<h3 id="current-time-ns--integer"><code>(current-time-ns)</code> →
-integer</h3>
-<p>Wall-clock nanoseconds since the Unix epoch. Codegen returns an
-<code>int64</code> tagged value
-(<code>function_return_types["current-time-ns"] = BuiltinTypes::Integer</code>).</p>
-<h3 id="current-timestamp--real"><code>(current-timestamp)</code> →
-real</h3>
-<p>Wall-clock seconds since the Unix epoch as a <code>double</code>. The
-C implementation uses <code>clock_gettime(CLOCK_REALTIME)</code> on
-POSIX and <code>GetSystemTimeAsFileTime</code> on Windows
-(<code>system_builtins.c</code>).</p>
+<h3 id="current-time-ns--integer"><code>(current-time-ns)</code> → integer</h3>
+<p>Wall-clock nanoseconds since the Unix epoch. Codegen returns an <code>int64</code> tagged value (<code>function_return_types["current-time-ns"] = BuiltinTypes::Integer</code>).</p>
+<h3 id="current-timestamp--real"><code>(current-timestamp)</code> → real</h3>
+<p>Wall-clock seconds since the Unix epoch as a <code>double</code>. The C implementation uses <code>clock_gettime(CLOCK_REALTIME)</code> on POSIX and <code>GetSystemTimeAsFileTime</code> on Windows (<code>system_builtins.c</code>).</p>
 <pre class="scheme"><code>(define t (current-timestamp))
 (display t) (newline)
 ;; → 1747700000.123456  (Wed May 20 …)</code></pre>
-<h3 id="format-iso8601-ns--string"><code>(format-iso8601 ns)</code> →
-string</h3>
-<p>Formats an <code>int64</code> nanosecond timestamp as
-<code>"YYYY-MM-DDTHH:MM:SS.mmmZ"</code> (always UTC, always millisecond
-precision, always <code>Z</code> suffix). Source:
-<code>system_builtins.c</code>.</p>
+<h3 id="format-iso8601-ns--string"><code>(format-iso8601 ns)</code> → string</h3>
+<p>Formats an <code>int64</code> nanosecond timestamp as <code>"YYYY-MM-DDTHH:MM:SS.mmmZ"</code> (always UTC, always millisecond precision, always <code>Z</code> suffix). Source: <code>system_builtins.c</code>.</p>
 <pre class="scheme"><code>(format-iso8601 0)                          ; → &quot;1970-01-01T00:00:00.000Z&quot;
 (format-iso8601 1000000000)                 ; → &quot;1970-01-01T00:00:01.000Z&quot;
 (format-iso8601 1704067200789000000)        ; → &quot;2024-01-01T00:00:00.789Z&quot;</code></pre>
 <p><strong>Edge cases</strong>:</p>
 <ul>
-<li>Accepts both <code>int64</code>-tagged and
-<code>double</code>-tagged input. If the input is a double
-(e.g. <code>(format-iso8601 1.7e18)</code>) the implementation casts
-back to <code>int64</code> (<code>system_builtins.c</code>).</li>
-<li>Negative ns values are accepted and represent pre-epoch dates; the
-formatter uses <code>gmtime_r</code> and is bounded by what
-<code>time_t</code> can hold on the host.</li>
+<li>Accepts both <code>int64</code>-tagged and <code>double</code>-tagged input. If the input is a double (e.g. <code>(format-iso8601 1.7e18)</code>) the implementation casts back to <code>int64</code> (<code>system_builtins.c</code>).</li>
+<li>Negative ns values are accepted and represent pre-epoch dates; the formatter uses <code>gmtime_r</code> and is bounded by what <code>time_t</code> can hold on the host.</li>
 </ul>
-<h3
-id="parse-iso8601-str--integer-or-f"><code>(parse-iso8601 str)</code> →
-integer or <code>#f</code></h3>
-<p>Parses <code>"YYYY-MM-DDTHH:MM:SS[.fff][Z|±HH:MM]"</code> to
-<code>int64</code> nanoseconds since epoch. Returns <code>#f</code> on
-any malformed input — so callers can disambiguate “this string is
-garbage” from “this string represents epoch zero” (which is the
-<code>int64</code> value <code>0</code>).</p>
+<h3 id="parse-iso8601-str--integer-or-f"><code>(parse-iso8601 str)</code> → integer or <code>#f</code></h3>
+<p>Parses <code>"YYYY-MM-DDTHH:MM:SS[.fff][Z|±HH:MM]"</code> to <code>int64</code> nanoseconds since epoch. Returns <code>#f</code> on any malformed input — so callers can disambiguate “this string is garbage” from “this string represents epoch zero” (which is the <code>int64</code> value <code>0</code>).</p>
 <p>Accepted forms (<code>system_builtins.c</code>):</p>
 <ul>
 <li><code>2024-01-01T00:00:00Z</code> — base form, UTC</li>
-<li><code>2024-01-01 00:00:00Z</code> — space accepted as the
-<code>T</code> separator</li>
-<li><code>2024-01-01T00:00:00.500Z</code> — fractional seconds, up to 9
-digits, internally truncated/padded to milliseconds</li>
-<li><code>2024-01-01T05:00:00+05:00</code> — positive offset (subtracted
-to reach UTC)</li>
-<li><code>2024-01-01T12:00:00-05:00</code> — negative offset (added to
-reach UTC)</li>
-<li><code>1970-01-01T00:00:00Z</code> — epoch zero parses to
-<code>0</code></li>
+<li><code>2024-01-01 00:00:00Z</code> — space accepted as the <code>T</code> separator</li>
+<li><code>2024-01-01T00:00:00.500Z</code> — fractional seconds, up to 9 digits, internally truncated/padded to milliseconds</li>
+<li><code>2024-01-01T05:00:00+05:00</code> — positive offset (subtracted to reach UTC)</li>
+<li><code>2024-01-01T12:00:00-05:00</code> — negative offset (added to reach UTC)</li>
+<li><code>1970-01-01T00:00:00Z</code> — epoch zero parses to <code>0</code></li>
 </ul>
 <p>Rejected (returns <code>#f</code>):</p>
 <ul>
-<li><code>"not-a-date"</code>, <code>"2024"</code>,
-<code>"2024-01-01"</code> (date-only — time portion required), and any
-string with trailing junk after the timezone marker.</li>
+<li><code>"not-a-date"</code>, <code>"2024"</code>, <code>"2024-01-01"</code> (date-only — time portion required), and any string with trailing junk after the timezone marker.</li>
 </ul>
-<h3
-id="format-relative-seconds-ago--string"><code>(format-relative seconds-ago)</code>
-→ string</h3>
-<p>Renders a non-negative <code>int64</code> of seconds into a coarse
-human-readable string. Source: <code>system_builtins.c</code>.</p>
+<h3 id="format-relative-seconds-ago--string"><code>(format-relative seconds-ago)</code> → string</h3>
+<p>Renders a non-negative <code>int64</code> of seconds into a coarse human-readable string. Source: <code>system_builtins.c</code>.</p>
 <table>
 <colgroup>
 <col style="width: 25%" />
@@ -708,27 +474,13 @@ human-readable string. Source: <code>system_builtins.c</code>.</p>
 </tbody>
 </table>
 <p>Negative input is clamped to <code>0</code> (line 454).</p>
-<h3
-id="local-timezone-offset--integer"><code>(local-timezone-offset)</code>
-→ integer</h3>
-<p>Returns the local timezone offset in seconds east of UTC.
-Implementation uses <code>localtime_r(now)</code> and
-<code>gmtime_r(now)</code> followed by
-<code>difftime(mktime(local), mktime(utc))</code>
-(<code>system_builtins.c</code>).</p>
-<p>On the WebAssembly build (<code>ESHKOL_VM_WASM</code>) this returns
-<code>0</code> unconditionally since the browser sandbox does not expose
-a deterministic timezone API.</p>
-<h3 id="monotonic-time-ms--integer"><code>(monotonic-time-ms)</code> →
-integer</h3>
-<p>Monotonic milliseconds since some unspecified origin. Use it only for
-<em>elapsed-time</em> measurements. On Linux/macOS it uses
-<code>clock_gettime(CLOCK_MONOTONIC)</code>; on Windows it uses
-<code>GetTickCount64</code>. (<code>system_builtins.c</code>.)</p>
-<h3 id="high-precision-timing-helpers-in-libstdlibesk">High-precision
-timing helpers (in <code>lib/stdlib.esk</code>)</h3>
-<p><code>lib/stdlib.esk</code> defines three additional helpers on top
-of <code>current-time-ns</code> (lines 96-113):</p>
+<h3 id="local-timezone-offset--integer"><code>(local-timezone-offset)</code> → integer</h3>
+<p>Returns the local timezone offset in seconds east of UTC. Implementation uses <code>localtime_r(now)</code> and <code>gmtime_r(now)</code> followed by <code>difftime(mktime(local), mktime(utc))</code> (<code>system_builtins.c</code>).</p>
+<p>On the WebAssembly build (<code>ESHKOL_VM_WASM</code>) this returns <code>0</code> unconditionally since the browser sandbox does not expose a deterministic timezone API.</p>
+<h3 id="monotonic-time-ms--integer"><code>(monotonic-time-ms)</code> → integer</h3>
+<p>Monotonic milliseconds since some unspecified origin. Use it only for <em>elapsed-time</em> measurements. On Linux/macOS it uses <code>clock_gettime(CLOCK_MONOTONIC)</code>; on Windows it uses <code>GetTickCount64</code>. (<code>system_builtins.c</code>.)</p>
+<h3 id="high-precision-timing-helpers-in-libstdlibesk">High-precision timing helpers (in <code>lib/stdlib.esk</code>)</h3>
+<p><code>lib/stdlib.esk</code> defines three additional helpers on top of <code>current-time-ns</code> (lines 96-113):</p>
 <pre class="scheme"><code>(define (current-time-us)
   &quot;Current Unix time in microseconds&quot;
   (/ (current-time-ns) 1000.0))
@@ -751,23 +503,14 @@ of <code>current-time-ns</code> (lines 96-113):</p>
         (thunk)
         (loop (+ i 1))))
     (/ (- (current-time-ns) start) iterations)))</code></pre>
-<p>Use <code>time-ns</code> / <code>time-us</code> for one-shot
-measurement and <code>time-it</code> for averaged microbenchmarks. Note
-that these wrap <code>current-time-ns</code> (wall-clock), not
-<code>monotonic-time-ms</code>; the choice is deliberate because
-nanosecond-resolution monotonic clocks vary widely across platforms,
-whereas <code>current-time-ns</code> is universally implemented to
-nanosecond precision.</p>
-<h3 id="worked-example-round-trip-an-iso-8601-timestamp">Worked example:
-round-trip an ISO 8601 timestamp</h3>
+<p>Use <code>time-ns</code> / <code>time-us</code> for one-shot measurement and <code>time-it</code> for averaged microbenchmarks. Note that these wrap <code>current-time-ns</code> (wall-clock), not <code>monotonic-time-ms</code>; the choice is deliberate because nanosecond-resolution monotonic clocks vary widely across platforms, whereas <code>current-time-ns</code> is universally implemented to nanosecond precision.</p>
+<h3 id="worked-example-round-trip-an-iso-8601-timestamp">Worked example: round-trip an ISO 8601 timestamp</h3>
 <pre class="scheme"><code>(let* ((s0 &quot;2026-04-17T12:34:56.789Z&quot;)
        (ns (parse-iso8601 s0))
        (s1 (format-iso8601 ns)))
   (display (string=? s0 s1)) (newline))         ; → #t</code></pre>
-<p>(Source: regression-tested by
-<code>tests/v1_2_edge_cases/time_api_test.esk:50-55</code>.)</p>
-<h3 id="worked-example-bench-a-function-with-time-ns">Worked example:
-bench a function with <code>time-ns</code></h3>
+<p>(Source: regression-tested by <code>tests/v1_2_edge_cases/time_api_test.esk:50-55</code>.)</p>
+<h3 id="worked-example-bench-a-function-with-time-ns">Worked example: bench a function with <code>time-ns</code></h3>
 <pre class="scheme"><code>(require stdlib)
 
 (define (slow-sum n)
@@ -779,127 +522,52 @@ bench a function with <code>time-ns</code></h3>
 (display &quot;took &quot;) (display elapsed) (display &quot; ns&quot;) (newline)</code></pre>
 <h3 id="cross-references-2">Cross-references</h3>
 <ul>
-<li>For Wall-clock monotonicity guarantees, contrast
-<code>current-time-ns</code> (NTP- adjustable) with
-<code>monotonic-time-ms</code> (immune to clock jumps).</li>
-<li>For ISO 8601 strings produced or consumed by JSON, use
-<code>format-iso8601</code> / <code>parse-iso8601</code> directly — the
-JSON parser preserves them as plain strings.</li>
+<li>For Wall-clock monotonicity guarantees, contrast <code>current-time-ns</code> (NTP- adjustable) with <code>monotonic-time-ms</code> (immune to clock jumps).</li>
+<li>For ISO 8601 strings produced or consumed by JSON, use <code>format-iso8601</code> / <code>parse-iso8601</code> directly — the JSON parser preserves them as plain strings.</li>
 </ul>
 <hr />
 <h2 id="4-libagentregexesk">4. <code>lib/agent/regex.esk</code></h2>
-<p><strong>Source</strong>: <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/agent/regex.esk" target="_blank" rel="noopener noreferrer"><code>lib/agent/regex.esk</code></a>
-wrapping <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/agent/c/agent_regex.c" target="_blank" rel="noopener noreferrer"><code>lib/agent/c/agent_regex.c</code></a>
-(PCRE2). <strong>Module require line</strong>: not a
-<code>(require …)</code> module. The agent FFI archive is force-loaded
-into <code>eshkol-run</code>; the JIT picks up
-<code>eshkol_regex_*</code> C symbols via
-<code>dlsym(RTLD_DEFAULT)</code>. In code that needs the helpers
-explicitly, use <code>(load "lib/agent/regex.esk")</code> or rely on
-<code>(require stdlib)</code>’s force-load side effect.</p>
+<p><strong>Source</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/agent/regex.esk" target="_blank" rel="noopener noreferrer"><code>lib/agent/regex.esk</code></a> wrapping <a href="https://github.com/tsotchke/eshkol/blob/master/lib/agent/c/agent_regex.c" target="_blank" rel="noopener noreferrer"><code>lib/agent/c/agent_regex.c</code></a> (PCRE2). <strong>Module require line</strong>: not a <code>(require …)</code> module. The agent FFI archive is force-loaded into <code>eshkol-run</code>; the JIT picks up <code>eshkol_regex_*</code> C symbols via <code>dlsym(RTLD_DEFAULT)</code>. In code that needs the helpers explicitly, use <code>(load "lib/agent/regex.esk")</code> or rely on <code>(require stdlib)</code>’s force-load side effect.</p>
 <h3 id="provided-symbols-2">Provided symbols</h3>
 <pre class="scheme"><code>(provide regex-compile regex-match regex-match? regex-match-all
          regex-replace regex-free
          regex-match-groups regex-group regex-named-group-number
          REGEX_CASELESS REGEX_MULTILINE REGEX_DOTALL)</code></pre>
-<p>(Source: <code>lib/agent/regex.esk:5-8</code>. The capture-group
-functions (<code>regex-match-groups</code>, <code>regex-group</code>,
-<code>regex-named-group-number</code>) are the v1.2 additions; the
-earlier surface only supported match-or-no-match.)</p>
+<p>(Source: <code>lib/agent/regex.esk:5-8</code>. The capture-group functions (<code>regex-match-groups</code>, <code>regex-group</code>, <code>regex-named-group-number</code>) are the v1.2 additions; the earlier surface only supported match-or-no-match.)</p>
 <h3 id="flag-constants">Flag constants</h3>
 <pre class="scheme"><code>(define REGEX_CASELESS  1)
 (define REGEX_MULTILINE 2)
 (define REGEX_DOTALL    4)</code></pre>
-<p>Bitwise-OR them and pass the result to <code>regex-compile</code>’s
-optional second argument. They map to PCRE2’s
-<code>PCRE2_CASELESS</code>, <code>PCRE2_MULTILINE</code>,
-<code>PCRE2_DOTALL</code> (<code>agent_regex.c</code>). The compile call
-always sets <code>PCRE2_UTF</code>.</p>
-<h3
-id="regex-compile-pattern-flags--integer-handle-or--1"><code>(regex-compile pattern [flags])</code>
-→ integer handle or <code>-1</code></h3>
-<p>Compiles a PCRE2 pattern. Returns a small positive integer handle (1
-≤ h &lt; 256, taken from a fixed-size handle pool in
-<code>agent_regex.c</code>) or <code>-1</code> on compile failure. The
-pool is process-global; do not leak handles or you will run out — call
-<code>(regex-free h)</code> when done.</p>
+<p>Bitwise-OR them and pass the result to <code>regex-compile</code>’s optional second argument. They map to PCRE2’s <code>PCRE2_CASELESS</code>, <code>PCRE2_MULTILINE</code>, <code>PCRE2_DOTALL</code> (<code>agent_regex.c</code>). The compile call always sets <code>PCRE2_UTF</code>.</p>
+<h3 id="regex-compile-pattern-flags--integer-handle-or--1"><code>(regex-compile pattern [flags])</code> → integer handle or <code>-1</code></h3>
+<p>Compiles a PCRE2 pattern. Returns a small positive integer handle (1 ≤ h &lt; 256, taken from a fixed-size handle pool in <code>agent_regex.c</code>) or <code>-1</code> on compile failure. The pool is process-global; do not leak handles or you will run out — call <code>(regex-free h)</code> when done.</p>
 <pre class="scheme"><code>(define digits  (regex-compile &quot;[0-9]+&quot;))
 (define ci-word (regex-compile &quot;[a-z]+&quot; REGEX_CASELESS))</code></pre>
-<h3
-id="regex-match-handle-subject--string-or-f"><code>(regex-match handle subject)</code>
-→ string or <code>#f</code></h3>
-<p>Returns the first matching substring or <code>#f</code> if no match.
-The internal buffer is <code>4096</code> bytes; matches longer than that
-are truncated at the first NUL (<code>regex.esk</code>).</p>
-<h3
-id="regex-match-handle-subject--boolean"><code>(regex-match? handle subject)</code>
-→ boolean</h3>
-<p>Cheap predicate form. Passes <code>#f</code> for the match buffer so
-no string allocation occurs (<code>regex.esk</code>).</p>
-<h3
-id="regex-match-all-handle-subject-max--list-of-strings"><code>(regex-match-all handle subject [max])</code>
-→ list of strings</h3>
-<p>Returns up to <code>max</code> (default 100) non-overlapping matches.
-The underlying buffer is sized <code>max * 256</code> bytes; matches
-share the buffer and are split on embedded NULs. Returns
-<code>'()</code> on no matches (<code>regex.esk</code>).</p>
-<h3
-id="regex-replace-handle-subject-replacement--string"><code>(regex-replace handle subject replacement)</code>
-→ string</h3>
-<p>PCRE2 substitution; replaces all non-overlapping matches. The buffer
-is sized <code>2 * (|subject| + |replacement|)</code>. On replace
-failure (negative return code) returns the original <code>subject</code>
-unchanged (<code>regex.esk</code>).</p>
-<h3 id="regex-free-handle--none"><code>(regex-free handle)</code> →
-none</h3>
-<p>Releases the PCRE2 handle and returns it to the pool. After
-<code>regex-free</code>, the handle is invalid; later use of it returns
-<code>0</code> from <code>regex-match-raw</code> and therefore
-<code>#f</code> from <code>regex-match?</code> /
-<code>regex-match</code>.</p>
+<h3 id="regex-match-handle-subject--string-or-f"><code>(regex-match handle subject)</code> → string or <code>#f</code></h3>
+<p>Returns the first matching substring or <code>#f</code> if no match. The internal buffer is <code>4096</code> bytes; matches longer than that are truncated at the first NUL (<code>regex.esk</code>).</p>
+<h3 id="regex-match-handle-subject--boolean"><code>(regex-match? handle subject)</code> → boolean</h3>
+<p>Cheap predicate form. Passes <code>#f</code> for the match buffer so no string allocation occurs (<code>regex.esk</code>).</p>
+<h3 id="regex-match-all-handle-subject-max--list-of-strings"><code>(regex-match-all handle subject [max])</code> → list of strings</h3>
+<p>Returns up to <code>max</code> (default 100) non-overlapping matches. The underlying buffer is sized <code>max * 256</code> bytes; matches share the buffer and are split on embedded NULs. Returns <code>'()</code> on no matches (<code>regex.esk</code>).</p>
+<h3 id="regex-replace-handle-subject-replacement--string"><code>(regex-replace handle subject replacement)</code> → string</h3>
+<p>PCRE2 substitution; replaces all non-overlapping matches. The buffer is sized <code>2 * (|subject| + |replacement|)</code>. On replace failure (negative return code) returns the original <code>subject</code> unchanged (<code>regex.esk</code>).</p>
+<h3 id="regex-free-handle--none"><code>(regex-free handle)</code> → none</h3>
+<p>Releases the PCRE2 handle and returns it to the pool. After <code>regex-free</code>, the handle is invalid; later use of it returns <code>0</code> from <code>regex-match-raw</code> and therefore <code>#f</code> from <code>regex-match?</code> / <code>regex-match</code>.</p>
 <h3 id="capture-groups-v12-addition">Capture groups (v1.2 addition)</h3>
-<h4
-id="regex-match-groups-handle-subject--list-of-strings-or-f"><code>(regex-match-groups handle subject)</code>
-→ list of strings or <code>#f</code></h4>
-<p>Matches <code>subject</code> and returns
-<code>(list full-match group1 group2 …)</code> on a match,
-<code>#f</code> on no match. <code>group 0</code> is the full match;
-<code>group 1..N</code> are the captured subgroups in left-to-right
-declaration order. An unset optional group (e.g. the <code>b</code> in
-<code>a(b)?c</code> when <code>b</code> is absent) is returned as the
-empty string <code>""</code> (<code>regex.esk</code>).</p>
-<h4
-id="regex-group-match-groups-idx--string-or-f"><code>(regex-group match-groups idx)</code>
-→ string or <code>#f</code></h4>
-<p>Accessor by integer index into the list returned by
-<code>regex-match-groups</code>. Index <code>0</code> is the full match.
-Out-of-range indices return <code>#f</code>
-(<code>regex.esk</code>).</p>
-<h4
-id="regex-named-group-number-handle-name--integer"><code>(regex-named-group-number handle name)</code>
-→ integer</h4>
-<p>Returns the integer index of a PCRE2 named capture group
-<code>(?&lt;name&gt;...)</code>, or <code>-1</code> if no such name
-exists in the compiled pattern (<code>regex.esk</code>). Combine with
-<code>regex-group</code> to do “give me the group called ‘year’”:</p>
+<h4 id="regex-match-groups-handle-subject--list-of-strings-or-f"><code>(regex-match-groups handle subject)</code> → list of strings or <code>#f</code></h4>
+<p>Matches <code>subject</code> and returns <code>(list full-match group1 group2 …)</code> on a match, <code>#f</code> on no match. <code>group 0</code> is the full match; <code>group 1..N</code> are the captured subgroups in left-to-right declaration order. An unset optional group (e.g. the <code>b</code> in <code>a(b)?c</code> when <code>b</code> is absent) is returned as the empty string <code>""</code> (<code>regex.esk</code>).</p>
+<h4 id="regex-group-match-groups-idx--string-or-f"><code>(regex-group match-groups idx)</code> → string or <code>#f</code></h4>
+<p>Accessor by integer index into the list returned by <code>regex-match-groups</code>. Index <code>0</code> is the full match. Out-of-range indices return <code>#f</code> (<code>regex.esk</code>).</p>
+<h4 id="regex-named-group-number-handle-name--integer"><code>(regex-named-group-number handle name)</code> → integer</h4>
+<p>Returns the integer index of a PCRE2 named capture group <code>(?&lt;name&gt;...)</code>, or <code>-1</code> if no such name exists in the compiled pattern (<code>regex.esk</code>). Combine with <code>regex-group</code> to do “give me the group called ‘year’”:</p>
 <pre class="scheme"><code>(define h (regex-compile &quot;(?&lt;year&gt;[0-9]{4})-(?&lt;mon&gt;[0-9]{2})-(?&lt;day&gt;[0-9]{2})&quot;))
 (define m (regex-match-groups h &quot;2026-05-20&quot;))
 (define year-idx (regex-named-group-number h &quot;year&quot;))
 (display (regex-group m year-idx))  ; → &quot;2026&quot;
 (regex-free h)</code></pre>
 <h3 id="redos-protection">ReDoS protection</h3>
-<p><code>agent_regex.c</code> installs a process-global
-<code>pcre2_match_context</code> with a match-limit of 10 million
-backtrack steps and a depth-limit of 100 000. Pathological patterns like
-<code>(a+)+$</code> against a long subject of <code>a</code>s with one
-trailing non-<code>a</code> will return <em>no match</em> rather than
-hang the calling thread. The limit is conservatively chosen — legitimate
-matches finish in tens of milliseconds even on the largest realistic
-inputs.</p>
-<h3 id="worked-example-extract-structured-fields-from-a-log-line">Worked
-example: extract structured fields from a log line</h3>
+<p><code>agent_regex.c</code> installs a process-global <code>pcre2_match_context</code> with a match-limit of 10 million backtrack steps and a depth-limit of 100 000. Pathological patterns like <code>(a+)+$</code> against a long subject of <code>a</code>s with one trailing non-<code>a</code> will return <em>no match</em> rather than hang the calling thread. The limit is conservatively chosen — legitimate matches finish in tens of milliseconds even on the largest realistic inputs.</p>
+<h3 id="worked-example-extract-structured-fields-from-a-log-line">Worked example: extract structured fields from a log line</h3>
 <pre class="scheme"><code>(define re
   (regex-compile &quot;(?&lt;lvl&gt;INFO|WARN|ERROR) \\[(?&lt;ts&gt;[^\\]]+)\\] (?&lt;msg&gt;.*)&quot;))
 
@@ -914,33 +582,13 @@ example: extract structured fields from a log line</h3>
 (regex-free re)</code></pre>
 <h3 id="cross-references-3">Cross-references</h3>
 <ul>
-<li>For percent-encoded URLs, use <a
-href="/docs#page=stdlib_v1_2_api&amp;9-coreurl" data-url="/content/stdlib_v1_2_api.html"><code>url-decode</code></a> before applying a
-regex.</li>
-<li>The standalone VM exposes a different regex surface
-(<code>tests/vm/regex_surface_regression.esk</code>) that returns an
-alist instead of a list. This document covers the LLVM/JIT/AOT path; the
-VM-side surface differs in shape (alist vs list) — cross-check
-<code>tests/vm/regex_surface_regression.esk</code> before porting code
-between targets.</li>
+<li>For percent-encoded URLs, use <a href="/docs#page=stdlib_v1_2_api&amp;9-coreurl" data-url="/content/stdlib_v1_2_api.html"><code>url-decode</code></a> before applying a regex.</li>
+<li>The standalone VM exposes a different regex surface (<code>tests/vm/regex_surface_regression.esk</code>) that returns an alist instead of a list. This document covers the LLVM/JIT/AOT path; the VM-side surface differs in shape (alist vs list) — cross-check <code>tests/vm/regex_surface_regression.esk</code> before porting code between targets.</li>
 </ul>
 <hr />
 <h2 id="5-corecache">5. <code>core.cache</code></h2>
-<p><strong>Source</strong>: <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/cache.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/cache.esk</code></a>.
-<strong>Direct import</strong>: <code>(require core.cache)</code>.
-<strong>Not auto-loaded</strong> by <code>(require stdlib)</code> —
-<code>lib/stdlib.esk</code> deliberately omits it (see comment at
-<code>lib/stdlib.esk:64-69</code> regarding <code>core.testing</code>;
-the same approach is taken for <code>core.cache</code> to keep the
-auto-load surface tight).</p>
-<p>A bounded LRU cache and a memoizer built on top of it. The cache is a
-simple hash-table-plus-timestamp scheme described at the head of the
-source file (lines 16-23). Eviction walks the table to find the lowest
-timestamp — an <code>O(n)</code> operation that trades implementation
-simplicity for strictly-bounded memory; the design is appropriate for
-hundreds-to-low-thousands of entries, which covers the typical
-agent-workflow cache.</p>
+<p><strong>Source</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/cache.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/cache.esk</code></a>. <strong>Direct import</strong>: <code>(require core.cache)</code>. <strong>Not auto-loaded</strong> by <code>(require stdlib)</code> — <code>lib/stdlib.esk</code> deliberately omits it (see comment at <code>lib/stdlib.esk:64-69</code> regarding <code>core.testing</code>; the same approach is taken for <code>core.cache</code> to keep the auto-load surface tight).</p>
+<p>A bounded LRU cache and a memoizer built on top of it. The cache is a simple hash-table-plus-timestamp scheme described at the head of the source file (lines 16-23). Eviction walks the table to find the lowest timestamp — an <code>O(n)</code> operation that trades implementation simplicity for strictly-bounded memory; the design is appropriate for hundreds-to-low-thousands of entries, which covers the typical agent-workflow cache.</p>
 <h3 id="provided-symbols-3">Provided symbols</h3>
 <pre class="scheme"><code>(provide make-lru-cache lru-get lru-get/default lru-set! lru-has?
          lru-delete! lru-size lru-capacity lru-clear!
@@ -948,100 +596,46 @@ agent-workflow cache.</p>
          memoize1 memoize1/cap memoize2 memoize2/cap)</code></pre>
 <p>(Source: <code>lib/core/cache.esk:29-32</code>.)</p>
 <h3 id="internal-representation">Internal representation</h3>
-<p>Each cache handle is a 3-element vector
-<code>#(capacity counter-box ht)</code> (<code>cache.esk</code>):</p>
+<p>Each cache handle is a 3-element vector <code>#(capacity counter-box ht)</code> (<code>cache.esk</code>):</p>
 <ul>
 <li><code>capacity</code> — the configured max entry count.</li>
-<li><code>counter-box</code> — a single-cell <code>(list n)</code> used
-as a mutable monotonic timestamp.</li>
-<li><code>ht</code> — a hash table mapping keys to
-<code>(cons value timestamp)</code>.</li>
+<li><code>counter-box</code> — a single-cell <code>(list n)</code> used as a mutable monotonic timestamp.</li>
+<li><code>ht</code> — a hash table mapping keys to <code>(cons value timestamp)</code>.</li>
 </ul>
-<p>This representation matters for users who want to introspect a cache;
-do not rely on it beyond what the public API gives you, but it explains
-why <code>hash-table-keys</code> does not return cache keys directly
-(you would need <code>(hash-table-keys (vector-ref cache 2))</code>,
-which is unsupported).</p>
-<h3
-id="make-lru-cache-capacity--cache-handle"><code>(make-lru-cache capacity)</code>
-→ cache handle</h3>
+<p>This representation matters for users who want to introspect a cache; do not rely on it beyond what the public API gives you, but it explains why <code>hash-table-keys</code> does not return cache keys directly (you would need <code>(hash-table-keys (vector-ref cache 2))</code>, which is unsupported).</p>
+<h3 id="make-lru-cache-capacity--cache-handle"><code>(make-lru-cache capacity)</code> → cache handle</h3>
 <p>Constructs an LRU cache with the given positive-integer capacity.</p>
-<p><strong>Edge case</strong>: passing <code>0</code>, a negative
-number, or a non-integer raises an error via <code>(error …)</code> —
-exercised by <code>tests/v1_2_edge_cases/cache_test.esk:107-110</code>
-(<code>check-raises</code>).</p>
-<h3 id="lru-capacity-cache--integer"><code>(lru-capacity cache)</code> →
-integer</h3>
-<p>The configured maximum, unchanged from
-<code>make-lru-cache</code>.</p>
-<h3 id="lru-size-cache--integer"><code>(lru-size cache)</code> →
-integer</h3>
+<p><strong>Edge case</strong>: passing <code>0</code>, a negative number, or a non-integer raises an error via <code>(error …)</code> — exercised by <code>tests/v1_2_edge_cases/cache_test.esk:107-110</code> (<code>check-raises</code>).</p>
+<h3 id="lru-capacity-cache--integer"><code>(lru-capacity cache)</code> → integer</h3>
+<p>The configured maximum, unchanged from <code>make-lru-cache</code>.</p>
+<h3 id="lru-size-cache--integer"><code>(lru-size cache)</code> → integer</h3>
 <p>Current number of entries (≤ <code>lru-capacity</code>).</p>
-<h3 id="lru-has-cache-key--boolean"><code>(lru-has? cache key)</code> →
-boolean</h3>
+<h3 id="lru-has-cache-key--boolean"><code>(lru-has? cache key)</code> → boolean</h3>
 <p>Membership test without touching the timestamp.</p>
-<h3 id="lru-get-cache-key--value-or-f"><code>(lru-get cache key)</code>
-→ value or <code>#f</code></h3>
-<p>Returns the cached value and bumps its timestamp on a hit. On a miss
-returns <code>#f</code> (so a cache that legitimately stores
-<code>#f</code> is ambiguous; use <code>lru-get/default</code> if your
-value space includes <code>#f</code>).</p>
-<h3
-id="lru-getdefault-cache-key-default--value-or-default"><code>(lru-get/default cache key default)</code>
-→ value or <code>default</code></h3>
-<p>Like <code>lru-get</code> but returns <code>default</code> on a miss.
-Still bumps the timestamp on a hit (<code>cache.esk</code>).</p>
-<h3
-id="lru-set-cache-key-value--unspecified"><code>(lru-set! cache key value)</code>
-→ unspecified</h3>
-<p>Stores <code>value</code> under <code>key</code>. If <code>key</code>
-already exists, updates the value and touches the timestamp (does not
-change <code>lru-size</code>). Otherwise inserts, and if this would
-exceed <code>capacity</code>, evicts the lowest-timestamp entry first
-(<code>cache.esk</code>).</p>
-<h3
-id="lru-delete-cache-key--boolean"><code>(lru-delete! cache key)</code>
-→ boolean</h3>
-<p>Removes <code>key</code> from the cache. Returns <code>#t</code> if
-the key was present, <code>#f</code> otherwise.</p>
-<h3 id="lru-clear-cache--unspecified"><code>(lru-clear! cache)</code> →
-unspecified</h3>
+<h3 id="lru-get-cache-key--value-or-f"><code>(lru-get cache key)</code> → value or <code>#f</code></h3>
+<p>Returns the cached value and bumps its timestamp on a hit. On a miss returns <code>#f</code> (so a cache that legitimately stores <code>#f</code> is ambiguous; use <code>lru-get/default</code> if your value space includes <code>#f</code>).</p>
+<h3 id="lru-getdefault-cache-key-default--value-or-default"><code>(lru-get/default cache key default)</code> → value or <code>default</code></h3>
+<p>Like <code>lru-get</code> but returns <code>default</code> on a miss. Still bumps the timestamp on a hit (<code>cache.esk</code>).</p>
+<h3 id="lru-set-cache-key-value--unspecified"><code>(lru-set! cache key value)</code> → unspecified</h3>
+<p>Stores <code>value</code> under <code>key</code>. If <code>key</code> already exists, updates the value and touches the timestamp (does not change <code>lru-size</code>). Otherwise inserts, and if this would exceed <code>capacity</code>, evicts the lowest-timestamp entry first (<code>cache.esk</code>).</p>
+<h3 id="lru-delete-cache-key--boolean"><code>(lru-delete! cache key)</code> → boolean</h3>
+<p>Removes <code>key</code> from the cache. Returns <code>#t</code> if the key was present, <code>#f</code> otherwise.</p>
+<h3 id="lru-clear-cache--unspecified"><code>(lru-clear! cache)</code> → unspecified</h3>
 <p>Drops every entry (<code>cache.esk</code>).</p>
 <h3 id="memoize-family"><code>memoize</code> family</h3>
-<p><code>memoize</code>-class functions wrap a deterministic function so
-identical arguments return the cached prior result. The cache is
-per-wrapped-function: each invocation of <code>memoize</code> allocates
-a fresh <code>make-lru-cache</code>.</p>
-<h4 id="memoize1-fn--1-ary-function"><code>(memoize1 fn)</code> → 1-ary
-function</h4>
+<p><code>memoize</code>-class functions wrap a deterministic function so identical arguments return the cached prior result. The cache is per-wrapped-function: each invocation of <code>memoize</code> allocates a fresh <code>make-lru-cache</code>.</p>
+<h4 id="memoize1-fn--1-ary-function"><code>(memoize1 fn)</code> → 1-ary function</h4>
 <p>Memoize a 1-argument function with default capacity 1024.</p>
-<h4
-id="memoize1cap-fn-capacity--1-ary-function"><code>(memoize1/cap fn capacity)</code>
-→ 1-ary function</h4>
+<h4 id="memoize1cap-fn-capacity--1-ary-function"><code>(memoize1/cap fn capacity)</code> → 1-ary function</h4>
 <p>Memoize a 1-argument function with the given capacity.</p>
-<h4 id="memoize2-fn--2-ary-function"><code>(memoize2 fn)</code> → 2-ary
-function</h4>
-<p>Memoize a 2-argument function. The cache key is the string
-concatenation of <code>(display x port)</code> and
-<code>(display y port)</code> separated by NUL (<code>cache.esk</code>),
-so structural-equality (<code>equal?</code>-style) matching is achieved
-without allocating a fresh cons cell per call.</p>
-<h4
-id="memoize2cap-fn-capacity--2-ary-function"><code>(memoize2/cap fn capacity)</code>
-→ 2-ary function</h4>
+<h4 id="memoize2-fn--2-ary-function"><code>(memoize2 fn)</code> → 2-ary function</h4>
+<p>Memoize a 2-argument function. The cache key is the string concatenation of <code>(display x port)</code> and <code>(display y port)</code> separated by NUL (<code>cache.esk</code>), so structural-equality (<code>equal?</code>-style) matching is achieved without allocating a fresh cons cell per call.</p>
+<h4 id="memoize2cap-fn-capacity--2-ary-function"><code>(memoize2/cap fn capacity)</code> → 2-ary function</h4>
 <p><code>memoize2</code> with custom capacity.</p>
-<h4 id="memoize-fn-and-memoizecap-fn-capacity"><code>(memoize fn)</code>
-and <code>(memoize/cap fn capacity)</code></h4>
-<p>Aliases for <code>memoize1</code> and <code>memoize1/cap</code>
-respectively. Use them when the arity is implicit.</p>
-<p><strong>Why only 1- and 2-ary memoization?</strong> Variadic
-<code>(lambda args …)</code> capturing free variables interacts badly
-with the closure- ABI codepath in compile-to-binary mode (see the
-explanatory comment in <code>cache.esk</code>). Callers needing N-ary
-memoization should pre-curry their arguments into a single list and
-memoize the 1-ary wrapper.</p>
-<h3 id="worked-example-memoized-fibonacci-with-lru-eviction">Worked
-example: memoized Fibonacci with LRU eviction</h3>
+<h4 id="memoize-fn-and-memoizecap-fn-capacity"><code>(memoize fn)</code> and <code>(memoize/cap fn capacity)</code></h4>
+<p>Aliases for <code>memoize1</code> and <code>memoize1/cap</code> respectively. Use them when the arity is implicit.</p>
+<p><strong>Why only 1- and 2-ary memoization?</strong> Variadic <code>(lambda args …)</code> capturing free variables interacts badly with the closure- ABI codepath in compile-to-binary mode (see the explanatory comment in <code>cache.esk</code>). Callers needing N-ary memoization should pre-curry their arguments into a single list and memoize the 1-ary wrapper.</p>
+<h3 id="worked-example-memoized-fibonacci-with-lru-eviction">Worked example: memoized Fibonacci with LRU eviction</h3>
 <pre class="scheme"><code>(require core.cache)
 
 (define call-count 0)
@@ -1055,8 +649,7 @@ example: memoized Fibonacci with LRU eviction</h3>
 (display (square 5)) (newline)   ; 25, cache hit (call-count unchanged)
 (display (square 6)) (newline)   ; 36, new entry
 (display call-count) (newline)   ; → 2 (not 3)</code></pre>
-<h3 id="worked-example-lru-eviction-order">Worked example: LRU eviction
-order</h3>
+<h3 id="worked-example-lru-eviction-order">Worked example: LRU eviction order</h3>
 <pre class="scheme"><code>(require core.cache)
 
 (define c (make-lru-cache 3))
@@ -1071,98 +664,44 @@ order</h3>
 (display (lru-has? c &#39;b)) (newline)   ; #f — evicted
 (display (lru-has? c &#39;c)) (newline)   ; #t
 (display (lru-has? c &#39;d)) (newline)   ; #t</code></pre>
-<p>(Source: regression-tested by
-<code>tests/v1_2_edge_cases/cache_test.esk:36-49</code>.)</p>
+<p>(Source: regression-tested by <code>tests/v1_2_edge_cases/cache_test.esk:36-49</code>.)</p>
 <h3 id="cross-references-4">Cross-references</h3>
 <ul>
-<li>For a <em>recursive</em> memoization that survives across calls, use
-a module-level <code>memoize1</code>-wrapped function rather than
-re-wrapping inside the function body — re-wrapping creates a fresh cache
-per call and defeats the purpose.</li>
-<li>For very large caches (&gt;10⁶ entries) the <code>O(n)</code>
-eviction scan becomes measurable; the source-level comment recommends an
-external store at that scale (<code>cache.esk</code>).</li>
+<li>For a <em>recursive</em> memoization that survives across calls, use a module-level <code>memoize1</code>-wrapped function rather than re-wrapping inside the function body — re-wrapping creates a fresh cache per call and defeats the purpose.</li>
+<li>For very large caches (&gt;10⁶ entries) the <code>O(n)</code> eviction scan becomes measurable; the source-level comment recommends an external store at that scale (<code>cache.esk</code>).</li>
 </ul>
 <hr />
-<h2
-id="6-prng-make-prng--prng-random-codegen-builtins--librandomrandomesk">6.
-PRNG: <code>make-prng</code> / <code>prng-random</code> (codegen
-builtins) + <code>lib/random/random.esk</code></h2>
+<h2 id="6-prng-make-prng--prng-random-codegen-builtins--librandomrandomesk">6. PRNG: <code>make-prng</code> / <code>prng-random</code> (codegen builtins) + <code>lib/random/random.esk</code></h2>
 <p><strong>Sources</strong>:</p>
 <ul>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/prng.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/prng.cpp</code></a> —
-C runtime backing the per-stream isolated PRNG state.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/prng.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/prng.cpp</code></a> — C runtime backing the per-stream isolated PRNG state.</li>
 <li><code>lib/backend/llvm_codegen.cpp</code> — codegen dispatch.</li>
-<li><code>lib/backend/llvm_codegen.cpp</code> — the inline documentation
-block describing the API and the registration pattern.</li>
-<li><a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/random/random.esk" target="_blank" rel="noopener noreferrer"><code>lib/random/random.esk</code></a> —
-high-level distribution sampling built on top of the global
-<code>(random)</code> function.</li>
+<li><code>lib/backend/llvm_codegen.cpp</code> — the inline documentation block describing the API and the registration pattern.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/random/random.esk" target="_blank" rel="noopener noreferrer"><code>lib/random/random.esk</code></a> — high-level distribution sampling built on top of the global <code>(random)</code> function.</li>
 </ul>
 <p><strong>Module require lines</strong>:</p>
 <ul>
-<li>Per-stream isolation primitives (<code>make-prng</code>,
-<code>prng-random</code>, <code>prng-random-integer</code>,
-<code>prng?</code>, <code>set-random-seed!</code>):
-<strong>none</strong> — they are codegen builtins, available
-everywhere.</li>
-<li>High-level distribution wrappers:
-<code>(require random.random)</code> or <code>(require "random")</code>
-(path-based fallback).</li>
+<li>Per-stream isolation primitives (<code>make-prng</code>, <code>prng-random</code>, <code>prng-random-integer</code>, <code>prng?</code>, <code>set-random-seed!</code>): <strong>none</strong> — they are codegen builtins, available everywhere.</li>
+<li>High-level distribution wrappers: <code>(require random.random)</code> or <code>(require "random")</code> (path-based fallback).</li>
 </ul>
-<p>There is <strong>no</strong> <code>core.random</code> module. The
-brief listed one; the actual implementation has two halves: codegen
-builtins for the seed/isolation mechanics, and a <code>.esk</code>
-library for the distribution-sampling helpers.</p>
-<h3 id="global-prng-drand48-compatible">Global PRNG
-(drand48-compatible)</h3>
-<p>The codegen for <code>(random)</code> calls libc’s
-<code>drand48</code>. On Linux/macOS this is the system implementation;
-on Windows it routes through the <code>eshkol</code>-shipped shim in
-<code>platform_runtime.cpp</code> (<code>prng.cpp</code>).</p>
-<h4
-id="set-random-seed-seed--unspecified"><code>(set-random-seed! seed)</code>
-→ unspecified</h4>
-<p>Seed the global PRNG. The codegen for <code>set-random-seed!</code>
-also flips a <code>__random_seeded__</code> marker so the runtime’s
-auto-seed-from-time path (which fires on first <code>(random)</code> of
-a program) is suppressed (<code>prng.cpp</code>).</p>
-<h4 id="random--real-in-00-10"><code>(random)</code> → real in
-<code>[0.0, 1.0)</code></h4>
-<p>Standard drand48-style uniform sample. Mutex-protected on the global
-state.</p>
+<p>There is <strong>no</strong> <code>core.random</code> module. The brief listed one; the actual implementation has two halves: codegen builtins for the seed/isolation mechanics, and a <code>.esk</code> library for the distribution-sampling helpers.</p>
+<h3 id="global-prng-drand48-compatible">Global PRNG (drand48-compatible)</h3>
+<p>The codegen for <code>(random)</code> calls libc’s <code>drand48</code>. On Linux/macOS this is the system implementation; on Windows it routes through the <code>eshkol</code>-shipped shim in <code>platform_runtime.cpp</code> (<code>prng.cpp</code>).</p>
+<h4 id="set-random-seed-seed--unspecified"><code>(set-random-seed! seed)</code> → unspecified</h4>
+<p>Seed the global PRNG. The codegen for <code>set-random-seed!</code> also flips a <code>__random_seeded__</code> marker so the runtime’s auto-seed-from-time path (which fires on first <code>(random)</code> of a program) is suppressed (<code>prng.cpp</code>).</p>
+<h4 id="random--real-in-00-10"><code>(random)</code> → real in <code>[0.0, 1.0)</code></h4>
+<p>Standard drand48-style uniform sample. Mutex-protected on the global state.</p>
 <h3 id="per-stream-isolated-prng">Per-stream isolated PRNG</h3>
-<p>For parallel workloads and paper-artifact reproducibility, the global
-PRNG’s shared mutex is a problem: two <code>parallel-map</code> workers
-calling <code>(random)</code> interleave nondeterministically. The
-per-stream API gives each thread its own state and removes the lock.</p>
-<h4 id="make-prng-seed--prng-handle"><code>(make-prng seed)</code> →
-PRNG handle</h4>
-<p>Allocates a fresh PRNG state on the arena, seeded as
-<code>(seed &lt;&lt; 16) | 0x330E</code> (matching POSIX
-<code>srand48</code>). The handle is a heap pointer with header subtype
-<code>HEAP_SUBTYPE_PRNG</code>. The same seed produces the same sequence
-as a freshly-seeded global PRNG (the documentation comment at
-<code>prng.cpp</code> calls this out explicitly).</p>
-<h4 id="prng-random-p--real-in-00-10"><code>(prng-random p)</code> →
-real in <code>[0.0, 1.0)</code></h4>
-<p>Advance the given PRNG state and return the next double.
-Lock-free.</p>
-<h4
-id="prng-random-integer-p-n--integer-in-0-n"><code>(prng-random-integer p n)</code>
-→ integer in <code>[0, n)</code></h4>
-<p>Advance the given PRNG state and return the next integer in
-<code>[0, n)</code>. Uses multiply-then-floor; bias is
-<code>&lt; 1/2^48</code>, well below user-visible
-(<code>prng.cpp</code>). Returns <code>0</code> if <code>n ≤ 0</code> or
-<code>p</code> is null.</p>
+<p>For parallel workloads and paper-artifact reproducibility, the global PRNG’s shared mutex is a problem: two <code>parallel-map</code> workers calling <code>(random)</code> interleave nondeterministically. The per-stream API gives each thread its own state and removes the lock.</p>
+<h4 id="make-prng-seed--prng-handle"><code>(make-prng seed)</code> → PRNG handle</h4>
+<p>Allocates a fresh PRNG state on the arena, seeded as <code>(seed &lt;&lt; 16) | 0x330E</code> (matching POSIX <code>srand48</code>). The handle is a heap pointer with header subtype <code>HEAP_SUBTYPE_PRNG</code>. The same seed produces the same sequence as a freshly-seeded global PRNG (the documentation comment at <code>prng.cpp</code> calls this out explicitly).</p>
+<h4 id="prng-random-p--real-in-00-10"><code>(prng-random p)</code> → real in <code>[0.0, 1.0)</code></h4>
+<p>Advance the given PRNG state and return the next double. Lock-free.</p>
+<h4 id="prng-random-integer-p-n--integer-in-0-n"><code>(prng-random-integer p n)</code> → integer in <code>[0, n)</code></h4>
+<p>Advance the given PRNG state and return the next integer in <code>[0, n)</code>. Uses multiply-then-floor; bias is <code>&lt; 1/2^48</code>, well below user-visible (<code>prng.cpp</code>). Returns <code>0</code> if <code>n ≤ 0</code> or <code>p</code> is null.</p>
 <h4 id="prng-x--boolean"><code>(prng? x)</code> → boolean</h4>
-<p>Heap-subtype check: returns <code>#t</code> iff <code>x</code> is a
-value allocated by <code>make-prng</code>. Other heap pointers,
-integers, strings, and <code>#f</code> all answer <code>#f</code>.</p>
-<h3 id="worked-example-deterministic-parallel-sampling">Worked example:
-deterministic parallel sampling</h3>
+<p>Heap-subtype check: returns <code>#t</code> iff <code>x</code> is a value allocated by <code>make-prng</code>. Other heap pointers, integers, strings, and <code>#f</code> all answer <code>#f</code>.</p>
+<h3 id="worked-example-deterministic-parallel-sampling">Worked example: deterministic parallel sampling</h3>
 <pre class="scheme"><code>(require stdlib)
 
 ;; Each worker gets its own PRNG seeded from a deterministic root —
@@ -1180,12 +719,9 @@ deterministic parallel sampling</h3>
 
 (define s3 (worker 42 1 1000))
 (display (= s1 s3)) (newline)              ; → #f — different stream</code></pre>
-<p>(Source: regression-tested by
-<code>tests/v1_2_edge_cases/prng_seeding_test.esk:36-69</code>.)</p>
-<h3 id="distribution-sampling--librandomrandomesk">Distribution sampling
-— <code>lib/random/random.esk</code></h3>
-<p>The high-level wrappers in <code>lib/random/random.esk</code> build
-on the global <code>(random)</code>:</p>
+<p>(Source: regression-tested by <code>tests/v1_2_edge_cases/prng_seeding_test.esk:36-69</code>.)</p>
+<h3 id="distribution-sampling--librandomrandomesk">Distribution sampling — <code>lib/random/random.esk</code></h3>
+<p>The high-level wrappers in <code>lib/random/random.esk</code> build on the global <code>(random)</code>:</p>
 <h4 id="provided-symbols-4">Provided symbols</h4>
 <pre class="scheme"><code>(provide random-float random-int random-bool random-choice
          qrandom qrandom-int qrandom-bool qrandom-choice
@@ -1287,24 +823,15 @@ on the global <code>(random)</code>:</p>
 <td>weights need not sum to 1</td>
 </tr>
 <tr>
-<td><code>(qrandom)</code>, <code>(qrandom-int hi)</code>,
-<code>(qrandom-bool)</code>, <code>(quniform lo hi)</code></td>
+<td><code>(qrandom)</code>, <code>(qrandom-int hi)</code>, <code>(qrandom-bool)</code>, <code>(quniform lo hi)</code></td>
 <td>various</td>
 <td>quantum-random variants (hardware entropy when available)</td>
 </tr>
 </tbody>
 </table>
-<h4
-id="set-random-seed-current-time-seed-randomize"><code>set-random-seed!</code>,
-<code>current-time-seed</code>, <code>randomize!</code></h4>
-<p><code>set-random-seed!</code> is <em>also</em> the codegen builtin
-documented above — <code>lib/random/random.esk:236-238</code> wraps it
-for re-export under <code>(require random.random)</code>.
-<code>current-time-seed</code> returns <code>(time 0)</code>;
-<code>randomize!</code> is
-<code>(set-random-seed! (current-time-seed))</code>.</p>
-<h3 id="worked-example-reproducible-normal-distribution-sampling">Worked
-example: reproducible normal-distribution sampling</h3>
+<h4 id="set-random-seed-current-time-seed-randomize"><code>set-random-seed!</code>, <code>current-time-seed</code>, <code>randomize!</code></h4>
+<p><code>set-random-seed!</code> is <em>also</em> the codegen builtin documented above — <code>lib/random/random.esk:236-238</code> wraps it for re-export under <code>(require random.random)</code>. <code>current-time-seed</code> returns <code>(time 0)</code>; <code>randomize!</code> is <code>(set-random-seed! (current-time-seed))</code>.</p>
+<h3 id="worked-example-reproducible-normal-distribution-sampling">Worked example: reproducible normal-distribution sampling</h3>
 <pre class="scheme"><code>(require random.random)
 
 (set-random-seed! 12345)
@@ -1315,24 +842,13 @@ example: reproducible normal-distribution sampling</h3>
 (display (normal 0.0 1.0)) (newline)       ; same value as the first call</code></pre>
 <h3 id="cross-references-5">Cross-references</h3>
 <ul>
-<li>For <code>parallel-map</code> workloads where each worker needs its
-own randomness, use <code>make-prng</code> not the global
-<code>(random)</code>. The global form serialises on a mutex; the
-per-stream form is lock-free (<code>prng.cpp</code>).</li>
-<li>For the consciousness-engine workspace’s stochastic broadcasts, use
-<code>make-prng</code> to give each module its own reproducible
-stream.</li>
+<li>For <code>parallel-map</code> workloads where each worker needs its own randomness, use <code>make-prng</code> not the global <code>(random)</code>. The global form serialises on a mutex; the per-stream form is lock-free (<code>prng.cpp</code>).</li>
+<li>For the consciousness-engine workspace’s stochastic broadcasts, use <code>make-prng</code> to give each module its own reproducible stream.</li>
 </ul>
 <hr />
 <h2 id="7-corestreams">7. <code>core.streams</code></h2>
-<p><strong>Source</strong>: <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/streams.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/streams.esk</code></a>.
-<strong>Auto-loaded</strong>: yes, via <code>(require stdlib)</code>.
-<strong>Direct import</strong>: <code>(require core.streams)</code>.</p>
-<p>A SRFI-41-style lazy stream library built on Eshkol’s existing
-<code>delay</code> / <code>force</code> codegen primitives. Promises
-memoise — each tail is computed at most once even if
-<code>stream-cdr</code> is called repeatedly.</p>
+<p><strong>Source</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/streams.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/streams.esk</code></a>. <strong>Auto-loaded</strong>: yes, via <code>(require stdlib)</code>. <strong>Direct import</strong>: <code>(require core.streams)</code>.</p>
+<p>A SRFI-41-style lazy stream library built on Eshkol’s existing <code>delay</code> / <code>force</code> codegen primitives. Promises memoise — each tail is computed at most once even if <code>stream-cdr</code> is called repeatedly.</p>
 <h3 id="provided-symbols-5">Provided symbols</h3>
 <pre class="scheme"><code>(provide stream-null
          stream-null?
@@ -1358,15 +874,10 @@ memoise — each tail is computed at most once even if
          list-&gt;stream)</code></pre>
 <p>(Source: <code>lib/core/streams.esk:28-49</code>.)</p>
 <h3 id="important-no-implicit-delay">Important: no implicit delay</h3>
-<p>Eshkol has no <code>define-syntax</code>, so SRFI 41’s macro form
-<code>(stream-cons head tail-expr)</code> (which would implicitly delay
-<code>tail-expr</code>) is unavailable. <strong>Callers must wrap the
-tail with <code>delay</code> explicitly</strong>
-(<code>streams.esk</code>):</p>
+<p>Eshkol has no <code>define-syntax</code>, so SRFI 41’s macro form <code>(stream-cons head tail-expr)</code> (which would implicitly delay <code>tail-expr</code>) is unavailable. <strong>Callers must wrap the tail with <code>delay</code> explicitly</strong> (<code>streams.esk</code>):</p>
 <pre class="scheme"><code>(define (from n) (stream-cons n (delay (from (+ n 1)))))
 (define ones (stream-cons 1 (delay ones)))                  ; cyclic</code></pre>
-<p>If you forget the <code>delay</code>, the tail evaluates strictly and
-an infinite stream recurses forever.</p>
+<p>If you forget the <code>delay</code>, the tail evaluates strictly and an infinite stream recurses forever.</p>
 <h3 id="construction-and-predicates">Construction and predicates</h3>
 <table>
 <colgroup>
@@ -1405,8 +916,7 @@ an infinite stream recurses forever.</p>
 <tr>
 <td><code>(stream-cons head tail-promise)</code></td>
 <td>new stream cell</td>
-<td><code>(cons head tail-promise)</code>. Caller must
-<code>delay</code> the tail</td>
+<td><code>(cons head tail-promise)</code>. Caller must <code>delay</code> the tail</td>
 </tr>
 <tr>
 <td><code>(stream-car s)</code></td>
@@ -1438,14 +948,12 @@ an infinite stream recurses forever.</p>
 <tr>
 <td><code>(stream-take s n)</code></td>
 <td>stream int → list</td>
-<td>First <code>n</code> elements as a list; truncates at
-<code>stream-null</code></td>
+<td>First <code>n</code> elements as a list; truncates at <code>stream-null</code></td>
 </tr>
 <tr>
 <td><code>(stream-drop s n)</code></td>
 <td>stream int → stream</td>
-<td>Skip first <code>n</code> elements; idempotent at
-<code>stream-null</code></td>
+<td>Skip first <code>n</code> elements; idempotent at <code>stream-null</code></td>
 </tr>
 <tr>
 <td><code>(stream-ref s n)</code></td>
@@ -1532,15 +1040,8 @@ an infinite stream recurses forever.</p>
 </tbody>
 </table>
 <h3 id="memoisation-guarantee">Memoisation guarantee</h3>
-<p><code>(stream-cdr s)</code> calls <code>(force (cdr s))</code>.
-Eshkol’s <code>force</code> memoises by construction, so repeated
-<code>stream-cdr</code> calls on the same cell do not re-run the tail
-expression. The test
-<code>tests/v1_2_edge_cases/streams_test.esk:76-91</code> exercises
-this: a counted generator advances exactly once per fresh
-<code>stream-cdr</code>, and not at all on a repeat.</p>
-<h3 id="worked-example-sieve-of-eratosthenes">Worked example: sieve of
-Eratosthenes</h3>
+<p><code>(stream-cdr s)</code> calls <code>(force (cdr s))</code>. Eshkol’s <code>force</code> memoises by construction, so repeated <code>stream-cdr</code> calls on the same cell do not re-run the tail expression. The test <code>tests/v1_2_edge_cases/streams_test.esk:76-91</code> exercises this: a counted generator advances exactly once per fresh <code>stream-cdr</code>, and not at all on a repeat.</p>
+<h3 id="worked-example-sieve-of-eratosthenes">Worked example: sieve of Eratosthenes</h3>
 <pre class="scheme"><code>(require core.streams)
 
 (define (sieve s)
@@ -1562,10 +1063,8 @@ Eratosthenes</h3>
 
 (display (stream-take zeros-and-ones 6)) (newline)
 ;; → (0 1 0 1 0 1)</code></pre>
-<p>(Source: regression-tested by
-<code>tests/v1_2_edge_cases/streams_test.esk:93-102</code>.)</p>
-<h3 id="worked-example-filter-map-pipeline-on-an-infinite-stream">Worked
-example: filter-map pipeline on an infinite stream</h3>
+<p>(Source: regression-tested by <code>tests/v1_2_edge_cases/streams_test.esk:93-102</code>.)</p>
+<h3 id="worked-example-filter-map-pipeline-on-an-infinite-stream">Worked example: filter-map pipeline on an infinite stream</h3>
 <pre class="scheme"><code>(require core.streams)
 
 (define even-squares
@@ -1577,40 +1076,25 @@ example: filter-map pipeline on an infinite stream</h3>
 ;; → (4 16 36 64 100)</code></pre>
 <h3 id="cross-references-6">Cross-references</h3>
 <ul>
-<li>For an eager list-based equivalent, see
-<code>core.list.transform</code> and
-<code>core.list.higher_order</code>.</li>
-<li>Strict <code>stream-&gt;list</code> of an infinite stream loops
-forever; bound it with <code>(stream-take s n)</code> first if the
-stream might be infinite.</li>
+<li>For an eager list-based equivalent, see <code>core.list.transform</code> and <code>core.list.higher_order</code>.</li>
+<li>Strict <code>stream-&gt;list</code> of an infinite stream loops forever; bound it with <code>(stream-take s n)</code> first if the stream might be infinite.</li>
 </ul>
 <hr />
 <h2 id="8-coreargparse">8. <code>core.argparse</code></h2>
-<p><strong>Source</strong>: <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/argparse.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/argparse.esk</code></a>.
-<strong>Direct import</strong>: <code>(require core.argparse)</code>.
-<strong>Not auto-loaded</strong> by <code>(require stdlib)</code> —
-<code>argparse</code> is a leaf module that only programs which actually
-parse <code>command-line</code> need.</p>
+<p><strong>Source</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/argparse.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/argparse.esk</code></a>. <strong>Direct import</strong>: <code>(require core.argparse)</code>. <strong>Not auto-loaded</strong> by <code>(require stdlib)</code> — <code>argparse</code> is a leaf module that only programs which actually parse <code>command-line</code> need.</p>
 <h3 id="provided-symbols-6">Provided symbols</h3>
 <pre class="scheme"><code>(provide parse-args arg-get arg-positional arg-has? argparse-help)</code></pre>
 <p>(Source: <code>lib/core/argparse.esk:36</code>.)</p>
 <h3 id="spec-format">Spec format</h3>
-<p>A spec is a list of four-element lists in the form
-<code>(name type default desc)</code> — purely positional because
-Eshkol’s reader at v1.2 does not support <code>#:default</code>-style
-keyword arguments in list literals (<code>argparse.esk</code>).</p>
+<p>A spec is a list of four-element lists in the form <code>(name type default desc)</code> — purely positional because Eshkol’s reader at v1.2 does not support <code>#:default</code>-style keyword arguments in list literals (<code>argparse.esk</code>).</p>
 <pre class="scheme"><code>(define spec
   (list (list &#39;--name    &#39;string  &quot;World&quot; &quot;Your name&quot;)
         (list &#39;--count   &#39;integer 1       &quot;How many greetings&quot;)
         (list &#39;--verbose &#39;boolean #f      &quot;Verbose output&quot;)))</code></pre>
 <ul>
-<li><code>name</code> — symbol, must start with <code>--</code>
-(long-form only at v1.2)</li>
-<li><code>type</code> — one of
-<code>'string 'integer 'number 'boolean</code></li>
-<li><code>default</code> — value used when the flag is absent from
-<code>argv</code></li>
+<li><code>name</code> — symbol, must start with <code>--</code> (long-form only at v1.2)</li>
+<li><code>type</code> — one of <code>'string 'integer 'number 'boolean</code></li>
+<li><code>default</code> — value used when the flag is absent from <code>argv</code></li>
 <li><code>desc</code> — string used by <code>argparse-help</code></li>
 </ul>
 <h3 id="recognised-flag-forms">Recognised flag forms</h3>
@@ -1648,52 +1132,29 @@ keyword arguments in list literals (<code>argparse.esk</code>).</p>
 </tr>
 </tbody>
 </table>
-<p>Source: <code>lib/core/argparse.esk:23-30</code>. Unknown flags fall
-through into the positional list, so callers can decide whether to
-reject or forward them.</p>
-<h3
-id="parse-args-argv-spec--list-flags-alist-positionals-list"><code>(parse-args argv spec)</code>
-→ <code>(list flags-alist positionals-list)</code></h3>
+<p>Source: <code>lib/core/argparse.esk:23-30</code>. Unknown flags fall through into the positional list, so callers can decide whether to reject or forward them.</p>
+<h3 id="parse-args-argv-spec--list-flags-alist-positionals-list"><code>(parse-args argv spec)</code> → <code>(list flags-alist positionals-list)</code></h3>
 <p>Returns a two-element list:</p>
 <ul>
-<li><code>(car result)</code> — the alist of <code>flag-symbol</code> →
-<code>converted-value</code>. Every flag in <code>spec</code> is
-present; flags not in <code>argv</code> carry their default.</li>
-<li><code>(car (cdr result))</code> — the positional argument strings in
-declaration order.</li>
+<li><code>(car result)</code> — the alist of <code>flag-symbol</code> → <code>converted-value</code>. Every flag in <code>spec</code> is present; flags not in <code>argv</code> carry their default.</li>
+<li><code>(car (cdr result))</code> — the positional argument strings in declaration order.</li>
 </ul>
 <p>Type coercion (<code>convert-value</code>, line 66-72):</p>
 <ul>
 <li><code>'string</code> — pass through</li>
 <li><code>'integer</code> — <code>string-&gt;number</code></li>
 <li><code>'number</code> — <code>string-&gt;number</code></li>
-<li><code>'boolean</code> — <code>#t</code> unless the raw string is
-exactly <code>"false"</code> or <code>"0"</code></li>
+<li><code>'boolean</code> — <code>#t</code> unless the raw string is exactly <code>"false"</code> or <code>"0"</code></li>
 </ul>
-<h3 id="arg-get-parsed-key--value"><code>(arg-get parsed key)</code> →
-value</h3>
-<p>Look up a flag by symbol. Returns the default value if not explicitly
-set on the command line.</p>
-<h3
-id="arg-positional-parsed--list-of-strings"><code>(arg-positional parsed)</code>
-→ list of strings</h3>
-<p>Returns the positional arguments preserved in left-to-right
-order.</p>
-<h3 id="arg-has-parsed-key--boolean"><code>(arg-has? parsed key)</code>
-→ boolean</h3>
-<p>Returns <code>#t</code> if the flag is non-null and
-non-<code>#f</code>. Useful for distinguishing “user set the value to
-its default” from “user did not set anything” — in particular, a boolean
-flag whose default is <code>#f</code> returns <code>#f</code> here
-unless the user explicitly passed <code>--name</code>.</p>
-<h3
-id="argparse-help-progname-spec--string"><code>(argparse-help progname spec)</code>
-→ string</h3>
-<p>Renders a Usage line plus one line per spec entry. Intentionally
-minimal; callers that want richer help should iterate the spec
-themselves.</p>
-<h3 id="worked-example-a-typical-entry-point">Worked example: a typical
-entry point</h3>
+<h3 id="arg-get-parsed-key--value"><code>(arg-get parsed key)</code> → value</h3>
+<p>Look up a flag by symbol. Returns the default value if not explicitly set on the command line.</p>
+<h3 id="arg-positional-parsed--list-of-strings"><code>(arg-positional parsed)</code> → list of strings</h3>
+<p>Returns the positional arguments preserved in left-to-right order.</p>
+<h3 id="arg-has-parsed-key--boolean"><code>(arg-has? parsed key)</code> → boolean</h3>
+<p>Returns <code>#t</code> if the flag is non-null and non-<code>#f</code>. Useful for distinguishing “user set the value to its default” from “user did not set anything” — in particular, a boolean flag whose default is <code>#f</code> returns <code>#f</code> here unless the user explicitly passed <code>--name</code>.</p>
+<h3 id="argparse-help-progname-spec--string"><code>(argparse-help progname spec)</code> → string</h3>
+<p>Renders a Usage line plus one line per spec entry. Intentionally minimal; callers that want richer help should iterate the spec themselves.</p>
+<h3 id="worked-example-a-typical-entry-point">Worked example: a typical entry point</h3>
 <pre class="scheme"><code>(require core.argparse)
 
 (define spec
@@ -1717,86 +1178,43 @@ entry point</h3>
   (display (arg-positional args)) (newline))</code></pre>
 <h3 id="edge-cases">Edge cases</h3>
 <ul>
-<li><code>--name</code> with no following token: the flag is silently
-skipped (<code>argparse.esk</code>).</li>
-<li>Unknown flag like <code>--bogus</code>: the literal string
-<code>"--bogus"</code> ends up in <code>arg-positional</code>. There is
-no warning.</li>
-<li><code>--</code> consumes itself and forces all subsequent tokens
-(including ones that look like flags) into positional.</li>
-<li>Single-dash flags (<code>-v</code>) are <em>not</em> recognised at
-v1.2 — they fall through to positional. Long-form
-(<code>--verbose</code>) is the only supported flag style.</li>
+<li><code>--name</code> with no following token: the flag is silently skipped (<code>argparse.esk</code>).</li>
+<li>Unknown flag like <code>--bogus</code>: the literal string <code>"--bogus"</code> ends up in <code>arg-positional</code>. There is no warning.</li>
+<li><code>--</code> consumes itself and forces all subsequent tokens (including ones that look like flags) into positional.</li>
+<li>Single-dash flags (<code>-v</code>) are <em>not</em> recognised at v1.2 — they fall through to positional. Long-form (<code>--verbose</code>) is the only supported flag style.</li>
 </ul>
 <h3 id="cross-references-7">Cross-references</h3>
 <ul>
-<li><code>(command-line)</code> is the codegen builtin that returns the
-original <code>argv</code> as a list of strings.</li>
-<li>For programs that want richer help / subcommands, treat
-<code>parse-args</code> as the flag layer and dispatch on
-<code>(car (arg-positional args))</code>.</li>
+<li><code>(command-line)</code> is the codegen builtin that returns the original <code>argv</code> as a list of strings.</li>
+<li>For programs that want richer help / subcommands, treat <code>parse-args</code> as the flag layer and dispatch on <code>(car (arg-positional args))</code>.</li>
 </ul>
 <hr />
 <h2 id="9-coreurl">9. <code>core.url</code></h2>
-<p><strong>Source</strong>: <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/url.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/url.esk</code></a>
-(encoder/decoder) plus the system-builtin <code>url-parse</code> in <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/system_builtins.c" target="_blank" rel="noopener noreferrer"><code>lib/core/system_builtins.c</code></a>
-lines 2286-2370. <strong>Auto-loaded</strong>: yes, via
-<code>(require stdlib)</code>. <strong>Direct import</strong>:
-<code>(require core.url)</code>.</p>
-<p>RFC 3986 percent-encoding for URL components, plus a one-shot URL
-parser. The encoder is UTF-8-aware: non-ASCII codepoints are
-percent-encoded as their UTF-8 byte sequence per RFC 3986 §2.5.</p>
+<p><strong>Source</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/url.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/url.esk</code></a> (encoder/decoder) plus the system-builtin <code>url-parse</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/system_builtins.c" target="_blank" rel="noopener noreferrer"><code>lib/core/system_builtins.c</code></a> lines 2286-2370. <strong>Auto-loaded</strong>: yes, via <code>(require stdlib)</code>. <strong>Direct import</strong>: <code>(require core.url)</code>.</p>
+<p>RFC 3986 percent-encoding for URL components, plus a one-shot URL parser. The encoder is UTF-8-aware: non-ASCII codepoints are percent-encoded as their UTF-8 byte sequence per RFC 3986 §2.5.</p>
 <h3 id="provided-symbols-7">Provided symbols</h3>
 <pre class="scheme"><code>(provide url-encode url-decode base64url-encode base64url-decode)</code></pre>
-<p>(Source: <code>lib/core/url.esk:20</code>. Note that
-<code>base64url-encode</code> and <code>base64url-decode</code> are
-re-exported here even though their underlying primitive
-(<code>base64-encode-string</code>) lives in
-<code>core.data.base64</code>.)</p>
-<p><code>url-parse</code> is <em>not</em> in the <code>provide</code>
-list because it is a codegen builtin (no <code>.esk</code> wrapper).</p>
-<h3 id="url-encode-str--string"><code>(url-encode str)</code> →
-string</h3>
-<p>Percent-encodes every byte of <code>str</code> except the RFC 3986
-unreserved set <code>[A-Za-z0-9-_.~]</code>. Returns the encoded string.
-Hex digits are upper-case per RFC 3986 §2.1.</p>
+<p>(Source: <code>lib/core/url.esk:20</code>. Note that <code>base64url-encode</code> and <code>base64url-decode</code> are re-exported here even though their underlying primitive (<code>base64-encode-string</code>) lives in <code>core.data.base64</code>.)</p>
+<p><code>url-parse</code> is <em>not</em> in the <code>provide</code> list because it is a codegen builtin (no <code>.esk</code> wrapper).</p>
+<h3 id="url-encode-str--string"><code>(url-encode str)</code> → string</h3>
+<p>Percent-encodes every byte of <code>str</code> except the RFC 3986 unreserved set <code>[A-Za-z0-9-_.~]</code>. Returns the encoded string. Hex digits are upper-case per RFC 3986 §2.1.</p>
 <pre class="scheme"><code>(url-encode &quot;hello world&quot;)      ; → &quot;hello%20world&quot;
 (url-encode &quot;k=v&amp;q=42&quot;)         ; → &quot;k%3Dv%26q%3D42&quot;
 (url-encode &quot;100% off&quot;)         ; → &quot;100%25%20off&quot;
 (url-encode &quot;café&quot;)             ; → &quot;caf%C3%A9&quot;   (UTF-8 byte sequence for é)
 (url-encode &quot;-_.~&quot;)             ; → &quot;-_.~&quot;        (all unreserved)</code></pre>
-<p>The unreserved-set check is <code>lib/core/url.esk:34-41</code>. The
-UTF-8 expansion for codepoints ≥ 128 is in <code>encode-codepoint</code>
-(lines 45-74) and emits 2/3/4-byte sequences for codepoints up to
-<code>0x10FFFF</code>.</p>
-<h3 id="url-decode-str--string"><code>(url-decode str)</code> →
-string</h3>
-<p>Reverses <code>url-encode</code>. Each <code>%XX</code> triple
-decodes to the byte <code>0xXX</code>; a literal <code>+</code> decodes
-to space (legacy form-encoding compatibility); UTF-8 multibyte sequences
-are reassembled into the original codepoint. Malformed input
-(<code>%</code> at end, <code>%</code> followed by non-hex) passes
-through literally.</p>
+<p>The unreserved-set check is <code>lib/core/url.esk:34-41</code>. The UTF-8 expansion for codepoints ≥ 128 is in <code>encode-codepoint</code> (lines 45-74) and emits 2/3/4-byte sequences for codepoints up to <code>0x10FFFF</code>.</p>
+<h3 id="url-decode-str--string"><code>(url-decode str)</code> → string</h3>
+<p>Reverses <code>url-encode</code>. Each <code>%XX</code> triple decodes to the byte <code>0xXX</code>; a literal <code>+</code> decodes to space (legacy form-encoding compatibility); UTF-8 multibyte sequences are reassembled into the original codepoint. Malformed input (<code>%</code> at end, <code>%</code> followed by non-hex) passes through literally.</p>
 <pre class="scheme"><code>(url-decode &quot;hello%20world&quot;)    ; → &quot;hello world&quot;
 (url-decode &quot;form+data&quot;)        ; → &quot;form data&quot;   (+ as space)
 (url-decode &quot;caf%C3%A9&quot;)        ; → &quot;café&quot;
 (url-decode &quot;100%25&quot;)           ; → &quot;100%&quot;
 (url-decode &quot;abc%&quot;)             ; → &quot;abc%&quot;        (trailing % passes through)
 (url-decode &quot;%XY&quot;)              ; → &quot;%XY&quot;         (non-hex after %)</code></pre>
-<h3
-id="url-parse-str--alist-or-f-system-builtin"><code>(url-parse str)</code>
-→ alist or <code>#f</code> <em>(system builtin)</em></h3>
-<p>Parses an <code>scheme://host[:port][/path][?query][#fragment]</code>
-URL into an alist. Returns <code>#f</code> on input that does not have a
-<code>://</code> separator or that has empty authority.</p>
-<p>The alist always carries <code>"scheme"</code>, <code>"host"</code>,
-and <code>"path"</code> (the path defaults to <code>"/"</code> if
-absent), and <code>"port"</code> if either explicit or the scheme has a
-known default (<code>http</code> → 80, <code>https</code> → 443). It
-carries <code>"query"</code> and <code>"fragment"</code> only when
-present.</p>
+<h3 id="url-parse-str--alist-or-f-system-builtin"><code>(url-parse str)</code> → alist or <code>#f</code> <em>(system builtin)</em></h3>
+<p>Parses an <code>scheme://host[:port][/path][?query][#fragment]</code> URL into an alist. Returns <code>#f</code> on input that does not have a <code>://</code> separator or that has empty authority.</p>
+<p>The alist always carries <code>"scheme"</code>, <code>"host"</code>, and <code>"path"</code> (the path defaults to <code>"/"</code> if absent), and <code>"port"</code> if either explicit or the scheme has a known default (<code>http</code> → 80, <code>https</code> → 443). It carries <code>"query"</code> and <code>"fragment"</code> only when present.</p>
 <pre class="scheme"><code>(url-parse &quot;https://example.com:8443/path/to?q=1#frag&quot;)
 ;; → ((&quot;scheme&quot; . &quot;https&quot;)
 ;;    (&quot;host&quot;   . &quot;example.com&quot;)
@@ -1821,21 +1239,11 @@ present.</p>
 (display (alist-ref &quot;host&quot;  u)) (newline)    ; → example.com
 (display (alist-ref &quot;port&quot;  u)) (newline)    ; → 8443
 (display (alist-ref &quot;query&quot; u)) (newline)    ; → v=2</code></pre>
-<p>Source: <code>system_builtins.c</code>; regression-tested in
-<code>tests/vm/url_parse_surface_regression.esk</code>.</p>
-<p><strong>Port handling</strong>: the parser refuses ports outside
-<code>[0, 65535]</code> and refuses non-numeric “port-like” suffixes; in
-either case the colon and following characters stay part of the host
-(<code>system_builtins.c</code>).</p>
-<h3
-id="base64url-encode-str-and-base64url-decode-str"><code>(base64url-encode str)</code>
-and <code>(base64url-decode str)</code></h3>
-<p>Documented in <a
-href="/docs#page=stdlib_v1_2_api&amp;10-coredatabase64--base64url-variants" data-url="/content/stdlib_v1_2_api.html">section 10</a>.
-Re-exported by <code>core.url</code> so a single
-<code>(require core.url)</code> covers all URL-safe encoding needs.</p>
-<h3 id="worked-example-encode-a-structured-query-string">Worked example:
-encode a structured query string</h3>
+<p>Source: <code>system_builtins.c</code>; regression-tested in <code>tests/vm/url_parse_surface_regression.esk</code>.</p>
+<p><strong>Port handling</strong>: the parser refuses ports outside <code>[0, 65535]</code> and refuses non-numeric “port-like” suffixes; in either case the colon and following characters stay part of the host (<code>system_builtins.c</code>).</p>
+<h3 id="base64url-encode-str-and-base64url-decode-str"><code>(base64url-encode str)</code> and <code>(base64url-decode str)</code></h3>
+<p>Documented in <a href="/docs#page=stdlib_v1_2_api&amp;10-coredatabase64--base64url-variants" data-url="/content/stdlib_v1_2_api.html">section 10</a>. Re-exported by <code>core.url</code> so a single <code>(require core.url)</code> covers all URL-safe encoding needs.</p>
+<h3 id="worked-example-encode-a-structured-query-string">Worked example: encode a structured query string</h3>
 <pre class="scheme"><code>(require core.url)
 
 (define (encode-pair p)
@@ -1857,33 +1265,17 @@ encode a structured query string</h3>
 
 (display qs) (newline)
 ;; → q=hello%20world&amp;filter=name%3Dalice%20%26%20status%3Dactive&amp;page=1</code></pre>
-<p>Use <code>(string-join …)</code> from <code>core.strings</code>
-instead of the inline definition in real code.</p>
+<p>Use <code>(string-join …)</code> from <code>core.strings</code> instead of the inline definition in real code.</p>
 <h3 id="cross-references-8">Cross-references</h3>
 <ul>
-<li>For decoding incoming form-data with
-<code>application/x-www-form-urlencoded</code>, remember that
-<code>url-decode</code> treats <code>+</code> as space; this is
-intentional for form-encoding compatibility.</li>
-<li>For URLs that need percent-decoding <em>then</em> JSON parsing,
-chain <code>(json-parse (url-decode …))</code>.</li>
+<li>For decoding incoming form-data with <code>application/x-www-form-urlencoded</code>, remember that <code>url-decode</code> treats <code>+</code> as space; this is intentional for form-encoding compatibility.</li>
+<li>For URLs that need percent-decoding <em>then</em> JSON parsing, chain <code>(json-parse (url-decode …))</code>.</li>
 <li>For URL-safe base64, see section 10.</li>
 </ul>
 <hr />
-<h2 id="10-coredatabase64--base64url-variants">10.
-<code>core.data.base64</code> — base64url variants</h2>
-<p><strong>Source</strong>: <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/data/base64.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/data/base64.esk</code></a>
-(the standard base64 primitives, pure Eshkol) plus the base64url
-variants from <a
-href="https://github.com/tsotchke/eshkol/blob/master/lib/core/url.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/url.esk</code></a> built on
-top. <strong>Auto-loaded</strong>: yes, via
-<code>(require stdlib)</code> (which pulls in both
-<code>core.data.base64</code> and <code>core.url</code>). <strong>Direct
-import</strong>: <code>(require core.data.base64)</code> and/or
-<code>(require core.url)</code>.</p>
-<h3 id="provided-symbols-standard-base64">Provided symbols (standard
-base64)</h3>
+<h2 id="10-coredatabase64--base64url-variants">10. <code>core.data.base64</code> — base64url variants</h2>
+<p><strong>Source</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/data/base64.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/data/base64.esk</code></a> (the standard base64 primitives, pure Eshkol) plus the base64url variants from <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/url.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/url.esk</code></a> built on top. <strong>Auto-loaded</strong>: yes, via <code>(require stdlib)</code> (which pulls in both <code>core.data.base64</code> and <code>core.url</code>). <strong>Direct import</strong>: <code>(require core.data.base64)</code> and/or <code>(require core.url)</code>.</p>
+<h3 id="provided-symbols-standard-base64">Provided symbols (standard base64)</h3>
 <pre class="scheme"><code>(provide base64-encode base64-decode base64-encode-string base64-decode-string
          string-&gt;bytes bytes-&gt;string base64-char-at base64-value
          string-&gt;bytes-helper base64-encode-helper base64-decode-helper base64-remove-padding)</code></pre>
@@ -1934,46 +1326,29 @@ base64)</h3>
 <tr>
 <td><code>(bytes-&gt;string bytes)</code></td>
 <td>byte-list → string</td>
-<td>Per-byte <code>integer-&gt;char</code> then
-<code>string-append</code></td>
+<td>Per-byte <code>integer-&gt;char</code> then <code>string-append</code></td>
 </tr>
 </tbody>
 </table>
-<p>The alphabet is
-<code>"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"</code>
-(<code>base64.esk</code>).</p>
-<p><code>base64-encode</code> always emits padding (<code>=</code> /
-<code>==</code>); <code>base64-decode</code> accepts both padded and
-unpadded forms (<code>base64-remove-padding</code> walks back from the
-tail).</p>
+<p>The alphabet is <code>"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"</code> (<code>base64.esk</code>).</p>
+<p><code>base64-encode</code> always emits padding (<code>=</code> / <code>==</code>); <code>base64-decode</code> accepts both padded and unpadded forms (<code>base64-remove-padding</code> walks back from the tail).</p>
 <h3 id="base64url-rfc-4648-5">Base64url (RFC 4648 §5)</h3>
-<p>The base64url variant is identical to base64 with two character
-substitutions and no padding:</p>
+<p>The base64url variant is identical to base64 with two character substitutions and no padding:</p>
 <ul>
 <li><code>+</code> → <code>-</code></li>
 <li><code>/</code> → <code>_</code></li>
 <li>trailing <code>=</code> stripped</li>
 </ul>
-<p>Use it for JWTs, CSRF tokens, content hashes that travel through
-query strings or path segments, and anything else that has to survive
-URL-encoding without its own internal substitutions.</p>
-<h4
-id="base64url-encode-str--string"><code>(base64url-encode str)</code> →
-string</h4>
+<p>Use it for JWTs, CSRF tokens, content hashes that travel through query strings or path segments, and anything else that has to survive URL-encoding without its own internal substitutions.</p>
+<h4 id="base64url-encode-str--string"><code>(base64url-encode str)</code> → string</h4>
 <p>Source: <code>lib/core/url.esk:210-211</code>. Implementation:</p>
 <pre class="scheme"><code>(define (base64url-encode str)
   (b64url-strip-padding (b64url-replace-encode (base64-encode-string str))))</code></pre>
-<h4
-id="base64url-decode-str--string"><code>(base64url-decode str)</code> →
-string</h4>
-<p>Source: <code>lib/core/url.esk:213-214</code>. Accepts both padded
-and unpadded forms. Pads back to a length divisible by 4
-(<code>b64url-restore-padding</code>,
-<code>lib/core/url.esk:193-200</code>).</p>
+<h4 id="base64url-decode-str--string"><code>(base64url-decode str)</code> → string</h4>
+<p>Source: <code>lib/core/url.esk:213-214</code>. Accepts both padded and unpadded forms. Pads back to a length divisible by 4 (<code>b64url-restore-padding</code>, <code>lib/core/url.esk:193-200</code>).</p>
 <pre class="scheme"><code>(define (base64url-decode str)
   (base64-decode-string (b64url-restore-padding (b64url-replace-decode str))))</code></pre>
-<h3 id="worked-example-encodedecode-round-trips">Worked example:
-encode/decode round-trips</h3>
+<h3 id="worked-example-encodedecode-round-trips">Worked example: encode/decode round-trips</h3>
 <pre class="scheme"><code>(require stdlib)
 
 (define samples (list &quot;&quot; &quot;f&quot; &quot;fo&quot; &quot;foo&quot; &quot;foob&quot; &quot;fooba&quot; &quot;foobar&quot;
@@ -1987,90 +1362,47 @@ encode/decode round-trips</h3>
       (display &quot;  ok: &quot;)   (display (string=? s roundtrip))
       (newline)))
   samples)</code></pre>
-<p>(Source: regression-tested by
-<code>tests/v1_2_edge_cases/base64url_test.esk:27-35</code>.)</p>
-<p>Sample output for <code>(base64url-encode "??&gt;?&lt;")</code> is
-<code>"Pz8-Pzw"</code> — note the <code>-</code> where a standard-base64
-encoder would emit <code>+</code>, confirming the URL-safe
-substitution.</p>
+<p>(Source: regression-tested by <code>tests/v1_2_edge_cases/base64url_test.esk:27-35</code>.)</p>
+<p>Sample output for <code>(base64url-encode "??&gt;?&lt;")</code> is <code>"Pz8-Pzw"</code> — note the <code>-</code> where a standard-base64 encoder would emit <code>+</code>, confirming the URL-safe substitution.</p>
 <h3 id="edge-cases-1">Edge cases</h3>
 <ul>
 <li><code>(base64-encode '())</code> → <code>""</code>.</li>
-<li><code>(base64-decode "")</code> → <code>'()</code> (empty byte
-list); <code>(base64-decode-string "")</code> → <code>""</code>.</li>
+<li><code>(base64-decode "")</code> → <code>'()</code> (empty byte list); <code>(base64-decode-string "")</code> → <code>""</code>.</li>
 <li><code>(base64url-encode "")</code> → <code>""</code>.</li>
-<li><code>(base64url-decode "SGVsbG8=")</code> → <code>"Hello"</code> —
-canonical padded form is accepted.</li>
-<li><code>(base64url-decode "SGVsbG8")</code> → <code>"Hello"</code> —
-unpadded form is also accepted.</li>
-<li>The <code>=</code>-character in <code>base64-value</code> decodes to
-<code>0</code> (padding); the strip / restore step ensures it never
-reaches <code>base64-decode-helper</code> on the URL-safe path.</li>
+<li><code>(base64url-decode "SGVsbG8=")</code> → <code>"Hello"</code> — canonical padded form is accepted.</li>
+<li><code>(base64url-decode "SGVsbG8")</code> → <code>"Hello"</code> — unpadded form is also accepted.</li>
+<li>The <code>=</code>-character in <code>base64-value</code> decodes to <code>0</code> (padding); the strip / restore step ensures it never reaches <code>base64-decode-helper</code> on the URL-safe path.</li>
 </ul>
 <h3 id="cross-references-9">Cross-references</h3>
 <ul>
-<li>For raw-byte handling (rather than string round-trip) use
-<code>base64-encode</code> and <code>base64-decode</code> directly; they
-operate on byte lists.</li>
-<li>For non-text payloads (image bytes, signed-cookie keys), prefer
-<code>base64url-encode</code> over <code>base64-encode</code> because
-the result fits in a URL query string with no further escaping.</li>
+<li>For raw-byte handling (rather than string round-trip) use <code>base64-encode</code> and <code>base64-decode</code> directly; they operate on byte lists.</li>
+<li>For non-text payloads (image bytes, signed-cookie keys), prefer <code>base64url-encode</code> over <code>base64-encode</code> because the result fits in a URL query string with no further escaping.</li>
 </ul>
 <hr />
-<h2 id="11-call-with-values-finalisation-codegen-builtin">11.
-<code>call-with-values</code> finalisation (codegen builtin)</h2>
-<p><strong>Source</strong>: parser dispatch at
-<code>lib/frontend/parser.cpp, 3309-3363</code>; codegen at
-<code>lib/backend/llvm_codegen.cpp</code>. <strong>Module require
-line</strong>: none — <code>call-with-values</code> is a
-parser-recognised special form, available everywhere.</p>
-<p><code>call-with-values</code> is the R7RS multiple-return-value
-plumbing primitive. The v1.2-scale work was <em>not</em> the
-introduction of the form (it has existed since v1.1) but the
-<strong>named-consumer resolution fix</strong> logged in <a
-href="/docs#page=changelog" data-url="/content/changelog.html"><code>CHANGELOG.md:758</code></a> and the
-<strong>stdlib-named consumer routing</strong> at line 718.</p>
+<h2 id="11-call-with-values-finalisation-codegen-builtin">11. <code>call-with-values</code> finalisation (codegen builtin)</h2>
+<p><strong>Source</strong>: parser dispatch at <code>lib/frontend/parser.cpp, 3309-3363</code>; codegen at <code>lib/backend/llvm_codegen.cpp</code>. <strong>Module require line</strong>: none — <code>call-with-values</code> is a parser-recognised special form, available everywhere.</p>
+<p><code>call-with-values</code> is the R7RS multiple-return-value plumbing primitive. The v1.2-scale work was <em>not</em> the introduction of the form (it has existed since v1.1) but the <strong>named-consumer resolution fix</strong> logged in <a href="/docs#page=changelog" data-url="/content/changelog.html"><code>CHANGELOG.md:758</code></a> and the <strong>stdlib-named consumer routing</strong> at line 718.</p>
 <h3 id="surface">Surface</h3>
 <pre class="scheme"><code>(call-with-values producer consumer)</code></pre>
 <ul>
-<li><code>producer</code> — a thunk (zero-argument procedure) that
-returns either a single value or multiple values via
-<code>(values v1 v2 …)</code>.</li>
-<li><code>consumer</code> — a procedure that receives the producer’s
-values as its arguments.</li>
+<li><code>producer</code> — a thunk (zero-argument procedure) that returns either a single value or multiple values via <code>(values v1 v2 …)</code>.</li>
+<li><code>consumer</code> — a procedure that receives the producer’s values as its arguments.</li>
 </ul>
 <p>The codegen handles three cases:</p>
 <ol type="1">
-<li><code>producer</code> returns no values via <code>(values)</code>:
-<code>consumer</code> is called with no arguments
-(<code>llvm_codegen.cpp</code>).</li>
-<li><code>producer</code> returns exactly N values via
-<code>(values v1 … vN)</code>: <code>consumer</code> is called with N
-arguments — there is a small switch over N
-(<code>llvm_codegen.cpp</code>).</li>
-<li><code>producer</code> returns a single ordinary value:
-<code>consumer</code> is called with one argument.</li>
+<li><code>producer</code> returns no values via <code>(values)</code>: <code>consumer</code> is called with no arguments (<code>llvm_codegen.cpp</code>).</li>
+<li><code>producer</code> returns exactly N values via <code>(values v1 … vN)</code>: <code>consumer</code> is called with N arguments — there is a small switch over N (<code>llvm_codegen.cpp</code>).</li>
+<li><code>producer</code> returns a single ordinary value: <code>consumer</code> is called with one argument.</li>
 </ol>
 <h3 id="what-v12-scale-fixed">What v1.2-scale fixed</h3>
 <p>Before the named-consumer routing fix, an expression like</p>
 <pre class="scheme"><code>(call-with-values
   (lambda () (values 1 2 3))
   list)         ; consumer is the named stdlib function `list`</code></pre>
-<p>failed because the codegen could not resolve the bare symbol
-<code>list</code> to its honest first-class procedure value (the symbol
-resolution wandered into the inline-expansion path used for direct
-calls). The fix at <code>llvm_codegen.cpp</code> forces bare-symbol
-consumers to evaluate as honest values, so any stdlib function that
-takes the right number of arguments can sit in the consumer slot.</p>
-<h3 id="values-v1---multi-value"><code>(values v1 …)</code> →
-multi-value</h3>
-<p>Companion form: <code>values</code> packages zero or more results so
-that a downstream <code>call-with-values</code> consumer can deconstruct
-them. Outside a <code>call-with-values</code> context,
-<code>(values x)</code> is equivalent to <code>x</code> and
-<code>(values)</code> produces an “unspecified” / discarded value.</p>
-<h3 id="worked-example-pair-returning-division">Worked example:
-pair-returning division</h3>
+<p>failed because the codegen could not resolve the bare symbol <code>list</code> to its honest first-class procedure value (the symbol resolution wandered into the inline-expansion path used for direct calls). The fix at <code>llvm_codegen.cpp</code> forces bare-symbol consumers to evaluate as honest values, so any stdlib function that takes the right number of arguments can sit in the consumer slot.</p>
+<h3 id="values-v1---multi-value"><code>(values v1 …)</code> → multi-value</h3>
+<p>Companion form: <code>values</code> packages zero or more results so that a downstream <code>call-with-values</code> consumer can deconstruct them. Outside a <code>call-with-values</code> context, <code>(values x)</code> is equivalent to <code>x</code> and <code>(values)</code> produces an “unspecified” / discarded value.</p>
+<h3 id="worked-example-pair-returning-division">Worked example: pair-returning division</h3>
 <pre class="scheme"><code>;; A producer that returns both quotient and remainder.
 (define (divmod a b)
   (values (quotient a b) (remainder a b)))
@@ -2083,52 +1415,35 @@ pair-returning division</h3>
     (display &quot;remainder: &quot;) (display r) (newline)))
 ;; → quotient: 3
 ;; → remainder: 2</code></pre>
-<h3
-id="worked-example-stdlib-named-consumer-the-v12-fix-in-action">Worked
-example: stdlib-named consumer (the v1.2 fix in action)</h3>
+<h3 id="worked-example-stdlib-named-consumer-the-v12-fix-in-action">Worked example: stdlib-named consumer (the v1.2 fix in action)</h3>
 <pre class="scheme"><code>(define triple-as-list
   (call-with-values
     (lambda () (values 1 2 3))
     list))                                ; bare-symbol stdlib consumer
 
 (display triple-as-list) (newline)        ; → (1 2 3)</code></pre>
-<p>Prior to the v1.2 routing fix this raised a “consumer is not a
-procedure” or “Unknown function” error. After the fix it returns
-<code>(1 2 3)</code>.</p>
+<p>Prior to the v1.2 routing fix this raised a “consumer is not a procedure” or “Unknown function” error. After the fix it returns <code>(1 2 3)</code>.</p>
 <h3 id="cross-references-10">Cross-references</h3>
 <ul>
-<li>For exception-based multi-value plumbing (return-and-continuation),
-see <code>guard</code> / <code>raise</code> and
-<code>call-with-current-continuation</code>.</li>
-<li><code>dynamic-wind</code> does <em>not</em> interact with
-<code>values</code> — the multi-value packet flows through the call
-frame, not through the wind protocol.</li>
+<li>For exception-based multi-value plumbing (return-and-continuation), see <code>guard</code> / <code>raise</code> and <code>call-with-current-continuation</code>.</li>
+<li><code>dynamic-wind</code> does <em>not</em> interact with <code>values</code> — the multi-value packet flows through the call frame, not through the wind protocol.</li>
 </ul>
 <hr />
-<h2 id="12-cross-references-and-module-loading">12. Cross-references and
-module loading</h2>
-<h3 id="which-modules-are-auto-loaded-by-require-stdlib">Which modules
-are auto-loaded by <code>(require stdlib)</code>?</h3>
-<p>Inspect <code>lib/stdlib.esk</code> for the canonical list. As of
-v1.2.1-scale, the auto-loaded set includes:</p>
+<h2 id="12-cross-references-and-module-loading">12. Cross-references and module loading</h2>
+<h3 id="which-modules-are-auto-loaded-by-require-stdlib">Which modules are auto-loaded by <code>(require stdlib)</code>?</h3>
+<p>Inspect <code>lib/stdlib.esk</code> for the canonical list. As of v1.2.1-scale, the auto-loaded set includes:</p>
 <ul>
 <li><code>core.io</code></li>
-<li><code>core.operators.arithmetic</code>,
-<code>core.operators.compare</code></li>
-<li><code>core.logic.predicates</code>, <code>core.logic.types</code>,
-<code>core.logic.boolean</code></li>
-<li><code>core.functional.compose</code>,
-<code>core.functional.curry</code>,
-<code>core.functional.flip</code></li>
+<li><code>core.operators.arithmetic</code>, <code>core.operators.compare</code></li>
+<li><code>core.logic.predicates</code>, <code>core.logic.types</code>, <code>core.logic.boolean</code></li>
+<li><code>core.functional.compose</code>, <code>core.functional.curry</code>, <code>core.functional.flip</code></li>
 <li><code>core.control.trampoline</code></li>
-<li><code>core.list.*</code> (compound, generate, transform, query,
-sort, higher_order, search, convert)</li>
+<li><code>core.list.*</code> (compound, generate, transform, query, sort, higher_order, search, convert)</li>
 <li><code>core.strings</code></li>
 <li><code>core.files</code></li>
 <li><code>core.sexp</code></li>
 <li><code>core.json</code></li>
-<li><code>core.data.csv</code>, <code>core.data.dataframe</code>,
-<code>core.data.base64</code></li>
+<li><code>core.data.csv</code>, <code>core.data.dataframe</code>, <code>core.data.base64</code></li>
 <li><code>core.plot</code></li>
 <li><code>core.reflection</code></li>
 <li><code>core.url</code></li>
@@ -2137,52 +1452,25 @@ sort, higher_order, search, convert)</li>
 <li><code>signal.fft</code>, <code>signal.filters</code></li>
 <li><code>ml.optimization</code></li>
 </ul>
-<p>Modules that exist but <strong>must be explicitly required</strong>
-(and are not pulled in by <code>stdlib</code>):</p>
+<p>Modules that exist but <strong>must be explicitly required</strong> (and are not pulled in by <code>stdlib</code>):</p>
 <ul>
-<li><code>core.testing</code> — testing framework. The comment at
-<code>lib/stdlib.esk:64-69</code> explains: baking it into
-<code>stdlib.o</code> triggers symbol-renamer / external-decl path
-interactions that currently mis-handle pre-compiled modules’ internal
-state.</li>
-<li><code>core.cache</code> — same family of considerations; opt-in
-keeps the auto-load surface tight.</li>
-<li><code>core.argparse</code> — only useful for programs that read
-<code>(command-line)</code>; no reason to pay its load cost in
-libraries.</li>
-<li><code>random.random</code> — pulls in the distribution-sampling
-helpers, which most programs don’t need.</li>
-<li><code>lib/agent/regex.esk</code> — loaded via <code>(load …)</code>
-or by the JIT force-load mechanism, not by
-<code>(require …)</code>.</li>
+<li><code>core.testing</code> — testing framework. The comment at <code>lib/stdlib.esk:64-69</code> explains: baking it into <code>stdlib.o</code> triggers symbol-renamer / external-decl path interactions that currently mis-handle pre-compiled modules’ internal state.</li>
+<li><code>core.cache</code> — same family of considerations; opt-in keeps the auto-load surface tight.</li>
+<li><code>core.argparse</code> — only useful for programs that read <code>(command-line)</code>; no reason to pay its load cost in libraries.</li>
+<li><code>random.random</code> — pulls in the distribution-sampling helpers, which most programs don’t need.</li>
+<li><code>lib/agent/regex.esk</code> — loaded via <code>(load …)</code> or by the JIT force-load mechanism, not by <code>(require …)</code>.</li>
 </ul>
-<h3 id="which-surfaces-are-codegen-builtins-no-require-needed">Which
-surfaces are codegen builtins (no <code>require</code> needed)?</h3>
+<h3 id="which-surfaces-are-codegen-builtins-no-require-needed">Which surfaces are codegen builtins (no <code>require</code> needed)?</h3>
 <ul>
-<li>Time API: <code>current-time-ns</code>,
-<code>current-timestamp</code>, <code>format-iso8601</code>,
-<code>parse-iso8601</code>, <code>format-relative</code>,
-<code>local-timezone-offset</code>, <code>monotonic-time-ms</code>.</li>
-<li>PRNG isolation: <code>make-prng</code>, <code>prng-random</code>,
-<code>prng-random-integer</code>, <code>prng?</code>, and the global
-<code>set-random-seed!</code>.</li>
-<li>Reflection: <code>procedure-arity</code> (the
-<code>.esk</code>-level <code>describe</code> and <code>type-name</code>
-in <code>core.reflection</code> use it).</li>
+<li>Time API: <code>current-time-ns</code>, <code>current-timestamp</code>, <code>format-iso8601</code>, <code>parse-iso8601</code>, <code>format-relative</code>, <code>local-timezone-offset</code>, <code>monotonic-time-ms</code>.</li>
+<li>PRNG isolation: <code>make-prng</code>, <code>prng-random</code>, <code>prng-random-integer</code>, <code>prng?</code>, and the global <code>set-random-seed!</code>.</li>
+<li>Reflection: <code>procedure-arity</code> (the <code>.esk</code>-level <code>describe</code> and <code>type-name</code> in <code>core.reflection</code> use it).</li>
 <li>URL parser: <code>url-parse</code>.</li>
-<li>Multi-value plumbing: <code>call-with-values</code>,
-<code>values</code>.</li>
+<li>Multi-value plumbing: <code>call-with-values</code>, <code>values</code>.</li>
 </ul>
 <h3 id="self-check-methodology">Self-check methodology</h3>
-<p>For each procedure cited above, the symbol was verified to be present
-in the implementing file’s <code>(provide …)</code> block (for
-<code>.esk</code> modules) or in the codegen dispatch table (for
-builtins). The <code>function_return_types</code> table in
-<code>lib/backend/llvm_codegen.cpp</code> and the
-<code>vm_prelude_cache.h</code> exported-name lists serve as secondary
-cross-references for the codegen-builtin surfaces.</p>
-<p>Modules from the original brief that turned out not to exist under
-the listed name:</p>
+<p>For each procedure cited above, the symbol was verified to be present in the implementing file’s <code>(provide …)</code> block (for <code>.esk</code> modules) or in the codegen dispatch table (for builtins). The <code>function_return_types</code> table in <code>lib/backend/llvm_codegen.cpp</code> and the <code>vm_prelude_cache.h</code> exported-name lists serve as secondary cross-references for the codegen-builtin surfaces.</p>
+<p>Modules from the original brief that turned out not to exist under the listed name:</p>
 <table>
 <colgroup>
 <col style="width: 22%" />
@@ -2197,61 +1485,35 @@ the listed name:</p>
 <tbody>
 <tr>
 <td><code>core.time</code></td>
-<td>Not a module. Codegen builtins in
-<code>lib/core/system_builtins.c</code>.</td>
+<td>Not a module. Codegen builtins in <code>lib/core/system_builtins.c</code>.</td>
 </tr>
 <tr>
 <td><code>core.regex</code></td>
-<td>Lives at <code>lib/agent/regex.esk</code> (not
-<code>lib/core/</code>).</td>
+<td>Lives at <code>lib/agent/regex.esk</code> (not <code>lib/core/</code>).</td>
 </tr>
 <tr>
 <td><code>core.random</code></td>
-<td>Lives at <code>lib/random/random.esk</code> (not
-<code>lib/core/</code>); per-stream isolation primitives are codegen
-builtins backed by <code>lib/core/prng.cpp</code>.</td>
+<td>Lives at <code>lib/random/random.esk</code> (not <code>lib/core/</code>); per-stream isolation primitives are codegen builtins backed by <code>lib/core/prng.cpp</code>.</td>
 </tr>
 <tr>
 <td><code>core.control</code> (call-with-values)</td>
-<td><code>call-with-values</code> is a parser-recognised special form,
-not a stdlib module. <code>lib/core/control/trampoline.esk</code> exists
-but only provides <code>trampoline</code>, <code>bounce</code>,
-<code>done</code>.</td>
+<td><code>call-with-values</code> is a parser-recognised special form, not a stdlib module. <code>lib/core/control/trampoline.esk</code> exists but only provides <code>trampoline</code>, <code>bounce</code>, <code>done</code>.</td>
 </tr>
 <tr>
 <td><code>core.memoize</code></td>
-<td>Lives at <code>lib/core/cache.esk</code> (the CHANGELOG and brief
-use “cache” and “memoize” interchangeably; the actual module is
-<code>core.cache</code>).</td>
+<td>Lives at <code>lib/core/cache.esk</code> (the CHANGELOG and brief use “cache” and “memoize” interchangeably; the actual module is <code>core.cache</code>).</td>
 </tr>
 </tbody>
 </table>
 <h3 id="where-to-look-next">Where to look next</h3>
 <ul>
-<li>The v1.2 hardening trail (audit blockers each of these modules
-closed) lives in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/HARDENING.md" target="_blank" rel="noopener noreferrer"><code>HARDENING.md</code></a>
-and in the v1.2.x sections of <a
-href="/docs#page=release_notes" data-url="/content/release_notes.html"><code>RELEASE_NOTES.md</code></a>.</li>
-<li>The standalone VM’s surface for some of the same primitives differs
-in shape — <code>regex-match-groups</code> returns a list in the
-LLVM/JIT surface but an alist in the VM surface, for example.
-Cross-check <code>tests/vm/regex_surface_regression.esk</code> and the
-per-target tests under <code>tests/vm/</code> before porting code
-between targets.</li>
-<li>For changes in v1.3-evolve and later, follow the per-release section
-of <a href="/docs#page=changelog" data-url="/content/changelog.html"><code>CHANGELOG.md</code></a>.</li>
+<li>The v1.2 hardening trail (audit blockers each of these modules closed) lives in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/HARDENING.md" target="_blank" rel="noopener noreferrer"><code>HARDENING.md</code></a> and in the v1.2.x sections of <a href="/docs#page=release_notes" data-url="/content/release_notes.html"><code>RELEASE_NOTES.md</code></a>.</li>
+<li>The standalone VM’s surface for some of the same primitives differs in shape — <code>regex-match-groups</code> returns a list in the LLVM/JIT surface but an alist in the VM surface, for example. Cross-check <code>tests/vm/regex_surface_regression.esk</code> and the per-target tests under <code>tests/vm/</code> before porting code between targets.</li>
+<li>For changes in v1.3-evolve and later, follow the per-release section of <a href="/docs#page=changelog" data-url="/content/changelog.html"><code>CHANGELOG.md</code></a>.</li>
 </ul>
 <hr />
-<h2 id="appendix-b-infrastructure-stdlib-modules">Appendix B:
-Infrastructure stdlib modules</h2>
-<p>The current stdlib also ships seventeen infrastructure-oriented
-modules that the main sections above only listed by name. The signatures
-below come directly from each module’s <code>(provide …)</code> block
-(cited in the table). The “Auto-loaded” column says whether
-<code>(require stdlib)</code> pulls the module in or whether you need an
-explicit <code>(require ...)</code> line; the exact set of auto-loaded
-modules is the <code>(require …)</code> chain in
-<code>lib/stdlib.esk</code>.</p>
+<h2 id="appendix-b-infrastructure-stdlib-modules">Appendix B: Infrastructure stdlib modules</h2>
+<p>The current stdlib also ships seventeen infrastructure-oriented modules that the main sections above only listed by name. The signatures below come directly from each module’s <code>(provide …)</code> block (cited in the table). The “Auto-loaded” column says whether <code>(require stdlib)</code> pulls the module in or whether you need an explicit <code>(require ...)</code> line; the exact set of auto-loaded modules is the <code>(require …)</code> chain in <code>lib/stdlib.esk</code>.</p>
 <table>
 <colgroup>
 <col style="width: 25%" />
@@ -2344,15 +1606,13 @@ modules is the <code>(require …)</code> chain in
 <td><code>core.manifold</code></td>
 <td><code>lib/core/manifold.esk</code></td>
 <td>Yes</td>
-<td>Constant-curvature Riemannian manifolds: exp/log maps, geodesic
-distance, metric, Christoffel, Ricci, Riemann</td>
+<td>Constant-curvature Riemannian manifolds: exp/log maps, geodesic distance, metric, Christoffel, Ricci, Riemann</td>
 </tr>
 <tr>
 <td><code>core.distributed</code></td>
 <td><code>lib/core/distributed.esk</code></td>
 <td><strong>No</strong> — <code>(require core.distributed)</code></td>
-<td>Lamport/vector clocks, counters, OR-Set, LWW register/map, RGA
-sequence</td>
+<td>Lamport/vector clocks, counters, OR-Set, LWW register/map, RGA sequence</td>
 </tr>
 <tr>
 <td><code>core.msgpack</code></td>
@@ -2364,15 +1624,13 @@ sequence</td>
 <td><code>core.memory</code></td>
 <td><code>lib/core/memory.esk</code></td>
 <td><strong>No</strong> — <code>(require core.memory)</code></td>
-<td>Append-only, content-addressed, hash-chained, CRDT-merged event
-log</td>
+<td>Append-only, content-addressed, hash-chained, CRDT-merged event log</td>
 </tr>
 <tr>
 <td><code>core.memory_store</code></td>
 <td><code>lib/core/memory_store.esk</code></td>
 <td><strong>No</strong> — <code>(require core.memory_store)</code></td>
-<td>Durable fsync-on-append file backing for a <code>core.memory</code>
-log</td>
+<td>Durable fsync-on-append file backing for a <code>core.memory</code> log</td>
 </tr>
 </tbody>
 </table>
@@ -2391,24 +1649,13 @@ log</td>
   make-cas make-cas-with-hash cas? cas-put! cas-get cas-has? cas-size cas-keys)</code></pre>
 <p>Key entry points:</p>
 <ul>
-<li><code>(fnv1a-64 bytes-or-string) → int64</code> — non-cryptographic
-64-bit hash. The inner loop is in <code>lib/core/merkle.c</code> to get
-correct uint64 overflow semantics (the Eshkol-side implementation
-truncated on bignum modulo for inputs ≥ 2⁵³).</li>
-<li><code>(hash-&gt;hex h) → string</code> — 16-character hex encoding
-of a 64-bit hash.</li>
-<li><code>(merkle-tree leaf-list [hash-fn]) → root</code> — builds a
-balanced Merkle tree; <code>hash-fn</code> defaults to
-<code>fnv1a-64</code>. Returns the root node.</li>
+<li><code>(fnv1a-64 bytes-or-string) → int64</code> — non-cryptographic 64-bit hash. The inner loop is in <code>lib/core/merkle.c</code> to get correct uint64 overflow semantics (the Eshkol-side implementation truncated on bignum modulo for inputs ≥ 2⁵³).</li>
+<li><code>(hash-&gt;hex h) → string</code> — 16-character hex encoding of a 64-bit hash.</li>
+<li><code>(merkle-tree leaf-list [hash-fn]) → root</code> — builds a balanced Merkle tree; <code>hash-fn</code> defaults to <code>fnv1a-64</code>. Returns the root node.</li>
 <li><code>(merkle-root tree) → hash</code> — accessor.</li>
-<li><code>(merkle-proof tree leaf-index) → proof-list</code> —
-sibling-hash chain from leaf to root.</li>
-<li><code>(merkle-verify proof leaf root-hash) → bool</code> — verify a
-proof against a claimed root.</li>
-<li>Content-addressable store: <code>(make-cas [hash-fn])</code> returns
-a hash → blob store; <code>(cas-put! cas blob)</code> returns the hash;
-<code>(cas-get cas hash)</code> returns the blob or
-<code>#f</code>.</li>
+<li><code>(merkle-proof tree leaf-index) → proof-list</code> — sibling-hash chain from leaf to root.</li>
+<li><code>(merkle-verify proof leaf root-hash) → bool</code> — verify a proof against a claimed root.</li>
+<li>Content-addressable store: <code>(make-cas [hash-fn])</code> returns a hash → blob store; <code>(cas-put! cas blob)</code> returns the hash; <code>(cas-get cas hash)</code> returns the blob or <code>#f</code>.</li>
 </ul>
 <h3 id="b2-coremetrics">B.2 <code>core.metrics</code></h3>
 <pre class="scheme"><code>(require core.metrics)</code></pre>
@@ -2418,15 +1665,7 @@ a hash → blob store; <code>(cas-put! cas blob)</code> returns the hash;
          make-histogram histogram-observe! histogram-buckets
          metrics-register! metrics-render metrics-reset!
          metric-name metric-help metric-kind)</code></pre>
-<p>Counters are monotonically non-decreasing; gauges can move in either
-direction. Histograms validate strictly increasing numeric buckets and
-render cumulative <code>_bucket</code>, <code>_count</code>, and
-<code>_sum</code> samples. Metric names and label names are validated
-against the Prometheus identifier shape, label arity is checked on
-update, and <code>metrics-render</code> escapes HELP text and label
-values for Prometheus exposition format. <code>metrics-register!</code>
-adds a metric to the global registry; <code>metrics-render</code>
-produces a string suitable for HTTP <code>GET /metrics</code>.</p>
+<p>Counters are monotonically non-decreasing; gauges can move in either direction. Histograms validate strictly increasing numeric buckets and render cumulative <code>_bucket</code>, <code>_count</code>, and <code>_sum</code> samples. Metric names and label names are validated against the Prometheus identifier shape, label arity is checked on update, and <code>metrics-render</code> escapes HELP text and label values for Prometheus exposition format. <code>metrics-register!</code> adds a metric to the global registry; <code>metrics-render</code> produces a string suitable for HTTP <code>GET /metrics</code>.</p>
 <h3 id="b3-corelogging">B.3 <code>core.logging</code></h3>
 <pre class="scheme"><code>(require core.logging)</code></pre>
 <p>Exports (<code>logging.esk</code>):</p>
@@ -2434,19 +1673,7 @@ produces a string suitable for HTTP <code>GET /metrics</code>.</p>
          log-set-level! log-set-output!
          log-with-trace!
          log-level log-output-port)</code></pre>
-<p>JSON-Lines structured logging. Each call emits a single line with
-<code>level</code>, <code>ts</code> (ISO-8601), and any additional
-key/value pairs the caller passes. User fields may not reuse the
-reserved logger keys <code>ts</code>, <code>level</code>,
-<code>msg</code>, or <code>trace_id</code>. <code>log-set-output!</code>
-accepts an output port, a path string, or <code>#f</code> to return to
-<code>current-output-port</code>; path-string sinks are closed when the
-sink is changed again. <code>log-set-level!</code> thresholds at
-<code>'debug</code> / <code>'info</code> / <code>'warn</code> /
-<code>'error</code>. <code>log-with-trace!</code> enables a
-<code>trace_id</code> field that propagates through nested calls and is
-restored after normal returns or raised errors — useful for
-request-scoped logging.</p>
+<p>JSON-Lines structured logging. Each call emits a single line with <code>level</code>, <code>ts</code> (ISO-8601), and any additional key/value pairs the caller passes. User fields may not reuse the reserved logger keys <code>ts</code>, <code>level</code>, <code>msg</code>, or <code>trace_id</code>. <code>log-set-output!</code> accepts an output port, a path string, or <code>#f</code> to return to <code>current-output-port</code>; path-string sinks are closed when the sink is changed again. <code>log-set-level!</code> thresholds at <code>'debug</code> / <code>'info</code> / <code>'warn</code> / <code>'error</code>. <code>log-with-trace!</code> enables a <code>trace_id</code> field that propagates through nested calls and is restored after normal returns or raised errors — useful for request-scoped logging.</p>
 <h3 id="b4-corecollections">B.4 <code>core.collections</code></h3>
 <pre class="scheme"><code>(require core.collections)</code></pre>
 <p>Exports (<code>collections.esk</code>):</p>
@@ -2458,11 +1685,7 @@ request-scoped logging.</p>
   deque-pop-front! deque-pop-back!
   deque-peek-front deque-peek-back
   deque-size deque-empty? deque-&gt;list)</code></pre>
-<p>Priority queue is a binary min-heap backed by a growable vector; the
-optional third argument to <code>make-pq</code> is a comparator with the
-usual <code>(&lt;0 / 0 / &gt;0)</code> contract (defaults to scalar
-subtraction). Hash-set is backed by <code>core.hash-table</code>; deque
-is a circular buffer that grows by doubling.</p>
+<p>Priority queue is a binary min-heap backed by a growable vector; the optional third argument to <code>make-pq</code> is a comparator with the usual <code>(&lt;0 / 0 / &gt;0)</code> contract (defaults to scalar subtraction). Hash-set is backed by <code>core.hash-table</code>; deque is a circular buffer that grows by doubling.</p>
 <h3 id="b5-corechannels">B.5 <code>core.channels</code></h3>
 <pre class="scheme"><code>(require core.channels)</code></pre>
 <p>Exports (<code>channels.esk</code>):</p>
@@ -2472,14 +1695,7 @@ is a circular buffer that grows by doubling.</p>
   channel-try-send! channel-try-recv!
   channel-close!
   channel-closed-sentinel)</code></pre>
-<p>Bounded MPSC-style channels designed to coordinate
-<code>parallel-map</code> workers. <code>(make-channel cap)</code>
-creates an open channel with capacity ≥ 1. <code>channel-send!</code>
-and <code>channel-recv!</code> block; <code>channel-try-send!</code> /
-<code>channel-try-recv!</code> return <code>#f</code> on contention.
-After <code>channel-close!</code>, send raises, recv drains buffered
-items, and subsequent recvs return
-<code>(channel-closed-sentinel)</code>.</p>
+<p>Bounded MPSC-style channels designed to coordinate <code>parallel-map</code> workers. <code>(make-channel cap)</code> creates an open channel with capacity ≥ 1. <code>channel-send!</code> and <code>channel-recv!</code> block; <code>channel-try-send!</code> / <code>channel-try-recv!</code> return <code>#f</code> on contention. After <code>channel-close!</code>, send raises, recv drains buffered items, and subsequent recvs return <code>(channel-closed-sentinel)</code>.</p>
 <h3 id="b6-corethreads">B.6 <code>core.threads</code></h3>
 <pre class="scheme"><code>(require core.threads)</code></pre>
 <p>Exports (<code>threads.esk</code>):</p>
@@ -2487,56 +1703,27 @@ items, and subsequent recvs return
   make-mutex mutex-lock! mutex-trylock! mutex-unlock! mutex-destroy! with-mutex
   make-condvar condvar-wait! condvar-signal! condvar-broadcast! condvar-destroy!
   make-thread thread-join thread? thread-result-ready?)</code></pre>
-<p>POSIX-pthread wrappers. Mutexes are recursive (SRFI 18-compatible —
-re-entering the same mutex from the same thread does not deadlock).
-<code>make-thread</code> spawns the thunk on a thread-pool worker;
-<code>thread-join</code> blocks until completion. The Windows path is
-currently stubbed (returns <code>NULL</code> / error from every entry
-point pending the v1.4-platform program).</p>
+<p>POSIX-pthread wrappers. Mutexes are recursive (SRFI 18-compatible — re-entering the same mutex from the same thread does not deadlock). <code>make-thread</code> spawns the thunk on a thread-pool worker; <code>thread-join</code> blocks until completion. The Windows path is currently stubbed (returns <code>NULL</code> / error from every entry point pending the v1.4-platform program).</p>
 <h3 id="b7-coreplot">B.7 <code>core.plot</code></h3>
 <pre class="scheme"><code>(require core.plot)</code></pre>
 <p>Exports (<code>plot.esk</code>):</p>
 <pre class="scheme"><code>(provide sparkline bar-chart histogram)</code></pre>
-<p>Terminal-side numeric visualisation. <code>(sparkline xs)</code>
-returns a Unicode block-character string for an inline summary;
-<code>(bar-chart pairs)</code> produces a multi-line bar chart;
-<code>(histogram xs bins)</code> bins a sample into a column chart. All
-three return strings; the caller chooses what to do with the output
-(<code>display</code>, <code>string-append</code> into a log line,
-etc.).</p>
+<p>Terminal-side numeric visualisation. <code>(sparkline xs)</code> returns a Unicode block-character string for an inline summary; <code>(bar-chart pairs)</code> produces a multi-line bar chart; <code>(histogram xs bins)</code> bins a sample into a column chart. All three return strings; the caller chooses what to do with the output (<code>display</code>, <code>string-append</code> into a log line, etc.).</p>
 <h3 id="b8-coresexp">B.8 <code>core.sexp</code></h3>
 <pre class="scheme"><code>(require core.sexp)</code></pre>
 <p>Exports (<code>sexp.esk</code>):</p>
 <pre class="scheme"><code>(provide sexp-&gt;string
          sexp-&gt;canonical-string)</code></pre>
-<p><code>sexp-&gt;string</code> is a readable formatter — preserves
-source-like whitespace. <code>sexp-&gt;canonical-string</code> is the
-canonical form: deterministic key ordering for hash-tables, no
-insignificant whitespace, sorted alists. The canonical form is intended
-for content-hashing via <code>core.merkle</code> (matching s-exprs hash
-to the same <code>fnv1a-64</code>).</p>
+<p><code>sexp-&gt;string</code> is a readable formatter — preserves source-like whitespace. <code>sexp-&gt;canonical-string</code> is the canonical form: deterministic key ordering for hash-tables, no insignificant whitespace, sorted alists. The canonical form is intended for content-hashing via <code>core.merkle</code> (matching s-exprs hash to the same <code>fnv1a-64</code>).</p>
 <h3 id="b9-corefiles">B.9 <code>core.files</code></h3>
 <pre class="scheme"><code>(require core.files)</code></pre>
 <p>Exports (<code>files.esk</code>):</p>
 <pre class="scheme"><code>(provide path-directory with-atomic-output-file atomic-write-file)</code></pre>
 <ul>
-<li><code>(path-directory path) → string</code> — returns the directory
-component (uses <code>"."</code> for relative paths without a
-slash).</li>
-<li><code>(file-stat path) → list or #f</code> — returns
-<code>(size mtime-seconds type mtime-nanoseconds device inode)</code>;
-<code>type</code> is <code>"f"</code>, <code>"d"</code>,
-<code>"l"</code>, or <code>"?"</code>. The first three fields retain the
-historical positional contract, while the appended nanosecond timestamp
-and device/inode identity are stable across the native and VM
-engines.</li>
-<li><code>(atomic-write-file path data)</code> — writes via a temp file
-in the same directory then <code>rename(2)</code>s into place; safe
-against torn writes on crash.</li>
-<li><code>(with-atomic-output-file path proc)</code> — opens a temp
-file, calls <code>(proc port)</code>, then atomically renames to
-<code>path</code> on normal return; returns <code>#f</code> if
-publication fails and deletes the temp on exception.</li>
+<li><code>(path-directory path) → string</code> — returns the directory component (uses <code>"."</code> for relative paths without a slash).</li>
+<li><code>(file-stat path) → list or #f</code> — returns <code>(size mtime-seconds type mtime-nanoseconds device inode)</code>; <code>type</code> is <code>"f"</code>, <code>"d"</code>, <code>"l"</code>, or <code>"?"</code>. The first three fields retain the historical positional contract, while the appended nanosecond timestamp and device/inode identity are stable across the native and VM engines.</li>
+<li><code>(atomic-write-file path data)</code> — writes via a temp file in the same directory then <code>rename(2)</code>s into place; safe against torn writes on crash.</li>
+<li><code>(with-atomic-output-file path proc)</code> — opens a temp file, calls <code>(proc port)</code>, then atomically renames to <code>path</code> on normal return; returns <code>#f</code> if publication fails and deletes the temp on exception.</li>
 </ul>
 <h3 id="b10-coretesting">B.10 <code>core.testing</code></h3>
 <pre class="scheme"><code>(require core.testing)   ; explicit — not auto-loaded by (require stdlib)</code></pre>
@@ -2547,24 +1734,8 @@ publication fails and deletes the temp on exception.</li>
          run-tests reset-tests!
          *tests* *test-pass-count* *test-fail-count*
          *current-test-fails* *current-test-name*)</code></pre>
-<p>A minimal test harness. <code>(register-test name thunk)</code> adds
-a test to the global registry; <code>(run-tests)</code> invokes them all
-and returns <code>(values pass-count fail-count)</code>. Inside a thunk,
-<code>check-equal?</code>, <code>check-true</code>,
-<code>check-false</code>, <code>check-approx</code> (with tolerance),
-and <code>check-raises</code> (with expected exception kind) record
-per-test failure messages without aborting the whole batch.
-<code>(assert-close actual expected tolerance)</code> returns a boolean
-using absolute tolerance below magnitude one and relative tolerance
-otherwise. <code>(certify-kernel name actual expected tolerance)</code>
-returns that boolean for kernel gates whose exit code is the primary
-verdict; it is silent and leaves diagnostic
-<code>PASS:</code>/<code>FAIL:</code> reporting to its caller.</p>
-<p>Not auto-loaded because baking <code>core.testing</code> into
-<code>stdlib.o</code> triggers the symbol-renamer / external-decl path
-interactions documented at <code>lib/stdlib.esk:64-69</code> — embedded
-test fixtures end up with duplicate <code>_*tests*</code> globals in the
-user’s object file.</p>
+<p>A minimal test harness. <code>(register-test name thunk)</code> adds a test to the global registry; <code>(run-tests)</code> invokes them all and returns <code>(values pass-count fail-count)</code>. Inside a thunk, <code>check-equal?</code>, <code>check-true</code>, <code>check-false</code>, <code>check-approx</code> (with tolerance), and <code>check-raises</code> (with expected exception kind) record per-test failure messages without aborting the whole batch. <code>(assert-close actual expected tolerance)</code> returns a boolean using absolute tolerance below magnitude one and relative tolerance otherwise. <code>(certify-kernel name actual expected tolerance)</code> returns that boolean for kernel gates whose exit code is the primary verdict; it is silent and leaves diagnostic <code>PASS:</code>/<code>FAIL:</code> reporting to its caller.</p>
+<p>Not auto-loaded because baking <code>core.testing</code> into <code>stdlib.o</code> triggers the symbol-renamer / external-decl path interactions documented at <code>lib/stdlib.esk:64-69</code> — embedded test fixtures end up with duplicate <code>_*tests*</code> globals in the user’s object file.</p>
 <h3 id="b11-coremanifold">B.11 <code>core.manifold</code></h3>
 <pre class="scheme"><code>(require core.manifold)</code></pre>
 <p>Exports (<code>manifold.esk</code>):</p>
@@ -2572,20 +1743,8 @@ user’s object file.</p>
          manifold-exp-map manifold-log-map manifold-distance
          manifold-parallel-transport manifold-curvature
          manifold-dimension manifold-type)</code></pre>
-<p>Manifold operations for Riemannian computation. The three
-constructors return tagged manifold values;
-<code>manifold-exp-map</code> / <code>manifold-log-map</code> /
-<code>manifold-distance</code> /
-<code>manifold-parallel-transport</code> /
-<code>manifold-curvature</code> are dispatched on the manifold type.</p>
-<p>The current v1.2 implementation is a placeholder layer —
-<code>manifold-dimension</code> and <code>manifold-type</code> return
-constants pending the native VM ops planned for v1.3-evolve. For actual
-gradient-descent-on-manifolds workflows, build on top of
-<code>core.manifold</code> directly together with <code>gradient</code>
-/ <code>tensor-*</code> and the exact-numeric tower; a higher-level
-Riemannian-training API ships in v1.3-evolve along with the native VM
-ops.</p>
+<p>Manifold operations for Riemannian computation. The three constructors return tagged manifold values; <code>manifold-exp-map</code> / <code>manifold-log-map</code> / <code>manifold-distance</code> / <code>manifold-parallel-transport</code> / <code>manifold-curvature</code> are dispatched on the manifold type.</p>
+<p>The current v1.2 implementation is a placeholder layer — <code>manifold-dimension</code> and <code>manifold-type</code> return constants pending the native VM ops planned for v1.3-evolve. For actual gradient-descent-on-manifolds workflows, build on top of <code>core.manifold</code> directly together with <code>gradient</code> / <code>tensor-*</code> and the exact-numeric tower; a higher-level Riemannian-training API ships in v1.3-evolve along with the native VM ops.</p>
 <h3 id="b12-corecapabilities">B.12 <code>core.capabilities</code></h3>
 <pre class="scheme"><code>(require core.capabilities)</code></pre>
 <p>Exports (<code>capabilities.esk</code>):</p>
@@ -2595,16 +1754,7 @@ ops.</p>
          capability-policy-active?
          capability-allowed?
          capability-require!)</code></pre>
-<p>Hosted capability policy for v1.3 production surfaces. With no
-installed policy (<code>#f</code>), checks allow by default so existing
-v1.2 code keeps running. Installing an allow-list activates
-deny-by-default behavior: any capability symbol not present in the list
-raises through <code>capability-require!</code>. Hooks cover agent
-subprocess/shell, HTTP/network, Unix-socket, SQLite FFI, hosted
-environment reads/writes, and generated file-port opens. The hosted
-runtime also mirrors the active allow-list so core file I/O builtins
-require <code>file-read</code> for metadata/read paths and
-<code>file-write</code> for write/delete/rename paths.</p>
+<p>Hosted capability policy for v1.3 production surfaces. With no installed policy (<code>#f</code>), checks allow by default so existing v1.2 code keeps running. Installing an allow-list activates deny-by-default behavior: any capability symbol not present in the list raises through <code>capability-require!</code>. Hooks cover agent subprocess/shell, HTTP/network, Unix-socket, SQLite FFI, hosted environment reads/writes, and generated file-port opens. The hosted runtime also mirrors the active allow-list so core file I/O builtins require <code>file-read</code> for metadata/read paths and <code>file-write</code> for write/delete/rename paths.</p>
 <h3 id="b13-corehttp_server">B.13 <code>core.http_server</code></h3>
 <pre class="scheme"><code>(require core.http_server)</code></pre>
 <p>Exports (<code>http_server.esk</code>):</p>
@@ -2629,28 +1779,7 @@ require <code>file-read</code> for metadata/read paths and
          http-standard-response
          http-server-respond-response
          http-server-respond-standard)</code></pre>
-<p>Small routing helpers for the hosted HTTP server builtins. The parser
-extracts the request line, method, request target, query-stripped path,
-query string, HTTP version, headers, and body from raw HTTP request text
-returned by <code>http-server-accept</code>.
-<code>http-request-content-length</code> parses valid decimal
-<code>Content-Length</code> headers, and
-<code>http-request-body-too-large?</code> checks the 10 MiB
-<code>http-max-request-body-size</code> cap. Responses are
-<code>(status content-type body)</code> tuples with accessors.
-<code>http-route</code> creates <code>(method path handler)</code> route
-tuples; <code>http-route-request</code> dispatches exact method/path
-matches to handlers and converts handler exceptions or malformed handler
-returns to 500 responses. If no custom route matches, it falls back to
-<code>http-standard-response</code>, which serves
-<code>GET /health</code>, <code>GET /ready</code>, and
-<code>GET /metrics</code>; other methods on those standard paths return
-405, unknown routes return 404, and malformed request lines return 400.
-Invalid <code>Content-Length</code> returns 400 and oversized request
-bodies return 413 before custom handlers run.
-<code>http-server-respond-response</code> and
-<code>http-server-respond-standard</code> send those responses through
-<code>http-server-respond</code>.</p>
+<p>Small routing helpers for the hosted HTTP server builtins. The parser extracts the request line, method, request target, query-stripped path, query string, HTTP version, headers, and body from raw HTTP request text returned by <code>http-server-accept</code>. <code>http-request-content-length</code> parses valid decimal <code>Content-Length</code> headers, and <code>http-request-body-too-large?</code> checks the 10 MiB <code>http-max-request-body-size</code> cap. Responses are <code>(status content-type body)</code> tuples with accessors. <code>http-route</code> creates <code>(method path handler)</code> route tuples; <code>http-route-request</code> dispatches exact method/path matches to handlers and converts handler exceptions or malformed handler returns to 500 responses. If no custom route matches, it falls back to <code>http-standard-response</code>, which serves <code>GET /health</code>, <code>GET /ready</code>, and <code>GET /metrics</code>; other methods on those standard paths return 405, unknown routes return 404, and malformed request lines return 400. Invalid <code>Content-Length</code> returns 400 and oversized request bodies return 413 before custom handlers run. <code>http-server-respond-response</code> and <code>http-server-respond-standard</code> send those responses through <code>http-server-respond</code>.</p>
 <h3 id="b14-coredistributed">B.14 <code>core.distributed</code></h3>
 <pre class="scheme"><code>(require core.distributed)</code></pre>
 <p>Exports (<code>distributed.esk</code>):</p>
@@ -2674,18 +1803,7 @@ bodies return 413 before custom handlers run.
   make-rga rga-root-id rga-entries rga-clock rga-entry-id
   rga-entry-prev rga-entry-value rga-entry-deleted? rga-insert-after
   rga-append rga-delete rga-values rga-last-id rga-merge)</code></pre>
-<p>Pure value-level distributed-systems substrate for the v1.8/M4 track.
-Lamport clocks provide scalar event ordering. Vector clocks are alists
-of <code>(node counter)</code> entries and compare as
-<code>'before</code>, <code>'after</code>, <code>'equal</code>, or
-<code>'concurrent</code>. The G-Counter and PN-Counter are state-based
-CRDTs whose merge operation is pairwise-max, so merges are commutative,
-associative, and idempotent. OR-Set tracks observed add dots so removes
-do not erase unseen concurrent adds. LWW registers and maps use
-monotonic timestamps plus canonical writer/value tie-breaks so
-equal-timestamp merges converge. The RGA sequence stores insert-after
-links and tombstones, preserving deterministic visible order across
-concurrent inserts and delete merges.</p>
+<p>Pure value-level distributed-systems substrate for the v1.8/M4 track. Lamport clocks provide scalar event ordering. Vector clocks are alists of <code>(node counter)</code> entries and compare as <code>'before</code>, <code>'after</code>, <code>'equal</code>, or <code>'concurrent</code>. The G-Counter and PN-Counter are state-based CRDTs whose merge operation is pairwise-max, so merges are commutative, associative, and idempotent. OR-Set tracks observed add dots so removes do not erase unseen concurrent adds. LWW registers and maps use monotonic timestamps plus canonical writer/value tie-breaks so equal-timestamp merges converge. The RGA sequence stores insert-after links and tombstones, preserving deterministic visible order across concurrent inserts and delete merges.</p>
 <h3 id="b15-coremsgpack">B.15 <code>core.msgpack</code></h3>
 <pre class="scheme"><code>(require core.msgpack)</code></pre>
 <p>Exports (<code>msgpack.esk</code>):</p>
@@ -2694,21 +1812,8 @@ concurrent inserts and delete merges.</p>
   msgpack-map msgpack-map? msgpack-map-entries
   msgpack-encode msgpack-decode msgpack-decode-prefix
   msgpack-bytes-&gt;bytevector msgpack-bytevector-&gt;bytes)</code></pre>
-<p>Initial MessagePack wire-format substrate for the v1.8 distributed
-track. <code>msgpack-encode</code> returns a bytevector and
-<code>msgpack-decode</code> consumes exactly one object from a
-bytevector, raising on trailing bytes.
-<code>msgpack-decode-prefix</code> returns
-<code>(value next-index)</code> for stream framing. The supported
-deterministic subset is MessagePack nil via <code>(msgpack-null)</code>,
-booleans, exact integers through the signed/unsigned 32-bit encodings,
-UTF-8 strings, binary bytevectors, list arrays, and explicit maps
-created with <code>(msgpack-map entries)</code>.</p>
-<p>Maps decode back to the explicit map wrapper so alists are not
-confused with arrays. Array decode returns lists. Arbitrary vectors are
-intentionally not an encode surface yet; vector numeric-slot lowering is
-tracked separately, so the wire-format module avoids a lossy vector path
-until that compiler/runtime boundary is fixed.</p>
+<p>Initial MessagePack wire-format substrate for the v1.8 distributed track. <code>msgpack-encode</code> returns a bytevector and <code>msgpack-decode</code> consumes exactly one object from a bytevector, raising on trailing bytes. <code>msgpack-decode-prefix</code> returns <code>(value next-index)</code> for stream framing. The supported deterministic subset is MessagePack nil via <code>(msgpack-null)</code>, booleans, exact integers through the signed/unsigned 32-bit encodings, UTF-8 strings, binary bytevectors, list arrays, and explicit maps created with <code>(msgpack-map entries)</code>.</p>
+<p>Maps decode back to the explicit map wrapper so alists are not confused with arrays. Array decode returns lists. Arbitrary vectors are intentionally not an encode surface yet; vector numeric-slot lowering is tracked separately, so the wire-format module avoids a lossy vector path until that compiler/runtime boundary is fixed.</p>
 <h3 id="b16-corememory">B.16 <code>core.memory</code></h3>
 <pre class="scheme"><code>(require core.memory)</code></pre>
 <p>Exports (<code>memory.esk</code>):</p>
@@ -2724,72 +1829,20 @@ until that compiler/runtime boundary is fixed.</p>
   memory-event-id memory-event-prev memory-event-vclock
   memory-event-node memory-event-type memory-event-payload
   event-content-hash)</code></pre>
-<p>An append-only event log that is <strong>content-addressed</strong>,
-<strong>hash-chained</strong> and <strong>CRDT-merged</strong> at once,
-composed from three modules that already ship: <code>sha256</code> from
-<code>agent.crypto</code> for the addressing,
-<code>sexp-&gt;canonical-string</code> from <code>core.sexp</code> for a
-stable rendering to hash, and the RGA / LWW-register / vector-clock
-layer from <code>core.distributed</code> for the convergence. It is not
-a wrapper around a database; it is event sourcing expressed in Eshkol
-values.</p>
+<p>An append-only event log that is <strong>content-addressed</strong>, <strong>hash-chained</strong> and <strong>CRDT-merged</strong> at once, composed from three modules that already ship: <code>sha256</code> from <code>agent.crypto</code> for the addressing, <code>sexp-&gt;canonical-string</code> from <code>core.sexp</code> for a stable rendering to hash, and the RGA / LWW-register / vector-clock layer from <code>core.distributed</code> for the convergence. It is not a wrapper around a database; it is event sourcing expressed in Eshkol values.</p>
 <p>Two shapes are all there is to know:</p>
 <ul>
-<li><strong>Event</strong> — an immutable list
-<code>(mem-ev-v1 id prev-hash vclock node type payload)</code>.
-<code>id</code> is
-<code>(sha256 (sexp-&gt;canonical-string (list node prev vclock type payload)))</code>,
-the hash of everything <em>except</em> the id. Because the body embeds
-<code>prev-hash</code>, the log is a hash chain as well as a
-content-addressed set: change any field of any event and its recomputed
-id no longer matches.</li>
-<li><strong>Log</strong> — a mutable vector
-<code>#(mem-log node-id rga vclock prev-hash)</code>. Treat it as
-opaque; the accessors below are the interface.</li>
+<li><strong>Event</strong> — an immutable list <code>(mem-ev-v1 id prev-hash vclock node type payload)</code>. <code>id</code> is <code>(sha256 (sexp-&gt;canonical-string (list node prev vclock type payload)))</code>, the hash of everything <em>except</em> the id. Because the body embeds <code>prev-hash</code>, the log is a hash chain as well as a content-addressed set: change any field of any event and its recomputed id no longer matches.</li>
+<li><strong>Log</strong> — a mutable vector <code>#(mem-log node-id rga vclock prev-hash)</code>. Treat it as opaque; the accessors below are the interface.</li>
 </ul>
-<p><code>(make-memory-log node-id)</code> creates an empty log owned by
-<code>node-id</code> (any <code>equal?</code>-comparable value; a symbol
-is typical). It takes exactly one argument.</p>
-<p><code>(memory-append! log type payload)</code> ticks the log’s vector
-clock, computes the content hash, chains it to the previous id and
-RGA-appends. It <strong>mutates <code>log</code></strong> and returns
-<strong>the new event</strong>, not the log. The argument order is
-<code>(log type payload)</code>.</p>
-<p><code>(memory-events log)</code> returns the events in RGA convergent
-order.</p>
-<p><code>(memory-event? ev)</code> is the predicate.
-<code>memory-event-id</code>, <code>-prev</code>, <code>-vclock</code>,
-<code>-node</code>, <code>-type</code> and <code>-payload</code> are the
-field accessors; <code>-id</code> is a lowercase hex sha256 string and
-<code>-prev</code> is <code>#f</code> for the first event of a
-chain.</p>
-<p><code>(memory-verify-events events)</code> recomputes every event’s
-id from its body and returns <code>#t</code>, or
-<code>(offending-event . reason)</code> where <code>reason</code> is one
-of <code>not-an-event</code>, <code>no-id</code>,
-<code>hash-mismatch</code>. <code>(memory-verify-chain log)</code> is
-the convenience form over <code>(memory-events log)</code>. Verification
-is independent of interleave order, so it holds on merged multi-node
-logs as well as single-node ones.
-<code>(memory-verify-events '())</code> is <code>#t</code>.</p>
-<p><code>(memory-merge a b)</code> returns a <strong>new</strong> log
-whose RGA is the union of the two (dedup-by-id is inherent to the RGA)
-and whose vector clock is the pairwise merge. It is commutative,
-idempotent, associative and lossless, and the result still passes
-<code>memory-verify-chain</code>. Note that the merged log inherits
-<code>a</code>’s node id.</p>
-<p><code>(memory-fold-lww log key)</code> folds the
-<code>value</code>-typed events whose payload is a pair
-<code>(key . value)</code> into an LWW register, using append position
-as the timestamp, and returns the last-written value for
-<code>key</code> — or <code>#f</code> if the key never appears. Because
-events are totally ordered even after a merge, this is genuinely
-last-write-wins over the log.</p>
-<p><code>(event-content-hash node prev vclock type payload)</code>
-re-derives an event’s content hash from its body fields. It is exported
-so a cross-module consumer can verify integrity without rebuilding an
-RGA — <code>core.memory_store</code>’s streaming
-<code>memory-store-audit</code> is the reason it is public.</p>
+<p><code>(make-memory-log node-id)</code> creates an empty log owned by <code>node-id</code> (any <code>equal?</code>-comparable value; a symbol is typical). It takes exactly one argument.</p>
+<p><code>(memory-append! log type payload)</code> ticks the log’s vector clock, computes the content hash, chains it to the previous id and RGA-appends. It <strong>mutates <code>log</code></strong> and returns <strong>the new event</strong>, not the log. The argument order is <code>(log type payload)</code>.</p>
+<p><code>(memory-events log)</code> returns the events in RGA convergent order.</p>
+<p><code>(memory-event? ev)</code> is the predicate. <code>memory-event-id</code>, <code>-prev</code>, <code>-vclock</code>, <code>-node</code>, <code>-type</code> and <code>-payload</code> are the field accessors; <code>-id</code> is a lowercase hex sha256 string and <code>-prev</code> is <code>#f</code> for the first event of a chain.</p>
+<p><code>(memory-verify-events events)</code> recomputes every event’s id from its body and returns <code>#t</code>, or <code>(offending-event . reason)</code> where <code>reason</code> is one of <code>not-an-event</code>, <code>no-id</code>, <code>hash-mismatch</code>. <code>(memory-verify-chain log)</code> is the convenience form over <code>(memory-events log)</code>. Verification is independent of interleave order, so it holds on merged multi-node logs as well as single-node ones. <code>(memory-verify-events '())</code> is <code>#t</code>.</p>
+<p><code>(memory-merge a b)</code> returns a <strong>new</strong> log whose RGA is the union of the two (dedup-by-id is inherent to the RGA) and whose vector clock is the pairwise merge. It is commutative, idempotent, associative and lossless, and the result still passes <code>memory-verify-chain</code>. Note that the merged log inherits <code>a</code>’s node id.</p>
+<p><code>(memory-fold-lww log key)</code> folds the <code>value</code>-typed events whose payload is a pair <code>(key . value)</code> into an LWW register, using append position as the timestamp, and returns the last-written value for <code>key</code> — or <code>#f</code> if the key never appears. Because events are totally ordered even after a merge, this is genuinely last-write-wins over the log.</p>
+<p><code>(event-content-hash node prev vclock type payload)</code> re-derives an event’s content hash from its body fields. It is exported so a cross-module consumer can verify integrity without rebuilding an RGA — <code>core.memory_store</code>’s streaming <code>memory-store-audit</code> is the reason it is public.</p>
 <pre class="scheme"><code>(require core.memory)
 (define la (make-memory-log &#39;node-A))
 (define lb (make-memory-log &#39;node-B))
@@ -2801,14 +1854,8 @@ RGA — <code>core.memory_store</code>’s streaming
 (display (length (memory-events m)))   (newline)   ; 4 — lossless
 (display (memory-verify-chain m))      (newline)   ; #t
 (display (memory-fold-lww m &#39;mood))    (newline)   ; 0.7</code></pre>
-<p>The module works under <code>eshkol-run -r</code> (JIT) and AOT. It
-compiles clean under <code>--strict-types</code> as of #494, which split
-<code>memory-fold-lww</code> into a Boolean-only key-presence scan and a
-register-only fold so that neither named-let accumulator changes shape
-across iterations — the ledger entry is SW-63, closed.</p>
-<p>Run-verified examples with stamped output, including the
-tamper-detection case, are in <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/memory.md" target="_blank" rel="noopener noreferrer"><code>reference/stdlib/memory.md</code></a>.</p>
+<p>The module works under <code>eshkol-run -r</code> (JIT) and AOT. It compiles clean under <code>--strict-types</code> as of #494, which split <code>memory-fold-lww</code> into a Boolean-only key-presence scan and a register-only fold so that neither named-let accumulator changes shape across iterations — the ledger entry is SW-63, closed.</p>
+<p>Run-verified examples with stamped output, including the tamper-detection case, are in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/memory.md" target="_blank" rel="noopener noreferrer"><code>reference/stdlib/memory.md</code></a>.</p>
 <h3 id="b17-corememory_store">B.17 <code>core.memory_store</code></h3>
 <pre class="scheme"><code>(require core.memory_store)</code></pre>
 <p>Exports (<code>memory_store.esk</code>):</p>
@@ -2830,85 +1877,14 @@ href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/memor
          memory-store-head
          memory-store-tail
          memory-store-sanitize)</code></pre>
-<p>The durable half of <code>core.memory</code>. The compatibility
-constructor keeps the three-vector shape
-<code>#(mem-store log path)</code>. Durable constructors return an
-opaque handle that owns a per-journal single-writer lock for its
-lifetime and retains the authoritative tail without retaining the
-historic RGA projection. <code>memory-store-log</code> and
-<code>memory-store-path</code> are its accessors, and both raise a
-diagnostic rather than fault when handed a non-store.</p>
-<p>Every append is written to an append-only text file and
-<strong><code>fsync</code>’d before the append returns</strong>, and the
-in-memory head advances only after that <code>fsync</code> succeeds —
-the order matters, because advancing first leaves the chain referencing
-a parent that never reached disk if the write fails. One canonical
-s-expression per line, in the same canonical rendering the ids are
-hashed over, so the file <em>is</em> the chain: replay re-parses each
-line and re-derives every hash.</p>
-<p><code>(memory-store-open node-id path)</code> opens or creates the
-chain and replays any existing events strictly: a malformed, torn,
-hash-invalid, or broken-link row causes the open to fail closed rather
-than replaying a valid prefix.
-<code>(memory-store-open-fast node-id path)</code> is the compatibility
-sidecar path. The durable constructors
-<code>(memory-store-open-durable node-id path)</code> and
-<code>(memory-store-open-fast-durable node-id path)</code> additionally
-acquire exclusive ownership of the journal. The latter validates the
-complete file while keeping only count, vector-clock, head, and tail
-state, so its resident event projection is constant-size. The sidecar is
-never authoritative: a crash between append and sidecar publication is
-healed from the journal tail.</p>
-<p><code>(memory-store-append! store type payload)</code> is the durable
-counterpart of <code>memory-append!</code>. Every durable append writes
-the complete canonical row, flushes and syncs it before advancing the
-handle, and refuses writes after close.
-<code>(memory-store-close! store)</code> releases durable ownership.
-<code>(memory-store-count store)</code>,
-<code>(memory-store-head store)</code>, and
-<code>(memory-store-tail store)</code> report the logical count, last
-id, and complete last event (<code>#f</code> on an empty chain).</p>
-<p><code>(memory-store-verify store)</code> audits two layers:
-<code>core.memory</code>’s content hashes, which catch a
-<em>modified</em> event, and strict linear linkage, which catches a
-<em>deleted</em> one — the first event’s <code>prev</code> must be
-<code>#f</code> and each event’s <code>prev</code> must equal its
-predecessor’s id. It returns <code>#t</code>, a <code>core.memory</code>
-failure pair, or
-<code>((event ID expected-prev PREV) . linkage-broken)</code>. Linkage
-is a single-node property; a merged multi-node chain has legitimate
-forks.</p>
-<p><code>(memory-store-audit path)</code> streams the file without
-rebuilding the RGA and returns
-<code>(ms-audit-v1 #t count forks)</code>, or
-<code>(lineno . reason)</code> where <code>reason</code> is
-<code>unparseable</code>, <code>hash-mismatch</code> or
-<code>orphan-parent</code>.</p>
-<p><code>(memory-store-audit-linear path)</code> is the strict
-single-writer evidence scan. It retains only the previous id, rejects a
-non-<code>#f</code> first parent, forks, broken links, malformed/torn
-rows, and content-hash mismatches, and returns
-<code>(ms-audit-linear-v1 #t count head bytes)</code>. A missing path is
-valid empty evidence. The byte count is checked before and after the
-pass; a changed size returns <code>(0 . source-changed)</code> as a
-diagnostic and does not grant ownership.</p>
-<p><code>(memory-store-linear-evidence store)</code> is the
-ownership-aware form. It requires an open durable handle and
-cross-checks the scan’s count and head against the handle before
-returning evidence. Use it before a rebuild or other mutable follow-up
-that needs both file truth and writer ownership.</p>
-<p><code>(memory-store-sanitize str)</code> is the v1 payload-string
-sanitizer. The v1 payload contract is an alist of
-<code>(symbol . string|integer)</code>; strings must contain no double
-quotes, no newlines and no non-printable ASCII, because
-<code>core.sexp</code>’s canonical rendering does not escape them and
-the write path’s length argument counts characters rather than UTF-8
-bytes. Sanitize at ingest.</p>
-<p>The libc bindings are deliberately fixed-arity (<code>fopen</code>,
-<code>fwrite</code>, <code>fflush</code>, <code>fileno</code>,
-<code>fsync</code>, <code>fclose</code>) rather than variadic: a
-variadic <code>open</code> is not safe through the FFI on ARM64, where
-variadic arguments go to the stack while a fixed-signature extern passes
-them in registers.</p>
-<p>Per-function detail with stamped output is in <a
-href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/memory_store.md" target="_blank" rel="noopener noreferrer"><code>reference/stdlib/memory_store.md</code></a>.</p>
+<p>The durable half of <code>core.memory</code>. The compatibility constructor keeps the three-vector shape <code>#(mem-store log path)</code>. Durable constructors return an opaque handle that owns a per-journal single-writer lock for its lifetime and retains the authoritative tail without retaining the historic RGA projection. <code>memory-store-log</code> and <code>memory-store-path</code> are its accessors, and both raise a diagnostic rather than fault when handed a non-store.</p>
+<p>Every append is written to an append-only text file and <strong><code>fsync</code>’d before the append returns</strong>, and the in-memory head advances only after that <code>fsync</code> succeeds — the order matters, because advancing first leaves the chain referencing a parent that never reached disk if the write fails. One canonical s-expression per line, in the same canonical rendering the ids are hashed over, so the file <em>is</em> the chain: replay re-parses each line and re-derives every hash.</p>
+<p><code>(memory-store-open node-id path)</code> opens or creates the chain and replays any existing events strictly: a malformed, torn, hash-invalid, or broken-link row causes the open to fail closed rather than replaying a valid prefix. <code>(memory-store-open-fast node-id path)</code> is the compatibility sidecar path. The durable constructors <code>(memory-store-open-durable node-id path)</code> and <code>(memory-store-open-fast-durable node-id path)</code> additionally acquire exclusive ownership of the journal. The latter validates the complete file while keeping only count, vector-clock, head, and tail state, so its resident event projection is constant-size. The sidecar is never authoritative: a crash between append and sidecar publication is healed from the journal tail.</p>
+<p><code>(memory-store-append! store type payload)</code> is the durable counterpart of <code>memory-append!</code>. Every durable append writes the complete canonical row, flushes and syncs it before advancing the handle, and refuses writes after close. <code>(memory-store-close! store)</code> releases durable ownership. <code>(memory-store-count store)</code>, <code>(memory-store-head store)</code>, and <code>(memory-store-tail store)</code> report the logical count, last id, and complete last event (<code>#f</code> on an empty chain).</p>
+<p><code>(memory-store-verify store)</code> audits two layers: <code>core.memory</code>’s content hashes, which catch a <em>modified</em> event, and strict linear linkage, which catches a <em>deleted</em> one — the first event’s <code>prev</code> must be <code>#f</code> and each event’s <code>prev</code> must equal its predecessor’s id. It returns <code>#t</code>, a <code>core.memory</code> failure pair, or <code>((event ID expected-prev PREV) . linkage-broken)</code>. Linkage is a single-node property; a merged multi-node chain has legitimate forks.</p>
+<p><code>(memory-store-audit path)</code> streams the file without rebuilding the RGA and returns <code>(ms-audit-v1 #t count forks)</code>, or <code>(lineno . reason)</code> where <code>reason</code> is <code>unparseable</code>, <code>hash-mismatch</code> or <code>orphan-parent</code>.</p>
+<p><code>(memory-store-audit-linear path)</code> is the strict single-writer evidence scan. It retains only the previous id, rejects a non-<code>#f</code> first parent, forks, broken links, malformed/torn rows, and content-hash mismatches, and returns <code>(ms-audit-linear-v1 #t count head bytes)</code>. A missing path is valid empty evidence. The byte count is checked before and after the pass; a changed size returns <code>(0 . source-changed)</code> as a diagnostic and does not grant ownership.</p>
+<p><code>(memory-store-linear-evidence store)</code> is the ownership-aware form. It requires an open durable handle and cross-checks the scan’s count and head against the handle before returning evidence. Use it before a rebuild or other mutable follow-up that needs both file truth and writer ownership.</p>
+<p><code>(memory-store-sanitize str)</code> is the v1 payload-string sanitizer. The v1 payload contract is an alist of <code>(symbol . string|integer)</code>; strings must contain no double quotes, no newlines and no non-printable ASCII, because <code>core.sexp</code>’s canonical rendering does not escape them and the write path’s length argument counts characters rather than UTF-8 bytes. Sanitize at ingest.</p>
+<p>The libc bindings are deliberately fixed-arity (<code>fopen</code>, <code>fwrite</code>, <code>fflush</code>, <code>fileno</code>, <code>fsync</code>, <code>fclose</code>) rather than variadic: a variadic <code>open</code> is not safe through the FFI on ARM64, where variadic arguments go to the stack while a fixed-signature extern passes them in registers.</p>
+<p>Per-function detail with stamped output is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/memory_store.md" target="_blank" rel="noopener noreferrer"><code>reference/stdlib/memory_store.md</code></a>.</p>

@@ -66,8 +66,7 @@
         (begin (display ch) (loop)))))</code></pre>
 <hr />
 <h2 id="string-ports">String Ports</h2>
-<p>String ports let you build strings incrementally or parse from
-strings:</p>
+<p>String ports let you build strings incrementally or parse from strings:</p>
 <pre class="scheme"><code>;; Output string port — build a string
 (define sp (open-output-string))
 (write-string &quot;hello &quot; sp)

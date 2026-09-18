@@ -1,25 +1,13 @@
 <h1 id="bytecode-vm-architecture">Bytecode VM Architecture</h1>
 <h2 id="overview">Overview</h2>
-<p>Eshkol has a dual backend: the primary LLVM compiler generates native
-machine code, and a secondary bytecode VM interprets programs through a
-72-opcode instruction set: 64 base opcodes (0–63) plus eight (64–71) for
-execution-coverage evidence, the top-level store boundary, the long
-closure encoding, the secondary raise and the popped tail call. The SDNC
-verifier extends the 64 base opcodes with 19 bounded reverse-mode AD
-opcodes, giving the paper artifact its 83-opcode canonical VM/AD ISA.
-The VM serves three purposes:</p>
+<p>Eshkol has a dual backend: the primary LLVM compiler generates native machine code, and a secondary bytecode VM interprets programs through a 72-opcode instruction set: 64 base opcodes (0–63) plus eight (64–71) for execution-coverage evidence, the top-level store boundary, the long closure encoding, the secondary raise and the popped tail call. The SDNC verifier extends the 64 base opcodes with 19 bounded reverse-mode AD opcodes, giving the paper artifact its 83-opcode canonical VM/AD ISA. The VM serves three purposes:</p>
 <ol type="1">
-<li><strong>WebAssembly execution</strong> — the browser REPL at
-eshkol.ai</li>
-<li><strong>Weight matrix compilation</strong> — programs compile to
-transformer neural network weights (see <a
-href="/docs#page=breakdown_computable_transformer" data-url="/content/breakdown_computable_transformer.html">Computable Transformer</a>)</li>
-<li><strong>Portable bytecode</strong> — ESKB binary format for
-cross-platform distribution</li>
+<li><strong>WebAssembly execution</strong> — the browser REPL at eshkol.ai</li>
+<li><strong>Weight matrix compilation</strong> — programs compile to transformer neural network weights (see <a href="/docs#page=breakdown_computable_transformer" data-url="/content/breakdown_computable_transformer.html">Computable Transformer</a>)</li>
+<li><strong>Portable bytecode</strong> — ESKB binary format for cross-platform distribution</li>
 </ol>
 <h2 id="architecture">Architecture</h2>
-<p>The VM is a unity-build C system: <code>eshkol_vm.c</code> includes
-all modules via <code>#include</code>:</p>
+<p>The VM is a unity-build C system: <code>eshkol_vm.c</code> includes all modules via <code>#include</code>:</p>
 <pre><code>eshkol_vm.c (hub)
  ├─ vm_core.c       — VM struct, stack, heap, value types
  ├─ vm_run.c        — 72-opcode dispatch loop (computed-goto + switch fallback)
@@ -45,22 +33,9 @@ all modules via <code>#include</code>:</p>
     ├─ vm_string.c, vm_io.c, vm_hashtable.c, vm_bytevector.c
     ├─ vm_multivalue.c, vm_error.c, vm_parameter.c
     └─ vm_prelude_cache.h — pre-compiled VM prelude and canonical stdlib bootstrap</code></pre>
-<p><code>vm_run.c</code> holds the dispatch loop itself — the
-fetch/decode step and the two dispatch mechanisms (computed-goto
-threading on GCC/Clang, a <code>switch</code> loop everywhere else). The
-interpreter helpers and shared opcode bodies live in the five
-responsibility modules beside it; each shared opcode body is written
-once and called from both dispatch mechanisms. Arithmetic,
-local-variable, string-accessor, call, call/cc, and other handlers whose
-two paths intentionally differ remain inline in <code>vm_run.c</code>;
-the decomposition does not change those semantics.</p>
-<p>The surrounding responsibilities have stable owners as well: builtin
-trampolines and native dispatch are in <code>vm_native.c</code>, error
-objects and their helpers are in <code>vm_error.c</code>, coverage hooks
-and public ESKB entry points are in <code>eshkol_vm.c</code>, and VM
-instance creation/destruction is in <code>vm_lifecycle.c</code>.</p>
-<h2 id="core-instruction-set-72-opcodes">Core Instruction Set (72
-Opcodes)</h2>
+<p><code>vm_run.c</code> holds the dispatch loop itself — the fetch/decode step and the two dispatch mechanisms (computed-goto threading on GCC/Clang, a <code>switch</code> loop everywhere else). The interpreter helpers and shared opcode bodies live in the five responsibility modules beside it; each shared opcode body is written once and called from both dispatch mechanisms. Arithmetic, local-variable, string-accessor, call, call/cc, and other handlers whose two paths intentionally differ remain inline in <code>vm_run.c</code>; the decomposition does not change those semantics.</p>
+<p>The surrounding responsibilities have stable owners as well: builtin trampolines and native dispatch are in <code>vm_native.c</code>, error objects and their helpers are in <code>vm_error.c</code>, coverage hooks and public ESKB entry points are in <code>eshkol_vm.c</code>, and VM instance creation/destruction is in <code>vm_lifecycle.c</code>.</p>
+<h2 id="core-instruction-set-72-opcodes">Core Instruction Set (72 Opcodes)</h2>
 <table>
 <colgroup>
 <col style="width: 29%" />
@@ -233,34 +208,27 @@ Opcodes)</h2>
 <tr>
 <td>64</td>
 <td>LANGUAGE_COVERAGE</td>
-<td>Opt-in metadata before a native call: the builtin index whose
-dispatch is recorded as VM execution evidence; never emitted by normal
-compilation</td>
+<td>Opt-in metadata before a native call: the builtin index whose dispatch is recorded as VM execution evidence; never emitted by normal compilation</td>
 </tr>
 <tr>
 <td>65</td>
 <td>LANGUAGE_COVERAGE_CALL</td>
-<td>Opt-in stable-hash marker before a direct Scheme call or tail
-call</td>
+<td>Opt-in stable-hash marker before a direct Scheme call or tail call</td>
 </tr>
 <tr>
 <td>66</td>
 <td>GLOBAL_MARK</td>
-<td>Record the top-level binding count after each top-level form, the
-store/control boundary a continuation restore does not roll back
-across</td>
+<td>Record the top-level binding count after each top-level form, the store/control boundary a continuation restore does not roll back across</td>
 </tr>
 <tr>
 <td>67-68</td>
 <td>CLOSURE_LONG, CLOSURE_COUNT</td>
-<td>Version 2 closure encoding: full constant index, then a lossless
-capture count, so a closure may capture more than 255 values</td>
+<td>Version 2 closure encoding: full constant index, then a lossless capture count, so a closure may capture more than 255 values</td>
 </tr>
 <tr>
 <td>69</td>
 <td>RAISE_SECONDARY</td>
-<td>Raise the R7RS secondary condition after a non-continuable handler
-returns, once that handler has been removed</td>
+<td>Raise the R7RS secondary condition after a non-continuable handler returns, once that handler has been removed</td>
 </tr>
 <tr>
 <td>70</td>
@@ -270,29 +238,20 @@ returns, once that handler has been removed</td>
 <tr>
 <td>71</td>
 <td>LANGUAGE_COVERAGE_FORM</td>
-<td>Opt-in execution marker at the head of a compiled
-<code>(name ...)</code> form, carrying the head symbol’s stable hash;
-never emitted by normal compilation</td>
+<td>Opt-in execution marker at the head of a compiled <code>(name ...)</code> form, carrying the head symbol’s stable hash; never emitted by normal compilation</td>
 </tr>
 </tbody>
 </table>
-<p>The SDNC weight-matrix artifact adds canonical opcodes 64-82 for
-bounded reverse-mode AD tape construction, backward propagation, and
-gradient reads. Those 19 AD opcodes are documented in <a
-href="/docs#page=sdnc" data-url="/content/sdnc.html">SDNC</a> and implemented in
-<code>lib/backend/weight_matrices.c</code>.</p>
+<p>The SDNC weight-matrix artifact adds canonical opcodes 64-82 for bounded reverse-mode AD tape construction, backward propagation, and gradient reads. Those 19 AD opcodes are documented in <a href="/docs#page=sdnc" data-url="/content/sdnc.html">SDNC</a> and implemented in <code>lib/backend/weight_matrices.c</code>.</p>
 <h2 id="automatic-differentiation">Automatic Differentiation</h2>
-<p>The arithmetic opcodes (ADD, SUB, MUL, DIV) and math functions (sin,
-cos, exp, log, sqrt, pow) detect <code>VAL_DUAL</code> operands and
-dispatch to dual number arithmetic:</p>
+<p>The arithmetic opcodes (ADD, SUB, MUL, DIV) and math functions (sin, cos, exp, log, sqrt, pow) detect <code>VAL_DUAL</code> operands and dispatch to dual number arithmetic:</p>
 <ul>
 <li>ADD: <code>(a+b, a'+b')</code></li>
 <li>MUL: <code>(a*b, a'*b + a*b')</code> (product rule)</li>
 <li>DIV: <code>(a/b, (a'*b - a*b')/b²)</code> (quotient rule)</li>
 <li>sin: <code>(sin(a), a'*cos(a))</code> (chain rule)</li>
 </ul>
-<p>This means <code>(derivative (lambda (x) (* x x)) 3.0)</code> returns
-<code>6.0</code> through the bytecode VM.</p>
+<p>This means <code>(derivative (lambda (x) (* x x)) 3.0)</code> returns <code>6.0</code> through the bytecode VM.</p>
 <h2 id="building-and-testing">Building and Testing</h2>
 <pre class="bash"><code># Build the standalone VM with its complete runtime dependency closure
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -312,47 +271,16 @@ emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME=&#39;EshkolVM&#39; \
   -I inc -I lib/backend lib/backend/vm_wasm_repl.c lib/core/unicode.cpp \
   lib/core/model_io_atomic.c \
   -o site/static/eshkol-vm.js -lm</code></pre>
-<p><code>-I inc</code> is required (the VM includes
-<code>eshkol/backend/vm_limits.h</code>). The
-<code>model_io_atomic.c</code> source supplies the VM’s checkpoint-save
-dependency; omitting it leaves <code>tensor-save</code> and
-<code>model-save</code> as unresolved aborting stubs. Only the three
-native leaf runtime dependencies listed below are intentionally
-unresolved. Accordingly, <code>ERROR_ON_UNDEFINED_SYMBOLS=0</code>
-leaves the three native leaf runtime deps that are not linked into the
-VM WASM (<code>eshkol_qrng_uint64</code>,
-<code>eshkol_qrng_double</code>, <code>eshkol_linear_solve</code>) as
-aborting stubs, so a program that calls them fails cleanly instead of
-silently mis-executing. <code>scripts/run_wasm_differential.sh</code>
-builds the same translation unit with the same two settings.</p>
-<h3 id="filesystem-free-stdlib-bootstrap">Filesystem-free stdlib
-bootstrap</h3>
-<p>The browser VM has no host filesystem. Its checked-in
-<code>lib/backend/vm_prelude_cache.h</code> is therefore a compiled
-bootstrap image, not just a convenience cache: it contains the VM
-builtin preamble, the VM Scheme prelude, and the complete dependency
-closure of the canonical <code>lib/stdlib.esk</code>. The cache
-generator is built from the current source tree and is the only path
-that reads those <code>.esk</code> files while producing the image. The
-cache staleness gate compares the generated header byte-for-byte, so a
-stdlib edit cannot leave the WASM VM running an older surface.</p>
-<p>The WASM execute-and-diff lane admits fixtures from
-<code>tests/vm_parity/corpus/</code> by default. A fixture that requires
-a host file, descriptor, or another unavailable host capability must
-have an explicit <code>EXCLUDED</code> row in
-<code>tests/wasm_diff/EXCLUSIONS.tsv</code> with its individual reason.
-The row emits an <code>EXCLUDED</code> trace event; it is not a blanket
-corpus skip. Stdlib-only fixtures remain in the supported corpus and
-must match desktop.</p>
+<p><code>-I inc</code> is required (the VM includes <code>eshkol/backend/vm_limits.h</code>). The <code>model_io_atomic.c</code> source supplies the VM’s checkpoint-save dependency; omitting it leaves <code>tensor-save</code> and <code>model-save</code> as unresolved aborting stubs. Only the three native leaf runtime dependencies listed below are intentionally unresolved. Accordingly, <code>ERROR_ON_UNDEFINED_SYMBOLS=0</code> leaves the three native leaf runtime deps that are not linked into the VM WASM (<code>eshkol_qrng_uint64</code>, <code>eshkol_qrng_double</code>, <code>eshkol_linear_solve</code>) as aborting stubs, so a program that calls them fails cleanly instead of silently mis-executing. <code>scripts/run_wasm_differential.sh</code> builds the same translation unit with the same two settings.</p>
+<h3 id="filesystem-free-stdlib-bootstrap">Filesystem-free stdlib bootstrap</h3>
+<p>The browser VM has no host filesystem. Its checked-in <code>lib/backend/vm_prelude_cache.h</code> is therefore a compiled bootstrap image, not just a convenience cache: it contains the VM builtin preamble, the VM Scheme prelude, and the complete dependency closure of the canonical <code>lib/stdlib.esk</code>. The cache generator is built from the current source tree and is the only path that reads those <code>.esk</code> files while producing the image. The cache staleness gate compares the generated header byte-for-byte, so a stdlib edit cannot leave the WASM VM running an older surface.</p>
+<p>The WASM execute-and-diff lane admits fixtures from <code>tests/vm_parity/corpus/</code> by default. A fixture that requires a host file, descriptor, or another unavailable host capability must have an explicit <code>EXCLUDED</code> row in <code>tests/wasm_diff/EXCLUSIONS.tsv</code> with its individual reason. The row emits an <code>EXCLUDED</code> trace event; it is not a blanket corpus skip. Stdlib-only fixtures remain in the supported corpus and must match desktop.</p>
 <h2 id="eskb-binary-format">ESKB Binary Format</h2>
 <p>Programs compile to ESKB (Eshkol Bytecode) binary format:</p>
 <pre class="bash"><code>eshkol-run program.esk -B program.eskb</code></pre>
-<p>ESKB files contain: - Magic number: <code>ESKB</code> - Instruction
-count + constant count - Opcode/operand pairs - Constant pool (integers,
-floats, strings) - CRC32 checksums</p>
+<p>ESKB files contain: - Magic number: <code>ESKB</code> - Instruction count + constant count - Opcode/operand pairs - Constant pool (integers, floats, strings) - CRC32 checksums</p>
 <h2 id="web-compilation-server">Web Compilation Server</h2>
-<p><code>exe/eshkol-server.cpp</code> (841 lines) provides an HTTP API
-for on-demand compilation:</p>
+<p><code>exe/eshkol-server.cpp</code> (841 lines) provides an HTTP API for on-demand compilation:</p>
 <pre><code>POST /compile  — compile Eshkol code to WASM
   Request:  { &quot;code&quot;: &quot;(display 42)&quot;, &quot;session_id&quot;: &quot;...&quot; }
   Response: { &quot;wasm&quot;: &quot;...&quot;, &quot;session_id&quot;: &quot;...&quot; }

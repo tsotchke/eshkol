@@ -1,33 +1,17 @@
 <h1 id="gpu-acceleration-in-eshkol">GPU Acceleration in Eshkol</h1>
 <h2 id="1-architecture-overview">1. Architecture Overview</h2>
 <h3 id="tensorcore-0123-integration">TensorCore 0.1.23 integration</h3>
-<p>With TensorCore enabled, Eshkol accepts TensorCore 0.1.22 and tests
-through 0.1.23. The adapter reads the versioned runtime capability
-structure rather than inferring features from a package version.
-TensorCore 0.1.23 adds fail-closed projections for DiLoCo support, its
-capability query, and the SHA-256-protected state-wire ABI v2. The
-execution ledger and unified AMP dtype policy remain TensorCore PyTorch
-binding surfaces, not Eshkol C ABI claims.</p>
-<p>Eshkol employs a multi-tier dispatch hierarchy for matrix and tensor
-operations, selecting the optimal compute backend at runtime based on
-problem size, hardware availability, and a calibrated cost model:</p>
+<p>With TensorCore enabled, Eshkol accepts TensorCore 0.1.22 and tests through 0.1.23. The adapter reads the versioned runtime capability structure rather than inferring features from a package version. TensorCore 0.1.23 adds fail-closed projections for DiLoCo support, its capability query, and the SHA-256-protected state-wire ABI v2. The execution ledger and unified AMP dtype policy remain TensorCore PyTorch binding surfaces, not Eshkol C ABI claims.</p>
+<p>Eshkol employs a multi-tier dispatch hierarchy for matrix and tensor operations, selecting the optimal compute backend at runtime based on problem size, hardware availability, and a calibrated cost model:</p>
 <pre><code>Scalar  --&gt;  SIMD  --&gt;  cBLAS  --&gt;  GPU
 (tiny)      (small)   (medium)   (massive)</code></pre>
-<p>The dispatch entry point is <code>eshkol_matmul_f64</code>
-(<code>blas_backend.cpp</code>):</p>
+<p>The dispatch entry point is <code>eshkol_matmul_f64</code> (<code>blas_backend.cpp</code>):</p>
 <ul>
-<li><strong>Tiny</strong> (output elements &lt;= 16): Scalar. SIMD/BLAS
-overhead exceeds compute.</li>
-<li><strong>Small to massive</strong> (17 to 1B elements): cBLAS via
-Apple Accelerate (AMX) or OpenBLAS. Accelerate sustains 1100+ GFLOPS on
-M-series. (<code>blas_backend.cpp</code>)</li>
-<li><strong>Super-massive</strong> (&gt;= 1B elements, ~31600x31600+):
-GPU vs BLAS cost model comparison. GPU lazily initialized on first
-encounter. (<code>blas_backend.cpp</code>)</li>
+<li><strong>Tiny</strong> (output elements &lt;= 16): Scalar. SIMD/BLAS overhead exceeds compute.</li>
+<li><strong>Small to massive</strong> (17 to 1B elements): cBLAS via Apple Accelerate (AMX) or OpenBLAS. Accelerate sustains 1100+ GFLOPS on M-series. (<code>blas_backend.cpp</code>)</li>
+<li><strong>Super-massive</strong> (&gt;= 1B elements, ~31600x31600+): GPU vs BLAS cost model comparison. GPU lazily initialized on first encounter. (<code>blas_backend.cpp</code>)</li>
 </ul>
-<p>Backend selection cascades via <code>[[fallthrough]]</code>
-(<code>blas_backend.cpp</code>): if the chosen backend fails, execution
-falls through to the next-best option.</p>
+<p>Backend selection cascades via <code>[[fallthrough]]</code> (<code>blas_backend.cpp</code>): if the chosen backend fails, execution falls through to the next-best option.</p>
 <table style="width:100%;">
 <colgroup>
 <col style="width: 31%" />
@@ -74,25 +58,17 @@ falls through to the next-best option.</p>
 </tr>
 </tbody>
 </table>
-<p>Build-time flags select the backend:
-<code>ESHKOL_GPU_METAL_ENABLED</code> (macOS),
-<code>ESHKOL_GPU_CUDA_ENABLED</code> (Linux/Windows), or the stub (no
-GPU). The stub logs actionable errors via <code>eshkol_error()</code>
-(<code>gpu_memory_stub.cpp</code>).</p>
+<p>Build-time flags select the backend: <code>ESHKOL_GPU_METAL_ENABLED</code> (macOS), <code>ESHKOL_GPU_CUDA_ENABLED</code> (Linux/Windows), or the stub (no GPU). The stub logs actionable errors via <code>eshkol_error()</code> (<code>gpu_memory_stub.cpp</code>).</p>
 <hr />
 <h2 id="2-cost-model">2. Cost Model</h2>
 <h3 id="estimation-formula">Estimation Formula</h3>
-<p>Defined in <code>estimate_matmul_cost</code>
-(<code>blas_backend.cpp</code>):</p>
+<p>Defined in <code>estimate_matmul_cost</code> (<code>blas_backend.cpp</code>):</p>
 <pre><code>flops = 2 * M * K * N
 efficiency_b = min(1.0, elements / efficiency_scale_b)
 compute_b    = flops / (peak_gflops_b * efficiency_b * 1e9) * 1e9
 cost_b       = overhead_b + compute_b</code></pre>
-<p>The efficiency term models ramp-up: small matrices cannot saturate
-the backend, so throughput scales linearly until
-<code>efficiency_scale</code> elements are reached.</p>
-<h3 id="calibrated-parameters-blas_backendcpp">Calibrated Parameters
-(<code>blas_backend.cpp</code>)</h3>
+<p>The efficiency term models ramp-up: small matrices cannot saturate the backend, so throughput scales linearly until <code>efficiency_scale</code> elements are reached.</p>
+<h3 id="calibrated-parameters-blas_backendcpp">Calibrated Parameters (<code>blas_backend.cpp</code>)</h3>
 <table>
 <colgroup>
 <col style="width: 35%" />
@@ -154,127 +130,45 @@ the backend, so throughput scales linearly until
 </tr>
 </tbody>
 </table>
-<h3 id="backend-selection-blas_backendcpp">Backend Selection
-(<code>blas_backend.cpp</code>)</h3>
-<p><code>select_best_backend</code> compares estimated costs and selects
-the minimum. Given the above parameters, the GPU path is only selected
-when output elements exceed ~1 billion
-(<code>g_gpu_matmul_threshold</code>, <code>blas_backend.cpp</code>).
-The SIMD-to-BLAS threshold is 64 elements
-(<code>blas_backend.cpp</code>) – cBLAS overhead (~5us) is negligible
-versus its 100x advantage over naive SIMD.</p>
+<h3 id="backend-selection-blas_backendcpp">Backend Selection (<code>blas_backend.cpp</code>)</h3>
+<p><code>select_best_backend</code> compares estimated costs and selects the minimum. Given the above parameters, the GPU path is only selected when output elements exceed ~1 billion (<code>g_gpu_matmul_threshold</code>, <code>blas_backend.cpp</code>). The SIMD-to-BLAS threshold is 64 elements (<code>blas_backend.cpp</code>) – cBLAS overhead (~5us) is negligible versus its 100x advantage over naive SIMD.</p>
 <hr />
 <h2 id="3-metal-backend">3. Metal Backend</h2>
-<h3 id="initialization-gpu_memorymm736">Initialization
-(<code>gpu_memory.mm:736</code>)</h3>
+<h3 id="initialization-gpu_memorymm736">Initialization (<code>gpu_memory.mm:736</code>)</h3>
 <ol type="1">
-<li>Create <code>MTLDevice</code> via
-<code>MTLCreateSystemDefaultDevice()</code></li>
-<li>Create <code>MTLCommandQueue</code>; detect unified memory via
-<code>MTLGPUFamilyApple1</code></li>
+<li>Create <code>MTLDevice</code> via <code>MTLCreateSystemDefaultDevice()</code></li>
+<li>Create <code>MTLCommandQueue</code>; detect unified memory via <code>MTLGPUFamilyApple1</code></li>
 <li>Identify GPU family (7=M1, 8=M2, 9=M3, 10=M4+)</li>
-<li>Populate <code>HardwareProfile</code>
-(<code>gpu_memory.mm:105</code>): <code>max_tg_mem</code>,
-<code>max_threads_per_tg</code> (1024), <code>thread_exec_width</code>
-(32), <code>device_mem</code></li>
+<li>Populate <code>HardwareProfile</code> (<code>gpu_memory.mm:105</code>): <code>max_tg_mem</code>, <code>max_threads_per_tg</code> (1024), <code>thread_exec_width</code> (32), <code>device_mem</code></li>
 <li>Compute all kernel configs via occupancy-aware scoring</li>
-<li>Compile Metal shaders with configuration <code>#define</code>s;
-fast-math disabled (<code>options.fastMathEnabled = NO</code>,
-<code>gpu_memory.mm:901</code>)</li>
+<li>Compile Metal shaders with configuration <code>#define</code>s; fast-math disabled (<code>options.fastMathEnabled = NO</code>, <code>gpu_memory.mm:901</code>)</li>
 <li>Create compute pipeline states for all kernels</li>
 </ol>
-<p>The shader source is auto-generated from
-<code>metal_softfloat.h</code> into <code>metal_sf64_embedded.inc</code>
-at build time. Configuration defines (tile sizes, thread counts) are
-prepended via <code>build_shader_config_string()</code>
-(<code>gpu_memory.mm:657</code>).</p>
-<h3 id="kernel-configuration-system-gpu_memorymm88-131">Kernel
-Configuration System (<code>gpu_memory.mm:88-131</code>)</h3>
-<p>Seven kernel types are supported: <code>KERNEL_SF64</code>,
-<code>KERNEL_DF64</code>, <code>KERNEL_F32_SIMD</code>,
-<code>KERNEL_F32_SIMD_128</code>, <code>KERNEL_FP24</code>,
-<code>KERNEL_FP53</code>, <code>KERNEL_OZAKI</code>. Each has a
-dedicated parameter search that enumerates candidate tile sizes and
-evaluates them via <code>score_config()</code>
-(<code>gpu_memory.mm:400</code>):</p>
+<p>The shader source is auto-generated from <code>metal_softfloat.h</code> into <code>metal_sf64_embedded.inc</code> at build time. Configuration defines (tile sizes, thread counts) are prepended via <code>build_shader_config_string()</code> (<code>gpu_memory.mm:657</code>).</p>
+<h3 id="kernel-configuration-system-gpu_memorymm88-131">Kernel Configuration System (<code>gpu_memory.mm:88-131</code>)</h3>
+<p>Seven kernel types are supported: <code>KERNEL_SF64</code>, <code>KERNEL_DF64</code>, <code>KERNEL_F32_SIMD</code>, <code>KERNEL_F32_SIMD_128</code>, <code>KERNEL_FP24</code>, <code>KERNEL_FP53</code>, <code>KERNEL_OZAKI</code>. Each has a dedicated parameter search that enumerates candidate tile sizes and evaluates them via <code>score_config()</code> (<code>gpu_memory.mm:400</code>):</p>
 <pre><code>score = occupancy * arithmetic_intensity * sqrt(BM * BN) * BK</code></pre>
-<p>Balancing latency hiding, compute density, tile coverage, and K-block
-amortization. Shared memory cost is computed per-kernel-type to ensure
-configurations fit within <code>maxThreadgroupMemoryLength</code>.</p>
-<h3 id="adaptive-row-blocking-gpu_memorymm586">Adaptive Row-Blocking
-(<code>gpu_memory.mm:586</code>)</h3>
-<p>Large matrices are partitioned into M-dimension chunks. Each kernel
-type has a weight factor (SF64=8.0, FP53=4.0, Ozaki-II=3.0, FP24=2.0,
-DF64=1.5, default=1.0), with chunks aligned to tile boundaries, capped
-at 4096 rows, targeting ~200ms GPU time per chunk.</p>
-<h3 id="ozaki-ii-crt-dgemm-gpu_memorymm136-332">Ozaki-II CRT DGEMM
-(<code>gpu_memory.mm:136-332</code>)</h3>
-<p>Exact f64 GEMM via Chinese Remainder Theorem. 49 pairwise coprime
-moduli (<code>gpu_memory.mm:138</code>) decompose f64 elements into
-residues, perform f32 GEMM per residue pair, then reconstruct via CRT.
-Constants are precomputed using <code>__int128</code> for exact
-arithmetic (<code>gpu_memory.mm:188</code>). Adaptive N selection
-(<code>gpu_memory.mm:260</code>) minimizes moduli count based on actual
-input magnitudes.</p>
-<p>The default exact tier (<code>ESHKOL_SF64_KERNEL=ozaki</code>, fixed
-N=16 moduli) does the per-modulus residue split and the double-double
-CRT reconstruction on the CPU — <code>O(num_moduli · N^2)</code> host
-passes that download every per-modulus <code>W_l</code> plane and
-dominate wall time.</p>
-<h3 id="ozaki-ii-reduced-precision-fast-tier-opt-in-fully-gpu">Ozaki-II
-reduced-precision FAST tier (opt-in, fully-GPU)</h3>
-<p><code>ESHKOL_SF64_KERNEL=ozaki-fast</code> (or
-<code>ESHKOL_OZAKI_FAST=1</code>) selects a reduced-precision LINEAR-CRT
-tier built on <strong>near-peak MPS f32 GEMMs</strong>, with the residue
-split and CRT reconstruction fully on the GPU. It is a port of a
-measured standalone prototype. The <strong>default path is
-unchanged</strong> — the tier is opt-in.</p>
-<p>The pipeline (host does only: upload A,B once; one O(N^2) exponent
-pass; download C):</p>
+<p>Balancing latency hiding, compute density, tile coverage, and K-block amortization. Shared memory cost is computed per-kernel-type to ensure configurations fit within <code>maxThreadgroupMemoryLength</code>.</p>
+<h3 id="adaptive-row-blocking-gpu_memorymm586">Adaptive Row-Blocking (<code>gpu_memory.mm:586</code>)</h3>
+<p>Large matrices are partitioned into M-dimension chunks. Each kernel type has a weight factor (SF64=8.0, FP53=4.0, Ozaki-II=3.0, FP24=2.0, DF64=1.5, default=1.0), with chunks aligned to tile boundaries, capped at 4096 rows, targeting ~200ms GPU time per chunk.</p>
+<h3 id="ozaki-ii-crt-dgemm-gpu_memorymm136-332">Ozaki-II CRT DGEMM (<code>gpu_memory.mm:136-332</code>)</h3>
+<p>Exact f64 GEMM via Chinese Remainder Theorem. 49 pairwise coprime moduli (<code>gpu_memory.mm:138</code>) decompose f64 elements into residues, perform f32 GEMM per residue pair, then reconstruct via CRT. Constants are precomputed using <code>__int128</code> for exact arithmetic (<code>gpu_memory.mm:188</code>). Adaptive N selection (<code>gpu_memory.mm:260</code>) minimizes moduli count based on actual input magnitudes.</p>
+<p>The default exact tier (<code>ESHKOL_SF64_KERNEL=ozaki</code>, fixed N=16 moduli) does the per-modulus residue split and the double-double CRT reconstruction on the CPU — <code>O(num_moduli · N^2)</code> host passes that download every per-modulus <code>W_l</code> plane and dominate wall time.</p>
+<h3 id="ozaki-ii-reduced-precision-fast-tier-opt-in-fully-gpu">Ozaki-II reduced-precision FAST tier (opt-in, fully-GPU)</h3>
+<p><code>ESHKOL_SF64_KERNEL=ozaki-fast</code> (or <code>ESHKOL_OZAKI_FAST=1</code>) selects a reduced-precision LINEAR-CRT tier built on <strong>near-peak MPS f32 GEMMs</strong>, with the residue split and CRT reconstruction fully on the GPU. It is a port of a measured standalone prototype. The <strong>default path is unchanged</strong> — the tier is opt-in.</p>
+<p>The pipeline (host does only: upload A,B once; one O(N^2) exponent pass; download C):</p>
 <ol type="1">
-<li><strong>Cap-limited prime-power moduli.</strong>
-<code>ESHKOL_OZAKI_FAST_MODULI</code> (default 11, clamped to
-<code>[2,16]</code>) is the accuracy knob. The moduli are the largest
-pairwise-coprime prime powers <code>≤ cap</code>, where <code>cap</code>
-is chosen from K so that <code>K·(p/2)² &lt; 2²⁴</code>. Under that
-bound a <strong>single MPS f32 GEMM of centered residues is
-integer-exact</strong> (the prototype verified this to f64) — so each
-modulus is one MPS GEMM at the GPU’s ~20 TF f32 ceiling, no K-tiling.
-This is the entire performance story vs the exact tier’s custom modular
-kernel.</li>
-<li><strong>GPU residue split</strong> (<code>ozaki_fast_split</code>):
-reads each operand element as an f64 bit-pattern, extracts the 53-bit
-significand, applies the <code>E</code>-scaling as an exact
-right-shift-with-round (<code>E≤52</code> ⇒ shift ≤ 0), reduces
-<code>mod p</code>, centers to <code>[-p/2, p/2)</code>. Zero host f64
-math.</li>
-<li><strong>GPU df32 fractional-CRT reconstruction</strong>
-(<code>ozaki_fast_accum</code> + <code>ozaki_fast_finalize</code>):
-<code>a_l = (G_l·q_l) mod p_l</code>, <code>S += a_l/p_l</code>
-accumulated in df32 (double-single) reduced mod 1 each step, then
-<code>Cs/P = frac(S) − round</code>,
-<code>C = frac·P·2^(e_i+f_j−2E)</code>, output as a df32 pair the host
-widens to f64.</li>
+<li><strong>Cap-limited prime-power moduli.</strong> <code>ESHKOL_OZAKI_FAST_MODULI</code> (default 11, clamped to <code>[2,16]</code>) is the accuracy knob. The moduli are the largest pairwise-coprime prime powers <code>≤ cap</code>, where <code>cap</code> is chosen from K so that <code>K·(p/2)² &lt; 2²⁴</code>. Under that bound a <strong>single MPS f32 GEMM of centered residues is integer-exact</strong> (the prototype verified this to f64) — so each modulus is one MPS GEMM at the GPU’s ~20 TF f32 ceiling, no K-tiling. This is the entire performance story vs the exact tier’s custom modular kernel.</li>
+<li><strong>GPU residue split</strong> (<code>ozaki_fast_split</code>): reads each operand element as an f64 bit-pattern, extracts the 53-bit significand, applies the <code>E</code>-scaling as an exact right-shift-with-round (<code>E≤52</code> ⇒ shift ≤ 0), reduces <code>mod p</code>, centers to <code>[-p/2, p/2)</code>. Zero host f64 math.</li>
+<li><strong>GPU df32 fractional-CRT reconstruction</strong> (<code>ozaki_fast_accum</code> + <code>ozaki_fast_finalize</code>): <code>a_l = (G_l·q_l) mod p_l</code>, <code>S += a_l/p_l</code> accumulated in df32 (double-single) reduced mod 1 each step, then <code>Cs/P = frac(S) − round</code>, <code>C = frac·P·2^(e_i+f_j−2E)</code>, output as a df32 pair the host widens to f64.</li>
 </ol>
-<p>All moduli run in <strong>one command buffer with a single CPU-GPU
-sync</strong> (per-modulus <code>waitUntilCompleted</code> starves the
-GPU under CPU load — a prototype finding).</p>
-<p><strong>df32 is the accuracy ceiling of this tier.</strong> Metal has
-no f64, so reconstruction is df32 (~48-bit → ~1e-11 floor). Two
-load-bearing constraints (verified on hardware):</p>
+<p>All moduli run in <strong>one command buffer with a single CPU-GPU sync</strong> (per-modulus <code>waitUntilCompleted</code> starves the GPU under CPU load — a prototype finding).</p>
+<p><strong>df32 is the accuracy ceiling of this tier.</strong> Metal has no f64, so reconstruction is df32 (~48-bit → ~1e-11 floor). Two load-bearing constraints (verified on hardware):</p>
 <ul>
-<li>The library is compiled with <code>fastMathEnabled = NO</code> /
-<code>MTLMathModeSafe</code> (<code>gpu_memory.mm</code>). Fast-math
-annihilates the TwoSum/TwoProduct compensation and collapses the
-reconstruction to plain f32 (~1e-7). Mandatory.</li>
-<li>Power-of-two descale uses <code>ldexp</code> (exact), never
-<code>exp2</code> (a polynomial approximation that injects a uniform
-~1e-7 error).</li>
+<li>The library is compiled with <code>fastMathEnabled = NO</code> / <code>MTLMathModeSafe</code> (<code>gpu_memory.mm</code>). Fast-math annihilates the TwoSum/TwoProduct compensation and collapses the reconstruction to plain f32 (~1e-7). Mandatory.</li>
+<li>Power-of-two descale uses <code>ldexp</code> (exact), never <code>exp2</code> (a polynomial approximation that injects a uniform ~1e-7 error).</li>
 </ul>
-<h4
-id="accuracy-vs-moduli-measured-m2-ultra-worst-case-over-the-four-gate-regimes">Accuracy
-vs moduli (measured, M2 Ultra, worst case over the four gate
-regimes</h4>
+<h4 id="accuracy-vs-moduli-measured-m2-ultra-worst-case-over-the-four-gate-regimes">Accuracy vs moduli (measured, M2 Ultra, worst case over the four gate regimes</h4>
 <p>integer / fractional / pi-e / wide-magnitude, K up to 4096)</p>
 <table>
 <colgroup>
@@ -317,20 +211,9 @@ regimes</h4>
 </tr>
 </tbody>
 </table>
-<p>The cancellation-heavy pi/e regime is binding: its near-zero-mean
-products amplify both the <code>2^-E</code> truncation and the df32
-reconstruction floor. Accuracy is NOT monotone in moduli count — beyond
-~12 the df32 accumulator grows and the pi/e floor rises again; ~14 is
-the practical df32 floor (~1e-11). Well-conditioned data (fractional,
-wide-magnitude) reaches ~1e-11..1e-13 at far fewer moduli.</p>
-<h4
-id="throughput-measured-m2-ultra-internal-gpu-pipeline-best-of-5-eshkol_ozaki_profile1">Throughput
-(measured, M2 Ultra, internal GPU pipeline, best-of-5,
-<code>ESHKOL_OZAKI_PROFILE=1</code>)</h4>
-<p>Effective <code>2·N^3</code> GFLOP/s of the full pipeline. Raw
-<code>cblas_dgemm</code> (AMX f64) was measured in the same session and
-was NOT depressed (N=8192 = 1099 GF ≈ the clean 1088 peak), so the AMX
-ratios below are fair, not overstated.</p>
+<p>The cancellation-heavy pi/e regime is binding: its near-zero-mean products amplify both the <code>2^-E</code> truncation and the df32 reconstruction floor. Accuracy is NOT monotone in moduli count — beyond ~12 the df32 accumulator grows and the pi/e floor rises again; ~14 is the practical df32 floor (~1e-11). Well-conditioned data (fractional, wide-magnitude) reaches ~1e-11..1e-13 at far fewer moduli.</p>
+<h4 id="throughput-measured-m2-ultra-internal-gpu-pipeline-best-of-5-eshkol_ozaki_profile1">Throughput (measured, M2 Ultra, internal GPU pipeline, best-of-5, <code>ESHKOL_OZAKI_PROFILE=1</code>)</h4>
+<p>Effective <code>2·N^3</code> GFLOP/s of the full pipeline. Raw <code>cblas_dgemm</code> (AMX f64) was measured in the same session and was NOT depressed (N=8192 = 1099 GF ≈ the clean 1088 peak), so the AMX ratios below are fair, not overstated.</p>
 <table>
 <colgroup>
 <col style="width: 30%" />
@@ -380,133 +263,51 @@ ratios below are fair, not overstated.</p>
 </tbody>
 </table>
 <ul>
-<li><strong>N=8192: the fast tier beats clean AMX f64 dgemm — 1.26x at
-the default 11 moduli (~2.4e-8), up to 1.32x at 10 moduli (~1e-8 on
-well-conditioned data).</strong> This matches the prototype’s ~1400 GF /
-~1.3x-clean-AMX at ~1e-8.</li>
-<li><strong>N=4096: a tie with AMX (~1.0x).</strong> Smaller N is
-overhead-bound (MPS f32 is not yet at its large-N ceiling and the host
-readback is a larger fraction) — the prototype documented the same
-(N=4096 does not win; the crossover is N=8192).</li>
-<li><strong>vs the exact Ozaki tier: 7.7x (N=4096) to ~9.7x (N=8192)
-faster</strong> — the exact tier at N=8192 also falls to its serial path
-(16-modulus buffers exceed its 4 GB batch cap), so the e2e gap is
-largest there.</li>
+<li><strong>N=8192: the fast tier beats clean AMX f64 dgemm — 1.26x at the default 11 moduli (~2.4e-8), up to 1.32x at 10 moduli (~1e-8 on well-conditioned data).</strong> This matches the prototype’s ~1400 GF / ~1.3x-clean-AMX at ~1e-8.</li>
+<li><strong>N=4096: a tie with AMX (~1.0x).</strong> Smaller N is overhead-bound (MPS f32 is not yet at its large-N ceiling and the host readback is a larger fraction) — the prototype documented the same (N=4096 does not win; the crossover is N=8192).</li>
+<li><strong>vs the exact Ozaki tier: 7.7x (N=4096) to ~9.7x (N=8192) faster</strong> — the exact tier at N=8192 also falls to its serial path (16-modulus buffers exceed its 4 GB batch cap), so the e2e gap is largest there.</li>
 </ul>
-<p>For genuine full f64 (~1e-14) AMX remains the right tool: full f64
-needs ~19–22 moduli (GEMM count ≈ AMX) and df32 reconstruction cannot
-reach 1e-14 anyway (~1e-11 floor). The GPU wins only at reduced
-precision (≳1e-11) and large N.</p>
-<p>Set <code>ESHKOL_OZAKI_PROFILE=1</code> to print the per-matmul
-internal pipeline ms and effective GFLOP/s for both the exact and fast
-tiers.</p>
+<p>For genuine full f64 (~1e-14) AMX remains the right tool: full f64 needs ~19–22 moduli (GEMM count ≈ AMX) and df32 reconstruction cannot reach 1e-14 anyway (~1e-11 floor). The GPU wins only at reduced precision (≳1e-11) and large N.</p>
+<p>Set <code>ESHKOL_OZAKI_PROFILE=1</code> to print the per-matmul internal pipeline ms and effective GFLOP/s for both the exact and fast tiers.</p>
 <hr />
 <h2 id="4-sf64-software-float64">4. SF64 Software Float64</h2>
-<p>Apple Silicon GPUs lack native f64 hardware. SF64 emulates full IEEE
-754 double-precision using <code>uint2</code> (two 32-bit integers) on
-Metal’s integer ALU.</p>
-<h3 id="representation-metal_softfloath">Representation
-(<code>metal_softfloat.h</code>)</h3>
+<p>Apple Silicon GPUs lack native f64 hardware. SF64 emulates full IEEE 754 double-precision using <code>uint2</code> (two 32-bit integers) on Metal’s integer ALU.</p>
+<h3 id="representation-metal_softfloath">Representation (<code>metal_softfloat.h</code>)</h3>
 <pre class="metal"><code>typedef uint2 sf64;  // .x = high 32 bits, .y = low 32 bits</code></pre>
-<p>IEEE 754 layout: sign (1 bit, bit 63), exponent (11 bits, bias 1023),
-mantissa (52 bits, implicit leading 1). 128-bit intermediates use
-<code>struct sf128 { sf64 hi; sf64 lo; };</code>.</p>
+<p>IEEE 754 layout: sign (1 bit, bit 63), exponent (11 bits, bias 1023), mantissa (52 bits, implicit leading 1). 128-bit intermediates use <code>struct sf128 { sf64 hi; sf64 lo; };</code>.</p>
 <h3 id="core-operations">Core Operations</h3>
-<p><strong>Addition</strong> (<code>metal_softfloat.h</code>): 11 guard
-bits via left-shift. After magnitude add/subtract, normalize leading 1
-to bit 62, extract 10 round bits (<code>&amp; 0x3FF</code>), delegate to
-<code>sf64_round_pack()</code>.</p>
-<p><strong>Multiplication</strong> (<code>metal_softfloat.h</code>):
-64x64 -&gt; 128 bit multiply via <code>mul64x64()</code> using Metal’s
-<code>mulhi()</code> intrinsic for 32-bit high-word extraction. 4
-partial products with branchless carry propagation.</p>
-<p><strong>FMA</strong> (<code>metal_softfloat.h</code>): True
-single-rounding using 128-bit intermediate. Fast path (all operands
-normal) skips 13 NaN/Inf/Zero/subnormal checks – the hot path in matmul
-accumulation.</p>
-<p><strong>Division</strong> (<code>metal_softfloat.h</code>):
-63-iteration long division. Remainder preserved as sticky bit for
-correct rounding.</p>
-<h3 id="rounding-metal_softfloath">Rounding
-(<code>metal_softfloat.h</code>)</h3>
-<p>IEEE 754 round-to-nearest-even with 10 rounding bits, halfway at
-<code>0x200</code>:</p>
+<p><strong>Addition</strong> (<code>metal_softfloat.h</code>): 11 guard bits via left-shift. After magnitude add/subtract, normalize leading 1 to bit 62, extract 10 round bits (<code>&amp; 0x3FF</code>), delegate to <code>sf64_round_pack()</code>.</p>
+<p><strong>Multiplication</strong> (<code>metal_softfloat.h</code>): 64x64 -&gt; 128 bit multiply via <code>mul64x64()</code> using Metal’s <code>mulhi()</code> intrinsic for 32-bit high-word extraction. 4 partial products with branchless carry propagation.</p>
+<p><strong>FMA</strong> (<code>metal_softfloat.h</code>): True single-rounding using 128-bit intermediate. Fast path (all operands normal) skips 13 NaN/Inf/Zero/subnormal checks – the hot path in matmul accumulation.</p>
+<p><strong>Division</strong> (<code>metal_softfloat.h</code>): 63-iteration long division. Remainder preserved as sticky bit for correct rounding.</p>
+<h3 id="rounding-metal_softfloath">Rounding (<code>metal_softfloat.h</code>)</h3>
+<p>IEEE 754 round-to-nearest-even with 10 rounding bits, halfway at <code>0x200</code>:</p>
 <pre class="metal"><code>bool round_up = (round_bits &gt; 0x200u) ||
                 ((round_bits == 0x200u) &amp;&amp; ((sig.y &amp; 1u) != 0));</code></pre>
-<p>The mask <code>0x3FF</code> was a critical bug fix – the earlier
-<code>0x7FF</code> shifted the halfway point, causing systematic
-rounding errors.</p>
+<p>The mask <code>0x3FF</code> was a critical bug fix – the earlier <code>0x7FF</code> shifted the halfway point, causing systematic rounding errors.</p>
 <h3 id="performance">Performance</h3>
-<p><code>shr128_jam</code> (<code>metal_softfloat.h</code>) includes a
-hand-optimized 1-31 bit fast path (direct 4-word shifts, no nested
-calls) for FMA exponent alignment. Each operation introduces at most 0.5
-ULP error, matching hardware f64.</p>
+<p><code>shr128_jam</code> (<code>metal_softfloat.h</code>) includes a hand-optimized 1-31 bit fast path (direct 4-word shifts, no nested calls) for FMA exponent alignment. Each operation introduces at most 0.5 ULP error, matching hardware f64.</p>
 <hr />
 <h2 id="5-cuda-backend">5. CUDA Backend</h2>
-<p>The CUDA backend (<code>gpu_memory_cuda.cpp</code>) provides native
-f64 GPU acceleration on NVIDIA hardware – no software emulation
-required.</p>
-<h3 id="initialization-gpu_memory_cudacpp">Initialization
-(<code>gpu_memory_cuda.cpp</code>)</h3>
-<p>Enumerate devices, select device 0, create CUDA stream and cuBLAS
-handle, bind handle to stream. Thread-safe via <code>std::mutex</code> +
-double-check pattern.</p>
-<h3 id="cublas-matmul-gpu_memory_cudacpp">cuBLAS Matmul
-(<code>gpu_memory_cuda.cpp</code>)</h3>
-<p>cuBLAS is column-major; Eshkol tensors are row-major. The transpose
-trick:</p>
+<p>The CUDA backend (<code>gpu_memory_cuda.cpp</code>) provides native f64 GPU acceleration on NVIDIA hardware – no software emulation required.</p>
+<h3 id="initialization-gpu_memory_cudacpp">Initialization (<code>gpu_memory_cuda.cpp</code>)</h3>
+<p>Enumerate devices, select device 0, create CUDA stream and cuBLAS handle, bind handle to stream. Thread-safe via <code>std::mutex</code> + double-check pattern.</p>
+<h3 id="cublas-matmul-gpu_memory_cudacpp">cuBLAS Matmul (<code>gpu_memory_cuda.cpp</code>)</h3>
+<p>cuBLAS is column-major; Eshkol tensors are row-major. The transpose trick:</p>
 <pre class="cpp"><code>cublasDgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N,
     N, M, K, &amp;alpha, B_ptr, N, A_ptr, K, &amp;beta, C_ptr, N);</code></pre>
-<p>Both <code>cublasDgemm</code> (f64) and <code>cublasSgemm</code>
-(f32) are supported.</p>
-<h3 id="int8-tensor-core-ozaki-f64-gemm-opt-in-gpu_memory_cudacpp">INT8
-Tensor-Core Ozaki f64 GEMM (opt-in,
-<code>gpu_memory_cuda.cpp</code>)</h3>
-<p>An opt-in f64 matmul path recovers FP64-accurate <code>C = A*B</code>
-from the INT8 (IMMA) tensor cores, which run ~500x faster than the
-deliberately crippled native FP64 pipeline on consumer/prosumer NVIDIA
-GPUs (GeForce Ampere f64 = 1/64 FP32). Enable with
-<code>ESHKOL_CUDA_F64_KERNEL=ozaki-int8</code>; the default f64 GPU
-matmul stays <code>cublasDgemm</code>.</p>
-<p>Scheme (Ootomo-Ozaki-Yokota, per-row/col scaled 7-bit integer
-slicing), for row-major <code>A</code> (MxK), <code>B</code> (KxN):</p>
+<p>Both <code>cublasDgemm</code> (f64) and <code>cublasSgemm</code> (f32) are supported.</p>
+<h3 id="int8-tensor-core-ozaki-f64-gemm-opt-in-gpu_memory_cudacpp">INT8 Tensor-Core Ozaki f64 GEMM (opt-in, <code>gpu_memory_cuda.cpp</code>)</h3>
+<p>An opt-in f64 matmul path recovers FP64-accurate <code>C = A*B</code> from the INT8 (IMMA) tensor cores, which run ~500x faster than the deliberately crippled native FP64 pipeline on consumer/prosumer NVIDIA GPUs (GeForce Ampere f64 = 1/64 FP32). Enable with <code>ESHKOL_CUDA_F64_KERNEL=ozaki-int8</code>; the default f64 GPU matmul stays <code>cublasDgemm</code>.</p>
+<p>Scheme (Ootomo-Ozaki-Yokota, per-row/col scaled 7-bit integer slicing), for row-major <code>A</code> (MxK), <code>B</code> (KxN):</p>
 <ol type="1">
-<li>Scale into <code>[-1,1]</code>: <code>r_i = max_k|A[i,k]|</code>,
-<code>c_j = max_k|B[k,j]|</code>.</li>
-<li>Slice <code>A/r</code> and <code>B/c</code> into
-<code>s = T+1</code> signed 7-bit int8 slices, base 128
-(<code>|slice| &lt;= 127</code>). A-slices are stored in natural layout,
-B-slices are stored <strong>transposed</strong> so each pair GEMM issues
-as
-<code>cublasGemmEx(OP_T, OP_N, CUDA_R_8I -&gt; CUDA_R_32I, COMPUTE_32I)</code>
-on the fast IMMA <strong>TN</strong> layout — mandatory on sm_86 (a 3.7x
-throughput cliff vs NN); Blackwell (sm_120) is layout-indifferent, so TN
-is safe everywhere.</li>
-<li><code>C[i,j] = r_i c_j * sum_{p+q&lt;=T} 128^{-(p+q+2)} (A_p x B_q)[i,j]</code>.
-Each <code>A_p x B_q</code> is one INT8-&gt;INT32 GEMM; the int32
-accumulation is <strong>exact</strong> (no rounding) — the only error
-source is dropping slice-pairs with <code>p+q &gt; T</code>.</li>
-<li><strong>Diagonal-fused reconstruction</strong>: all slice-pairs on a
-diagonal <code>d = p+q</code> carry the same weight
-<code>128^-(d+2)</code>, so they accumulate into one int32 buffer via
-<code>cublasGemmEx</code> <code>beta=1</code> (staying on the tensor
-path), then a single fused FP64 kernel streams the diagonal buffers,
-applies the weight, and scales by <code>r_i c_j</code>. Buffers are
-capped at <code>floor((2^31-1)/(K*127^2))</code> pairs so the
-accumulation stays int32-exact at any N; the split/reconstruct kernels
-are in <code>gpu_cuda_kernels.cu</code>.</li>
+<li>Scale into <code>[-1,1]</code>: <code>r_i = max_k|A[i,k]|</code>, <code>c_j = max_k|B[k,j]|</code>.</li>
+<li>Slice <code>A/r</code> and <code>B/c</code> into <code>s = T+1</code> signed 7-bit int8 slices, base 128 (<code>|slice| &lt;= 127</code>). A-slices are stored in natural layout, B-slices are stored <strong>transposed</strong> so each pair GEMM issues as <code>cublasGemmEx(OP_T, OP_N, CUDA_R_8I -&gt; CUDA_R_32I, COMPUTE_32I)</code> on the fast IMMA <strong>TN</strong> layout — mandatory on sm_86 (a 3.7x throughput cliff vs NN); Blackwell (sm_120) is layout-indifferent, so TN is safe everywhere.</li>
+<li><code>C[i,j] = r_i c_j * sum_{p+q&lt;=T} 128^{-(p+q+2)} (A_p x B_q)[i,j]</code>. Each <code>A_p x B_q</code> is one INT8-&gt;INT32 GEMM; the int32 accumulation is <strong>exact</strong> (no rounding) — the only error source is dropping slice-pairs with <code>p+q &gt; T</code>.</li>
+<li><strong>Diagonal-fused reconstruction</strong>: all slice-pairs on a diagonal <code>d = p+q</code> carry the same weight <code>128^-(d+2)</code>, so they accumulate into one int32 buffer via <code>cublasGemmEx</code> <code>beta=1</code> (staying on the tensor path), then a single fused FP64 kernel streams the diagonal buffers, applies the weight, and scales by <code>r_i c_j</code>. Buffers are capped at <code>floor((2^31-1)/(K*127^2))</code> pairs so the accumulation stays int32-exact at any N; the split/reconstruct kernels are in <code>gpu_cuda_kernels.cu</code>.</li>
 </ol>
-<p>The accuracy/throughput knob is <code>ESHKOL_OZAKI_CUDA_T</code>
-(default 6 = full f64 ~1e-15, 28 GEMMs; T=4 ~1e-11, 15 GEMMs, ~2x
-faster). <code>#GEMMs = (T+1)(T+2)/2</code>; relative error
-<code>~2^{-7(T+1)}</code>. <code>K</code> is guarded below 133,000
-(<code>K*127^2 &lt; 2^31</code>); out of range it falls back
-<strong>loudly</strong> to <code>cublasDgemm</code> (K-panel splitting
-is not implemented). Best throughput needs M, K, N multiples of 4; any
-<code>cublasGemmEx</code> <code>NOT_SUPPORTED</code> (e.g. unaligned
-dims) falls back quietly to <code>cublasDgemm</code>.</p>
-<p>Measured (normwise Frobenius error is the accuracy metric — a single
-near-zero output entry inflates per-element error meaninglessly):</p>
+<p>The accuracy/throughput knob is <code>ESHKOL_OZAKI_CUDA_T</code> (default 6 = full f64 ~1e-15, 28 GEMMs; T=4 ~1e-11, 15 GEMMs, ~2x faster). <code>#GEMMs = (T+1)(T+2)/2</code>; relative error <code>~2^{-7(T+1)}</code>. <code>K</code> is guarded below 133,000 (<code>K*127^2 &lt; 2^31</code>); out of range it falls back <strong>loudly</strong> to <code>cublasDgemm</code> (K-panel splitting is not implemented). Best throughput needs M, K, N multiples of 4; any <code>cublasGemmEx</code> <code>NOT_SUPPORTED</code> (e.g. unaligned dims) falls back quietly to <code>cublasDgemm</code>.</p>
+<p>Measured (normwise Frobenius error is the accuracy metric — a single near-zero output entry inflates per-element error meaninglessly):</p>
 <table>
 <colgroup>
 <col style="width: 8%" />
@@ -537,29 +338,15 @@ near-zero output entry inflates per-element error meaninglessly):</p>
 </tr>
 </tbody>
 </table>
-<p>Per-row/col scaling keeps wide-dynamic-range data accurate (7.5e-15
-on 1e-3..1e3 inputs on the 3090). FP8-Ozaki was measured but is 2x
-slower than INT8 on Blackwell (identical tensor throughput, fewer exact
-bits/slice), so INT8 is the f64-accurate path. Correctness is gated by
-<code>tests/gpu/cuda_ozaki_correctness_gate.sh</code> (ICC oracle
-<code>cuda-ozaki-int8-correctness</code>).</p>
-<h3 id="custom-kernels-gpu_cuda_kernelscu">Custom Kernels
-(<code>gpu_cuda_kernels.cu</code>)</h3>
-<p>All kernels use 256 threads/block with grid-stride loops, grid capped
-at 65535.</p>
+<p>Per-row/col scaling keeps wide-dynamic-range data accurate (7.5e-15 on 1e-3..1e3 inputs on the 3090). FP8-Ozaki was measured but is 2x slower than INT8 on Blackwell (identical tensor throughput, fewer exact bits/slice), so INT8 is the f64-accurate path. Correctness is gated by <code>tests/gpu/cuda_ozaki_correctness_gate.sh</code> (ICC oracle <code>cuda-ozaki-int8-correctness</code>).</p>
+<h3 id="custom-kernels-gpu_cuda_kernelscu">Custom Kernels (<code>gpu_cuda_kernels.cu</code>)</h3>
+<p>All kernels use 256 threads/block with grid-stride loops, grid capped at 65535.</p>
 <ul>
-<li><strong>Elementwise</strong> (<code>gpu_cuda_kernels.cu:21</code>):
-15 ops dispatched by int code.</li>
-<li><strong>Reduce</strong> (<code>gpu_cuda_kernels.cu:76</code>):
-Two-pass – block reduction with <code>__shfl_down_sync</code> warp
-shuffle + shared memory, then single-block finalize.</li>
-<li><strong>Transpose</strong> (<code>gpu_cuda_kernels.cu:186</code>):
-Tiled with <code>TILE_DIM=32</code>, <code>BLOCK_ROWS=8</code>, +1
-shared memory padding to avoid bank conflicts.</li>
-<li><strong>Softmax</strong> (<code>gpu_cuda_kernels.cu:319</code>):
-Three-pass (max, exp+sum, normalize).</li>
-<li><strong>Normalize</strong> (<code>gpu_cuda_kernels.cu:364</code>):
-Layer normalization (mean, variance, scale+shift).</li>
+<li><strong>Elementwise</strong> (<code>gpu_cuda_kernels.cu:21</code>): 15 ops dispatched by int code.</li>
+<li><strong>Reduce</strong> (<code>gpu_cuda_kernels.cu:76</code>): Two-pass – block reduction with <code>__shfl_down_sync</code> warp shuffle + shared memory, then single-block finalize.</li>
+<li><strong>Transpose</strong> (<code>gpu_cuda_kernels.cu:186</code>): Tiled with <code>TILE_DIM=32</code>, <code>BLOCK_ROWS=8</code>, +1 shared memory padding to avoid bank conflicts.</li>
+<li><strong>Softmax</strong> (<code>gpu_cuda_kernels.cu:319</code>): Three-pass (max, exp+sum, normalize).</li>
+<li><strong>Normalize</strong> (<code>gpu_cuda_kernels.cu:364</code>): Layer normalization (mean, variance, scale+shift).</li>
 </ul>
 <hr />
 <h2 id="6-supported-operations">6. Supported Operations</h2>
@@ -647,45 +434,26 @@ Layer normalization (mean, variance, scale+shift).</li>
 </tr>
 </tbody>
 </table>
-<p><strong>Precision tiers</strong> (Metal, via
-<code>ESHKOL_GPU_PRECISION</code>): exact=SF64 (52-bit mantissa),
-high=DF64 (~100-bit), fast=f32 (23-bit). Specialized: FP24 (truncated
-mantissa + int64 accum), FP53 (uint2 + 128-bit accum), Ozaki-II (exact
-via CRT).</p>
+<p><strong>Precision tiers</strong> (Metal, via <code>ESHKOL_GPU_PRECISION</code>): exact=SF64 (52-bit mantissa), high=DF64 (~100-bit), fast=f32 (23-bit). Specialized: FP24 (truncated mantissa + int64 accum), FP53 (uint2 + 128-bit accum), Ozaki-II (exact via CRT).</p>
 <hr />
 <h2 id="7-memory-management">7. Memory Management</h2>
 <h3 id="metal-unified-memory">Metal Unified Memory</h3>
-<p>Apple Silicon uses <code>MTLResourceStorageModeShared</code>
-(<code>gpu_memory.mm:636</code>) – unified CPU/GPU memory, no explicit
-transfers. Host pointers are wrapped via
-<code>newBufferWithBytesNoCopy:</code> for zero-copy access.</p>
-<p>A size-binned buffer pool (<code>gpu_memory.mm:611-653</code>) reuses
-<code>MTLBuffer</code> objects. Sizes are rounded to the next power of
-2; each bucket holds up to 8 buffers (<code>POOL_MAX_PER_BUCKET</code>).
-Excess buffers are dropped (freed by ARC).</p>
-<h3 id="cuda-memory-types-gpu_memory_cudacpp">CUDA Memory Types
-(<code>gpu_memory_cuda.cpp</code>)</h3>
+<p>Apple Silicon uses <code>MTLResourceStorageModeShared</code> (<code>gpu_memory.mm:636</code>) – unified CPU/GPU memory, no explicit transfers. Host pointers are wrapped via <code>newBufferWithBytesNoCopy:</code> for zero-copy access.</p>
+<p>A size-binned buffer pool (<code>gpu_memory.mm:611-653</code>) reuses <code>MTLBuffer</code> objects. Sizes are rounded to the next power of 2; each bucket holds up to 8 buffers (<code>POOL_MAX_PER_BUCKET</code>). Excess buffers are dropped (freed by ARC).</p>
+<h3 id="cuda-memory-types-gpu_memory_cudacpp">CUDA Memory Types (<code>gpu_memory_cuda.cpp</code>)</h3>
 <ul>
-<li><code>ESHKOL_MEM_UNIFIED</code>: <code>cudaMallocManaged()</code> –
-automatic page migration</li>
-<li><code>ESHKOL_MEM_DEVICE</code>: <code>cudaMalloc()</code> –
-device-only, maximum throughput</li>
-<li><code>ESHKOL_MEM_HOST_PINNED</code>: <code>cudaMallocHost()</code> –
-pinned, async DMA transfers</li>
+<li><code>ESHKOL_MEM_UNIFIED</code>: <code>cudaMallocManaged()</code> – automatic page migration</li>
+<li><code>ESHKOL_MEM_DEVICE</code>: <code>cudaMalloc()</code> – device-only, maximum throughput</li>
+<li><code>ESHKOL_MEM_HOST_PINNED</code>: <code>cudaMallocHost()</code> – pinned, async DMA transfers</li>
 </ul>
-<p>Host wrapping uses <code>cudaHostRegister()</code> with fallback to
-unified alloc + memcpy.</p>
+<p>Host wrapping uses <code>cudaHostRegister()</code> with fallback to unified alloc + memcpy.</p>
 <h3 id="buffer-handle">Buffer Handle</h3>
 <pre class="c"><code>typedef struct {
     void*  host_ptr;    void*  device_ptr;    size_t size_bytes;
     EshkolMemoryType mem_type;  EshkolGPUBackend backend;
     void*  backend_data;        uint32_t flags;  // bit 0: wrapped
 } EshkolGPUBuffer;</code></pre>
-<p>API: <code>eshkol_gpu_alloc()</code>,
-<code>eshkol_gpu_alloc_aligned()</code>, <code>eshkol_gpu_free()</code>,
-<code>eshkol_gpu_wrap_host()</code>, <code>eshkol_gpu_sync()</code>,
-<code>eshkol_gpu_wait()</code>. The <code>flags</code> bit 0 prevents
-deallocation of externally-owned memory.</p>
+<p>API: <code>eshkol_gpu_alloc()</code>, <code>eshkol_gpu_alloc_aligned()</code>, <code>eshkol_gpu_free()</code>, <code>eshkol_gpu_wrap_host()</code>, <code>eshkol_gpu_sync()</code>, <code>eshkol_gpu_wait()</code>. The <code>flags</code> bit 0 prevents deallocation of externally-owned memory.</p>
 <hr />
 <h2 id="8-configuration">8. Configuration</h2>
 <h3 id="environment-variables">Environment Variables</h3>
@@ -771,14 +539,12 @@ deallocation of externally-owned memory.</p>
 <tr>
 <td><code>ESHKOL_CUDA_F64_KERNEL</code></td>
 <td><code>ozaki-int8</code></td>
-<td>Select the INT8 tensor-core Ozaki f64 matmul (default:
-<code>cublasDgemm</code>)</td>
+<td>Select the INT8 tensor-core Ozaki f64 matmul (default: <code>cublasDgemm</code>)</td>
 </tr>
 <tr>
 <td><code>ESHKOL_OZAKI_CUDA_T</code></td>
 <td>1..8 (default 6)</td>
-<td>Accuracy/throughput knob: T=6 full f64 (~1e-15), T=4 ~1e-11 (~2x
-faster)</td>
+<td>Accuracy/throughput knob: T=6 full f64 (~1e-15), T=4 ~1e-11 (~2x faster)</td>
 </tr>
 </tbody>
 </table>
@@ -848,22 +614,18 @@ faster)</td>
 <tbody>
 <tr>
 <td><code>ESHKOL_SF64_KERNEL</code></td>
-<td><code>ozaki</code> / <code>ozaki-fast</code> / <code>fp53</code> /
-<code>legacy</code></td>
-<td>selects the exact CRT tier, the opt-in reduced-precision fast tier
-(MPS f32 GEMMs), or the fp53/legacy exact kernels</td>
+<td><code>ozaki</code> / <code>ozaki-fast</code> / <code>fp53</code> / <code>legacy</code></td>
+<td>selects the exact CRT tier, the opt-in reduced-precision fast tier (MPS f32 GEMMs), or the fp53/legacy exact kernels</td>
 </tr>
 <tr>
 <td><code>ESHKOL_OZAKI_FAST</code></td>
 <td><code>1</code></td>
-<td>enables the fast tier (equivalent to
-<code>ESHKOL_SF64_KERNEL=ozaki-fast</code>)</td>
+<td>enables the fast tier (equivalent to <code>ESHKOL_SF64_KERNEL=ozaki-fast</code>)</td>
 </tr>
 <tr>
 <td><code>ESHKOL_OZAKI_FAST_MODULI</code></td>
 <td>2–16 (default 11)</td>
-<td>fast-tier accuracy knob; out-of-range clamps loudly to
-<code>[2,16]</code></td>
+<td>fast-tier accuracy knob; out-of-range clamps loudly to <code>[2,16]</code></td>
 </tr>
 <tr>
 <td><code>ESHKOL_OZAKI_NUM_MODULI</code></td>
@@ -878,90 +640,38 @@ faster)</td>
 <tr>
 <td><code>ESHKOL_OZAKI_PROFILE</code></td>
 <td><code>1</code></td>
-<td>prints per-matmul internal pipeline ms + effective GFLOP/s (exact
-and fast tiers)</td>
+<td>prints per-matmul internal pipeline ms + effective GFLOP/s (exact and fast tiers)</td>
 </tr>
 </tbody>
 </table>
-<h4 id="exact-reference-certification-gate">Exact-reference
-certification gate</h4>
-<p><code>scripts/run_gpu_tests.sh</code> drives this gate as part of the
-GPU suite: the certification fixture runs whenever a real GPU device is
-present, and when there is none the suite prints a LOUD skip
-(<code>EXACT-OZAKI CERTIFICATION NOT VERIFIED BY THIS RUN</code>) plus
-an explicit verdict line in its summary, so an unverified exact-GEMM
-claim can never pass unnoticed. It used to be skipped by filename,
-unconditionally. Note that no hosted CI runner has a GPU (see
-<code>.github/workflows/gpu-execution-gate.yml</code> and its
-<code>gpu-gate-visibility</code> reporting job), so on CI the loud skip
-is the expected outcome and this certification is a per-release manual
-attestation from a Metal/CUDA host.</p>
-<p><code>tests/gpu/ozaki_certification_gate.sh</code> runs a
-deterministic <code>512x512</code> integer-valued f64 witness. It uses
-an independent sampled native-<code>i128</code> dot-product oracle with
-a proven bound below <code>2^58</code>, then converts oracle sums to
-correctly rounded f64. On the identical witness, Apple Accelerate must
-differ on at least one sample while fixed-<code>N16</code> Metal exact
-Ozaki (<code>ozaki</code>) must match every sampled reference. The
-script exercises both default cached-JIT and AOT and requires real
-fixed-<code>N16</code> Metal dispatch markers, explicitly rejecting CPU
-fallback. ICC oracle name is <code>ozaki-certification</code>. This is a
-correctness-only certification witness: no default-dispatch change and
-no performance claim.</p>
-<p>The default DGEMM tier is unchanged; both <code>ozaki</code> and
-<code>ozaki-fast</code> are opt-in. See section 3 (Ozaki-II CRT DGEMM)
-for the accuracy/throughput tables.</p>
-<p><strong>Diagnostic:</strong> <code>ESHKOL_GPU_VERBOSE</code> enables
-dispatch logging to stderr.</p>
+<h4 id="exact-reference-certification-gate">Exact-reference certification gate</h4>
+<p><code>scripts/run_gpu_tests.sh</code> drives this gate as part of the GPU suite: the certification fixture runs whenever a real GPU device is present, and when there is none the suite prints a LOUD skip (<code>EXACT-OZAKI CERTIFICATION NOT VERIFIED BY THIS RUN</code>) plus an explicit verdict line in its summary, so an unverified exact-GEMM claim can never pass unnoticed. It used to be skipped by filename, unconditionally. Note that no hosted CI runner has a GPU (see <code>.github/workflows/gpu-execution-gate.yml</code> and its <code>gpu-gate-visibility</code> reporting job), so on CI the loud skip is the expected outcome and this certification is a per-release manual attestation from a Metal/CUDA host.</p>
+<p><code>tests/gpu/ozaki_certification_gate.sh</code> runs a deterministic <code>512x512</code> integer-valued f64 witness. It uses an independent sampled native-<code>i128</code> dot-product oracle with a proven bound below <code>2^58</code>, then converts oracle sums to correctly rounded f64. On the identical witness, Apple Accelerate must differ on at least one sample while fixed-<code>N16</code> Metal exact Ozaki (<code>ozaki</code>) must match every sampled reference. The script exercises both default cached-JIT and AOT and requires real fixed-<code>N16</code> Metal dispatch markers, explicitly rejecting CPU fallback. ICC oracle name is <code>ozaki-certification</code>. This is a correctness-only certification witness: no default-dispatch change and no performance claim.</p>
+<p>The default DGEMM tier is unchanged; both <code>ozaki</code> and <code>ozaki-fast</code> are opt-in. See section 3 (Ozaki-II CRT DGEMM) for the accuracy/throughput tables.</p>
+<p><strong>Diagnostic:</strong> <code>ESHKOL_GPU_VERBOSE</code> enables dispatch logging to stderr.</p>
 <h3 id="tuning-guide">Tuning Guide</h3>
 <p>Force GPU for benchmarking:</p>
 <pre class="bash"><code>ESHKOL_GPU_MATMUL_THRESHOLD=1 ESHKOL_FORCE_GPU=1 ./program</code></pre>
-<p>Calibrate cost model by measuring peak cBLAS throughput on a large
-matmul (e.g. 4096x4096) and setting <code>ESHKOL_BLAS_PEAK_GFLOPS</code>
-to the observed value.</p>
+<p>Calibrate cost model by measuring peak cBLAS throughput on a large matmul (e.g. 4096x4096) and setting <code>ESHKOL_BLAS_PEAK_GFLOPS</code> to the observed value.</p>
 <p>Select precision for workload:</p>
 <pre class="bash"><code>ESHKOL_GPU_PRECISION=fast ./inference    # ML: f32 suffices
 ESHKOL_GPU_PRECISION=exact ./simulation  # Science: exact f64</code></pre>
-<p>Override threadgroup dimensions if auto-tuned occupancy is
-suboptimal:</p>
+<p>Override threadgroup dimensions if auto-tuned occupancy is suboptimal:</p>
 <pre class="bash"><code>ESHKOL_SF64_TG=16 ESHKOL_SF64_TILE_K=8 ./program</code></pre>
-<p>The Metal backend logs all kernel configurations at init (to stderr)
-including occupancy scores, making it straightforward to assess
-auto-tuned optimality.</p>
+<p>The Metal backend logs all kernel configurations at init (to stderr) including occupancy scores, making it straightforward to assess auto-tuned optimality.</p>
 <h3 id="simd-implementation-details">SIMD Implementation Details</h3>
-<p>The SIMD tier provides architecture-specific matmul as a middle
-ground between scalar and cBLAS:</p>
+<p>The SIMD tier provides architecture-specific matmul as a middle ground between scalar and cBLAS:</p>
 <ul>
-<li><p><strong>ARM NEON</strong> (<code>blas_backend.cpp</code>):
-Cache-blocked with 64x64x64 tiles tuned for M-series L1 (64KB data). 4x4
-register micro-kernel with <code>vfmaq_f64</code> FMA and 8
-<code>float64x2_t</code> accumulators.</p></li>
-<li><p><strong>x86 AVX</strong> (<code>blas_backend.cpp</code>):
-64x64x64 tiles for x86 L1 (~32KB). 4x8 micro-kernel with
-<code>_mm256_fmadd_pd</code> (FMA3) or separate mul+add, 8
-<code>__m256d</code> accumulators.</p></li>
-<li><p><strong>x86 SSE2</strong> (<code>blas_backend.cpp</code>):
-Fallback for older x86. 4x4 micro-kernel with <code>__m128d</code>,
-64x64x64 blocking.</p></li>
+<li><p><strong>ARM NEON</strong> (<code>blas_backend.cpp</code>): Cache-blocked with 64x64x64 tiles tuned for M-series L1 (64KB data). 4x4 register micro-kernel with <code>vfmaq_f64</code> FMA and 8 <code>float64x2_t</code> accumulators.</p></li>
+<li><p><strong>x86 AVX</strong> (<code>blas_backend.cpp</code>): 64x64x64 tiles for x86 L1 (~32KB). 4x8 micro-kernel with <code>_mm256_fmadd_pd</code> (FMA3) or separate mul+add, 8 <code>__m256d</code> accumulators.</p></li>
+<li><p><strong>x86 SSE2</strong> (<code>blas_backend.cpp</code>): Fallback for older x86. 4x4 micro-kernel with <code>__m128d</code>, 64x64x64 blocking.</p></li>
 </ul>
-<p>Edge tiles that do not fill a complete micro-kernel fall back to
-scalar computation via <code>scalar_block</code> /
-<code>avx_scalar_block</code> / <code>sse_scalar_block</code>. All SIMD
-implementations zero the result matrix with <code>memset</code> before
-blocked accumulation to support the <code>C[i][j] += sum</code> pattern
-(<code>blas_backend.cpp</code>).</p>
+<p>Edge tiles that do not fill a complete micro-kernel fall back to scalar computation via <code>scalar_block</code> / <code>avx_scalar_block</code> / <code>sse_scalar_block</code>. All SIMD implementations zero the result matrix with <code>memset</code> before blocked accumulation to support the <code>C[i][j] += sum</code> pattern (<code>blas_backend.cpp</code>).</p>
 <hr />
-<h2 id="9-sf64-double-double-arithmetic--algorithmic-deep-dive">9. SF64
-Double-Double Arithmetic – Algorithmic Deep Dive</h2>
-<p>Apple Silicon GPUs have no native f64 ALU. The SF64 subsystem
-(<code>lib/backend/gpu/metal_softfloat.h</code>) emulates full IEEE 754
-double-precision arithmetic using Metal’s 32-bit integer pipeline, based
-on Berkeley SoftFloat algorithms.</p>
-<h3 id="the-uint2-representation">The <code>uint2</code>
-Representation</h3>
-<p>A <code>double</code> is 64 bits. Metal’s Shading Language provides
-<code>uint2</code> (two 32-bit unsigned integers), which SF64 uses as
-its storage type (<code>metal_softfloat.h</code>):</p>
+<h2 id="9-sf64-double-double-arithmetic--algorithmic-deep-dive">9. SF64 Double-Double Arithmetic – Algorithmic Deep Dive</h2>
+<p>Apple Silicon GPUs have no native f64 ALU. The SF64 subsystem (<code>lib/backend/gpu/metal_softfloat.h</code>) emulates full IEEE 754 double-precision arithmetic using Metal’s 32-bit integer pipeline, based on Berkeley SoftFloat algorithms.</p>
+<h3 id="the-uint2-representation">The <code>uint2</code> Representation</h3>
+<p>A <code>double</code> is 64 bits. Metal’s Shading Language provides <code>uint2</code> (two 32-bit unsigned integers), which SF64 uses as its storage type (<code>metal_softfloat.h</code>):</p>
 <pre class="metal"><code>typedef uint2 sf64;   // .x = high 32 bits, .y = low 32 bits</code></pre>
 <p>The IEEE 754 layout maps as follows:</p>
 <table>
@@ -995,114 +705,30 @@ its storage type (<code>metal_softfloat.h</code>):</p>
 </tr>
 </tbody>
 </table>
-<p>Constants <code>SF64_SIGN_MASK</code> (0x80000000),
-<code>SF64_EXP_MASK</code> (0x7FF00000), and
-<code>SF64_MANT_HI_MASK</code> (0x000FFFFF) extract each field
-(<code>metal_softfloat.h</code>). Classification functions
-(<code>sf64_is_zero</code>, <code>sf64_is_inf</code>,
-<code>sf64_is_nan</code>, <code>sf64_is_subnormal</code>,
-<code>sf64_is_signaling_nan</code>) operate purely on these bitfields
-(<code>metal_softfloat.h</code>).</p>
-<p>On little-endian ARM64, a <code>double</code> in memory stores
-<code>[low32, high32]</code>, but <code>uint2.x</code> is the first
-word. The <code>native_to_sf64</code> / <code>sf64_to_native</code>
-helpers (<code>metal_softfloat.h</code>) perform the swap inline in
-every kernel, eliminating the need for a separate word-swap dispatch
-pass.</p>
+<p>Constants <code>SF64_SIGN_MASK</code> (0x80000000), <code>SF64_EXP_MASK</code> (0x7FF00000), and <code>SF64_MANT_HI_MASK</code> (0x000FFFFF) extract each field (<code>metal_softfloat.h</code>). Classification functions (<code>sf64_is_zero</code>, <code>sf64_is_inf</code>, <code>sf64_is_nan</code>, <code>sf64_is_subnormal</code>, <code>sf64_is_signaling_nan</code>) operate purely on these bitfields (<code>metal_softfloat.h</code>).</p>
+<p>On little-endian ARM64, a <code>double</code> in memory stores <code>[low32, high32]</code>, but <code>uint2.x</code> is the first word. The <code>native_to_sf64</code> / <code>sf64_to_native</code> helpers (<code>metal_softfloat.h</code>) perform the swap inline in every kernel, eliminating the need for a separate word-swap dispatch pass.</p>
 <h3 id="128-bit-intermediates">128-Bit Intermediates</h3>
-<p>For multiply and FMA, SF64 needs more than 64 bits of intermediate
-precision. The <code>sf128</code> struct
-(<code>metal_softfloat.h</code>) holds two <code>sf64</code> values as
-high and low halves:</p>
+<p>For multiply and FMA, SF64 needs more than 64 bits of intermediate precision. The <code>sf128</code> struct (<code>metal_softfloat.h</code>) holds two <code>sf64</code> values as high and low halves:</p>
 <pre class="metal"><code>struct sf128 { sf64 hi; sf64 lo; };   // 128-bit value</code></pre>
-<p>The <code>uint128_t</code> struct (<code>metal_softfloat.h</code>)
-provides a 4-word representation (<code>w3..w0</code>, MSW first) used
-for multiplication output. These are not hardware-supported – all
-128-bit operations are synthesized from 32-bit word arithmetic with
-explicit carry/borrow propagation.</p>
+<p>The <code>uint128_t</code> struct (<code>metal_softfloat.h</code>) provides a 4-word representation (<code>w3..w0</code>, MSW first) used for multiplication output. These are not hardware-supported – all 128-bit operations are synthesized from 32-bit word arithmetic with explicit carry/borrow propagation.</p>
 <h3 id="core-operations-1">Core Operations</h3>
-<p><strong>Addition</strong> (<code>sf64_add</code>,
-<code>metal_softfloat.h</code>): The algorithm uses 11 guard bits by
-left-shifting both significands by 11, placing the implicit leading 1 at
-bit 63. After aligning exponents via <code>shr64_jam</code> (which
-preserves rounding information as a sticky bit), it adds or subtracts
-magnitudes. On same-sign overflow (carry out of bit 63), it shifts right
-by 2 and sets bit 62. On subtraction, it normalizes via
-<code>clz64</code> to place the leading 1 at bit 62. Finally, 10 round
-bits are extracted from the low 10 bits (<code>&amp; 0x3FF</code>), the
-significand is shifted right by 10, and <code>sf64_round_pack</code>
-produces the final result (<code>metal_softfloat.h</code>).</p>
-<p><strong>Multiplication</strong> (<code>sf64_mul</code>,
-<code>metal_softfloat.h</code>): Both significands are shifted to have
-the leading 1 at bit 63. The 64x64-bit multiply is performed by
-<code>mul64x64</code> (<code>metal_softfloat.h</code>), which decomposes
-into 4 partial products using Metal’s <code>mulhi()</code> intrinsic for
-the high 32-bit word of each 32x32 product. Carries are propagated
-branchlessly via <code>select(0u, 1u, ...)</code>. The result is a
-128-bit product in <code>uint128_t{w3,w2,w1,w0}</code>. The product’s
-leading 1 is at bit 126 or 127; if bit 127 (overflow), the high word is
-shifted right by 1 and the exponent incremented. Bits w1|w0 contribute a
-sticky bit for correct rounding.</p>
-<p><strong>Fused Multiply-Add</strong> (<code>sf64_fma</code>,
-<code>metal_softfloat.h</code>): This is the critical inner-loop
-operation for matmul (C[i][j] += A[i][k] * B[k][j]). It computes a*b+c
-with a single rounding at the end, matching IEEE 754 semantics. The
-implementation has two paths:</p>
+<p><strong>Addition</strong> (<code>sf64_add</code>, <code>metal_softfloat.h</code>): The algorithm uses 11 guard bits by left-shifting both significands by 11, placing the implicit leading 1 at bit 63. After aligning exponents via <code>shr64_jam</code> (which preserves rounding information as a sticky bit), it adds or subtracts magnitudes. On same-sign overflow (carry out of bit 63), it shifts right by 2 and sets bit 62. On subtraction, it normalizes via <code>clz64</code> to place the leading 1 at bit 62. Finally, 10 round bits are extracted from the low 10 bits (<code>&amp; 0x3FF</code>), the significand is shifted right by 10, and <code>sf64_round_pack</code> produces the final result (<code>metal_softfloat.h</code>).</p>
+<p><strong>Multiplication</strong> (<code>sf64_mul</code>, <code>metal_softfloat.h</code>): Both significands are shifted to have the leading 1 at bit 63. The 64x64-bit multiply is performed by <code>mul64x64</code> (<code>metal_softfloat.h</code>), which decomposes into 4 partial products using Metal’s <code>mulhi()</code> intrinsic for the high 32-bit word of each 32x32 product. Carries are propagated branchlessly via <code>select(0u, 1u, ...)</code>. The result is a 128-bit product in <code>uint128_t{w3,w2,w1,w0}</code>. The product’s leading 1 is at bit 126 or 127; if bit 127 (overflow), the high word is shifted right by 1 and the exponent incremented. Bits w1|w0 contribute a sticky bit for correct rounding.</p>
+<p><strong>Fused Multiply-Add</strong> (<code>sf64_fma</code>, <code>metal_softfloat.h</code>): This is the critical inner-loop operation for matmul (C[i][j] += A[i][k] * B[k][j]). It computes a*b+c with a single rounding at the end, matching IEEE 754 semantics. The implementation has two paths:</p>
 <ol type="1">
-<li><p><strong>Fast path</strong> (lines 707-747): When all three
-operands are normal (exponent neither 0 nor 0x7FF), it extracts
-components directly without any NaN/Inf/Zero/subnormal checks. This
-saves 13 branch evaluations per FMA – the hot path in matmul
-accumulation.</p></li>
-<li><p><strong>Slow path</strong> (lines 716-747): Handles all special
-cases: NaN propagation via <code>sf64_propagate_nan3</code>, infinity
-arithmetic (inf*0=NaN, inf+(-inf)=NaN), zero operands, and subnormal
-normalization via <code>clz64</code>-based shifting.</p></li>
+<li><p><strong>Fast path</strong> (lines 707-747): When all three operands are normal (exponent neither 0 nor 0x7FF), it extracts components directly without any NaN/Inf/Zero/subnormal checks. This saves 13 branch evaluations per FMA – the hot path in matmul accumulation.</p></li>
+<li><p><strong>Slow path</strong> (lines 716-747): Handles all special cases: NaN propagation via <code>sf64_propagate_nan3</code>, infinity arithmetic (inf*0=NaN, inf+(-inf)=NaN), zero operands, and subnormal normalization via <code>clz64</code>-based shifting.</p></li>
 </ol>
-<p>The product a*b is computed as a full 128-bit value. The addend c is
-widened to 128 bits by shifting its 53-bit significand to bit 126
-(<code>shl64(sigC, 10)</code> into the high half). After aligning
-exponents via <code>shr128_jam</code>, the 128-bit addition or
-subtraction is performed with 4-word carry propagation
-(<code>add128</code>/<code>sub128</code>,
-<code>metal_softfloat.h</code>). On subtraction with cancellation,
-<code>clz128</code> finds the new leading 1 and <code>shl128</code>
-normalizes. The sticky bit is computed from the low 64 bits
-(<code>R.lo.x | R.lo.y</code>), 10 round bits are extracted from
-<code>R.hi.y</code>, and <code>sf64_round_pack</code> produces the
-single-rounded result.</p>
-<p><strong>Division</strong> (<code>sf64_div</code>,
-<code>metal_softfloat.h</code>): Uses 63-iteration long division. The
-dividend significand is placed at bit 62 (aligned); if the dividend is
-less than the divisor, it is shifted left by 1 and the exponent
-decremented. Each iteration compares the remainder against the divisor,
-subtracts if larger, and sets the corresponding quotient bit. After the
-loop, the remainder is preserved as a sticky bit for correct rounding.
-This gives exact results but is the most expensive SF64 operation at 63
-serial iterations.</p>
-<h3 id="rounding-round-to-nearest-even">Rounding:
-Round-to-Nearest-Even</h3>
-<p><code>sf64_round_pack</code> (<code>metal_softfloat.h</code>)
-implements IEEE 754 round-to-nearest-even using 10 rounding bits. The
-halfway point is at <code>0x200</code> (bit 9):</p>
+<p>The product a*b is computed as a full 128-bit value. The addend c is widened to 128 bits by shifting its 53-bit significand to bit 126 (<code>shl64(sigC, 10)</code> into the high half). After aligning exponents via <code>shr128_jam</code>, the 128-bit addition or subtraction is performed with 4-word carry propagation (<code>add128</code>/<code>sub128</code>, <code>metal_softfloat.h</code>). On subtraction with cancellation, <code>clz128</code> finds the new leading 1 and <code>shl128</code> normalizes. The sticky bit is computed from the low 64 bits (<code>R.lo.x | R.lo.y</code>), 10 round bits are extracted from <code>R.hi.y</code>, and <code>sf64_round_pack</code> produces the single-rounded result.</p>
+<p><strong>Division</strong> (<code>sf64_div</code>, <code>metal_softfloat.h</code>): Uses 63-iteration long division. The dividend significand is placed at bit 62 (aligned); if the dividend is less than the divisor, it is shifted left by 1 and the exponent decremented. Each iteration compares the remainder against the divisor, subtracts if larger, and sets the corresponding quotient bit. After the loop, the remainder is preserved as a sticky bit for correct rounding. This gives exact results but is the most expensive SF64 operation at 63 serial iterations.</p>
+<h3 id="rounding-round-to-nearest-even">Rounding: Round-to-Nearest-Even</h3>
+<p><code>sf64_round_pack</code> (<code>metal_softfloat.h</code>) implements IEEE 754 round-to-nearest-even using 10 rounding bits. The halfway point is at <code>0x200</code> (bit 9):</p>
 <pre class="metal"><code>bool round_up = (round_bits &gt; 0x200u) ||
                 ((round_bits == 0x200u) &amp;&amp; ((sig.y &amp; 1u) != 0));</code></pre>
-<p>The second clause handles the tie-breaking rule: when rounding bits
-are exactly 0x200 (halfway), the result rounds toward even (LSB of
-significand). If rounding causes the mantissa to overflow (bit 52
-carries into bit 53), the significand is shifted right and the exponent
-incremented. Overflow to infinity and underflow to subnormal/zero are
-handled as edge cases.</p>
-<p>The <code>0x3FF</code> mask was a critical bug fix (documented in
-<code>metal_softfloat.h</code> and the project memory). The earlier
-<code>0x7FF</code> (11 bits) shifted the halfway point, causing
-systematic rounding errors in matmul accumulation.</p>
-<h3 id="the-shr128_jam-fast-path">The <code>shr128_jam</code> Fast
-Path</h3>
-<p>The <code>shr128_jam</code> function (<code>metal_softfloat.h</code>)
-is the hot path in FMA exponent alignment. For shifts of 1-31 bits (the
-common case when aligning operands with similar exponents), it uses a
-hand-optimized 4-word direct shift (<code>metal_softfloat.h</code>):</p>
+<p>The second clause handles the tie-breaking rule: when rounding bits are exactly 0x200 (halfway), the result rounds toward even (LSB of significand). If rounding causes the mantissa to overflow (bit 52 carries into bit 53), the significand is shifted right and the exponent incremented. Overflow to infinity and underflow to subnormal/zero are handled as edge cases.</p>
+<p>The <code>0x3FF</code> mask was a critical bug fix (documented in <code>metal_softfloat.h</code> and the project memory). The earlier <code>0x7FF</code> (11 bits) shifted the halfway point, causing systematic rounding errors in matmul accumulation.</p>
+<h3 id="the-shr128_jam-fast-path">The <code>shr128_jam</code> Fast Path</h3>
+<p>The <code>shr128_jam</code> function (<code>metal_softfloat.h</code>) is the hot path in FMA exponent alignment. For shifts of 1-31 bits (the common case when aligning operands with similar exponents), it uses a hand-optimized 4-word direct shift (<code>metal_softfloat.h</code>):</p>
 <pre class="metal"><code>if (n &lt; 32) {
     uint w0 = (x.lo.y &gt;&gt; un) | (x.lo.x &lt;&lt; inv);
     uint w1 = (x.lo.x &gt;&gt; un) | (x.hi.y &lt;&lt; inv);
@@ -1110,168 +736,61 @@ hand-optimized 4-word direct shift (<code>metal_softfloat.h</code>):</p>
     uint w3 = x.hi.x &gt;&gt; un;
     return sf128{sf64(w3, w2), sf64(w1, w0 | sticky)};
 }</code></pre>
-<p>This avoids the overhead of nested function calls to
-<code>shr64_jam</code> and <code>shr128</code>, reducing register
-pressure on Metal’s GPU SIMD units. The sticky bit preserves information
-about shifted-out bits for correct rounding.</p>
+<p>This avoids the overhead of nested function calls to <code>shr64_jam</code> and <code>shr128</code>, reducing register pressure on Metal’s GPU SIMD units. The sticky bit preserves information about shifted-out bits for correct rounding.</p>
 <h3 id="transcendental-functions">Transcendental Functions</h3>
-<p>Metal has no native f64 math functions. SF64 implements them using
-FMA-chain polynomial approximations:</p>
+<p>Metal has no native f64 math functions. SF64 implements them using FMA-chain polynomial approximations:</p>
 <ul>
-<li><p><strong><code>sf64_exp</code></strong>
-(<code>metal_softfloat.h</code>): Cody-Waite range reduction (x = n*ln2
-+ r, |r| &lt; ln2/2), then 13-term Horner evaluation using
-<code>sf64_fma</code> for each coefficient (1/n! for n=2..13). Final
-scaling by 2^n via direct exponent adjustment.</p></li>
-<li><p><strong><code>sf64_log</code></strong>
-(<code>metal_softfloat.h</code>): Extracts exponent and mantissa,
-reduces to [sqrt(2)/2, sqrt(2)] range, computes s=(f-1)/(f+1), then
-evaluates an odd-power series (2/(2k+1) for k=1..6) via Horner form.
-Result: n*ln2 + log(f).</p></li>
-<li><p><strong><code>sf64_sin</code> / <code>sf64_cos</code></strong>
-(<code>metal_softfloat.h</code>): Cody-Waite reduction to [-pi/4, pi/4]
-via <code>sf64_trig_reduce</code>, then minimax polynomials
-(<code>sf64_sin_poly</code>: 5 odd terms, <code>sf64_cos_poly</code>: 5
-even terms), with quadrant-based sign/function selection.</p></li>
-<li><p><strong><code>sf64_sqrt</code></strong>
-(<code>metal_softfloat.h</code>): Newton-Raphson with 5 iterations.
-Initial estimate halves the exponent. Each iteration: y = (y + x/y) *
-0.5.</p></li>
-<li><p><strong><code>sf64_tanh</code></strong>
-(<code>metal_softfloat.h</code>): Computed as
-(e<sup>(2x)-1)/(e</sup>(2x)+1) with saturation to +/-1 for |x| &gt;=
-20.</p></li>
+<li><p><strong><code>sf64_exp</code></strong> (<code>metal_softfloat.h</code>): Cody-Waite range reduction (x = n*ln2 + r, |r| &lt; ln2/2), then 13-term Horner evaluation using <code>sf64_fma</code> for each coefficient (1/n! for n=2..13). Final scaling by 2^n via direct exponent adjustment.</p></li>
+<li><p><strong><code>sf64_log</code></strong> (<code>metal_softfloat.h</code>): Extracts exponent and mantissa, reduces to [sqrt(2)/2, sqrt(2)] range, computes s=(f-1)/(f+1), then evaluates an odd-power series (2/(2k+1) for k=1..6) via Horner form. Result: n*ln2 + log(f).</p></li>
+<li><p><strong><code>sf64_sin</code> / <code>sf64_cos</code></strong> (<code>metal_softfloat.h</code>): Cody-Waite reduction to [-pi/4, pi/4] via <code>sf64_trig_reduce</code>, then minimax polynomials (<code>sf64_sin_poly</code>: 5 odd terms, <code>sf64_cos_poly</code>: 5 even terms), with quadrant-based sign/function selection.</p></li>
+<li><p><strong><code>sf64_sqrt</code></strong> (<code>metal_softfloat.h</code>): Newton-Raphson with 5 iterations. Initial estimate halves the exponent. Each iteration: y = (y + x/y) * 0.5.</p></li>
+<li><p><strong><code>sf64_tanh</code></strong> (<code>metal_softfloat.h</code>): Computed as (e<sup>(2x)-1)/(e</sup>(2x)+1) with saturation to +/-1 for |x| &gt;= 20.</p></li>
 </ul>
-<p>All transcendentals use <code>sf64_fma</code> in their polynomial
-evaluations, maintaining full 52-bit precision throughout.</p>
+<p>All transcendentals use <code>sf64_fma</code> in their polynomial evaluations, maintaining full 52-bit precision throughout.</p>
 <h3 id="precision-characteristics">Precision Characteristics</h3>
-<p>SF64 provides <strong>bit-exact IEEE 754 double-precision</strong>
-(52-bit mantissa). Each individual operation introduces at most 0.5 ULP
-error, matching hardware f64. The 128-bit intermediates in FMA ensure
-that the product a*b is computed exactly before the addition of c, so
-the only rounding occurs at the final pack step.</p>
-<p>The DF64 (double-float) alternative uses <code>float2</code> on
-Metal’s native f32 FMA units, achieving approximately 100 bits of
-effective mantissa via Knuth/Dekker splitting. SF64 and DF64 serve
-different precision tiers: SF64 is exact but slower (integer ALU), DF64
-is approximate but faster (native f32 FMA).</p>
+<p>SF64 provides <strong>bit-exact IEEE 754 double-precision</strong> (52-bit mantissa). Each individual operation introduces at most 0.5 ULP error, matching hardware f64. The 128-bit intermediates in FMA ensure that the product a*b is computed exactly before the addition of c, so the only rounding occurs at the final pack step.</p>
+<p>The DF64 (double-float) alternative uses <code>float2</code> on Metal’s native f32 FMA units, achieving approximately 100 bits of effective mantissa via Knuth/Dekker splitting. SF64 and DF64 serve different precision tiers: SF64 is exact but slower (integer ALU), DF64 is approximate but faster (native f32 FMA).</p>
 <hr />
 <h2 id="10-metal-compute-pipeline">10. Metal Compute Pipeline</h2>
-<h3 id="shader-compilation-and-caching">Shader Compilation and
-Caching</h3>
-<p>Metal shaders are compiled at runtime from source, not from
-precompiled <code>.metallib</code> files. The shader source originates
-from <code>metal_softfloat.h</code>, which CMake auto-generates into
-<code>metal_sf64_embedded.inc</code> at build time. This
-<code>.inc</code> file is <code>#include</code>d as an NSString constant
-(<code>g_matmul_sf64_source</code>) in
-<code>gpu_memory.mm:733</code>.</p>
-<p>At initialization (<code>metal_init</code>,
-<code>gpu_memory.mm:736</code>), the full shader source is assembled by
-prepending kernel-specific <code>#define</code> directives to the
-embedded source. <code>build_shader_config_string()</code>
-(<code>gpu_memory.mm:657</code>) generates all configuration defines
-(tile sizes, thread counts, BK values) for every kernel type:</p>
+<h3 id="shader-compilation-and-caching">Shader Compilation and Caching</h3>
+<p>Metal shaders are compiled at runtime from source, not from precompiled <code>.metallib</code> files. The shader source originates from <code>metal_softfloat.h</code>, which CMake auto-generates into <code>metal_sf64_embedded.inc</code> at build time. This <code>.inc</code> file is <code>#include</code>d as an NSString constant (<code>g_matmul_sf64_source</code>) in <code>gpu_memory.mm:733</code>.</p>
+<p>At initialization (<code>metal_init</code>, <code>gpu_memory.mm:736</code>), the full shader source is assembled by prepending kernel-specific <code>#define</code> directives to the embedded source. <code>build_shader_config_string()</code> (<code>gpu_memory.mm:657</code>) generates all configuration defines (tile sizes, thread counts, BK values) for every kernel type:</p>
 <pre class="objc"><code>NSString* config = build_shader_config_string();
 NSString* fullSource = [config stringByAppendingString:g_matmul_sf64_source];</code></pre>
-<p>Compilation uses <code>MTLCompileOptions</code> with
-<code>fastMathEnabled = NO</code> (<code>gpu_memory.mm:901-902</code>)
-to ensure IEEE 754 compliance – fast-math optimizations would break the
-bit-exact rounding behavior that SF64 relies on.</p>
-<p>The compiled library (<code>MTLLibrary</code>) contains all kernel
-functions. Individual pipelines are created by looking up each kernel by
-name and calling <code>newComputePipelineStateWithFunction:</code>
-(<code>gpu_memory.mm:924</code>). Pipeline objects
-(<code>id&lt;MTLComputePipelineState&gt;</code>) are cached as global
-statics (<code>gpu_memory.mm:61-81</code>) for the lifetime of the
-process.</p>
-<h3 id="hardware-adaptive-recompilation">Hardware-Adaptive
-Recompilation</h3>
-<p>After creating each pipeline, <code>metal_init</code> queries the
-actual <code>maxTotalThreadsPerThreadgroup</code> from the pipeline
-state (<code>gpu_memory.mm:936-939</code>). If the hardware limit is
-lower than the occupancy-tuned thread count (due to register pressure
-from complex kernels), the system re-searches the configuration space
-with the reduced constraint:</p>
+<p>Compilation uses <code>MTLCompileOptions</code> with <code>fastMathEnabled = NO</code> (<code>gpu_memory.mm:901-902</code>) to ensure IEEE 754 compliance – fast-math optimizations would break the bit-exact rounding behavior that SF64 relies on.</p>
+<p>The compiled library (<code>MTLLibrary</code>) contains all kernel functions. Individual pipelines are created by looking up each kernel by name and calling <code>newComputePipelineStateWithFunction:</code> (<code>gpu_memory.mm:924</code>). Pipeline objects (<code>id&lt;MTLComputePipelineState&gt;</code>) are cached as global statics (<code>gpu_memory.mm:61-81</code>) for the lifetime of the process.</p>
+<h3 id="hardware-adaptive-recompilation">Hardware-Adaptive Recompilation</h3>
+<p>After creating each pipeline, <code>metal_init</code> queries the actual <code>maxTotalThreadsPerThreadgroup</code> from the pipeline state (<code>gpu_memory.mm:936-939</code>). If the hardware limit is lower than the occupancy-tuned thread count (due to register pressure from complex kernels), the system re-searches the configuration space with the reduced constraint:</p>
 <pre class="cpp"><code>HardwareProfile hw_reduced = g_hw;
 hw_reduced.max_threads_per_tg = (uint32_t)maxTG;
 search_fp_config(KERNEL_FP24, g_cfg_fp24, hw_reduced);</code></pre>
-<p>It then rebuilds the full shader config string and recompiles the
-entire library with updated defines
-(<code>gpu_memory.mm:1082-1093</code>). This ensures that tile sizes,
-thread counts, and shared memory usage are all consistent with what the
-hardware actually supports. The fp24, fp53, df64_pure, and f32_simd_128
-kernels all have this adaptive recompilation path.</p>
-<h3 id="thread-organization-and-dispatch">Thread Organization and
-Dispatch</h3>
+<p>It then rebuilds the full shader config string and recompiles the entire library with updated defines (<code>gpu_memory.mm:1082-1093</code>). This ensures that tile sizes, thread counts, and shared memory usage are all consistent with what the hardware actually supports. The fp24, fp53, df64_pure, and f32_simd_128 kernels all have this adaptive recompilation path.</p>
+<h3 id="thread-organization-and-dispatch">Thread Organization and Dispatch</h3>
 <p>Each kernel type uses a specific threadgroup geometry:</p>
 <ul>
-<li><p><strong>SF64 / DF64</strong>: 2D threadgroups of
-<code>TG x TG</code> threads (e.g. 8x8 = 64 or 16x16 = 256). Grid
-dimensions: <code>ceil(N/BN) x ceil(M/BM)</code> threadgroups. Each
-thread computes a <code>TT x TT</code> sub-tile of the output matrix
-(<code>gpu_memory.mm:1586-1587</code>).</p></li>
-<li><p><strong>F32 SIMD</strong>: 1D threadgroups of
-<code>WM * WN * 32</code> threads (multiples of warp size 32). For the
-small-tile kernel (<code>matmul_f32_simd_pure</code>), typical
-configuration is 128 threads (4 simdgroups). Grid:
-<code>ceil(N/BN) x ceil(M/BM)</code>
-(<code>gpu_memory.mm:1634-1635</code>).</p></li>
-<li><p><strong>Elementwise / Convert</strong>: 1D threadgroups of 256
-threads with 1D grids of <code>ceil(N/256)</code> groups
-(<code>gpu_memory.mm:1384-1386</code>).</p></li>
-<li><p><strong>Reduce</strong>: 256 threads per group with tree
-reduction in threadgroup memory (<code>metal_softfloat.h</code>).
-Two-pass: first pass reduces chunks of 256 to partial results, host
-launches second pass if needed.</p></li>
+<li><p><strong>SF64 / DF64</strong>: 2D threadgroups of <code>TG x TG</code> threads (e.g. 8x8 = 64 or 16x16 = 256). Grid dimensions: <code>ceil(N/BN) x ceil(M/BM)</code> threadgroups. Each thread computes a <code>TT x TT</code> sub-tile of the output matrix (<code>gpu_memory.mm:1586-1587</code>).</p></li>
+<li><p><strong>F32 SIMD</strong>: 1D threadgroups of <code>WM * WN * 32</code> threads (multiples of warp size 32). For the small-tile kernel (<code>matmul_f32_simd_pure</code>), typical configuration is 128 threads (4 simdgroups). Grid: <code>ceil(N/BN) x ceil(M/BM)</code> (<code>gpu_memory.mm:1634-1635</code>).</p></li>
+<li><p><strong>Elementwise / Convert</strong>: 1D threadgroups of 256 threads with 1D grids of <code>ceil(N/256)</code> groups (<code>gpu_memory.mm:1384-1386</code>).</p></li>
+<li><p><strong>Reduce</strong>: 256 threads per group with tree reduction in threadgroup memory (<code>metal_softfloat.h</code>). Two-pass: first pass reduces chunks of 256 to partial results, host launches second pass if needed.</p></li>
 </ul>
 <h3 id="gpu-warmup">GPU Warmup</h3>
-<p>After pipeline creation, a 1x1 warmup dispatch is issued
-(<code>gpu_memory.mm:1249-1271</code>). This primes the Metal driver’s
-internal caches and JIT compiler, avoiding a latency spike on the first
-real dispatch. The warmup uses a tiny 64-byte scratch buffer and the
-SF64 pipeline with 1 threadgroup.</p>
+<p>After pipeline creation, a 1x1 warmup dispatch is issued (<code>gpu_memory.mm:1249-1271</code>). This primes the Metal driver’s internal caches and JIT compiler, avoiding a latency spike on the first real dispatch. The warmup uses a tiny 64-byte scratch buffer and the SF64 pipeline with 1 threadgroup.</p>
 <h3 id="occupancy-aware-scoring">Occupancy-Aware Scoring</h3>
-<p>The configuration search (<code>compute_all_configs</code>,
-<code>gpu_memory.mm:566</code>) evaluates every candidate tile
-configuration via <code>score_config</code>
-(<code>gpu_memory.mm:400</code>):</p>
+<p>The configuration search (<code>compute_all_configs</code>, <code>gpu_memory.mm:566</code>) evaluates every candidate tile configuration via <code>score_config</code> (<code>gpu_memory.mm:400</code>):</p>
 <pre><code>score = occupancy * arithmetic_intensity * sqrt(BM * BN) * BK</code></pre>
-<p>Where: - <strong>Occupancy</strong>:
-<code>min(max_tg_mem / shared_bytes, max_threads / threads)</code>,
-capped at 4. Multiple threadgroups per compute unit hide memory latency.
-- <strong>Arithmetic intensity</strong>:
-<code>2 * BM * BN * BK / ((BM*BK + BK*BN) * elem_bytes)</code>. Higher
-values mean more compute per byte loaded. - <strong>Tile area</strong>:
-<code>sqrt(BM * BN)</code> favors larger output tiles that amortize
-shared memory loads. - <strong>BK amortization</strong>: Linear in BK,
-because larger K-blocks mean fewer barrier synchronizations and loop
-iterations.</p>
-<p>Shared memory cost is computed per-kernel-type by
-<code>compute_shared_bytes</code> (<code>gpu_memory.mm:344-394</code>).
-Each kernel type has different storage needs: SF64 uses 8 bytes per
-element (uint2), DF64 uses 8 bytes (float2), F32 uses 4 bytes (float),
-and Ozaki uses 6 A-slices + 6 B-slices + scratch.</p>
+<p>Where: - <strong>Occupancy</strong>: <code>min(max_tg_mem / shared_bytes, max_threads / threads)</code>, capped at 4. Multiple threadgroups per compute unit hide memory latency. - <strong>Arithmetic intensity</strong>: <code>2 * BM * BN * BK / ((BM*BK + BK*BN) * elem_bytes)</code>. Higher values mean more compute per byte loaded. - <strong>Tile area</strong>: <code>sqrt(BM * BN)</code> favors larger output tiles that amortize shared memory loads. - <strong>BK amortization</strong>: Linear in BK, because larger K-blocks mean fewer barrier synchronizations and loop iterations.</p>
+<p>Shared memory cost is computed per-kernel-type by <code>compute_shared_bytes</code> (<code>gpu_memory.mm:344-394</code>). Each kernel type has different storage needs: SF64 uses 8 bytes per element (uint2), DF64 uses 8 bytes (float2), F32 uses 4 bytes (float), and Ozaki uses 6 A-slices + 6 B-slices + scratch.</p>
 <h3 id="adaptive-row-blocking">Adaptive Row-Blocking</h3>
-<p>Large matrices risk GPU command timeout (~2 seconds on macOS). The
-<code>compute_chunk_m</code> function (<code>gpu_memory.mm:586</code>)
-computes the maximum number of M-rows per dispatch:</p>
+<p>Large matrices risk GPU command timeout (~2 seconds on macOS). The <code>compute_chunk_m</code> function (<code>gpu_memory.mm:586</code>) computes the maximum number of M-rows per dispatch:</p>
 <pre class="cpp"><code>target = 4096 * 4096 / (K * weight);
 target = align_to_tile(target, bm);
 target = min(target, 4096);</code></pre>
-<p>Weight factors reflect per-element cost: SF64=8.0 (integer emulation
-is expensive), FP53=4.0, Ozaki-II=3.0, FP24=2.0, DF64=1.5, F32=1.0. Each
-chunk dispatches
-<code>C_chunk[chunk_M x N] = A_chunk[chunk_M x K] * B[K x N]</code>
-using Metal buffer offsets (<code>gpu_memory.mm:1717-1719</code>):</p>
+<p>Weight factors reflect per-element cost: SF64=8.0 (integer emulation is expensive), FP53=4.0, Ozaki-II=3.0, FP24=2.0, DF64=1.5, F32=1.0. Each chunk dispatches <code>C_chunk[chunk_M x N] = A_chunk[chunk_M x K] * B[K x N]</code> using Metal buffer offsets (<code>gpu_memory.mm:1717-1719</code>):</p>
 <pre class="objc"><code>[enc setBuffer:buf_a offset:(size_t)m_off * K * 8 atIndex:0];
 [enc setBuffer:buf_c offset:(size_t)m_off * N * 8 atIndex:2];</code></pre>
-<p>This avoids allocating separate sub-buffers while keeping each GPU
-dispatch within the timeout window.</p>
+<p>This avoids allocating separate sub-buffers while keeping each GPU dispatch within the timeout window.</p>
 <h3 id="hardware-profile-detection">Hardware Profile Detection</h3>
-<p><code>metal_init</code> (<code>gpu_memory.mm:736</code>) populates a
-<code>HardwareProfile</code> (<code>gpu_memory.mm:105-111</code>) by
-querying the Metal device:</p>
+<p><code>metal_init</code> (<code>gpu_memory.mm:736</code>) populates a <code>HardwareProfile</code> (<code>gpu_memory.mm:105-111</code>) by querying the Metal device:</p>
 <table>
 <colgroup>
 <col style="width: 25%" />
@@ -1313,27 +832,14 @@ querying the Metal device:</p>
 </tr>
 </tbody>
 </table>
-<p>GPU family detection (<code>gpu_memory.mm:753-769</code>) uses
-<code>@available</code> checks to test <code>MTLGPUFamilyApple7</code>
-(M1), <code>MTLGPUFamilyApple8</code> (M2), and
-<code>MTLGPUFamilyApple9</code> (M3). The family number is logged at
-init and can be used for future family-specific kernel tuning.</p>
+<p>GPU family detection (<code>gpu_memory.mm:753-769</code>) uses <code>@available</code> checks to test <code>MTLGPUFamilyApple7</code> (M1), <code>MTLGPUFamilyApple8</code> (M2), and <code>MTLGPUFamilyApple9</code> (M3). The family number is logged at init and can be used for future family-specific kernel tuning.</p>
 <hr />
 <h2 id="11-buffer-pool-architecture">11. Buffer Pool Architecture</h2>
 <h3 id="problem">Problem</h3>
-<p>Metal buffer allocation
-(<code>[MTLDevice newBufferWithLength:options:]</code>) involves kernel
-transitions and VM mapping. In batched workloads (ML training loops,
-repeated matmul), allocation overhead dominates for small-to-medium
-matrices.</p>
+<p>Metal buffer allocation (<code>[MTLDevice newBufferWithLength:options:]</code>) involves kernel transitions and VM mapping. In batched workloads (ML training loops, repeated matmul), allocation overhead dominates for small-to-medium matrices.</p>
 <h3 id="size-binned-recycling">Size-Binned Recycling</h3>
-<p>The buffer pool (<code>gpu_memory.mm:611-653</code>) is a size-binned
-cache of <code>MTLBuffer</code> objects. Each requested allocation is
-rounded up to the next power of 2, and buffers are stored in buckets
-keyed by that rounded size.</p>
-<p>The bucket function (<code>pool_bucket</code>,
-<code>gpu_memory.mm:619-625</code>) computes the next power of 2 using
-standard bit-spreading:</p>
+<p>The buffer pool (<code>gpu_memory.mm:611-653</code>) is a size-binned cache of <code>MTLBuffer</code> objects. Each requested allocation is rounded up to the next power of 2, and buffers are stored in buckets keyed by that rounded size.</p>
+<p>The bucket function (<code>pool_bucket</code>, <code>gpu_memory.mm:619-625</code>) computes the next power of 2 using standard bit-spreading:</p>
 <pre class="cpp"><code>static size_t pool_bucket(size_t bytes) {
     if (bytes == 0) return 1;
     size_t v = bytes - 1;
@@ -1341,319 +847,100 @@ standard bit-spreading:</p>
     v |= v &gt;&gt; 8; v |= v &gt;&gt; 16; v |= v &gt;&gt; 32;
     return v + 1;
 }</code></pre>
-<p>This means a 5000-byte request uses an 8192-byte bucket. The overhead
-(wasted space) is at most 2x, which is acceptable because Metal buffers
-are virtual-memory-backed and do not consume physical pages for
-untouched regions on Apple Silicon.</p>
+<p>This means a 5000-byte request uses an 8192-byte bucket. The overhead (wasted space) is at most 2x, which is acceptable because Metal buffers are virtual-memory-backed and do not consume physical pages for untouched regions on Apple Silicon.</p>
 <h3 id="allocation-and-release">Allocation and Release</h3>
-<p><code>pool_alloc</code> (<code>gpu_memory.mm:627-637</code>) checks
-the bucket for a recycled buffer. If available, it pops the last one
-(LIFO for cache warmth). If empty, it allocates a new buffer with
-<code>MTLResourceStorageModeShared</code> for unified CPU/GPU
-access:</p>
+<p><code>pool_alloc</code> (<code>gpu_memory.mm:627-637</code>) checks the bucket for a recycled buffer. If available, it pops the last one (LIFO for cache warmth). If empty, it allocates a new buffer with <code>MTLResourceStorageModeShared</code> for unified CPU/GPU access:</p>
 <pre class="objc"><code>return [g_metal_device newBufferWithLength:bucket
                                    options:MTLResourceStorageModeShared];</code></pre>
-<p><code>pool_release</code> (<code>gpu_memory.mm:641-649</code>)
-returns a buffer to its bucket. If the bucket already contains
-<code>POOL_MAX_PER_BUCKET</code> (8) buffers
-(<code>gpu_memory.mm:639</code>), the excess buffer is dropped and ARC
-frees the underlying MTLBuffer. This caps per-bucket memory at 8 *
-bucket_size bytes.</p>
+<p><code>pool_release</code> (<code>gpu_memory.mm:641-649</code>) returns a buffer to its bucket. If the bucket already contains <code>POOL_MAX_PER_BUCKET</code> (8) buffers (<code>gpu_memory.mm:639</code>), the excess buffer is dropped and ARC frees the underlying MTLBuffer. This caps per-bucket memory at 8 * bucket_size bytes.</p>
 <h3 id="pool-and-arena-interaction">Pool and Arena Interaction</h3>
-<p>The buffer pool is used exclusively for GPU dispatch scratch buffers
-(input, output, and intermediate buffers in the matmul pipelines). It
-does not interact directly with the Eshkol arena allocator, which
-manages tensor and heap objects on the CPU side. The flow is:</p>
+<p>The buffer pool is used exclusively for GPU dispatch scratch buffers (input, output, and intermediate buffers in the matmul pipelines). It does not interact directly with the Eshkol arena allocator, which manages tensor and heap objects on the CPU side. The flow is:</p>
 <ol type="1">
 <li>Arena allocates tensor data (f64 doubles) as CPU memory</li>
-<li>GPU dispatch wraps or copies tensor data into pooled
-<code>MTLBuffer</code>s</li>
+<li>GPU dispatch wraps or copies tensor data into pooled <code>MTLBuffer</code>s</li>
 <li>GPU kernel executes on the buffer contents</li>
-<li>Results are <code>memcpy</code>d back to the arena-managed
-tensor</li>
+<li>Results are <code>memcpy</code>d back to the arena-managed tensor</li>
 <li>Pooled buffers are returned via <code>pool_release</code></li>
 </ol>
-<p>For the Metal unified memory path, <code>eshkol_gpu_wrap_host</code>
-(<code>gpu_memory.mm:1398-1424</code>) can wrap arena pointers directly
-as MTLBuffers using <code>newBufferWithBytesNoCopy:</code> for zero-copy
-GPU access when the memory is page-aligned.</p>
+<p>For the Metal unified memory path, <code>eshkol_gpu_wrap_host</code> (<code>gpu_memory.mm:1398-1424</code>) can wrap arena pointers directly as MTLBuffers using <code>newBufferWithBytesNoCopy:</code> for zero-copy GPU access when the memory is page-aligned.</p>
 <h3 id="pool-drain-on-shutdown">Pool Drain on Shutdown</h3>
-<p><code>metal_shutdown</code> (<code>gpu_memory.mm:1277-1301</code>)
-calls <code>pool_drain()</code> (<code>gpu_memory.mm:651-653</code>) as
-its first action, clearing the entire
-<code>unordered_map&lt;size_t, vector&lt;id&lt;MTLBuffer&gt;&gt;&gt;</code>.
-ARC releases all retained MTLBuffer objects. Pipeline states, the
-library, command queue, and device are then set to <code>nil</code> in
-order.</p>
+<p><code>metal_shutdown</code> (<code>gpu_memory.mm:1277-1301</code>) calls <code>pool_drain()</code> (<code>gpu_memory.mm:651-653</code>) as its first action, clearing the entire <code>unordered_map&lt;size_t, vector&lt;id&lt;MTLBuffer&gt;&gt;&gt;</code>. ARC releases all retained MTLBuffer objects. Pipeline states, the library, command queue, and device are then set to <code>nil</code> in order.</p>
 <hr />
 <h2 id="12-cuda-backend-status">12. CUDA Backend Status</h2>
 <h3 id="implementation-scope">Implementation Scope</h3>
-<p>The CUDA backend (<code>lib/backend/gpu/gpu_memory_cuda.cpp</code>,
-1,576 lines) is a fully functional GPU acceleration path for NVIDIA
-hardware. Unlike the Metal backend which requires SF64 software
-emulation, CUDA provides native f64 hardware, so no precision emulation
-is needed.</p>
+<p>The CUDA backend (<code>lib/backend/gpu/gpu_memory_cuda.cpp</code>, 1,576 lines) is a fully functional GPU acceleration path for NVIDIA hardware. Unlike the Metal backend which requires SF64 software emulation, CUDA provides native f64 hardware, so no precision emulation is needed.</p>
 <h3 id="what-is-fully-implemented">What Is Fully Implemented</h3>
-<p><strong>Initialization</strong> (<code>gpu_memory_cuda.cpp</code>):
-Device enumeration via <code>cudaGetDeviceCount</code>, device 0
-selection, CUDA stream creation, cuBLAS handle creation and stream
-binding. Thread-safe via <code>std::mutex</code> + double-check pattern
-in <code>eshkol_gpu_init</code> (<code>gpu_memory_cuda.cpp</code>).</p>
-<p><strong>Memory management</strong>
-(<code>gpu_memory_cuda.cpp</code>): Three allocation modes: -
-<code>ESHKOL_MEM_UNIFIED</code>: <code>cudaMallocManaged()</code> –
-automatic page migration between host and device -
-<code>ESHKOL_MEM_DEVICE</code>: <code>cudaMalloc()</code> – device-only,
-maximum throughput - <code>ESHKOL_MEM_HOST_PINNED</code>:
-<code>cudaMallocHost()</code> – pinned host memory for async DMA</p>
-<p>Host wrapping (<code>gpu_memory_cuda.cpp</code>) uses
-<code>cudaHostRegister()</code> to pin existing memory. If registration
-fails (e.g., already-registered or non-page-aligned), it falls back to
-unified allocation + memcpy.</p>
-<p>Sync (<code>gpu_memory_cuda.cpp</code>) handles bidirectional
-transfers: unified memory uses <code>cudaStreamSynchronize</code>,
-pinned memory uses <code>cudaMemcpyAsync</code> with explicit
-direction.</p>
-<p><strong>Matmul via cuBLAS</strong>
-(<code>gpu_memory_cuda.cpp</code>): Both f64 (<code>cublasDgemm</code>)
-and f32 (<code>cublasSgemm</code>) are implemented. The row-major to
-column-major conversion uses the standard transpose trick:</p>
+<p><strong>Initialization</strong> (<code>gpu_memory_cuda.cpp</code>): Device enumeration via <code>cudaGetDeviceCount</code>, device 0 selection, CUDA stream creation, cuBLAS handle creation and stream binding. Thread-safe via <code>std::mutex</code> + double-check pattern in <code>eshkol_gpu_init</code> (<code>gpu_memory_cuda.cpp</code>).</p>
+<p><strong>Memory management</strong> (<code>gpu_memory_cuda.cpp</code>): Three allocation modes: - <code>ESHKOL_MEM_UNIFIED</code>: <code>cudaMallocManaged()</code> – automatic page migration between host and device - <code>ESHKOL_MEM_DEVICE</code>: <code>cudaMalloc()</code> – device-only, maximum throughput - <code>ESHKOL_MEM_HOST_PINNED</code>: <code>cudaMallocHost()</code> – pinned host memory for async DMA</p>
+<p>Host wrapping (<code>gpu_memory_cuda.cpp</code>) uses <code>cudaHostRegister()</code> to pin existing memory. If registration fails (e.g., already-registered or non-page-aligned), it falls back to unified allocation + memcpy.</p>
+<p>Sync (<code>gpu_memory_cuda.cpp</code>) handles bidirectional transfers: unified memory uses <code>cudaStreamSynchronize</code>, pinned memory uses <code>cudaMemcpyAsync</code> with explicit direction.</p>
+<p><strong>Matmul via cuBLAS</strong> (<code>gpu_memory_cuda.cpp</code>): Both f64 (<code>cublasDgemm</code>) and f32 (<code>cublasSgemm</code>) are implemented. The row-major to column-major conversion uses the standard transpose trick:</p>
 <pre class="cpp"><code>cublasDgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N,
     N, M, K, &amp;alpha, B_ptr, N, A_ptr, K, &amp;beta, C_ptr, N);</code></pre>
-<p>This computes C^T = B^T * A^T in column-major, which is equivalent to
-C = A * B in row-major.</p>
-<p><strong>Custom kernels</strong> (<code>gpu_cuda_kernels.cu</code>,
-800 lines, launched via extern “C” declarations in
-<code>gpu_memory_cuda.cpp</code>): - Elementwise: 15 operations
-dispatched by integer op code, 256 threads/block - Reduce: Two-pass
-block reduction with <code>__shfl_down_sync</code> warp shuffle - Reduce
-axis: N-dimensional axis reduction - Transpose: Tiled with
-<code>TILE_DIM=32</code>, <code>BLOCK_ROWS=8</code>, shared memory +1
-padding - Softmax: Three-pass (max, exp+sum, normalize) - Normalize:
-Layer normalization (mean, variance, scale+shift)</p>
-<p><strong>Full public API</strong>: All <code>eshkol_gpu_*</code>
-functions (<code>gpu_memory_cuda.cpp</code>) are implemented:
-<code>init</code>, <code>shutdown</code>, <code>alloc</code>,
-<code>alloc_aligned</code>, <code>free</code>, <code>wrap_host</code>,
-<code>sync</code>, <code>sync_async</code>, <code>wait</code>,
-<code>matmul_f64</code>, <code>matmul_f32</code>,
-<code>elementwise_f64</code>, <code>reduce_f64</code>,
-<code>reduce_axis_f64</code>, <code>transpose_f64</code>,
-<code>softmax_f64</code>, <code>normalize_f64</code>,
-<code>set_threshold</code>, <code>get_threshold</code>,
-<code>should_use</code>, and <code>matmul_dispatch</code>.</p>
-<p>Every GPU function has a CPU fallback path: if the CUDA backend is
-not active or the GPU operation fails, the function falls through to a
-scalar CPU implementation in the same file
-(<code>gpu_memory_cuda.cpp</code>).</p>
+<p>This computes C^T = B^T * A^T in column-major, which is equivalent to C = A * B in row-major.</p>
+<p><strong>Custom kernels</strong> (<code>gpu_cuda_kernels.cu</code>, 800 lines, launched via extern “C” declarations in <code>gpu_memory_cuda.cpp</code>): - Elementwise: 15 operations dispatched by integer op code, 256 threads/block - Reduce: Two-pass block reduction with <code>__shfl_down_sync</code> warp shuffle - Reduce axis: N-dimensional axis reduction - Transpose: Tiled with <code>TILE_DIM=32</code>, <code>BLOCK_ROWS=8</code>, shared memory +1 padding - Softmax: Three-pass (max, exp+sum, normalize) - Normalize: Layer normalization (mean, variance, scale+shift)</p>
+<p><strong>Full public API</strong>: All <code>eshkol_gpu_*</code> functions (<code>gpu_memory_cuda.cpp</code>) are implemented: <code>init</code>, <code>shutdown</code>, <code>alloc</code>, <code>alloc_aligned</code>, <code>free</code>, <code>wrap_host</code>, <code>sync</code>, <code>sync_async</code>, <code>wait</code>, <code>matmul_f64</code>, <code>matmul_f32</code>, <code>elementwise_f64</code>, <code>reduce_f64</code>, <code>reduce_axis_f64</code>, <code>transpose_f64</code>, <code>softmax_f64</code>, <code>normalize_f64</code>, <code>set_threshold</code>, <code>get_threshold</code>, <code>should_use</code>, and <code>matmul_dispatch</code>.</p>
+<p>Every GPU function has a CPU fallback path: if the CUDA backend is not active or the GPU operation fails, the function falls through to a scalar CPU implementation in the same file (<code>gpu_memory_cuda.cpp</code>).</p>
 <h3 id="what-is-not-implemented">What Is Not Implemented</h3>
 <ul>
-<li><strong>SF64/DF64/FP24/FP53/Ozaki-II precision tiers</strong>: These
-are Metal-only. CUDA has native f64, so software emulation is
-unnecessary.</li>
-<li><strong>Buffer pool</strong>: CUDA uses
-<code>cudaMalloc</code>/<code>cudaFree</code> directly. No recycling
-pool is implemented (CUDA’s allocator is already efficient for this
-pattern).</li>
-<li><strong>Multi-stream dispatch</strong>: A single CUDA stream is used
-for all operations. Concurrent kernel execution would require stream
-pools.</li>
-<li><strong>Tensor core dispatch</strong>: cuBLAS may internally use
-tensor cores when available, but there is no explicit
-<code>cublasGemmEx</code> / <code>CUBLAS_COMPUTE_64F</code> path for
-Ampere/Hopper tensor core f64.</li>
+<li><strong>SF64/DF64/FP24/FP53/Ozaki-II precision tiers</strong>: These are Metal-only. CUDA has native f64, so software emulation is unnecessary.</li>
+<li><strong>Buffer pool</strong>: CUDA uses <code>cudaMalloc</code>/<code>cudaFree</code> directly. No recycling pool is implemented (CUDA’s allocator is already efficient for this pattern).</li>
+<li><strong>Multi-stream dispatch</strong>: A single CUDA stream is used for all operations. Concurrent kernel execution would require stream pools.</li>
+<li><strong>Tensor core dispatch</strong>: cuBLAS may internally use tensor cores when available, but there is no explicit <code>cublasGemmEx</code> / <code>CUBLAS_COMPUTE_64F</code> path for Ampere/Hopper tensor core f64.</li>
 </ul>
 <h3 id="cublas-integration-path">cuBLAS Integration Path</h3>
-<p>cuBLAS is the primary compute backend. The integration is
-minimal:</p>
+<p>cuBLAS is the primary compute backend. The integration is minimal:</p>
 <ol type="1">
-<li><code>cublasCreate</code> + <code>cublasSetStream</code> at init
-(<code>gpu_memory_cuda.cpp</code>)</li>
-<li><code>cublasDgemm</code> / <code>cublasSgemm</code> for matmul
-(<code>gpu_memory_cuda.cpp</code>)</li>
-<li><code>cublasDestroy</code> at shutdown
-(<code>gpu_memory_cuda.cpp</code>)</li>
+<li><code>cublasCreate</code> + <code>cublasSetStream</code> at init (<code>gpu_memory_cuda.cpp</code>)</li>
+<li><code>cublasDgemm</code> / <code>cublasSgemm</code> for matmul (<code>gpu_memory_cuda.cpp</code>)</li>
+<li><code>cublasDestroy</code> at shutdown (<code>gpu_memory_cuda.cpp</code>)</li>
 </ol>
-<p>Custom CUDA kernels handle all non-matmul operations (elementwise,
-reduce, transpose, softmax, normalize) because cuBLAS only provides
-BLAS-level routines.</p>
+<p>Custom CUDA kernels handle all non-matmul operations (elementwise, reduce, transpose, softmax, normalize) because cuBLAS only provides BLAS-level routines.</p>
 <h3 id="runtime-backend-selection">Runtime Backend Selection</h3>
-<p>Metal and CUDA coexist via compile-time guards and runtime
-detection:</p>
+<p>Metal and CUDA coexist via compile-time guards and runtime detection:</p>
 <ul>
-<li><p><strong>Compile-time</strong>:
-<code>ESHKOL_GPU_METAL_ENABLED</code> (macOS builds) and
-<code>ESHKOL_GPU_CUDA_ENABLED</code> (Linux/Windows builds) are set by
-CMake. <code>gpu_memory.mm</code> is compiled as Objective-C++ on macOS;
-<code>gpu_memory_cuda.cpp</code> is compiled as standard C++ on
-Linux/Windows. A stub file (<code>gpu_memory_stub.cpp</code>, 449 lines)
-provides no-op implementations when neither backend is
-available.</p></li>
-<li><p><strong>Runtime</strong>: <code>eshkol_gpu_init</code>
-(<code>gpu_memory_cuda.cpp</code>) tries CUDA first (on builds with
-<code>ESHKOL_GPU_CUDA_AVAILABLE</code>). The Metal backend
-(<code>gpu_memory.mm</code>) follows the same pattern. The first backend
-that successfully initializes sets <code>g_active_backend</code>;
-subsequent API calls dispatch to it. Only one backend is active at a
-time.</p></li>
-<li><p><strong>Backend query</strong>:
-<code>eshkol_gpu_get_backend()</code> returns the active enum
-(<code>ESHKOL_GPU_METAL</code>, <code>ESHKOL_GPU_CUDA</code>, or
-<code>ESHKOL_GPU_NONE</code>). <code>eshkol_gpu_supports_f64()</code>
-returns true for CUDA (native) and false for “no GPU”
-(<code>gpu_memory_cuda.cpp</code>). The Metal backend reports f64
-support via SF64 emulation.</p></li>
+<li><p><strong>Compile-time</strong>: <code>ESHKOL_GPU_METAL_ENABLED</code> (macOS builds) and <code>ESHKOL_GPU_CUDA_ENABLED</code> (Linux/Windows builds) are set by CMake. <code>gpu_memory.mm</code> is compiled as Objective-C++ on macOS; <code>gpu_memory_cuda.cpp</code> is compiled as standard C++ on Linux/Windows. A stub file (<code>gpu_memory_stub.cpp</code>, 449 lines) provides no-op implementations when neither backend is available.</p></li>
+<li><p><strong>Runtime</strong>: <code>eshkol_gpu_init</code> (<code>gpu_memory_cuda.cpp</code>) tries CUDA first (on builds with <code>ESHKOL_GPU_CUDA_AVAILABLE</code>). The Metal backend (<code>gpu_memory.mm</code>) follows the same pattern. The first backend that successfully initializes sets <code>g_active_backend</code>; subsequent API calls dispatch to it. Only one backend is active at a time.</p></li>
+<li><p><strong>Backend query</strong>: <code>eshkol_gpu_get_backend()</code> returns the active enum (<code>ESHKOL_GPU_METAL</code>, <code>ESHKOL_GPU_CUDA</code>, or <code>ESHKOL_GPU_NONE</code>). <code>eshkol_gpu_supports_f64()</code> returns true for CUDA (native) and false for “no GPU” (<code>gpu_memory_cuda.cpp</code>). The Metal backend reports f64 support via SF64 emulation.</p></li>
 </ul>
-<h2 id="13-ci-testing-compilation-vs-execution">13. CI Testing:
-Compilation vs. Execution</h2>
-<p>Two separate things are gated, and it matters which one you’re
-looking at:</p>
+<h2 id="13-ci-testing-compilation-vs-execution">13. CI Testing: Compilation vs. Execution</h2>
+<p>Two separate things are gated, and it matters which one you’re looking at:</p>
 <ul>
-<li><p><strong>Compilation</strong>
-(<code>.github/workflows/ci.yml</code>, the <code>linux-x64-cuda</code>,
-<code>linux-arm64-cuda</code>, and <code>windows-x64-cuda</code> jobs):
-installs a pinned NVIDIA CUDA toolkit, configures with both
-<code>ESHKOL_GPU_ENABLED=ON</code> and
-<code>ESHKOL_REQUIRE_GPU_BACKEND=ON</code>, and runs
-<code>scripts/verify_gpu_backend.py</code> before
-<code>scripts/run_gpu_tests.sh</code>. The verifier requires
-<code>nvcc</code>, CUDA runtime, cuBLAS, and both real CUDA sources and
-rejects the CPU stub. NVIDIA does not provide a native Windows ARM64
-CUDA toolkit, so no such artifact is labeled or shipped. CUDA 12 builds
-on newer GNU hosts must select a supported compiler for the whole build
-(for example <code>CC=gcc-13 CXX=g++-13 cmake ...</code>); overriding
-only <code>CMAKE_CUDA_HOST_COMPILER</code> can mix libstdc++ ABI and
-search paths at final link time. These jobs run on GitHub-hosted
-runners, which have no GPU. The real backend compiles, but at runtime
-<code>eshkol_gpu_init()</code> finds zero devices, so the real
-<code>tests/gpu/*.esk</code> tests all execute their CPU fallback path
-(the must-fail canary is excluded from the graded loop). These lanes
-prove the GPU backend <em>builds</em>; they do not exercise a single GPU
-kernel.</p></li>
-<li><p><strong>Execution</strong>
-(<code>.github/workflows/gpu-execution-gate.yml</code>,
-<code>tests/gpu/gpu_correctness_gate.sh</code>): builds Eshkol twice —
-once with GPU acceleration on, once off — and diffs GPU-vs-CPU output on
-the same differentiable workload. The tolerance is
-<code>GPU_GATE_TOL</code>, default <strong>1e-9</strong>
-(<code>tests/gpu/gpu_correctness_gate.sh:71</code>), tightened from 1e-4
-in v1.3.5-evolve (#501). That figure is not arbitrary: measured
-Metal-vs-CPU divergence is 0 across every probe, the K=512 accumulation
-noise floor is around 6e-14, and a real GPU-kernel defect corrupts by
-1e-2 to 1e0, so 1e-9 sits well below the smallest real defect and well
-above the noise. This is the gate that actually proves a Metal or CUDA
-kernel ran and produced a correct answer. It exits 0 with a SKIP message
-on any host without a real GPU device (which includes essentially all
-GitHub-hosted runners), and a SKIP deliberately writes
-<strong>no</strong> trace record at all, so an absent GPU is recorded as
-unmeasured rather than credited as a pass (#472). It needs a self-hosted
-runner carrying <code>[self-hosted, gpu]</code> labels to run in CI;
-until one is registered it stays queued rather than failing anything. It
-can also be run by hand on any workstation with a real GPU (Metal on any
-Mac, CUDA with an NVIDIA driver present — including the Jetson AGX
-Xavier setup in <code>nix/jetson/</code>).</p></li>
+<li><p><strong>Compilation</strong> (<code>.github/workflows/ci.yml</code>, the <code>linux-x64-cuda</code>, <code>linux-arm64-cuda</code>, and <code>windows-x64-cuda</code> jobs): installs a pinned NVIDIA CUDA toolkit, configures with both <code>ESHKOL_GPU_ENABLED=ON</code> and <code>ESHKOL_REQUIRE_GPU_BACKEND=ON</code>, and runs <code>scripts/verify_gpu_backend.py</code> before <code>scripts/run_gpu_tests.sh</code>. The verifier requires <code>nvcc</code>, CUDA runtime, cuBLAS, and both real CUDA sources and rejects the CPU stub. NVIDIA does not provide a native Windows ARM64 CUDA toolkit, so no such artifact is labeled or shipped. CUDA 12 builds on newer GNU hosts must select a supported compiler for the whole build (for example <code>CC=gcc-13 CXX=g++-13 cmake ...</code>); overriding only <code>CMAKE_CUDA_HOST_COMPILER</code> can mix libstdc++ ABI and search paths at final link time. These jobs run on GitHub-hosted runners, which have no GPU. The real backend compiles, but at runtime <code>eshkol_gpu_init()</code> finds zero devices, so the real <code>tests/gpu/*.esk</code> tests all execute their CPU fallback path (the must-fail canary is excluded from the graded loop). These lanes prove the GPU backend <em>builds</em>; they do not exercise a single GPU kernel.</p></li>
+<li><p><strong>Execution</strong> (<code>.github/workflows/gpu-execution-gate.yml</code>, <code>tests/gpu/gpu_correctness_gate.sh</code>): builds Eshkol twice — once with GPU acceleration on, once off — and diffs GPU-vs-CPU output on the same differentiable workload. The tolerance is <code>GPU_GATE_TOL</code>, default <strong>1e-9</strong> (<code>tests/gpu/gpu_correctness_gate.sh:71</code>), tightened from 1e-4 in v1.3.5-evolve (#501). That figure is not arbitrary: measured Metal-vs-CPU divergence is 0 across every probe, the K=512 accumulation noise floor is around 6e-14, and a real GPU-kernel defect corrupts by 1e-2 to 1e0, so 1e-9 sits well below the smallest real defect and well above the noise. This is the gate that actually proves a Metal or CUDA kernel ran and produced a correct answer. It exits 0 with a SKIP message on any host without a real GPU device (which includes essentially all GitHub-hosted runners), and a SKIP deliberately writes <strong>no</strong> trace record at all, so an absent GPU is recorded as unmeasured rather than credited as a pass (#472). It needs a self-hosted runner carrying <code>[self-hosted, gpu]</code> labels to run in CI; until one is registered it stays queued rather than failing anything. It can also be run by hand on any workstation with a real GPU (Metal on any Mac, CUDA with an NVIDIA driver present — including the Jetson AGX Xavier setup in <code>nix/jetson/</code>).</p></li>
 </ul>
-<p><strong>The gate has teeth, and proves it on every run.</strong>
-Until v1.3.5-evolve (#501) this gate was vacuous: its probes printed
-diagnostics without asserting, and its tolerance was loose enough to
-accept anything. Three mechanisms now keep it honest.</p>
+<p><strong>The gate has teeth, and proves it on every run.</strong> Until v1.3.5-evolve (#501) this gate was vacuous: its probes printed diagnostics without asserting, and its tolerance was loose enough to accept anything. Three mechanisms now keep it honest.</p>
 <ul>
-<li><strong>Verdict contract.</strong> The exit code is the verdict. A
-probe that produces no verdict at all is graded FAIL, not skipped.</li>
-<li><strong>A must-fail canary.</strong>
-<code>tests/gpu/gate_canary_must_fail.esk</code> asserts something
-permanently false, and <code>scripts/run_gpu_tests.sh</code> forces the
-entire run red if that probe exits 0, fails to compile, is missing, or
-exits non-zero without emitting a <code>FAIL:</code> marker — checked
-before the ordinary failure count, so a green canary cannot be outvoted
-by the passing tests around it. Do not “fix” that file: a green canary
-is not a fixed test, it is a broken verdict pipeline. The Windows judge
-applies the same inversion to any <code>*_must_fail.esk</code>.</li>
-<li><strong>A trace-contract self-test.</strong>
-<code>gpu_correctness_gate.sh --self-test</code> runs with no build and
-no GPU, and asserts that a SKIP writes no trace directory, that a
-failure writes exactly one FAIL record, and that a PASS record does not
-also read as FAIL. This is what stops the <code>gpu-execution</code>
-oracle target from reading a SKIP as ready.</li>
+<li><strong>Verdict contract.</strong> The exit code is the verdict. A probe that produces no verdict at all is graded FAIL, not skipped.</li>
+<li><strong>A must-fail canary.</strong> <code>tests/gpu/gate_canary_must_fail.esk</code> asserts something permanently false, and <code>scripts/run_gpu_tests.sh</code> forces the entire run red if that probe exits 0, fails to compile, is missing, or exits non-zero without emitting a <code>FAIL:</code> marker — checked before the ordinary failure count, so a green canary cannot be outvoted by the passing tests around it. Do not “fix” that file: a green canary is not a fixed test, it is a broken verdict pipeline. The Windows judge applies the same inversion to any <code>*_must_fail.esk</code>.</li>
+<li><strong>A trace-contract self-test.</strong> <code>gpu_correctness_gate.sh --self-test</code> runs with no build and no GPU, and asserts that a SKIP writes no trace directory, that a failure writes exactly one FAIL record, and that a PASS record does not also read as FAIL. This is what stops the <code>gpu-execution</code> oracle target from reading a SKIP as ready.</li>
 </ul>
-<p>Of the 19 files in <code>tests/gpu/</code>, 18 are real tests and one
-is the canary.</p>
-<p>Note for anyone reading the workflow:
-<code>.github/workflows/gpu-execution-gate.yml</code> still pins
-<code>GPU_GATE_TOL: '1e-4'</code>, which overrides the script default in
-the only lane that runs the gate. Flipping that lane to the script’s own
-1e-9 is tracked as a follow-up; until it lands, the tightened default is
-what a manual run enforces, not what CI enforces.</p>
+<p>Of the 19 files in <code>tests/gpu/</code>, 18 are real tests and one is the canary.</p>
+<p>Note for anyone reading the workflow: <code>.github/workflows/gpu-execution-gate.yml</code> still pins <code>GPU_GATE_TOL: '1e-4'</code>, which overrides the script default in the only lane that runs the gate. Flipping that lane to the script’s own 1e-9 is tracked as a follow-up; until it lands, the tightened default is what a manual run enforces, not what CI enforces.</p>
 <h3 id="the-payload-contract">The payload contract</h3>
-<p>The gate is a differential, so it is only as strong as its ability to
-tell a numeric difference from a structural one.</p>
-<p><code>tests/gpu/gpu_correctness_gate.esk</code> emits one
-<code>RESULT &lt;label&gt; &lt;value&gt;</code> line per probe and a
-terminal <code>GATE-DONE</code> marker. The script runs it twice — once
-against the GPU build, once against the CPU-reference build — and
-requires:</p>
+<p>The gate is a differential, so it is only as strong as its ability to tell a numeric difference from a structural one.</p>
+<p><code>tests/gpu/gpu_correctness_gate.esk</code> emits one <code>RESULT &lt;label&gt; &lt;value&gt;</code> line per probe and a terminal <code>GATE-DONE</code> marker. The script runs it twice — once against the GPU build, once against the CPU-reference build — and requires:</p>
 <ol type="1">
-<li>both runs contain <code>GATE-DONE</code>, so a truncated run is a
-failure rather than a short but agreeing result set;</li>
-<li>the two runs’ <strong>label sets are identical</strong>. A mismatch
-fails with “RESULT label sets differ between GPU and CPU runs — payload
-divergence, not a numeric issue”, because a probe that silently stopped
-emitting a label would otherwise diff clean against the labels that
-remain;</li>
-<li>every shared label’s relative difference is at or below
-<code>GPU_GATE_TOL</code>, with a denominator floor of
-<code>1e-12</code> so that a value near zero does not manufacture an
-enormous relative error.</li>
+<li>both runs contain <code>GATE-DONE</code>, so a truncated run is a failure rather than a short but agreeing result set;</li>
+<li>the two runs’ <strong>label sets are identical</strong>. A mismatch fails with “RESULT label sets differ between GPU and CPU runs — payload divergence, not a numeric issue”, because a probe that silently stopped emitting a label would otherwise diff clean against the labels that remain;</li>
+<li>every shared label’s relative difference is at or below <code>GPU_GATE_TOL</code>, with a denominator floor of <code>1e-12</code> so that a value near zero does not manufacture an enormous relative error.</li>
 </ol>
 <p>The GPU run is invoked with dispatch forced on:</p>
 <pre class="sh"><code>ESHKOL_VERBOSE=1 ESHKOL_GPU_VERBOSE=1 ESHKOL_GPU_THRESHOLD=1 ESHKOL_SF64_KERNEL=legacy</code></pre>
-<p>and the script then greps the captured stderr for a device-liveness
-line — a Metal announcement, a cuBLAS dispatch line, or an
-<code>sf64 dispatch/completed</code> line. <strong>If the device never
-announces itself the run is a SKIP, not a PASS.</strong> Building with
-GPU support and finding no device is exactly the situation this gate
-exists to distinguish from a real measurement.</p>
+<p>and the script then greps the captured stderr for a device-liveness line — a Metal announcement, a cuBLAS dispatch line, or an <code>sf64 dispatch/completed</code> line. <strong>If the device never announces itself the run is a SKIP, not a PASS.</strong> Building with GPU support and finding no device is exactly the situation this gate exists to distinguish from a real measurement.</p>
 <h3 id="the-trace-contract">The trace contract</h3>
-<p>The gate’s evidence is a single JSON-L record appended to
-<code>scripts/icc_traces/gpu_execution.jsonl</code>:</p>
+<p>The gate’s evidence is a single JSON-L record appended to <code>scripts/icc_traces/gpu_execution.jsonl</code>:</p>
 <pre class="json"><code>{&quot;kind&quot;:&quot;gpu_execution&quot;,&quot;name&quot;:&quot;gpu_execution_gate&quot;,&quot;value&quot;:&quot;PASS&quot;,&quot;snippet&quot;:&quot;…&quot;,&quot;confidence&quot;:0.95}</code></pre>
-<p><code>value</code> is <code>PASS</code> or <code>FAIL</code>. The
-PASS snippet carries the platform, the measured
-<code>max_rel_diff</code>, the tolerance actually in force and the probe
-count, so the record says what was measured rather than only that
-something was.</p>
-<p><code>skip()</code> is deliberately <strong>the one verdict path that
-never writes a record</strong>. That silence is what lets
-<code>.icc/completion-oracles.yaml</code>’s <code>gpu-execution</code>
-criterion read a GPU-less host as “no evidence yet” instead of a false
-PASS. It is also why <code>--self-test</code> asserts the absence of the
-trace directory rather than the presence of a <code>SKIP</code>-valued
-record: a future edit that started emitting from inside
-<code>skip()</code> — even with <code>value=SKIP</code> — could satisfy
-a consumer matching on record presence.</p>
-<h3 id="two-different-can-this-go-red-mechanisms">Two different “can
-this go red?” mechanisms</h3>
+<p><code>value</code> is <code>PASS</code> or <code>FAIL</code>. The PASS snippet carries the platform, the measured <code>max_rel_diff</code>, the tolerance actually in force and the probe count, so the record says what was measured rather than only that something was.</p>
+<p><code>skip()</code> is deliberately <strong>the one verdict path that never writes a record</strong>. That silence is what lets <code>.icc/completion-oracles.yaml</code>’s <code>gpu-execution</code> criterion read a GPU-less host as “no evidence yet” instead of a false PASS. It is also why <code>--self-test</code> asserts the absence of the trace directory rather than the presence of a <code>SKIP</code>-valued record: a future edit that started emitting from inside <code>skip()</code> — even with <code>value=SKIP</code> — could satisfy a consumer matching on record presence.</p>
+<h3 id="two-different-can-this-go-red-mechanisms">Two different “can this go red?” mechanisms</h3>
 <p>They are often conflated and they prove different things:</p>
 <ul>
-<li><strong><code>tests/gpu/gate_canary_must_fail.esk</code></strong>
-proves the <strong>verdict pipeline</strong> is live. It computes a 2×2
-<code>matmul</code> whose <code>C[0,0]</code> is <code>19.0</code> and
-asserts it is <code>999.0</code>. It is computed <em>through the tensor
-path</em> on purpose, so a build that cannot even construct a tensor
-still reaches a <code>FAIL</code> verdict rather than crashing before
-printing one. <code>scripts/run_gpu_tests.sh</code> hard-fails the whole
-run on four distinct outcomes: the file is missing, it fails to compile,
-it exits 0, or it exits non-zero without a <code>FAIL:</code> marker
-(which would mean the marker grammar itself had broken). This check runs
-before the ordinary failure count, so a green canary cannot be outvoted
-by the passing tests around it.</li>
-<li><strong><code>gpu_correctness_gate.sh --self-test</code></strong>
-proves the <strong>trace contract</strong> holds. It needs no build and
-no GPU.</li>
+<li><strong><code>tests/gpu/gate_canary_must_fail.esk</code></strong> proves the <strong>verdict pipeline</strong> is live. It computes a 2×2 <code>matmul</code> whose <code>C[0,0]</code> is <code>19.0</code> and asserts it is <code>999.0</code>. It is computed <em>through the tensor path</em> on purpose, so a build that cannot even construct a tensor still reaches a <code>FAIL</code> verdict rather than crashing before printing one. <code>scripts/run_gpu_tests.sh</code> hard-fails the whole run on four distinct outcomes: the file is missing, it fails to compile, it exits 0, or it exits non-zero without a <code>FAIL:</code> marker (which would mean the marker grammar itself had broken). This check runs before the ordinary failure count, so a green canary cannot be outvoted by the passing tests around it.</li>
+<li><strong><code>gpu_correctness_gate.sh --self-test</code></strong> proves the <strong>trace contract</strong> holds. It needs no build and no GPU.</li>
 </ul>
 <h3 id="skip-clean-or-fail-closed">Skip clean, or fail closed</h3>
-<p>Two gates in this repository make opposite choices about a missing
-subject, and both are deliberate:</p>
+<p>Two gates in this repository make opposite choices about a missing subject, and both are deliberate:</p>
 <table>
 <colgroup>
 <col style="width: 33%" />
@@ -1680,32 +967,8 @@ subject, and both are deliberate:</p>
 </tr>
 </tbody>
 </table>
-<p>The GPU gate skips because most hosts genuinely have no GPU and a
-false PASS is the failure mode to avoid; the absence is recorded by
-writing nothing. The AD VM gate fails closed because “an absent VM
-binary is not evidence that the VM’s AD is exact, and a gate that passes
-when its subject is missing is the shape this whole wave exists to
-remove” (ledger SW-51).</p>
-<h3 id="reporting-that-the-gate-did-not-run">Reporting that the gate did
-not run</h3>
-<p><code>gpu-execution-gate.yml</code> carries a second job,
-<code>gpu-gate-visibility</code>, which runs on an ordinary hosted
-runner <strong>on purpose</strong>: its whole job is to report whether
-the real gate ran, so it must not depend on the hardware whose absence
-it reports. It emits a workflow warning and a status marker naming the
-gate job’s result, whether any <code>gpu</code>-labelled self-hosted
-runner is registered, when the gate last succeeded (or that it never
-has), the commit and the timestamp. It never fails — visibility, never a
-false red.</p>
-<p>The <code>gpu</code> label carries a specific meaning in that
-workflow: a real, addressable GPU <strong>device</strong>, not merely a
-GPU toolchain. A runner labelled <code>gpu</code> without a device would
-let the job report success while measuring the CPU fallback.</p>
-<p>Artifacts: the gate job uploads <code>gpu-execution-gate-logs</code>
-(the four configure and build logs for both trees) and the visibility
-job uploads <code>gpu-gate-status</code>. Triggers are
-<code>workflow_dispatch</code>, a daily schedule, and pushes to
-<code>master</code> touching <code>lib/backend/gpu/**</code>,
-<code>lib/backend/vm_gpu_dispatch.h</code>,
-<code>tests/gpu/gpu_correctness_gate.*</code> or the workflow
-itself.</p>
+<p>The GPU gate skips because most hosts genuinely have no GPU and a false PASS is the failure mode to avoid; the absence is recorded by writing nothing. The AD VM gate fails closed because “an absent VM binary is not evidence that the VM’s AD is exact, and a gate that passes when its subject is missing is the shape this whole wave exists to remove” (ledger SW-51).</p>
+<h3 id="reporting-that-the-gate-did-not-run">Reporting that the gate did not run</h3>
+<p><code>gpu-execution-gate.yml</code> carries a second job, <code>gpu-gate-visibility</code>, which runs on an ordinary hosted runner <strong>on purpose</strong>: its whole job is to report whether the real gate ran, so it must not depend on the hardware whose absence it reports. It emits a workflow warning and a status marker naming the gate job’s result, whether any <code>gpu</code>-labelled self-hosted runner is registered, when the gate last succeeded (or that it never has), the commit and the timestamp. It never fails — visibility, never a false red.</p>
+<p>The <code>gpu</code> label carries a specific meaning in that workflow: a real, addressable GPU <strong>device</strong>, not merely a GPU toolchain. A runner labelled <code>gpu</code> without a device would let the job report success while measuring the CPU fallback.</p>
+<p>Artifacts: the gate job uploads <code>gpu-execution-gate-logs</code> (the four configure and build logs for both trees) and the visibility job uploads <code>gpu-gate-status</code>. Triggers are <code>workflow_dispatch</code>, a daily schedule, and pushes to <code>master</code> touching <code>lib/backend/gpu/**</code>, <code>lib/backend/vm_gpu_dispatch.h</code>, <code>tests/gpu/gpu_correctness_gate.*</code> or the workflow itself.</p>

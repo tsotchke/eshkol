@@ -1,9 +1,5 @@
-<h1 id="tutorial-2-the-eshkol-bytecode-vm">Tutorial 2: The Eshkol
-Bytecode VM</h1>
-<p>Eshkol has two execution backends: the <strong>LLVM native
-compiler</strong> (AOT, fast, produces machine code) and the
-<strong>bytecode VM</strong> (interpreted, portable, instant startup).
-This tutorial shows you when and how to use each.</p>
+<h1 id="tutorial-2-the-eshkol-bytecode-vm">Tutorial 2: The Eshkol Bytecode VM</h1>
+<p>Eshkol has two execution backends: the <strong>LLVM native compiler</strong> (AOT, fast, produces machine code) and the <strong>bytecode VM</strong> (interpreted, portable, instant startup). This tutorial shows you when and how to use each.</p>
 <hr />
 <h2 id="when-to-use-what">When to Use What</h2>
 <table>
@@ -52,12 +48,9 @@ This tutorial shows you when and how to use each.</p>
 </tr>
 </tbody>
 </table>
-<p><strong>Rule of thumb:</strong> Use the LLVM backend for anything
-performance-sensitive. Use the VM for quick iteration, the REPL, and the
-browser.</p>
+<p><strong>Rule of thumb:</strong> Use the LLVM backend for anything performance-sensitive. Use the VM for quick iteration, the REPL, and the browser.</p>
 <hr />
-<h2 id="part-1-running-code-in-the-repl">Part 1: Running Code in the
-REPL</h2>
+<h2 id="part-1-running-code-in-the-repl">Part 1: Running Code in the REPL</h2>
 <p>The REPL uses the LLVM JIT backend by default:</p>
 <pre class="bash"><code>$ eshkol-repl
   (ASCII banner)
@@ -72,23 +65,18 @@ eshkol&gt; (fib 10)
 55
 eshkol&gt; :quit
 Goodbye!</code></pre>
-<p>Every expression is JIT-compiled to native code and executed.
-Definitions persist across evaluations — you can incrementally build up
-a program.</p>
+<p>Every expression is JIT-compiled to native code and executed. Definitions persist across evaluations — you can incrementally build up a program.</p>
 <h3 id="hot-reload">Hot Reload</h3>
-<p>The REPL supports live redefinition. Redefine any function or
-variable and all subsequent calls use the new definition:</p>
+<p>The REPL supports live redefinition. Redefine any function or variable and all subsequent calls use the new definition:</p>
 <pre class="scheme"><code>&gt; (define (greet name) (display &quot;Hello, &quot;) (display name) (newline))
 &gt; (greet &quot;Alice&quot;)
 Hello, Alice
 &gt; (define (greet name) (display &quot;Hey &quot;) (display name) (display &quot;!&quot;) (newline))
 &gt; (greet &quot;Alice&quot;)
 Hey Alice!</code></pre>
-<p>This works for functions, variables, lambdas, and even across
-closures that reference the redefined name.</p>
+<p>This works for functions, variables, lambdas, and even across closures that reference the redefined name.</p>
 <hr />
-<h2 id="part-2-compiling-to-native-code">Part 2: Compiling to Native
-Code</h2>
+<h2 id="part-2-compiling-to-native-code">Part 2: Compiling to Native Code</h2>
 <p>For production, compile to a native binary:</p>
 <pre class="bash"><code># Compile
 $ eshkol-run program.esk -o program
@@ -97,31 +85,22 @@ $ eshkol-run program.esk -o program
 $ ./program</code></pre>
 <p>Add optimization:</p>
 <pre class="bash"><code>$ eshkol-run program.esk -o program -O 2</code></pre>
-<p>Optimization levels: 0 (none), 1 (basic), 2 (full), 3
-(aggressive).</p>
+<p>Optimization levels: 0 (none), 1 (basic), 2 (full), 3 (aggressive).</p>
 <hr />
 <h2 id="part-3-compiling-to-bytecode">Part 3: Compiling to Bytecode</h2>
 <p>Emit portable ESKB bytecode alongside native compilation:</p>
 <pre class="bash"><code># Compile to both native AND bytecode
 $ eshkol-run program.esk -o program -B program.eskb</code></pre>
-<p>The <code>.eskb</code> file is a section-based binary container: -
-Header with magic bytes and version - Instruction stream (64 core
-opcodes) - Constant pool (numbers, strings, symbols) - Local variable
-table - CRC32 integrity check</p>
+<p>The <code>.eskb</code> file is a section-based binary container: - Header with magic bytes and version - Instruction stream (64 core opcodes) - Constant pool (numbers, strings, symbols) - Local variable table - CRC32 integrity check</p>
 <hr />
 <h2 id="part-4-the-vm-architecture">Part 4: The VM Architecture</h2>
 <p>The bytecode VM is a hybrid register+stack machine:</p>
 <ul>
-<li><strong>64 core opcodes</strong> — arithmetic, control flow,
-function calls, data structures</li>
-<li><strong>555+ native call IDs</strong> — builtins accessible from
-bytecode via <code>OP_NATIVE_CALL</code></li>
-<li><strong>Arena memory</strong> — same OALR system as the native
-backend, zero GC</li>
-<li><strong>Closure support</strong> — first-class functions with
-captured environments</li>
-<li><strong>Tail call optimization</strong> — proper tail calls for
-unbounded recursion</li>
+<li><strong>64 core opcodes</strong> — arithmetic, control flow, function calls, data structures</li>
+<li><strong>555+ native call IDs</strong> — builtins accessible from bytecode via <code>OP_NATIVE_CALL</code></li>
+<li><strong>Arena memory</strong> — same OALR system as the native backend, zero GC</li>
+<li><strong>Closure support</strong> — first-class functions with captured environments</li>
+<li><strong>Tail call optimization</strong> — proper tail calls for unbounded recursion</li>
 </ul>
 <h3 id="key-opcodes">Key Opcodes</h3>
 <table>
@@ -141,8 +120,7 @@ unbounded recursion</li>
 <td>Pop top of stack</td>
 </tr>
 <tr>
-<td><code>ADD</code>, <code>SUB</code>, <code>MUL</code>,
-<code>DIV</code></td>
+<td><code>ADD</code>, <code>SUB</code>, <code>MUL</code>, <code>DIV</code></td>
 <td>Arithmetic</td>
 </tr>
 <tr>
@@ -181,9 +159,7 @@ unbounded recursion</li>
 </table>
 <hr />
 <h2 id="part-5-the-browser-repl">Part 5: The Browser REPL</h2>
-<p>The VM compiles to WebAssembly, powering the browser REPL at <a
-href="https://eshkol.ai">eshkol.ai</a>. Everything you type in the
-browser runs through the same 64-opcode core ISA:</p>
+<p>The VM compiles to WebAssembly, powering the browser REPL at <a href="https://eshkol.ai">eshkol.ai</a>. Everything you type in the browser runs through the same 64-opcode core ISA:</p>
 <pre class="scheme"><code>;; These all work in the browser REPL:
 (define (factorial n)
   (if (= n 0) 1
@@ -205,8 +181,7 @@ browser runs through the same 64-opcode core ISA:</p>
 (display (derivative f 2.0))
 ;; =&gt; 12.0</code></pre>
 <hr />
-<h2 id="part-6-vm-vs-llvm-feature-parity">Part 6: VM vs LLVM Feature
-Parity</h2>
+<h2 id="part-6-vm-vs-llvm-feature-parity">Part 6: VM vs LLVM Feature Parity</h2>
 <p>Most features work in both backends. Key differences:</p>
 <table>
 <thead>

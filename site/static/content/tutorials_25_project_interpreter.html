@@ -1,8 +1,5 @@
-<h1 id="project-build-a-calculator-in-eshkol">Project: Build a
-Calculator in Eshkol</h1>
-<p>A complete interpreter for arithmetic expressions, demonstrating
-homoiconicity — in Eshkol, code IS data, so building an interpreter is
-natural.</p>
+<h1 id="project-build-a-calculator-in-eshkol">Project: Build a Calculator in Eshkol</h1>
+<p>A complete interpreter for arithmetic expressions, demonstrating homoiconicity — in Eshkol, code IS data, so building an interpreter is natural.</p>
 <hr />
 <h2 id="the-complete-program">The Complete Program</h2>
 <pre class="scheme"><code>;; ═══════════════════════════════════════════════════════
@@ -85,16 +82,8 @@ Homoiconicity: code = data</code></pre>
 <hr />
 <h2 id="key-concepts">Key Concepts</h2>
 <ol type="1">
-<li><p><strong>Homoiconicity</strong> — Eshkol code and Eshkol data have
-the same structure (s-expressions). A quoted expression
-<code>'(+ 1 2)</code> is a list you can traverse with
-<code>car</code>/<code>cdr</code> — AND valid Eshkol code.</p></li>
-<li><p><strong>Recursive evaluation</strong> — <code>calc</code> calls
-itself on sub-expressions, building up results from leaves to root. This
-is exactly how a real interpreter works.</p></li>
-<li><p><strong>Pattern dispatch</strong> — <code>cond</code> with type
-predicates (<code>number?</code>, <code>pair?</code>) dispatches on the
-structure of the input.</p></li>
-<li><p><strong>Variadic arithmetic</strong> — <code>(+ 1 2 3)</code>
-handles any number of arguments via <code>fold-left</code>.</p></li>
+<li><p><strong>Homoiconicity</strong> — Eshkol code and Eshkol data have the same structure (s-expressions). A quoted expression <code>'(+ 1 2)</code> is a list you can traverse with <code>car</code>/<code>cdr</code> — AND valid Eshkol code.</p></li>
+<li><p><strong>Recursive evaluation</strong> — <code>calc</code> calls itself on sub-expressions, building up results from leaves to root. This is exactly how a real interpreter works.</p></li>
+<li><p><strong>Pattern dispatch</strong> — <code>cond</code> with type predicates (<code>number?</code>, <code>pair?</code>) dispatches on the structure of the input.</p></li>
+<li><p><strong>Variadic arithmetic</strong> — <code>(+ 1 2 3)</code> handles any number of arguments via <code>fold-left</code>.</p></li>
 </ol>
