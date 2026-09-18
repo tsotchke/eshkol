@@ -450,7 +450,7 @@ seam.
 - The backward path calls **only** `vqe_compute_gradient` (exact adjoint /
   parameter-shift). It must **never** finite-difference `vqe_compute_energy` on
   the default path. This is Eshkol's stated doctrine, not a new rule:
-  `docs/design/adr/0002-ad-alt-architect.md:24-25` — "The default SciML/PINN
+  `docs/design/adr/0016-ad-alt-architect.md:26-27` — "The default SciML/PINN
   path must be exact AD or an explicit unsupported-op error. Hidden finite
   differences are disallowed."; `docs/design/adr/0002-ad-staged-dense-kernels.md:236-239`
   — derivative operators are "exact AD or an explicit unsupported error ...

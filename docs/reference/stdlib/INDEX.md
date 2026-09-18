@@ -8,7 +8,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Modules: 61** (plus `stdlib` itself and the module system page) — **provided symbols: 714** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Modules: 63** (plus `stdlib` itself and the module system page) — **provided symbols: 856** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -61,14 +61,14 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.logic.types`](../../../lib/core/logic/types.esk) | yes | [logic_types.md](logic_types.md) | `is-null?` `is-pair?` |
 | [`core.manifold`](../../../lib/core/manifold.esk) | yes | [manifold.md](manifold.md) | `make-euclidean-manifold` `make-hyperbolic-manifold` `make-spherical-manifold` `manifold-exp-map` `manifold-log-map` `manifold-distance` `manifold-parallel-transport` `manifold-curvature` `manifold-dimension` `manifold-type` `metric-component` `manifold-metric` `manifold-metric-inverse` `christoffel-symbol` `manifold-christoffel` `manifold-sectional-curvature` `manifold-scalar-curvature` `ricci-component` `manifold-ricci` `riemann-component` |
 | [`core.memory`](../../../lib/core/memory.esk) | no | [memory.md](memory.md) | `make-memory-log` `memory-append!` `memory-events` `memory-merge` `memory-verify-chain` `memory-verify-events` `memory-fold-lww` `memory-event?` `memory-event-id` `memory-event-prev` `memory-event-vclock` `memory-event-node` `memory-event-type` `memory-event-payload` `event-content-hash` |
-| [`core.memory_store`](../../../lib/core/memory_store.esk) | no | [memory_store.md](memory_store.md) | `make-memory-store` `memory-store?` `memory-store-log` `memory-store-path` `memory-store-open` `memory-store-open-fast` `memory-store-append!` `memory-store-verify` `memory-store-audit` `memory-store-count` `memory-store-head` `memory-store-sanitize` |
+| [`core.memory_store`](../../../lib/core/memory_store.esk) | no | [memory_store.md](memory_store.md) | `make-memory-store` `memory-store?` `memory-store-log` `memory-store-path` `memory-store-open` `memory-store-open-fast` `memory-store-open-durable` `memory-store-open-fast-durable` `memory-store-close!` `memory-store-append!` `memory-store-verify` `memory-store-audit` `memory-store-audit-linear` `memory-store-linear-evidence` `memory-store-count` `memory-store-head` `memory-store-tail` `memory-store-sanitize` `memory-store-test-fail-next-first-file-parent-sync!` |
 | [`core.merkle`](../../../lib/core/merkle.esk) | no | [merkle.md](merkle.md) | `fnv1a-64` `hash->hex` `merkle-leaf` `merkle-leaf?` `merkle-inode?` `merkle-root` `merkle-data` `merkle-tree` `merkle-tree-with-hash` `merkle-leaves` `merkle-proof` `merkle-verify` `make-cas` `make-cas-with-hash` `cas?` `cas-put!` `cas-get` `cas-has?` `cas-size` `cas-keys` |
 | [`core.metrics`](../../../lib/core/metrics.esk) | no | [metrics.md](metrics.md) | `make-counter` `counter-inc!` `counter-add!` `make-gauge` `gauge-set!` `gauge-inc!` `gauge-dec!` `make-histogram` `histogram-observe!` `histogram-buckets` `metrics-register!` `metrics-render` `metrics-reset!` `metric-name` `metric-help` `metric-kind` |
 | [`core.ml.gradient_estimators`](../../../lib/core/ml/gradient_estimators.esk) | no | [ml_gradient_estimators.md](ml_gradient_estimators.md) | `gumbel-softmax` `gumbel-softmax-det` `straight-through` `straight-through-round` `straight-through-onehot` `categorical-pick` `argmax-onehot` `softmax` `sample-gumbel-noise` |
 | [`core.ml.neurosymbolic`](../../../lib/core/ml/neurosymbolic.esk) | no | [ml_neurosymbolic.md](ml_neurosymbolic.md) | `make-embedding-table` `emb-dim` `embed!` `vdot` `soft-unify` `soft-unify-loss` `soft-unify-train!` `kb-attention` `kb-retrieve` |
 | [`core.msgpack`](../../../lib/core/msgpack.esk) | no | [msgpack.md](msgpack.md) | `msgpack-null` `msgpack-null?` `msgpack-map` `msgpack-map?` `msgpack-map-entries` `msgpack-encode` `msgpack-decode` `msgpack-decode-prefix` `msgpack-bytes->bytevector` `msgpack-bytevector->bytes` |
 | [`core.numeric_extras`](../../../lib/core/numeric_extras.esk) | yes | [numeric_extras.md](numeric_extras.md) | `exact-integer-sqrt` |
-| [`core.operators.arithmetic`](../../../lib/core/operators/arithmetic.esk) | yes | [operators_arithmetic.md](operators_arithmetic.md) | `add` `sub` `mul` `div` |
+| [`core.operators.arithmetic`](../../../lib/core/operators/arithmetic.esk) | yes | [operators_arithmetic.md](operators_arithmetic.md) | `add` `sub` `mul` `divide` |
 | [`core.operators.compare`](../../../lib/core/operators/compare.esk) | yes | [operators_compare.md](operators_compare.md) | `lt` `gt` `le` `ge` `eq` |
 | [`core.pde.ns-residual`](../../../lib/core/pde/ns-residual.esk) | yes | [ns-residual.md](ns-residual.md) | `ns-flow` `ns-flow-ur` `ns-flow-utheta` `ns-flow-uz` `ns-flow-p` `ns-flow-nu` `ns-cflow` `ns-cflow-u` `ns-cflow-p` `ns-cflow-nu` `ns-residual` `ns-residual-cartesian` `ns-divergence` `ns-divergence-cartesian` `ns-simpson-nodes` `ns-simpson-weights` `ns-simpson-step` `ns-grid-integral` `ns-energy` `ns-dissipation` `ns-similarity-field` `ns-residual-tau-series` `ns-singular-orders` `ns-force-smoothness-probe` |
 | [`core.plot`](../../../lib/core/plot.esk) | yes | [plot.md](plot.md) | `sparkline` `bar-chart` `histogram` |
@@ -86,6 +86,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`ml.optimization`](../../../lib/ml/optimization.esk) | yes | [ml_optimization.md](ml_optimization.md) | `gradient-descent` `adam` `l-bfgs` `conjugate-gradient` `line-search` `tensor-dot` `tensor-norm` |
 | [`signal.fft`](../../../lib/signal/fft.esk) | yes | [signal_fft.md](signal_fft.md) | `fft` `ifft` |
 | [`signal.filters`](../../../lib/signal/filters.esk) | yes | [signal_filters.md](signal_filters.md) | `hamming-window` `hann-window` `blackman-window` `kaiser-window` `apply-window` `convolve` `fast-convolve` `fir-filter` `iir-filter` `butterworth-lowpass` `butterworth-highpass` `butterworth-bandpass` `frequency-response` |
+| [`web.web`](../../../lib/web/web.esk) | no | [web.md](web.md) | `web-get-document` `web-get-window` `web-get-body` `web-create-element` `web-create-text-node` `web-get-element-by-id` `web-query-selector` `web-query-selector-all` `web-append-child` `web-remove-child` `web-insert-before` `web-replace-child` `web-clone-node` `web-get-parent` `web-get-first-child` `web-get-last-child` `web-get-next-sibling` `web-get-prev-sibling` `web-get-children-count` `web-get-child-at` `web-set-attribute` `web-get-attribute` `web-remove-attribute` `web-has-attribute` `web-set-inner-html` `web-get-inner-html` `web-set-text-content` `web-get-text-content` `web-add-class` `web-remove-class` `web-toggle-class` `web-has-class` `web-set-style` `web-get-style` `web-get-value` `web-set-value` `web-get-checked` `web-set-checked` `web-focus` `web-blur` `web-add-event-listener` `web-remove-event-listener` `web-event-prevent-default` `web-event-stop-propagation` `web-event-get-target` `web-event-get-key` `web-event-get-key-code` `web-event-get-mouse-x` `web-event-get-mouse-y` `web-set-timeout` `web-set-interval` `web-clear-timeout` `web-clear-interval` `web-request-animation-frame` `web-cancel-animation-frame` `web-console-log` `web-console-warn` `web-console-error` `web-alert` `web-confirm` `web-prompt` `web-get-window-width` `web-get-window-height` `web-get-scroll-x` `web-get-scroll-y` `web-scroll-to` `web-get-href` `web-set-href` `web-get-hash` `web-set-hash` `web-storage-get` `web-storage-set` `web-storage-remove` `web-storage-clear` `web-fetch` `web-get-context-2d` `web-canvas-fill-rect` `web-canvas-stroke-rect` `web-canvas-clear-rect` `web-canvas-fill-style` `web-canvas-stroke-style` `web-canvas-line-width` `web-canvas-begin-path` `web-canvas-close-path` `web-canvas-move-to` `web-canvas-line-to` `web-canvas-arc` `web-canvas-fill` `web-canvas-stroke` `web-canvas-fill-text` `web-canvas-font` `web-canvas-save` `web-canvas-restore` `web-canvas-translate` `web-canvas-rotate` `web-canvas-scale` `web-release-handle` |
 
 ## Builtin families
 
@@ -176,3 +177,28 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
   is the agent-FFI domain, documented separately from the stdlib reference.
 - `stdlib`-level helpers (`random-tensor`, `time-it`, `time-ns`, keyword-argument
   internals, …) are covered in [stdlib_extras.md](stdlib_extras.md).
+
+### Modules documented outside this directory
+
+These shipped modules have no per-module page in this directory; their exports
+are documented, with signatures, on the pages listed.
+
+| Module | Require | Documented in |
+|---|---|---|
+| `math.constants` | `(require math.constants)` | [MATH_STDLIB.md §1](../../breakdown/MATH_STDLIB.md#1-mathematical-constants) |
+| `math.special` | `(require math.special)` | [MATH_STDLIB.md §2](../../breakdown/MATH_STDLIB.md#2-special-functions) |
+| `math.ode` | `(require math.ode)` | [MATH_STDLIB.md §3](../../breakdown/MATH_STDLIB.md#3-ode-solvers) |
+| `math.statistics` | `(require math.statistics)` | [MATH_STDLIB.md §4](../../breakdown/MATH_STDLIB.md#4-statistics) |
+| `random.random` | `(require random.random)` | [QUANTUM_RNG.md](../../breakdown/QUANTUM_RNG.md) |
+| `tensor.utils` | `(require tensor.utils)` | [API_REFERENCE.md, Tensor Utilities](../../API_REFERENCE.md#tensor-utilities) |
+| `tensorcore` | `(require tensorcore)` | [shipped_exports.md](shipped_exports.md#tensorcore) |
+| `core.blc` | `(require core.blc)` | [blc.md](blc.md) (reference); [BINARY_LAMBDA_CALCULUS.md](../../guide/BINARY_LAMBDA_CALCULUS.md) (guide) |
+| `core.ad.guw` | `(require core.ad.guw)` | [AUTOMATIC_DIFFERENTIATION.md §4](../../guide/AUTOMATIC_DIFFERENTIATION.md#4-multivariate-mixed-partials-guw) |
+| `core.ad.tensor_tower` | `(require core.ad.tensor_tower)` | [AUTOMATIC_DIFFERENTIATION.md §5](../../guide/AUTOMATIC_DIFFERENTIATION.md#5-tensor-ad--towers-of-tensors) |
+| `core.ad.sparse_guw` | `(require core.ad.sparse_guw)` | [AUTOMATIC_DIFFERENTIATION.md §7](../../guide/AUTOMATIC_DIFFERENTIATION.md#7-sparse-high-order--sparse-hessians) |
+| `core.ad.checkpoint` | `(require core.ad.checkpoint)` | [AUTOMATIC_DIFFERENTIATION.md §8](../../guide/AUTOMATIC_DIFFERENTIATION.md#8-reverse-mode--checkpointing) |
+| `core.ad.taylor_numerics` | `(require core.ad.taylor_numerics)` | [AUTOMATIC_DIFFERENTIATION.md §10](../../guide/AUTOMATIC_DIFFERENTIATION.md#10-tower-numerics--odes-roots-inversion) |
+| `core.ad.interval`, `core.ad.rigorous_interval`, `core.ad.taylor_models`, `core.ad.rigorous_taylor_models` | `(require core.ad.taylor_models)` | [certified-enclosures.md](certified-enclosures.md) |
+| `agent.*` | `(require agent.<name>)` | [../agent/INDEX.md](../agent/INDEX.md) |
+
+The modules under `lib/test/modules/` are module-system test fixtures, not user API.

@@ -66,7 +66,7 @@ without ceremony:
   to Scheme as part of `(reset-tests!)` in `core/testing.esk`) between
   independent test batches to clear stale logic-var IDs and predicate
   canonical pointers.
-- **AD tape** (`lib/core/arena_memory.cpp`) — the reverse-mode tape
+- **AD tape** (`lib/core/runtime_autodiff.cpp`) — the reverse-mode tape
   stack is **thread-local** so parallel workers keep isolated tapes.
   The tape node storage itself lives in the main arena; if you reset
   the arena, outstanding tape references go with it. Finalize gradient

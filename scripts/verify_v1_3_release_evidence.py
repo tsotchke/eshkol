@@ -59,8 +59,8 @@ def main() -> int:
     if oracle is None:
         raise SystemExit("v1.3.5-evolve completion oracle is absent")
     criteria = oracle.get("requires", [])
-    if len(criteria) != 35:
-        raise SystemExit(f"expected 35 authored criteria; found {len(criteria)}")
+    if len(criteria) != 37:
+        raise SystemExit(f"expected 37 authored criteria; found {len(criteria)}")
 
     records = load_events(args.trace_dir)
     errors: list[str] = []
@@ -102,7 +102,7 @@ def main() -> int:
         for error in errors:
             print(f"release evidence verification: FAIL: {error}")
         return 1
-    print(f"release evidence verification: PASS ({checked_runtime} runtime events, {checked_tests} named test actions, 35 criteria)")
+    print(f"release evidence verification: PASS ({checked_runtime} runtime events, {checked_tests} named test actions, 37 criteria)")
     return 0
 
 

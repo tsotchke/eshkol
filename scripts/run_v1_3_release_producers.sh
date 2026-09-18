@@ -100,6 +100,10 @@ python3 scripts/check_public_api_docs.py --trace-dir "$TRACE_DIR"
 python3 scripts/gen_api_docs.py --check --trace-dir "$TRACE_DIR"
 python3 scripts/check_disclosure.py --base origin/master --head HEAD --trace-dir "$TRACE_DIR"
 python3 scripts/check_required_context_consistency.py --offline --trace-dir "$TRACE_DIR"
+# Walks <previous_tag>..HEAD, so it needs the release workflow's full-history
+# checkout (fetch-depth: 0 on release-readiness-gate); it fails closed without it.
+python3 scripts/check_changelog_completeness.py --trace-dir "$TRACE_DIR"
+python3 scripts/check_doc_front_matter.py --trace-dir "$TRACE_DIR"
 python3 scripts/check_doc_claims_residual.py --icc-bin "$ICC_BIN" --repo "$ICC_REPO" \
     --trace-dir "$TRACE_DIR" --emit-trace-dir "$TRACE_DIR"
 

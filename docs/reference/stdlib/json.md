@@ -112,19 +112,40 @@ Index into a parsed array (list) — thin wrapper over `list-ref`.
 ```
 
 ### `(json-get-in obj keys [default])`
-Follow a path of keys into nested objects/arrays. String keys index
-hash-tables; integer keys index lists. Returns `default` if any step fails,
-or `#f` when no default is given.
+Follow a path of keys into nested objects/arrays. `keys` is a list: string
+keys index hash-tables (objects); integer keys index lists (arrays,
+zero-based). There are two call forms:
+
+- `(json-get-in obj keys)` — returns the value at the path, or `#f` if any
+  step fails (missing key, index out of range, or a key of the wrong kind for
+  the value reached).
+- `(json-get-in obj keys default)` — the same walk, returning `default`
+  instead of `#f` when a step fails.
+
+An empty `keys` list returns `obj` itself. A stored `0` or JSON `null` (`'()`)
+is returned as the value, not replaced by the default.
 
 ```scheme
-(display (json-get-in (json-parse "{\"a\":{\"b\":[1,2,3]}}") '("a" "b" 2))) (newline)
-(display (json-get-in (json-parse "{\"a\":{}}") '("a" "b"))) (newline)
-(display (json-get-in (json-parse "{\"a\":{}}") '("a" "b") 0)) (newline)
+(require stdlib)
+(define doc (json-parse "{\"a\":{\"b\":[1,2,3]},\"zero\":0,\"name\":null}"))
+;; two-argument form: a missing step gives #f
+(display (json-get-in doc '("a" "b" 2))) (newline)
+(display (json-get-in doc '("a" "missing"))) (newline)
+;; three-argument form: a missing step gives the default
+(display (json-get-in doc '("a" "missing") 0)) (newline)
+(display (json-get-in doc '("a" "b" 9) "none")) (newline)
+(display (json-get-in doc '("a" "b" 0) "none")) (newline)
+(display (json-get-in doc '("zero") "none")) (newline)
+(display (json-get-in doc '("name") "none")) (newline)
 ```
 ```
 3
 #f
 0
+none
+1
+0
+()
 ```
 
 ## Serialization

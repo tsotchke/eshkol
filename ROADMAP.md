@@ -63,8 +63,8 @@ And ADR-0002's dense tensor AD node now executes (ledger SW-48, COMPLETE):
 the reverse pass discriminates on `tensor_value` *or* `tensor_gradient`, and
 the gate holds the two lowerings to byte-identical gradients. The dense-kernel
 staging that rides on it — the primitive registry as a real table, first-class
-cotangent-layout and error ABI, the strict-mode kernel flag — remains ADR-0002b
-Phase G work under **v1.6.0-reasoning** below, so Stages 5, 7 and 8 are now
+cotangent-layout and error ABI, the strict-mode kernel flag — remains ADR-0002
+Phase G work (with the ADR-0016 grafts) under **v1.6.0-reasoning** below, so Stages 5, 7 and 8 are now
 gated on that staging rather than on an unexecutable node.
 
 > **Parallel platform program**: The internal freestanding / kernel / embedded architecture work begins during `v1.2-scale` as a mergeable infrastructure program and converges publicly at `v1.8-platform`. See [docs/platform/README.md](docs/platform/README.md) and [docs/platform/ROADMAP_ALIGNMENT.md](docs/platform/ROADMAP_ALIGNMENT.md).
@@ -699,12 +699,12 @@ Ordered. These are v1.3.5-line items, not v1.4 features:
 **Focus:** A resource-sound systems profile — connect to the outside world
 under the same discipline that made `Qubit` linear.
 
-- [ ] Signed-curvature stereographic geometry (ADR-0012): one κ-stereographic
+- [ ] Signed-curvature stereographic geometry (ADR-0018): one κ-stereographic
       chart for all curvature signs in the canonical-flat `alpha = 1` gauge,
       analytic through `K = 0` with curvature jets, squared-distance geodesic
       attention, versioned coordinate migration (`x_v2 = 2 x_v1`), and the
       binary128 reference-grid gates across every `K` binade
-- [ ] Stochastic Binary Lambda Calculus, first slice (ADR-0011): `core.sblc`
+- [ ] Stochastic Binary Lambda Calculus, first slice (ADR-0017): `core.sblc`
       with the four-form `sblc-v1` prefix code, fair choice, seeded sampling,
       exact rational distribution semantics under a step bound, the exact
       `2^-length` prior, bounded enumeration and conditioning, and the SBLC gate
@@ -848,7 +848,7 @@ Informed by the [Neuro-Symbolic Architecture](docs/future/NEURO_SYMBOLIC_COMPLET
 **Flagship:** `core.dbsp` GA (W1) + native-product PGO in the release
 workflow (ADR-0007 Phase 1).
 
-- [ ] SBLC second slice (ADR-0011): universal `U⊕` self-interpreter, resumable
+- [ ] SBLC second slice (ADR-0017): universal `U⊕` self-interpreter, resumable
       E6 search with deterministic mesh sharding, DBSP/N3 receipts, VM PRNG
       parity, experimental differentiable proposals (REINFORCE, projected
       relaxations) — all under exact-verification gates
@@ -906,7 +906,7 @@ below.
 - [ ] Constraint solving (finite domain constraints, SAT solver integration)
 - [ ] Knowledge graphs (RDF-style triple store with SPO/POS/OSP indexing)
 - [ ] Knowledge graph embeddings (entity-relation-entity triples as learnable vectors)
-- [ ] Staged AD ABI (ADR-0002b Phase G): the dense primitive registry as a
+- [ ] Staged AD ABI (ADR-0002 Phase G, ADR-0016 grafts): the dense primitive registry as a
       real table, cotangent-layout and error ABI first-class, strict-mode
       kernel flag
 - [ ] W6 distributed: sharding annotations on the staged dense graph ->

@@ -191,6 +191,60 @@ empty evidence. It compares file size before and after scanning and returns
 cross-checks the scanner's count/head against that handle. Use it when evidence
 will authorize a rebuild or other mutable follow-up.
 
+### `(memory-store-test-fail-next-first-file-parent-sync!)`
+
+Test-only, one-shot fault seam for durability tests. It arms a module-level
+flag so that the **next** append which creates a journal file fails exactly one
+step: the parent-directory sync that makes the new file's name durable. That
+step runs after the row has been written, flushed, synced and closed, so the
+row itself is committed. The append then reports the ambiguous commit boundary
+by raising an error, and the durable handle is closed ("poisoned"): later
+appends on it return `#f`, and its in-memory count stays unchanged. Reopening
+the path with `memory-store-open-durable` replays the journal and recovers the
+committed row. The flag clears itself when it fires, and appends to an existing
+file never consult it. Returns an unspecified value. Production code never
+calls it; with the seam unarmed, persistence takes the normal path unchanged.
+
+```scheme
+(require core.memory_store)
+
+(define path "fault-seam-demo.journal")
+(define store (memory-store-open-fast-durable 'demo-node path))
+
+;; Arm the one-shot seam, then make the append that creates the journal file.
+(memory-store-test-fail-next-first-file-parent-sync!)
+(define raised #f)
+(guard (exn (#t (set! raised #t)))
+  (memory-store-append! store 'note (list (cons 'text "first"))))
+(display raised) (newline)                                  ; the append raised
+(display (memory-store-append! store 'note '())) (newline)  ; handle is poisoned
+(display (memory-store-count store)) (newline)              ; nothing acknowledged
+
+;; The row was flushed and synced before the seam fired: strict replay recovers it.
+(define reopened (memory-store-open-durable 'demo-node path))
+(display (memory-store-count reopened)) (newline)
+(display (memory-event-type (memory-store-tail reopened))) (newline)
+
+;; The seam is one-shot: the next append on a healthy handle succeeds.
+(display (memory-event? (memory-store-append! reopened 'note '()))) (newline)
+(display (memory-store-count reopened)) (newline)
+(memory-store-close! reopened)
+```
+```
+#t
+memory-store: append refused on closed durable handle
+#f
+0
+1
+note
+#t
+2
+```
+
+The second line is the diagnostic the poisoned handle writes when it refuses
+an append. Run the example in an empty directory: it creates
+`fault-seam-demo.journal` and its `.head` and `.lock` sidecars.
+
 ## Known issues
 
 None. (Historically `memory-store-audit` was uncallable: its body references

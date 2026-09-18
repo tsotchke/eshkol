@@ -1478,7 +1478,9 @@ Eshkol uses a **polymorphic tagged value system** at runtime:
 
 On top of the runtime tagged-value system, Eshkol has an optional static type
 checker (gradual typing: warnings, not errors — programs run regardless). Strict
-mode accepts idiomatic dynamic-but-validated code without escape hatches:
+mode accepts idiomatic dynamic-but-validated code without escape hatches. The
+full account, with runnable examples and a guide to reading a diagnostic, is
+[the gradual typing guide](guide/GRADUAL_TYPING.md):
 
 - **Checked ascription `(the <type> expr)`.** Asserts that `expr` has type
   `<type>` as a **trusted assertion to the checker** — it narrows the checker's
@@ -1510,12 +1512,44 @@ mode accepts idiomatic dynamic-but-validated code without escape hatches:
   (and (pair? p) (car p))         ; p is a pair for (car p)
   ```
 
+- **Checking reaches every control form.** A call is checked against its
+  callee's annotations wherever it is written: in a `cond` or `case` clause, a
+  `match` body, a `when` or `unless`, every part of a `do`, a `guard` body or
+  handler, an `and`/`or` operand, a `set!` value, a quasiquote escape, the
+  thunks of `dynamic-wind`, the producer and consumer of `call-with-values`, a
+  `with-region` body, a computed callee, and every non-final expression of a
+  body. The diagnostic is the one the same call gets at top level.
+
+  ```scheme
+  (define (area (w : number) (h : number)) (* w h))
+  (define (describe flag)
+    (cond (flag (area "wide" 3))   ; reported: expected Number, got String
+          (else 0)))
+  ```
+
+- **One rule for fitting types.** Arguments, return annotations and annotated
+  bindings accept a *consistent subtype*: a static subtype in which anything
+  the checker does not know is acceptable. A body the checker types as `Value`
+  satisfies any return annotation; `String` where `Number` is expected is
+  reported.
+- **Function types.** `(-> number number)` is a type. Function types are
+  contravariant in their parameters and covariant in their result, and they
+  print as arrows in diagnostics: `expected (-> Number Number), got (-> Int64
+  Number)`.
+- **Branches join.** The type of an `if`, `cond`, `case`, `match`, `when`,
+  `unless`, `and` or `or` is the join of its branches, so an `if` and the
+  equivalent `cond` have the same type.
 - **Sum-type annotations on named-let parameters** are honored, so a `named-let`
   accumulator declared as a sum type keeps that type across iterations.
-- **Numeric-tower join for recursive accumulators.** A recursive accumulator is
-  given the least-upper-bound (join) of the numeric types that flow into it,
-  rather than being rejected when it widens (e.g. integer accumulator that later
-  takes a rational or real value).
+- **Loops are typed by what they carry.** An unannotated named-`let` parameter
+  has the join of its seed and of every argument the loop passes back to it, so
+  an accumulator seeded with `(cons 0.0 0)` and fed the result of arithmetic is
+  accepted, as is an integer accumulator that later takes a rational or a real.
+  A join that would reach `Value` is refused and the argument is reported:
+  `(loop "three")` for a parameter seeded with `0` warns. A `#f` seed means
+  "nothing yet" and widens. A recursive procedure's result type is inferred the
+  same way, from its base cases.
+
 - **Linear `Qubit` type.** A first-class linear type whose values must be used
   exactly once. `define`/`lambda` parameters and `let` bindings may declare a
   linear type, and double-use (a clone) and drop are both **compile-time type
