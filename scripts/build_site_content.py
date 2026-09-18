@@ -25,6 +25,7 @@ Usage:
     scripts/build_site_content.py --check    # no pandoc: verify that the list,
                                              # the fragments and the navigation
                                              # agree (exit 1 when they do not)
+    scripts/build_site_content.py --self-test
 """
 
 from __future__ import annotations
@@ -319,11 +320,93 @@ def build(doc: dict, content_dir: Path = CONTENT_DIR, root: Path = ROOT) -> int:
     return 0
 
 
+def self_test() -> bool:
+    """Red/green fixtures for the page-list validator, the drift check and link rewriting."""
+    import tempfile
+
+    cases: list[tuple[str, bool]] = []
+
+    def expect(name: str, ok: bool) -> None:
+        cases.append((name, ok))
+
+    with tempfile.TemporaryDirectory(dir=ROOT, prefix=".selftest-site-pages-") as tmp:
+        root = Path(tmp)
+        (root / "docs").mkdir()
+        (root / "docs" / "A.md").write_text("# A\n", encoding="utf-8")
+        (root / "docs" / "B.md").write_text("# B\n", encoding="utf-8")
+        (root / "docs" / "notes.txt").write_text("x\n", encoding="utf-8")
+
+        def page_list(pages: list[dict], default: str = "a") -> Path:
+            path = root / "pages.json"
+            path.write_text(json.dumps({
+                "schema": SCHEMA, "repository": "https://github.com/o/r", "branch": "master",
+                "views": {"docs": {"route": "/docs", "default": default}}, "pages": pages,
+            }), encoding="utf-8")
+            return path
+
+        a = {"file": "docs/A.md", "slug": "a", "view": "docs", "section": "S", "title": "A"}
+        b = {"file": "docs/B.md", "slug": "b", "view": "docs", "section": "S", "title": "B"}
+        later = {"file": "docs/LATER.md", "slug": "later", "view": "docs", "section": "S",
+                 "title": "Later", "pending": True}
+
+        def loads(pages: list[dict], default: str = "a") -> dict | None:
+            try:
+                return load_page_list(page_list(pages, default), root)
+            except PageListError:
+                return None
+
+        doc = loads([a, b, later])
+        expect("green_list_loads", doc is not None and [p["slug"] for p in doc["published"]] == ["a", "b"])
+        expect("pending_absent_file_is_tolerated", doc is not None and doc["absent"][0]["slug"] == "later")
+        expect("absent_file_not_pending_is_rejected",
+               loads([a, {k: v for k, v in later.items() if k != "pending"}]) is None)
+        expect("duplicate_slug_is_rejected", loads([a, dict(b, slug="a")]) is None)
+        expect("duplicate_file_is_rejected", loads([a, dict(a, slug="a2")]) is None)
+        expect("unknown_view_is_rejected", loads([a, dict(b, view="blog")]) is None)
+        expect("unpublished_default_is_rejected", loads([a, later], default="later") is None)
+        expect("reserved_slug_is_rejected", loads([a, dict(b, slug="nav_docs")]) is None)
+        expect("path_escape_is_rejected", loads([a, dict(b, file="../B.md")]) is None)
+
+        content = root / "content"
+        content.mkdir()
+        if doc is not None:
+            for name, text in expected_outputs(doc).items():
+                (content / name).write_text(text if text is not None else "<p>x</p>", encoding="utf-8")
+            expect("check_green", check(doc, content) == [])
+            (content / "stray.html").write_text("x", encoding="utf-8")
+            expect("check_stray_fragment_fails", check(doc, content) != [])
+            (content / "stray.html").unlink()
+            (content / "b.html").unlink()
+            expect("check_missing_fragment_fails", check(doc, content) != [])
+            (content / "b.html").write_text("<p>x</p>", encoding="utf-8")
+            (content / "nav-docs.html").write_text("<!-- stale -->", encoding="utf-8")
+            expect("check_stale_navigation_fails", check(doc, content) != [])
+            nav = render_nav(doc, "docs")
+            expect("pending_page_not_in_navigation", "later" not in nav and 'data-url="/content/b.html"' in nav)
+            out, unresolved = rewrite_links(
+                '<a href="B.md#x">b</a><a href="notes.txt">n</a><a href="gone.md">g</a>', doc, doc["published"][0], root)
+            expect("link_to_published_page_stays_on_site",
+                   'href="/docs#page=b&amp;x" data-url="/content/b.html"' in out)
+            expect("link_to_unpublished_file_goes_upstream",
+                   'href="https://github.com/o/r/blob/master/docs/notes.txt"' in out)
+            expect("missing_link_target_is_reported", unresolved == ["gone.md"])
+
+    ok = all(passed for _, passed in cases)
+    print("build_site_content.py self-test:")
+    for name, passed in cases:
+        print(f"  [{'OK' if passed else 'GATE IS BROKEN'}] {name}")
+    print(f"self-test {'PASS' if ok else 'FAIL'}: {sum(p for _, p in cases)}/{len(cases)} fixtures")
+    return ok
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true",
                         help="verify the committed content against the page list without rendering")
+    parser.add_argument("--self-test", action="store_true", help="run the red/green fixture suite")
     args = parser.parse_args(argv)
+    if args.self_test:
+        return 0 if self_test() else 1
     try:
         doc = load_page_list()
     except PageListError as exc:

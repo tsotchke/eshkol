@@ -540,7 +540,7 @@
 
     (body-html section "<strong style='color:#a78bfa'>Autonomous Agents.</strong> Build systems that reason about their own uncertainty. The consciousness engine gives you knowledge bases with Prolog-style unification, factor graphs with belief propagation, and global workspace theory for competing cognitive modules.")
 
-    (body-html section "<strong style='color:#a78bfa'>Full-Stack Applications.</strong> Compile to a native executable, or target WebAssembly for the browser. This whole website is one Eshkol source file compiled to WASM. It uses 97 browser-host bindings: DOM, events, canvas, timers, fetch, localStorage, and window. Hash-based routing and a live bytecode REPL come from that same file -- all one language.")
+    (body-html section "<strong style='color:#a78bfa'>Full-Stack Applications.</strong> Compile to a native executable, or target WebAssembly for the browser. This whole website is one Eshkol source file compiled to WASM. The web platform provides 97 browser-host bindings: DOM, events, canvas, timers, fetch, localStorage, and window. Pathname routing and a live bytecode REPL come from that same file -- all one language.")
 
     section))
 
@@ -1157,24 +1157,6 @@
         "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; The actual code powering this page</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(render-hero parent)</span>\n  <span style='color:#c084fc'>(let</span> ((<span style='color:#a78bfa'>hero</span> <span style='color:#c084fc'>(create-section</span> parent<span style='color:#c084fc'>)))</span>\n    <span style='color:#c084fc'>(style!</span> hero <span style='color:#00ff88'>\"paddingTop\"</span> <span style='color:#00ff88'>\"120px\"</span><span style='color:#c084fc'>)</span>\n    <span style='color:#606078'>;; ... 1500+ lines of pure Eshkol</span>\n    hero<span style='color:#c084fc'>))</span></pre>"))
 
     (render-footer page)))
-
-;; ═══════════════════════════════════════════════════════════
-;; PAGE: DOCS
-;; ═══════════════════════════════════════════════════════════
-
-(define (render-sidebar-group parent title)
-  (let ((group (create-div parent)))
-    (web-add-class group "docs-sidebar-group")
-    (let ((t (create-text "div" title group)))
-      (web-add-class t "docs-sidebar-group-title"))
-    group))
-
-(define (render-sidebar-item parent label url)
-  (let ((item (create-text "a" label parent)))
-    (web-add-class item "docs-sidebar-item")
-    (web-set-attribute item "href" url)
-    (web-set-attribute item "data-url" url)
-    item))
 
 ;; ═══════════════════════════════════════════════════════════
 ;; PAGE: TUTORIALS
