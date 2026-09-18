@@ -1043,7 +1043,7 @@ PINNED, EXTERNAL.
 
 ### Arena Block Size: 1024-Byte Floor, 8192-Byte Default
 
-`arena_create` (`lib/core/arena_memory.cpp` §169–195) enforces a minimum
+`arena_create` (`lib/core/runtime_arena_core.cpp` §113–145) enforces a minimum
 block size of 1024 bytes. The common case is `arena_create(8192)` from
 `Arena` (the C++ wrapper, §2417). The REPL shared arena passes 8192 as
 well. Per-thread worker arenas pass 1 MB. The global arena and per-thread
@@ -1059,7 +1059,7 @@ arena's lifetime (until `arena_reset` or `arena_destroy`).
 
 ### Allocation Hardening: SIZE_MAX and UINT32_MAX Guards
 
-`arena_allocate_with_header` (`lib/core/arena_memory.cpp` §358–403)
+`arena_allocate_with_header` (`lib/core/runtime_object_alloc.cpp` §20–62)
 guards against two integer-overflow classes flagged in docs/HARDENING.md §192:
 
 ```c
@@ -1119,7 +1119,7 @@ void     eshkol_thread_init_worker(size_t arena_size_hint);
 void     eshkol_thread_shutdown_worker(void);
 ```
 
-`arena_create_thread_local` (§1752–1760 in `arena_memory.cpp`):
+`arena_create_thread_local` (§224–230 in `lib/core/runtime_regions.cpp`):
 
 ```c
 arena_t* arena_create_thread_local(size_t size_hint) {
@@ -1328,7 +1328,7 @@ target_link_options(eshkol-run PRIVATE "-Wl,-z,stack-size=536870912")
 `536870912` = 512 × 1024 × 1024 bytes.
 
 **Runtime, both platforms**: `eshkol_init_stack_size`
-(`lib/core/arena_memory.cpp` §62–90) uses `setrlimit(RLIMIT_STACK,
+(`lib/core/runtime_stack_hosted.cpp` §400–447) uses `setrlimit(RLIMIT_STACK,
 ...)` to raise the soft limit for spawned threads, and as a Linux
 fallback if the link-time flag was not applied. `ESHKOL_STACK_SIZE`
 env var overrides:

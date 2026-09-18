@@ -99,7 +99,7 @@ shapes are enforced and which are not yet.
 |------|---------|
 | `--target TRIPLE` | Set the LLVM target triple (cross-compilation) |
 | `--profile NAME` | Execution profile (see below) |
-| `--emit-eskb FILE` / `-B FILE` | Emit Eshkol VM bytecode (ESKB); requires a VM profile |
+| `--emit-eskb FILE` / `-B FILE` | Emit Eshkol VM bytecode (ESKB). A VM profile requires this flag and writes only the admission-checked ESKB; without a VM profile the ESKB is written alongside the native artifact |
 | `--require-vm-entry NAME` | Require a named VM entry in the emitted ESKB (VM profile only) |
 | `--require-vm-entry-zero-arg NAME` | Require a named zero-argument VM entry in the emitted ESKB |
 

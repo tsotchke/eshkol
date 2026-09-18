@@ -203,3 +203,15 @@ g++ -O2 -std=c++20 exe/eshkol-server.cpp -o eshkol-server \
 # Run on port 8080
 ./eshkol-server --port 8080 --web-dir site/static/
 ```
+
+Server options (`eshkol-server --help`):
+
+| Flag | Meaning |
+|------|---------|
+| `--port <port>` | Port to listen on (default `8080`) |
+| `--host <addr>` | IPv4 address (or `localhost`) to bind (default `127.0.0.1`) |
+| `--public` | Bind `0.0.0.0`. A non-loopback bind is refused unless a compile token is set |
+| `--compile-token <token>` | Require the token on `POST /compile`, sent as `Authorization: Bearer <token>` or `X-Eshkol-Compile-Token`; `ESHKOL_SERVER_TOKEN` sets the same value |
+| `--cors-origin <origin>` | Allow CORS for one exact origin; `*` is rejected |
+| `--web-dir <path>` | Directory to serve static files from (default: `web/` or `../web/` when it holds an `index.html`) |
+| `--help`, `-h` | Print usage and exit |

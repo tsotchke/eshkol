@@ -787,14 +787,14 @@ to be true before that meant anything, and both were fixed in the leak audit:
 
 ### The audited state
 
-Every real workload — an AOT compile, the compiled program, `-r` JIT, `--vm`,
+Every real workload — an AOT compile, the compiled program, `-r` JIT, the bytecode VM,
 the REPL, and the agent-FFI test binaries — was run under ASan+LSan over
 `hello.esk`, `examples/h2_vibrational.esk`, `examples/autodiff.esk` and
 `examples/tensors.esk`. The reports resolve to 17 distinct allocation sites:
 
 | category | sites | disposition |
 |---|---|---|
-| **Runtime, VM, arena, compiled programs** | 0 | Nothing. These paths are leak-clean: every report from a compiled binary or a `--vm` run came from platform framework init, not from Eshkol code. |
+| **Runtime, VM, arena, compiled programs** | 0 | Nothing. These paths are leak-clean: every report from a compiled binary or a bytecode-VM run came from platform framework init, not from Eshkol code. |
 | **Compiler front-end AST** | 8 | Retained for process lifetime by design (`eshkol_ast_t` has no destructor), the convention clang/rustc/gcc use. Named individually with a reason in `.icc/lsan-suppressions.txt`. Retires with epic #182. |
 | **In-process JIT and driver** | 3 | **Fixed — see below.** All three grew with the work done, none was process-init. |
 | **LLVM ORC JIT** | 1 | Third-party: `DynamicLibrarySearchGenerator` holds a `dlopen` handle for the life of the JITDylib. Suppressed, scoped to that class. |

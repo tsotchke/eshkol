@@ -86,6 +86,37 @@ Key constants: `KEY_UP KEY_DOWN KEY_LEFT KEY_RIGHT KEY_HOME KEY_END
 KEY_BACKSPACE KEY_DELETE KEY_TAB KEY_ENTER KEY_ESCAPE KEY_PAGE_UP KEY_PAGE_DOWN
 KEY_F1 KEY_F2 KEY_F3 KEY_F4`.
 
+Read-status constants. `(term-read-key-timeout-raw ms)` returns a key code (a
+byte value or a `KEY_*` constant, always non-negative) or one of three negative
+status integers. They are exported so a caller of the raw surface compares
+against names rather than literals:
+
+| Constant | Value | Meaning | Tagged form from `term-read-key-timeout` |
+|----------|-------|---------|------------------------------------------|
+| `TERM-READ-TIMEOUT` | `-1` | no input arrived within `ms` milliseconds | `((status . timeout) (key . #f))` |
+| `TERM-READ-EOF` | `-2` | standard input reached end of file | `((status . eof) (key . #f))` |
+| `TERM-READ-IO-ERROR` | `-3` | the poll or read failed, or standard input is not a pollable device | `((status . io-error) (key . #f))` |
+
+A successful read is `((status . key) (key . code))`. A negative `ms` blocks
+until a byte arrives, so `TERM-READ-TIMEOUT` is only produced for `ms >= 0`.
+
+```scheme
+(require agent.terminal)
+(display (list TERM-READ-TIMEOUT TERM-READ-EOF TERM-READ-IO-ERROR)) (newline)
+;; => (-1 -2 -3)
+;; Raw surface: compare the integer against the named codes.
+(define raw (term-read-key-timeout-raw 10))
+(display (cond ((= raw TERM-READ-TIMEOUT) 'timeout)
+               ((= raw TERM-READ-EOF) 'eof)
+               ((= raw TERM-READ-IO-ERROR) 'io-error)
+               (else 'key)))
+(newline)
+;; Tagged surface: the same outcome as an association list.
+(display (term-read-key-timeout 10)) (newline)
+;; with standard input closed by an empty pipe  => eof      ((status . eof) (key . #f))
+;; with an open pipe that sends nothing          => timeout  ((status . timeout) (key . #f))
+```
+
 ---
 
 ## `agent.git-ffi` — Git Helpers

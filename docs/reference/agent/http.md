@@ -1,4 +1,4 @@
-# `agent.http` and `agent.http-server` — HTTP Client & Server
+# `agent.http` and `agent.http_server` — HTTP Client & Server
 
 ## Client — `agent.http`
 
@@ -51,10 +51,10 @@ Source: `lib/agent/http.esk`. C symbols: `qllm_http_*` (libcurl-backed).
   native client. `http-stream-next` returns the parsed event rather than a
   placeholder.
 
-## Server — `agent.http-server`
+## Server — `agent.http_server`
 
 ```scheme
-(require agent.http-server)
+(require agent.http_server)
 ```
 
 Source: `lib/agent/http_server.esk`. C symbols: `eshkol_http_server_*`,
@@ -81,8 +81,23 @@ Source: `lib/agent/http_server.esk`. C symbols: `eshkol_http_server_*`,
 | `ws-receive` | `(ws-receive handle buffer-size timeout-ms)` → `(frame-type . data)` |
 | `ws-close` | `(ws-close handle)` |
 
-Frame-type constants from `ws-receive`: `WS-FRAME-TEXT`, `WS-FRAME-BINARY`,
-`WS-FRAME-CLOSE`, `WS-FRAME-PING`, `WS-FRAME-PONG`.
+Frame-type constants, the `frame-type` half of the pair `ws-receive` returns
+(the values are the RFC 6455 opcodes):
+
+| Constant | Value | Frame |
+|----------|-------|-------|
+| `WS-FRAME-TEXT` | `1` | UTF-8 text message |
+| `WS-FRAME-BINARY` | `2` | binary message |
+| `WS-FRAME-CLOSE` | `8` | close handshake |
+| `WS-FRAME-PING` | `9` | ping |
+| `WS-FRAME-PONG` | `10` | pong |
+
+```scheme
+(require agent.http_server)
+(display (list WS-FRAME-TEXT WS-FRAME-BINARY WS-FRAME-CLOSE WS-FRAME-PING WS-FRAME-PONG))
+(newline)
+;; => (1 2 8 9 10)
+```
 
 The server can be protected with a bearer token via the `ESHKOL_SERVER_TOKEN`
 environment variable.

@@ -106,7 +106,7 @@ missed one would reject a legitimate pointer. The tradeoff is that an exotic tag
 encoding may slip through unchecked — never that a working call breaks.
 
 Native link-time fingerprint — **COMPLETE**. The fingerprint covers the active
-object ABI's header size, subtype offset, and payload alignment. `--freestanding`
+object ABI's header size, subtype offset, and payload alignment. `--profile freestanding-*`
 objects remain outside that link check because their contract has no external
 runtime dependency.
 

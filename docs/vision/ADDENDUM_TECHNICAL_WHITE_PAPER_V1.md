@@ -1230,7 +1230,7 @@ eshkol_tagged_value_t result = exported_function(arg1, arg2);
 
 **Command:**
 ```bash
-eshkol-run --object-only input.esk -o output.o
+eshkol-run --compile-only input.esk -o output.o
 ```
 
 **Linking:**

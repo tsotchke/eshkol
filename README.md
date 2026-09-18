@@ -575,13 +575,13 @@ export PATH=$PATH:$(pwd)/build
 
 ```bash
 # Test basic functionality
-echo '(+ 1 2 3)' | eshkol-run  # Should output: 6
+eshkol-run -e '(display (+ 1 2 3))'  # Should output: 6
 
 # Test automatic differentiation  
-echo '(derivative (lambda (x) (* x x)) 5.0)' | eshkol-run  # Should output: 10.0
+eshkol-run -e '(display (derivative (lambda (x) (* x x)) 5.0))'  # Should output: 10
 
 # Test neural network capability
-eshkol-run tests/neural/nn_working.esk
+eshkol-run -r tests/neural/nn_working.esk
 
 # Interactive REPL
 eshkol-repl

@@ -454,7 +454,7 @@ This means that Scheme-level errors within parallel-mapped closures that call `e
 
 ### 12.1 Per-Thread Tape Stack
 
-The AD (automatic differentiation) tape state uses `thread_local` storage in `arena_memory.cpp` (lines 88--104):
+The AD (automatic differentiation) tape state uses `thread_local` storage in `lib/core/runtime_autodiff.cpp` (lines 102--103):
 
 ```c
 #define MAX_TAPE_DEPTH 32
@@ -481,7 +481,7 @@ When a closure passed to `parallel-map` contains a `gradient` call, each worker 
 
 ### 12.3 The `__ad_mode_active` Global Flag Issue
 
-The tape stack is thread-local, but two critical AD state variables are **not** thread-local -- they are plain global variables in `arena_memory.cpp` (lines 37, 41):
+The tape stack is thread-local, but two critical AD state variables are **not** thread-local -- they are plain global variables in `lib/core/runtime_autodiff.cpp` (lines 26, 30):
 
 ```c
 ad_tape_t* __current_ad_tape = nullptr;   // line 37
