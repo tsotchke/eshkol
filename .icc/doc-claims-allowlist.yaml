@@ -32,7 +32,10 @@ pruned_from: 'v1.3.5 astra doc-typed-claims residual pass (integration/astra-v13
   2026-09-13: db85666284b594af (docs/design/adr/0006-language-conformance-modules.md:222,
   lib/backend/call_apply_codegen.cpp:1129) pruned as stale -- the file has grown back to 1,150 lines, so
   icc doc-typed-claims now grounds the claim and it no longer matches any wrong claim by id or stable key.
-  80 entries remain.'
+  80 entries remain. 2026-09-17: bcd4c6dbe5584069 (docs/DESIGN.md:252, lib/backend/eshkol_vm.c family
+  aggregate 51,092) pruned as stale -- docs/DESIGN.md no longer states that aggregate, icc doc-typed-claims
+  grounds the remaining eshkol_vm.c figure (2,850 lines), and the entry matches no wrong claim by id or by
+  stable key. 79 entries remain.'
 regenerated_at: '2026-08-28'
 regenerated_from: 'DD-01 closure (2026-08-28): icc doc-typed-claims --repo eshkol-ledger-debt --claim-limit
   20000 --finding-limit 2000 --format json at c459f292 + this fix''s own doc corrections, measured final_wrong_count=76
@@ -804,21 +807,21 @@ entries:
   line: 79
   claim_type: numeric
   subject: lib/backend/tensorcore_codegen.cpp
-  value: 22355
+  value: 23389
   disposition: DETECTOR-MISATTRIBUTION
   reason: family-sum misattribution, last-named-file variant. The sentence lists all thirteen per-domain
     modules and then says "totalling roughly 22,355 lines"; the detector binds the aggregate to tensorcore_codegen.cpp,
     the last file named before the number. tensorcore_codegen.cpp is 225 lines; the thirteen named modules
-    sum to exactly 22,355. Added 2026-08-28.
-- claim_id: d779d74d0cfe0b0d
+    sum to exactly 22,355 (2026-08-28); re-verified at 23,389 on the v1.3.5 cut (2026-09-17). Added 2026-08-28.
+- claim_id: eedbcfe637ad9d4e
   path: docs/breakdown/COMPILER_ARCHITECTURE.md
-  line: 391
+  line: 465
   claim_type: numeric
   subject: lib/backend/tensorcore_codegen.cpp
-  value: 22355
+  value: 23389
   disposition: DETECTOR-MISATTRIBUTION
   reason: identical to docs/DESIGN.md:79 -- the same thirteen-module list followed by "totalling approximately
-    22,355 lines", bound by the detector to the last file named. Sum verified at 22,355. Added 2026-08-28.
+    22,355 lines", bound by the detector to the last file named. Sum verified at 22,355 (2026-08-28) and re-verified at 23,389 on the v1.3.5 cut (2026-09-17). Added 2026-08-28.
 - claim_id: d73fab66ac8246fb
   path: ROADMAP.md
   line: 323
@@ -831,23 +834,12 @@ entries:
     this documentation wave at ...", so the current figure is stated separately and is grounded. The detector
     checks the historical 1,280 against today's 1,867. Correcting it would misrepresent a dated measurement
     as a current one. Added 2026-08-28.
-- claim_id: bcd4c6dbe5584069
-  path: docs/DESIGN.md
-  line: 252
-  claim_type: numeric
-  subject: lib/backend/eshkol_vm.c
-  value: 51092
-  disposition: DETECTOR-MISATTRIBUTION
-  reason: family-sum misattribution. The sentence gives the exact eshkol_vm.c file size and separately
-    gives the measured total for the eshkol_vm.c plus vm_*.c family; the detector binds the family aggregate
-    to the nearest named file. The aggregate is a reviewed current source measurement, while the per-file
-    value is corrected in the document itself.
 - claim_id: 3a23c0991a17476f
   path: docs/API_REFERENCE.md
   line: 7123
   claim_type: numeric
   subject: lib/backend/tensor_codegen.cpp
-  value: 22355
+  value: 23389
   disposition: DETECTOR-MISATTRIBUTION
   reason: family-sum misattribution. The line gives the dispatcher size and a separately measured total
     for its thirteen per-domain sibling modules; the detector attaches the aggregate to the nearest named
@@ -857,12 +849,12 @@ entries:
   line: 7136
   claim_type: numeric
   subject: lib/backend/tensor_codegen.cpp
-  value: 22355
+  value: 23389
   disposition: DETECTOR-MISATTRIBUTION
   reason: family-sum misattribution. The sentence states "1,867-line dispatcher plus ~22,355 lines across
     thirteen per-domain tensor_*_codegen.cpp modules"; the per-file figure (1,867) is grounded, and the
     detector binds the thirteen-module aggregate to the dispatcher. The thirteen modules sum to exactly
-    22,355 lines on this tree. Added 2026-08-28.
+    22,355 lines on that tree; 23,389 on the v1.3.5 cut (2026-09-17). Added 2026-08-28.
 - claim_id: 1ef94e09a80a0a7f
   path: docs/design/adr/0006-language-conformance-modules.md
   line: 34

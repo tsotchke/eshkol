@@ -39,7 +39,7 @@ which re-derives every declaration from the source rather than believing it.
 
 | Carrier | Where | Vocabulary | Substrates |
 |---------|-------|------------|------------|
-| `ad_node_t` reverse tape | `inc/eshkol/eshkol.h`, emitted by `autodiff_codegen.cpp` | 95 registered node types incl. `AD_NODE_CUSTOM` | native |
+| `ad_node_t` reverse tape | `inc/eshkol/eshkol.h`, emitted by `autodiff_codegen.cpp` | 96 registered node types incl. `AD_NODE_CUSTOM` | native |
 | forward jet | `autodiff_codegen.cpp` (`seedForwardAndPush`) | e1/e2/ep slots + Taylor tower | native |
 | `VmDual {primal, tangent}` | `vm_dual.c`; dual tensor carrier in `vm_tensor.c` | 16 flat forward-dual ops plus first-order transformer tensor propagation | VM |
 | `VmHyperDual {f, f1, f2, f12}` | `vm_hyperdual.c` | second-order forward | VM |
@@ -106,7 +106,7 @@ other paths, and neither is a wiring change.
 arithmetic, `tensor-sum` and `tensor-mean`.** This was, through v1.3.4, the single largest gap in the AD
 architecture: no compiled program could create one of these nodes at all.
 `AutodiffCodegen::recordADNodeTensor` existed and had exactly one call site,
-dead behind `kDenseTensorADNodesEnabled` in `lib/backend/llvm_codegen.cpp`, and
+dead behind the flag now read by `denseTensorADNodesEnabled()` (`lib/backend/autodiff_codegen.cpp`), and
 flipping that flag SIGSEGV'd rather than yielding a slower-but-correct
 gradient, for three independent reasons:
 
@@ -147,6 +147,19 @@ by default (ADR-0002 Position A, `.icc/silent-wrong-ledger.yaml` SW-48):
    node, whose backward is the identity scatter from the dense gradient onto
    the scalar nodes. A pack node performs no arithmetic, so it can change the
    *representation* of a gradient and not its value.
+4. **Every other consumer reads it as a tensor.** An operator with no dense
+   rule (`tensor-dot`, `reshape`, `relu`, `softmax`, `tensor-get`, the
+   two-argument `tensor-ref`, `vector-length`, `vector-ref`, `vector->list`)
+   receives the dense node through one resolver,
+   `eshkol_ad_dense_node_elements`: the tensor of the node's shape whose
+   element `i` is an `AD_NODE_DENSE_ELEM` node projecting element `i`, appended
+   to the tape. The operator's scalarizing rule then applies unchanged, and the
+   reverse sweep scatters each element's adjoint into the dense node's
+   gradient at `i` — the inverse of a pack node, and like it an identity that
+   cannot change a gradient's value. The tensor boundary
+   (`eshkol_tensor_operand_checked`) and the collection builtins
+   (`TaggedValueCodegen::resolveDenseTensorNode`) both route to it, so a new
+   consumer needs no case of its own ([ADR-0023](../../design/adr/0023-dense-tensor-node-as-operand.md)).
 
 The cost claim is measured, not asserted.
 [`tests/ad/matmul_tape_node_count_test.esk`](../../../tests/ad/matmul_tape_node_count_test.esk)
@@ -267,7 +280,7 @@ an X-macro row:
 ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN)
 ```
 
-There are **95 rows**, values `0`–`94`, dense. `VALUE` is explicit and asserted
+There are **96 rows**, values `0`–`95`, dense. `VALUE` is explicit and asserted
 equal to the row's ordinal, because these values are an ABI: emitted LLVM IR
 compares `node->type` against integer literals and serialized tapes carry them.
 
@@ -285,7 +298,7 @@ vanish.
 |---|---:|---|
 | `SCALAR_ADJOINT` | 44 | the adjoint is computed by the scalar reverse sweep |
 | `BRIDGE` | 19 | an exact tensor backward, named by `BRIDGE_FN` |
-| `INLINE` | 25 | the backward is emitted inline at the recording site |
+| `INLINE` | 26 | the backward is emitted inline at the recording site |
 | `UNREGISTERED` | 4 | an **explicit registered refusal** |
 | `LEAF` | 2 | a tape leaf; nothing to propagate |
 | `CUSTOM_VJP` | 1 | caller-provided vector-Jacobian product |
@@ -560,8 +573,8 @@ composition `(hessian f point)` performs, and it agrees with it entry-for-entry:
 ```scheme
 (define (f v) (* (vref v 0) (vref v 0) (vref v 1)))
 (define g (gradient f))
-(jacobian g (vector 2.0 3.0))   ;; => #(#(6 4) #(4 0))
-(hessian  f (vector 2.0 3.0))   ;; => #(#(6 4) #(4 0))
+(jacobian g (vector 2.0 3.0))   ;; => #((6 4) (4 0))
+(hessian  f (vector 2.0 3.0))   ;; => #((6 4) (4 0))
 ```
 
 The one shape that still refuses is a point *computed* from the enclosing pass's
@@ -573,6 +586,44 @@ before the tensor arm is reached; a tensor of non-seed nodes is caught by the
 pre-scan itself, `unsupported nested differentiation`. See KNOWN_ISSUES.md.
 
 See [support-matrix.md](support-matrix.md) for the per-cell evidence.
+
+---
+
+## Capture resolution — one resolver for every operator
+
+An AD operator that resolves its differentiand to an `llvm::Function` calls it
+directly and passes the function's capture arguments itself.
+`AutodiffCodegen::appendDifferentiandCaptures`
+([`autodiff_codegen.h`](../../../inc/eshkol/backend/autodiff_codegen.h)) is the
+only place that decides where a capture comes from (since v1.3.5):
+
+- For a **named** differentiand it reads the captures from the closure object
+  the name evaluates to. `emitClosureCaptureArguments` in
+  [`closure_capture_scope.h`](../../../inc/eshkol/backend/closure_capture_scope.h)
+  follows the closure-call ABI, including the environment-pointer ABI used above
+  64 captures.
+- For an **inline** lambda, created at the same site, it resolves captures by
+  name in that scope. A local define's module-level capture cells are used
+  directly.
+- **Structural safeguard.** Every resolved capture value must belong to the
+  function being emitted (`valueUsableInFunction`). A value of an enclosing
+  function is reached through the current function's own `captured_<var>` /
+  `<var>_cap` pointer; if there is none, code generation fails with a diagnostic
+  naming the variable, the owning function, the function being emitted and the
+  source position. The check costs two `dyn_cast`s per capture at compile time.
+
+The derivative family (`derivative`, `derivative-n`, `taylor`), every `gradient`
+path (exact tower, jet, structured vector, scalar, reverse), `jacobian` (and
+through it `divergence` and `curl`), `hessian` (and through it `laplacian`) and
+`directional-derivative` all go through this resolver, as do
+`MapCodegen::loadCapturedValues` for a named procedure and `reduce`, which
+dispatches on the closure value. Whether a name may be resolved statically at
+all is a binding fact owned by
+[`static_callee_binding.h`](../../../inc/eshkol/backend/static_callee_binding.h)
+([ADR 0015](../../design/adr/0015-static-callee-binding-identity.md)): a
+reassigned or redefined binding gets no static alias, so its current value is
+evaluated and called through the closure ABI. User-facing rules and a runnable
+example are in [operators.md](operators.md#where-a-capture-is-resolved).
 
 ---
 

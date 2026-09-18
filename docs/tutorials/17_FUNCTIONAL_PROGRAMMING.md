@@ -52,17 +52,19 @@ A closure captures variables from its enclosing scope:
 
 ```scheme
 (require core.functional.curry)
+(require core.functional.flip)
 
-;; curry: convert a multi-arg function to a chain of single-arg functions
+;; curry2: convert a two-argument function to a chain of single-argument
+;; functions (curry3 does the same for three arguments)
 (define add (lambda (a b) (+ a b)))
-(define add5 ((curry add) 5))
+(define add5 ((curry2 add) 5))
 (display (add5 10))  ;; => 15
 (display (add5 20))  ;; => 25
 
 ;; flip: swap the first two arguments
 (define div (lambda (a b) (/ a b)))
 (define div-by (flip div))
-(display ((div-by 2) 10))  ;; => 5 (10/2)
+(display (div-by 2 10))  ;; => 5 (10/2)
 ```
 
 ---

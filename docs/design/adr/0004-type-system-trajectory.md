@@ -1,6 +1,6 @@
 # ADR 0004: One quantitative dependent type system for Eshkol
 
-- Status: Proposed
+- Status: Accepted — partially implemented: the `NodeId`-keyed type identity substrate (`NominalTypeId`, `TypeRef` and typed metadata in `inc/eshkol/frontend/semantic_identity.h`, ADR-0000 Stage 2) and the single gradual relation of ADR-0013 (`TypeRelation` in `lib/types/type_relation.cpp`) are in v1.3.5-evolve; remaining stages Proposed
 - Date: 2026-07-09
 - Decision owners: language, frontend, runtime, and LLVM backend
 - Scope: v1.3.2 through v2.0

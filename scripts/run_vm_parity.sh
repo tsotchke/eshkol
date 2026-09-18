@@ -58,6 +58,9 @@ REPO_ROOT="$(pwd)"
 if eshkol_durable_enabled; then
     VM_PARITY_WORK="$(eshkol_durable_prepare_dir vm-parity)" || exit $?
     TRACE_DIR="${TRACE_DIR:-$VM_PARITY_WORK/traces}"
+    # Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+    . "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+    eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 else
     TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 fi
@@ -528,8 +531,20 @@ echo "vm-parity: $pass passed, $fail failed, $infra infra (no verdict)"
 if [ $infra -gt 0 ]; then
     echo "WARNING: $infra check(s) could not obtain a parity verdict (INFRA) — see trace and re-run under less contention if this persists." >&2
 fi
-if [ $fail -eq 0 ]; then
-    gate_summary="$pass checks green (audit + corpus + oos + fatal)$([ $infra -gt 0 ] && printf '; %d infra (no verdict)' "$infra")"
+if [ $fail -gt 0 ]; then
+    gate_summary="$fail of $((pass+fail)) checks failed"
+    emit_event "vm_parity_gate" "FAIL" "$gate_summary"
+    emit_test_result "vm_parity_gate" "FAIL" "$gate_summary"
+    rc=1
+elif [ $infra -gt 0 ]; then
+    # A clean subset plus an unmeasured check is not a measured PASS. Preserve
+    # the infrastructure diagnosis for ICC, but do not emit test_result: that
+    # receipt is reserved for runs that completed with a product verdict.
+    gate_summary="$pass checks measured PASS; $infra INFRA checks have no verdict"
+    emit_event "vm_parity_gate" "INFRA" "$gate_summary"
+    rc=2
+else
+    gate_summary="$pass checks green (audit + corpus + oos + fatal)"
     emit_event "vm_parity_gate" "PASS" "$gate_summary"
     # Name the production dispatcher explicitly so ICC can bind this full
     # source+serialized-bytecode parity run to the implementation boundary it
@@ -539,11 +554,6 @@ if [ $fail -eq 0 ]; then
         "vm_dispatch_native exercised by $gate_summary"
     emit_test_result "vm_parity_gate" "PASS" "$gate_summary"
     rc=0
-else
-    gate_summary="$fail of $((pass+fail)) checks failed"
-    emit_event "vm_parity_gate" "FAIL" "$gate_summary"
-    emit_test_result "vm_parity_gate" "FAIL" "$gate_summary"
-    rc=1
 fi
 
 # Mirror only after every event (including the final gate verdict) has been

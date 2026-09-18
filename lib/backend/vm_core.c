@@ -1008,7 +1008,50 @@ typedef struct VM {
     struct {
         int active;
     } ts_queries[32];
+    /* Open upvalues (SW-190). Every (closure, upvalue) that native 151 pointed
+     * at a top-level stack slot, so the scope that retires the slot (OP_POPN,
+     * OP_TAIL_CALL_POPN) can CLOSE the capture -- copy the slot's last value
+     * into the closure -- instead of leaving it pointing at a slot the next
+     * top-level define reuses. */
+    struct VmOpenUpvalue { int32_t obj; int32_t uv; int32_t slot; }* open_uvs;
+    int n_open_uvs;
+    int cap_open_uvs;
 } VM;
+
+/* Record that upvalue @p uv of closure object @p obj reads stack slot @p slot. */
+static void vm_register_open_upvalue(VM* vm, int32_t obj, int32_t uv, int32_t slot) {
+    for (int i = 0; i < vm->n_open_uvs; i++) {
+        if (vm->open_uvs[i].obj == obj && vm->open_uvs[i].uv == uv) {
+            vm->open_uvs[i].slot = slot;
+            return;
+        }
+    }
+    if (vm->n_open_uvs == vm->cap_open_uvs) {
+        int cap = vm->cap_open_uvs ? vm->cap_open_uvs * 2 : 64;
+        struct VmOpenUpvalue* grown = (struct VmOpenUpvalue*)realloc(
+            vm->open_uvs, (size_t)cap * sizeof(struct VmOpenUpvalue));
+        if (!grown) return;  /* the capture stays open; the old behaviour */
+        vm->open_uvs = grown;
+        vm->cap_open_uvs = cap;
+    }
+    vm->open_uvs[vm->n_open_uvs++] = (struct VmOpenUpvalue){obj, uv, slot};
+}
+
+/* Close every open upvalue whose slot is at or above @p first_dead_slot: the
+ * slot is about to be retired, so the closure keeps its last value. */
+static void vm_close_open_upvalues_from(VM* vm, int first_dead_slot) {
+    for (int i = 0; i < vm->n_open_uvs;) {
+        struct VmOpenUpvalue e = vm->open_uvs[i];
+        if (e.slot < first_dead_slot) { i++; continue; }
+        HeapObject* cl = (e.obj >= 0 && e.obj < vm->heap.next_free) ? vm->heap.objects[e.obj] : NULL;
+        if (cl && cl->type == HEAP_CLOSURE && e.uv >= 0 && e.uv < cl->closure.n_upvalues &&
+            cl->closure.open_slots && cl->closure.open_slots[e.uv] == e.slot) {
+            if (e.slot >= 0 && e.slot < vm->sp) cl->closure.upvalues[e.uv] = vm->stack[e.slot];
+            cl->closure.open_slots[e.uv] = -1;
+        }
+        vm->open_uvs[i] = vm->open_uvs[--vm->n_open_uvs];
+    }
+}
 
 /* Validate fixed-arity closure calls at the common dispatch boundary. Native
  * builtin closures are ordinary VM closures, so checking only user lambdas
@@ -1287,6 +1330,28 @@ static double as_number_vm(VM* vm, Value v) {
         if (hd) return hd->f;
     }
     return 0.0;
+}
+
+/** @brief The VM half of the container slot store boundary (ADR-0020).
+ *
+ * A tensor slot holds a real number. Every VM mutator that writes a Scheme
+ * value into a tensor -- vector-set! on a tensor operand and both tensor-set!
+ * forms -- obtains the slot's double here. A value with no real-number
+ * representation is refused: the caller raises a catchable error instead of
+ * storing the 0.0 that as_number_vm() answers for an unknown tag. Characters
+ * are refused too; as_number_vm() reads one as its code point, which is an
+ * index convenience, not a numeric value.
+ *
+ * @return 1 and the slot value in @p out, or 0 when the value is refused. */
+static int vm_tensor_slot_value(VM* vm, Value v, double* out) {
+    switch (v.type) {
+    case VAL_INT: case VAL_FLOAT: case VAL_RATIONAL: case VAL_BIGNUM:
+    case VAL_DUAL: case VAL_HYPER_DUAL:
+        *out = as_number_vm(vm, v);
+        return 1;
+    default:
+        return 0;
+    }
 }
 
 /** @brief Validate that @p v's heap pointer is in range AND its object
@@ -1593,6 +1658,8 @@ static void print_value(VM* vm, Value v) {
  ******************************************************************************/
 
 static void vm_run(VM* vm);
+/* The one implementation of + - * / (vm_ops.c); the first-class natives call it. */
+static void vm_op_arith(VM* vm, char op);
 
 /* Validate fixed-arity closures at the call boundary, before their body can
  * read argument locals. Unknown metadata remains permissive for legacy

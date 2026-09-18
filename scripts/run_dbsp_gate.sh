@@ -47,6 +47,8 @@ if [ ! -r "$ESHKOL_TEST_LIB" ]; then
     exit 2
 fi
 source "$ESHKOL_TEST_LIB"
+# shellcheck source=lib/checked_write.sh
+. "$(dirname "$ESHKOL_TEST_LIB")/checked_write.sh"
 eshkol_test_isolation_init "dbsp-gate"
 trap eshkol_test_isolation_cleanup EXIT
 
@@ -77,6 +79,7 @@ echo "========================================="
 
 echo ""
 echo "--- [1/2] JIT (-r) -----------------------"
+eshkol_require_output_file_path "$DBSP_OUT"
 if "$RUN" -r "$TEST" > "$DBSP_OUT" 2>&1; then
     cat "$DBSP_OUT"
     if dbsp_check_output "JIT"; then
@@ -94,6 +97,7 @@ echo ""
 echo "--- [2/2] AOT (compile + run) ------------"
 AOT_BIN="$ESHKOL_TEST_TMPDIR/dbsp_aot"
 if "$RUN" -o "$AOT_BIN" "$TEST"; then
+    eshkol_require_output_file_path "$DBSP_OUT"
     if "$AOT_BIN" > "$DBSP_OUT" 2>&1; then
         cat "$DBSP_OUT"
         if dbsp_check_output "AOT"; then

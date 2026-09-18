@@ -1,0 +1,127 @@
+<h1 id="why-eshkol">Why Eshkol?</h1>
+<p>A side-by-side comparison showing what Eshkol does that other languages can’t — or make much harder.</p>
+<hr />
+<h2 id="1-derivatives-without-a-framework">1. Derivatives without a framework</h2>
+<p><strong>Python (requires JAX):</strong></p>
+<pre class="python"><code>import jax
+import jax.numpy as jnp
+
+def f(x):
+    return x ** 3
+
+grad_f = jax.grad(f)
+print(grad_f(2.0))  # 12.0
+# Requires: pip install jax, GPU drivers, 500MB+ dependencies</code></pre>
+<p><strong>Eshkol:</strong></p>
+<pre class="scheme"><code>(derivative (lambda (x) (* x x x)) 2.0)  ;; =&gt; 12.0
+;; Built into the compiler. Zero dependencies.</code></pre>
+<hr />
+<h2 id="2-no-overflow--ever">2. No overflow — ever</h2>
+<p><strong>Python:</strong></p>
+<pre class="python"><code>2 ** 64       # 18446744073709551616 (Python handles this)
+1/3 + 1/6    # 0.49999999999999994 (floating point error!)</code></pre>
+<p><strong>JavaScript:</strong></p>
+<pre class="javascript"><code>2 ** 64       // 18446744073709552000 (WRONG — float64 precision lost)
+1/3 + 1/6    // 0.49999999999999994</code></pre>
+<p><strong>Eshkol:</strong></p>
+<pre class="scheme"><code>(expt 2 64)    ;; =&gt; 18446744073709551616 (exact)
+(+ 1/3 1/6)   ;; =&gt; 1/2 (exact rational — not 0.4999...)</code></pre>
+<hr />
+<h2 id="3-hot-reload-in-the-repl">3. Hot-reload in the REPL</h2>
+<p><strong>Python:</strong></p>
+<pre class="python"><code># Define a function
+def f(x): return x * 2
+f(5)  # 10
+
+# Redefine — but callers may have cached the old version
+def f(x): return x * 3
+f(5)  # 15 (works here, but not always in complex programs)</code></pre>
+<p><strong>Eshkol:</strong></p>
+<pre class="scheme"><code>(define (f x) (* x 2))
+(f 5)                    ;; =&gt; 10
+(define (f x) (* x 3))
+(f 5)                    ;; =&gt; 15
+;; ALL callers see the new definition — even closures that
+;; captured f by name. R7RS-correct dynamic name resolution.</code></pre>
+<hr />
+<h2 id="4-programs-as-neural-network-weights">4. Programs as neural network weights</h2>
+<p>No other language does this. Eshkol compiles programs to bytecode, encodes the canonical VM/AD ISA into a 6-layer transformer’s weight matrices, and executes programs as matrix multiplications. The current repository artifact verifies 126/126 inline programs and 123/123 traced programs across three execution paths, with every canonical opcode weight-covered except the deliberate <code>OP_NATIVE_CALL</code> boundary.</p>
+<p>This means: - Programs are differentiable (gradient descent on program behaviour) - The interpreter itself is a neural network - You can learn to improve the interpreter via backpropagation</p>
+<hr />
+<h2 id="5-built-in-ai-reasoning">5. Built-in AI reasoning</h2>
+<p><strong>Python (requires multiple libraries):</strong></p>
+<pre class="python"><code># Logic programming → need pyDatalog or kanren
+# Factor graphs → need pgmpy or pomegranate
+# Global workspace → need custom implementation
+# All three together → research project</code></pre>
+<p><strong>Eshkol (22 builtins, zero dependencies):</strong></p>
+<pre class="scheme"><code>(define kb (make-kb))
+(kb-assert! kb (make-fact &#39;parent &#39;alice &#39;bob))
+(kb-query kb (make-fact &#39;parent ?p &#39;bob))
+;; =&gt; ({?p -&gt; alice})
+
+(define fg (make-factor-graph 3 #(2 2 2)))
+(fg-add-factor! fg #(0 1) #(0.9 0.1 0.1 0.9))
+(fg-infer! fg 10)
+(free-energy fg #(0 1))
+;; Bayesian inference in one line</code></pre>
+<hr />
+<h2 id="6-zero-garbage-collection">6. Zero garbage collection</h2>
+<p>Eshkol uses arena allocation with ownership-aware lexical regions (OALR). Memory is freed deterministically at scope exit — no GC pauses, no unpredictable latency spikes, no “GC took 200ms” in your ML training loop.</p>
+<p>This is the <strong>native engine</strong> (<code>eshkol-run</code>), which is what you compile and ship with. The bytecode VM runs the same programs to the same answers but does not reclaim yet, so use <code>eshkol-run</code> for anything long-running — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/memory-model.md#which-engine-reclaims" target="_blank" rel="noopener noreferrer">memory model</a>.</p>
+<hr />
+<h2 id="7-one-language-every-platform">7. One language, every platform</h2>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th>How</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>macOS native (ARM64 + x64)</td>
+<td><code>eshkol-run program.esk -o binary</code></td>
+</tr>
+<tr>
+<td>Linux native (x64 + ARM64)</td>
+<td>Same command</td>
+</tr>
+<tr>
+<td>Windows native (x64 + ARM64)</td>
+<td>Same command</td>
+</tr>
+<tr>
+<td>WebAssembly (browser)</td>
+<td><code>eshkol-run program.esk -w -o program.wasm</code></td>
+</tr>
+<tr>
+<td>GPU (Metal + CUDA)</td>
+<td>Automatic dispatch for large tensors</td>
+</tr>
+<tr>
+<td>Portable bytecode</td>
+<td><code>eshkol-run program.esk -B program.eskb</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="the-eshkol-stack">The Eshkol Stack</h2>
+<pre><code>┌──────────────────────────────────────────┐
+│  Your Code (.esk)                        │
+├──────────────────────────────────────────┤
+│  555+ builtins: ML, signal, logic, math  │
+├──────────────────────────────────────────┤
+│  Autodiff (forward + reverse mode)       │
+├──────────────────────────────────────────┤
+│  Arena Memory (zero GC, OALR)            │
+├──────────────────────────────────────────┤
+│  LLVM 21 backend ──── Bytecode VM        │
+│  (AOT native)         (portable, WASM)   │
+├──────────────────────────────────────────┤
+│  Metal / CUDA / SIMD / XLA               │
+└──────────────────────────────────────────┘</code></pre>
+<hr />
+<h2 id="get-started">Get Started</h2>
+<pre class="bash"><code>brew tap tsotchke/eshkol &amp;&amp; brew install eshkol</code></pre>
+<p>Or just go to <a href="https://eshkol.ai">eshkol.ai</a> and start typing.</p>

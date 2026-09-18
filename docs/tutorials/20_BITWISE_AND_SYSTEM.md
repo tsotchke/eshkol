@@ -18,6 +18,7 @@
 
 ## Environment Variables
 
+<!-- doc-example: run-only platform-specific: prints the reader's own HOME and PATH -->
 ```scheme
 (display (getenv "HOME"))       ;; => /Users/alice
 (display (getenv "PATH"))       ;; => /usr/local/bin:...
@@ -36,14 +37,22 @@
 ## File System
 
 ```scheme
-;; Check if file/directory exists
-(display (file-exists? "hello.esk"))  ;; => #t or #f
+;; Create a file to work with
+(define out (open-output-file "old.txt"))
+(display "scratch" out)
+(close-port out)
 
-;; Remove file
-(remove "tempfile.txt")
+;; Check if file/directory exists
+(display (file-exists? "old.txt"))    ;; => #t
+(display (file-exists? "new.txt"))    ;; => #f
 
 ;; Rename
-(rename "old.txt" "new.txt")
+(file-rename "old.txt" "new.txt")
+(display (file-exists? "new.txt"))    ;; => #t
+
+;; Remove file
+(file-delete "new.txt")
+(display (file-exists? "new.txt"))    ;; => #f
 ```
 
 ---

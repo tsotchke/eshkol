@@ -165,6 +165,66 @@ public:
      * @return A tagged_value struct with NULL type
      */
     llvm::Value* packNull();
+    /** Pack the unspecified value (ADR-0024): the result of every form R7RS
+     *  leaves unspecified. Distinct from packNull(), which is the empty list. */
+    llvm::Value* packUnspecified();
+
+    // === Cons slots ===
+    //
+    // A cons cell is two tagged values, {car, cdr} (arena_tagged_cons_cell_t).
+    // These two functions are the ONLY way emitted code moves an element value
+    // into or out of a cell, and they move it whole: type, flags and payload.
+    //
+    // They replace a family of readers and writers that each branched over a
+    // closed list of representations (null, double, heap pointer, callable,
+    // bool, char, else int64) and went through a typed runtime accessor. A
+    // value type outside the list was rejected on the way in and read back as
+    // the exact integer 0, with exit status 0. Types were added to individual
+    // copies as they were found missing, so the copies disagreed. Because a
+    // slot is moved whole here, the set of value types a list can hold is open:
+    // a forward-mode dual number, a complex number and any future value type
+    // need no case.
+    //
+    // A typed runtime accessor remains correct for a slot whose type is known
+    // statically, such as the cdr link followed when walking a proper list.
+
+    /**
+     * Load one slot of a cons cell as a tagged value.
+     * @param cell   The cell, as a pointer or as its i64 address.
+     * @param is_cdr false for the car slot, true for the cdr slot.
+     * @return The slot's tagged value; the empty list when @p cell is null, so
+     *         the load is total.
+     */
+    llvm::Value* loadConsSlot(llvm::Value* cell, bool is_cdr);
+
+    /**
+     * Store a tagged value into one slot of a cons cell.
+     * @param cell   The cell, as a pointer or as its i64 address. Must be a
+     *               live cell: callers store into a cell they just allocated
+     *               or have already checked.
+     * @param is_cdr false for the car slot, true for the cdr slot.
+     * @param tagged The tagged value to store. Returns false, having emitted
+     *               nothing, when it is not a tagged value.
+     */
+    bool storeConsSlot(llvm::Value* cell, bool is_cdr, llvm::Value* tagged);
+
+    // === Dense tensor AD nodes ===
+    //
+    // The dense reverse path (ADR-0002 Position A) publishes a tensor result as
+    // ONE CALLABLE AD node whose tensor_value is an f64 buffer. A consumer that
+    // reads a tensor by its elements (a collection builtin, an indexer) has no
+    // rule for that representation and used to misread the node as a Scheme
+    // vector. This resolves the value once: a dense AD node becomes the tensor
+    // of its shape whose elements project it (eshkol_ad_dense_node_elements,
+    // ADR-0023); anything else is returned unchanged. Tensor operators reach
+    // the same projection through eshkol_tensor_operand_checked.
+
+    /**
+     * Resolve a possible dense tensor AD node to the tensor it denotes.
+     * @param tagged A tagged value (a non-tagged value is returned as is).
+     * @return A HEAP_PTR tensor for a dense AD node, else @p tagged.
+     */
+    llvm::Value* resolveDenseTensorNode(llvm::Value* tagged);
 
     /**
      * Pack a character (Unicode codepoint) into a tagged value.

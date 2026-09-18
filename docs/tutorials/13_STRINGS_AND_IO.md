@@ -42,8 +42,8 @@
 (char-alphabetic? #\a)   ;; => #t
 (char-numeric? #\5)      ;; => #t
 (char-whitespace? #\space) ;; => #t
-(char-uppercase? #\A)    ;; => #t
-(char-lowercase? #\a)    ;; => #t
+(char-upper-case? #\A)   ;; => #t
+(char-lower-case? #\a)   ;; => #t
 (char-upcase #\a)        ;; => #\A
 (char-downcase #\A)      ;; => #\a
 ```

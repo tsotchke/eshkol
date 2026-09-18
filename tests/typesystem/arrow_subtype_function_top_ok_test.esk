@@ -1,0 +1,28 @@
+;; Type System Test: every function signature is a subtype of the generic
+;; procedure type, and a signature whose parameters or result are Value is
+;; consistent with a declared arrow. The checker used to relate a signature to
+;; nothing but itself, so each call below warned.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (inc (x : number)) : number (+ x 1))
+(define (call-procedure (p : procedure) x) (p x))
+(define (call-closure (p : closure) x) (p x))
+(define (apply-num (f : (-> number number)) (x : number)) (f x))
+
+(display (call-procedure inc 1))
+(newline)
+(display (call-closure inc 1))
+(newline)
+;; (-> Value Value): unknown, not wrong.
+(display (apply-num (lambda (x) x) 5))
+(newline)
+;; A procedure-typed value flows into a declared arrow parameter.
+(define (forward (p : procedure)) (apply-num p 3))
+(display (forward inc))
+(newline)
+;; if joins two signatures over the same parameters to one signature.
+(define (pick flag) (apply-num (if flag inc (lambda ((x : number)) : number (* x 2))) 4))
+(display (pick #t))
+(newline)

@@ -1,6 +1,13 @@
+---
+kind: report
+status: historical
+owner-area: project
+since: v1.3.5
+sources: []
+---
 # Resolution of the 2026-08-25 architecture and conformity audit
 
-- Source audit: `~/Desktop/Selene/ESHKOL-ARCHITECTURE-AUDIT-2026-08-25.md` (604 lines), subject `4bf871a0`
+- Source audit: the maintainer's private architecture audit of 2026-08-25 (604 lines), subject `4bf871a0`
 - This resolution: worktree `.worktrees/v135/conformity`, branch `docs/conformity-audit-resolution`, originally based on `origin/master` at `4bf871a0`, **rebased 2026-08-25 onto `73cc7cbb`** (PR #464 merged) after #464 landed and conflicted with this branch on the shared doc areas
 - Governing rule (maintainer): **docs are the blueprint and are not walked back.** A doc claim that describes a real, intended capability the code does not yet have is corrected only in the sense of being made *honest about present attainment* — the claim itself stays as tracked, targeted work. A doc is only softened/deleted when it is factually wrong about the past, or when it contradicts itself or another doc (in which case we resolve to the measured truth and cite it).
 - Overlap with PR #464 (`docs/v135-refresh`, merged as `73cc7cbb`): that PR fixed the FEATURE_MATRIX v1.2 Vulkan/Distributed row (d1), the `tensor_codegen.cpp` line-count claim (a9), and the ROADMAP.md version-timeline re-dating (a11). Those three items are marked **SKIPPED (see #464)** below, confirmed absent from this branch's diff against `origin/master` post-rebase, and not duplicated. Everything else in the audit's 50-row conformity table is resolved here. One genuine cross-PR disagreement surfaced during the rebase and was resolved by direct re-verification rather than by picking a side — see d4's updated entry below (ONNX export).
@@ -23,7 +30,7 @@ All 50 rows below correspond 1:1 to the audit's Conformity Table §2: `a*` = ROA
 | a4 | "`(prefix (m) p-)` requires an explicit `only`/`rename`" — now over-pessimistic; bare prefix works | (e) | Corrected description to match the deferred alias-emission path that already works, citing `lib/frontend/parser.cpp:3973-3985` + `exe/eshkol-run.cpp:3157-3163` | ROADMAP.md |
 | a5 | "Arbitrary-order AD … all 13 phases shipped complete" with no engine qualifier | (a)+(b) | Corrected to state LLVM-only completeness explicitly (2/10 named operators are compiler builtins, 8/10 are library code bottoming out in `derivative-n`; VM has none). Filed VM Taylor-tower builtins as a BUILD ITEM (target v1.4.1, ADR-0000 Stage 3/4) | ROADMAP.md |
 | a7 | "Qubit type with linear resource tracking (no-cloning enforced at compile time) — SHIPPED" | (a)+(b) | Corrected to "warning-level type annotation (`--strict-types` required, `--unsafe` disables it, tracked by name so aliasing defeats it); codegen has zero `Qubit` references." Filed hard compile-time no-cloning enforcement as BUILD ITEM (target v1.9.0, ADR-0004). **CLOSED in v1.3.5** — violations are fatal in the default mode with no artifact written, on BOTH engines (the bytecode VM runs the same judgment); the decidable fragment covers `cond`/`case`/`when`/`unless`/`do`/`guard`/`match`/`set!` and alias laundering through an applied `lambda`, a `set!` move or an untyped container. The residue — loop-carried accounting, `call/cc`, once-closures, and a qubit returned from an unannotated function (place-keyed tracking, ADR-0004) — stays filed and is specified in `docs/COMPLETE_LANGUAGE_SPECIFICATION.md` 3.6.8 | ROADMAP.md |
-| a8 | "LLVM Backend — Complete (34,928 lines)" | (e) | Corrected to measured 42,993 (`wc -l lib/backend/llvm_codegen.cpp`) | ROADMAP.md |
+| a8 | "LLVM Backend — Complete (34,928 lines)" | (e) | Corrected to measured 42,993 on 2026-08-25, re-measured 46,973 on the v1.3.5-evolve cut (`wc -l lib/backend/llvm_codegen.cpp`) | ROADMAP.md |
 | a9 | `tensor_codegen.cpp` "19,940 → 1,280 (94%)" vs measured 1,867 | — | **SKIPPED (fixed by PR #464)** | — |
 | a11 | Release Timeline v1.4=Jul 2026, v1.5=Aug 2026, both stale | — | **SKIPPED (re-dating owned by PR #464)** — footer "Last Updated" bumped mechanically since this PR edits the file, dates in the Release Timeline table left untouched pending #464 | ROADMAP.md (footer only) |
 | a13 | v1.3.4 "no finite-difference fallback anywhere in the gradient path" — true for LLVM `gradient`/`hessian`/etc, false for VM `divergence`/`curl` (central differences, `h=1e-7`) | (a)+(b) | Added engine qualifier ("on the LLVM backend"); cross-referenced the existing VM FD gap. Filed "convert VM `divergence`/`curl` off central-difference FD" as BUILD ITEM (target v1.5.0, ties to ADR-0002 Stage 5 gate) | ROADMAP.md |

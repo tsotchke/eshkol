@@ -5399,7 +5399,9 @@ static int vm_vecref_tensor_path(VM* vm, Value tensor_val, Value idx_val) {
  * Mirrors CollectionCodegen::vectorSet's tensor path: unlike vector-ref,
  * native does NOT special-case N-D row addressing here — `idx` is always
  * bounds-checked against the FLAT total element count regardless of rank,
- * and the value is stored as a double directly into the flat data buffer.
+ * and the value is converted to the slot's double by vm_tensor_slot_value(),
+ * the VM half of the ADR-0020 slot store boundary (a value with no
+ * real-number representation raises instead of being stored as 0.0).
  *
  * Returns 1 on success (caller still pushes the void result, matching the
  * VAL_VECTOR path's convention). On an out-of-range index this RAISES a
@@ -5413,7 +5415,13 @@ static int vm_vecset_tensor_path(VM* vm, Value tensor_val, Value idx_val, Value 
         vm_raise_error_msg(vm, "vector-set!: index out of bounds");
         return 0;
     }
-    t->data[idx] = as_number(val);
+    double slot = 0.0;
+    if (!vm_tensor_slot_value(vm, val, &slot)) {
+        vm_raise_error_msg(vm, "vector-set!: value has no representation in a numeric "
+                               "tensor slot (a tensor-backed vector holds real numbers only)");
+        return 0;
+    }
+    t->data[idx] = slot;
     return 1;
 }
 
@@ -10339,6 +10347,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_raise_error_msg(vm, "tensor-set!: index must be an integer, list or vector");
             break;
         }
+        /* ADR-0020 slot store boundary: MS-04 / SW-166 made an exact rational
+         * or bignum convert to its correctly-rounded double here; a value with
+         * no real-number representation is now refused rather than stored as
+         * the 0.0 as_number_vm() answers for it. */
+        double slot = 0.0;
+        if (!vm_tensor_slot_value(vm, val, &slot)) {
+            vm_raise_error_msg(vm, "tensor-set!: value has no representation in a numeric "
+                                   "tensor slot (a tensor-backed vector holds real numbers only)");
+            break;
+        }
         /* Bounds contract (#356): an out-of-range write is a catchable error on
          * every substrate.  vm_tensor_set() returns silently instead, so an
          * out-of-range tensor-set! was a NO-OP the program could not detect. */
@@ -10349,10 +10367,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm_raise_error_msg(vm, "tensor-set!: index out of bounds");
                 break;
             }
-            /* MS-04 / SW-166: as_number_vm so an exact rational/bignum value
-             * (e.g. (tensor-set! t 0 1/2)) converts to its correctly-rounded
-             * double instead of silently writing 0.0. */
-            t->data[indices[0]] = as_number_vm(vm, val);
+            t->data[indices[0]] = slot;
             vm_push(vm, NIL_VAL);
             break;
         }
@@ -10360,7 +10375,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_raise_error_msg(vm, "tensor-set!: index out of bounds");
             break;
         }
-        vm_tensor_set(t, indices, n, as_number_vm(vm, val));
+        vm_tensor_set(t, indices, n, slot);
         vm_push(vm, NIL_VAL);
         break;
     }
@@ -13890,8 +13905,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 2014: { /* json-get-in(obj, path, default) → value */
+    case 2014: { /* json-get-in(obj, path [, default]) → value; default #f */
         Value default_val = vm_pop(vm), path_val = vm_pop(vm), obj_val = vm_pop(vm);
+        if (vm_native_absent(default_val)) default_val = BOOL_VAL(0);
         vm_push(vm, vm_json_get_in_value(vm, obj_val, path_val, default_val));
         break;
     }
@@ -15550,101 +15566,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 142: { /* add2 — complex- and rational-aware */
-        /* The variadic prelude folds with these, so they must dispatch over
-         * exactly the same tag set as the OP_ADD/OP_SUB/OP_MUL opcodes.  A
-         * rational operand had NO branch here and fell through to the double
-         * path, where as_number() reads its heap pointer as 0.0 — so
-         * `(apply + (list 1/3 1.5))` answered 1.5, silently dropping a term. */
-        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
-            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
-            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            VmComplex* r = vm_complex_add(&vm->heap.regions, &a_z, &b_z);
-            if (!r) { vm->error = 1; break; }
-            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
-            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
-        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL) {
-            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 331);
-        } else if (vm_either_bignum(a_val,b_val)) { vm_bignum_arith(vm,a_val,b_val,'+'); }
-        else if (a_val.type==VAL_INT && b_val.type==VAL_INT) {
-            int64_t r; if (__builtin_add_overflow(a_val.as.i,b_val.as.i,&r)) vm_bignum_arith(vm,a_val,b_val,'+'); else vm_push(vm, INT_VAL(r));
-        } else { vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) + as_number_vm(vm,b_val))); }
-        break; }
-    case 143: { /* sub2 — complex-aware */
-        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
-            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
-            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            VmComplex* r = vm_complex_sub(&vm->heap.regions, &a_z, &b_z);
-            if (!r) { vm->error = 1; break; }
-            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
-            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
-        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL) {
-            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 332);
-        } else if (vm_either_bignum(a_val,b_val)) { vm_bignum_arith(vm,a_val,b_val,'-'); }
-        else if (a_val.type==VAL_INT && b_val.type==VAL_INT) {
-            int64_t r; if (__builtin_sub_overflow(a_val.as.i,b_val.as.i,&r)) vm_bignum_arith(vm,a_val,b_val,'-'); else vm_push(vm, INT_VAL(r));
-        } else { vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) - as_number_vm(vm,b_val))); }
-        break; }
-    case 144: { /* mul2 — complex-aware */
-        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
-            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
-            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            VmComplex* r = vm_complex_mul(&vm->heap.regions, &a_z, &b_z);
-            if (!r) { vm->error = 1; break; }
-            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
-            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
-        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL) {
-            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 333);
-        } else if (vm_either_bignum(a_val,b_val)) { vm_bignum_arith(vm,a_val,b_val,'*'); }
-        else if (a_val.type==VAL_INT && b_val.type==VAL_INT) {
-            int64_t r; if (__builtin_mul_overflow(a_val.as.i,b_val.as.i,&r)) vm_bignum_arith(vm,a_val,b_val,'*'); else vm_push(vm, INT_VAL(r));
-        } else { vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) * as_number_vm(vm,b_val))); }
-        break; }
-    case 145: { /* div2 — complex- and rational-aware.
-                 * The prelude's variadic `/` folds with div2, so this is the
-                 * real path for (/ 1 3). Exact/exact division yields an exact
-                 * rational (or an integer when it divides), matching the native
-                 * path; previously it always produced an inexact float. */
-        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
-            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
-            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            VmComplex* r = vm_complex_div(&vm->heap.regions, &a_z, &b_z);
-            if (!r) { vm->error = 1; break; }
-            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
-            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
-        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL ||
-                   (a_val.type == VAL_INT && b_val.type == VAL_INT)) {
-            if ((a_val.type == VAL_INT && b_val.type == VAL_INT && b_val.as.i == 0)) {
-                fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
-            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 334); /* rational div: reduces, collapses denom==1 to int */
-        } else if (vm_either_bignum(a_val, b_val)) {
-            /* as_number() answers 0.0 for a heap-boxed bignum, so without this
-             * branch the plain double fallback below silently produced 0 for
-             * every bignum division routed through the variadic `/`. */
-            vm_bignum_arith(vm, a_val, b_val, '/');
-        } else {
-            /* At least one operand is INEXACT here, so a zero divisor is
-             * IEEE-754: ±inf.0 / +nan.0, exactly as native computes it. */
-            vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) / as_number_vm(vm,b_val)));
-        }
-        break; }
-    /* Comparison operators as first-class functions (for sort, map, fold, etc.)
-     * SW-158: the AD-carrier arm must run before vm_either_exact_wide() —
-     * see vm_either_ad_carrier() in vm_ops.c for the full rationale (the
-     * bytecode OP_LT/GT/LE/GE/EQ opcodes carry the identical fix via
-     * vm_exec_lt() et al.; this is the separate first-class-closure copy). */
+    /* The first-class procedures + - * / (and the variadic prelude folds over
+     * them). They run the opcode implementation itself, so a first-class `+`
+     * and an inline `+` cannot disagree about any operand type (SW-183). */
+    case 142: vm_op_arith(vm, '+'); break; /* add2 */
+    case 143: vm_op_arith(vm, '-'); break; /* sub2 */
+    case 144: vm_op_arith(vm, '*'); break; /* mul2 */
+    case 145: vm_op_arith(vm, '/'); break; /* div2 */
+
     case 146: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_ad_carrier(a,b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <  as_number_vm(vm,b))); break; } if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) < as_number_vm(vm,b))); break; }  /* < */
     case 147: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_ad_carrier(a,b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >  as_number_vm(vm,b))); break; } if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) > as_number_vm(vm,b))); break; }  /* > */
     case 148: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_ad_carrier(a,b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; } if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; } /* <= */
@@ -16040,8 +15969,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int slot = (int)as_number(slot_v);
             int absolute_slot = vm->fp + slot;
             if (uv_idx >= 0 && uv_idx < cl->closure.n_upvalues &&
-                absolute_slot >= 0 && absolute_slot < vm->sp)
+                absolute_slot >= 0 && absolute_slot < vm->sp) {
                 cl->closure.open_slots[uv_idx] = absolute_slot;
+                vm_register_open_upvalue(vm, cl_val.as.ptr, uv_idx, absolute_slot);
+            }
         }
         vm_push(vm, NIL_VAL);
         break;

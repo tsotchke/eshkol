@@ -15,13 +15,17 @@
  * embedded in binaries and reported by `--version`.
  */
 #define ESHKOL_VERSION_MAJOR 1
+/** @brief Minor component of the semantic version (the `3` in 1.3.5). */
 #define ESHKOL_VERSION_MINOR 3
+/** @brief Patch component of the semantic version (the `5` in 1.3.5). */
 #define ESHKOL_VERSION_PATCH 5
+/** @brief Full release string, `MAJOR.MINOR.PATCH` plus the release-series suffix. */
 #define ESHKOL_VERSION_STRING "1.3.5-evolve"
 
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "eshkol/frontend/node_identity.h"
 
 #include "eshkol/exhaustive_dispatch.h"
 
@@ -40,6 +44,7 @@
 #ifdef __cplusplus
 #define ESHKOL_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
 #else
+/** @brief C spelling of ESHKOL_STATIC_ASSERT: expands to C11 `_Static_assert(cond, msg)`. */
 #define ESHKOL_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
 #endif
 
@@ -51,6 +56,13 @@
 extern "C" {
 #endif
 
+/**
+ * @brief Opaque handle to an arena allocator.
+ *
+ * The struct is defined in lib/core/arena_memory.h; this header only passes
+ * pointers to it. Runtime objects allocated from an arena live until the
+ * arena (or the region scope that owns it) is reset or destroyed.
+ */
 typedef struct arena arena_t;
 
 /**
@@ -123,6 +135,13 @@ typedef enum {
 
     // Neuro-symbolic consciousness engine types
     ESHKOL_VALUE_LOGIC_VAR   = 10,  // Logic variable ?x (data = var_id : int64)
+    // The unspecified value (ADR-0024): what every form R7RS leaves
+    // unspecified evaluates to -- display, newline, set!, vector-set!, when and
+    // unless with a false test, for-each, ... It is an immediate with no
+    // payload, distinct from the empty list (ESHKOL_VALUE_NULL) so `null?` is
+    // #f and `eq?` against '() is #f, prints as nothing, and is the native
+    // counterpart of the bytecode VM's VAL_VOID.
+    ESHKOL_VALUE_UNSPECIFIED = 11,
 
     // ═══════════════════════════════════════════════════════════════════════
     // MULTIMEDIA TYPES (16-19) - linear resources with lifecycle management
@@ -152,17 +171,53 @@ typedef enum {
 } eshkol_value_type_t;
 
 // Type flags for Scheme exactness tracking
+/**
+ * @brief Exactness bit 0x10: the number is R7RS-exact.
+ *
+ * eshkol_make_int64() stores it in eshkol_tagged_value_t::flags. Some code
+ * paths fold it into the `type` byte instead (see ESHKOL_VALUE_EXACT_INT64),
+ * so comparisons of a `type` byte mask it off first (ESHKOL_GET_BASE_TYPE).
+ */
 #define ESHKOL_VALUE_EXACT_FLAG   0x10
+/**
+ * @brief Exactness bit 0x20: the number is R7RS-inexact.
+ *
+ * Set in eshkol_tagged_value_t::flags by eshkol_make_double() and
+ * eshkol_make_complex(); like ESHKOL_VALUE_EXACT_FLAG it may also appear
+ * folded into a `type` byte (ESHKOL_VALUE_INEXACT_DOUBLE).
+ */
 #define ESHKOL_VALUE_INEXACT_FLAG 0x20
 
 // Port type flags (OR'd into type byte with ESHKOL_VALUE_HEAP_PTR)
+/**
+ * @brief Port bit 0x10: the value is an input port.
+ *
+ * Port bits are OR'd into the `type` byte together with
+ * ESHKOL_VALUE_HEAP_PTR, so an input port's type byte is `8 | 0x10`. The bit
+ * shares its numeric value with ESHKOL_VALUE_EXACT_FLAG; the two never meet
+ * because exactness applies to numbers and port bits to HEAP_PTR values.
+ */
 #define ESHKOL_PORT_INPUT_FLAG    0x10   // Input port
+/** @brief Port bit 0x40: the value is an output port (type byte `ESHKOL_VALUE_HEAP_PTR | 0x40`). */
 #define ESHKOL_PORT_OUTPUT_FLAG   0x40   // Output port
+/**
+ * @brief Port bit 0x04: the port is binary; a port without it is textual.
+ *
+ * Combined with a direction bit, e.g. a binary input port carries
+ * `ESHKOL_VALUE_HEAP_PTR | ESHKOL_PORT_INPUT_FLAG | ESHKOL_PORT_BINARY_FLAG`.
+ * `binary-port?` and `textual-port?` test this bit after the direction mask.
+ */
 #define ESHKOL_PORT_BINARY_FLAG   0x04   // Binary port (vs textual)
+/**
+ * @brief Direction mask 0x50 (input | output): non-zero `type & mask` on a
+ *        HEAP_PTR-based type byte means the value is a port.
+ */
 #define ESHKOL_PORT_ANY_FLAG      0x50   // Mask: input (0x10) | output (0x40)
 
 // Combined type constants for common cases
+/** @brief Combined type byte for an exact integer: ESHKOL_VALUE_INT64 with the exact bit folded in (0x11). */
 #define ESHKOL_VALUE_EXACT_INT64     (ESHKOL_VALUE_INT64 | ESHKOL_VALUE_EXACT_FLAG)
+/** @brief Combined type byte for an inexact real: ESHKOL_VALUE_DOUBLE with the inexact bit folded in (0x22). */
 #define ESHKOL_VALUE_INEXACT_DOUBLE  (ESHKOL_VALUE_DOUBLE | ESHKOL_VALUE_INEXACT_FLAG)
 
 /**
@@ -203,7 +258,7 @@ typedef struct eshkol_tagged_value {
     } data;
 } eshkol_tagged_value_t;
 
-// Compile-time size validation for tagged values
+/** @brief Compile-time check: a tagged value occupies at most 16 bytes. */
 ESHKOL_STATIC_ASSERT(sizeof(eshkol_tagged_value_t) <= 16,
                      "Tagged value must fit in 16 bytes for efficiency");
 
@@ -228,13 +283,19 @@ typedef struct eshkol_dual_number {
     double ep12;         // derivative of e12 with respect to the reverse seed
 } eshkol_dual_number_t;
 
-// Compile-time size validation for dual numbers
+/** @brief Compile-time check: eshkol_dual_number_t is exactly eight doubles (64 bytes). */
 ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 8 * sizeof(double),
                      "Mixed-mode dual jet must contain eight doubles");
 
-/* The native LLVM forward carrier is the eight-double JET8 payload.  Its
- * tagged pointer keeps the legacy DUAL_NUMBER tag, so region evacuation needs
- * the emitted payload size rather than the two-double public scalar helper. */
+/**
+ * @brief Byte size of the heap payload behind an ESHKOL_VALUE_DUAL_NUMBER
+ *        pointer: eight doubles, equal to sizeof(eshkol_dual_number_t).
+ *
+ * The native LLVM forward carrier is the eight-double jet payload, and its
+ * tagged pointer keeps the DUAL_NUMBER tag.
+ * Region evacuation copies this many bytes when a dual number escapes a
+ * region, because the tagged pointer carries no width of its own.
+ */
 #define ESHKOL_DUAL_HEAP_PAYLOAD_SIZE (8u * sizeof(double))
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -268,7 +329,9 @@ typedef struct esh_taylor {
 } esh_taylor_t;
 
 // esh_taylor_t.flags bitfield accessors (§4 of the design).
+/** @brief Mask of the coefficient-representation field, bits 0..7 of esh_taylor_t::flags. */
 #define ESH_TAYLOR_COEFF_MASK    0x000000FFu  // coefficient type: 0=F64, 1=RATIONAL (P7 adds TENSOR)
+/** @brief Coefficient representation 0: the series is stored as raw doubles in esh_taylor_t::c. */
 #define ESH_TAYLOR_COEFF_F64     0u
 // P6 (ESH-0191): exact-coefficient towers. When COEFF_RATIONAL is set, the
 // `c[]` storage declared as `double c[]` above is REINTERPRETED as
@@ -279,6 +342,13 @@ typedef struct esh_taylor {
 // 32 bytes in) is 8-byte aligned, matching
 // alignof(eshkol_tagged_value_t); accessors in lib/core/runtime_taylor.c
 // never raw-index across coefficient types (design section 4/12).
+/**
+ * @brief Coefficient representation 1: exact coefficients.
+ *
+ * Each coefficient is an eshkol_tagged_value_t holding an exact int64, bignum
+ * or rational. A tower allocated by eshkol_taylor_alloc_exact() overlays the
+ * tagged values on the `c[]` storage and points esh_taylor_t::exact_c at it.
+ */
 #define ESH_TAYLOR_COEFF_RATIONAL 1u
 // P5 (ESH-0190) reverse-over-Taylor: a tower may carry a parallel first-order
 // "seed tangent" series alongside its value series. When ESH_TAYLOR_TANGENT_FLAG
@@ -286,15 +356,46 @@ typedef struct esh_taylor {
 // by c[K+1..2K+1] = d(value_k)/d(reverse-seed). This is the tower analogue of
 // the 8-jet's ep-derivative half (docs/design/AD_TAYLOR_TOWER.md §8). Lives in
 // the RESERVED0 byte (bit 8); orthogonal to COEFF_MASK and EPOCH_TAG.
+/**
+ * @brief Bit 8: the tower carries a first-order tangent series.
+ *
+ * Storage then holds 2*(K+1) doubles: values c[0..K] followed by the tangent
+ * coefficients c[K+1..2K+1].
+ */
 #define ESH_TAYLOR_TANGENT_FLAG  0x00000100u
+/**
+ * @brief Bit 9: sign hint, the exactly computed primal c[0] is negative.
+ *
+ * Recorded by exact +, -, * and / on tangent-carrying towers; read by `abs`
+ * to choose the branch when the double primal is 0.0.
+ */
 #define ESH_TAYLOR_PRIMAL_NEGATIVE_FLAG 0x00000200u
+/** @brief Bit 10: sign hint, the exactly computed primal c[0] is positive (see ESH_TAYLOR_PRIMAL_NEGATIVE_FLAG). */
 #define ESH_TAYLOR_PRIMAL_POSITIVE_FLAG 0x00000400u
+/**
+ * @brief Bit 11: the value and tangent series also have exact copies.
+ *
+ * esh_taylor_t::exact_c then points at a sidecar placed after the double
+ * lanes: K+1 exact value coefficients followed by K+1 exact tangent
+ * coefficients.
+ */
 #define ESH_TAYLOR_TANGENT_EXACT_FLAG 0x00000800u
+/**
+ * @brief Bit 12: hyperdual tower with a second tangent series.
+ *
+ * Storage holds four double lanes of K+1 entries: value, tangent, second
+ * tangent and the mixed tangent*tangent2 term.
+ */
 #define ESH_TAYLOR_TANGENT2_FLAG 0x00001000u
+/** @brief Bit 13: the second-tangent and mixed lanes also have exact copies in the esh_taylor_t::exact_c sidecar. */
 #define ESH_TAYLOR_TANGENT2_EXACT_FLAG 0x00002000u
+/** @brief True when flags word @p fl has ESH_TAYLOR_TANGENT_FLAG set. */
 #define ESH_TAYLOR_HAS_TANGENT(fl) (((fl) & ESH_TAYLOR_TANGENT_FLAG) != 0u)
+/** @brief True when flags word @p fl has ESH_TAYLOR_TANGENT_EXACT_FLAG set. */
 #define ESH_TAYLOR_TANGENT_IS_EXACT(fl) (((fl) & ESH_TAYLOR_TANGENT_EXACT_FLAG) != 0u)
+/** @brief True when flags word @p fl has ESH_TAYLOR_TANGENT2_FLAG set. */
 #define ESH_TAYLOR_HAS_TANGENT2(fl) (((fl) & ESH_TAYLOR_TANGENT2_FLAG) != 0u)
+/** @brief True when flags word @p fl has ESH_TAYLOR_TANGENT2_EXACT_FLAG set. */
 #define ESH_TAYLOR_TANGENT2_IS_EXACT(fl) (((fl) & ESH_TAYLOR_TANGENT2_EXACT_FLAG) != 0u)
 // ESH-0412 nested capture: `esh_taylor_t.carry_epoch` names the ENCLOSING
 // differentiation level whose perturbation this tower's first-order companion
@@ -306,30 +407,75 @@ typedef struct esh_taylor {
 // variable instead of through the evaluation point. Set where a foreign-epoch
 // tower is lifted (see "operand normalisation + epoch" in
 // lib/core/runtime_taylor.c) and read by eshkol_ad_tower_carry_result().
+/** @brief Bit position (16) of the epoch tag inside esh_taylor_t::flags. */
 #define ESH_TAYLOR_EPOCH_SHIFT   16u
+/**
+ * @brief Mask of the 16-bit epoch tag, bits 16..31 of esh_taylor_t::flags.
+ *
+ * The epoch identifies the differentiation pass that owns the series, so
+ * that nested passes never mix their perturbations.
+ */
 #define ESH_TAYLOR_EPOCH_MASK    0xFFFF0000u  // perturbation-confusion tag (bits 16..31)
+/** @brief Extract the epoch tag (0..65535) from flags word @p fl. */
 #define ESH_TAYLOR_GET_EPOCH(fl) (((fl) & ESH_TAYLOR_EPOCH_MASK) >> ESH_TAYLOR_EPOCH_SHIFT)
+/**
+ * @brief Build a flags word from a coefficient representation and an epoch.
+ *
+ * @p coeff is masked to 8 bits and @p epoch to 16 bits; every other bit
+ * (tangent, sign-hint and exactness bits) is clear and is OR'd in separately.
+ */
 #define ESH_TAYLOR_MK_FLAGS(coeff, epoch) \
     (((uint32_t)(coeff) & ESH_TAYLOR_COEFF_MASK) | \
     (((uint32_t)(epoch) << ESH_TAYLOR_EPOCH_SHIFT) & ESH_TAYLOR_EPOCH_MASK))
 
-/* Compare the primal coefficients of Taylor operands using the exact numeric
- * tower whenever both primals are exact.  op is 0=lt, 1=gt, 2=eq, 3=le,
- * 4=ge. */
+/**
+ * @brief Order two values by their primal (c[0]) coefficient.
+ *
+ * A Taylor operand contributes its c[0]; any other operand is compared as it
+ * is. When either primal is exact and the other is exact or a finite double,
+ * the comparison is carried out in the exact numeric tower (the double is
+ * converted to the rational it represents); otherwise both are compared as
+ * doubles with IEEE semantics.
+ *
+ * @param arena Arena for exact temporaries.
+ * @param left  Left operand.
+ * @param right Right operand.
+ * @param op    0 = lt, 1 = gt, 2 = eq, 3 = le, 4 = ge; any other code yields 0
+ *              on the double path.
+ * @return 1 when the relation holds, 0 otherwise.
+ */
 int32_t eshkol_taylor_order_tagged(
     void* arena, const eshkol_tagged_value_t* left,
     const eshkol_tagged_value_t* right, int op);
 
-/* Restate an inner Taylor derivative in the enclosing Taylor carrier. The
- * result's c[0] is the selected inner derivative and c[1] is the attached
- * outer-epoch perturbation, kept exact when both payloads are exact. */
+/**
+ * @brief Restate an inner Taylor derivative in the enclosing Taylor carrier.
+ *
+ * Projects the series owned by the tower's own value epoch. The result's
+ * c[0] is the selected inner derivative and c[1] is the attached outer-epoch
+ * perturbation, kept exact when both payloads are exact.
+ *
+ * @param arena Arena for the result.
+ * @param tower Tagged Taylor tower produced by the inner pass.
+ * @param n     Derivative order to select.
+ * @param out   Receives the projected value.
+ */
 void eshkol_taylor_project_tangent_outer(
     arena_t* arena, const eshkol_tagged_value_t* tower, uint32_t n,
     eshkol_tagged_value_t* out);
 
-/* Project a first-order forward pass from a Taylor result. Returns zero when
- * the value is not a Taylor carrier, otherwise writes the selected tangent
- * while preserving the carrier's foreign value epoch. */
+/**
+ * @brief Project a first-order forward pass out of a Taylor result.
+ *
+ * Selects the tower's tangent epoch (esh_taylor_t::tangent_epoch) at order 1
+ * and writes the tangent to @p out while preserving the carrier's foreign
+ * value epoch.
+ *
+ * @param arena Arena for the result.
+ * @param tower Tagged value to project.
+ * @param out   Receives the projection; untouched when 0 is returned.
+ * @return 1 when @p tower is a Taylor carrier, 0 when it is not.
+ */
 int32_t eshkol_taylor_project_forward_tangent(
     arena_t* arena, const eshkol_tagged_value_t* tower,
     eshkol_tagged_value_t* out);
@@ -339,10 +485,15 @@ int32_t eshkol_taylor_project_forward_tangent(
 // already an ENCLOSING pass's carrier, and threaded (packed with the outer
 // tower's epoch in bits 8..23) to the matching eshkol_ad_nested_extract().
 // See the block comment above eshkol_ad_nested_seed in lib/core/runtime_taylor.c.
+/** @brief Route 0: the evaluation point is an ordinary value; the caller seeds its pass as for a non-nested differentiation. */
 #define ESH_AD_NEST_NONE         0   // not nested: caller seeds exactly as before
+/** @brief Route 1: the outer pass is an 8-jet, which rides this tower's tangent series. */
 #define ESH_AD_NEST_CARRY_JET    1   // outer 8-jet rides this tower's tangent
+/** @brief Route 2: this pass is first order (or order zero) and rides the outer tower's tangent dimension. */
 #define ESH_AD_NEST_RIDE         2   // this first-order pass rides the outer tower's tangent
+/** @brief Route 3: the outer pass is an order-1 tower, which rides this tower's tangent series. */
 #define ESH_AD_NEST_CARRY_TWR    3   // outer order-1 tower rides this tower's tangent
+/** @brief Route -1: neither pass is first order, so no composition exists; the caller raises an error. */
 #define ESH_AD_NEST_UNSUPPORTED (-1) // neither pass is first order: caller raises
 
 /**
@@ -357,29 +508,53 @@ typedef struct eshkol_complex_number {
     double imag;        // Imaginary component (𝕴)
 } eshkol_complex_number_t;
 
-// Compile-time size validation for complex numbers
+/** @brief Compile-time check: eshkol_complex_number_t is exactly 16 bytes. */
 ESHKOL_STATIC_ASSERT(sizeof(eshkol_complex_number_t) == 16,
                      "Complex number must be 16 bytes for cache efficiency");
 
-/* Fixed-size payload descriptors shared by every producer and every region
- * escape copier for pointer-carrying AD/user-number values. The runtime tag
- * alone cannot distinguish the legacy two-field spelling from the complete
- * mixed-mode jet, so all DUAL_NUMBER producers use DUAL_JET. Header-prefixed
- * AD nodes and Taylor towers retain their own object-header size and layout
- * descriptors; this table covers the headerless payloads only. */
+/**
+ * @brief X-macro table of the headerless, fixed-size AD payloads.
+ *
+ * Shared by every producer and every region escape copier of
+ * pointer-carrying AD and user-number values. Header-prefixed AD nodes and
+ * Taylor towers keep their own object-header size and are not in the table.
+ * The runtime tag cannot tell a two-field dual from the complete mixed-mode
+ * jet, so every DUAL_NUMBER producer uses the DUAL_JET layout.
+ * Each row is `X(name, C type)`: DUAL_JET is the eshkol_dual_number_t behind
+ * every ESHKOL_VALUE_DUAL_NUMBER pointer, USER_NUMBER the
+ * eshkol_complex_number_t behind ESHKOL_VALUE_COMPLEX. It generates
+ * eshkol_ad_payload_subtype_t and eshkol_ad_payload_size() and is undefined
+ * again right after them.
+ */
 #define ESHKOL_AD_PAYLOAD_LAYOUTS(X) \
     X(DUAL_JET,    eshkol_dual_number_t) \
     X(USER_NUMBER, eshkol_complex_number_t)
 
+/**
+ * @brief Identifies one row of the headerless AD payload table.
+ *
+ * Enumerators are ESHKOL_AD_PAYLOAD_DUAL_JET and
+ * ESHKOL_AD_PAYLOAD_USER_NUMBER, followed by ESHKOL_AD_PAYLOAD_LAYOUT_COUNT
+ * (the number of rows, not a payload kind).
+ */
 typedef enum {
+/** @brief Row expander used once, here: turns a table row into the enumerator ESHKOL_AD_PAYLOAD_<name>. */
 #define ESHKOL_AD_PAYLOAD_LAYOUT_ENUM(name, type) ESHKOL_AD_PAYLOAD_##name,
     ESHKOL_AD_PAYLOAD_LAYOUTS(ESHKOL_AD_PAYLOAD_LAYOUT_ENUM)
 #undef ESHKOL_AD_PAYLOAD_LAYOUT_ENUM
     ESHKOL_AD_PAYLOAD_LAYOUT_COUNT
 } eshkol_ad_payload_subtype_t;
 
+/**
+ * @brief Byte size of a headerless AD payload.
+ * @param subtype Payload kind.
+ * @return sizeof the C type registered for @p subtype (64 for DUAL_JET, 16
+ *         for USER_NUMBER); 0 for ESHKOL_AD_PAYLOAD_LAYOUT_COUNT or any value
+ *         outside the table.
+ */
 static inline size_t eshkol_ad_payload_size(eshkol_ad_payload_subtype_t subtype) {
     switch (subtype) {
+/** @brief Row expander used once, here: turns a table row into `case ESHKOL_AD_PAYLOAD_<name>: return sizeof(type);`. */
 #define ESHKOL_AD_PAYLOAD_LAYOUT_SIZE(name, type) \
         case ESHKOL_AD_PAYLOAD_##name: return sizeof(type);
         ESHKOL_AD_PAYLOAD_LAYOUTS(ESHKOL_AD_PAYLOAD_LAYOUT_SIZE)
@@ -484,6 +659,7 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 
 // Immediate type checks (no masking needed for new types)
 #define ESHKOL_IS_NULL_TYPE(type)        ((type) == ESHKOL_VALUE_NULL)
+#define ESHKOL_IS_UNSPECIFIED_TYPE(type) ((type) == ESHKOL_VALUE_UNSPECIFIED)
 #define ESHKOL_IS_INT64_TYPE(type)       ((type) == ESHKOL_VALUE_INT64)
 #define ESHKOL_IS_DOUBLE_TYPE(type)      ((type) == ESHKOL_VALUE_DOUBLE)
 #define ESHKOL_IS_BOOL_TYPE(type)        ((type) == ESHKOL_VALUE_BOOL)
@@ -3112,7 +3288,9 @@ extern "C" {
  * (`operation`, an eshkol_operations_t tagged by its own `op` field).
  * `inferred_hott_type` caches the type checker's result (0 = not yet
  * checked); `line`/`column` give 1-based source location for diagnostics
- * (0 = unknown).
+ * (0 = unknown). `node_id` uses the parser allocator's `eshkol_node_id_t`
+ * key type, a `uint32_t` alias, so semantic side tables use the same key
+ * without changing the public field width or layout.
  */
 typedef struct eshkol_ast {
     eshkol_type_t type;
@@ -3203,8 +3381,10 @@ typedef struct eshkol_ast {
      * deliberately an id and not a pointer: C++ construction zeroes it, but a
      * node assembled over unconstructed memory could hold garbage, and a garbage
      * NodeId is rejected by its tag and its bound and reads as unknown —
-     * never as a confident wrong location. */
-    uint32_t node_id ESHKOL_AST_BORN_ZERO;
+     * never as a confident wrong location. The field uses the allocator's
+     * eshkol_node_id_t alias (uint32_t), preserving the public field width
+     * while keeping parser and semantic-query keys type-identical. */
+    eshkol_node_id_t node_id ESHKOL_AST_BORN_ZERO;
 } eshkol_ast_t;
 
 #ifdef __cplusplus
@@ -3566,18 +3746,36 @@ extern "C" const char* eshkol_get_parse_source_context(void);
  * The table lives for the process and its entries are never reallocated away,
  * so an id is safe to store in an AST node and resolve much later — after the
  * loader's own path strings have gone out of scope.
+ *
+ * Each entry keeps two spellings (ADR-0021): the DISPLAY path, normalized by
+ * inc/eshkol/frontend/source_paths.h and used by everything that records or
+ * embeds a location, and the HOST path as given, used only to read the file.
  * @param path File path to intern; NULL or empty returns 0 ("unknown").
  * @return A nonzero id, or 0 when @p path is NULL/empty.
  */
 extern "C" uint32_t eshkol_intern_source_file(const char* path);
 
 /**
- * @brief Resolve an interned source-file id back to its path.
+ * @brief Resolve an interned source-file id to its DISPLAY path.
+ *
+ * This is the spelling that may be printed in a diagnostic or embedded in a
+ * generated object: repository-relative, module-relative, or a bare file name
+ * — never an absolute host path.
  * @param id Id previously returned by eshkol_intern_source_file().
- * @return The interned path, or NULL when @p id is 0 or not a live id (which is
+ * @return The display path, or NULL when @p id is 0 or not a live id (which is
  *         how an unset/garbage eshkol_ast_t::source_file_id reads as unknown).
  */
 extern "C" const char* eshkol_source_file_name(uint32_t id);
+
+/**
+ * @brief Resolve an interned source-file id to the HOST path it was read from.
+ *
+ * For opening the file (the caret line under a diagnostic). Never record or
+ * embed this: it names the build machine's directory layout.
+ * @param id Id previously returned by eshkol_intern_source_file().
+ * @return The host path, or NULL when @p id is 0 or not a live id.
+ */
+extern "C" const char* eshkol_source_file_host_path(uint32_t id);
 /** Reset/query the current thread's cumulative parser error state. */
 extern "C" void eshkol_reset_parse_errors(void);
 extern "C" int eshkol_parse_had_error(void);

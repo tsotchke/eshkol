@@ -1,0 +1,167 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  A list cell holds a differentiated value like any other value
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  Forward mode carries a derivative in a dual number. When a lambda passed to
+;;  `map` captures the differentiated variable, every element of the list it
+;;  builds is a dual number. Writing a cons slot used to branch over a closed
+;;  list of storage classes (null, double, pointer, else int64) and reading one
+;;  branched over a longer closed list; a dual number was in neither. The write
+;;  was rejected and left the slot empty, the read answered the exact integer
+;;  0, and the derivative of the whole expression was 0 with exit status 0 and
+;;  "Invalid type for int64 storage value: 6" on stderr (SW-183).
+;;
+;;  A slot is a tagged value and is now written and read whole, so the set of
+;;  value types a list can hold is open.
+;;
+;;  Every check pins the analytic value. The rows cover each higher-order list
+;;  procedure with a captured differentiated variable, the list primitives
+;;  themselves, reverse mode, second order, and two non-AD values that fell in
+;;  the same hole (a complex number in a list, a character in a cdr slot read
+;;  through `apply`). Runs identically under -r with and without the run cache,
+;;  and as a compiled binary; prints a PASS/FAIL summary and exits non-zero on
+;;  any failure.
+;; ─────────────────────────────────────────────────────────────────────────
+
+(define npass 0)
+(define nfail 0)
+
+(define (rel-ok got want)
+  (let ((d (abs (- got want))))
+    (or (< d 1e-9)
+        (< (/ d (+ 1e-30 (abs want))) 1e-9))))
+
+(define (report-fail name got)
+  (set! nfail (+ nfail 1))
+  (display "FAIL: ") (display name) (display " got ") (display got) (newline))
+
+(define (check name got want)
+  (if (and (number? got) (rel-ok got want))
+      (set! npass (+ npass 1))
+      (report-fail name got)))
+
+(define (check-true name got)
+  (if (eq? got #t)
+      (set! npass (+ npass 1))
+      (report-fail name got)))
+
+(define (check-vec name got want)
+  (let loop ((i 0) (w want) (ok #t))
+    (if (null? w)
+        (if ok (set! npass (+ npass 1)) (report-fail name got))
+        (let ((g (vref got i)))
+          (loop (+ i 1) (cdr w) (and ok (number? g) (rel-ok g (car w))))))))
+
+(define data '(1.0 2.0 3.0))
+
+;; ── The ledger program ───────────────────────────────────────────────────
+;; f(a) = a*1 + a*2 + a*3 = 6a, so f'(a) = 6 everywhere.
+(define (f a) (fold-left + 0.0 (map (lambda (x) (* a x)) '(1.0 2.0 3.0))))
+(check "ledger: map then fold-left" (derivative f 2.0) 6.0)
+
+;; ── Each higher-order list procedure, capturing the differentiated variable
+(check "map then fold-right"
+       (derivative (lambda (a) (fold-right + 0.0 (map (lambda (x) (* a x)) data))) 2.0) 6.0)
+(check "map then reduce"
+       (derivative (lambda (a) (reduce + 0.0 (map (lambda (x) (* a x)) data))) 2.0) 6.0)
+(check "map then apply"
+       (derivative (lambda (a) (apply + (map (lambda (x) (* a x)) data))) 2.0) 6.0)
+(check "for-each accumulating with set!"
+       (derivative (lambda (a)
+                     (let ((acc 0.0))
+                       (for-each (lambda (x) (set! acc (+ acc (* a x)))) data)
+                       acc))
+                   2.0)
+       6.0)
+;; At a = 2 the mapped list is (2 4 6); the filter keeps 4 and 6, which are
+;; 2a and 3a, so the derivative is 5.
+(check "filter over a mapped list"
+       (derivative (lambda (a)
+                     (fold-left + 0.0 (filter (lambda (y) (> y 3.0))
+                                              (map (lambda (x) (* a x)) data))))
+                   2.0)
+       5.0)
+;; sum of a*x*x over (1 2 3) is 14a.
+(check "map over two lists"
+       (derivative (lambda (a) (fold-left + 0.0 (map (lambda (x y) (* a (* x y))) data data))) 2.0)
+       14.0)
+;; The capture shape that failed under the JIT only: an internal define.
+;; g(a) = sum of a^2 x = 6a^2, so g'(2) = 24.
+(define (g a)
+  (define (term x) (* a (* a x)))
+  (fold-left + 0.0 (map term data)))
+(check "map of an internal define" (derivative g 2.0) 24.0)
+;; sum over x and y of a*x*y = 36a.
+(check "map nested in map"
+       (derivative (lambda (a)
+                     (fold-left + 0.0
+                       (map (lambda (x) (fold-left + 0.0 (map (lambda (y) (* a (* x y))) data)))
+                            data)))
+                   2.0)
+       36.0)
+
+;; ── The list primitives themselves ───────────────────────────────────────
+(check "cons then car"  (derivative (lambda (a) (car (cons (* a a) '()))) 3.0) 6.0)
+(check "cons then cdr"  (derivative (lambda (a) (cdr (cons 1.0 (* a a)))) 3.0) 6.0)
+(check "list then cadr" (derivative (lambda (a) (cadr (list 1.0 (* a a)))) 3.0) 6.0)
+(check "append, reverse, list-ref"
+       (derivative (lambda (a) (list-ref (reverse (append (list (* a 1.0)) (list (* a a)))) 0)) 3.0)
+       6.0)
+
+;; ── Reverse mode and second order through the same lists ─────────────────
+(check-vec "gradient through map"
+           (gradient (lambda (v) (fold-left + 0.0 (map (lambda (x) (* (vref v 0) x)) data)))
+                     (vector 2.0))
+           '(6.0))
+;; inner(b) = 6b^2, inner'(b) = 12b, and the derivative of that is 12.
+(check "second derivative through map"
+       (derivative (lambda (a)
+                     (derivative (lambda (b) (fold-left + 0.0 (map (lambda (x) (* b (* b x))) data))) a))
+                   2.0)
+       12.0)
+
+;; ── Least squares written the way the optimisation tutorial writes it ────
+;; L(a,b,c) = sum of (a x^2 + b x + c - y)^2 over x = 0,1,2 with y = 1,3,7.
+;; At the origin every residual is -y, so
+;;   dL/da = 2 * sum(-y x^2) = -62,  dL/db = 2 * sum(-y x) = -34,
+;;   dL/dc = 2 * sum(-y)     = -22.
+;; The point is given as separate scalar variables and the residuals are built
+;; with map, so this row needs both halves of the change.
+(define xs '(0.0 1.0 2.0))
+(define ys '(1.0 3.0 7.0))
+(define (fit-loss a b c)
+  (fold-left + 0.0
+    (map (lambda (x y)
+           (let ((r (- (+ (* a (* x x)) (+ (* b x) c)) y))) (* r r)))
+         xs ys)))
+(define a0 0.0)
+(define b0 0.0)
+(define c0 0.0)
+(check-vec "least-squares gradient at scalar variables" (gradient fit-loss a0 b0 c0) '(-62.0 -34.0 -22.0))
+
+;; ── Two values outside AD that fell in the same hole ─────────────────────
+(define zs (map (lambda (x) (make-rectangular x 1.0)) '(1.0 2.0)))
+(check "complex number kept by map: real part" (real-part (cadr zs)) 2.0)
+(check "complex number kept by map: imaginary part" (imag-part (cadr zs)) 1.0)
+;; The cdr reader never had the character arm the car reader had.
+(check-true "character in a cdr slot read through apply"
+            (char? (apply cdr (list (cons #\a #\b)))))
+
+;; ── Value semantics are unchanged ────────────────────────────────────────
+(check "plain map and fold" (fold-left + 0.0 (map (lambda (x) (* 2.0 x)) data)) 12.0)
+(check-true "exact integers stay exact through a list" (exact? (car (map (lambda (n) (* n 2)) '(1 2 3)))))
+(check-true "symbols survive a list" (eq? (cadr (list 'a 'b)) 'b))
+(check-true "booleans survive a list" (eq? (cadr (list #t #f)) #f))
+(check-true "strings survive a list" (string=? (car (map (lambda (s) s) (list "k"))) "k"))
+(check-true "empty list survives as an element" (null? (car (list '() 1))))
+
+(if (= nfail 0)
+    (begin
+      (display "PASS: differentiated_values_in_list_cells ")
+      (display npass) (display "/") (display npass)
+      (display " checks") (newline))
+    (begin
+      (display "FAIL: differentiated_values_in_list_cells ")
+      (display nfail) (display " of ") (display (+ npass nfail))
+      (display " checks failed") (newline)
+      (exit 1)))

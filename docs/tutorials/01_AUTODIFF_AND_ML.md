@@ -238,30 +238,61 @@ Eshkol includes 555+ builtins for ML. Here are the most useful:
 (swish 1.0)             ;; => 0.7311...
 ```
 
+The same names take a tensor and return a tensor, elementwise:
+
+```scheme
+(softplus #(0.0 1.0))   ;; => #(0.6931... 1.3132...)
+(gelu #(0.5))           ;; => #(0.3457...)
+(silu #(1.0))           ;; => #(0.7311...)   ; silu is swish with beta = 1
+```
+
+Several take an optional second argument — `softplus`'s beta, `leaky-relu`'s
+and `elu`'s and `celu`'s alpha, `swish`'s beta — and it applies to a number and
+to a tensor alike:
+
+```scheme
+(leaky-relu -2.0 0.1)   ;; => -0.2
+(elu -1.0 2.0)          ;; => -1.2642...
+(swish 1.0 2.0)         ;; => 0.8807...
+```
+
 ### Loss Functions
 
 ```scheme
+;; Losses take a prediction tensor and a target tensor and return a number
+(define predicted #(1.0 2.0 3.0))
+(define actual    #(1.5 2.0 2.0))
+
 ;; Mean squared error
-(mse-loss predicted actual)
+(mse-loss predicted actual)            ;; => 0.4166...
 
-;; Cross-entropy (for classification)
-(cross-entropy-loss predicted actual)
+;; Huber loss (robust to outliers); the optional third argument is delta
+(huber-loss predicted actual)          ;; => 0.2083...
+(huber-loss predicted actual 0.5)      ;; => 0.1666...
 
-;; Huber loss (robust to outliers)
-(huber-loss predicted actual delta)
+;; Cross-entropy (for classification): logits and a one-hot target
+(cross-entropy-loss #(2.0 1.0 0.1) #(1.0 0.0 0.0))  ;; => 0.4170...
 ```
 
 ### Optimizers
 
 ```scheme
-;; Gradient descent with momentum
-(gradient-descent params grad learning-rate)
+;; The optimizers live in ml.optimization. Each takes the function to
+;; minimise and a starting point, and returns the point it converged to.
+(require ml.optimization)
 
-;; Adam optimizer
-(adam params grad learning-rate beta1 beta2 epsilon t)
+;; f(x, y) = x^2 + y^2, minimum at the origin
+(define (quad v)
+  (+ (* (vref v 0) (vref v 0)) (* (vref v 1) (vref v 1))))
+
+;; Gradient descent: f, start, learning rate, max iterations, tolerance
+(gradient-descent quad #(5.0 5.0) 0.1 1000 1e-8)   ;; => ~#(0.0 0.0)
+
+;; Adam: f, start, learning rate
+(adam quad #(5.0 5.0) 0.1)                         ;; => ~#(0.0 0.0)
 
 ;; L-BFGS for second-order optimization
-(line-search f x direction)
+(l-bfgs quad #(5.0 5.0))                           ;; => #(0 0)
 ```
 
 These all compose with autodiff — you can differentiate through any of

@@ -271,5 +271,13 @@ ESHKOL_AD_NODE(SQUARED_DISTANCE,     92, TENSOR, BRIDGE,       tensor_squared_di
 /* Dense whole-tensor max uses the documented last-winner subgradient at ties. */
 ESHKOL_AD_NODE(TENSOR_MAX_DENSE,              93, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
 ESHKOL_AD_NODE(BATCH_MATMUL,                  94, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
+/* One element of a dense tensor node, as a scalar-consumer node (ADR-0023).
+ * The inverse of TENSOR_PACK: input1 is the dense node, params[0] the flat
+ * element index, tensor_value a one-element copy of that element so the
+ * scalar-consumer bridge above applies, and value the same number for the
+ * scalar rules. Backward is the identity scatter into input1's gradient at
+ * params[0]. It performs no arithmetic, so it cannot change a gradient's
+ * value, only which representation carries it. */
+ESHKOL_AD_NODE(DENSE_ELEM,                    95, TENSOR, INLINE, ESHKOL_AD_NO_BRIDGE)
 
 /* clang-format on */

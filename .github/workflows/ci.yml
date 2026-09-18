@@ -633,6 +633,7 @@ jobs:
           python3 scripts/gate_ad_shared_node_model.py --self-test
           python3 scripts/check_required_context_consistency.py --self-test
           python3 scripts/ci_change_class.py --self-test
+          python3 tests/toolchain/test_disclosure_base.py
           python3 scripts/ci_lane_plan.py --self-test
           python3 scripts/ci_equivalent_head.py --self-test
           python3 scripts/check_package_manifest.py --self-test
@@ -642,10 +643,13 @@ jobs:
           python3 scripts/gate_compiler_architecture.py --self-test
           python3 scripts/gate_public_api_linkage.py --self-test
           python3 scripts/check_surface_counts.py --self-test
+          python3 scripts/check_changelog_completeness.py --self-test
+          python3 scripts/check_doc_front_matter.py --self-test
           python3 scripts/check_self_verdicts.py --self-test
           python3 scripts/check_build_fingerprint.py --self-test
           python3 scripts/doc_audit/check_results_schema.py --self-test
           python3 scripts/doc_audit/test_harness.py
+          python3 scripts/doc_audit/check_doc_examples.py --self-test
           python3 scripts/check_test_coverage.py --self-test
           python3 scripts/check_engine_parity_threshold.py --self-test
           python3 scripts/check_ps1_encoding.py --self-test
@@ -816,6 +820,52 @@ jobs:
         shell: bash
         run: python3 scripts/gen_api_docs.py --check
 
+      # Motivating incident (v1.3.5-evolve): the release's documentation sweep
+      # ran on 2026-09-11 and dozens of pull requests merged after it; the
+      # changelog described few of them and nothing noticed, because no gate
+      # connected "a pull request merged" with "the release section accounts
+      # for it". This gate walks <previous_tag>..HEAD (both tags come from
+      # tests/coverage/release_record.json), derives every merged pull request
+      # number from the commit subjects, and fails unless each one is
+      # referenced in the changelog section for the release (or in
+      # [Unreleased]) or listed with a class and a reason in
+      # tests/coverage/changelog_no_user_facing_change.json. It lives in THIS
+      # job, not beside check_surface_counts.py in pillars-readiness, for two
+      # reasons: it needs the full history and the release tags, which this
+      # job's `fetch-depth: 0` checkout provides and that job's default
+      # shallow checkout does not (the gate fails closed, NO_DATA, on a shallow
+      # clone rather than passing over an empty range); and this job runs on
+      # docs-only pull requests, which is exactly where a changelog edit
+      # lands, while pillars-readiness is skipped for them. A pull request's
+      # own number is not in the history until it merges, so it is passed as
+      # --pending-pr: the pull request may account for itself in advance
+      # without its ledger entry being graded stale.
+      - name: Changelog accounts for every merged pull request in the release range
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          pending=()
+          if [ -n "${PR_NUMBER:-}" ]; then pending=(--pending-pr "$PR_NUMBER"); fi
+          python3 scripts/check_changelog_completeness.py ${pending[@]+"${pending[@]}"}
+
+      # Documentation pages declare what they are in a front-matter block
+      # (kind, status, owner-area, since, sources; docs/DOCUMENTATION.md and
+      # ADR 0019). A block nobody checks decays like the prose it replaced, so
+      # this gate validates every block, refuses release narrative ("new in
+      # v", "recently", "in this release", ...) outside code fences in current
+      # tutorial/guide/reference/explanation pages unless the line carries
+      # `<!-- evergreen: allow <reason> -->`, fails a current page that links
+      # to a historical or superseded page without saying so on the line, and
+      # ratchets the count of pages with no block in
+      # tests/coverage/doc_front_matter_baseline.json (it can only go down).
+      # Build-free and history-free, and it belongs in this job because this
+      # job runs on docs-only pull requests, which is where pages change.
+      - name: Documentation front matter, evergreen wording and historical links
+        shell: bash
+        run: python3 scripts/check_doc_front_matter.py
+
       # 2026-08-28: a squash-merge commit body is assembled out of the PR's
       # own branch commit messages, and nothing in review treats commit prose
       # as a reviewable surface the way a diff hunk is. This gate scans PR
@@ -864,13 +914,20 @@ jobs:
       - name: Scan incoming commits when no PR text is present
         if: github.event_name != 'pull_request'
         env:
-          BASE_SHA: ${{ github.event.merge_group.base_sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.merge_group.head_sha || github.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$BASE_SHA"
-          git cat-file -e "${BASE_SHA}^{commit}"
+          BASE_SHA="$(python3 scripts/select_disclosure_base.py \
+            --event "$EVENT_NAME" --head "$HEAD_SHA" --ref "$REF" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --before "$PUSH_BEFORE" \
+            --merge-group-base "$MERGE_GROUP_BASE_SHA")"
           git cat-file -e "${HEAD_SHA}^{commit}"
           python3 scripts/check_disclosure.py --base "$BASE_SHA" --head "$HEAD_SHA"
 
@@ -1584,7 +1641,7 @@ jobs:
     needs: changes
     if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: ${{ matrix.job_timeout_minutes || 120 }}
     env:
       ESHKOL_FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.ci-cache/fetchcontent
       # Which lanes this run actually needs, decided by the `changes`
@@ -1607,6 +1664,8 @@ jobs:
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_all_tests.sh
+            job_timeout_minutes: 240
+            test_timeout_minutes: 180
             upload_artifact: 'true'
             artifact_name: eshkol-linux-x64
           # This is the assertion-enabled compilation axis. Keep it as a
@@ -1899,11 +1958,15 @@ jobs:
         run: |
           set -euxo pipefail
           if [[ "${{ matrix.sanitizer_flags }}" == *"ESHKOL_ENABLE_ASAN=ON"* ]]; then
-            # Compiler subprocesses intentionally retain process-lifetime
-            # parser/AST state. Keep LeakSanitizer for the explicit workload
-            # gates below, but make the build setting independent of any
-            # runner-level sanitizer environment.
-            export ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:allocator_may_return_null=1"
+            # One leak policy for builds (ADR-0021): the instrumented compiler
+            # compiling the stdlib during the build is a real compiler
+            # workload, so it must be leak-clean under the same checked-in
+            # suppression file as every other workload. This is the setting
+            # scripts/build-sanitizer.sh applies and the release producer
+            # uses; a build that ran with detect_leaks=0 here could not have
+            # caught the module-renaming retention the release dry run did.
+            export ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:allocator_may_return_null=1"
+            export LSAN_OPTIONS="suppressions=$GITHUB_WORKSPACE/.icc/lsan-suppressions.txt:print_suppressions=0"
             export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
           fi
           # `--parallel` with no job count hands the decision to the native
@@ -2065,7 +2128,7 @@ jobs:
 
       - name: Run Tests
         if: env.LANE_ACTIVE == 'true'
-        timeout-minutes: 120
+        timeout-minutes: ${{ matrix.test_timeout_minutes || 120 }}
         shell: bash
         env:
           BUILD_DIR: ${{ matrix.build_dir }}
@@ -2119,6 +2182,28 @@ jobs:
       # native and bytecode back ends keep separate FD counters — the asymmetry
       # that let one stay dead while the other worked. One Linux and one macOS
       # lane is enough to cover both platforms without paying for it six times.
+      # Every fenced example under the gated documentation scopes
+      # (scripts/doc_audit/extract_examples.py GATED_SCOPES; docs/tutorials
+      # today) is run on the JIT and as an AOT binary, and each `;; =>`
+      # annotation is compared with what the build printed. An example that
+      # cannot run carries an explicit marker in the markdown; the marked count
+      # is ratcheted in scripts/doc_audit/example_gate_baseline.json. One Linux
+      # and one macOS lane: the examples are platform-independent programs, and
+      # the two lanes cover both AOT link paths.
+      - name: Every tutorial example runs and prints what the page says
+        if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite')
+        timeout-minutes: 45
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+          ESHKOL_PATH: ${{ github.workspace }}/lib
+        run: |
+          set -euxo pipefail
+          python3 scripts/doc_audit/check_doc_examples.py \
+            --eshkol-run "$BUILD_DIR/eshkol-run" \
+            --work-dir "${{ runner.temp }}/doc-example-gate" \
+            --report "${{ runner.temp }}/doc-example-gate-report.json"
+
       - name: AD exactness gate (finite-difference counter is live; matmul tape ratchet)
         if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite')
         timeout-minutes: 25
@@ -2498,6 +2583,8 @@ jobs:
             '-B', '${{ matrix.build_dir }}',
             '-DBUILD_REPL=ON',
             '-DESHKOL_BUILD_TESTS=OFF',
+            '-DESHKOL_STDLIB_TARGET_CPU=generic',
+            '-DESHKOL_STDLIB_TARGET_FEATURES=',
             '-DESHKOL_REQUIRED_LLVM_MAJOR=${{ env.LLVM_MAJOR }}',
             "-DESHKOL_HOST_CXX_COMPILER=$hostCxx",
             '-DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }}',
@@ -2601,7 +2688,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-agent-ffi', 'eshkol-windows-agent-test', 'eshkol-agent-http-test', 'eshkol-agent-sse-test', 'eshkol-agent-capabilities-test')
+          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-agent-ffi', 'eshkol-windows-agent-test', 'eshkol-agent-http-test', 'eshkol-agent-sse-test', 'eshkol-agent-capabilities-test', 'stdlib')
           if ('${{ matrix.test_mode }}' -eq 'xla') {
             $targets += 'xla_codegen_test'
           }
@@ -2613,6 +2700,20 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # -SkipConfigureBuild bypasses run_all_tests.ps1's missing-target
+          # repair. Require the precompiled stdlib before the suite so each
+          # AOT test links it instead of reprocessing the stdlib source tree.
+          foreach ($artifact in @(
+            (Join-Path '${{ matrix.build_dir }}' 'stdlib.o'),
+            (Join-Path '${{ matrix.build_dir }}' 'stdlib.bc')
+          )) {
+            if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+              throw "Required precompiled stdlib artifact is missing: $artifact"
+            }
+            if ((Get-Item -LiteralPath $artifact).Length -le 0) {
+              throw "Required precompiled stdlib artifact is empty: $artifact"
+            }
+          }
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\eshkol-test-logs" | Out-Null
           & .\scripts\run_all_tests.ps1 -BuildDir ".\${{ matrix.build_dir }}" -SkipConfigureBuild -Mode '${{ matrix.test_mode }}' *>&1 |
             Tee-Object -FilePath "$env:RUNNER_TEMP\eshkol-test-logs\${{ matrix.name }}.log"

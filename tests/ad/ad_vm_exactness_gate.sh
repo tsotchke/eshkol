@@ -45,7 +45,12 @@ fi
 mkdir -p "$WORKDIR" || { echo "FAIL: cannot create $WORKDIR"; exit 1; }
 PROG="$WORKDIR/ad_vm_exactness.esk"
 
-cat > "$PROG" <<'ESK'
+TEST_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts/lib" && pwd)"
+# shellcheck source=../../scripts/lib/checked_write.sh
+. "$TEST_LIB_DIR/checked_write.sh"
+PROG_TMP="$(eshkol_install_tmp "$PROG")" || exit $?
+
+cat > "$PROG_TMP" <<'ESK'
 (ad-reset-counters!)
 
 ;; F1 = grad(xyz): a gradient field, so curl F1 = (0 0 0) identically,
@@ -75,6 +80,7 @@ cat > "$PROG" <<'ESK'
 (display "|FD=") (display (ad-finite-difference-evals))
 (display "|END")
 ESK
+eshkol_install_checked "$PROG_TMP" "$PROG" || exit $?
 
 OUT=$("$ESHKOL_VM" "$PROG" 2>&1)
 RC=$?

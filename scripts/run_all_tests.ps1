@@ -1358,6 +1358,7 @@ function Invoke-CppTypeSuite {
 
     $sources = @(
         (Join-Path $script:ProjectRoot "lib/types/hott_types.cpp"),
+        (Join-Path $script:ProjectRoot "lib/types/type_relation.cpp"),
         (Join-Path $script:ProjectRoot "lib/types/type_checker.cpp"),
         (Join-Path $script:ProjectRoot "lib/types/dependent.cpp"),
         (Join-Path $script:ProjectRoot "lib/core/ast.cpp")
@@ -1365,7 +1366,8 @@ function Invoke-CppTypeSuite {
 
     $tests = @(
         (Join-Path $script:ProjectRoot "tests/types/hott_types_test.cpp"),
-        (Join-Path $script:ProjectRoot "tests/types/type_checker_test.cpp")
+        (Join-Path $script:ProjectRoot "tests/types/type_checker_test.cpp"),
+        (Join-Path $script:ProjectRoot "tests/types/type_relation_test.cpp")
     )
 
     foreach ($testFile in $tests) {

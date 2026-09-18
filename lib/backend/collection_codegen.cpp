@@ -18,6 +18,7 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/logger.h>
+#include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/Constants.h>
 #include <vector>
 
@@ -472,9 +473,8 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         ctx_.builder().CreateUnreachable();
 
         ctx_.builder().SetInsertPoint(subtype_ok);
-        // Direct struct load: car is at offset 0.
-        llvm::Value* car_tagged_direct = ctx_.builder().CreateLoad(
-            ctx_.taggedValueType(), cons_ptr, "car_direct");
+        // The slot is loaded whole; see TaggedValueCodegen::loadConsSlot.
+        llvm::Value* car_tagged_direct = tagged_.loadConsSlot(cons_ptr, false);
         ctx_.builder().CreateBr(car_final);
         llvm::BasicBlock* direct_exit = ctx_.builder().GetInsertBlock();
 
@@ -1006,183 +1006,11 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
 
         llvm::Value* cons_ptr = ctx_.builder().CreateIntToPtr(pair_int_safe, ctx_.ptrType());
 
-        // Get cdr type (properly handles legacy types >= 32)
-        llvm::Value* is_cdr = llvm::ConstantInt::get(ctx_.int1Type(), 1);
-        llvm::Value* cdr_type = ctx_.builder().CreateCall(mem_.getTaggedConsGetType(), {cons_ptr, is_cdr});
-        llvm::Value* cdr_base_type = tagged_.getBaseType(cdr_type);
-
-        // Type checks
-        llvm::Value* cdr_is_double = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
-        // Handle both legacy (CONS_PTR) and consolidated (HEAP_PTR) formats
-        llvm::Value* cdr_is_cons_legacy = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
-        llvm::Value* cdr_is_heap_ptr = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
-        llvm::Value* cdr_is_cons_ptr = ctx_.builder().CreateOr(cdr_is_cons_legacy, cdr_is_heap_ptr);
-        llvm::Value* cdr_is_null_type = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL));
-        llvm::Value* cdr_is_string_ptr = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
-        llvm::Value* cdr_is_lambda_sexpr = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
-        // Check for both legacy CLOSURE_PTR and new CALLABLE type
-        llvm::Value* cdr_is_closure_legacy = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
-        llvm::Value* cdr_is_callable = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
-        llvm::Value* cdr_is_closure_ptr = ctx_.builder().CreateOr(cdr_is_closure_legacy, cdr_is_callable);
-        llvm::Value* cdr_is_bool = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_BOOL));
-        llvm::Value* cdr_is_char = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CHAR));
-        llvm::Value* cdr_is_hash_ptr = ctx_.builder().CreateICmpEQ(cdr_base_type,
-            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
-
-        // Create blocks for each type
-        llvm::BasicBlock* double_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_double", current_func);
-        llvm::BasicBlock* check_cons_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_cons", current_func);
-        llvm::BasicBlock* cons_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_cons", current_func);
-        llvm::BasicBlock* check_null_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_null", current_func);
-        llvm::BasicBlock* null_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_null", current_func);
-        llvm::BasicBlock* check_string_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_string", current_func);
-        llvm::BasicBlock* string_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_string", current_func);
-        llvm::BasicBlock* check_lambda_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_lambda", current_func);
-        llvm::BasicBlock* lambda_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_lambda", current_func);
-        llvm::BasicBlock* check_closure_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_closure", current_func);
-        llvm::BasicBlock* closure_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_closure", current_func);
-        llvm::BasicBlock* check_bool_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_bool", current_func);
-        llvm::BasicBlock* bool_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_bool", current_func);
-        llvm::BasicBlock* check_char_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_char", current_func);
-        llvm::BasicBlock* char_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_char", current_func);
-        llvm::BasicBlock* check_hash_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_check_hash", current_func);
-        llvm::BasicBlock* hash_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_hash", current_func);
-        llvm::BasicBlock* int_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_extract_int", current_func);
-        llvm::BasicBlock* merge_cdr = llvm::BasicBlock::Create(ctx_.context(), "cdr_merge", current_func);
-
-        ctx_.builder().CreateCondBr(cdr_is_double, double_cdr, check_cons_cdr);
-
-        ctx_.builder().SetInsertPoint(double_cdr);
-        llvm::Value* cdr_double = ctx_.builder().CreateCall(mem_.getTaggedConsGetDouble(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_double_cdr = tagged_.packDouble(cdr_double);
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* double_exit = ctx_.builder().GetInsertBlock();
-
-        ctx_.builder().SetInsertPoint(check_cons_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_cons_ptr, cons_cdr, check_null_cdr);
-
-        ctx_.builder().SetInsertPoint(cons_cdr);
-        llvm::Value* cdr_cons = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        // Pack as HEAP_PTR (consolidated format) - type checks handle both formats
-        llvm::Value* tagged_cons_cdr = tagged_.packHeapPtr(cdr_cons);
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* cons_exit_cdr = ctx_.builder().GetInsertBlock();
-
-        ctx_.builder().SetInsertPoint(check_null_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_null_type, null_cdr, check_string_cdr);
-
-        ctx_.builder().SetInsertPoint(null_cdr);
-        llvm::Value* tagged_null_extract = tagged_.packNull();
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* null_cdr_exit = ctx_.builder().GetInsertBlock();
-
-        // Handle STRING_PTR
-        ctx_.builder().SetInsertPoint(check_string_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_string_ptr, string_cdr, check_lambda_cdr);
-
-        ctx_.builder().SetInsertPoint(string_cdr);
-        llvm::Value* cdr_string = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_string_cdr = tagged_.packPtr(ctx_.builder().CreateIntToPtr(cdr_string, ctx_.ptrType()), ESHKOL_VALUE_HEAP_PTR);
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* string_exit = ctx_.builder().GetInsertBlock();
-
-        // Handle LAMBDA_SEXPR
-        ctx_.builder().SetInsertPoint(check_lambda_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_lambda_sexpr, lambda_cdr, check_closure_cdr);
-
-        ctx_.builder().SetInsertPoint(lambda_cdr);
-        llvm::Value* lambda_type_cdr = ctx_.builder().CreateCall(mem_.getTaggedConsGetType(), {cons_ptr, is_cdr});
-        llvm::Value* lambda_flags_cdr = ctx_.builder().CreateCall(mem_.getTaggedConsGetFlags(), {cons_ptr, is_cdr});
-        llvm::Value* lambda_ptr_cdr = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_lambda_cdr = tagged_.packPtrWithFlags(
-            ctx_.builder().CreateIntToPtr(lambda_ptr_cdr, ctx_.ptrType()),
-            lambda_type_cdr, lambda_flags_cdr);
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* lambda_exit = ctx_.builder().GetInsertBlock();
-
-        // Handle CLOSURE_PTR
-        ctx_.builder().SetInsertPoint(check_closure_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_closure_ptr, closure_cdr, check_bool_cdr);
-
-        ctx_.builder().SetInsertPoint(closure_cdr);
-        llvm::Value* closure_type_cdr = ctx_.builder().CreateCall(mem_.getTaggedConsGetType(), {cons_ptr, is_cdr});
-        llvm::Value* closure_flags_cdr = ctx_.builder().CreateCall(mem_.getTaggedConsGetFlags(), {cons_ptr, is_cdr});
-        llvm::Value* closure_ptr_cdr = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_closure_cdr = tagged_.packPtrWithFlags(
-            ctx_.builder().CreateIntToPtr(closure_ptr_cdr, ctx_.ptrType()),
-            closure_type_cdr, closure_flags_cdr);
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* closure_exit = ctx_.builder().GetInsertBlock();
-
-        // Handle boolean values
-        ctx_.builder().SetInsertPoint(check_bool_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_bool, bool_cdr, check_char_cdr);
-
-        ctx_.builder().SetInsertPoint(bool_cdr);
-        llvm::Value* cdr_bool_int = ctx_.builder().CreateCall(mem_.getTaggedConsGetInt64(), {cons_ptr, is_cdr});
-        llvm::Value* cdr_bool_i1 = ctx_.builder().CreateICmpNE(cdr_bool_int, llvm::ConstantInt::get(ctx_.int64Type(), 0));
-        llvm::Value* tagged_bool_cdr = tagged_.packBool(cdr_bool_i1);
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* bool_exit = ctx_.builder().GetInsertBlock();
-
-        // Handle CHAR values
-        ctx_.builder().SetInsertPoint(check_char_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_char, char_cdr, check_hash_cdr);
-
-        ctx_.builder().SetInsertPoint(char_cdr);
-        llvm::Value* cdr_char_int = ctx_.builder().CreateCall(mem_.getTaggedConsGetInt64(), {cons_ptr, is_cdr});
-        llvm::Value* tagged_char_cdr = tagged_.packChar(cdr_char_int);
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* char_exit = ctx_.builder().GetInsertBlock();
-
-        // Handle HASH_PTR for hash tables (legacy HASH_PTR - repacks as HEAP_PTR)
-        ctx_.builder().SetInsertPoint(check_hash_cdr);
-        ctx_.builder().CreateCondBr(cdr_is_hash_ptr, hash_cdr, int_cdr);
-
-        ctx_.builder().SetInsertPoint(hash_cdr);
-        llvm::Value* cdr_hash = ctx_.builder().CreateCall(mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr});
-        // Repack as HEAP_PTR (consolidated format) - subtype is in object header
-        llvm::Value* tagged_hash_cdr = tagged_.packHeapPtr(ctx_.builder().CreateIntToPtr(cdr_hash, ctx_.ptrType()));
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* hash_exit = ctx_.builder().GetInsertBlock();
-
-        ctx_.builder().SetInsertPoint(int_cdr);
-        llvm::Value* cdr_int64 = ctx_.builder().CreateCall(mem_.getTaggedConsGetInt64(), {cons_ptr, is_cdr});
-        // Preserve the STORED type byte rather than hardcoding INT64. This
-        // block is the fallback for every int-payload immediate the chain
-        // above does not enumerate, and re-tagging them all as INT64 silently
-        // destroyed their type: `(cdr (cons ?a ?b))` came back as the raw
-        // variable id `1` instead of `?b`, so `(logic-var? (cdr p))` was #f
-        // natively and #t on the VM. Carrying the tag through fixes
-        // LOGIC_VAR and any future immediate at the root instead of adding a
-        // tenth special case.
-        llvm::Value* tagged_int64_cdr = tagged_.packInt64WithTypeAndFlags(
-            cdr_int64, cdr_type, llvm::ConstantInt::get(ctx_.int8Type(), 0));
-        ctx_.builder().CreateBr(merge_cdr);
-        llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
-
-        ctx_.builder().SetInsertPoint(merge_cdr);
-        llvm::PHINode* cdr_tagged_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 10);
-        cdr_tagged_phi->addIncoming(tagged_double_cdr, double_exit);
-        cdr_tagged_phi->addIncoming(tagged_cons_cdr, cons_exit_cdr);
-        cdr_tagged_phi->addIncoming(tagged_null_extract, null_cdr_exit);
-        cdr_tagged_phi->addIncoming(tagged_string_cdr, string_exit);
-        cdr_tagged_phi->addIncoming(tagged_lambda_cdr, lambda_exit);
-        cdr_tagged_phi->addIncoming(tagged_closure_cdr, closure_exit);
-        cdr_tagged_phi->addIncoming(tagged_bool_cdr, bool_exit);
-        cdr_tagged_phi->addIncoming(tagged_char_cdr, char_exit);
-        cdr_tagged_phi->addIncoming(tagged_hash_cdr, hash_exit);
-        cdr_tagged_phi->addIncoming(tagged_int64_cdr, int_exit);
+        // The slot is loaded whole (SW-183); see TaggedValueCodegen::loadConsSlot.
+        // `car` above already loaded its slot directly; this reader still branched
+        // over a closed list of representations, so a dual number in a cdr slot
+        // was read through the int64 accessor.
+        llvm::Value* cdr_tagged_phi = tagged_.loadConsSlot(cons_ptr, true);
         ctx_.builder().CreateBr(cdr_final);
         llvm::BasicBlock* merge_exit = ctx_.builder().GetInsertBlock();
 
@@ -1642,6 +1470,7 @@ llvm::Value* CollectionCodegen::vectorLength(const eshkol_operations_t* op) {
 
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!vec_arg) return nullptr;
+    vec_arg = tagged_.resolveDenseTensorNode(vec_arg);  // ADR-0023
 
     llvm::Value* length = nullptr;
 
@@ -1742,6 +1571,7 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     void* idx_typed = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
     if (!vec_arg || !idx_typed) return nullptr;
+    vec_arg = tagged_.resolveDenseTensorNode(vec_arg);  // ADR-0023
 
     llvm::Value* idx_tagged = typed_to_tagged_callback_(idx_typed, callback_context_);
     if (!idx_tagged) return nullptr;
@@ -1852,6 +1682,25 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
         ctx_.builder().SetInsertPoint(tvref_ok);
     }
 
+    // ADR-0020: a carrier promoted by a non-numeric store (and a dual tensor)
+    // holds 16-byte tagged values; its slot is the value, with nothing to
+    // decode. Only a numeric carrier needs the double/AD-node discrimination
+    // below.
+    llvm::Value* vref_dtype = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), tensor_ptr, 4), "vref_dtype");
+    llvm::Value* vref_is_tagged = ctx_.builder().CreateOr(
+        ctx_.builder().CreateICmpEQ(vref_dtype,
+            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_BOXED)),
+        ctx_.builder().CreateICmpEQ(vref_dtype,
+            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_DUAL)));
+    llvm::BasicBlock* vref_tagged_bb = llvm::BasicBlock::Create(ctx_.context(), "vref_tagged_slot", current_func);
+    llvm::BasicBlock* vref_numeric_bb = llvm::BasicBlock::Create(ctx_.context(), "vref_numeric_slot", current_func);
+    ctx_.builder().CreateCondBr(vref_is_tagged, vref_tagged_bb, vref_numeric_bb);
+
+    ctx_.builder().SetInsertPoint(vref_tagged_bb);
+    llvm::Value* vref_tagged_slot = ctx_.builder().CreateLoad(ctx_.taggedValueType(),
+        ctx_.builder().CreateGEP(ctx_.taggedValueType(), elems_ptr, idx));
+    ctx_.builder().SetInsertPoint(vref_numeric_bb);
     llvm::Value* tensor_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elems_ptr, idx);
     llvm::Value* tensor_elem_int64 = ctx_.builder().CreateLoad(ctx_.int64Type(), tensor_elem_ptr);
 
@@ -1865,6 +1714,13 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     llvm::BasicBlock* is_ad_node = llvm::BasicBlock::Create(ctx_.context(), "vref_ad_node", current_func);
     llvm::BasicBlock* is_double = llvm::BasicBlock::Create(ctx_.context(), "vref_double", current_func);
     llvm::BasicBlock* elem_merge = llvm::BasicBlock::Create(ctx_.context(), "vref_elem_merge", current_func);
+
+    // Close the tagged-slot block now that its merge target exists.
+    llvm::IRBuilderBase::InsertPoint vref_saved = ctx_.builder().saveIP();
+    ctx_.builder().SetInsertPoint(vref_tagged_bb);
+    ctx_.builder().CreateBr(elem_merge);
+    llvm::BasicBlock* vref_tagged_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().restoreIP(vref_saved);
 
     ctx_.builder().CreateCondBr(could_be_ad_ptr, is_ad_node, is_double);
 
@@ -1881,9 +1737,10 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     llvm::BasicBlock* double_exit = ctx_.builder().GetInsertBlock();
 
     ctx_.builder().SetInsertPoint(elem_merge);
-    llvm::PHINode* elem_result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "tensor_elem");
+    llvm::PHINode* elem_result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "tensor_elem");
     elem_result->addIncoming(ad_node_result, ad_exit);
     elem_result->addIncoming(double_result, double_exit);
+    elem_result->addIncoming(vref_tagged_slot, vref_tagged_exit);
     ctx_.builder().CreateBr(tensor_merge);
     llvm::BasicBlock* tensor_1d_exit = ctx_.builder().GetInsertBlock();
 
@@ -2059,9 +1916,15 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
  * the HEAP_PTR base type. Each path bounds-checks `idx` against the
  * relevant length (tensor's total_elements, or the vector's length word)
  * and raises an ESHKOL_EXCEPTION_ERROR on failure; then:
- *  - Tensor path: unpacks `val` as a double and stores its bit pattern into
- *    `elements[idx]` (8 bytes).
- *  - Vector path: stores the full 16-byte tagged value into `elements[idx]`.
+ *  - Vector path (proven inline): stores the full 16-byte tagged value into
+ *    `elements[idx]` behind the region write barrier.
+ *  - Tensor path: CodegenContext::emitTensorSlotStore, the ADR-0020 slot store
+ *    boundary, which converts the value to the slot's declared representation
+ *    (a real number of any exactness becomes the tensor's dtype-reduced f64)
+ *    or raises a catchable error. The value's payload bits are never
+ *    reinterpreted (SW-179).
+ *  - Any other operand: CodegenContext::emitSequenceSlotStore, which reports
+ *    a non-sequence operand.
  *
  * @param op AST operation node; call arguments are (vector, index, value).
  * @return The (unchanged) tagged vector/tensor operand, matching R7RS
@@ -2100,64 +1963,52 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
         }
     }
 
-    // Detect tensor vs Scheme vector via header subtype (mirror vectorRef).
-    // A tensor (HEAP_SUBTYPE_TENSOR) stores homogeneous doubles in a separate
-    // elements buffer (8-byte stride), NOT inline 16-byte tagged values. Without
-    // this dispatch, vector-set! on a builtin-returned tensor scribbled a 16-byte
-    // tagged value into 8-byte slots, corrupting it (display became garbage).
+    // ADR-0020 slot store boundary. A Scheme vector (HEAP_PTR +
+    // HEAP_SUBTYPE_VECTOR) slot holds any tagged value unchanged and is stored
+    // inline. A tensor operand -- a numeric #(...) literal or a builtin-returned
+    // tensor -- is stored through emitTensorSlotStore, which converts the value
+    // to the slot's declared representation or raises. Anything else reaches
+    // the runtime boundary, which reports it.
+    if (tagged_val->getType() != ctx_.taggedValueType()) {
+        eshkol_error("vector-set!: value did not lower to a tagged value");
+        return nullptr;
+    }
     llvm::Value* vec_base_type = tagged_.getBaseType(tagged_.getType(vec_arg));
     llvm::Value* is_heap_ptr = ctx_.builder().CreateICmpEQ(vec_base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* vset_check_subtype = llvm::BasicBlock::Create(ctx_.context(), "vset_check_subtype", current_func);
-    llvm::BasicBlock* vset_tensor = llvm::BasicBlock::Create(ctx_.context(), "vset_tensor", current_func);
+    llvm::BasicBlock* vset_boundary = llvm::BasicBlock::Create(ctx_.context(), "vset_boundary", current_func);
     llvm::BasicBlock* vset_vector = llvm::BasicBlock::Create(ctx_.context(), "vset_vector", current_func);
     llvm::BasicBlock* vset_merge = llvm::BasicBlock::Create(ctx_.context(), "vset_merge", current_func);
-    ctx_.builder().CreateCondBr(is_heap_ptr, vset_check_subtype, vset_vector);
+    // The boundary block is the error path: keep it out of the hot layout.
+    llvm::MDNode* vset_likely = llvm::MDBuilder(ctx_.context()).createBranchWeights((1U << 20) - 1, 1);
+    ctx_.builder().CreateCondBr(is_heap_ptr, vset_check_subtype, vset_boundary, vset_likely);
 
     ctx_.builder().SetInsertPoint(vset_check_subtype);
     llvm::Value* vptr_sub = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
     llvm::Value* vset_header = ctx_.builder().CreateGEP(ctx_.int8Type(), vptr_sub,
         llvm::ConstantInt::get(ctx_.int64Type(), -8));
     llvm::Value* vset_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), vset_header);
+    llvm::Value* vset_is_vector = ctx_.builder().CreateICmpEQ(vset_subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+    llvm::BasicBlock* vset_check_tensor = llvm::BasicBlock::Create(ctx_.context(), "vset_check_tensor", current_func);
+    llvm::BasicBlock* vset_tensor = llvm::BasicBlock::Create(ctx_.context(), "vset_tensor", current_func);
+    ctx_.builder().CreateCondBr(vset_is_vector, vset_vector, vset_check_tensor);
+
+    ctx_.builder().SetInsertPoint(vset_check_tensor);
     llvm::Value* vset_is_tensor = ctx_.builder().CreateICmpEQ(vset_subtype,
         llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
-    ctx_.builder().CreateCondBr(vset_is_tensor, vset_tensor, vset_vector);
+    ctx_.builder().CreateCondBr(vset_is_tensor, vset_tensor, vset_boundary, vset_likely);
 
-    // Shared bounds-failure emitter
-    auto emit_oob = [&](const char* msg) {
-        llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
-        if (!raise_func) {
-            llvm::FunctionType* raise_type = llvm::FunctionType::get(
-                ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
-            raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
-                "eshkol_raise", &ctx_.module());
-            raise_func->setDoesNotReturn();
-        }
-        llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
-        if (!make_exc_func) {
-            llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
-                {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
-            make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
-                "eshkol_make_exception_with_header", &ctx_.module());
-        }
-        llvm::Value* err_msg = ctx_.builder().CreateGlobalString(msg);
-        llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
-        llvm::Value* exception = ctx_.builder().CreateCall(make_exc_func, {exc_type, err_msg});
-        ctx_.builder().CreateCall(raise_func, {exception});
-        ctx_.builder().CreateUnreachable();
-    };
-
-    // ===== TENSOR PATH: store a double into elements_ptr[idx] (8-byte) =====
+    // ===== TENSOR PATH: linear index, bounds-checked here; the slot store
+    // itself is the boundary's tensor emitter (inline only for a DOUBLE into an
+    // f64 tensor, the runtime encoder for everything else). =====
     ctx_.builder().SetInsertPoint(vset_tensor);
     {
-        llvm::Value* tptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
-        llvm::Value* elems_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), tptr, 2);
-        llvm::Value* elems_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), elems_field);
-        llvm::Value* total_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), tptr, 3);
-        llvm::Value* total_elems = ctx_.builder().CreateLoad(ctx_.int64Type(), total_field);
-
+        llvm::Value* total_elems = ctx_.builder().CreateLoad(ctx_.int64Type(),
+            ctx_.builder().CreateStructGEP(ctx_.tensorType(), vptr_sub, 3), "vset_tensor_total");
         llvm::Value* t_oob = ctx_.builder().CreateOr(
             ctx_.builder().CreateICmpSLT(idx, llvm::ConstantInt::get(ctx_.int64Type(), 0)),
             ctx_.builder().CreateICmpSGE(idx, total_elems));
@@ -2165,16 +2016,18 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
         llvm::BasicBlock* t_fail = llvm::BasicBlock::Create(ctx_.context(), "vset_tensor_fail", current_func);
         ctx_.builder().CreateCondBr(t_oob, t_fail, t_ok);
         ctx_.builder().SetInsertPoint(t_fail);
-        emit_oob("vector-set!: index out of bounds (tensor)");
+        ctx_.emitRaise("vector-set!: index out of bounds");
         ctx_.builder().SetInsertPoint(t_ok);
-
-        // Tensors store doubles as int64 bitpatterns.
-        llvm::Value* t_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elems_ptr, idx);
-        llvm::Value* v_double = tagged_.unpackDouble(tagged_val);
-        llvm::Value* v_bits = ctx_.builder().CreateBitCast(v_double, ctx_.int64Type());
-        ctx_.builder().CreateStore(v_bits, t_elem_ptr);
+        ctx_.emitTensorSlotStore(vptr_sub, idx, tagged_val, "vector-set!",
+                                 /*promote_on_non_numeric=*/true);
         ctx_.builder().CreateBr(vset_merge);
     }
+
+    // ===== BOUNDARY PATH: an operand that is not a sequence (the runtime
+    // resolves legacy pointer tags and reports the rest) =====
+    ctx_.builder().SetInsertPoint(vset_boundary);
+    ctx_.emitSequenceSlotStore(vec_arg, idx, tagged_val, "vector-set!");
+    ctx_.builder().CreateBr(vset_merge);
 
     // ===== VECTOR PATH: store a 16-byte tagged value inline =====
     ctx_.builder().SetInsertPoint(vset_vector);
@@ -2188,7 +2041,7 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
         llvm::BasicBlock* v_fail = llvm::BasicBlock::Create(ctx_.context(), "vset_vec_fail", current_func);
         ctx_.builder().CreateCondBr(v_oob, v_fail, v_ok);
         ctx_.builder().SetInsertPoint(v_fail);
-        emit_oob("vector-set!: index out of bounds");
+        ctx_.emitRaise("vector-set!: index out of bounds");
         ctx_.builder().SetInsertPoint(v_ok);
 
         llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
@@ -2205,8 +2058,8 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
     }
 
     ctx_.builder().SetInsertPoint(vset_merge);
-    // Return the vector/tensor
-    return vec_arg;
+    // ADR-0024: vector-set! evaluates to the unspecified value.
+    return tagged_.packUnspecified();
 }
 
 /**
@@ -2216,9 +2069,10 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
  * `from[start:end)` into `to[at:at+count)` using `llvm.memmove` (safe for
  * overlapping source/destination ranges, e.g. copying within the same
  * vector). `start` defaults to 0 and `end` defaults to `from`'s length.
- * Note: unlike vectorRef/vectorSet/vectorCopyNew, this path does not
- * dispatch on the tensor vs. Scheme-vector header subtype — it assumes both
- * operands are Scheme vectors with the [length][tagged elements...] layout.
+ * Both operands may be a Scheme vector or a tensor-backed `#(...)` literal:
+ * the copy runs in the runtime half of the ADR-0020 slot store boundary
+ * (eshkol_vector_copy_mutating), which validates every value against the
+ * destination's slot representation before the destination is modified.
  *
  * @param op AST operation node; call arguments are (to, at, from[, start[, end]]).
  * @return Tagged null (the operation's result is not otherwise used).
@@ -2300,54 +2154,9 @@ llvm::Value* CollectionCodegen::vectorCopy(const eshkol_operations_t* op) {
     llvm::Value* status = ctx_.builder().CreateCall(
         copy_helper, {to_ptr, at_idx, from_ptr, start, end}, "vector_copy_status");
 
-    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-    llvm::BasicBlock* copy_ok = llvm::BasicBlock::Create(
-        ctx_.context(), "vector_copy_ok", current_func);
-    llvm::BasicBlock* copy_fail = llvm::BasicBlock::Create(
-        ctx_.context(), "vector_copy_fail", current_func);
-    ctx_.builder().CreateCondBr(
-        ctx_.builder().CreateICmpEQ(
-            status, llvm::ConstantInt::get(ctx_.builder().getInt32Ty(),
-                                           ESHKOL_VECTOR_COPY_OK)),
-        copy_ok, copy_fail);
-
-    ctx_.builder().SetInsertPoint(copy_fail);
-    llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
-    if (!raise_func) {
-        llvm::FunctionType* raise_type = llvm::FunctionType::get(
-            ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
-        raise_func = llvm::Function::Create(
-            raise_type, llvm::Function::ExternalLinkage, "eshkol_raise",
-            &ctx_.module());
-        raise_func->setDoesNotReturn();
-    }
-    llvm::Function* make_exc =
-        ctx_.module().getFunction("eshkol_make_exception_with_header");
-    if (!make_exc) {
-        llvm::FunctionType* make_type = llvm::FunctionType::get(
-            ctx_.ptrType(), {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
-        make_exc = llvm::Function::Create(
-            make_type, llvm::Function::ExternalLinkage,
-            "eshkol_make_exception_with_header", &ctx_.module());
-    }
-    llvm::Value* is_bounds = ctx_.builder().CreateICmpEQ(
-        status, llvm::ConstantInt::get(ctx_.builder().getInt32Ty(),
-                                       ESHKOL_VECTOR_COPY_BOUNDS));
-    llvm::Value* bounds_msg = ctx_.builder().CreateGlobalString(
-        "vector-copy!: index out of range");
-    llvm::Value* type_msg = ctx_.builder().CreateGlobalString(
-        "vector-copy!: incompatible vector/tensor element representation");
-    llvm::Value* message = ctx_.builder().CreateSelect(
-        is_bounds, bounds_msg, type_msg, "vector_copy_error_message");
-    llvm::Value* exception = ctx_.builder().CreateCall(
-        make_exc,
-        {llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR),
-         message});
-    ctx_.builder().CreateCall(raise_func, {exception});
-    ctx_.builder().CreateUnreachable();
-
-    ctx_.builder().SetInsertPoint(copy_ok);
-    return tagged_.packNull();
+    // One status vocabulary and one failure block for every slot store.
+    ctx_.emitSlotStoreStatusCheck(status, "vector-copy!");
+    return tagged_.packUnspecified();  // ADR-0024
 }
 
 /**
@@ -2520,15 +2329,30 @@ llvm::Value* CollectionCodegen::vectorCopyNew(const eshkol_operations_t* op) {
     // elements: fresh arena buffer of `count` doubles, sliced from [start,end).
     llvm::Value* src_elems_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), vec_ptr, 2);
     llvm::Value* src_elems_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), src_elems_field_ptr);
-    llvm::Value* new_elems_size = ctx_.builder().CreateMul(count,
-        llvm::ConstantInt::get(ctx_.sizeType(), sizeof(double)));
+    // ADR-0020: the source's dtype decides the slot width and travels with the
+    // copy, so a promoted (boxed) carrier copies its tagged slots whole and
+    // the copy is itself a promoted carrier.
+    llvm::Value* vcopy_dtype = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), vec_ptr, 4), "vcopy_dtype");
+    llvm::Value* vcopy_is_tagged = ctx_.builder().CreateOr(
+        ctx_.builder().CreateICmpEQ(vcopy_dtype,
+            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_BOXED)),
+        ctx_.builder().CreateICmpEQ(vcopy_dtype,
+            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_DUAL)));
+    ctx_.builder().CreateStore(vcopy_dtype,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), new_tensor, 4));
+    llvm::Value* vcopy_slot_bytes = ctx_.builder().CreateSelect(vcopy_is_tagged,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(eshkol_tagged_value_t)),
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)), "vcopy_slot_bytes");
+    llvm::Value* new_elems_size = ctx_.builder().CreateMul(count, vcopy_slot_bytes);
     llvm::Value* new_elems = ctx_.builder().CreateCall(mem_.getArenaAllocate(),
         {tensor_arena_ptr, new_elems_size});
     ctx_.builder().CreateStore(new_elems, ctx_.builder().CreateStructGEP(ctx_.tensorType(), new_tensor, 2));
 
-    llvm::Value* tensor_src_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), src_elems_ptr, start);
-    llvm::Value* tensor_byte_count = ctx_.builder().CreateMul(count,
-        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)), "vcopy_tensor_bytes");
+    llvm::Value* tensor_src_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), src_elems_ptr,
+        ctx_.builder().CreateMul(start, vcopy_slot_bytes));
+    llvm::Value* tensor_byte_count = ctx_.builder().CreateMul(count, vcopy_slot_bytes,
+        "vcopy_tensor_bytes");
     ctx_.builder().CreateMemCpy(
         new_elems, llvm::MaybeAlign(8),
         tensor_src_ptr, llvm::MaybeAlign(8),
@@ -2608,6 +2432,7 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
     std::vector<llvm::Value*> src_lens;
     std::vector<llvm::Value*> src_elem_bases;
     std::vector<llvm::Value*> src_is_tensor;
+    std::vector<llvm::Value*> src_is_tagged;
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
     for (uint64_t i = 0; i < num_vecs; i++) {
@@ -2639,6 +2464,15 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
             ctx_.tensorType(), ptr, 2);
         llvm::Value* tensor_elems = ctx_.builder().CreateLoad(
             ctx_.ptrType(), tensor_elems_ptr, "vappend_tensor_elems");
+        // ADR-0020: a promoted (boxed) carrier's slots are already tagged
+        // values, so they are copied, not decoded.
+        llvm::Value* vappend_dtype = ctx_.builder().CreateLoad(ctx_.int64Type(),
+            ctx_.builder().CreateStructGEP(ctx_.tensorType(), ptr, 4), "vappend_dtype");
+        llvm::Value* vappend_tagged_slots = ctx_.builder().CreateOr(
+            ctx_.builder().CreateICmpEQ(vappend_dtype,
+                llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_BOXED)),
+            ctx_.builder().CreateICmpEQ(vappend_dtype,
+                llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_DUAL)));
         ctx_.builder().CreateBr(meta_merge);
         tensor_meta = ctx_.builder().GetInsertBlock();
 
@@ -2655,6 +2489,11 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
             ctx_.int64Type(), 2, "vappend_len");
         len->addIncoming(tensor_len, tensor_meta);
         len->addIncoming(vector_len, vector_meta);
+        llvm::PHINode* tagged_slots_phi = ctx_.builder().CreatePHI(
+            ctx_.builder().getInt1Ty(), 2, "vappend_tagged_slots");
+        tagged_slots_phi->addIncoming(vappend_tagged_slots, tensor_meta);
+        tagged_slots_phi->addIncoming(ctx_.builder().getFalse(), vector_meta);
+        src_is_tagged.push_back(tagged_slots_phi);
         llvm::PHINode* elem_base = ctx_.builder().CreatePHI(
             ctx_.ptrType(), 2, "vappend_elems");
         elem_base->addIncoming(tensor_elems, tensor_meta);
@@ -2728,6 +2567,22 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
             loop_body, loop_exit);
 
         ctx_.builder().SetInsertPoint(loop_body);
+        llvm::BasicBlock* boxed_elem_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "vappend_boxed_elem", current_func);
+        llvm::BasicBlock* numeric_elem_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "vappend_numeric_elem", current_func);
+        llvm::BasicBlock* elem_ready_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "vappend_elem_ready", current_func);
+        ctx_.builder().CreateCondBr(src_is_tagged[i], boxed_elem_bb, numeric_elem_bb);
+
+        ctx_.builder().SetInsertPoint(boxed_elem_bb);
+        llvm::Value* boxed_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(),
+            ctx_.builder().CreateGEP(ctx_.taggedValueType(), src_elem_bases[i], elem_i),
+            "vappend_boxed_slot");
+        ctx_.builder().CreateBr(elem_ready_bb);
+        llvm::BasicBlock* boxed_elem_exit = ctx_.builder().GetInsertBlock();
+
+        ctx_.builder().SetInsertPoint(numeric_elem_bb);
         llvm::Value* raw_ptr = ctx_.builder().CreateGEP(
             ctx_.int64Type(), src_elem_bases[i], elem_i);
         llvm::Value* raw = ctx_.builder().CreateLoad(
@@ -2742,8 +2597,16 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
         llvm::Value* as_ad = tagged_.packPtr(raw, ESHKOL_VALUE_CALLABLE);
         llvm::Value* as_double = tagged_.packDouble(
             ctx_.builder().CreateBitCast(raw, ctx_.doubleType()));
-        llvm::Value* tagged_elem = ctx_.builder().CreateSelect(
+        llvm::Value* numeric_elem = ctx_.builder().CreateSelect(
             could_be_ad_ptr, as_ad, as_double, "vappend_tensor_tagged");
+        ctx_.builder().CreateBr(elem_ready_bb);
+        llvm::BasicBlock* numeric_elem_exit = ctx_.builder().GetInsertBlock();
+
+        ctx_.builder().SetInsertPoint(elem_ready_bb);
+        llvm::PHINode* tagged_elem = ctx_.builder().CreatePHI(
+            ctx_.taggedValueType(), 2, "vappend_elem");
+        tagged_elem->addIncoming(boxed_elem, boxed_elem_exit);
+        tagged_elem->addIncoming(numeric_elem, numeric_elem_exit);
         llvm::Value* dest_index = ctx_.builder().CreateAdd(offset, elem_i);
         llvm::Value* tensor_dest = ctx_.builder().CreateGEP(
             ctx_.taggedValueType(), new_elem_typed, dest_index);
@@ -2768,9 +2631,12 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
 /**
  * @brief Emit IR for `(vector-fill! v val)`.
  *
- * Reads the vector's length word, then emits a loop that stores `val`
- * (a tagged value) into every element slot. Assumes the Scheme-vector
- * [length][tagged elements...] layout (no tensor-subtype dispatch).
+ * Routed through the ADR-0020 slot store boundary
+ * (CodegenContext::emitSequenceFill): the runtime resolves whether the operand
+ * is a Scheme vector or a tensor-backed `#(...)` literal, converts `val` once
+ * to the slot's declared representation, and stores it into every slot. A
+ * value with no representation in a numeric tensor slot, or an operand that
+ * is not a sequence, raises a catchable error.
  *
  * @param op AST operation node; call arguments are (v, val).
  * @return Tagged null.
@@ -2796,45 +2662,18 @@ llvm::Value* CollectionCodegen::vectorFill(const eshkol_operations_t* op) {
     llvm::Value* fill_val = typed_to_tagged_callback_(fill_typed, callback_context_);
     if (!fill_val) return nullptr;
 
-    // Extract vector pointer and length
-    llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
-    llvm::Value* length = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "vfill_len");
+    if (fill_val->getType() != ctx_.taggedValueType() ||
+        vec_arg->getType() != ctx_.taggedValueType()) {
+        eshkol_error("vector-fill!: operands did not lower to tagged values");
+        return nullptr;
+    }
 
-    // ESH-0214c region write barrier: like vector-set!, vector-fill! can store a
-    // region value into an outer vector. One barrier call suffices — every slot
-    // receives the same (possibly promoted) value.
-    if (fill_val->getType() == ctx_.taggedValueType())
-        fill_val = ctx_.emitRegionWriteBarrier(vec_ptr, fill_val);
-
-    // Get element base
-    llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* elem_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
-
-    // Fill loop
-    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-    llvm::BasicBlock* loop_header = llvm::BasicBlock::Create(ctx_.context(), "vfill_header", current_func);
-    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "vfill_body", current_func);
-    llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(ctx_.context(), "vfill_exit", current_func);
-
-    ctx_.builder().CreateBr(loop_header);
-
-    ctx_.builder().SetInsertPoint(loop_header);
-    llvm::PHINode* i = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "fill_i");
-    i->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 0),
-        loop_header->getSinglePredecessor());
-    llvm::Value* done = ctx_.builder().CreateICmpUGE(i, length);
-    ctx_.builder().CreateCondBr(done, loop_exit, loop_body);
-
-    ctx_.builder().SetInsertPoint(loop_body);
-    llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_typed, i);
-    ctx_.builder().CreateStore(fill_val, elem_ptr);
-    llvm::Value* next_i = ctx_.builder().CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    i->addIncoming(next_i, loop_body);
-    ctx_.builder().CreateBr(loop_header);
-
-    ctx_.builder().SetInsertPoint(loop_exit);
-    return tagged_.packNull();
+    // ADR-0020 slot store boundary: the runtime resolves the operand's
+    // representation (Scheme vector or tensor-backed #(...) literal), converts
+    // the value once to the slot's declared representation, fills every slot,
+    // and runs the region write barrier for tagged destinations.
+    ctx_.emitSequenceFill(vec_arg, fill_val, "vector-fill!");
+    return tagged_.packUnspecified();  // ADR-0024
 }
 
 /**
@@ -2867,6 +2706,7 @@ llvm::Value* CollectionCodegen::vectorToList(const eshkol_operations_t* op) {
     // Get vector
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!vec_arg) return nullptr;
+    vec_arg = tagged_.resolveDenseTensorNode(vec_arg);  // ADR-0023
 
     // Vector literals may be represented either as Scheme vectors
     // ([length][tagged elements...]) or as tensor-backed numeric vectors.
@@ -2889,6 +2729,13 @@ llvm::Value* CollectionCodegen::vectorToList(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(length_tensor);
     llvm::Value* tensor_elems_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), vec_ptr, 2);
     llvm::Value* tensor_elem_base = ctx_.builder().CreateLoad(ctx_.ptrType(), tensor_elems_field, "v2l_tensor_elems");
+    llvm::Value* v2l_dtype = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), vec_ptr, 4), "v2l_dtype");
+    llvm::Value* v2l_tensor_is_tagged = ctx_.builder().CreateOr(
+        ctx_.builder().CreateICmpEQ(v2l_dtype,
+            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_BOXED)),
+        ctx_.builder().CreateICmpEQ(v2l_dtype,
+            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_DUAL)));
     llvm::Value* tensor_total_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), vec_ptr, 3);
     llvm::Value* tensor_len = ctx_.builder().CreateLoad(ctx_.int64Type(), tensor_total_field, "v2l_tensor_len");
     ctx_.builder().CreateBr(length_merge);
@@ -2909,6 +2756,11 @@ llvm::Value* CollectionCodegen::vectorToList(const eshkol_operations_t* op) {
     llvm::PHINode* elem_base = ctx_.builder().CreatePHI(ctx_.ptrType(), 2, "v2l_elem_base");
     elem_base->addIncoming(tensor_elem_base, length_tensor_exit);
     elem_base->addIncoming(vector_elem_base, length_vector_exit);
+    // ADR-0020: a promoted carrier (and a dual tensor) holds tagged values, so
+    // its slots are read like a vector's, with nothing to decode.
+    llvm::PHINode* v2l_tagged_slots = ctx_.builder().CreatePHI(ctx_.builder().getInt1Ty(), 2, "v2l_tagged_slots");
+    v2l_tagged_slots->addIncoming(v2l_tensor_is_tagged, length_tensor_exit);
+    v2l_tagged_slots->addIncoming(ctx_.builder().getFalse(), length_vector_exit);
 
     // Get optional start/end
     llvm::Value* start;
@@ -2960,6 +2812,15 @@ llvm::Value* CollectionCodegen::vectorToList(const eshkol_operations_t* op) {
     ctx_.builder().CreateCondBr(is_tensor, elem_tensor, elem_vector);
 
     ctx_.builder().SetInsertPoint(elem_tensor);
+    llvm::BasicBlock* elem_tensor_boxed = llvm::BasicBlock::Create(ctx_.context(), "v2l_tensor_boxed", current_func);
+    llvm::BasicBlock* elem_tensor_numeric = llvm::BasicBlock::Create(ctx_.context(), "v2l_tensor_numeric", current_func);
+    ctx_.builder().CreateCondBr(v2l_tagged_slots, elem_tensor_boxed, elem_tensor_numeric);
+
+    ctx_.builder().SetInsertPoint(elem_tensor_boxed);
+    llvm::Value* v2l_boxed_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(),
+        ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_base, i), "v2l_boxed_elem");
+
+    ctx_.builder().SetInsertPoint(elem_tensor_numeric);
     llvm::Value* tensor_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elem_base, i);
     llvm::Value* tensor_elem_i64 = ctx_.builder().CreateLoad(ctx_.int64Type(), tensor_elem_ptr, "v2l_tensor_elem");
     llvm::Value* not_zero = ctx_.builder().CreateICmpNE(tensor_elem_i64,
@@ -2973,6 +2834,13 @@ llvm::Value* CollectionCodegen::vectorToList(const eshkol_operations_t* op) {
     llvm::BasicBlock* elem_tensor_tagged = llvm::BasicBlock::Create(ctx_.context(), "v2l_tensor_tagged", current_func);
     ctx_.builder().CreateCondBr(could_be_ad_ptr, elem_tensor_ad, elem_tensor_double);
 
+    // Close the boxed-slot block now that its merge target exists.
+    llvm::IRBuilderBase::InsertPoint v2l_saved = ctx_.builder().saveIP();
+    ctx_.builder().SetInsertPoint(elem_tensor_boxed);
+    ctx_.builder().CreateBr(elem_tensor_tagged);
+    llvm::BasicBlock* elem_tensor_boxed_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().restoreIP(v2l_saved);
+
     ctx_.builder().SetInsertPoint(elem_tensor_ad);
     llvm::Value* tensor_ad_result = tagged_.packPtr(tensor_elem_i64, ESHKOL_VALUE_CALLABLE);
     ctx_.builder().CreateBr(elem_tensor_tagged);
@@ -2985,9 +2853,10 @@ llvm::Value* CollectionCodegen::vectorToList(const eshkol_operations_t* op) {
     llvm::BasicBlock* elem_tensor_double_exit = ctx_.builder().GetInsertBlock();
 
     ctx_.builder().SetInsertPoint(elem_tensor_tagged);
-    llvm::PHINode* tensor_elem = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "v2l_tensor_tagged_elem");
+    llvm::PHINode* tensor_elem = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "v2l_tensor_tagged_elem");
     tensor_elem->addIncoming(tensor_ad_result, elem_tensor_ad_exit);
     tensor_elem->addIncoming(tensor_double_result, elem_tensor_double_exit);
+    tensor_elem->addIncoming(v2l_boxed_elem, elem_tensor_boxed_exit);
     ctx_.builder().CreateBr(elem_merge);
     llvm::BasicBlock* elem_tensor_exit = ctx_.builder().GetInsertBlock();
 

@@ -1654,6 +1654,22 @@ static void evac_drain(EvacState& st) {
                 if (t->dimensions && st.owns(t->dimensions))
                     t->dimensions = (uint64_t*)evac_raw(
                         st, t->dimensions, (size_t)t->num_dimensions * sizeof(uint64_t));
+                // A tagged-element carrier (a dual tensor, or a vector
+                // promoted by a non-numeric store -- ADR-0020) holds 16-byte
+                // tagged values that can point into the dying region, so its
+                // buffer is wider and each slot is walked.
+                if (eshkol_tensor_dtype_is_tagged(t->dtype)) {
+                    if (t->elements && st.owns(t->elements))
+                        t->elements = (int64_t*)evac_raw(
+                            st, t->elements,
+                            (size_t)t->total_elements * sizeof(eshkol_tagged_value_t));
+                    if (t->elements) {
+                        auto* slots = (eshkol_tagged_value_t*)t->elements;
+                        for (uint64_t i = 0; i < t->total_elements; ++i)
+                            slots[i] = evac_value(st, slots[i]);
+                    }
+                    break;
+                }
                 if (t->elements && st.owns(t->elements))
                     t->elements = (int64_t*)evac_raw(
                         st, t->elements, (size_t)t->total_elements * sizeof(int64_t));

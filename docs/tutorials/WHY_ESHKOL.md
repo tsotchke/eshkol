@@ -106,7 +106,7 @@ This means:
 (define kb (make-kb))
 (kb-assert! kb (make-fact 'parent 'alice 'bob))
 (kb-query kb (make-fact 'parent ?p 'bob))
-;; => ((parent alice bob))
+;; => ({?p -> alice})
 
 (define fg (make-factor-graph 3 #(2 2 2)))
 (fg-add-factor! fg #(0 1) #(0.9 0.1 0.1 0.9))

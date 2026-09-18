@@ -34,6 +34,8 @@ export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+# shellcheck source=../../scripts/lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 
 BUILD_DIR="${BUILD_DIR:-build}"
 if [ -z "${ESHKOL_RUN:-}" ]; then
@@ -79,12 +81,13 @@ if /usr/bin/time -l true >/dev/null 2>"$TIME_PROBE"; then
         TIME_MODE="bsd"
     fi
 fi
+eshkol_require_output_file_path "$TIME_PROBE"
 if [ -z "$TIME_MODE" ] && /usr/bin/time -v true >"$TIME_PROBE" 2>&1; then
     if grep -qi "Maximum resident set size" "$TIME_PROBE" 2>/dev/null; then
         TIME_MODE="gnu"
     fi
 fi
-if ! eshkol_durable_enabled; then rm -f "$TIME_PROBE"; fi
+if ! eshkol_durable_enabled; then eshkol_checked_rm "$TIME_PROBE"; fi
 if [ -z "$TIME_MODE" ]; then
     echo "define_loop_flat_rss_aot_test.sh: neither \`/usr/bin/time -l\` (macOS) nor \`/usr/bin/time -v\` (Linux) reports peak RSS on this host — cannot gate." >&2
     exit 2

@@ -1,8 +1,24 @@
+---
+kind: reference
+status: current
+owner-area: build
+since: v1.0.0
+sources:
+  - inc/eshkol/eshkol.h
+  - inc/eshkol/types/type_relation.h
+  - inc/eshkol/backend/libm_codegen.h
+  - inc/eshkol/backend/static_callee_binding.h
+  - inc/eshkol/backend/closure_capture_scope.h
+  - exe/eshkol-run.cpp
+  - lib/backend/llvm_codegen.cpp
+  - lib/types/type_checker.cpp
+  - CMakeLists.txt
+---
 # Eshkol System Architecture Reference
 
 **Version**: v1.3.5-evolve
 **Release**: v1.3.5-evolve
-**Date**: August 2026
+**Date**: September 2026
 **Status**: Production-ready compiler with GPU acceleration, consciousness engine, and exact arithmetic
 
 > **Note**: This document describes the **actual implemented system** based on comprehensive code analysis. Features marked as "planned" or "future" are documented separately in roadmap documents.
@@ -47,13 +63,13 @@ Eshkol is a production-grade compiler implementing a Scheme-like language with:
 | Metric | Value |
 |--------|-------|
 | Total backend (`lib/backend/`) | ~220,211 lines indexed |
-| LLVM backend | 35 codegen modules, ~108,400 lines |
-| Bytecode VM | 66 core opcodes, 722 VM-table builtins, ~51,092 lines |
-| Main codegen | 44,003 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)) |
-| Parser | 11,116 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp)) |
+| LLVM backend | 39 codegen modules, 118,470 lines |
+| Bytecode VM | 66 core opcodes, 722 VM-table builtins, ~57,650 lines |
+| Main codegen | 47,107 lines ([`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)) |
+| Parser | 11,691 lines ([`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp)) |
 | Memory manager | 4,259 lines ([`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_*` siblings) |
 | Weight matrix transformer | ~7,400 lines, 127/127 inline + 124/124 traced, 3-way verified |
-| Test suite | 528 self-reported tests across 37 suites (0 failures) |
+| Test suite | 1,020 self-reported tests across 46 suites (0 failures; see [TEST_COVERAGE.md](TEST_COVERAGE.md)) |
 
 ---
 
@@ -134,7 +150,7 @@ in `vm_run.c`, so this structural change does not alter behavior.
 
 ## Memory Architecture (OALR)
 
-**Implementation**: [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (18,367 lines total), against the [`lib/core/arena_memory.h`](../lib/core/arena_memory.h) interface (1,095 lines)
+**Implementation**: [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (18,367 lines total), against the [`lib/core/arena_memory.h`](../lib/core/arena_memory.h) interface (1,156 lines)
 
 ### Core Principles
 
@@ -181,6 +197,8 @@ _Static_assert(sizeof(eshkol_object_header_t) == 8, "Must be 8 bytes");
 ```
 
 The header is at **offset -8** from the data pointer returned by allocators.
+
+**Heap subtypes have one definition.** `heap_subtype_t` in [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) is the only place a heap subtype is declared: 25 members (values 0-13 and 15-25; 14 is reserved). Each member carries an interior-pointer tag on its declaration line. `[DEEPWALK]` (16 members) means the region evacuator must walk the object's interior tagged values and pointers when the object escapes a dying region. `[LEAF]` (9 members) means a contiguous header-plus-payload copy is sound, because the object holds no interior region pointer. Every `[DEEPWALK]` member has a native evacuation handler in `evac_kind_for` ([`lib/core/runtime_regions.cpp`](../lib/core/runtime_regions.cpp)); a leaf copy does not count as a deep walk. `eshkol_heap_subtype_is_declared()` is an exhaustive switch over the same enum with no `default:`, so a member added to the enum and not to the predicate is a compile error, and a subtype byte read from a header that is not a declared member takes a loud fallback that names the value. The architecture model grades the tags against the evacuator's actual `case` arms (`INV-oalr-interior-pointer-deepwalk`, and `INV-vm-region-evac-subtype-total` for the VM evacuator) (since v1.3.5; [ADR 0014](design/adr/0014-release-invariant-contracts.md)).
 
 ### Phase 3B: Tagged Cons Cells
 
@@ -255,7 +273,7 @@ Eshkol uses **three layers** of type information for different purposes:
 
 ### Layer 1: Runtime Types (Tagged Values)
 
-**Implementation**: [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) (3,493 lines)
+**Implementation**: [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) (3,759 lines)
 
 ```c
 typedef struct eshkol_tagged_value {
@@ -310,7 +328,7 @@ ESHKOL_VALUE_CLOSURE_PTR (38)
 
 ### Layer 2: Compile-Time Types (HoTT)
 
-**Implementation**: [`lib/types/hott_types.cpp`](../lib/types/hott_types.cpp) (1,247 lines), [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) (4,924 lines)
+**Implementation**: [`lib/types/hott_types.cpp`](../lib/types/hott_types.cpp) (1,130 lines), [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) (6,061 lines)
 
 **Universe Hierarchy**:
 ```scheme
@@ -352,6 +370,37 @@ typedef struct {
 
 **Current Status**: Type checker produces **warnings only** and does not block compilation (gradual typing), with one deliberate exception: a value carrying `TYPE_FLAG_LINEAR` (`Qubit`, `Handle`, `Stream`) is enforced. Cloning one is a compile-time error in the default build on both engines and no artifact is written (v1.3.5-evolve, #471).
 
+#### The Type Relation
+
+**Implementation**: [`inc/eshkol/types/type_relation.h`](../inc/eshkol/types/type_relation.h) (170 lines), [`lib/types/type_relation.cpp`](../lib/types/type_relation.cpp) (433 lines) (since v1.3.5; [ADR 0013](design/adr/0013-gradual-type-relation.md))
+
+`TypeRelation` is the sole owner of every judgment that compares, combines or prints types. It is a lightweight view over one `TypeEnvironment`: it reads and extends the environment's interned signatures, pairs and sums, fills the environment's subtype cache, and keys nothing by expression or binding (per-expression facts belong to the semantic identity tables, not to this module). The lattice has `Value` at the top and `Never` at the bottom; between them sit the nominal graph, tracked pairs `Pair<A, B>` (a bare `Pair` is `Pair<Value, Value>`), sums `(+ A B ...)`, and function signatures `(-> A... R)` below the generic procedure types `Function` and `Closure`.
+
+| Operation | Judgment |
+|-----------|----------|
+| `isSubtype(sub, super)` | Static subtyping `A <: B` (cached). Arrows are contravariant in parameters and covariant in results; pair components are covariant; a union fits when every source arm fits the target; an unresolved `Invalid` carries no evidence |
+| `isConsistent(a, b)` | Siek-Taha consistency `A ~ B`: equal up to `Value`, structurally inside arrows and pairs. Symmetric, not transitive, never cached |
+| `isConsistentSubtype(sub, super)` | Consistent subtyping, the gradual check applied to procedure arguments and return annotations |
+| `compatibility(from, to)`, `accepts(from, to)` | Flow evidence (`RelationEvidence`): `Identity`, `Upcast`, `Dynamic`, `Numeric` or `Incompatible`. Every kind except `Incompatible` is accepted; the kind names the coercion a typed intermediate form makes explicit |
+| `castable(actual, ascribed)` | The `(the T e)` rule: the ascription is accepted unless it is a provable contradiction, so overlapping types are castable |
+| `join(a, b)`, `joinAll(types)`, `meet(a, b)` | Least upper and greatest lower bounds. Both recurse through unions, pairs and arrows, then use the nominal graph. `Never` is the join identity; disjoint concrete types meet at `Never` |
+| `narrow(current, proven)` | The type a successful runtime test proves: the meet, or the proven type when the meet is empty |
+| `widen(slot, incoming, policy)` | Inferred-slot widening under one of two policies (`WidenPolicy`). `InferenceSlot` (a named-let parameter) treats a join that reaches `Value` as a conflict and keeps the slot's type, except where either side is `Boolean`. `AdoptTop` (a `do` variable) adopts every join |
+| `pairProjection(pair, side)` | The type `car` or `cdr` yields: a tracked component, a `List` tail, else `Value` |
+| `print(type)` | The one printing function: `(-> Number Int64)`, `Pair<A, B>`, `(+ A B)`, `Function` |
+
+`TypeEnvironment` keeps thin facades for its existing callers (`isSubtype`, `leastCommonSupertype`, `getTypeName`, `getFunctionTypeName`). Each one constructs a `TypeRelation` and delegates; none contains a rule of its own. The checker calls `TypeRelation` directly. `tests/types/type_relation_test.cpp` is the direct contract for the module (arrow variance, dynamic components, disjoint joins and meets, pair covariance, printing, both widening policies), compiled and run by `scripts/run_cpp_type_tests.sh`.
+
+#### Checker Data Flow
+
+The checker ([`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp)) is bidirectional (`synthesize` and `check`) and runs as continuation tasks, so its native stack use does not grow with expression nesting. Three properties define how types flow through a program (since v1.3.5):
+
+- **Every control form is synthesised.** Each evaluated subexpression of `cond`, `case`, `match`, `when`, `unless`, `do`, `guard`, `and`, `or`, `set!`, `begin` and body sequences, quasiquote escapes, `dynamic-wind`, `call/cc`, `values`, `call-with-values`, `let-values`, `raise`, `with-region`, the ownership forms, tensor literals, computed callees, and the function, point, direction and order operands of the differentiation operators reaches the checker, so an argument error inside any of them produces the same diagnostic as the same call at top level. Each branch body is checked in its own scope; a multi-branch form's type is the `join` of its branches plus the value the form yields when no branch runs (`#f` for `cond`, `case`, `when` and `unless`).
+- **Recursive slots are typed by fixpoint.** A named-let parameter takes the join of its seed and every argument passed at a call that resolves to that loop's own binding (`LoopFrame` records the arguments per parameter). The body is checked in speculative passes: diagnostics are held (`emitDiagnostic`), and when a pass widens a parameter, `rollbackSpeculation` undoes the pass's diagnostics, recorded errors, linearity count and linear-usage counters before the body is checked again. The pass that widens nothing is the real check, and `releaseSpeculation` prints what it held. Annotated and linear bindings are never widened, and a parameter only moves up its finite supertype chain, so the iteration terminates. The same frame serves the result type of every recursive procedure (named let, function define, `letrec` lambda), bounded at 8 passes (`kMaxRecursionPasses`), after which the result is `Value`. A `do` variable is the fixpoint join of its init and its step under the `AdoptTop` policy.
+- **One relation at every site.** Branch-producing forms use `join`; return annotations and procedure arguments use consistent subtyping; `the` uses `castable`; diagnostics print types through `TypeRelation::print`.
+
+The user-facing account of annotations, inference and diagnostics is the [Gradual Typing guide](guide/GRADUAL_TYPING.md).
+
 ### Layer 3: Dependent Types
 
 **Implementation**: [`lib/types/dependent.cpp`](../lib/types/dependent.cpp) (534 lines)
@@ -383,7 +432,7 @@ DimensionChecker::Result checkMatMulDimensions(
 
 ## Automatic Differentiation
 
-**Implementation**: [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp) (15,233 lines), with reverse-mode AD dispatch sites inside [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)
+**Implementation**: [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp) (14,938 lines), with reverse-mode AD dispatch sites inside [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)
 
 Eshkol provides **three modes** of automatic differentiation, each optimized for different use cases:
 
@@ -600,6 +649,28 @@ Closures store **pointers** to captured variables, not values:
 
 **Implementation**: Captured variables are allocated as `GlobalVariable` or arena storage, closure stores pointers to these locations. `set!` writes through the pointer.
 
+### Static Callee Bindings
+
+**Implementation**: [`inc/eshkol/backend/static_callee_binding.h`](../inc/eshkol/backend/static_callee_binding.h) (247 lines) (since v1.3.5; [ADR 0015](design/adr/0015-static-callee-binding-identity.md))
+
+Binding a variable to a lambda records a static alias, `<name>_func` (inside a function also `<function>.<name>_func`), so direct calls, `apply`, `map`, `reduce`, `remove` and the differentiation operators can call the LLVM function without going through the runtime closure value. An alias is a binding fact, and the header is the one place its validity is decided:
+
+1. **The binding keeps its value.** A binding that is the target of a `set!` anywhere in its scope, or a top-level name that is defined more than once, gets no alias (`bindStaticCallee`). The top-level reassignment and redefinition facts come from the compiler's lexical mutation analysis over the fully expanded unit and are computed before code generation (`collectRedefinedTopLevelNames`, the memoised reassignment query, and the per-body `flat_mutation_targets_` summaries in [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp)). The analysis uses the existing source binding names and storage locations, and it reads an `extern` declaration as signature metadata, not as a call expression.
+2. **The alias belongs to the binding the name denotes at the use site.** Each alias records the LLVM storage of the binding that created it (`recordStaticCallee`), and `staticCalleeHiddenByRuntimeBinding` accepts an alias only when that storage is the one the name currently denotes. A sibling `let`, a parameter or a loop variable of the same name therefore hides an older alias.
+
+A call through a mutable binding evaluates the binding's current value and dispatches through the closure ABI; an unmodified binding keeps direct-call resolution. `inheritStaticCalleeCapture` propagates an alias into a nested function only for a capture proven immutable.
+
+### Capture Resolution for Direct Calls
+
+**Implementation**: [`inc/eshkol/backend/closure_capture_scope.h`](../inc/eshkol/backend/closure_capture_scope.h) (182 lines), `AutodiffCodegen::appendDifferentiandCaptures` in [`lib/backend/autodiff_codegen.cpp`](../lib/backend/autodiff_codegen.cpp) (since v1.3.5)
+
+A lambda with free variables lowers to an LLVM function that takes one pointer parameter per captured variable, appended after its user parameters. A site that calls such a function directly has to supply those pointers itself, and two rules keep that sound:
+
+1. **A captured value comes only from the function being emitted** (one of its own arguments or instructions) or from the module (a global, constant or function). `valueUsableInFunction` is the structural check every capture site applies. A value that belongs to an enclosing function is reached through the current function's own capture pointer; where no such pointer exists, code generation stops with a diagnostic that names the variable, the owning function, the function being emitted and the source location.
+2. **A callee reached through a name takes its captures from the closure object.** `emitClosureCaptureArguments` reads them from the closure's environment under the closure-call ABI, including the environment-pointer form used above 64 captures, which is what the runtime closure call does. An inline lambda created at the call site resolves its captures by name.
+
+`appendDifferentiandCaptures` is the single resolver for a differentiated closure's captures. `derivative`, `derivative-n`, `taylor`, every `gradient` path, `jacobian`, `hessian`, and through them `divergence`, `curl`, `laplacian` and `directional-derivative`, all use it. `MapCodegen` applies the same two rules for `map` and multi-list `map`, and `reduce` dispatches on the closure value.
+
 ### Variadic Functions
 
 **Rest parameters**:
@@ -635,7 +706,7 @@ Enables type-directed optimizations in higher-order functions.
 
 ## N-Dimensional Tensors
 
-**Implementation**: [`lib/backend/tensor_codegen.cpp`](../lib/backend/tensor_codegen.cpp) (1,867-line dispatcher; per-domain ops in thirteen `tensor_*_codegen.cpp` siblings totalling 22,355 lines)
+**Implementation**: [`lib/backend/tensor_codegen.cpp`](../lib/backend/tensor_codegen.cpp) (2,012-line dispatcher; per-domain ops in thirteen `tensor_*_codegen.cpp` siblings totalling 23,389 lines)
 
 ### Tensor Structure
 
@@ -763,6 +834,41 @@ int64_t wrong = static_cast<int64_t>(value);  // → 3 (loses precision!)
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Source Locations and Node Identity
+
+**Implementation**: `eshkol_ast_t` in [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h), [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp), [`inc/eshkol/frontend/node_identity.h`](../inc/eshkol/frontend/node_identity.h) (since v1.3.5)
+
+- **Every AST node is born with a location.** In C++, `eshkol_ast_t` carries default member initialisers: `line` and `column` are copied from a thread-local birth location (`eshkol_ast_birth_location`), and `source_file_id` and `node_id` start at 0. The parser, the macro expander and codegen each open an `EshkolAstBirthLocationScope` for the form they are processing, so a node synthesised while handling that form (internal-define `letrec*`, body sequences, named-let and `do` lowering, record-type expansion, nodes built by hand in codegen) inherits the location of the form it came from. A node's own stamp overrides its birth location, and outside any scope the location is 0/0, which means "no originating form". Raw arena storage is constructed through `eshkol_ast_construct_array`, so it follows the same rule. The initialisers, the scope class and the constructor helper sit inside `#ifdef __cplusplus`; the struct layout is identical in C and C++ and the type stays trivially copyable.
+- **The reader keeps line and column per input stream.** The cumulative position lives in `std::ios_base` storage on the stream (`xalloc` slots), bound to the reader only for the duration of one call (`StreamPositionBinding`). A nested read of a required module, which the AOT driver performs while it is still reading the parent, cannot disturb the parent's position; a fresh stream starts at line 1, and the position dies with the stream.
+- **One node-identity key.** The parser's `eshkol_ast_t::node_id`, the NodeId allocator (`eshkol_node_id_new`) and the semantic queries (`eshkol_binding_id_for_node`, `eshkol_typed_expr_info`) share the `eshkol_node_id_t` key type. The AST field is a 32-bit alias of it, which preserves the public field width and layout ([ADR 0014](design/adr/0014-release-invariant-contracts.md)). Payload (source spans, binding identity, typed-expression facts) lives in side tables keyed on this value, not in fields on the node.
+
+Deterministic locations are what make language-coverage records reproducible; `language_coverage_determinism_test` holds that property (see [TESTING.md](TESTING.md#language-coverage-instrumentation)).
+
+### Driver Analyses Before Codegen
+
+**Implementation**: `OwnershipAnalyzer` and `EscapeAnalyzer` in [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp)
+
+Ownership analysis and escape analysis traverse the AST iteratively. Each analyzer keeps an explicit stack of work records (`WorkItem`): an `AST` record visits a node, and continuation records (`LET_BINDING`, `EXIT_SCOPE`, `UNBORROW` for ownership; `LET_BINDING`, `EXIT_SCOPE`, `LET_EXIT`, `LAMBDA_EXIT` for escape) run the step that follows a child's traversal. The records preserve the traversal order and the scope cleanup of a recursive walk, so diagnostics are unchanged, while native stack use is independent of source nesting. Together with the explicit continuation stacks in the parser, the type checker and codegen, this lets deeply nested source compile ahead of time within the default 8 MiB stack: the `parser_stack_compile` CTest compiles and runs 16,000 levels of nesting through the JIT and AOT with the stack limit fixed at 8 MiB, and `ownership_nested_diagnostics` holds the analyzers' diagnostics on nested input (since v1.3.5).
+
+### AST ownership
+
+Every phase above reads the same AST, so its data lives for the whole
+compilation:
+
+- **Node identity and spans**: `NodeId -> SourceSpan`, minted by the parser
+  ([`node_identity.h`](../inc/eshkol/frontend/node_identity.h), ADR-0000
+  Stage 1).
+- **String payloads**: identifiers, literal text, operation names, rest
+  parameters, type-variable names, and every name that expansion, renaming,
+  the driver, the REPL or codegen synthesizes. These have one owner, a
+  process-rooted chunked arena
+  ([`ast_strings.h`](../inc/eshkol/frontend/ast_strings.h),
+  [ADR-0021](design/adr/0021-ast-string-owner.md)). Producers allocate from
+  it, and no consumer frees an individual string. `eshkol-run` releases it
+  when `main()` returns, and the REPL releases it in its ordered exit.
+- **Node storage** (`eshkol_ast_t` arrays) is still reclaimed only when the
+  process exits (epic #182).
+
 ### Special Forms (70+)
 
 **Core**: `define`, `define-type`, `define-syntax`, `set!`, `lambda`, `let`, `let*`, `letrec`, `if`, `cond`, `case`, `match`, `and`, `or`, `when`, `unless`, `do`
@@ -785,7 +891,7 @@ int64_t wrong = static_cast<int64_t>(value);  // → 3 (loses precision!)
 
 ## Module System
 
-**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) (6,090 lines)
+**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) (6,099 lines)
 
 ### Architecture
 
@@ -856,7 +962,7 @@ __test_modules_mod_a__helper
 
 ## REPL/JIT System
 
-**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) (4,600 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp) (1,743 lines)
+**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) (4,679 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp) (1,743 lines)
 
 ### Architecture
 
@@ -1025,6 +1131,8 @@ All implemented in **pure Eshkol** using tensor operations and autodiff.
 
 ### Directory Structure
 
+The indented tree is an illustrative layout snapshot; its per-file size annotations are historical and may not match current sources.
+
 ```
 eshkol/
 ├── CMakeLists.txt          # Build system (6,484 lines)
@@ -1032,7 +1140,7 @@ eshkol/
 ├── LICENSE                 # MIT license
 │
 ├── inc/eshkol/             # Public headers
-│   ├── eshkol.h            # Main header (2,990 lines)
+│   ├── eshkol.h            # Main header (3,759 lines)
 │   ├── llvm_backend.h      # Backend API (432 lines)
 │   ├── logger.h            # Logging system
 │   │
@@ -1073,7 +1181,7 @@ eshkol/
 │   │   ├── llvm_codegen.cpp      # Main engine (44,003 lines)
 │   │   ├── arithmetic_codegen.cpp# Polymorphic arithmetic (4,012 lines)
 │   │   ├── autodiff_codegen.cpp  # AD operations (14,545 lines)
-│   │   ├── tensor_codegen.cpp    # Tensor-op dispatcher (1,867 lines); per-domain in tensor_*_codegen.cpp
+│   │   ├── tensor_codegen.cpp    # Tensor-op dispatcher (2,012 lines); per-domain in tensor_*_codegen.cpp
 │   │   ├── collection_codegen.cpp# Lists/vectors (3,173 lines)
 │   │   ├── control_flow_codegen.cpp # if/cond/and/or (1,107 lines)
 │   │   ├── binding_codegen.cpp   # define/let/set! (1,662 lines)
@@ -1101,7 +1209,7 @@ eshkol/
 │   │   └── *.esk            # Stdlib modules (33 files)
 │   │
 │   ├── frontend/
-│   │   ├── parser.cpp       # S-expr parser (11,116 lines)
+│   │   ├── parser.cpp       # S-expr parser (11,115 lines)
 │   │   └── macro_expander.cpp # Macro system (1,658 lines)
 │   │
 │   ├── types/
@@ -1110,7 +1218,7 @@ eshkol/
 │   │   └── dependent.cpp    # Dependent types (534 lines)
 │   │
 │   ├── repl/
-│   │   ├── repl_jit.cpp     # JIT compiler (4,354 lines)
+│   │   ├── repl_jit.cpp     # JIT compiler (4,679 lines)
 │   │   └── repl_utils.h     # REPL utilities
 │   │
 │   └── quantum/
@@ -1153,6 +1261,18 @@ llvm::Value* arg_value = codegen_ast_callback_(ast, callback_context_);
 
 **Remaining Work**: Some modules (FunctionCodegen) have stub implementations, full logic still in main codegen.
 
+### Shared Codegen Facilities
+
+Three header-only facilities under `inc/eshkol/backend/` each own one decision that several codegen modules need, so no module carries a private copy of the rule (since v1.3.5):
+
+| Header | Lines | The decision it owns |
+|--------|------:|----------------------|
+| [`libm_codegen.h`](../inc/eshkol/backend/libm_codegen.h) | 204 | How codegen obtains a libm function |
+| [`static_callee_binding.h`](../inc/eshkol/backend/static_callee_binding.h) | 247 | When a variable may be resolved to an `llvm::Function` at compile time (see [Static Callee Bindings](#static-callee-bindings)) |
+| [`closure_capture_scope.h`](../inc/eshkol/backend/closure_capture_scope.h) | 182 | Where a statically resolved closure's captures come from (see [Capture Resolution for Direct Calls](#capture-resolution-for-direct-calls)) |
+
+**libm access.** `eshkol::libm_codegen::unary` and `binary` are the single way codegen obtains a libm function. They answer with the LLVM intrinsic (`llvm.exp.f64`, `llvm.log.f64`, `llvm.pow.f64`, ...) wherever the LLVM major being built against has one; an intrinsic name is reserved, so no module symbol, including a user program's own `(define (exp x) ...)`, can shadow it. Where no intrinsic exists (`tanh` before LLVM 19, `atan2` before LLVM 20), the helper looks the function up by name and verifies the found function's type against the signature about to be emitted; on a mismatch it declares a distinctly named function (`eshkol_libm_<name>`), so a collision is a link failure and never a call through the wrong ABI. `BuiltinFactoryCodegen` declares the libm names that have no intrinsic on any supported LLVM (`asinh`, `acosh`, `atanh`, `cbrt`, `fmod`, `remainder`, `nextafter`) at module initialisation, before any user definition or lowering runs. `AutodiffCodegen::getMathFunc` and `EshkolLLVMCodeGen::mathFunc` route the scalar-math and AD paths through the same helper, verify a cached row's type before reuse, and never return null.
+
 ---
 
 ## Performance Characteristics
@@ -1191,7 +1311,7 @@ Where n = number of operations.
 
 ## Build System
 
-**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (9,784 lines)
+**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (10,748 lines)
 
 ### Requirements
 
@@ -1250,7 +1370,7 @@ This makes arena functions, autodiff tape operations, etc. available to JIT-comp
 
 ### Test Suite Organization
 
-**528 self-reported tests** across 37 suites:
+**1,020 self-reported tests** across 46 suites (the aggregate `scripts/run_all_tests.sh` run; figures in [TEST_COVERAGE.md](TEST_COVERAGE.md)). Representative categories:
 
 | Category | Count | Purpose |
 |----------|-------|---------|
@@ -1313,13 +1433,14 @@ These features are **designed but not implemented**. See roadmap documents for d
 
 ### Primary Source Files (analyzed in detail)
 
-- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (3,493 lines)
-- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (46,007 lines)
-- [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (763 lines; 4,259 across all `runtime_*` memory modules)
-- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (11,563 lines)
-- [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (4,924 lines)
-- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,600 lines)
-- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (6,090 lines)
+- [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (3,759 lines)
+- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (47,107 lines)
+- [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (1226 lines; 4,259 across all `runtime_*` memory modules)
+- [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (11,691 lines)
+- [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (6,061 lines)
+- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,679 lines)
+- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (6,099 lines)
+- [`lib/types/type_relation.cpp`](../lib/types/type_relation.cpp) - Gradual type relation (433 lines)
 
 ### Forward-looking design documents
 

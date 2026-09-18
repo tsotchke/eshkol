@@ -13,6 +13,7 @@
  */
 
 #include <eshkol/backend/call_apply_codegen.h>
+#include <eshkol/backend/static_callee_binding.h>
 #include <eshkol/eshkol.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -174,23 +175,28 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
     // Check if function is a symbol (built-in or user-defined)
     if (func_arg->type == ESHKOL_VAR) {
         std::string func_name = func_arg->variable.id;
+        const bool top_level_reassigned = is_top_level_callee_reassigned_callback_ &&
+            is_top_level_callee_reassigned_callback_(func_name.c_str(), callback_context_);
+        const bool dynamic_binding = eshkol::staticCalleeTopLevelBindingIsDynamic(
+            symbol_table_, global_symbol_table_,
+            ctx_.builder().GetInsertBlock()->getParent(), func_name, top_level_reassigned);
 
         // Variadic built-in reductions: arithmetic (+ - * /) and min/max.
         // All share the same fold-over-list machinery; applyReduction
         // dispatches on op name internally.
-        if (func_name == "+" || func_name == "-" || func_name == "*" || func_name == "/" ||
-            func_name == "min" || func_name == "max") {
+        if (!dynamic_binding && (func_name == "+" || func_name == "-" || func_name == "*" || func_name == "/" ||
+            func_name == "min" || func_name == "max")) {
             return applyReduction(func_name, list_int);
         }
 
         // Handle list operation
-        if (func_name == "list") {
+        if (!dynamic_binding && func_name == "list") {
             // (apply list '(1 2 3)) returns the list itself
             return arg_list;
         }
 
         // Handle cons
-        if (func_name == "cons") {
+        if (!dynamic_binding && func_name == "cons") {
             return applyCons(list_int);
         }
 
@@ -219,7 +225,7 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
              func_name == "reshape" || func_name == "transpose" ||
              func_name == "tensor" || func_name == "make-tensor");
 
-        if (is_unsupported_apply_builtin && !ctx_.module().getFunction(func_name)) {
+        if (!dynamic_binding && is_unsupported_apply_builtin && !ctx_.module().getFunction(func_name)) {
             eshkol_error_current(
                 ("apply: `%s` cannot be called through `apply` -- its arguments are not all "
                  "dimensions, and the apply path can only materialise a shape. Call it "
@@ -229,7 +235,7 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             return nullptr;
         }
 
-        if (apply_builtin_callback_ && is_shape_only_creation) {
+        if (!dynamic_binding && apply_builtin_callback_ && is_shape_only_creation) {
 
             Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
             Function* cons_get_ptr = getTaggedConsGetPtrFunc();
@@ -297,7 +303,7 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
         }
 
         // Try to find function by name in the module
-        Function* named_func = ctx_.module().getFunction(func_name);
+        Function* named_func = dynamic_binding ? nullptr : ctx_.module().getFunction(func_name);
         if (named_func) {
             return applyUserFunction(named_func, list_int);
         }
@@ -305,7 +311,12 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
         // FIRST-CLASS FUNCTION FIX: Check for function pointer stored with _func suffix
         // MUTABLE CAPTURE FIX: Skip this path if function has capture parameters (ptr types)
         // because applyUserFunction doesn't handle captures - use closure path instead
-        if (symbol_table_) {
+        // A local runtime binding of this name hides any static alias of a
+        // same-named binding elsewhere (static_callee_binding.h).
+        const bool alias_hidden = dynamic_binding || eshkol::staticCalleeHiddenByRuntimeBinding(
+            symbol_table_, global_symbol_table_,
+            ctx_.builder().GetInsertBlock()->getParent(), func_name);
+        if (symbol_table_ && !alias_hidden) {
             auto func_it = symbol_table_->find(func_name + "_func");
             if (func_it != symbol_table_->end()) {
                 if (auto* stored_func = dyn_cast<Function>(func_it->second)) {
@@ -397,7 +408,7 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
         // a different LLVM module loaded via the JIT. Consult
         // function_table_ directly first; direct calls already use
         // this table.
-        if (function_table_) {
+        if (function_table_ && !dynamic_binding) {
             auto ft_it = function_table_->find(func_name);
             if (ft_it != function_table_->end() && ft_it->second) {
                 Function* tf = ft_it->second;

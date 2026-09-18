@@ -32,8 +32,12 @@ fi
 if eshkol_durable_enabled; then
     TRACE_DIR="${TRACE_DIR:-$ESHKOL_ICC_WORK/traces}"
 else
-    TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
+    TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
 fi
+# Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
+export TRACE_DIR ICC_TRACE_DIR="$TRACE_DIR" ESHKOL_TRACE_DIR="$TRACE_DIR"
 TRACE_FILE="$TRACE_DIR/eshkol_smoke.jsonl"
 mkdir -p "$TRACE_DIR"
 
@@ -121,73 +125,7 @@ rm() {
     return 0
 }
 
-# Emit one trace line as a JSON-L event with explicit `kind`. ICC's
-# runtime_evidence parser was extended (2026-05-07) to recognize records
-# carrying an explicit `kind` field as pre-shaped events, instead of
-# walking their keys with the ML-training-log heuristic.
-#
-# The oracle criterion matches:
-#     event_kinds: [eshkol_smoke]
-#     event_names: ["<probe_id>"]
-#     event_values: ["PASS"]
-emit_event() {
-    local probe_id="$1" status="$2" snippet="$3"
-    : "${TRACE_FILE:?}"
-    # json.dumps handles newlines, tabs, control bytes, quotes, backslashes,
-    # and Unicode labels. Hand-escaping only quotes/backslashes produced
-    # invalid JSON-L whenever a failing probe emitted a multiline diagnostic.
-    python3 -c '
-import json, sys
-print(json.dumps({"kind": "eshkol_smoke", "name": sys.argv[1],
-                  "value": sys.argv[2], "snippet": sys.argv[3],
-                  "confidence": 0.95}, ensure_ascii=False))
-' "$probe_id" "$status" "$snippet" >> "${TRACE_FILE:?}"
-}
-
-PROBE_TOTAL=0
-PROBE_FAILURES=0
-PROBE_INFRA=0
-
-probe() {
-    local probe_id="$1" label="$2" cmd="$3"
-    local out status snippet class
-    PROBE_TOTAL=$((PROBE_TOTAL + 1))
-    # Capture combined stdout+stderr so the snippet is informative when
-    # something fails. Bound the snippet so a multi-MB log doesn't blow
-    # up the trace file.
-    out=$(eval "$cmd" 2>&1)
-    status=$?
-    if [ "$status" -eq 0 ]; then
-        snippet="${label}: OK"
-        emit_event "$probe_id" PASS "$snippet"
-        printf '  ✓ %-40s %s\n' "$probe_id" "$label"
-        return
-    fi
-    # A probe body is an ad hoc `eval`'d shell snippet, most of which call
-    # eshkol-run/a compiled binary directly with no timeout wrapper at all —
-    # so today the ONLY exit codes this classifier can recognize as
-    # "harness could not run" rather than "the code is wrong" are the
-    # small, well-known set scripts/lib/harness_outcome.sh defines: a
-    # SIGKILL/SIGTERM/SIGINT the environment sent (137/143/130), or the 124/
-    # 125/142 shapes any probe that DOES wrap itself in
-    # eshkol_outcome_guarded (directly, or transitively through a script
-    # that sources this file) can now produce. Everything else stays FAIL,
-    # per eshkol_outcome_classify_exit's own principle: an unrecognized
-    # nonzero exit is a claim about the CODE until a harness explicitly
-    # says otherwise.
-    class=$(eshkol_outcome_classify_exit "$status")
-    if [ "$class" = INFRA ]; then
-        PROBE_INFRA=$((PROBE_INFRA + 1))
-        snippet=$(printf '%s' "$out" | tail -c 200)
-        emit_event "$probe_id" INFRA "$snippet"
-        printf '  ⚠ %-40s %s (infra, exit %d — no verdict obtained)\n' "$probe_id" "$label" "$status"
-    else
-        PROBE_FAILURES=$((PROBE_FAILURES + 1))
-        snippet=$(printf '%s' "$out" | tail -c 200)
-        emit_event "$probe_id" FAIL "$snippet"
-        printf '  ✗ %-40s %s (exit %d)\n' "$probe_id" "$label" "$status"
-    fi
-}
+. "$REPO_ROOT/scripts/lib/icc_probe.sh"
 
 echo "Running ICC smoke probes → $TRACE_FILE"
 echo
@@ -227,11 +165,8 @@ probe jit_repl_clean_exit "eshkol-run -r returns 0 on a noop input" \
 # cleanly and read each other's objects at the wrong offsets — silently. These
 # two probes are the evidence for INV-object-abi-mixed-link-refused and
 # INV-object-abi-site-ratchet respectively.
-probe abi_layout_pin "object header layout and guard symbol are pinned" \
-    '"$(dirname "$ESHKOL_RUN")/abi_layout_pin_test"'
-
-probe abi_object_header_ratchet "no new object-header layout dependence" \
-    'python3 "$REPO_ROOT/scripts/abi_header_inventory.py" check --repo "$REPO_ROOT"'
+. "$REPO_ROOT/scripts/lib/release_invariant_probes.sh"
+eshkol_release_invariant_probes
 
 # ─────────────────────────────────────────────────────────────────
 # Agent FFI probes (#234/#236/#237/#248 contracts)
@@ -349,8 +284,14 @@ fi
 probe stdlib_o_loads "build/stdlib.o exists and is non-empty" \
     'test -s "$BUILD_DIR_PATH/stdlib.o"'
 
-probe stdlib_compiles_clean "stdlib rebuilds without errors" \
-    'cd "$REPO_ROOT" && touch lib/stdlib.esk && cmake --build "$BUILD_DIR_PATH" --target stdlib >/dev/null 2>&1'
+probe stdlib_compiles_clean "stdlib rebuilds to isolated outputs with the release compiler" \
+    'if eshkol_durable_enabled; then
+         stdlib_output_root="$ESHKOL_ICC_WORK";
+     else
+         stdlib_output_root="$ESHKOL_SCRATCH_ROOT";
+     fi;
+     python3 "$REPO_ROOT/scripts/compile_stdlib_isolated.py" \
+       --build-dir "$BUILD_DIR_PATH" --output-root "$stdlib_output_root"'
 
 probe error_messages_have_source_locations "Diagnostic includes line:col" \
     'tmp=$(mktemp).esk; bin=$(mktemp).bin; rm -f "$bin";
@@ -563,11 +504,7 @@ probe ad_adversarial_fd_oracle \
 # number of perturbations it evaluated, and the assertion form goes #f), on both
 # engines, plus the matmul tape-node ratchet. Readiness must never again be able
 # to certify exactness on the strength of a counter that cannot move.
-probe ad_exactness_gate \
-    'the no-finite-differences guarantee is enforced by a counter that can actually read nonzero: exact gradients report 0 FD evals, a real finite-difference backward reports exactly its perturbations and turns the shipped assertion #f (both engines), and matmul AD tape node counts stay within their ratchet with gradients exact' \
-    'cd "$REPO_ROOT";
-     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash scripts/run_ad_exactness_gate.sh 2>&1) || exit 1;
-     printf "%s" "$out" | grep -q "AD exactness gate: PASS"'
+# The shared early release probes above execute ad_exactness_gate and emit its typed receipt.
 
 probe region_evac_subtype_coverage \
     'ESH-0214d/e region escape-evacuator keeps promoted logic/workspace/PROMISE subtype interiors intact under ESHKOL_ARENA_POISON=1 (AOT, flat RSS)' \
@@ -750,7 +687,24 @@ probe generative_differential_oracle 'generated R7RS programs agree across chibi
 # dedicated harness also writes runtime_event evidence consumed directly by
 # INV-language-surface-exercise and the total-language completion oracle.
 probe language_surface_coverage_floor 'exposure-engine language coverage meets the committed monotonic floor' \
-    'cd "$REPO_ROOT" && ./scripts/run_language_coverage.sh'
+    'if [ "${ESHKOL_LANGUAGE_COVERAGE_ALREADY_RUN:-0}" != 1 ]; then
+     ICC_TRACE_DIR="$TRACE_DIR" ./scripts/run_language_coverage.sh || exit $?
+     fi;
+     python3 - "$TRACE_DIR/language_surface_coverage.jsonl" <<PY
+import json, sys
+path = sys.argv[1]
+events = []
+with open(path, encoding="utf-8") as handle:
+    for line in handle:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("kind") == "runtime_event" and event.get("name") == "language_surface_coverage":
+            events.append(event)
+if not events or events[-1].get("value") != "PASS":
+    raise SystemExit("missing current language_surface_coverage PASS receipt")
+PY'
 # The ledger says what the VM supports; this makes the ledger prove it by
 # RUNNING both engines over the whole callable surface. Without it a row can
 # claim vm-supported for a name that aborts the VM, and vm_parity_audit.py
@@ -772,11 +726,11 @@ probe surface_parity_execution_backed 'every name native resolves is resolved by
 probe engine_semantic_parity 'no corpus program computes a different answer on the two engines, and differential construct coverage holds its floor' \
     'if eshkol_durable_enabled; then
          workdir=$(eshkol_durable_prepare_dir engine-parity) || exit $?;
-         cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py --workdir "$workdir" && \
-           python3 scripts/check_engine_parity_threshold.py;
+         cd "$REPO_ROOT" && TRACE_DIR="$TRACE_DIR" BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py --workdir "$workdir" && \
+           python3 scripts/check_engine_parity_threshold.py --trace-file "$TRACE_DIR/engine_parity_coverage.jsonl";
      else
-         cd "$REPO_ROOT" && BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py && \
-           python3 scripts/check_engine_parity_threshold.py;
+         cd "$REPO_ROOT" && TRACE_DIR="$TRACE_DIR" BUILD_DIR="$BUILD_DIR" python3 scripts/run_engine_parity_coverage.py && \
+           python3 scripts/check_engine_parity_threshold.py --trace-file "$TRACE_DIR/engine_parity_coverage.jsonl";
      fi'
 
 # -- fix-campaign regression gates (2026-07-10): exact-oracle-verified fixes --

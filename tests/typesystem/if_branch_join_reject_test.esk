@@ -1,0 +1,23 @@
+;; Type System Test: a join of concrete `if` branches that is provably the
+;; wrong type is still reported where the value is used, with the same message
+;; as the equivalent `cond`: String branches give String, Int64 with Float64
+;; gives Number, Boolean branches give Boolean.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN]
+;; EXPECT-STDERR: argument 1 of 'area': expected Number, got String (line 16
+;; EXPECT-STDERR: argument 1 of 'area': expected Number, got String (line 17
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Number (line 18
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Number (line 19
+;; EXPECT-STDERR: argument 2 of 'area': expected Number, got Boolean (line 20
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+(define (strings flag) (area (if flag "a" "b") 1))
+(define (strings-cond flag) (area (cond (flag "a") (else "b")) 1))
+(define (numbers flag) (label (if flag 1 2.5)))
+(define (numbers-cond flag) (label (cond (flag 1) (else 2.5))))
+(define (booleans flag) (area 1 (if flag #t (> 2 1))))
+
+(display (area 2 3))
+(newline)

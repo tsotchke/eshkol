@@ -71,15 +71,13 @@ Direct time-domain convolution. Output length `len(a) + len(b) − 1`.
 ```
 
 ### `(fast-convolve a b)`
-FFT-based convolution, intended to be O(N log N) (zero-pads both signals to the next power of 2, multiplies spectra, inverse-transforms, takes real parts). **Currently broken — returns garbage.** See [Known issues](#known-issues); use `convolve` instead.
+FFT-based convolution, O(N log N): zero-pads both signals to the next power of 2, multiplies spectra, inverse-transforms, and takes real parts. It agrees with `convolve` to rounding; prefer it when both inputs are long (see [the signal-processing breakdown](../../breakdown/SIGNAL_PROCESSING.md)).
 
 ```scheme
 (display (fast-convolve #(1.0 2.0 3.0) #(1.0 1.0))) (newline)
 ```
 ```
-#(4966129304 -8 -8 -7.999999999999999)   ;; expected #(1 3 5 3); the leading
-                                         ;; value is uninitialised memory and
-                                         ;; differs on every run
+#(1 3 5 3)
 ```
 
 ## FIR / IIR filters
@@ -155,29 +153,3 @@ Evaluate `H(e^{jω}) = B/A` at `n-points` frequencies from 0 to π. Returns `(ma
 ## Internal helpers (not in `provide`)
 
 `window-ratio`, `bessel-i0`, `next-power-of-2`, `zero-pad-vector`, `complex-vector-real`, `butterworth-poles`, `bilinear-transform`, `poly-from-roots`, `real-part-vector` are defined in the module for use by the exported functions but are not part of the `provide` list.
-
-## Known issues
-
-### `fast-convolve` returns garbage
-
-`fast-convolve` produces completely wrong output — the first element is a huge number in the billions that **differs on every run** (it is uninitialised memory) and the remaining elements collapse to a negative constant — whereas the direct `convolve` is correct.
-
-```scheme
-;; repro.esk
-(require signal.filters)
-(display (convolve      #(1.0 2.0 3.0 4.0 5.0) #(1.0 1.0 1.0))) (newline)
-(display (fast-convolve #(1.0 2.0 3.0 4.0 5.0) #(1.0 1.0 1.0))) (newline)
-```
-```
-#(1 3 6 9 12 9 5)                     ;; convolve — correct
-#(4430393720 -8 -8 -8 -8 -7.999999999999999 -7.999999999999999)
-                                      ;; fast-convolve — garbage; the leading
-                                      ;; value differs on every run
-```
-Root cause: `fast-convolve` computes `(ifft (fft …))` inside its body, and
-because `fast-convolve` lives in the **precompiled stdlib shared library**, it
-hits the precompiled `fft`→`ifft` chaining corruption documented in
-[`signal.fft`](signal_fft.md#known-issues) (an identical `fast-convolve` compiled
-in ordinary user code — even with `(require stdlib)` — works). This is a compiler
-bug (tracked as **ESH-0115**), not a library bug, so it is reported rather than
-worked around in Scheme. Workaround: use the direct-time-domain `convolve`.

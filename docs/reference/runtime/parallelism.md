@@ -37,7 +37,14 @@ fallback resolves them when possible.
   capacity) with epoch-based reclamation and randomized victim selection. Set
   `ESHKOL_DISABLE_WORK_STEALING` to fall back to the legacy shared queue.
 - **Worker stack**: 16 MB per worker by default; override with
-  `ESHKOL_WORKER_STACK_BYTES` (floored at `PTHREAD_STACK_MIN`).
+  `ESHKOL_WORKER_STACK_BYTES` (floored at `PTHREAD_STACK_MIN`). Each
+  runtime-created worker installs **its own** alternate signal stack, because
+  `sigaltstack` is per thread while the fatal-signal handlers are per process.
+  A worker that exhausts its stack therefore prints the same
+  `eshkol: stack overflow: …` diagnostic the main thread does and the process
+  exits 121, instead of dying silently on the guard page (ESH-0101 / ESH-0112,
+  ledger SW-81). See
+  [environment variables](environment-variables.md#native-stack-guard).
 
 ## Serialized state pattern
 
@@ -53,7 +60,7 @@ phase afterward.
 Practical rule: make the mapped/folded function pure. Thread an accumulator as a
 loop variable rather than `set!`-ing a shared cell from inside parallel work.
 
-### Scope reclamation on workers is commit-only (v1.3.4)
+### Scope reclamation on workers is commit-only (since v1.3.4)
 
 `parallel-map` is safe for closures that **allocate and return collections** —
 including a closure whose body uses per-iteration scope reclamation (an internal

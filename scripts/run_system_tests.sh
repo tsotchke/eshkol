@@ -20,6 +20,8 @@ if [ ! -r "$ESHKOL_TEST_LIB" ]; then
     exit 2
 fi
 source "$ESHKOL_TEST_LIB"
+# shellcheck source=lib/checked_write.sh
+. "$(dirname "$ESHKOL_TEST_LIB")/checked_write.sh"
 eshkol_test_isolation_init "system"
 set +e  # Don't exit on error
 
@@ -71,6 +73,7 @@ for test_file in "$TEST_DIR"/*.esk; do
     # The output is captured, not discarded: these programs print their own
     # verdicts and exit 0 either way, so throwing stdout at /dev/null and
     # trusting the exit status certified every failing assertion as a PASS.
+    eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
     if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
         if eshkol_test_output_has_failure "$ESHKOL_TEST_OUT" 'error:'; then
             echo -e "${RED}ASSERTION FAIL${NC}"

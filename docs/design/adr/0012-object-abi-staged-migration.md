@@ -1,6 +1,6 @@
 # ADR-0012: Object ABI — discrimination, enforcement, and the staged migration
 
-- **Status:** Accepted through Stage 2 (COMPLETE); Proposed for Stages 3-6
+- **Status:** Accepted — partially implemented: Stages 0 through 2 are COMPLETE in v1.3.5-evolve (the layout inventory ratchet against `.icc/abi-header-baseline.json`, the link-time fingerprint guard and `ESHKOL_OBJECT_ABI_CACHE_TAG` cache keys in `inc/eshkol/abi_fingerprint.h`, and the WASM geometry guard); Stages 3-6 Proposed
 - **Date:** 2026-08-25
 - **Decision owners:** Eshkol memory/runtime architecture
 - **Cluster:** OALR / object model / toolchain integrity

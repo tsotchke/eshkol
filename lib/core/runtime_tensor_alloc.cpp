@@ -37,6 +37,26 @@ extern void eshkol_runtime_fatal(eshkol_exception_type_t type,
  * freestanding-adjacent translation unit's include surface small; ABI-stable
  * symbols. */
 bool eshkol_tensor_collection_is_nested(const eshkol_tagged_value_t* input);
+/* A dense tensor AD node read as a tensor of scalar nodes (runtime_autodiff.cpp). */
+extern "C" void* eshkol_ad_dense_node_elements(void* dense_node);
+
+/* (f) operand is a dense tensor AD node: a CALLABLE whose object header says
+ *     AD_NODE and whose tensor_value is set. The dense reverse path publishes
+ *     its results this way, and every operator that has no dense rule reads
+ *     its operand here. The node is returned as a tensor of its shape whose
+ *     elements project it, so the operator's scalarising AD rule applies and
+ *     the reverse sweep reaches the dense node (ADR-0023). Before this case a
+ *     matmul result fed to tensor-dot, reshape, relu, softmax or tensor-scale
+ *     raised "expected tensor, got ad-node" (SW-181). */
+static void* dense_ad_node_as_tensor(const eshkol_tagged_value_t* val) {
+    if (!val || (val->type & 0x0F) != ESHKOL_VALUE_CALLABLE || !val->data.ptr_val) return nullptr;
+    void* ptr = (void*)(uintptr_t)val->data.ptr_val;
+    const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(ptr);
+    if (!hdr || hdr->subtype != CALLABLE_SUBTYPE_AD_NODE) return nullptr;
+    const ad_node_t* node = (const ad_node_t*)ptr;
+    if (!node->tensor_value) return nullptr;
+    return eshkol_ad_dense_node_elements(ptr);
+}
 void* eshkol_tensor_from_collection(arena_t* arena,
                                     const eshkol_tagged_value_t* input);
 
@@ -87,6 +107,7 @@ void* eshkol_tensor_from_collection(arena_t* arena,
 void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
                                     const char* op_name) {
     if (val) {
+        if (void* projected = dense_ad_node_as_tensor(val)) return projected;
         /* A NEST goes to the shared rank-N walker before any of the flat cases
          * below, so a runtime-built nested collection denotes the same tensor as
          * the identical nested literal. Checked first because a nest is also a
@@ -106,6 +127,15 @@ void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
             if (hdr) {
                 if (hdr->subtype == HEAP_SUBTYPE_TENSOR) {
                     const auto* t = static_cast<const eshkol_tensor_t*>(ptr);
+                    /* ADR-0020: a carrier promoted by a non-numeric store holds
+                     * tagged values, not f64s. It is no longer a numeric
+                     * tensor, so every tensor kernel refuses it here rather
+                     * than reading its slots as doubles. */
+                    if (t->dtype == ESHKOL_TENSOR_DTYPE_BOXED) {
+                        eshkol_type_error_with_operand(
+                            op_name, "numeric tensor (this vector holds non-numeric elements)", val);
+                        return nullptr;  /* not reached */
+                    }
                     if (!eshkol_tensor_metadata_valid(
                             reinterpret_cast<const int64_t*>(t->dimensions),
                             static_cast<int64_t>(t->num_dimensions), t->elements,
@@ -268,6 +298,13 @@ void* eshkol_tensor_destination_checked(const eshkol_tagged_value_t* val,
             void* ptr = (void*)(uintptr_t)val->data.ptr_val;
             const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(ptr);
             if (hdr && hdr->subtype == HEAP_SUBTYPE_TENSOR) {
+                /* ADR-0020: a promoted (boxed) carrier is not a numeric tensor. */
+                if (static_cast<const eshkol_tensor_t*>(ptr)->dtype ==
+                        ESHKOL_TENSOR_DTYPE_BOXED) {
+                    eshkol_type_error_with_operand(
+                        op_name, "numeric tensor (this vector holds non-numeric elements)", val);
+                    return nullptr;  /* not reached */
+                }
                 return ptr;
             }
         }
@@ -321,10 +358,19 @@ void* eshkol_tensor_matrix_operand_checked(const eshkol_tagged_value_t* val,
                                           const char* op_name) {
     const eshkol_tensor_t* t = nullptr;
     if (val) {
+        if (void* projected = dense_ad_node_as_tensor(val)) t = (const eshkol_tensor_t*)projected;
+        else
         if (val->type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
             void* ptr = (void*)(uintptr_t)val->data.ptr_val;
             const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(ptr);
             if (hdr && hdr->subtype == HEAP_SUBTYPE_TENSOR) {
+                /* ADR-0020: a promoted (boxed) carrier is not a numeric tensor. */
+                if (static_cast<const eshkol_tensor_t*>(ptr)->dtype ==
+                        ESHKOL_TENSOR_DTYPE_BOXED) {
+                    eshkol_type_error_with_operand(
+                        op_name, "numeric tensor (this vector holds non-numeric elements)", val);
+                    return nullptr;  /* not reached */
+                }
                 t = (const eshkol_tensor_t*)ptr;
             }
         } else if (val->type == ESHKOL_VALUE_TENSOR_PTR && val->data.ptr_val) {

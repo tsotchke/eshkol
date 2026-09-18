@@ -10,6 +10,8 @@
 #include "eshkol/eshkol.h"
 #include <eshkol/llvm_backend.h>
 #include <eshkol/abi_fingerprint.h>
+#include <eshkol/frontend/ast_strings.h>
+#include <eshkol/frontend/source_paths.h>
 #include <eshkol/frontend/node_identity.h>
 #include <eshkol/frontend/semantic_identity.h>
 #include <eshkol/frontend/diagnostic.h>
@@ -18,6 +20,7 @@
 #include <eshkol/backend/libm_codegen.h>
 #include <eshkol/backend/link_probe.h>
 #include <eshkol/backend/closure_capture_scope.h>
+#include <eshkol/backend/static_callee_binding.h>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -744,8 +747,13 @@ static bool g_emit_debug_info = false;
 static std::string g_debug_source_filename;
 static std::string g_debug_source_directory;
 // Source text + filepath for structured error messages with caret display.
+// g_source_filepath is a RECORDING spelling (ADR-0021): it is printed in
+// diagnostics and embedded as a string constant for runtime error locations,
+// so it is the normalized display path, never the absolute host path.
+// g_source_hostpath is the path the text was read from, and is never emitted.
 static std::string g_source_text;
 static std::string g_source_filepath;
+static std::string g_source_hostpath;
 
 /* Module privacy is an internal linkage detail, not part of the source-level
  * name users should see in diagnostics. Private definitions are qualified as
@@ -828,24 +836,29 @@ public:
         // and handed back the OUTGOING file's text — the caret then rendered a
         // line from the wrong file (or nothing, when the new line number ran
         // past the old file's end).
-        std::string text = sourceTextForFile(std::string(name));
+        const char* host = eshkol_source_file_host_path(source_file_id);
+        std::string text = sourceTextForFile(std::string(host && *host ? host : name));
         saved_path_ = std::move(g_source_filepath);
+        saved_host_ = std::move(g_source_hostpath);
         saved_text_ = std::move(g_source_text);
         saved_file_id_ = g_source_file_id_active;
         active_ = true;
         g_source_filepath = name;
+        g_source_hostpath = host ? host : "";
         g_source_text = std::move(text);
         g_source_file_id_active = source_file_id;
     }
     ~ScopedAstProvenance() {
         if (!active_) return;
         g_source_filepath = std::move(saved_path_);
+        g_source_hostpath = std::move(saved_host_);
         g_source_text = std::move(saved_text_);
         g_source_file_id_active = saved_file_id_;
     }
     ScopedAstProvenance(const ScopedAstProvenance&) = delete;
     ScopedAstProvenance& operator=(const ScopedAstProvenance&) = delete;
 private:
+    std::string saved_host_;
     std::string saved_path_;
     std::string saved_text_;
     uint32_t saved_file_id_ = 0;
@@ -1589,6 +1602,7 @@ namespace ControlFlowCallbacks {
     bool isSelfTailRecursiveWrapper(const void* lambda_op, const char* func_name, void* context);
     // Binding callback for assignment conversion of lexical locals.
     bool isVarSetWrapper(const void* ast, const char* name, void* context);
+    bool isReassignedTopLevelNameWrapper(const char* name, void* context);
     bool isVarObservedWrapper(const void* ast, const char* name, void* context);
     bool continuationEscapeWrapper(const void* ast, void* context);
     // Wrapper for getting builtin arithmetic functions (for CallApplyCodegen)
@@ -1619,6 +1633,7 @@ class EshkolLLVMCodeGen {
     friend llvm::Value* ControlFlowCallbacks::eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context);
     friend llvm::Value* ControlFlowCallbacks::detectAndPackWrapper(llvm::Value* val, void* context);
     friend bool ControlFlowCallbacks::isVarSetWrapper(const void* ast, const char* name, void* context);
+    friend bool ControlFlowCallbacks::isReassignedTopLevelNameWrapper(const char* name, void* context);
     friend bool ControlFlowCallbacks::isVarObservedWrapper(const void* ast, const char* name, void* context);
     friend bool ControlFlowCallbacks::continuationEscapeWrapper(const void* ast, void* context);
     friend llvm::Value* ControlFlowCallbacks::consCreateWrapper(llvm::Value* car, llvm::Value* cdr, void* context);
@@ -1899,6 +1914,16 @@ private:
      * definitions, which is every name in practice, keep the direct call.
      */
     std::unordered_set<std::string> redefined_toplevel_names;
+    std::unordered_set<std::string> toplevel_callee_names;
+
+    /* Names whose top-level binding is reassigned: defined more than once, or
+     * the target of a set! at top-level scope. Such a binding never gets a
+     * static `<name>_func` alias (static_callee_binding.h). Answered lazily
+     * per name from the unit's top-level forms and memoised, so only names
+     * that are actually bound to lambdas pay for the scan. */
+    const eshkol_ast_t* toplevel_asts_for_reassignment = nullptr;
+    size_t num_toplevel_asts_for_reassignment = 0;
+    std::unordered_map<std::string, bool> reassigned_toplevel_memo;
 
     // ESH-0078: Maps a defined function name to its source body AST, so an AD
     // operator applied to a NAMED function (via var) can run the same
@@ -2347,6 +2372,13 @@ public:
             const eshkol_ast_t* asts_to_use = expanded_asts.data();
             size_t num_asts_to_use = expanded_asts.size();
 
+            // Compute binding/reassignment facts against the fully expanded,
+            // flattened source tree before the type checker annotates it or
+            // codegen starts rewriting nodes. Every later fast path reads the
+            // cached facts rather than traversing ASTs whose union payloads
+            // may already have changed.
+            collectRedefinedTopLevelNames(asts_to_use, num_asts_to_use);
+
             // ESH-0214c: whole-program pre-pass, before any function body is
             // codegen'd, so codegenNamedLet's automatic per-iteration arena
             // scope reclamation (ESH-0214b) can see whether a loop's
@@ -2776,11 +2808,6 @@ public:
             // SAFE ORDER: Function declarations → Function bodies → Global variables in main()
             // Global variables (including lambdas) are processed ONLY in main function context
             // This avoids issues with processing lambdas without a function context
-
-            // Step 0: R7RS §5.3.1 — which top-level names are defined more than
-            // once?  Must run before Step 1.5 creates bindings and before Step 2
-            // compiles any body that references them.
-            collectRedefinedTopLevelNames(asts_to_use, num_asts_to_use);
 
             // Step 1: Create function declarations FIRST (including nested functions)
             for (size_t i = 0; i < num_asts_to_use; i++) {
@@ -3868,6 +3895,10 @@ private:
      */
     void collectRedefinedTopLevelNames(const eshkol_ast_t* asts, size_t num_asts) {
         redefined_toplevel_names.clear();
+        toplevel_callee_names.clear();
+        toplevel_asts_for_reassignment = asts;
+        num_toplevel_asts_for_reassignment = asts ? num_asts : 0;
+        reassigned_toplevel_memo.clear();
         if (!asts) return;
 
         std::unordered_map<std::string, unsigned> counts;
@@ -3877,6 +3908,12 @@ private:
             if (asts[i].operation.define_op.is_external) continue;
             const char* name = asts[i].operation.define_op.name;
             if (!name || !name[0]) continue;
+            const auto& def = asts[i].operation.define_op;
+            if (def.is_function ||
+                (def.value && def.value->type == ESHKOL_OP &&
+                 def.value->operation.op == ESHKOL_LAMBDA_OP)) {
+                toplevel_callee_names.insert(name);
+            }
             counts[name]++;
         }
 
@@ -3888,11 +3925,47 @@ private:
                              entry.first.c_str(), entry.second);
             }
         }
+
+        // Compute call-target mutation facts while the complete expanded AST
+        // is still intact. Later codegen mutates some AST nodes; repeatedly
+        // walking the unit from a fast path both did needless work and let a
+        // query observe a partially lowered tree. astSetsVar already carries
+        // the compiler's lexical-shadowing rules, so this caches only its
+        // answers and introduces no second binding-name analysis.
+        for (const std::string& name : toplevel_callee_names) {
+            bool reassigned = isRedefinedTopLevelName(name.c_str());
+            for (size_t i = 0; i < num_toplevel_asts_for_reassignment && !reassigned; ++i) {
+                reassigned = astSetsVar(&toplevel_asts_for_reassignment[i], name);
+            }
+            reassigned_toplevel_memo.emplace(name, reassigned);
+        }
     }
 
     bool isRedefinedTopLevelName(const char* name) const {
         return name && name[0] &&
                redefined_toplevel_names.find(name) != redefined_toplevel_names.end();
+    }
+
+    /* Is the top-level binding of `name` reassigned in this compilation
+     * unit: defined more than once, or the target of a set! anywhere at
+     * top-level scope (inside any top-level form, unless a nearer binding of
+     * the same name shadows it)? A top-level lambda binding of such a name
+     * must not be resolved statically: the lambda it was created with is not
+     * what the name denotes after the assignment. */
+    bool isReassignedTopLevelName(const char* name) {
+        if (!name || !name[0]) return false;
+        if (!g_repl_mode_enabled && toplevel_callee_names.count(name) == 0) return false;
+        if (isRedefinedTopLevelName(name)) return true;
+        auto memo_it = reassigned_toplevel_memo.find(name);
+        if (memo_it != reassigned_toplevel_memo.end()) return memo_it->second;
+        if (!g_repl_mode_enabled) return false;
+        bool reassigned = false;
+        const std::string var(name);
+        for (size_t i = 0; i < num_toplevel_asts_for_reassignment && !reassigned; i++) {
+            reassigned = astSetsVar(&toplevel_asts_for_reassignment[i], var);
+        }
+        reassigned_toplevel_memo.emplace(var, reassigned);
+        return reassigned;
     }
 
     /* Wrap a top-level LLVM function in a zero-capture arena closure and
@@ -4373,7 +4446,11 @@ private:
                     // Generate the lambda function
                     Value* lambda_func = codegenLambda(&value->operation);
 
-                    if (lambda_func && isa<Function>(lambda_func)) {
+                    // A reassigned name gets no static alias and no source
+                    // alias: neither describes the binding after the
+                    // assignment (static_callee_binding.h).
+                    if (lambda_func && isa<Function>(lambda_func) &&
+                        !isReassignedTopLevelName(var_name)) {
                         Function* actual_func = cast<Function>(lambda_func);
                         // Store the function reference for gradient/derivative resolution
                         symbol_table[std::string(var_name) + "_func"] = actual_func;
@@ -6154,7 +6231,8 @@ private:
                     // Case 1: Lambda calling lambda (make-adder pattern)
                     auto callee_it = global_symbol_table.find(func_name + "_func");
                     if (callee_it != global_symbol_table.end() && callee_it->second &&
-                        isa<Function>(callee_it->second)) {
+                        isa<Function>(callee_it->second) &&
+                        !isShadowedByLocalRuntimeBinding(func_name)) {
                         Function* callee_func = cast<Function>(callee_it->second);
                         if (callee_func) {
                             std::string callee_lambda_name = callee_func->getName().str();
@@ -6257,7 +6335,8 @@ private:
                     std::string func_key = var_name + "_func";
                     bool found_in_symbol_table = (symbol_table.find(func_key) != symbol_table.end());
                     bool found_in_global = (global_symbol_table.find(func_key) != global_symbol_table.end());
-                    if (found_in_symbol_table || found_in_global) {
+                    if ((found_in_symbol_table || found_in_global) &&
+                        !isShadowedByLocalRuntimeBinding(var_name)) {
                         // This variable is a lambda - return with LAMBDA_SEXPR type
                         co_return TypedValue(val, ESHKOL_VALUE_CALLABLE,
                                          eshkol::hott::BuiltinTypes::Function, true);
@@ -6458,19 +6537,28 @@ private:
     }
     // Phase 3B: Simplified tagged cons cell allocation - direct tagged_value storage!
     Value* codegenTaggedArenaConsCell(const TypedValue& car_val, const TypedValue& cdr_val) {
+        Value* result = codegenTaggedArenaConsCellCopying(typedValueToTaggedValue(car_val),
+                                                          typedValueToTaggedValue(cdr_val));
+        eshkol_debug("Created tagged cons cell (Phase 3B): car_type=%d, cdr_type=%d", car_val.type, cdr_val.type);
+        return result;
+    }
+
+    // Allocate a cons cell whose car and cdr are COMPLETE copies of two
+    // tagged values: type byte, flags and payload. A list builtin that moves
+    // an existing element into a new list must use this (or
+    // codegenTaggedArenaConsCellFromTaggedValue); reducing the element to its
+    // 64-bit payload first loses its type, which is how remove and split-at
+    // returned the raw bits of inexact elements.
+    Value* codegenTaggedArenaConsCellCopying(Value* car_tagged, Value* cdr_tagged) {
         Value* arena_ptr = getArenaPtr();
         if (!arena_ptr) {
             eshkol_error("Arena not initialized for tagged cons cell allocation");
             return nullptr;
         }
-        
+
         // Allocate tagged cons cell with object header (consolidated pointer format)
         Value* cons_ptr = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
-        
-        // Convert TypedValue to tagged_value
-        Value* car_tagged = typedValueToTaggedValue(car_val);
-        Value* cdr_tagged = typedValueToTaggedValue(cdr_val);
-        
+
         // Store COMPLETE tagged_value structs directly using Phase 3B helpers!
         Value* is_car = ConstantInt::get(int1_type, 0);
         Value* is_cdr = ConstantInt::get(int1_type, 1);
@@ -6497,8 +6585,6 @@ private:
         builder->CreateCall(getTaggedConsSetTaggedValueFunc(), {cons_ptr, is_car, car_ptr});
         builder->CreateCall(getTaggedConsSetTaggedValueFunc(), {cons_ptr, is_cdr, cdr_ptr});
 
-        eshkol_debug("Created tagged cons cell (Phase 3B): car_type=%d, cdr_type=%d", car_val.type, cdr_val.type);
-
         // Return pointer to cons cell as int64
         return builder->CreatePtrToInt(cons_ptr, int64_type);
     }
@@ -6511,178 +6597,20 @@ private:
             eshkol_error("Arena not initialized for tagged cons cell allocation");
             return nullptr;
         }
-        
+        if (!car_tagged || !cdr_tagged ||
+            car_tagged->getType() != tagged_value_type ||
+            cdr_tagged->getType() != tagged_value_type) {
+            eshkol_error("cons cell construction requires two tagged values");
+            return nullptr;
+        }
+
         // Allocate tagged cons cell with object header (consolidated pointer format)
         Value* cons_ptr = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
 
-        // Extract type from car_tagged
-        Value* car_type = getTaggedValueType(car_tagged);
-        Value* car_base_type = getBaseType(car_type);
+        // Both slots are stored whole (SW-183); see TaggedValueCodegen::storeConsSlot.
+        tagged_->storeConsSlot(cons_ptr, false, car_tagged);
+        tagged_->storeConsSlot(cons_ptr, true, cdr_tagged);
 
-        // Check for NULL, DOUBLE, all pointer types, and INT64
-        // Handle both legacy types (CONS_PTR=32, etc.) and consolidated (HEAP_PTR=8, CALLABLE=9)
-        Value* car_is_null = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
-        Value* car_is_double = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        // Legacy pointer types
-        Value* car_is_cons = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* car_is_string = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* car_is_vector = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* car_is_tensor = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* car_is_ad = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* car_is_lambda = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* car_is_closure = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        // Consolidated pointer types
-        Value* car_is_heap_ptr = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* car_is_callable = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* car_is_ptr = builder->CreateOr(car_is_cons,
-            builder->CreateOr(car_is_string,
-            builder->CreateOr(car_is_vector,
-            builder->CreateOr(car_is_tensor,
-            builder->CreateOr(car_is_ad,
-            builder->CreateOr(car_is_lambda,
-            builder->CreateOr(car_is_closure,
-            builder->CreateOr(car_is_heap_ptr, car_is_callable))))))));
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* car_null = BasicBlock::Create(*context, "cons_car_null", current_func);
-        BasicBlock* check_double = BasicBlock::Create(*context, "cons_car_check_double", current_func);
-        BasicBlock* car_double = BasicBlock::Create(*context, "cons_car_double", current_func);
-        BasicBlock* check_ptr = BasicBlock::Create(*context, "cons_car_check_ptr", current_func);
-        BasicBlock* car_ptr = BasicBlock::Create(*context, "cons_car_ptr", current_func);
-        BasicBlock* car_int = BasicBlock::Create(*context, "cons_car_int", current_func);
-        BasicBlock* car_done = BasicBlock::Create(*context, "cons_car_done", current_func);
-
-        Value* is_car = ConstantInt::get(int1_type, 0);
-
-        // Check NULL first
-        builder->CreateCondBr(car_is_null, car_null, check_double);
-
-        // Store car as null
-        builder->SetInsertPoint(car_null);
-        builder->CreateCall(getTaggedConsSetNullFunc(), {cons_ptr, is_car});
-        builder->CreateBr(car_done);
-
-        // Check double
-        builder->SetInsertPoint(check_double);
-        builder->CreateCondBr(car_is_double, car_double, check_ptr);
-
-        // Store car as double
-        builder->SetInsertPoint(car_double);
-        Value* car_double_val = unpackDoubleFromTaggedValue(car_tagged);
-        builder->CreateCall(getTaggedConsSetDoubleFunc(),
-            {cons_ptr, is_car, car_double_val, car_type});
-        builder->CreateBr(car_done);
-
-        // Check if CONS_PTR
-        builder->SetInsertPoint(check_ptr);
-        builder->CreateCondBr(car_is_ptr, car_ptr, car_int);
-
-        // Store car as pointer (string symbols, nested lists, etc.)
-        builder->SetInsertPoint(car_ptr);
-        Value* car_ptr_val = unpackInt64FromTaggedValue(car_tagged);
-        builder->CreateCall(getTaggedConsSetPtrFunc(),
-            {cons_ptr, is_car, car_ptr_val, car_type});
-        builder->CreateBr(car_done);
-
-        // Store car as int64
-        builder->SetInsertPoint(car_int);
-        Value* car_int_val = unpackInt64FromTaggedValue(car_tagged);
-        builder->CreateCall(getTaggedConsSetInt64Func(),
-            {cons_ptr, is_car, car_int_val, car_type});
-        builder->CreateBr(car_done);
-        
-        // Store cdr - SYMBOLIC DIFF FIX: check for NULL, DOUBLE, CONS_PTR, INT64
-        builder->SetInsertPoint(car_done);
-        Value* is_cdr = ConstantInt::get(int1_type, 1);
-        
-        // Get cdr type
-        Value* cdr_type = getTaggedValueType(cdr_tagged);
-        Value* cdr_base_type = getBaseType(cdr_type);
-        
-        Value* cdr_is_null = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
-        Value* cdr_is_double = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        // Check all pointer types that should use set_ptr
-        Value* cdr_is_cons = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* cdr_is_string = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* cdr_is_vector = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* cdr_is_tensor = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* cdr_is_ad = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* cdr_is_lambda = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        // CLOSURE_PTR FIX: Also handle closure pointers in cons cells
-        Value* cdr_is_closure = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* cdr_is_ptr = builder->CreateOr(cdr_is_cons,
-            builder->CreateOr(cdr_is_string,
-            builder->CreateOr(cdr_is_vector,
-            builder->CreateOr(cdr_is_tensor,
-            builder->CreateOr(cdr_is_ad,
-            builder->CreateOr(cdr_is_lambda, cdr_is_closure))))));
-        
-        BasicBlock* cdr_null_block = BasicBlock::Create(*context, "cons_cdr_null", current_func);
-        BasicBlock* cdr_check_double = BasicBlock::Create(*context, "cons_cdr_check_double", current_func);
-        BasicBlock* cdr_double_block = BasicBlock::Create(*context, "cons_cdr_double", current_func);
-        BasicBlock* cdr_check_ptr = BasicBlock::Create(*context, "cons_cdr_check_ptr", current_func);
-        BasicBlock* cdr_ptr_block = BasicBlock::Create(*context, "cons_cdr_ptr", current_func);
-        BasicBlock* cdr_int_block = BasicBlock::Create(*context, "cons_cdr_int", current_func);
-        BasicBlock* cdr_done_block = BasicBlock::Create(*context, "cons_cdr_done", current_func);
-        
-        builder->CreateCondBr(cdr_is_null, cdr_null_block, cdr_check_double);
-        
-        // Cdr is null - use set_null
-        builder->SetInsertPoint(cdr_null_block);
-        builder->CreateCall(getTaggedConsSetNullFunc(), {cons_ptr, is_cdr});
-        builder->CreateBr(cdr_done_block);
-        
-        // Check if cdr is double
-        builder->SetInsertPoint(cdr_check_double);
-        builder->CreateCondBr(cdr_is_double, cdr_double_block, cdr_check_ptr);
-        
-        // Cdr is double - use set_double
-        builder->SetInsertPoint(cdr_double_block);
-        Value* cdr_double_val = unpackDoubleFromTaggedValue(cdr_tagged);
-        builder->CreateCall(getTaggedConsSetDoubleFunc(),
-            {cons_ptr, is_cdr, cdr_double_val, cdr_type});
-        builder->CreateBr(cdr_done_block);
-        
-        // Check if CONS_PTR
-        builder->SetInsertPoint(cdr_check_ptr);
-        builder->CreateCondBr(cdr_is_ptr, cdr_ptr_block, cdr_int_block);
-        
-        // Cdr is CONS_PTR - use set_ptr (for nested lists in S-expressions!)
-        builder->SetInsertPoint(cdr_ptr_block);
-        Value* cdr_ptr_val = unpackInt64FromTaggedValue(cdr_tagged);
-        builder->CreateCall(getTaggedConsSetPtrFunc(),
-            {cons_ptr, is_cdr, cdr_ptr_val, cdr_type});
-        builder->CreateBr(cdr_done_block);
-        
-        // Cdr is int64 - use set_int64
-        builder->SetInsertPoint(cdr_int_block);
-        Value* cdr_int_val = unpackInt64FromTaggedValue(cdr_tagged);
-        builder->CreateCall(getTaggedConsSetInt64Func(),
-            {cons_ptr, is_cdr, cdr_int_val, cdr_type});
-        builder->CreateBr(cdr_done_block);
-        
-        builder->SetInsertPoint(cdr_done_block);
-        
         // Return cons cell pointer as int64
         return builder->CreatePtrToInt(cons_ptr, int64_type);
     }
@@ -6718,6 +6646,11 @@ private:
     // MIGRATED: Delegates to TaggedValueCodegen
     Value* packNullToTaggedValue() {
         return tagged_->packNull();
+    }
+
+    /** The unspecified value (ADR-0024). */
+    Value* packUnspecifiedToTaggedValue() {
+        return tagged_->packUnspecified();
     }
 
     // Ensure a value is in tagged format
@@ -8179,358 +8112,13 @@ private:
     }
 
     Value* extractCarAsTaggedValue(Value* cons_ptr_int) {
-        // TYPE SYSTEM FIX: Use safeExtractInt64 to handle tagged_value structs
-        cons_ptr_int = safeExtractInt64(cons_ptr_int);
-
-        Value* cons_ptr = builder->CreateIntToPtr(cons_ptr_int, builder->getPtrTy());
-
-        Value* is_car = ConstantInt::get(int1_type, 0);
-        Value* car_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car});
-
-        Value* car_base_type = getBaseType(car_type);
-
-        // HOMOICONIC FIX: Check for NULL, DOUBLE, CONS_PTR, STRING_PTR, LAMBDA_SEXPR, CLOSURE_PTR, INT64
-        Value* car_is_null = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
-        Value* car_is_double = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        Value* car_is_cons_ptr = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* car_is_string_ptr = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* car_is_lambda_sexpr = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        // CLOSURE_PTR FIX: Handle closure pointers when extracting from cons cells
-        // M1 Migration: Check both legacy CLOSURE_PTR and new CALLABLE type
-        Value* car_is_closure_legacy = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* car_is_callable = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* car_is_closure_ptr = builder->CreateOr(car_is_closure_legacy, car_is_callable);
-        // BOOL FIX: Handle boolean values when extracting from cons cells
-        Value* car_is_bool = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_BOOL));
-        // HASH_PTR FIX: Handle hash table pointers when extracting from cons cells
-        Value* car_is_hash_ptr = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        // VECTOR_PTR FIX: Handle vector pointers when extracting from cons cells
-        Value* car_is_vector_ptr = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        // CHAR FIX (ESH-0099): a character in a cons cell must be re-tagged as
-        // CHAR, not demoted to INT64 by the default path below. Without this,
-        // (apply f (list #\a)) delivers the raw codepoint 97 to f.
-        Value* car_is_char = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CHAR));
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* null_car = BasicBlock::Create(*context, "car_extract_null", current_func);
-        BasicBlock* double_car = BasicBlock::Create(*context, "car_extract_double", current_func);
-        BasicBlock* check_cons_ptr = BasicBlock::Create(*context, "car_check_cons_ptr", current_func);
-        BasicBlock* cons_ptr_car = BasicBlock::Create(*context, "car_extract_cons_ptr", current_func);
-        BasicBlock* check_string_ptr = BasicBlock::Create(*context, "car_check_string_ptr", current_func);
-        BasicBlock* string_ptr_car = BasicBlock::Create(*context, "car_extract_string_ptr", current_func);
-        BasicBlock* check_lambda_sexpr = BasicBlock::Create(*context, "car_check_lambda_sexpr", current_func);
-        BasicBlock* lambda_sexpr_car = BasicBlock::Create(*context, "car_extract_lambda_sexpr", current_func);
-        BasicBlock* check_closure_ptr = BasicBlock::Create(*context, "car_check_closure_ptr", current_func);
-        BasicBlock* closure_ptr_car = BasicBlock::Create(*context, "car_extract_closure_ptr", current_func);
-        BasicBlock* check_bool = BasicBlock::Create(*context, "car_check_bool", current_func);
-        BasicBlock* bool_car = BasicBlock::Create(*context, "car_extract_bool", current_func);
-        BasicBlock* check_hash_ptr = BasicBlock::Create(*context, "car_check_hash_ptr", current_func);
-        BasicBlock* hash_ptr_car = BasicBlock::Create(*context, "car_extract_hash_ptr", current_func);
-        BasicBlock* check_vector_ptr = BasicBlock::Create(*context, "car_check_vector_ptr", current_func);
-        BasicBlock* vector_ptr_car = BasicBlock::Create(*context, "car_extract_vector_ptr", current_func);
-        BasicBlock* check_char = BasicBlock::Create(*context, "car_check_char", current_func);
-        BasicBlock* char_car = BasicBlock::Create(*context, "car_extract_char", current_func);
-        BasicBlock* int_car = BasicBlock::Create(*context, "car_extract_int", current_func);
-        BasicBlock* merge_car = BasicBlock::Create(*context, "car_merge", current_func);
-
-        BasicBlock* check_double = BasicBlock::Create(*context, "car_check_double", current_func);
-
-        builder->CreateCondBr(car_is_null, null_car, check_double);
-
-        builder->SetInsertPoint(null_car);
-        Value* tagged_null = packNullToTaggedValue();
-        builder->CreateBr(merge_car);
-        BasicBlock* null_exit = builder->GetInsertBlock();
-
-        builder->SetInsertPoint(check_double);
-        builder->CreateCondBr(car_is_double, double_car, check_cons_ptr);
-
-        builder->SetInsertPoint(double_car);
-        Value* car_double = builder->CreateCall(getTaggedConsGetDoubleFunc(), {cons_ptr, is_car});
-        Value* tagged_double = packDoubleToTaggedValue(car_double);
-        builder->CreateBr(merge_car);
-        BasicBlock* double_exit = builder->GetInsertBlock();
-
-        builder->SetInsertPoint(check_cons_ptr);
-        builder->CreateCondBr(car_is_cons_ptr, cons_ptr_car, check_string_ptr);
-
-        builder->SetInsertPoint(cons_ptr_car);
-        Value* car_cons_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
-        // M1 Migration: Use consolidated HEAP_PTR (subtype in object header)
-        Value* tagged_cons_ptr = packPtrToTaggedValue(
-            builder->CreateIntToPtr(car_cons_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_HEAP_PTR);
-        builder->CreateBr(merge_car);
-        BasicBlock* cons_ptr_exit = builder->GetInsertBlock();
-
-        // HOMOICONIC FIX: Handle STRING_PTR for symbol names (x, y, +, *, etc.)
-        builder->SetInsertPoint(check_string_ptr);
-        builder->CreateCondBr(car_is_string_ptr, string_ptr_car, check_lambda_sexpr);
-
-        builder->SetInsertPoint(string_ptr_car);
-        Value* car_string_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
-        Value* tagged_string_ptr = packPtrToTaggedValue(
-            builder->CreateIntToPtr(car_string_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_HEAP_PTR);
-        builder->CreateBr(merge_car);
-        BasicBlock* string_ptr_exit = builder->GetInsertBlock();
-
-        // HOMOICONIC FIX: Handle LAMBDA_SEXPR for lambdas stored in lists
-        builder->SetInsertPoint(check_lambda_sexpr);
-        builder->CreateCondBr(car_is_lambda_sexpr, lambda_sexpr_car, check_closure_ptr);
-
-        builder->SetInsertPoint(lambda_sexpr_car);
-        // CRITICAL FIX: Read type, flags, and ptr separately to avoid struct-return ABI issues
-        // This is essential for homoiconic lambda display - flags determine if we need to dereference
-        Value* lambda_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car});
-        Value* lambda_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car});
-        Value* lambda_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
-
-        // Manually build the tagged_value struct with correct type, flags, and ptr
-        Value* tagged_lambda_ptr = packPtrToTaggedValueWithFlags(
-            builder->CreateIntToPtr(lambda_ptr, builder->getPtrTy()),
-            lambda_type, lambda_flags);
-        builder->CreateBr(merge_car);
-        BasicBlock* lambda_sexpr_exit = builder->GetInsertBlock();
-
-        // CLOSURE_PTR FIX: Handle closure pointers when extracting from cons cells
-        builder->SetInsertPoint(check_closure_ptr);
-        builder->CreateCondBr(car_is_closure_ptr, closure_ptr_car, check_bool);
-
-        builder->SetInsertPoint(closure_ptr_car);
-        // Extract closure pointer from cons cell and rebuild as CLOSURE_PTR tagged value
-        Value* closure_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car});
-        Value* closure_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car});
-        Value* closure_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
-        Value* tagged_closure_ptr = packPtrToTaggedValueWithFlags(
-            builder->CreateIntToPtr(closure_ptr_val, builder->getPtrTy()),
-            closure_type, closure_flags);
-        builder->CreateBr(merge_car);
-        BasicBlock* closure_ptr_exit = builder->GetInsertBlock();
-
-        // BOOL FIX: Handle boolean values when extracting from cons cells
-        builder->SetInsertPoint(check_bool);
-        builder->CreateCondBr(car_is_bool, bool_car, check_hash_ptr);
-
-        builder->SetInsertPoint(bool_car);
-        // Extract boolean value and pack as BOOL type
-        Value* car_bool_int = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_car});
-        Value* car_bool_i1 = builder->CreateICmpNE(car_bool_int, ConstantInt::get(int64_type, 0));
-        Value* tagged_bool = packBoolToTaggedValue(car_bool_i1);
-        builder->CreateBr(merge_car);
-        BasicBlock* bool_exit = builder->GetInsertBlock();
-
-        // HASH_PTR FIX: Handle hash table pointers when extracting from cons cells
-        builder->SetInsertPoint(check_hash_ptr);
-        builder->CreateCondBr(car_is_hash_ptr, hash_ptr_car, check_vector_ptr);
-
-        builder->SetInsertPoint(hash_ptr_car);
-        Value* car_hash_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
-        // Repack as HEAP_PTR (consolidated format) - subtype is in object header
-        Value* tagged_hash_ptr = packPtrToTaggedValue(
-            builder->CreateIntToPtr(car_hash_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_HEAP_PTR);
-        builder->CreateBr(merge_car);
-        BasicBlock* hash_ptr_exit = builder->GetInsertBlock();
-
-        // VECTOR_PTR FIX: Handle vector pointers when extracting from cons cells
-        builder->SetInsertPoint(check_vector_ptr);
-        builder->CreateCondBr(car_is_vector_ptr, vector_ptr_car, check_char);
-
-        builder->SetInsertPoint(vector_ptr_car);
-        Value* car_vector_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
-        Value* tagged_vector_ptr = packPtrToTaggedValue(
-            builder->CreateIntToPtr(car_vector_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_HEAP_PTR);
-        builder->CreateBr(merge_car);
-        BasicBlock* vector_ptr_exit = builder->GetInsertBlock();
-
-        // CHAR FIX (ESH-0099): extract codepoint and re-tag as CHAR.
-        builder->SetInsertPoint(check_char);
-        builder->CreateCondBr(car_is_char, char_car, int_car);
-
-        builder->SetInsertPoint(char_car);
-        Value* car_char = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_car});
-        Value* tagged_char = packCharToTaggedValue(car_char);
-        builder->CreateBr(merge_car);
-        BasicBlock* char_exit = builder->GetInsertBlock();
-
-        builder->SetInsertPoint(int_car);
-        Value* car_int64 = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_car});
-        Value* tagged_int64 = packInt64ToTaggedValue(car_int64, true);
-        builder->CreateBr(merge_car);
-        BasicBlock* int_exit = builder->GetInsertBlock();
-
-        builder->SetInsertPoint(merge_car);
-        PHINode* car_tagged_phi = builder->CreatePHI(tagged_value_type, 11);
-        car_tagged_phi->addIncoming(tagged_null, null_exit);
-        car_tagged_phi->addIncoming(tagged_double, double_exit);
-        car_tagged_phi->addIncoming(tagged_cons_ptr, cons_ptr_exit);
-        car_tagged_phi->addIncoming(tagged_string_ptr, string_ptr_exit);
-        car_tagged_phi->addIncoming(tagged_lambda_ptr, lambda_sexpr_exit);
-        car_tagged_phi->addIncoming(tagged_closure_ptr, closure_ptr_exit);
-        car_tagged_phi->addIncoming(tagged_bool, bool_exit);
-        car_tagged_phi->addIncoming(tagged_hash_ptr, hash_ptr_exit);
-        car_tagged_phi->addIncoming(tagged_vector_ptr, vector_ptr_exit);
-        car_tagged_phi->addIncoming(tagged_char, char_exit);
-        car_tagged_phi->addIncoming(tagged_int64, int_exit);
-
-        return car_tagged_phi;
+        // The slot is loaded whole (SW-183); see TaggedValueCodegen::loadConsSlot.
+        return tagged_->loadConsSlot(safeExtractInt64(cons_ptr_int), false);
     }
     
     Value* extractCdrAsTaggedValue(Value* cons_ptr_int) {
-        // TYPE SYSTEM FIX: Use safeExtractInt64 to handle tagged_value structs
-        cons_ptr_int = safeExtractInt64(cons_ptr_int);
-
-        Value* cons_ptr = builder->CreateIntToPtr(cons_ptr_int, builder->getPtrTy());
-        
-        Value* is_cdr = ConstantInt::get(int1_type, 1);
-        Value* cdr_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_cdr});
-        
-        Value* cdr_base_type = getBaseType(cdr_type);
-
-        // SYMBOLIC DIFF FIX: Check for NULL, DOUBLE, CONS_PTR, BOOL, INT64
-        Value* cdr_is_double = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        Value* cdr_is_ptr = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* cdr_is_null = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
-        // BOOL FIX: Handle boolean values in cdr
-        Value* cdr_is_bool = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_BOOL));
-        // HASH_PTR FIX: Handle hash table pointers in cdr
-        Value* cdr_is_hash_ptr = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        // VECTOR_PTR FIX: Handle vector pointers in cdr
-        Value* cdr_is_vector_ptr = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        // STRING_PTR FIX: Handle string pointers in cdr
-        Value* cdr_is_string_ptr = builder->CreateICmpEQ(cdr_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* double_cdr = BasicBlock::Create(*context, "cdr_extract_double", current_func);
-        BasicBlock* check_ptr_cdr = BasicBlock::Create(*context, "cdr_check_ptr", current_func);
-        BasicBlock* ptr_cdr = BasicBlock::Create(*context, "cdr_extract_ptr", current_func);
-        BasicBlock* check_null_cdr = BasicBlock::Create(*context, "cdr_check_null", current_func);
-        BasicBlock* null_cdr = BasicBlock::Create(*context, "cdr_extract_null", current_func);
-        BasicBlock* check_bool_cdr = BasicBlock::Create(*context, "cdr_check_bool", current_func);
-        BasicBlock* bool_cdr = BasicBlock::Create(*context, "cdr_extract_bool", current_func);
-        BasicBlock* check_hash_ptr_cdr = BasicBlock::Create(*context, "cdr_check_hash_ptr", current_func);
-        BasicBlock* hash_ptr_cdr = BasicBlock::Create(*context, "cdr_extract_hash_ptr", current_func);
-        BasicBlock* check_vector_ptr_cdr = BasicBlock::Create(*context, "cdr_check_vector_ptr", current_func);
-        BasicBlock* vector_ptr_cdr = BasicBlock::Create(*context, "cdr_extract_vector_ptr", current_func);
-        BasicBlock* check_string_ptr_cdr = BasicBlock::Create(*context, "cdr_check_string_ptr", current_func);
-        BasicBlock* string_ptr_cdr = BasicBlock::Create(*context, "cdr_extract_string_ptr", current_func);
-        BasicBlock* int_cdr = BasicBlock::Create(*context, "cdr_extract_int", current_func);
-        BasicBlock* merge_cdr = BasicBlock::Create(*context, "cdr_merge", current_func);
-
-        builder->CreateCondBr(cdr_is_double, double_cdr, check_ptr_cdr);
-
-        builder->SetInsertPoint(double_cdr);
-        Value* cdr_double = builder->CreateCall(getTaggedConsGetDoubleFunc(), {cons_ptr, is_cdr});
-        Value* tagged_double_cdr = packDoubleToTaggedValue(cdr_double);
-        builder->CreateBr(merge_cdr);
-        BasicBlock* double_exit = builder->GetInsertBlock();
-
-        builder->SetInsertPoint(check_ptr_cdr);
-        builder->CreateCondBr(cdr_is_ptr, ptr_cdr, check_null_cdr);
-
-        builder->SetInsertPoint(ptr_cdr);
-        Value* cdr_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
-        // M1 Migration: Use consolidated HEAP_PTR (subtype in object header)
-        Value* tagged_ptr_cdr = packPtrToTaggedValue(
-            builder->CreateIntToPtr(cdr_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_HEAP_PTR);
-        builder->CreateBr(merge_cdr);
-        BasicBlock* ptr_exit = builder->GetInsertBlock();
-
-        builder->SetInsertPoint(check_null_cdr);
-        builder->CreateCondBr(cdr_is_null, null_cdr, check_bool_cdr);
-
-        builder->SetInsertPoint(null_cdr);
-        Value* tagged_null_cdr = packNullToTaggedValue();
-        builder->CreateBr(merge_cdr);
-        BasicBlock* null_exit = builder->GetInsertBlock();
-
-        // BOOL FIX: Handle boolean values when extracting cdr from cons cells
-        builder->SetInsertPoint(check_bool_cdr);
-        builder->CreateCondBr(cdr_is_bool, bool_cdr, check_hash_ptr_cdr);
-
-        builder->SetInsertPoint(bool_cdr);
-        Value* cdr_bool_int = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_cdr});
-        Value* cdr_bool_i1 = builder->CreateICmpNE(cdr_bool_int, ConstantInt::get(int64_type, 0));
-        Value* tagged_bool_cdr = packBoolToTaggedValue(cdr_bool_i1);
-        builder->CreateBr(merge_cdr);
-        BasicBlock* bool_exit = builder->GetInsertBlock();
-
-        // HASH_PTR FIX: Handle hash table pointers when extracting cdr from cons cells
-        builder->SetInsertPoint(check_hash_ptr_cdr);
-        builder->CreateCondBr(cdr_is_hash_ptr, hash_ptr_cdr, check_vector_ptr_cdr);
-
-        builder->SetInsertPoint(hash_ptr_cdr);
-        Value* cdr_hash_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
-        // Repack as HEAP_PTR (consolidated format) - subtype is in object header
-        Value* tagged_hash_ptr_cdr = packPtrToTaggedValue(
-            builder->CreateIntToPtr(cdr_hash_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_HEAP_PTR);
-        builder->CreateBr(merge_cdr);
-        BasicBlock* hash_ptr_exit = builder->GetInsertBlock();
-
-        // VECTOR_PTR FIX: Handle vector pointers when extracting cdr from cons cells
-        builder->SetInsertPoint(check_vector_ptr_cdr);
-        builder->CreateCondBr(cdr_is_vector_ptr, vector_ptr_cdr, check_string_ptr_cdr);
-
-        builder->SetInsertPoint(vector_ptr_cdr);
-        Value* cdr_vector_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
-        Value* tagged_vector_ptr_cdr = packPtrToTaggedValue(
-            builder->CreateIntToPtr(cdr_vector_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_HEAP_PTR);
-        builder->CreateBr(merge_cdr);
-        BasicBlock* vector_ptr_exit = builder->GetInsertBlock();
-
-        // STRING_PTR FIX: Handle string pointers when extracting cdr from cons cells
-        builder->SetInsertPoint(check_string_ptr_cdr);
-        builder->CreateCondBr(cdr_is_string_ptr, string_ptr_cdr, int_cdr);
-
-        builder->SetInsertPoint(string_ptr_cdr);
-        Value* cdr_string_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_cdr});
-        Value* tagged_string_ptr_cdr = packPtrToTaggedValue(
-            builder->CreateIntToPtr(cdr_string_ptr, builder->getPtrTy()),
-            ESHKOL_VALUE_HEAP_PTR);
-        builder->CreateBr(merge_cdr);
-        BasicBlock* string_ptr_exit = builder->GetInsertBlock();
-
-        builder->SetInsertPoint(int_cdr);
-        Value* cdr_int64 = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_cdr});
-        Value* tagged_int64_cdr = packInt64ToTaggedValue(cdr_int64, true);
-        builder->CreateBr(merge_cdr);
-        BasicBlock* int_exit = builder->GetInsertBlock();
-
-        builder->SetInsertPoint(merge_cdr);
-        PHINode* cdr_tagged_phi = builder->CreatePHI(tagged_value_type, 8);
-        cdr_tagged_phi->addIncoming(tagged_double_cdr, double_exit);
-        cdr_tagged_phi->addIncoming(tagged_ptr_cdr, ptr_exit);
-        cdr_tagged_phi->addIncoming(tagged_null_cdr, null_exit);
-        cdr_tagged_phi->addIncoming(tagged_bool_cdr, bool_exit);
-        cdr_tagged_phi->addIncoming(tagged_hash_ptr_cdr, hash_ptr_exit);
-        cdr_tagged_phi->addIncoming(tagged_vector_ptr_cdr, vector_ptr_exit);
-        cdr_tagged_phi->addIncoming(tagged_string_ptr_cdr, string_ptr_exit);
-        cdr_tagged_phi->addIncoming(tagged_int64_cdr, int_exit);
-
-        return cdr_tagged_phi;
+        // The slot is loaded whole (SW-183); see TaggedValueCodegen::loadConsSlot.
+        return tagged_->loadConsSlot(safeExtractInt64(cons_ptr_int), true);
     }
     
     // MIGRATED: Delegates to TaggedValueCodegen
@@ -8583,186 +8171,15 @@ private:
     // Helper: Extract car element from cons cell as tagged value (type-safe approach)
     // This avoids ABI issues with returning 16-byte structs from C functions
     Value* extractConsCarAsTaggedValue(Value* cons_ptr) {
-        Function* current_func = builder->GetInsertBlock()->getParent();
-
-        // Get car type using arena_tagged_cons_get_type(cell, false)
-        Value* is_car_flag = ConstantInt::get(int1_type, 0); // false = car
-        Value* car_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_flag});
-
-        // Get base type - correctly handles legacy types (>= 32)
-        Value* car_base_type = getBaseType(car_type);
-
-        // NULL FIX: Check for NULL values stored in cons cells
-        Value* car_is_null = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
-        // Check for all types: DOUBLE, CONS_PTR, STRING_PTR, LAMBDA_SEXPR, CLOSURE_PTR, INT64
-        Value* car_is_double = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-        Value* car_is_cons = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        // SYMBOL FIX: Check for STRING_PTR, LAMBDA_SEXPR, CLOSURE_PTR
-        Value* car_is_string = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* car_is_lambda = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* car_is_closure = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        // HASH_PTR FIX: Check for HASH_PTR, VECTOR_PTR
-        Value* car_is_hash = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* car_is_vector = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        // CHAR FIX (ESH-0099): a character stored in a cons cell must be
-        // re-extracted as a CHAR-tagged value, not silently demoted to INT64
-        // (which is what the default int path below does). Without this,
-        // (apply f (list #\a)) delivers the raw codepoint 97 to f.
-        Value* car_is_char = builder->CreateICmpEQ(car_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_CHAR));
-
-        // NULL FIX: Add null_block for NULL values
-        BasicBlock* null_block = BasicBlock::Create(*context, "extract_null", current_func);
-        BasicBlock* check_double = BasicBlock::Create(*context, "extract_check_double", current_func);
-        BasicBlock* double_block = BasicBlock::Create(*context, "extract_double", current_func);
-        BasicBlock* check_cons = BasicBlock::Create(*context, "extract_check_cons", current_func);
-        BasicBlock* cons_block = BasicBlock::Create(*context, "extract_cons", current_func);
-        BasicBlock* check_string = BasicBlock::Create(*context, "extract_check_string", current_func);
-        BasicBlock* string_block = BasicBlock::Create(*context, "extract_string", current_func);
-        BasicBlock* check_lambda = BasicBlock::Create(*context, "extract_check_lambda", current_func);
-        BasicBlock* lambda_block = BasicBlock::Create(*context, "extract_lambda", current_func);
-        BasicBlock* check_closure = BasicBlock::Create(*context, "extract_check_closure", current_func);
-        BasicBlock* closure_block = BasicBlock::Create(*context, "extract_closure", current_func);
-        BasicBlock* check_hash = BasicBlock::Create(*context, "extract_check_hash", current_func);
-        BasicBlock* hash_block = BasicBlock::Create(*context, "extract_hash", current_func);
-        BasicBlock* check_vector = BasicBlock::Create(*context, "extract_check_vector", current_func);
-        BasicBlock* vector_block = BasicBlock::Create(*context, "extract_vector", current_func);
-        BasicBlock* check_char = BasicBlock::Create(*context, "extract_check_char", current_func);
-        BasicBlock* char_block = BasicBlock::Create(*context, "extract_char", current_func);
-        BasicBlock* int_block = BasicBlock::Create(*context, "extract_int", current_func);
-        BasicBlock* merge_block = BasicBlock::Create(*context, "extract_merge", current_func);
-
-        // NULL FIX: Check for NULL first
-        builder->CreateCondBr(car_is_null, null_block, check_double);
-
-        // NULL FIX: Extract NULL car and return proper NULL tagged value
-        builder->SetInsertPoint(null_block);
-        Value* tagged_null = packNullToTaggedValue();
-        builder->CreateBr(merge_block);
-        BasicBlock* null_exit = builder->GetInsertBlock();
-
-        builder->SetInsertPoint(check_double);
-        builder->CreateCondBr(car_is_double, double_block, check_cons);
-
-        // Extract double car and pack into tagged value
-        builder->SetInsertPoint(double_block);
-        Value* car_double = builder->CreateCall(getTaggedConsGetDoubleFunc(), {cons_ptr, is_car_flag});
-        Value* tagged_double = packDoubleToTaggedValue(car_double);
-        builder->CreateBr(merge_block);
-        BasicBlock* double_exit = builder->GetInsertBlock();
-
-        builder->SetInsertPoint(check_cons);
-        builder->CreateCondBr(car_is_cons, cons_block, check_string);
-
-        builder->SetInsertPoint(cons_block);
-        Value* car_cons = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
-        Value* tagged_cons = packPtrToTaggedValue(builder->CreateIntToPtr(car_cons, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
-        builder->CreateBr(merge_block);
-        BasicBlock* cons_exit = builder->GetInsertBlock();
-
-        // SYMBOL FIX: Handle STRING_PTR
-        builder->SetInsertPoint(check_string);
-        builder->CreateCondBr(car_is_string, string_block, check_lambda);
-
-        builder->SetInsertPoint(string_block);
-        Value* car_string = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
-        // MIGRATION: Output as HEAP_PTR (subtype STRING in header)
-        Value* tagged_string = packPtrToTaggedValue(builder->CreateIntToPtr(car_string, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
-        builder->CreateBr(merge_block);
-        BasicBlock* string_exit = builder->GetInsertBlock();
-
-        // Handle LAMBDA_SEXPR
-        builder->SetInsertPoint(check_lambda);
-        builder->CreateCondBr(car_is_lambda, lambda_block, check_closure);
-
-        builder->SetInsertPoint(lambda_block);
-        Value* lambda_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_flag});
-        Value* lambda_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_flag});
-        Value* lambda_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
-        Value* tagged_lambda = packPtrToTaggedValueWithFlags(
-            builder->CreateIntToPtr(lambda_ptr, builder->getPtrTy()),
-            lambda_type, lambda_flags);
-        builder->CreateBr(merge_block);
-        BasicBlock* lambda_exit = builder->GetInsertBlock();
-
-        // Handle CLOSURE_PTR
-        builder->SetInsertPoint(check_closure);
-        builder->CreateCondBr(car_is_closure, closure_block, check_hash);
-
-        builder->SetInsertPoint(closure_block);
-        Value* closure_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_flag});
-        Value* closure_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_flag});
-        Value* closure_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
-        Value* tagged_closure = packPtrToTaggedValueWithFlags(
-            builder->CreateIntToPtr(closure_ptr, builder->getPtrTy()),
-            closure_type, closure_flags);
-        builder->CreateBr(merge_block);
-        BasicBlock* closure_exit = builder->GetInsertBlock();
-
-        // HASH_PTR FIX: Handle hash table pointers
-        builder->SetInsertPoint(check_hash);
-        builder->CreateCondBr(car_is_hash, hash_block, check_vector);
-
-        builder->SetInsertPoint(hash_block);
-        Value* car_hash = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
-        // Repack as HEAP_PTR (consolidated format) - subtype is in object header
-        Value* tagged_hash = packPtrToTaggedValue(builder->CreateIntToPtr(car_hash, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
-        builder->CreateBr(merge_block);
-        BasicBlock* hash_exit = builder->GetInsertBlock();
-
-        // VECTOR_PTR FIX: Handle vector pointers (MIGRATION: output as HEAP_PTR)
-        builder->SetInsertPoint(check_vector);
-        builder->CreateCondBr(car_is_vector, vector_block, check_char);
-
-        builder->SetInsertPoint(vector_block);
-        Value* car_vector = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
-        // MIGRATION: Use consolidated HEAP_PTR (subtype in header)
-        Value* tagged_vector = packPtrToTaggedValue(builder->CreateIntToPtr(car_vector, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
-        builder->CreateBr(merge_block);
-        BasicBlock* vector_exit = builder->GetInsertBlock();
-
-        // CHAR FIX (ESH-0099): extract the codepoint and re-tag as CHAR so the
-        // character survives (apply f (list #\a)) and other cons-list unpacking.
-        builder->SetInsertPoint(check_char);
-        builder->CreateCondBr(car_is_char, char_block, int_block);
-
-        builder->SetInsertPoint(char_block);
-        Value* car_char = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_car_flag});
-        Value* tagged_char = packCharToTaggedValue(car_char);
-        builder->CreateBr(merge_block);
-        BasicBlock* char_exit = builder->GetInsertBlock();
-
-        // Extract int64 car and pack into tagged value
-        builder->SetInsertPoint(int_block);
-        Value* car_int64 = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_car_flag});
-        Value* tagged_int64 = packInt64ToTaggedValue(car_int64, true);
-        builder->CreateBr(merge_block);
-        BasicBlock* int_exit = builder->GetInsertBlock();
-
-        // Merge: return tagged value struct
-        builder->SetInsertPoint(merge_block);
-        PHINode* car_tagged_phi = builder->CreatePHI(tagged_value_type, 10);
-        // NULL FIX: Add null_exit as incoming
-        car_tagged_phi->addIncoming(tagged_null, null_exit);
-        car_tagged_phi->addIncoming(tagged_double, double_exit);
-        car_tagged_phi->addIncoming(tagged_cons, cons_exit);
-        car_tagged_phi->addIncoming(tagged_string, string_exit);
-        car_tagged_phi->addIncoming(tagged_lambda, lambda_exit);
-        car_tagged_phi->addIncoming(tagged_closure, closure_exit);
-        car_tagged_phi->addIncoming(tagged_hash, hash_exit);
-        car_tagged_phi->addIncoming(tagged_vector, vector_exit);
-        car_tagged_phi->addIncoming(tagged_char, char_exit);
-        car_tagged_phi->addIncoming(tagged_int64, int_exit);
-
-        return car_tagged_phi;
+        // The pointer-typed spelling of extractCarAsTaggedValue. It used to carry
+        // its own copy of the closed representation list, and the three copies had
+        // drifted apart: the car reader knew bool and char, the cdr reader bool
+        // only, and this one char only. There is one slot loader now.
+        if (!cons_ptr) return nullptr;
+        Value* cons_ptr_int = cons_ptr->getType()->isPointerTy()
+            ? builder->CreatePtrToInt(cons_ptr, int64_type)
+            : cons_ptr;
+        return extractCarAsTaggedValue(cons_ptr_int);
     }
 
     // Create a unit value for erased types (when we need a valid LLVM value but the type is erased)
@@ -9426,20 +8843,6 @@ private:
     
     // Simple helper to wrap tagged_value in TypedValue (for cons cell creation)
     // This avoids complex control flow by just storing the tagged_value as-is
-    TypedValue taggedValueToTypedValue(Value* tagged_val) {
-        if (!tagged_val || tagged_val->getType() != tagged_value_type) {
-            return TypedValue();
-        }
-        
-        // Simply unpack the int64 data field - we'll let runtime type checking handle it
-        // This avoids dominance issues from complex branching
-        Value* data = unpackInt64FromTaggedValue(tagged_val);
-        
-        // For cons cell creation, we just need the raw data
-        // The type is preserved in the tagged_value itself
-        return TypedValue(data, ESHKOL_VALUE_INT64, true);
-    }
-    
     // ===== POLYMORPHIC ARITHMETIC FUNCTIONS (Phase 1.3 + Phase 2 Dual Number Support) =====
     // These operate on tagged_value parameters and handle mixed types + dual numbers
     
@@ -10562,10 +9965,9 @@ private:
             // Use resolveLambdaFunction with appropriate arity
             eshkol_ast_t var_ast;
             var_ast.type = ESHKOL_VAR;
-            var_ast.variable.id = strdup(var_name.c_str());
+            var_ast.variable.id = eshkol_ast_string_copy(var_name);
             size_t arity = (var_name == "cons") ? 2 : 1;
             Value* builtin_func = resolveLambdaFunction(&var_ast, arity);
-            free((void*)var_ast.variable.id);
             if (builtin_func && isa<Function>(builtin_func)) {
                 // Wrap in closure for proper first-class function use
                 Function* func = cast<Function>(builtin_func);
@@ -12914,8 +12316,8 @@ private:
             builder->CreateStore(store_value, var_ptr);
             eshkol_debug("set! updated variable: %s", var_name);
 
-            // Return the new value (set! returns an unspecified value, but we return the stored value)
-            return new_value->getType() == tagged_value_type ? new_value : typedValueToTaggedValue(typed);
+            // ADR-0024: set! evaluates to the unspecified value.
+            return tagged_->packUnspecified();
         } else {
             // Variable is not mutable (might be a function argument passed by value)
             eshkol_error("set!: variable '%s' is not mutable (not an alloca, global, or capture pointer)", var_name);
@@ -13850,8 +13252,8 @@ private:
         // Scalar activations share the numeric dispatch with the tensor names.
         // In particular, a Taylor carrier must not be handed to the tensor
         // implementation, which only understands tensor layout.
-        if (func_name == "relu") co_return codegenActivationFunction(op, true);
-        if (func_name == "sigmoid") co_return codegenActivationFunction(op, false);
+        if (func_name == "relu") co_return codegenActivationFamily(op, *findActivation("relu"));
+        if (func_name == "sigmoid") co_return codegenActivationFamily(op, *findActivation("sigmoid"));
 
         // Handle math functions with dual number support (Phase 2)
         if (func_name == "sin") co_return codegenMathFunction(op, "sin");
@@ -15195,7 +14597,7 @@ private:
                         {PointerType::getUnqual(*context)}, false));
                 builder->CreateCall(write_func, {arg_ptr});
             }
-            co_return tagged_->packNull();
+            co_return packUnspecifiedToTaggedValue();  // ADR-0024
         }
 
         // R7RS read: parse S-expression from port (or stdin)
@@ -16042,7 +15444,7 @@ private:
         // R7RS unspecified-value constructor.  Eshkol represents the single
         // unspecified value as its canonical null tagged value.
         if (func_name == "void" && op->call_op.num_vars == 0)
-            co_return packNullToTaggedValue();
+            co_return packUnspecifiedToTaggedValue();  // ADR-0024
 
         // Handle if conditional
         if (func_name == "if") co_return codegenIfCall(op);
@@ -17524,34 +16926,9 @@ private:
             Function* cur_func = builder->GetInsertBlock()->getParent();
             int n_vecs = op->call_op.num_vars - 1;
 
-            // Per-vector element loader: yields the i-th element as a tagged
-            // value, branching on whether the source is a tensor or a vector.
-            auto loadElem = [&](Value* is_t, Value* elems, Value* base, Value* idx) -> Value* {
-                Function* f = builder->GetInsertBlock()->getParent();
-                BasicBlock* tb = BasicBlock::Create(*context, "velt_t", f);
-                BasicBlock* vb = BasicBlock::Create(*context, "velt_v", f);
-                BasicBlock* mb = BasicBlock::Create(*context, "velt_m", f);
-                builder->CreateCondBr(is_t, tb, vb);
-                builder->SetInsertPoint(tb);
-                Value* ep = builder->CreateGEP(int64_type, elems, idx);
-                Value* ei = builder->CreateLoad(int64_type, ep);
-                Value* et = packDoubleToTaggedValue(builder->CreateBitCast(ei, double_type));
-                builder->CreateBr(mb);
-                BasicBlock* tb_exit = builder->GetInsertBlock();
-                builder->SetInsertPoint(vb);
-                Value* eptr = builder->CreateGEP(tagged_value_type, base, idx);
-                Value* ev = builder->CreateLoad(tagged_value_type, eptr);
-                builder->CreateBr(mb);
-                BasicBlock* vb_exit = builder->GetInsertBlock();
-                builder->SetInsertPoint(mb);
-                PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
-                phi->addIncoming(et, tb_exit);
-                phi->addIncoming(ev, vb_exit);
-                return phi;
-            };
 
             std::vector<Value*> is_tensors(n_vecs), elems_ptrs(n_vecs),
-                                base_ptrs(n_vecs), lengths(n_vecs);
+                                base_ptrs(n_vecs), lengths(n_vecs), tagged_slots(n_vecs);
             Value* nullp = ConstantPointerNull::get(PointerType::getUnqual(*context));
             for (int a = 0; a < n_vecs; a++) {
                 Value* va = (co_await codegenASTTask(&op->call_op.variables[a + 1]));
@@ -17569,6 +16946,11 @@ private:
                 builder->SetInsertPoint(tb);
                 Value* tlen = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 3));
                 Value* telems = builder->CreateLoad(PointerType::getUnqual(*context), builder->CreateStructGEP(tensor_type, vp, 2));
+                // ADR-0020: a promoted (boxed) carrier's slots are tagged values.
+                Value* tdtype = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 4));
+                Value* t_tagged = builder->CreateOr(
+                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_BOXED)),
+                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_DUAL)));
                 builder->CreateBr(mb);
                 BasicBlock* tb_exit = builder->GetInsertBlock();
                 builder->SetInsertPoint(vb);
@@ -17583,8 +16965,12 @@ private:
                 elems_phi->addIncoming(telems, tb_exit); elems_phi->addIncoming(nullp, vb_exit);
                 PHINode* base_phi = builder->CreatePHI(PointerType::getUnqual(*context), 2);
                 base_phi->addIncoming(nullp, tb_exit); base_phi->addIncoming(vbase, vb_exit);
+                PHINode* tagged_phi = builder->CreatePHI(builder->getInt1Ty(), 2);
+                tagged_phi->addIncoming(t_tagged, tb_exit);
+                tagged_phi->addIncoming(builder->getFalse(), vb_exit);
                 is_tensors[a] = is_t; lengths[a] = len_phi;
                 elems_ptrs[a] = elems_phi; base_ptrs[a] = base_phi;
+                tagged_slots[a] = tagged_phi;
             }
 
             // Iterate to the shortest length.
@@ -17607,14 +16993,14 @@ private:
             Value* ci = builder->CreateLoad(int64_type, idx_ptr);
             std::vector<Value*> call_args;
             for (int a = 0; a < n_vecs; a++)
-                call_args.push_back(loadElem(is_tensors[a], elems_ptrs[a], base_ptrs[a], ci));
+                call_args.push_back(loadSequenceElement(is_tensors[a], tagged_slots[a], elems_ptrs[a], base_ptrs[a], ci));
             codegenClosureCall(func_val, call_args, "vector-for-each");
-            // Reload the counter — loadElem/codegenClosureCall create blocks.
+            // Reload the counter — the element load and the closure call create blocks.
             Value* ci2 = builder->CreateLoad(int64_type, idx_ptr);
             builder->CreateStore(builder->CreateAdd(ci2, ConstantInt::get(int64_type, 1)), idx_ptr);
             builder->CreateBr(cond_bb);
             builder->SetInsertPoint(done_bb);
-            co_return packNullToTaggedValue();
+            co_return packUnspecifiedToTaggedValue();  // ADR-0024
         }
         // R7RS vector-map: (vector-map proc vector) → vector
         // Handles both Scheme vectors (16-byte tagged elements) and tensors (8-byte doubles)
@@ -17635,32 +17021,9 @@ private:
             Function* cur_func = builder->GetInsertBlock()->getParent();
             int n_vecs = op->call_op.num_vars - 1;
 
-            auto loadElem = [&](Value* is_t, Value* elems, Value* base, Value* idx) -> Value* {
-                Function* f = builder->GetInsertBlock()->getParent();
-                BasicBlock* tb = BasicBlock::Create(*context, "vmelt_t", f);
-                BasicBlock* vb = BasicBlock::Create(*context, "vmelt_v", f);
-                BasicBlock* mb = BasicBlock::Create(*context, "vmelt_m", f);
-                builder->CreateCondBr(is_t, tb, vb);
-                builder->SetInsertPoint(tb);
-                Value* ep = builder->CreateGEP(int64_type, elems, idx);
-                Value* ei = builder->CreateLoad(int64_type, ep);
-                Value* et = packDoubleToTaggedValue(builder->CreateBitCast(ei, double_type));
-                builder->CreateBr(mb);
-                BasicBlock* tb_exit = builder->GetInsertBlock();
-                builder->SetInsertPoint(vb);
-                Value* eptr = builder->CreateGEP(tagged_value_type, base, idx);
-                Value* ev = builder->CreateLoad(tagged_value_type, eptr);
-                builder->CreateBr(mb);
-                BasicBlock* vb_exit = builder->GetInsertBlock();
-                builder->SetInsertPoint(mb);
-                PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
-                phi->addIncoming(et, tb_exit);
-                phi->addIncoming(ev, vb_exit);
-                return phi;
-            };
 
             std::vector<Value*> is_tensors(n_vecs), elems_ptrs(n_vecs),
-                                base_ptrs(n_vecs), lengths(n_vecs);
+                                base_ptrs(n_vecs), lengths(n_vecs), tagged_slots(n_vecs);
             Value* nullp = ConstantPointerNull::get(PointerType::getUnqual(*context));
             for (int a = 0; a < n_vecs; a++) {
                 Value* va = (co_await codegenASTTask(&op->call_op.variables[a + 1]));
@@ -17678,6 +17041,11 @@ private:
                 builder->SetInsertPoint(tb);
                 Value* tlen = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 3));
                 Value* telems = builder->CreateLoad(PointerType::getUnqual(*context), builder->CreateStructGEP(tensor_type, vp, 2));
+                // ADR-0020: a promoted (boxed) carrier's slots are tagged values.
+                Value* tdtype = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 4));
+                Value* t_tagged = builder->CreateOr(
+                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_BOXED)),
+                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_DUAL)));
                 builder->CreateBr(mb);
                 BasicBlock* tb_exit = builder->GetInsertBlock();
                 builder->SetInsertPoint(vb);
@@ -17692,8 +17060,12 @@ private:
                 elems_phi->addIncoming(telems, tb_exit); elems_phi->addIncoming(nullp, vb_exit);
                 PHINode* base_phi = builder->CreatePHI(PointerType::getUnqual(*context), 2);
                 base_phi->addIncoming(nullp, tb_exit); base_phi->addIncoming(vbase, vb_exit);
+                PHINode* tagged_phi = builder->CreatePHI(builder->getInt1Ty(), 2);
+                tagged_phi->addIncoming(t_tagged, tb_exit);
+                tagged_phi->addIncoming(builder->getFalse(), vb_exit);
                 is_tensors[a] = is_t; lengths[a] = len_phi;
                 elems_ptrs[a] = elems_phi; base_ptrs[a] = base_phi;
+                tagged_slots[a] = tagged_phi;
             }
 
             // Result length is the shortest of the inputs.
@@ -17729,10 +17101,10 @@ private:
             Value* ci = builder->CreateLoad(int64_type, idx_ptr);
             std::vector<Value*> call_args;
             for (int a = 0; a < n_vecs; a++)
-                call_args.push_back(loadElem(is_tensors[a], elems_ptrs[a], base_ptrs[a], ci));
+                call_args.push_back(loadSequenceElement(is_tensors[a], tagged_slots[a], elems_ptrs[a], base_ptrs[a], ci));
             Value* result = codegenClosureCall(func_val, call_args, "vector-map");
             Value* result_tagged = ensureTaggedValue(result);
-            // Reload the counter — loadElem/codegenClosureCall create blocks.
+            // Reload the counter — the element load and the closure call create blocks.
             Value* ci2 = builder->CreateLoad(int64_type, idx_ptr);
             Value* new_elem_ptr = builder->CreateGEP(tagged_value_type, new_elem_base, ci2);
             builder->CreateStore(result_tagged, new_elem_ptr);
@@ -17886,20 +17258,23 @@ private:
         if (func_name == "tensor-data") co_return tensor_->tensorToVector(op);  // Alias for tensor->vector
 
         // Activation functions (SIMD-accelerated)
-        if (func_name == "relu") co_return tensor_->tensorRelu(op);
-        if (func_name == "sigmoid") co_return tensor_->tensorSigmoid(op);
+        // The elementwise activation family (a number or a tensor). Each name
+        // is spelled out -- scripts/gen_language_surface.py enumerates the
+        // builtin surface from these lines -- but every one of them reaches the
+        // single lowering, codegenActivationFamily(), and its one table.
+        if (func_name == "gelu") co_return codegenActivationFamily(op, *findActivation("gelu"));
+        if (func_name == "leaky-relu") co_return codegenActivationFamily(op, *findActivation("leaky-relu"));
+        if (func_name == "silu") co_return codegenActivationFamily(op, *findActivation("silu"));
+        if (func_name == "swish") co_return codegenActivationFamily(op, *findActivation("swish"));
+        if (func_name == "elu") co_return codegenActivationFamily(op, *findActivation("elu"));
+        if (func_name == "selu") co_return codegenActivationFamily(op, *findActivation("selu"));
+        if (func_name == "mish") co_return codegenActivationFamily(op, *findActivation("mish"));
+        if (func_name == "hard-swish") co_return codegenActivationFamily(op, *findActivation("hard-swish"));
+        if (func_name == "hard-sigmoid") co_return codegenActivationFamily(op, *findActivation("hard-sigmoid"));
+        if (func_name == "softplus") co_return codegenActivationFamily(op, *findActivation("softplus"));
+        if (func_name == "celu") co_return codegenActivationFamily(op, *findActivation("celu"));
         if (func_name == "softmax") co_return tensor_->tensorSoftmax(op);
-        if (func_name == "gelu") co_return tensor_->tensorGelu(op);
-        if (func_name == "leaky-relu") co_return tensor_->tensorLeakyRelu(op);
-        if (func_name == "silu") co_return tensor_->tensorSilu(op);
-        if (func_name == "elu") co_return tensor_->tensorElu(op);
-        if (func_name == "selu") co_return tensor_->tensorSelu(op);
-        if (func_name == "mish") co_return tensor_->tensorMish(op);
-        if (func_name == "hard-swish") co_return tensor_->tensorHardSwish(op);
-        if (func_name == "hard-sigmoid") co_return tensor_->tensorHardSigmoid(op);
-        if (func_name == "softplus") co_return tensor_->tensorSoftplus(op);
         if (func_name == "dropout") co_return tensor_->tensorDropout(op);
-        if (func_name == "celu") co_return tensor_->tensorCelu(op);
 
         // Statistics operations
         if (func_name == "tensor-var") co_return tensor_->tensorVar(op);
@@ -18156,12 +17531,20 @@ private:
             !isa<Function>(local_callable_it->second)) {
             local_callable_storage_shadows_global = true;
         }
+        const bool top_level_binding_is_dynamic =
+            eshkol::staticCalleeTopLevelBindingIsDynamic(
+                &symbol_table, &global_symbol_table, current_function, func_name,
+                isReassignedTopLevelName(func_name.c_str()));
+        if (top_level_binding_is_dynamic) {
+            eshkol_debug("Static callee resolution deferred for top-level mutable binding %s",
+                         func_name.c_str());
+        }
 
         // Step 1: Check LOCAL symbol table first (for letrec/let bindings with _func)
         // SCOPED LOOKUP FIX: First try scoped version (current_func.name_func) to handle
         // nested functions with the same name in different outer functions.
         std::string func_key = func_name + "_func";
-        if (!local_callable_storage_shadows_global && current_function) {
+        if (!top_level_binding_is_dynamic && !local_callable_storage_shadows_global && current_function) {
             std::string scoped_key = current_function->getName().str() + "." + func_key;
             auto scoped_it = symbol_table.find(scoped_key);
             if (scoped_it != symbol_table.end() && scoped_it->second && isa<Function>(scoped_it->second)) {
@@ -18171,7 +17554,7 @@ private:
         }
 
         // If not found with scoped key, try unscoped
-        if (!local_callable_storage_shadows_global && !callee) {
+        if (!top_level_binding_is_dynamic && !local_callable_storage_shadows_global && !callee) {
             auto func_it = symbol_table.find(func_key);
             eshkol_debug("Looking for %s in symbol_table: %s",
                         func_key.c_str(),
@@ -18254,7 +17637,7 @@ private:
         // helper; otherwise local letrec closures such as `mul` can briefly
         // resolve to the global arithmetic helper before the closure-call
         // fallback gets a chance to load the activation-local cell.
-        if (!callee && !local_callable_storage_shadows_global) {
+        if (!callee && !top_level_binding_is_dynamic && !local_callable_storage_shadows_global) {
             auto ft_it = function_table.find(func_name);
             if (ft_it != function_table.end()) {
                 callee = ft_it->second;
@@ -18799,7 +18182,8 @@ private:
                     }
                 }
 
-                if (func_entry && isa<Function>(func_entry)) {
+                if (func_entry && isa<Function>(func_entry) &&
+                    !isShadowedByLocalRuntimeBinding(func_name)) {
                     callee = dyn_cast<Function>(func_entry);
                     eshkol_debug("Resolved closure function for %s", func_name.c_str());
                 } else {
@@ -21587,6 +20971,322 @@ private:
         result->addIncoming(tagged_dual, dual_exit);
         result->addIncoming(regular_result, regular_exit);
         return result;
+    }
+
+    // ===== ML activation family: one dispatch point =====
+    //
+    // Every activation takes a number or a tensor and returns the same kind
+    // (docs/tutorials/01_AUTODIFF_AND_ML.md, docs/API_REFERENCE.md). This table
+    // and codegenActivationFamily() are the only place an activation name is
+    // lowered. The operand is evaluated ONCE, bound to a generated name, and
+    // classified at run time:
+    //   - a tensor, or a reverse-mode node that carries a tensor, goes to the
+    //     TensorCodegen lowering, which owns tensor layout and tensor AD;
+    //   - a scalar number or scalar differentiation carrier (fixnum, flonum,
+    //     bignum, rational, dual, Taylor tower, scalar AD node) goes to the
+    //     activation's scalar definition. That definition is a composition of
+    //     the scalar primitives (+ - * / exp log tanh min max and `>` on the
+    //     primal), each of which already carries every differentiation mode,
+    //     so the activation is differentiable without a rule of its own. It is
+    //     the same formula, constants and threshold as the tensor kernel;
+    //   - anything else goes to the tensor lowering, whose operand check
+    //     coerces a numeric collection or raises a catchable type error.
+    // relu and sigmoid enter through the same table but keep their dedicated
+    // scalar lowering (codegenActivationFunction), which records dedicated AD
+    // node and Taylor operations.
+    static eshkol_ast_t* actCall(const char* fn, std::initializer_list<eshkol_ast_t*> args) {
+        eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
+        ast->type = ESHKOL_OP;
+        ast->operation.op = ESHKOL_CALL_OP;
+        ast->operation.call_op.func = eshkol_make_var_ast(fn);
+        ast->operation.call_op.num_vars = args.size();
+        ast->operation.call_op.variables = eshkol_ast_construct_array(
+            arena_allocate(get_global_arena(), args.size() * sizeof(eshkol_ast_t)), args.size());
+        size_t i = 0;
+        for (eshkol_ast_t* a : args) ast->operation.call_op.variables[i++] = *a;
+        return ast;
+    }
+    static eshkol_ast_t* actNum(double v) { return eshkol_make_double_ast(v); }
+
+    // An activation's definition as an AST over the operand x and the optional
+    // parameter p, and the TensorCodegen kernel it pairs with.
+    using ActivationFormula = eshkol_ast_t* (*)(eshkol_ast_t* x, eshkol_ast_t* p);
+    using ActivationKernel = Value* (eshkol::TensorCodegen::*)(const eshkol_operations_t*);
+    struct ActivationSpec {
+        const char* name;
+        uint64_t min_args;
+        uint64_t max_args;
+        double param_default;  // value of the optional second argument
+        ActivationKernel tensor_fn;
+        // Scalar definition; null for the activations with a dedicated scalar
+        // lowering (relu, sigmoid).
+        ActivationFormula scalar;
+        // Tensor definition used when the optional parameter is supplied and
+        // the tensor kernel has no parameter of its own (swish's beta).
+        ActivationFormula tensor_with_param;
+    };
+
+    static const ActivationSpec* findActivation(const std::string& name) {
+        // Formulas mirror lib/backend/tensor_activation_codegen.cpp exactly.
+        static const ActivationSpec table[] = {
+            {"relu", 1, 1, 0.0, &eshkol::TensorCodegen::tensorRelu, nullptr, nullptr},
+            {"sigmoid", 1, 1, 0.0, &eshkol::TensorCodegen::tensorSigmoid, nullptr, nullptr},
+            // (1/beta) * log(1 + exp(beta*x)), or x when beta*x > 20
+            {"softplus", 1, 2, 1.0, &eshkol::TensorCodegen::tensorSoftplus,
+             [](eshkol_ast_t* x, eshkol_ast_t* p) {
+                 eshkol_ast_t* bx = actCall("*", {p, x});
+                 return actCall("if", {actCall(">", {bx, actNum(20.0)}), x,
+                     actCall("*", {actCall("/", {actNum(1.0), p}),
+                                   actCall("log", {actCall("+", {actNum(1.0), actCall("exp", {bx})})})})});
+             }, nullptr},
+            // 0.5*x*(1 + tanh(sqrt(2/pi)*(x + 0.044715*x^3)))
+            {"gelu", 1, 1, 0.0, &eshkol::TensorCodegen::tensorGelu,
+             [](eshkol_ast_t* x, eshkol_ast_t*) {
+                 eshkol_ast_t* x3 = actCall("*", {actCall("*", {x, x}), x});
+                 eshkol_ast_t* inner = actCall("+", {x, actCall("*", {actNum(0.044715), x3})});
+                 eshkol_ast_t* t = actCall("tanh", {actCall("*", {actNum(0.7978845608028654), inner})});
+                 return actCall("*", {actCall("*", {actNum(0.5), x}), actCall("+", {actNum(1.0), t})});
+             }, nullptr},
+            // x if x > 0, else alpha*x (alpha 0.01)
+            {"leaky-relu", 1, 2, 0.01, &eshkol::TensorCodegen::tensorLeakyRelu,
+             [](eshkol_ast_t* x, eshkol_ast_t* p) {
+                 return actCall("if", {actCall(">", {x, actNum(0.0)}), x, actCall("*", {p, x})});
+             }, nullptr},
+            // x * sigmoid(x)
+            {"silu", 1, 1, 0.0, &eshkol::TensorCodegen::tensorSilu,
+             [](eshkol_ast_t* x, eshkol_ast_t*) { return actCall("*", {x, actCall("sigmoid", {x})}); },
+             nullptr},
+            // Swish: x * sigmoid(beta*x); beta 1 is SiLU
+            {"swish", 1, 2, 1.0, &eshkol::TensorCodegen::tensorSilu,
+             [](eshkol_ast_t* x, eshkol_ast_t* p) {
+                 return actCall("*", {x, actCall("sigmoid", {actCall("*", {p, x})})});
+             },
+             [](eshkol_ast_t* x, eshkol_ast_t* p) {
+                 eshkol_ast_t* beta = actCall("make-tensor", {actCall("list", {eshkol_make_int_ast(1)}), p});
+                 return actCall("tensor-mul", {x, actCall("sigmoid", {actCall("tensor-mul", {x, beta})})});
+             }},
+            // x if x > 0, else alpha*(exp(x) - 1) (alpha 1)
+            {"elu", 1, 2, 1.0, &eshkol::TensorCodegen::tensorElu,
+             [](eshkol_ast_t* x, eshkol_ast_t* p) {
+                 return actCall("if", {actCall(">", {x, actNum(0.0)}), x,
+                     actCall("*", {p, actCall("-", {actCall("exp", {x}), actNum(1.0)})})});
+             }, nullptr},
+            // lambda * (x if x > 0, else alpha*(exp(x) - 1))
+            {"selu", 1, 1, 0.0, &eshkol::TensorCodegen::tensorSelu,
+             [](eshkol_ast_t* x, eshkol_ast_t*) {
+                 return actCall("*", {actNum(1.0507009873554804934193349852946),
+                     actCall("if", {actCall(">", {x, actNum(0.0)}), x,
+                         actCall("*", {actNum(1.6732632423543772848170429916717),
+                                       actCall("-", {actCall("exp", {x}), actNum(1.0)})})})});
+             }, nullptr},
+            // x * tanh(log(1 + exp(x))), or x * tanh(x) when x > 20
+            {"mish", 1, 1, 0.0, &eshkol::TensorCodegen::tensorMish,
+             [](eshkol_ast_t* x, eshkol_ast_t*) {
+                 return actCall("if", {actCall(">", {x, actNum(20.0)}),
+                     actCall("*", {x, actCall("tanh", {x})}),
+                     actCall("*", {x, actCall("tanh", {actCall("log", {actCall("+", {actNum(1.0), actCall("exp", {x})})})})})});
+             }, nullptr},
+            // x * min(max(x + 3, 0), 6) / 6
+            {"hard-swish", 1, 1, 0.0, &eshkol::TensorCodegen::tensorHardSwish,
+             [](eshkol_ast_t* x, eshkol_ast_t*) {
+                 eshkol_ast_t* clamped = actCall("min", {actCall("max", {actCall("+", {x, actNum(3.0)}), actNum(0.0)}), actNum(6.0)});
+                 return actCall("/", {actCall("*", {x, clamped}), actNum(6.0)});
+             }, nullptr},
+            // min(max((x + 3) / 6, 0), 1)
+            {"hard-sigmoid", 1, 1, 0.0, &eshkol::TensorCodegen::tensorHardSigmoid,
+             [](eshkol_ast_t* x, eshkol_ast_t*) {
+                 return actCall("min", {actCall("max", {actCall("/", {actCall("+", {x, actNum(3.0)}), actNum(6.0)}), actNum(0.0)}), actNum(1.0)});
+             }, nullptr},
+            // max(0, x) + min(0, alpha*(exp(x/alpha) - 1)) (alpha 1)
+            {"celu", 1, 2, 1.0, &eshkol::TensorCodegen::tensorCelu,
+             [](eshkol_ast_t* x, eshkol_ast_t* p) {
+                 return actCall("+", {actCall("max", {actNum(0.0), x}),
+                     actCall("min", {actNum(0.0), actCall("*", {p,
+                         actCall("-", {actCall("exp", {actCall("/", {x, p})}), actNum(1.0)})})})});
+             }, nullptr},
+        };
+        for (const ActivationSpec& spec : table) {
+            if (name == spec.name) return &spec;
+        }
+        return nullptr;
+    }
+
+    // i1: the operand belongs to the scalar definition (a number or a scalar
+    // differentiation carrier). Everything else -- a tensor, a reverse-mode node
+    // that carries a tensor, or a non-number -- belongs to the tensor lowering.
+    Value* emitActivationOperandIsScalar(Value* arg) {
+        Function* fn = builder->GetInsertBlock()->getParent();
+        BasicBlock* callable_bb = BasicBlock::Create(*context, "act_callable_check", fn);
+        BasicBlock* ad_bb = BasicBlock::Create(*context, "act_ad_scalar_check", fn);
+        BasicBlock* done_bb = BasicBlock::Create(*context, "act_classified", fn);
+        Value* base = getBaseType(getTaggedValueType(arg));
+        Value* number_like = builder->CreateOr(tagged_->isNumeric(arg),
+            builder->CreateOr(
+                builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER)),
+                builder->CreateOr(isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM),
+                    builder->CreateOr(isHeapSubtype(arg, HEAP_SUBTYPE_RATIONAL),
+                                      isHeapSubtype(arg, HEAP_SUBTYPE_TAYLOR)))));
+        Value* is_callable = builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+        // The subtype probes above may have split the block, and the callable
+        // subtype probe below dereferences the payload, so it may only run once
+        // the value is known to be a callable.
+        BasicBlock* entry_bb = builder->GetInsertBlock();
+        builder->CreateCondBr(is_callable, callable_bb, done_bb);
+
+        builder->SetInsertPoint(callable_bb);
+        Value* is_ad = tagged_->checkCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
+        BasicBlock* callable_exit = builder->GetInsertBlock();
+        builder->CreateCondBr(is_ad, ad_bb, done_bb);
+
+        // A reverse-mode node is scalar exactly when it carries no tensor.
+        builder->SetInsertPoint(ad_bb);
+        PointerType* ptr_ty = PointerType::getUnqual(*context);
+        Value* node = builder->CreateIntToPtr(unpackInt64FromTaggedValue(arg), ptr_ty);
+        Value* tensor_value = builder->CreateLoad(ptr_ty, builder->CreateStructGEP(ad_node_type, node, 6));
+        Value* scalar_ad = builder->CreateICmpEQ(tensor_value, ConstantPointerNull::get(ptr_ty));
+        BasicBlock* ad_exit = builder->GetInsertBlock();
+        builder->CreateBr(done_bb);
+
+        builder->SetInsertPoint(done_bb);
+        PHINode* result = builder->CreatePHI(builder->getInt1Ty(), 3, "act_is_scalar");
+        result->addIncoming(number_like, entry_bb);
+        result->addIncoming(ConstantInt::getFalse(*context), callable_exit);
+        result->addIncoming(scalar_ad, ad_exit);
+        return result;
+    }
+
+    Value* codegenActivationFamily(const eshkol_operations_t* op, const ActivationSpec& spec) {
+        const uint64_t n = op->call_op.num_vars;
+        if (n < spec.min_args || n > spec.max_args) {
+            if (spec.min_args == spec.max_args) {
+                eshkol_arity_error_current("%s requires exactly %llu argument%s", spec.name,
+                    static_cast<unsigned long long>(spec.min_args), spec.min_args == 1 ? "" : "s");
+            } else {
+                eshkol_arity_error_current("%s requires %llu to %llu arguments", spec.name,
+                    static_cast<unsigned long long>(spec.min_args),
+                    static_cast<unsigned long long>(spec.max_args));
+            }
+            return nullptr;
+        }
+        if (!spec.scalar) {
+            // relu / sigmoid: dedicated scalar lowering.
+            return codegenActivationFunction(op, std::string(spec.name) == "relu");
+        }
+        // The operand is classified at run time, never from its static type:
+        // the type checker narrows an unannotated parameter to Tensor, and
+        // trusting that reads a double's bit pattern as a tensor pointer.
+
+        // Evaluate every argument once and bind it to a generated name; both
+        // branches read the bindings, so no argument is evaluated twice.
+        Function* fn = builder->GetInsertBlock()->getParent();
+        std::vector<std::string> names;
+        names.reserve(n);  // vars[i].variable.id points into these strings
+        std::vector<eshkol_ast_t> vars(n);
+        for (uint64_t i = 0; i < n; ++i) {
+            Value* v = codegenAST(&op->call_op.variables[i]);
+            if (!v) return nullptr;
+            v = ensureTaggedValue(v);
+            IRBuilderBase::InsertPoint saved = builder->saveIP();
+            builder->SetInsertPoint(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+            AllocaInst* slot = builder->CreateAlloca(tagged_value_type, nullptr, "act_arg");
+            builder->restoreIP(saved);
+            builder->CreateStore(v, slot);
+            names.push_back(std::string("__act_arg_") + std::to_string(name_uniquifier_++));
+            symbol_table[names.back()] = slot;
+            vars[i].type = ESHKOL_VAR;
+            vars[i].variable.id = const_cast<char*>(names.back().c_str());
+            vars[i].variable.data = nullptr;
+        }
+        struct Unbind {
+            std::unordered_map<std::string, Value*>& table;
+            std::vector<std::string>& names;
+            ~Unbind() { for (auto& nm : names) table.erase(nm); }
+        } unbind{symbol_table, names};
+
+        Value* arg = builder->CreateLoad(tagged_value_type, symbol_table[names[0]]);
+        Value* is_scalar = emitActivationOperandIsScalar(arg);
+        BasicBlock* scalar_bb = BasicBlock::Create(*context, std::string(spec.name) + "_scalar", fn);
+        BasicBlock* tensor_bb = BasicBlock::Create(*context, std::string(spec.name) + "_tensor", fn);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, std::string(spec.name) + "_merge", fn);
+        builder->CreateCondBr(is_scalar, scalar_bb, tensor_bb);
+
+        eshkol_ast_t* x = eshkol_make_var_ast(names[0].c_str());
+        eshkol_ast_t* p = n > 1 ? eshkol_make_var_ast(names[1].c_str()) : actNum(spec.param_default);
+
+        builder->SetInsertPoint(tensor_bb);
+        Value* tensor_result;
+        if (n > 1 && spec.tensor_with_param) {
+            tensor_result = codegenAST(spec.tensor_with_param(x, p));
+        } else {
+            eshkol_operations_t bound = *op;
+            bound.call_op.variables = vars.data();
+            tensor_result = (tensor_.get()->*spec.tensor_fn)(&bound);
+        }
+        if (!tensor_result) return nullptr;
+        tensor_result = ensureTaggedValue(tensor_result);
+        builder->CreateBr(merge_bb);
+        BasicBlock* tensor_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(scalar_bb);
+        // An activation's value is inexact, as every tensor element and the
+        // relu/sigmoid scalar lowering are: (softplus 30) is 30.0, not the exact
+        // operand its threshold branch returns. Multiplying by 1.0 keeps every
+        // differentiation carrier intact.
+        Value* scalar_result = codegenAST(actCall("*", {actNum(1.0), spec.scalar(x, p)}));
+        if (!scalar_result) return nullptr;
+        scalar_result = ensureTaggedValue(scalar_result);
+        builder->CreateBr(merge_bb);
+        BasicBlock* scalar_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(merge_bb);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 2, std::string(spec.name) + "_result");
+        result->addIncoming(tensor_result, tensor_exit);
+        result->addIncoming(scalar_result, scalar_exit);
+        return result;
+    }
+
+    // One element loader for the multi-sequence iterators (vector-map,
+    // vector-for-each): the i-th element of a source as a tagged value. A
+    // Scheme vector slot is the value; a tensor slot is a double bit pattern,
+    // unless the carrier was promoted by a non-numeric store or is a dual
+    // tensor (ADR-0020), where the slot is already a tagged value.
+    Value* loadSequenceElement(Value* is_tensor, Value* tagged_slots,
+                               Value* elems, Value* base, Value* idx) {
+        Function* f = builder->GetInsertBlock()->getParent();
+        BasicBlock* tb = BasicBlock::Create(*context, "velt_t", f);
+        BasicBlock* boxed_bb = BasicBlock::Create(*context, "velt_boxed", f);
+        BasicBlock* numeric_bb = BasicBlock::Create(*context, "velt_numeric", f);
+        BasicBlock* vb = BasicBlock::Create(*context, "velt_v", f);
+        BasicBlock* mb = BasicBlock::Create(*context, "velt_m", f);
+        builder->CreateCondBr(is_tensor, tb, vb);
+
+        builder->SetInsertPoint(tb);
+        builder->CreateCondBr(tagged_slots, boxed_bb, numeric_bb);
+
+        builder->SetInsertPoint(boxed_bb);
+        Value* boxed = builder->CreateLoad(tagged_value_type,
+            builder->CreateGEP(tagged_value_type, elems, idx));
+        builder->CreateBr(mb);
+        BasicBlock* boxed_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(numeric_bb);
+        Value* ei = builder->CreateLoad(int64_type, builder->CreateGEP(int64_type, elems, idx));
+        Value* et = packDoubleToTaggedValue(builder->CreateBitCast(ei, double_type));
+        builder->CreateBr(mb);
+        BasicBlock* numeric_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(vb);
+        Value* ev = builder->CreateLoad(tagged_value_type,
+            builder->CreateGEP(tagged_value_type, base, idx));
+        builder->CreateBr(mb);
+        BasicBlock* vb_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(mb);
+        PHINode* phi = builder->CreatePHI(tagged_value_type, 3);
+        phi->addIncoming(boxed, boxed_exit);
+        phi->addIncoming(et, numeric_exit);
+        phi->addIncoming(ev, vb_exit);
+        return phi;
     }
 
     // Polymorphic abs - handles AD/dual, then delegates to ArithmeticCodegen::abs
@@ -30945,7 +30645,7 @@ private:
                 eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
                 eshkol::AstRouteGroup<AstRoute::Call,
                     ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP, ESHKOL_CASE_OP,
-                    ESHKOL_DO_OP, ESHKOL_WHEN_OP, ESHKOL_EXTERN_OP, ESHKOL_UNLESS_OP,
+                    ESHKOL_DO_OP, ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP,
                     ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP,
                     ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_KB_QUERY_PREFIX_OP,
                     ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP,
@@ -30999,7 +30699,7 @@ private:
                 eshkol::AstRouteGroup<AstRoute::CaseLambda, ESHKOL_CASE_LAMBDA_OP>{},
                 eshkol::AstRouteGroup<AstRoute::OtherOperations,
                     ESHKOL_INVALID_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP, ESHKOL_MUL_OP,
-                    ESHKOL_DIV_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
+                    ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
                     ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
                     ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP,
                     ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_LOGIC_VAR_OP,
@@ -33135,6 +32835,22 @@ private:
                     symbol_table[var_name] = capture_arg;
                     eshkol_debug("Lambda using closure env pointer for capture %s", var_name.c_str());
                 }
+
+                // Preserve the static-callee fact through this capture only
+                // when the outer alias was owned by the outer binding's
+                // storage. The nested LLVM argument or IntToPtr capture
+                // instruction is a new IR value for the same lexical cell;
+                // recording that representation keeps scoped AD/map/apply
+                // resolution exact while still rejecting sibling shadows.
+                auto source_storage = prev_symbols.find(var_name);
+                auto captured_storage = symbol_table.find(var_name);
+                if (source_storage != prev_symbols.end() &&
+                    captured_storage != symbol_table.end()) {
+                    eshkol::inheritStaticCalleeCapture(
+                        &symbol_table, &global_symbol_table, prev_function,
+                        lambda_func, var_name, source_storage->second,
+                        captured_storage->second);
+                }
             } else {
                 eshkol_warn("Missing capture parameter for %s", var_name.c_str());
             }
@@ -34698,7 +34414,19 @@ private:
                         // Use BitCast for doubles, NOT FPToSI (which truncates to integer!)
                         element_val = builder->CreateBitCast(element_val, int64_type);
                     } else {
-                        element_val = ConstantInt::get(int64_type, 0);
+                        // SW-182: this lowering is for a literal whose elements
+                        // are raw numbers. An element that evaluates to anything
+                        // else (a variable, a call, a parameter: a tagged value)
+                        // used to be stored as the constant 0 with no
+                        // diagnostic. A lowering must never invent a value, so
+                        // this is a compile-time failure. A literal with
+                        // computed elements is an ESHKOL_TENSOR_OP, which
+                        // TensorCodegen::tensorOperation evaluates element by
+                        // element.
+                        eshkol_error("tensor literal element %llu is not a raw number; "
+                                     "a literal with computed elements must be built as a tensor operation",
+                                     (unsigned long long)i);
+                        return nullptr;
                     }
                 }
                 
@@ -34849,6 +34577,16 @@ private:
 
         BasicBlock* check_callable = BasicBlock::Create(*context, "vref_check_callable", current_func);
         // Scalar inputs: (tensor-ref 6.0 0) → return 6.0 directly
+        // The tensor path reads its source through this slot, so a dense
+        // AD node can hand it a projection instead of the node (ADR-0023).
+        IRBuilderBase::InsertPoint vref_saved_ip = builder->saveIP();
+        if (current_func && !current_func->empty()) {
+            BasicBlock& vref_entry = current_func->getEntryBlock();
+            builder->SetInsertPoint(&vref_entry, vref_entry.begin());
+        }
+        Value* vref_src_slot = builder->CreateAlloca(int64_type, nullptr, "vref_src");
+        builder->restoreIP(vref_saved_ip);
+        builder->CreateStore(safeExtractInt64(vector_val), vref_src_slot);
         builder->CreateCondBr(is_scalar, scalar_input, check_callable);
 
         builder->SetInsertPoint(check_callable);
@@ -34884,6 +34622,36 @@ private:
         
         // Unpack AD node pointer from tagged_value
         Value* ad_node_ptr = unpackPtrFromTaggedValue(vector_val);
+
+        // A CALLABLE AD node with a tensor_value is a DENSE tensor node (the
+        // dense reverse path's result). Indexing it means indexing its
+        // elements, so it is projected through the runtime and read by the
+        // tensor path below; only a node without a tensor value is the scalar
+        // node the comment above describes. Returning the dense node itself
+        // gave `(tensor-ref (matmul A x) i)` the whole vector (SW-181).
+        {
+            Value* vref_node = ad_node_ptr->getType()->isPointerTy()
+                ? ad_node_ptr : builder->CreateIntToPtr(ad_node_ptr, builder->getPtrTy());
+            Value* vref_tv = builder->CreateLoad(builder->getPtrTy(),
+                builder->CreateStructGEP(ctx_->adNodeType(), vref_node, 6));
+            BasicBlock* vref_dense = BasicBlock::Create(*context, "vref_dense_node", current_func);
+            BasicBlock* vref_scalar_node = BasicBlock::Create(*context, "vref_scalar_node", current_func);
+            builder->CreateCondBr(builder->CreateICmpNE(vref_tv,
+                ConstantPointerNull::get(builder->getPtrTy())), vref_dense, vref_scalar_node);
+
+            builder->SetInsertPoint(vref_dense);
+            Function* vref_proj_fn = module->getFunction("eshkol_ad_dense_node_elements");
+            if (!vref_proj_fn) {
+                vref_proj_fn = Function::Create(
+                    FunctionType::get(builder->getPtrTy(), {builder->getPtrTy()}, false),
+                    Function::ExternalLinkage, "eshkol_ad_dense_node_elements", module.get());
+            }
+            Value* vref_projected = builder->CreateCall(vref_proj_fn, {vref_node});
+            builder->CreateStore(builder->CreatePtrToInt(vref_projected, int64_type), vref_src_slot);
+            builder->CreateBr(tensor_input);
+
+            builder->SetInsertPoint(vref_scalar_node);
+        }
         
         // AD node struct: {type, value, gradient, input1, input2, id}
         // We want field 1 (value)
@@ -34934,7 +34702,7 @@ private:
         builder->SetInsertPoint(tensor_input);
 
         // Unpack if tagged_value (lambda parameters are tagged_value)
-        Value* vector_ptr_int = safeExtractInt64(vector_val);
+        Value* vector_ptr_int = builder->CreateLoad(int64_type, vref_src_slot);
         Value* index_int = safeExtractInt64(index);
         
         // Use class member tensor_type (shared by all tensor operations)
@@ -39478,247 +39246,14 @@ private:
                     builder->SetInsertPoint(valid_block);
                     Value* cons_ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
 
-                    Value* is_car_op = ConstantInt::get(int1_type, (c == 'a') ? 0 : 1);
-                    Value* field_type = builder->CreateCall(getTaggedConsGetTypeFunc(),
-                        {cons_ptr, is_car_op});
-
-                    Value* base_type = getBaseType(field_type);
-
-                    // Check for all value types (including NULL for list terminators)
-                    Value* is_field_null = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
-                    Value* is_double = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-                    Value* is_cons_ptr = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-                    Value* is_string_ptr = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-                    Value* is_lambda_sexpr = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-                    Value* is_closure_ptr = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-                    // BOOL FIX: Check for BOOL type
-                    Value* is_bool = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_BOOL));
-                    // HASH_PTR FIX: Check for HASH_PTR, VECTOR_PTR types
-                    Value* is_hash_ptr = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-                    Value* is_vector_ptr = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-                    // CALLABLE FIX: Check for consolidated CALLABLE type (closures, lambdas, AD nodes)
-                    Value* is_callable = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-                    // HEAP_PTR FIX: Check for consolidated HEAP_PTR type
-                    Value* is_heap_ptr = builder->CreateICmpEQ(base_type,
-                        ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-
-                    // Create all basic blocks for type dispatch
-                    BasicBlock* field_null_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_field_null", current_func);
-                    BasicBlock* check_double_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_check_double", current_func);
-                    BasicBlock* double_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_double", current_func);
-                    BasicBlock* check_cons_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_check_cons", current_func);
-                    BasicBlock* cons_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_cons", current_func);
-                    BasicBlock* check_string_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_check_string", current_func);
-                    BasicBlock* string_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_string", current_func);
-                    BasicBlock* check_lambda_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_check_lambda", current_func);
-                    BasicBlock* lambda_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_lambda", current_func);
-                    BasicBlock* check_closure_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_check_closure", current_func);
-                    BasicBlock* closure_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_closure", current_func);
-                    // BOOL FIX: Add bool blocks
-                    BasicBlock* check_bool_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_check_bool", current_func);
-                    BasicBlock* bool_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_bool", current_func);
-                    // HASH_PTR FIX: Add hash and vector blocks
-                    BasicBlock* check_hash_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_check_hash", current_func);
-                    BasicBlock* hash_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_hash", current_func);
-                    BasicBlock* check_vector_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_check_vector", current_func);
-                    BasicBlock* vector_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_vector", current_func);
-                    // CALLABLE FIX: Add callable blocks
-                    BasicBlock* check_callable_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_check_callable", current_func);
-                    BasicBlock* callable_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_callable", current_func);
-                    // HEAP_PTR FIX: Add heap_ptr blocks
-                    BasicBlock* check_heap_ptr_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_check_heap_ptr", current_func);
-                    BasicBlock* heap_ptr_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_heap_ptr", current_func);
-                    BasicBlock* int_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_int", current_func);
-                    BasicBlock* merge_block = BasicBlock::Create(*context,
-                        std::string("fb_") + c + "_merge", current_func);
-
-                    // CRITICAL: Check for NULL first - cdr of last element is NULL
-                    builder->CreateCondBr(is_field_null, field_null_block, check_double_block);
-
-                    // NULL field path - return NULL tagged value
-                    builder->SetInsertPoint(field_null_block);
-                    Value* field_null_tagged = packNullToTaggedValue();
-                    builder->CreateBr(merge_block);
-
-                    builder->SetInsertPoint(check_double_block);
-                    builder->CreateCondBr(is_double, double_block, check_cons_block);
-
-                    // Double path
-                    builder->SetInsertPoint(double_block);
-                    Value* double_val = builder->CreateCall(getTaggedConsGetDoubleFunc(),
-                        {cons_ptr, is_car_op});
-                    Value* tagged_double = packDoubleToTaggedValue(double_val);
-                    builder->CreateBr(merge_block);
-
-                    // Cons ptr path
-                    builder->SetInsertPoint(check_cons_block);
-                    builder->CreateCondBr(is_cons_ptr, cons_block, check_string_block);
-
-                    builder->SetInsertPoint(cons_block);
-                    Value* cons_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
-                        {cons_ptr, is_car_op});
-                    // M1 Migration: Use consolidated HEAP_PTR
-                    Value* tagged_cons = packPtrToTaggedValue(
-                        builder->CreateIntToPtr(cons_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
-                    builder->CreateBr(merge_block);
-
-                    // String ptr path (symbols)
-                    builder->SetInsertPoint(check_string_block);
-                    builder->CreateCondBr(is_string_ptr, string_block, check_lambda_block);
-
-                    builder->SetInsertPoint(string_block);
-                    Value* string_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
-                        {cons_ptr, is_car_op});
-                    Value* tagged_string = packPtrToTaggedValue(
-                        builder->CreateIntToPtr(string_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
-                    builder->CreateBr(merge_block);
-
-                    // Lambda sexpr path
-                    builder->SetInsertPoint(check_lambda_block);
-                    builder->CreateCondBr(is_lambda_sexpr, lambda_block, check_closure_block);
-
-                    builder->SetInsertPoint(lambda_block);
-                    Value* lambda_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_op});
-                    Value* lambda_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_op});
-                    Value* lambda_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_op});
-                    Value* tagged_lambda = packPtrToTaggedValueWithFlags(
-                        builder->CreateIntToPtr(lambda_ptr, builder->getPtrTy()), lambda_type, lambda_flags);
-                    builder->CreateBr(merge_block);
-
-                    // Closure ptr path
-                    builder->SetInsertPoint(check_closure_block);
-                    builder->CreateCondBr(is_closure_ptr, closure_block, check_bool_block);
-
-                    builder->SetInsertPoint(closure_block);
-                    Value* closure_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_op});
-                    Value* closure_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_op});
-                    Value* closure_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_op});
-                    Value* tagged_closure = packPtrToTaggedValueWithFlags(
-                        builder->CreateIntToPtr(closure_ptr_val, builder->getPtrTy()), closure_type, closure_flags);
-                    builder->CreateBr(merge_block);
-
-                    // BOOL FIX: Check if bool
-                    builder->SetInsertPoint(check_bool_block);
-                    builder->CreateCondBr(is_bool, bool_block, check_hash_block);
-
-                    // BOOL FIX: Extract bool (stored as int64, 0=false, 1=true)
-                    builder->SetInsertPoint(bool_block);
-                    Value* bool_int_val = builder->CreateCall(getTaggedConsGetInt64Func(),
-                        {cons_ptr, is_car_op});
-                    // Convert int to bool (i1)
-                    Value* bool_val = builder->CreateICmpNE(bool_int_val, ConstantInt::get(int64_type, 0));
-                    Value* tagged_bool = packBoolToTaggedValue(bool_val);
-                    builder->CreateBr(merge_block);
-
-                    // HASH_PTR FIX: Check if hash_ptr
-                    builder->SetInsertPoint(check_hash_block);
-                    builder->CreateCondBr(is_hash_ptr, hash_block, check_vector_block);
-
-                    // HASH_PTR FIX: Extract hash_ptr (repacks as HEAP_PTR)
-                    builder->SetInsertPoint(hash_block);
-                    Value* hash_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
-                        {cons_ptr, is_car_op});
-                    // Repack as HEAP_PTR (consolidated format) - subtype is in object header
-                    Value* tagged_hash = packPtrToTaggedValue(
-                        builder->CreateIntToPtr(hash_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
-                    builder->CreateBr(merge_block);
-
-                    // VECTOR_PTR FIX: Check if vector_ptr
-                    builder->SetInsertPoint(check_vector_block);
-                    builder->CreateCondBr(is_vector_ptr, vector_block, check_callable_block);
-
-                    // VECTOR_PTR FIX: Extract vector_ptr
-                    builder->SetInsertPoint(vector_block);
-                    Value* vector_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
-                        {cons_ptr, is_car_op});
-                    Value* tagged_vector = packPtrToTaggedValue(
-                        builder->CreateIntToPtr(vector_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
-                    builder->CreateBr(merge_block);
-
-                    // CALLABLE FIX: Check if callable (closures, lambdas, AD nodes)
-                    builder->SetInsertPoint(check_callable_block);
-                    builder->CreateCondBr(is_callable, callable_block, check_heap_ptr_block);
-
-                    // CALLABLE FIX: Extract callable with proper type and flags
-                    builder->SetInsertPoint(callable_block);
-                    Value* callable_type_val = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_op});
-                    Value* callable_flags_val = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_op});
-                    Value* callable_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_op});
-                    Value* tagged_callable = packPtrToTaggedValueWithFlags(
-                        builder->CreateIntToPtr(callable_ptr_val, builder->getPtrTy()), callable_type_val, callable_flags_val);
-                    builder->CreateBr(merge_block);
-
-                    // HEAP_PTR FIX: Check if heap_ptr (cons, string, vector, tensor, hash, etc.)
-                    builder->SetInsertPoint(check_heap_ptr_block);
-                    builder->CreateCondBr(is_heap_ptr, heap_ptr_block, int_block);
-
-                    // HEAP_PTR FIX: Extract heap_ptr with proper type and flags
-                    builder->SetInsertPoint(heap_ptr_block);
-                    Value* heap_type_val = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_op});
-                    Value* heap_flags_val = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_op});
-                    Value* heap_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_op});
-                    Value* tagged_heap = packPtrToTaggedValueWithFlags(
-                        builder->CreateIntToPtr(heap_ptr_val, builder->getPtrTy()), heap_type_val, heap_flags_val);
-                    builder->CreateBr(merge_block);
-
-                    // Int path (fallback)
-                    builder->SetInsertPoint(int_block);
-                    Value* int_val = builder->CreateCall(getTaggedConsGetInt64Func(),
-                        {cons_ptr, is_car_op});
-                    Value* tagged_int = packInt64ToTaggedValue(int_val, true);
-                    builder->CreateBr(merge_block);
-
-                    builder->SetInsertPoint(merge_block);
-                    PHINode* extract_phi = builder->CreatePHI(tagged_value_type, 13);  // CALLABLE FIX: 13 incoming
-                    extract_phi->addIncoming(field_null_tagged, field_null_block);
-                    extract_phi->addIncoming(tagged_double, double_block);
-                    extract_phi->addIncoming(tagged_cons, cons_block);
-                    extract_phi->addIncoming(tagged_string, string_block);
-                    extract_phi->addIncoming(tagged_lambda, lambda_block);
-                    extract_phi->addIncoming(tagged_closure, closure_block);
-                    extract_phi->addIncoming(tagged_bool, bool_block);  // BOOL FIX
-                    extract_phi->addIncoming(tagged_hash, hash_block);  // HASH_PTR FIX
-                    extract_phi->addIncoming(tagged_vector, vector_block);  // VECTOR_PTR FIX
-                    extract_phi->addIncoming(tagged_callable, callable_block);  // CALLABLE FIX
-                    extract_phi->addIncoming(tagged_heap, heap_ptr_block);  // HEAP_PTR FIX
-                    extract_phi->addIncoming(tagged_int, int_block);
+                    // The slot is loaded whole (SW-183); see TaggedValueCodegen::loadConsSlot.
+                    Value* extract_phi = tagged_->loadConsSlot(cons_ptr, c != 'a');
+                    BasicBlock* extract_exit = builder->GetInsertBlock();
                     builder->CreateBr(continue_block);
 
                     builder->SetInsertPoint(continue_block);
                     PHINode* result_phi = builder->CreatePHI(tagged_value_type, 1);
-                    result_phi->addIncoming(extract_phi, merge_block);
+                    result_phi->addIncoming(extract_phi, extract_exit);
 
                     list_result = result_phi;
                 }
@@ -39763,208 +39298,15 @@ private:
             builder->SetInsertPoint(valid_block);
             Value* cons_ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
             
-            Value* is_car_op = ConstantInt::get(int1_type, (c == 'a') ? 0 : 1);
-            Value* field_type = builder->CreateCall(getTaggedConsGetTypeFunc(),
-                {cons_ptr, is_car_op});
-            
-            // Get base type - correctly handles legacy types (>= 32)
-            Value* base_type = getBaseType(field_type);
-
-            // Check type: NULL (for list terminators), double, cons_ptr, string_ptr, lambda_sexpr, closure_ptr, int64
-            Value* is_field_null = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
-            Value* is_double = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-            Value* is_cons_ptr = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-            // SYMBOL FIX: Check for STRING_PTR, LAMBDA_SEXPR, CLOSURE_PTR
-            Value* is_string_ptr = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-            Value* is_lambda_sexpr = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-            Value* is_closure_ptr = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-            // BOOL FIX: Check for BOOL type
-            Value* is_bool = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_BOOL));
-            // HASH_PTR FIX: Check for HASH_PTR, VECTOR_PTR types
-            Value* is_hash_ptr = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-            Value* is_vector_ptr = builder->CreateICmpEQ(base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-
-            BasicBlock* field_null_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_field_null", current_func);
-            BasicBlock* check_double_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_check_double", current_func);
-            BasicBlock* double_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_double", current_func);
-            BasicBlock* check_cons_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_check_cons", current_func);
-            BasicBlock* cons_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_cons", current_func);
-            BasicBlock* check_string_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_check_string", current_func);
-            BasicBlock* string_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_string", current_func);
-            BasicBlock* check_lambda_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_check_lambda", current_func);
-            BasicBlock* lambda_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_lambda", current_func);
-            BasicBlock* check_closure_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_check_closure", current_func);
-            BasicBlock* closure_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_closure", current_func);
-            // BOOL FIX: Add bool blocks
-            BasicBlock* check_bool_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_check_bool", current_func);
-            BasicBlock* bool_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_bool", current_func);
-            // HASH_PTR FIX: Add hash and vector blocks
-            BasicBlock* check_hash_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_check_hash", current_func);
-            BasicBlock* hash_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_hash", current_func);
-            BasicBlock* check_vector_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_check_vector", current_func);
-            BasicBlock* vector_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_vector", current_func);
-            BasicBlock* int_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_int", current_func);
-            BasicBlock* merge_block = BasicBlock::Create(*context,
-                std::string("compound_") + c + "_merge", current_func);
-
-            // CRITICAL: Check for NULL first - cdr of last element is NULL
-            builder->CreateCondBr(is_field_null, field_null_block, check_double_block);
-
-            // NULL field path - return NULL tagged value
-            builder->SetInsertPoint(field_null_block);
-            Value* field_null_tagged = packNullToTaggedValue();
-            builder->CreateBr(merge_block);
-
-            builder->SetInsertPoint(check_double_block);
-            builder->CreateCondBr(is_double, double_block, check_cons_block);
-
-            // Extract double
-            builder->SetInsertPoint(double_block);
-            Value* double_val = builder->CreateCall(getTaggedConsGetDoubleFunc(),
-                {cons_ptr, is_car_op});
-            Value* tagged_double = packDoubleToTaggedValue(double_val);
-            builder->CreateBr(merge_block);
-
-            // Check if cons_ptr
-            builder->SetInsertPoint(check_cons_block);
-            builder->CreateCondBr(is_cons_ptr, cons_block, check_string_block);
-
-            // Extract cons_ptr
-            builder->SetInsertPoint(cons_block);
-            Value* cons_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
-                {cons_ptr, is_car_op});
-            Value* tagged_cons = packPtrToTaggedValue(builder->CreateIntToPtr(cons_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
-            builder->CreateBr(merge_block);
-
-            // SYMBOL FIX: Check if string_ptr
-            builder->SetInsertPoint(check_string_block);
-            builder->CreateCondBr(is_string_ptr, string_block, check_lambda_block);
-
-            // Extract string_ptr
-            builder->SetInsertPoint(string_block);
-            Value* string_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
-                {cons_ptr, is_car_op});
-            Value* tagged_string = packPtrToTaggedValue(builder->CreateIntToPtr(string_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
-            builder->CreateBr(merge_block);
-
-            // Check if lambda_sexpr
-            builder->SetInsertPoint(check_lambda_block);
-            builder->CreateCondBr(is_lambda_sexpr, lambda_block, check_closure_block);
-
-            // Extract lambda_sexpr
-            builder->SetInsertPoint(lambda_block);
-            Value* lambda_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_op});
-            Value* lambda_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_op});
-            Value* lambda_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_op});
-            Value* tagged_lambda = packPtrToTaggedValueWithFlags(
-                builder->CreateIntToPtr(lambda_ptr, builder->getPtrTy()),
-                lambda_type, lambda_flags);
-            builder->CreateBr(merge_block);
-
-            // Check if closure_ptr
-            builder->SetInsertPoint(check_closure_block);
-            builder->CreateCondBr(is_closure_ptr, closure_block, check_bool_block);
-
-            // Extract closure_ptr
-            builder->SetInsertPoint(closure_block);
-            Value* closure_type = builder->CreateCall(getTaggedConsGetTypeFunc(), {cons_ptr, is_car_op});
-            Value* closure_flags = builder->CreateCall(getTaggedConsGetFlagsFunc(), {cons_ptr, is_car_op});
-            Value* closure_ptr_val = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_op});
-            Value* tagged_closure = packPtrToTaggedValueWithFlags(
-                builder->CreateIntToPtr(closure_ptr_val, builder->getPtrTy()),
-                closure_type, closure_flags);
-            builder->CreateBr(merge_block);
-
-            // BOOL FIX: Check if bool
-            builder->SetInsertPoint(check_bool_block);
-            builder->CreateCondBr(is_bool, bool_block, check_hash_block);
-
-            // BOOL FIX: Extract bool (stored as int64, 0=false, 1=true)
-            builder->SetInsertPoint(bool_block);
-            Value* bool_int_val = builder->CreateCall(getTaggedConsGetInt64Func(),
-                {cons_ptr, is_car_op});
-            // Convert int to bool (i1)
-            Value* bool_val = builder->CreateICmpNE(bool_int_val, ConstantInt::get(int64_type, 0));
-            Value* tagged_bool = packBoolToTaggedValue(bool_val);
-            builder->CreateBr(merge_block);
-
-            // HASH_PTR FIX: Check if hash_ptr
-            builder->SetInsertPoint(check_hash_block);
-            builder->CreateCondBr(is_hash_ptr, hash_block, check_vector_block);
-
-            // HASH_PTR FIX: Extract hash_ptr
-            builder->SetInsertPoint(hash_block);
-            Value* hash_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
-                {cons_ptr, is_car_op});
-            Value* tagged_hash = packPtrToTaggedValue(
-                builder->CreateIntToPtr(hash_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
-            builder->CreateBr(merge_block);
-
-            // VECTOR_PTR FIX: Check if vector_ptr
-            builder->SetInsertPoint(check_vector_block);
-            builder->CreateCondBr(is_vector_ptr, vector_block, int_block);
-
-            // VECTOR_PTR FIX: Extract vector_ptr
-            builder->SetInsertPoint(vector_block);
-            Value* vector_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
-                {cons_ptr, is_car_op});
-            Value* tagged_vector = packPtrToTaggedValue(
-                builder->CreateIntToPtr(vector_val, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
-            builder->CreateBr(merge_block);
-
-            // Extract int64
-            builder->SetInsertPoint(int_block);
-            Value* int_val = builder->CreateCall(getTaggedConsGetInt64Func(),
-                {cons_ptr, is_car_op});
-            Value* tagged_int = packInt64ToTaggedValue(int_val, true);
-            builder->CreateBr(merge_block);
-
-            // Merge all types
-            builder->SetInsertPoint(merge_block);
-            PHINode* extract_phi = builder->CreatePHI(tagged_value_type, 11);  // HASH_PTR FIX: increased to 11
-            extract_phi->addIncoming(field_null_tagged, field_null_block);
-            extract_phi->addIncoming(tagged_double, double_block);
-            extract_phi->addIncoming(tagged_cons, cons_block);
-            extract_phi->addIncoming(tagged_string, string_block);
-            extract_phi->addIncoming(tagged_lambda, lambda_block);
-            extract_phi->addIncoming(tagged_closure, closure_block);
-            extract_phi->addIncoming(tagged_bool, bool_block);  // BOOL FIX: add bool case
-            extract_phi->addIncoming(tagged_hash, hash_block);  // HASH_PTR FIX
-            extract_phi->addIncoming(tagged_vector, vector_block);  // VECTOR_PTR FIX
-            extract_phi->addIncoming(tagged_int, int_block);
+            // The slot is loaded whole (SW-183); see TaggedValueCodegen::loadConsSlot.
+            Value* extract_phi = tagged_->loadConsSlot(cons_ptr, c != 'a');
+            BasicBlock* extract_exit = builder->GetInsertBlock();
             builder->CreateBr(continue_block);
             
             // Continue with the successfully extracted result.
             builder->SetInsertPoint(continue_block);
             PHINode* result_phi = builder->CreatePHI(tagged_value_type, 1);
-            result_phi->addIncoming(extract_phi, merge_block);
+            result_phi->addIncoming(extract_phi, extract_exit);
             
             current = result_phi;
         }
@@ -41947,7 +41289,7 @@ private:
             builder->CreateStore(barriered, tv_slot);
             builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
                                 {cons_ptr, slot_flag, tv_slot});
-            return new_value;
+            return packUnspecifiedToTaggedValue();  // ADR-0024
         }
 
         // Fallback: non-tagged scalar. detectValueType still classifies
@@ -41969,7 +41311,7 @@ private:
                 {cons_ptr, slot_flag, new_val_typed.llvm_value,
                  ConstantInt::get(int8_type, type_tag)});
         }
-        return new_value;
+        return packUnspecifiedToTaggedValue();  // ADR-0024
     }
 
     Value* codegenSetCar(const eshkol_operations_t* op) {
@@ -42053,35 +41395,21 @@ private:
     
     // Helper function to resolve lambda/function from AST with arity-specific builtin handling
     /**
-     * @brief True when @p name is lexically shadowed by a runtime binding of
-     *        the current function (ESH-0070 class).
+     * @brief True when @p name denotes a runtime binding of the current
+     *        function that no static alias describes (ESH-0070 class).
      *
-     * A function parameter (llvm::Argument) or local variable (AllocaInst
-     * owned by the current function) shadows any same-named top-level
-     * function. The unscoped <name>_func entries leak into every scope
-     * (preGenerateTopLevelLambdas writes both symbol_table and
-     * global_symbol_table) and function_table is global, so static
-     * procedure resolution MUST decline when this returns true — the only
-     * resolution that agrees with lexical scope is runtime dispatch on the
-     * local value. A scoped <current>.<name>_func entry exempts the name:
-     * it proves the local binding itself is a statically-known lambda
-     * (let-bound or local define), which static resolution handles
-     * correctly via the scoped lookup.
+     * A function parameter or local storage cell shadows any same-named
+     * top-level function, and any scoped alias an earlier binding of the name
+     * left in this function. Static procedure resolution MUST decline when
+     * this returns true; the only resolution that agrees with lexical scope is
+     * runtime dispatch on the local value. The exception is a scoped alias
+     * recorded by the binding the name denotes now: that binding is a
+     * never-reassigned lambda and static resolution is exact. The rule lives
+     * in static_callee_binding.h so every static fast path applies it.
      */
     bool isShadowedByLocalRuntimeBinding(const std::string& name) {
-        if (!current_function) return false;
-        auto it = symbol_table.find(name);
-        if (it == symbol_table.end() || !it->second) return false;
-        Value* v = it->second;
-        bool is_param = isa<Argument>(v) &&
-            cast<Argument>(v)->getParent() == current_function;
-        bool is_local_alloca = isa<AllocaInst>(v) &&
-            cast<AllocaInst>(v)->getFunction() == current_function;
-        if (!is_param && !is_local_alloca) return false;
-        std::string scoped_key =
-            current_function->getName().str() + "." + name + "_func";
-        return symbol_table.find(scoped_key) == symbol_table.end() &&
-               global_symbol_table.find(scoped_key) == global_symbol_table.end();
+        return eshkol::staticCalleeHiddenByRuntimeBinding(
+            &symbol_table, &global_symbol_table, current_function, name);
     }
 
     Value* resolveLambdaFunction(const eshkol_ast_t* func_ast, size_t required_arity = 0) {
@@ -42205,6 +41533,17 @@ private:
                              "binding in '%s' — deferring to runtime dispatch",
                              func_name.c_str(),
                              current_function->getName().str().c_str());
+                return nullptr;
+            }
+
+            // A top-level value binding that can be reassigned is a runtime
+            // callee even when function_table still contains the lambda that
+            // originally initialized it. Preserve a same-named lexical lambda
+            // only when the shared storage-owner fact proves that alias is its
+            // current binding.
+            if (eshkol::staticCalleeTopLevelBindingIsDynamic(
+                    &symbol_table, &global_symbol_table, current_function, func_name,
+                    isReassignedTopLevelName(func_name.c_str()))) {
                 return nullptr;
             }
 
@@ -42947,13 +42286,10 @@ private:
         
         Value* input_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
         
-        // Extract car as tagged_value and convert to TypedValue
+        // Copy the element, complete with its type, into the prefix.
         Value* input_element_tagged = extractCarAsTaggedValue(current_val);
-        TypedValue input_element_typed = taggedValueToTypedValue(input_element_tagged);
-        
-        // Create new cons cell for prefix with type preservation
-        TypedValue cdr_null = TypedValue(ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
-        Value* new_prefix_cons = codegenTaggedArenaConsCell(input_element_typed, cdr_null);
+        Value* new_prefix_cons = codegenTaggedArenaConsCellCopying(
+            input_element_tagged, packNullToTaggedValue());
         
         // Update prefix list (similar to take)
         Value* prefix_head_val = builder->CreateLoad(int64_type, prefix_head);
@@ -43024,43 +42360,29 @@ private:
             return nullptr;
         }
 
-        // Check if first argument is a predicate (lambda or function reference)
+        // (remove pred list) removes the elements pred accepts; (remove item
+        // list) removes the elements equal to item under the comparison this
+        // entry point names (remove: equal?, remv: eqv?, remq: eq?).
+        //
+        // A predicate is called directly only when resolveLambdaFunction
+        // resolves it statically: an inline lambda, or a name whose binding is
+        // a never-reassigned lambda in scope (static_callee_binding.h). A
+        // procedure that captures variables is called through its closure
+        // value, as reduce does. Every other operand is evaluated once and
+        // dispatched on at runtime: a procedure value is called, anything else
+        // is compared.
         const eshkol_ast_t* first_arg = &op->call_op.variables[0];
-        bool is_predicate = false;
         Function* pred_func = nullptr;
-
-        if (first_arg->type == ESHKOL_OP && first_arg->operation.op == ESHKOL_LAMBDA_OP) {
-            // Inline lambda - resolve it
-            is_predicate = true;
-            Value* proc = resolveLambdaFunction(first_arg);
+        if ((first_arg->type == ESHKOL_OP && first_arg->operation.op == ESHKOL_LAMBDA_OP) ||
+            first_arg->type == ESHKOL_VAR) {
+            Value* proc = resolveLambdaFunction(first_arg, 1);
             pred_func = proc ? dyn_cast<Function>(proc) : nullptr;
-        } else if (first_arg->type == ESHKOL_VAR) {
-            // Variable - check if it's a function
-            std::string var_name = first_arg->variable.id;
-
-            // SHADOWING GUARD (ESH-0070 class): function_table and the
-            // unscoped <name>_func entries describe top-level bindings, so
-            // when the name is rebound to a runtime value in the current
-            // function (parameter or local alloca) the lookups below would
-            // substitute the shadowed global as the predicate. Decline
-            // static predicate resolution in that case: the local binding is
-            // a runtime value, and remove's element-based path compares
-            // against exactly that value — the same behavior a non-shadowed
-            // runtime argument gets today.
-            if (!isShadowedByLocalRuntimeBinding(var_name)) {
-                // Check function table first
-                auto func_it = function_table.find(var_name);
-                if (func_it != function_table.end() && func_it->second) {
-                    is_predicate = true;
-                    pred_func = func_it->second;
-                } else {
-                    // Check for lambda reference
-                    auto sym_it = symbol_table.find(var_name + "_func");
-                    if (sym_it != symbol_table.end()) {
-                        pred_func = dyn_cast<Function>(sym_it->second);
-                        is_predicate = (pred_func != nullptr);
-                    }
-                }
+            if (pred_func &&
+                (eshkol::functionHasCaptureParameters(pred_func) ||
+                 pred_func->arg_size() != 1 ||
+                 pred_func->getFunctionType()->getParamType(0) != tagged_value_type ||
+                 pred_func->getReturnType() != tagged_value_type)) {
+                pred_func = nullptr;
             }
         }
 
@@ -43068,24 +42390,24 @@ private:
         if (!list) return nullptr;
         Value* list_int = safeExtractInt64(list);
 
-        // For non-static-predicate removal, evaluate the operand ONCE.
-        // The value may still be a procedure at runtime — a function
-        // parameter, a binding that shadows a same-named top-level function
-        // (ESH-0070 class), or a closure produced by a call — and SRFI-1
-        // remove semantics require calling it as the predicate. Keep the
-        // tagged value for a runtime CALLABLE dispatch alongside the
-        // element-equality path.
-        Value* item_int = nullptr;
         Value* item_tagged = nullptr;
         Value* item_is_callable = nullptr;
-        if (!is_predicate) {
-            Value* item = codegenAST(&op->call_op.variables[0]);
+        Function* item_equal = nullptr;
+        if (!pred_func) {
+            Value* item = codegenAST(first_arg);
             if (!item) return nullptr;
             item_tagged = ensureTaggedValue(item);
-            item_int = safeExtractInt64(item_tagged);
             Value* item_base = getBaseType(getTaggedValueType(item_tagged));
             item_is_callable = builder->CreateICmpEQ(item_base,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
+            const char* equivalence = comparison_type == "eq" ? "eq?"
+                                    : comparison_type == "eqv" ? "eqv?"
+                                    : "equal?";
+            item_equal = createBuiltinEqualityFunction(equivalence);
+            if (!item_equal) {
+                eshkol_error("remove: failed to materialise %s for element comparison", equivalence);
+                return nullptr;
+            }
         }
 
         Function* current_func = builder->GetInsertBlock()->getParent();
@@ -43121,27 +42443,15 @@ private:
         builder->SetInsertPoint(loop_body);
 
         Value* input_cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
-
-        // Extract car as tagged_value
         Value* input_element_tagged = extractCarAsTaggedValue(current_val);
-        Value* input_element = unpackInt64FromTaggedValue(input_element_tagged);
 
-        // Determine if element should be removed
+        // Determine if element should be removed. A predicate's answer is
+        // tested with Scheme truthiness: only #f keeps the element.
         Value* is_match = nullptr;
-        if (is_predicate && pred_func) {
-            // Predicate-based removal: call predicate and check if result is truthy
+        if (pred_func) {
             Value* pred_result = builder->CreateCall(pred_func, {input_element_tagged});
-            // Check if result is truthy (non-zero, non-false)
-            Value* pred_result_int = safeExtractInt64(pred_result);
-            is_match = builder->CreateICmpNE(pred_result_int, ConstantInt::get(int64_type, 0));
+            is_match = isTruthy(ensureTaggedValue(pred_result));
         } else {
-            // Runtime dispatch (ESH-0070 class): the operand was not a
-            // statically-resolvable predicate — it may be a runtime
-            // procedure value (function parameter / shadowed binding /
-            // closure from a call) or a plain item. Branch on the tagged
-            // type: CALLABLE → call it as the predicate; anything else →
-            // element equality (eq/eqv/equal all compare the extracted
-            // value here, matching the previous behavior).
             BasicBlock* pred_call_bb = BasicBlock::Create(*context, "remove_pred_call", current_func);
             BasicBlock* item_cmp_bb = BasicBlock::Create(*context, "remove_item_cmp", current_func);
             BasicBlock* match_merge_bb = BasicBlock::Create(*context, "remove_match_merge", current_func);
@@ -43153,30 +42463,30 @@ private:
                 eshkol_error("remove: closure dispatch failed");
                 return nullptr;
             }
-            Value* rt_pred_int = safeExtractInt64(ensureTaggedValue(rt_pred_result));
-            Value* rt_pred_match = builder->CreateICmpNE(rt_pred_int, ConstantInt::get(int64_type, 0));
+            Value* rt_pred_match = isTruthy(ensureTaggedValue(rt_pred_result));
             BasicBlock* pred_call_end = builder->GetInsertBlock();
             builder->CreateBr(match_merge_bb);
 
             builder->SetInsertPoint(item_cmp_bb);
-            Value* item_cmp_match = builder->CreateICmpEQ(input_element, item_int);
+            Value* equal_result = builder->CreateCall(item_equal, {input_element_tagged, item_tagged});
+            Value* item_cmp_match = isTruthy(equal_result);
+            BasicBlock* item_cmp_end = builder->GetInsertBlock();
             builder->CreateBr(match_merge_bb);
 
             builder->SetInsertPoint(match_merge_bb);
             PHINode* match_phi = builder->CreatePHI(int1_type, 2, "remove_is_match");
             match_phi->addIncoming(rt_pred_match, pred_call_end);
-            match_phi->addIncoming(item_cmp_match, item_cmp_bb);
+            match_phi->addIncoming(item_cmp_match, item_cmp_end);
             is_match = match_phi;
         }
 
         // If it matches (predicate true or equals item), skip it; otherwise keep it
         builder->CreateCondBr(is_match, skip_element, keep_element);
-        
-        // Keep element (doesn't match item to remove)
+
+        // Keep element: copy it, complete with its type, into the result.
         builder->SetInsertPoint(keep_element);
-        TypedValue elem_typed = taggedValueToTypedValue(input_element_tagged);
-        TypedValue cdr_null = TypedValue(ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
-        Value* new_result_cons = codegenTaggedArenaConsCell(elem_typed, cdr_null);
+        Value* new_result_cons = codegenTaggedArenaConsCellCopying(
+            input_element_tagged, packNullToTaggedValue());
         
         // Update result list
         Value* head_val = builder->CreateLoad(int64_type, result_head);
@@ -44357,7 +43667,7 @@ private:
             {"rmsprop-step", {4}}, {"rotary-embedding", {3}}, {"scaled-dot-attention", {3}},
             {"selu", {1}}, {"sgd-step", {3}}, {"sigmoid", {1}},
             {"silu", {1}}, {"slice", {3}}, {"smooth-l1-loss", {2}},
-            {"softmax", {1}}, {"softplus", {1}}, {"squeeze", {1}},
+            {"softmax", {1}}, {"softplus", {1}}, {"squeeze", {1}}, {"swish", {1}},
             {"stack", {3}}, {"step-decay-lr", {4}}, {"tensor->vector", {1}},
             {"tensor-abs", {1}}, {"tensor-add", {2}}, {"tensor-argmax", {1}},
             {"tensor-argmin", {1}}, {"tensor-cholesky", {1}}, {"tensor-corrcoef", {2}},
@@ -45346,6 +44656,11 @@ namespace ControlFlowCallbacks {
         return name && codegen->astSetsVar(static_cast<const eshkol_ast_t*>(ast), name);
     }
 
+    bool isReassignedTopLevelNameWrapper(const char* name, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return codegen->isReassignedTopLevelName(name);
+    }
+
     bool isVarObservedWrapper(const void* ast, const char* name, void* context) {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         return name && codegen->astMayBeObservedAfterMutation(
@@ -45774,7 +45089,9 @@ void eshkol_disable_debug_info(void) {
 }
 
 void eshkol_set_source_context(const char* filepath, const char* source_text) {
-    g_source_filepath = filepath ? filepath : "";
+    const char* display = filepath ? eshkol_source_path_display(filepath) : nullptr;
+    g_source_filepath = display ? display : "";
+    g_source_hostpath = filepath ? filepath : "";
     g_source_text = source_text ? source_text : "";
     /* The ambient path moved without going through ScopedAstProvenance, so its
      * memoised id no longer describes it. 0 never equals a real interned id
@@ -45862,11 +45179,13 @@ LLVMModuleRef eshkol_generate_llvm_ir_with_source(
     const char* source_path, const char* source_text) {
     struct RestoreSourceContext {
         std::string path = g_source_filepath;
+        std::string host = g_source_hostpath;
         std::string text = g_source_text;
         std::string parse_path = eshkol_get_parse_source_context();
 
         ~RestoreSourceContext() {
             g_source_filepath = path;
+            g_source_hostpath = host;
             g_source_text = text;
             g_source_file_id_active = 0;  // see eshkol_set_source_context
             eshkol_set_parse_source_context(parse_path.c_str());
@@ -45876,7 +45195,9 @@ LLVMModuleRef eshkol_generate_llvm_ir_with_source(
         ~FlushLanguageCoverage() { eshkol_language_coverage_flush(); }
     } flush_language_coverage;
 
-    g_source_filepath = source_path ? source_path : "";
+    const char* source_display = source_path ? eshkol_source_path_display(source_path) : nullptr;
+    g_source_filepath = source_display ? source_display : "";
+    g_source_hostpath = source_path ? source_path : "";
     g_source_text = source_text ? source_text : "";
     g_source_file_id_active = 0;  // see eshkol_set_source_context
     eshkol_set_parse_source_context(source_path);

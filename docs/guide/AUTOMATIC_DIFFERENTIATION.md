@@ -1,6 +1,6 @@
 # Automatic Differentiation in Eshkol
 
-*A user guide to the v1.3.0-evolve Taylor-tower AD system.*
+*A user guide to the v1.3.5-evolve Taylor-tower AD system.*
 
 Eshkol differentiates programs, not just formulas. `derivative`, `gradient`,
 `jacobian` and friends are **compiler primitives** — you write ordinary Scheme
@@ -18,8 +18,12 @@ What makes Eshkol's AD unusual:
   `rational` — zero floating-point error. No double-only framework (JAX,
   PyTorch, Zygote) offers this.
 - **Validated when you need a guarantee.** Taylor models return a Taylor
-  polynomial *plus a rigorous interval remainder*, so you get a proven
-  enclosure of a function over a whole domain, not just a point estimate.
+  polynomial *plus an interval remainder*, so you get an enclosure of a
+  function over a whole domain, not just a point estimate — and beneath the
+  validated (sampled-remainder) family there is a **proof-backed** one,
+  `core.ad.rigorous_interval` / `core.ad.rigorous_taylor_models`, whose every
+  enclosure is derived rather than sampled. See
+  [certified enclosures](../reference/stdlib/certified-enclosures.md).
 - **A property of the language.** Derivatives flow through `if`/`cond`, loops,
   recursion, closures, and `map`/`fold`; through tensors (matmul/conv2d/
   activations); through the reverse tape; and they nest without perturbation
@@ -376,11 +380,25 @@ tensor sensitivities.
 
 ## 6. Validated AD — Taylor models
 
-A **Taylor model** is a Taylor polynomial plus a rigorous interval remainder
-that provably encloses the truncation error over a whole domain box. Instead of
-"the value at a point," you get a *guaranteed enclosure* of the function over an
-interval — the foundation of validated numerics and verified global
-optimization. Load `core.ad.taylor_models`.
+A **Taylor model** is a Taylor polynomial plus an interval remainder bounding
+the truncation error over a whole domain box. Instead of "the value at a
+point," you get an enclosure of the function over an interval — the foundation
+of validated numerics and verified global optimization. Load
+`core.ad.taylor_models`.
+
+Eshkol ships **two** layers under that one require, and they differ in where
+the remainder comes from:
+
+| Layer | Remainder | Use it for |
+|---|---|---|
+| `core.ad.taylor_models` (`taylor-model`, `tm-range`, `tm-eval`) | epsilon-widened / sampled | validated numerics, error budgets, tightening a search |
+| `core.ad.rigorous_taylor_models` (`tm-var`, `tm+`, `tm*`, `tm-exp`, `tm-bound`, `tm-prove-bound`) | **derived**, with an a-priori bound at every step | a claim you intend to stand on as a proof |
+
+This section is the validated layer. For the proof-backed one — directed
+rounding, outward-rounded interval arithmetic, and Makino-Berz rigorous Taylor
+models — see
+[certified enclosures](../reference/stdlib/certified-enclosures.md), and use
+`tm-rigorous?` to tell which kind of model a value is.
 
 ```scheme
 (require core.ad.taylor_models)
@@ -411,9 +429,37 @@ sound (it contains the true range). `tm-eval` gives a point enclosure that
 provably contains the true value. Enclosures tighten as the order `k` grows and
 as the radius shrinks.
 
-**When to use:** when you need a *proof*, not an estimate — rigorous error
-bounds, verified global optimization, guaranteed ODE enclosures, robust handling
-of catastrophic cancellation.
+**When to use:** when you need an enclosure rather than a point estimate —
+error budgets, verified global optimization, ODE enclosures, robust handling of
+catastrophic cancellation.
+
+When the claim has to be a *proof*, take the same shape through the rigorous
+family instead, where every remainder is derived rather than sampled:
+
+```scheme
+(require core.ad.taylor_models)
+
+(define rtm (tm-exp (tm-var 0 1/4 6) 6))   ; exp on [-1/4, 1/4], order 6
+(display (tm-rigorous? rtm)) (newline)
+(display (tm-bound rtm)) (newline)
+(display (tm-prove-bound rtm 0 2)) (newline)
+(display (tm-prove-bound rtm 0 1)) (newline)
+```
+
+Run with `./build/eshkol-run -r ex.esk -L build`. Output:
+
+```
+#t
+(0.7159745469364677 . 1.2840254530635327)
+#t
+#f
+```
+
+`tm-bound` is the certified enclosure; `tm-prove-bound` answers `#t` only when
+that enclosure *proves* the containment, so the second query — which asks
+whether exp stays inside `[0,1]` on that domain, and it does not — correctly
+refuses. A refusal is never a claim that the bound is false; it is a claim that
+this model does not prove it.
 
 ---
 
@@ -677,7 +723,7 @@ series inversion / analytic continuation — all reusing the AD kernel.
 
 ## 11. Perturbation safety & how it works
 
-### Nested differentiation is safe
+### Nested differentiation is safe from perturbation confusion
 
 Nested `derivative`/`derivative-n` is the classic *perturbation-confusion* trap
 (Siskind–Pearlmutter): a naive implementation lets an inner differentiation leak
@@ -723,10 +769,33 @@ outer or the inner pass. All nine pairings agree:
 
 Two passes compose by putting the enclosing one on a **first-order companion
 series** that rides alongside the inner pass's value series, so exactly one
-enclosing level can be carried at a time. When more is asked for — an enclosing
-level with second- or higher-order dependence reaching an inner pass through a
-capture, or two distinct enclosing levels at once — Eshkol **raises** rather
-than answering a number:
+enclosing level can be carried at a time. That is the v1.3.5 ceiling, and it is
+a property of the carrier rather than of the mathematics.
+
+**Below the ceiling** — any depth of first-order passes, and one pass of order
+≥ 2 with one enclosing first-order pass in either position — nesting is exact:
+
+```scheme
+;; depth 3, all first order: d/dx d/dy d/dz (x^2 y^2 z^2) at (2,3,4)
+(display (derivative (lambda (x) (derivative (lambda (y) (derivative (lambda (z) (* x x y y z z)) 4.0)) 3.0)) 2.0)) (newline)
+;; one order-2 pass under one first-order pass: d/da [d2/db2 (a^2 b^3)] at b=1/2, a=1/3
+(display (derivative (lambda (a) (derivative-n (lambda (b) (* a a b b b)) 1/2 2)) 1/3)) (newline)
+```
+```
+192
+2
+```
+
+**At the ceiling**, two passes both of order ≥ 2 **raise** rather than
+answering a number:
+
+```
+unsupported nested differentiation: an order-2 `derivative-n`/`taylor` pass
+inside another differentiation of order 2 or higher
+```
+
+and an enclosing level with second- or higher-order dependence reaching an
+inner pass through a **capture** raises its own diagnostic:
 
 ```
 unsupported nested differentiation: an enclosing differentiation reaches this
@@ -734,11 +803,48 @@ pass through a CAPTURED variable and carries second- or higher-order dependence
 ```
 
 Rewrite the outer pass as a first-order `derivative`, or take the higher-order
-term with a single `(derivative-n f x k)`. The composition is exact but
-**inexact-valued**: the companion series carries doubles, so an exact seed keeps
-its value through a nested pass and spends its exactness. Gated by
-`tests/ad/nested_operator_matrix_test.esk` (the captured-variable matrix, JIT +
-AOT) and `tests/ad/ad_carrier_nesting_test.esk` (the point matrix).
+term with a single `(derivative-n f x k)`.
+
+> **Known limitation (ledger SW-154): two enclosing levels over a pass of
+> order ≥ 2 is not supported in v1.3.5.** On the **exact** tier that shape
+> raises (`unsupported inexact/non-rational Taylor hyperdual operation`). On
+> the **inexact** tier it currently answers `0` rather than raising, so it is a
+> silent wrong answer — do not rely on it:
+>
+> ```scheme
+> ;; the analytic answer is 2
+> (display (derivative (lambda (a)
+>            (derivative (lambda (b)
+>              (derivative-n (lambda (c) (* a b c c)) 1.0 2)) 1.0)) 1.0)) (newline)
+> ```
+> ```
+> 0
+> ```
+>
+> The shape is pinned, unregistered, in
+> `tests/ad/nested_towers_matrix_test.esk`. Lifting the ceiling is the ESH-0413
+> carrier rewrite, which replaces the carrier this release's exact-coefficient
+> tier is built on — the two cannot both be in force — and is **v1.4** work.
+
+Exactness through a nested pass depends on which carrier the composition lands
+on: the first-order companion series carries doubles, so a first-order pass
+over a first-order pass returns an inexact value even from an exact seed, while
+a first-order pass over `derivative-n` stays on the exact tier and returns an
+exact one.
+
+```scheme
+(display (derivative (lambda (x) (derivative   (lambda (y) (* x x y y))   1/2))   1/3)) (newline)
+(display (derivative (lambda (a) (derivative-n (lambda (b) (* a a b b b)) 1/2 2)) 1/3)) (newline)
+```
+```
+0.6666666666666666
+2
+```
+
+Gated by `tests/ad/nested_operator_matrix_test.esk` (the captured-variable
+matrix, JIT + AOT) and `tests/ad/ad_carrier_nesting_test.esk` (the point
+matrix). The full table, with the verified output of every row, is in
+[the AD support matrix](../reference/ad/support-matrix.md#nesting-ceiling-sw-154).
 
 ### How it works (in one paragraph)
 
@@ -837,10 +943,12 @@ composition (`(derivative (compose f g) x)`) are all exactly as exact as the
 same computation inlined by hand. The exact route still defers to the
 (unchanged) jet path when the function cannot be resolved to a callable at
 all, or when another differentiation is already live — including a nested
-differentiation. Nesting itself is safe on every operator pairing (section 11),
-but the carrier that composes two passes is a first-order companion series of
-doubles, so an exact seed cannot stay exact *through* a nested pass; the value
-is right, the exactness is spent. A body that only calls other top-level
+differentiation. Nesting is free of perturbation confusion on every operator
+pairing, and composes up to the carrier ceiling described in section 11. Where
+two passes land on the first-order companion series — a companion of doubles —
+an exact seed keeps its *value* through the nested pass but spends its
+exactness; where the composition stays on the exact tier (a first-order pass
+over `derivative-n`, for one) the answer comes back exact. A body that only calls other top-level
 definitions is accepted: `(derivative (lambda (s) (h 1/5 s)) 1/3)` where
 `(define (h a b) (* a b b))` is exactly `2/15`, the same answer
 `(derivative-n … 1)` gives. Vector-point `gradient`/`hessian` and the

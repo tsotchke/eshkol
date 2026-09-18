@@ -4,6 +4,8 @@ set -u
 
 cd "$(dirname "$0")/.."
 REPO_ROOT=$(pwd)
+# shellcheck source=lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/tensorcore_adapter.jsonl"
 ENABLED_BUILD=${ESHKOL_TENSORCORE_ENABLED_BUILD:-/private/tmp/eshkol-tensorcore-enabled}
@@ -15,6 +17,7 @@ ESHKOL_INSTALL_PREFIX=${ESHKOL_TENSORCORE_INSTALL_PREFIX:-/private/tmp/eshkol-sd
 FAILURES=0
 
 mkdir -p "$TRACE_DIR"
+eshkol_require_output_file_path "$TRACE_FILE"
 : > "$TRACE_FILE"
 
 emit_event() {
@@ -22,6 +25,7 @@ emit_event() {
     escaped=$(printf '%s' "$snippet" |
         tr '\r\n' '  ' |
         sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+    eshkol_require_output_file_path "$TRACE_FILE"
     printf '{"kind":"eshkol_tensorcore","name":"%s","value":"%s","snippet":"%s","confidence":0.99}\n' \
         "$name" "$status" "$escaped" >> "$TRACE_FILE"
 }

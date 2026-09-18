@@ -185,6 +185,11 @@ public:
         callback_context_ = context;
     }
 
+    using IsTopLevelCalleeReassignedCallback = bool (*)(const char*, void*);
+    void setTopLevelCalleeReassignedCallback(IsTopLevelCalleeReassignedCallback callback) {
+        is_top_level_callee_reassigned_callback_ = callback;
+    }
+
     // === Cons Cell Operation Callbacks ===
     // These are needed for list manipulation in apply
 
@@ -297,6 +302,7 @@ private:
 
     // Callback for AST codegen
     CodegenASTCallback codegen_ast_callback_ = nullptr;
+    IsTopLevelCalleeReassignedCallback is_top_level_callee_reassigned_callback_ = nullptr;
     ClosureCallCallback closure_call_callback_ = nullptr;
     ClosureSpreadCallback closure_spread_callback_ = nullptr;
     void* callback_context_ = nullptr;

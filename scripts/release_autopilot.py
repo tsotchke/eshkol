@@ -229,6 +229,8 @@ class Release:
             ["scripts/gen_api_docs.py", "--check", "--no-trace"],
             ["scripts/gen_language_surface.py", "--check"],
             ["scripts/check_surface_counts.py", "--no-trace"],
+            ["scripts/check_changelog_completeness.py", "--no-trace"],
+            ["scripts/check_doc_front_matter.py", "--no-trace"],
             ["scripts/check_ledger_integrity.py", "--no-trace"],
             ["scripts/verify_site_release.py"],
             ["tests/toolchain/test_release_readiness_guard.py"],
@@ -278,7 +280,21 @@ class Release:
         self.state["proof"] = {"sha": sha, "run_id": run["id"], "url": run["html_url"]}
         return run
 
-    def finalize_notes(self, pr, proof):
+    def proof_and_checks(self, branch, sha, checks, required):
+        """Start strict proof before waiting on CI; require both gates to pass."""
+        proof_wait = None
+        try:
+            run = self.proof(branch, sha)
+        except Wait as exc:
+            proof_wait = exc
+            run = None
+        require_checks(checks(), required)
+        if proof_wait:
+            raise proof_wait
+        return run
+
+    def prepare_notes(self, pr):
+        """Finish documentation before validating the immutable candidate SHA."""
         path = self.checkout / "RELEASE_NOTES.md"
         original = path.read_text()
         pending = "RELEASE_EVIDENCE_PENDING" in original.split("\n---\n", 1)[0]
@@ -287,25 +303,26 @@ class Release:
         if not pending and not candidate:
             return
         if not self.execute:
-            raise Wait("Preview: would finalize notes with successful readiness evidence")
+            raise Wait("Preview: would prepare release notes before validation")
         current, separator, prior = original.partition("\n---\n")
         if status:
             historical = re.search(r"The [^.]*measurements[^\n]*", status.group())
-            replacement = "**Status:** validated release; publication follows the tagged-commit checks."
+            replacement = "**Status:** publication requires passing CI, strict readiness, and asset checks."
             if historical:
                 replacement += "\n\n" + historical.group()
             current = current.replace(status.group(), replacement, 1)
         current = re.sub(r"<!--\s*RELEASE_EVIDENCE_PENDING\s*-->", "", current)
         if "RELEASE_EVIDENCE_PENDING" in current:
             raise Wait("Unrecognized pending-evidence block requires an editorial update")
-        current += ("\n\nRelease-candidate verification: [strict readiness and asset validation]("
-            + proof["html_url"] + "). The tagged commit is independently revalidated before publication.\n")
+        current += ("\n\nThe final candidate and tagged commit are checked before publication. "
+            "Validation results are recorded in the [Release workflow](https://github.com/"
+            + self.repo + "/actions/workflows/release.yml).\n")
         path.write_text(current + separator + prior)
         self.git("add", "--", "RELEASE_NOTES.md", mutate=True)
-        self.git("commit", "--only", "-m", "docs: record verified v1.3.5 release-candidate evidence", "--",
+        self.git("commit", "--only", "-m", "docs: prepare v1.3.5 release notes for final validation", "--",
             "RELEASE_NOTES.md", mutate=True)
         self.git("push", "origin", "HEAD:refs/heads/" + pr["headRefName"], mutate=True)
-        raise Wait("Release notes finalized; validating the updated commit before merge")
+        raise Wait("Release notes prepared; validating the final candidate commit before merge")
 
     def ensure_homebrew(self):
         endpoint = "repos/tsotchke/homebrew-eshkol/contents/Formula/eshkol.rb"
@@ -382,15 +399,15 @@ class Release:
             self.refresh_cut(pr)
             pr = self.pr(self.config["cut_pr"])
             self.docs_ready(pr["headRefOid"])
+            self.prepare_notes(pr)
             if pr["baseRefName"] != "master":
                 self.gh("pr", "edit", str(pr["number"]), "--repo", self.repo, "--base", "master", mutate=True)
                 raise Wait("Release cut retargeted to master; waiting for required checks")
             if pr["isDraft"]:
                 self.gh("pr", "ready", str(pr["number"]), "--repo", self.repo, mutate=True)
                 raise Wait("Release cut ready for its complete CI matrix")
-            require_checks(pr["statusCheckRollup"], required)
-            run = self.proof(pr["headRefName"], pr["headRefOid"])
-            self.finalize_notes(pr, run)
+            self.proof_and_checks(pr["headRefName"], pr["headRefOid"],
+                lambda: pr["statusCheckRollup"], required)
             # GitHub enforces base protection; expected head prevents merging a changed PR.
             self.gh("pr", "merge", str(pr["number"]), "--repo", self.repo, "--squash",
                 "--match-head-commit", pr["headRefOid"], mutate=True)
@@ -404,12 +421,12 @@ class Release:
         self.require_lane_inclusion(sha, pr["headRefOid"])
         self.git("switch", "--detach", sha, mutate=True)
         self.docs_ready(sha)
-        self.master_ci(sha)
-        raw = self.api(f"commits/{sha}/check-runs?per_page=100")["check_runs"]
-        checks = [{"name": c["name"], "conclusion": (c["conclusion"] or "").upper(),
-            "startedAt": c["started_at"] or ""} for c in raw]
-        require_checks(checks, required)
-        self.proof("master", sha)
+        def master_checks():
+            self.master_ci(sha)
+            raw = self.api(f"commits/{sha}/check-runs?per_page=100")["check_runs"]
+            return [{"name": c["name"], "conclusion": (c["conclusion"] or "").upper(),
+                "startedAt": c["started_at"] or ""} for c in raw]
+        self.proof_and_checks("master", sha, master_checks, required)
         require_window(self.config, utcnow())
         self.command([self.config["python"], "scripts/release_readiness_guard.py", "notes", "--notes",
             "RELEASE_NOTES.md", "--tag", self.config["tag"], "--output", str(self.directory / "release-notes.md")],

@@ -237,18 +237,7 @@ void vm_run(VM* vm) {
      * tracked ones are promoted to ad_const nodes on the tape.
      */
 
-#define VM_AD_BINARY(vm, a_sp, b_sp, tape_fn, result_val) do { \
-    if ((vm)->active_tape) { \
-        AdTape* _t = (AdTape*)(vm)->active_tape; \
-        int _an = (vm)->ad_node_map[(a_sp)]; \
-        int _bn = (vm)->ad_node_map[(b_sp)]; \
-        if (_an != -1 || _bn != -1) { \
-            if (_an == -1) _an = ad_const(_t, as_number((vm)->stack[(a_sp)])); \
-            if (_bn == -1) _bn = ad_const(_t, as_number((vm)->stack[(b_sp)])); \
-            (vm)->ad_node_map[(vm)->sp] = tape_fn(_t, _an, _bn); \
-        } else { (vm)->ad_node_map[(vm)->sp] = -1; } \
-    } else { (vm)->ad_node_map[(vm)->sp] = -1; } \
-} while(0)
+/* VM_AD_BINARY is defined in vm_ops.c, beside vm_op_arith, its only user. */
 
 #define VM_AD_UNARY(vm, a_sp, tape_fn) do { \
     if ((vm)->active_tape) { \
@@ -260,101 +249,10 @@ void vm_run(VM* vm) {
     } else { (vm)->ad_node_map[(vm)->sp] = -1; } \
 } while(0)
 
-    lbl_ADD: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
-        Value b = vm_pop(vm), a = vm_pop(vm);
-        if (!vm_require_arithmetic_numbers(vm, a, b, "+")) DISPATCH();
-        /* SW-09: neither operand check below recognizes VAL_I128, so a
-         * generic `+` over i128 values used to fall all the way through to
-         * the double path, where as_number_vm() reads a heap-boxed i128 as
-         * 0.0. Route it through the shared i128 kernel so fixed-width wrap
-         * semantics agree with the native engine. */
-        if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_push(vm, a); vm_push(vm, b);
-            vm_dispatch_native(vm, 2103); /* i128-add */
-            DISPATCH();
-        }
-        if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1905); }
-        else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 373); }
-        else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 331); }
-        else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 307); }
-        else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '+'); }
-        else if (a.type == VAL_INT && b.type == VAL_INT) { int64_t r; VM_AD_BINARY(vm, a_sp, b_sp, ad_add, 0);
-            if (__builtin_add_overflow(a.as.i, b.as.i, &r)) vm_bignum_arith(vm, a, b, '+'); else vm_push(vm, INT_VAL(r)); }
-        else { VM_AD_BINARY(vm, a_sp, b_sp, ad_add, 0);
-            vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) + as_number_vm(vm, b))); } DISPATCH(); }
-    lbl_SUB: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
-        Value b = vm_pop(vm), a = vm_pop(vm);
-        if (!vm_require_arithmetic_numbers(vm, a, b, "-")) DISPATCH();
-        /* SW-09b: same family as lbl_ADD's guard — every arithmetic/
-         * comparison opcode that falls through to as_number_vm() misreads
-         * a heap-boxed VAL_I128 as 0.0. */
-        if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_push(vm, a); vm_push(vm, b);
-            vm_dispatch_native(vm, 2104); /* i128-sub */
-            DISPATCH();
-        }
-        if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1906); }
-        else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 374); }
-        else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 332); }
-        else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 308); }
-        else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '-'); }
-        else if (a.type == VAL_INT && b.type == VAL_INT) { int64_t r; VM_AD_BINARY(vm, a_sp, b_sp, ad_sub, 0);
-            if (__builtin_sub_overflow(a.as.i, b.as.i, &r)) vm_bignum_arith(vm, a, b, '-'); else vm_push(vm, INT_VAL(r)); }
-        else { VM_AD_BINARY(vm, a_sp, b_sp, ad_sub, 0);
-            vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) - as_number_vm(vm, b))); } DISPATCH(); }
-    lbl_MUL: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
-        Value b = vm_pop(vm), a = vm_pop(vm);
-        if (!vm_require_arithmetic_numbers(vm, a, b, "*")) DISPATCH();
-        /* SW-09b: see lbl_ADD/lbl_SUB. */
-        if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_push(vm, a); vm_push(vm, b);
-            vm_dispatch_native(vm, 2105); /* i128-mul */
-            DISPATCH();
-        }
-        if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1907); }
-        else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 375); }
-        else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 333); }
-        else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 309); }
-        else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '*'); }
-        else if (a.type == VAL_INT && b.type == VAL_INT) { int64_t r; VM_AD_BINARY(vm, a_sp, b_sp, ad_mul, 0);
-            if (__builtin_mul_overflow(a.as.i, b.as.i, &r)) vm_bignum_arith(vm, a, b, '*'); else vm_push(vm, INT_VAL(r)); }
-        else { VM_AD_BINARY(vm, a_sp, b_sp, ad_mul, 0);
-            vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) * as_number_vm(vm, b))); } DISPATCH(); }
-    lbl_DIV: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
-        Value b = vm_pop(vm), a = vm_pop(vm);
-        if (!vm_require_arithmetic_numbers(vm, a, b, "/")) DISPATCH();
-        /* SW-09b: see lbl_ADD/lbl_SUB/lbl_MUL. */
-        if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_push(vm, a); vm_push(vm, b);
-            vm_dispatch_native(vm, 2106); /* i128-quotient */
-            DISPATCH();
-        }
-        if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1908); }
-        else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 376); }
-        else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 334); }
-        else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 310); }
-        else if (a.type == VAL_INT && b.type == VAL_INT) {
-            /* exact/exact -> exact result (R7RS): native 334 (rational div)
-             * reduces the fraction and collapses denom==1 back to an integer,
-             * so (/ 1 3) yields 1/3 and (/ 6 3) yields 2 rather than the
-             * inexact float the double path produced. */
-            if (b.as.i == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
-            vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 334);
-        }
-        /* A bignum operand must reach the bignum domain: as_number() reads a
-         * heap pointer's .as.i and answers 0.0, so falling through to the
-         * double path below made every bignum division silently produce 0. */
-        else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '/'); if (vm->error) goto vm_exit; }
-        else {
-        double bd = as_number_vm(vm, b);
-        /* Only EXACT-by-exact-zero is an error.  With any inexact operand this
-         * is IEEE-754 division and must yield +nan.0 / ±inf.0 like native —
-         * erroring here aborted the run and dropped every later top-level
-         * form (tests/vm_parity/corpus/37_float_div_zero.esk). */
-        if (bd == 0 && vm_is_exact_number(a) && vm_is_exact_number(b)) {
-            fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
-        VM_AD_BINARY(vm, a_sp, b_sp, ad_div, 0);
-        vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) / bd)); } DISPATCH(); }
+    lbl_ADD: vm_op_arith(vm, '+'); DISPATCH();
+    lbl_SUB: vm_op_arith(vm, '-'); DISPATCH();
+    lbl_MUL: vm_op_arith(vm, '*'); DISPATCH();
+    lbl_DIV: vm_op_arith(vm, '/'); DISPATCH();
     lbl_MOD: {
         Value b = vm_pop(vm), a = vm_pop(vm);
         /* SW-09b: see lbl_ADD. modulo's double path (fmod) reads a
@@ -797,81 +695,10 @@ vm_exit:
         case OP_DUP:   vm_push(vm, vm_peek(vm, 0)); break;
 
         /* Arithmetic */
-        case OP_ADD: { Value b = vm_pop(vm), a = vm_pop(vm);
-            if (!vm_require_arithmetic_numbers(vm, a, b, "+")) break;
-            /* SW-09: see the identical guard in lbl_ADD above — this switch-
-             * based loop is the non-computed-goto twin of the same opcode
-             * and must reject i128 operands the same way, not silently
-             * coerce them to 0.0 via as_number_vm(). */
-            if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_push(vm, a); vm_push(vm, b);
-                vm_dispatch_native(vm, 2103); /* i128-add */
-                break;
-            }
-            if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1905); }
-            else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,373); }
-            else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,331); }
-            else if (a.type==VAL_COMPLEX||b.type==VAL_COMPLEX) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,307); }
-            else if (vm_either_bignum(a,b)) vm_bignum_arith(vm,a,b,'+');
-            else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_add_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'+'); else vm_push(vm, INT_VAL(r)); }
-            else vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) + as_number_vm(vm,b))); break; }
-        case OP_SUB: { Value b = vm_pop(vm), a = vm_pop(vm);
-            if (!vm_require_arithmetic_numbers(vm, a, b, "-")) break;
-            /* SW-09b: switch-based twin of lbl_SUB. */
-            if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_push(vm, a); vm_push(vm, b);
-                vm_dispatch_native(vm, 2104); /* i128-sub */
-                break;
-            }
-            if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1906); }
-            else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,374); }
-            else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,332); }
-            else if (a.type==VAL_COMPLEX||b.type==VAL_COMPLEX) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,308); }
-            else if (vm_either_bignum(a,b)) vm_bignum_arith(vm,a,b,'-');
-            else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_sub_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'-'); else vm_push(vm, INT_VAL(r)); }
-            else vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) - as_number_vm(vm,b))); break; }
-        case OP_MUL: { Value b = vm_pop(vm), a = vm_pop(vm);
-            if (!vm_require_arithmetic_numbers(vm, a, b, "*")) break;
-            /* SW-09b: switch-based twin of lbl_MUL. */
-            if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_push(vm, a); vm_push(vm, b);
-                vm_dispatch_native(vm, 2105); /* i128-mul */
-                break;
-            }
-            if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1907); }
-            else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,375); }
-            else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,333); }
-            else if (a.type==VAL_COMPLEX||b.type==VAL_COMPLEX) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,309); }
-            else if (vm_either_bignum(a,b)) vm_bignum_arith(vm,a,b,'*');
-            else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_mul_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'*'); else vm_push(vm, INT_VAL(r)); }
-            else vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) * as_number_vm(vm,b))); break; }
-        case OP_DIV: { Value b = vm_pop(vm), a = vm_pop(vm);
-            if (!vm_require_arithmetic_numbers(vm, a, b, "/")) break;
-            /* SW-09b: switch-based twin of lbl_DIV. */
-            if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_push(vm, a); vm_push(vm, b);
-                vm_dispatch_native(vm, 2106); /* i128-quotient */
-                break;
-            }
-            if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1908); }
-            else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,376); }
-            else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,334); }
-            else if (a.type==VAL_COMPLEX||b.type==VAL_COMPLEX) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,310); }
-            else if (a.type==VAL_INT && b.type==VAL_INT) {
-                /* exact/exact → exact result (R7RS): native 334 (rational div)
-                 * reduces the fraction and collapses denom==1 back to an
-                 * integer, so (/ 1 3) yields 1/3 and (/ 6 3) yields 2 rather
-                 * than the inexact float the double path produced. */
-                if (b.as.i == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
-                vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,334);
-            }
-            /* See the threaded-dispatch OP_DIV above: bignums need the bignum
-             * domain, and only EXACT-by-exact-zero is an error. */
-            else if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'/'); }
-            else { double bd = as_number_vm(vm,b);
-            if (bd == 0 && vm_is_exact_number(a) && vm_is_exact_number(b)) {
-                fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
-            vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) / bd)); } break; }
+        case OP_ADD: vm_op_arith(vm, '+'); break;
+        case OP_SUB: vm_op_arith(vm, '-'); break;
+        case OP_MUL: vm_op_arith(vm, '*'); break;
+        case OP_DIV: vm_op_arith(vm, '/'); break;
         case OP_MOD: {
             Value b = vm_pop(vm), a = vm_pop(vm);
             /* SW-09b: switch-based twin of lbl_MOD. */

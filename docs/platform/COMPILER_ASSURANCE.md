@@ -67,12 +67,29 @@ policy, not a C++ semantic or data-flow proof: unusual indirect-call spellings
 require extending its recognizer. Its self-tests cover newly introduced source
 files and duplicate dispatcher names as well as missing cases and defaults.
 
-The current integration base fails this strict policy: 32 discovered AST
-switches have omissions and defaults, and seven direct callable consumers
-remain outside the canonical dispatcher. These findings are blocking; the gate
-has no baseline or exception list. Run the gate to obtain exact paths, line
-numbers, and missing operations. This does not label intentionally partial
-analyses as proven runtime defects; they violate the explicit-routing policy.
+The v1.3.5-evolve release passes this strict policy with zero findings: the
+gate discovers 34 AST operation switches, each exhaustive with no default, and
+exactly one callable dispatch site, `codegenClosureCall`. The 32 switches with
+omissions or defaults and the seven direct callable consumers outside the
+canonical dispatcher that the gate's first run reported are all routed.
+Findings are blocking and the gate has no baseline or exception list, so the
+policy holds on every change.
+
+The same gate compares the two declarations of `EshkolLLVMCodeGen`: the public
+class contract in `inc/eshkol/backend/llvm_codegen.h` and the implementation
+class in `lib/backend/llvm_codegen.cpp`, which the extracted codegen translation
+units share. It derives each declaration's non-static data-member layout
+(member order, types, referenced nested layouts, bit fields) and fails on any
+difference, including a change that keeps the object size, and on a
+layout-level preprocessor conditional it cannot evaluate
+(`codegen_class_layout_unparseable`). Two translation units that disagree on
+the layout of one object would read each other's LLVM state at the wrong
+offsets; the gate turns that into a failed check (since v1.3.5;
+[ADR 0015](../design/adr/0015-static-callee-binding-identity.md)). Its JSON
+report carries the result under `class_layout`. Run the gate
+to obtain exact paths and line numbers for every discovered site. An
+intentionally partial analysis is not a runtime defect, but it must still state
+its remaining cases explicitly.
 
 `gate_public_api_linkage.py` derives every `eshkol_*` function prototype from
 the umbrella public header and generates a volatile function-pointer relocation

@@ -222,6 +222,64 @@ class EshkolRuntime {
         return out;
     }
 
+    // ── Documentation pages ────────────────────────────────────────
+    // Published pages are HTML fragments under /content/, generated from the
+    // docs tree by scripts/build-site-content.sh (site/pages.json is the
+    // declared list). A view names its page in the URL fragment as
+    // "#page=<slug>" or "#page=<slug>&<heading-id>", so every page has a
+    // shareable address while the pathname router keeps seeing "/docs" or
+    // "/tutorials". Any other fragment is a heading id in the default page.
+    static contentRequest(hash) {
+        const match = /^#page=([a-z0-9][a-z0-9_]*)(?:&(.*))?$/.exec(hash || '');
+        if (!match) return { url: null, anchor: decodeURIComponent((hash || '').slice(1)) };
+        return { url: '/content/' + match[1] + '.html', anchor: decodeURIComponent(match[2] || '') };
+    }
+
+    // Load `url` into `target`. `.html` URLs are generated fragments and are
+    // inserted as they are (Scheme code blocks are highlighted here, because
+    // the fragments are rendered without a highlighter); anything else is
+    // fetched as Markdown and rendered client-side. When `url` is a view's
+    // default page and the address names another page, that page is loaded.
+    loadContent(url, target, options) {
+        const isDefault = !(options && options.explicit);
+        const isNav = /\/nav-[a-z0-9_]+\.html$/.test(url);
+        const request = EshkolRuntime.contentRequest(window.location.hash);
+        if (isDefault && !isNav && request.url) url = request.url;
+        if (!isNav) this._contentUrl = url;
+        const markActive = () => {
+            document.querySelectorAll('.docs-sidebar-item[data-url]').forEach((el) => {
+                el.classList.toggle('active', el.getAttribute('data-url') === this._contentUrl);
+            });
+        };
+        target.innerHTML = '<p style="color:#606078;font-style:italic">Loading...</p>';
+        return fetch(url).then((r) => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return r.text();
+        }).then((text) => {
+            if (!isNav && this._contentUrl !== url) return;  // superseded by a later click
+            if (/\.html$/.test(url)) {
+                target.innerHTML = text;
+                const SCHEME_LANGS = ['scheme', 'eshkol', 'lisp', 'scm'];
+                target.querySelectorAll('pre > code').forEach((code) => {
+                    const classes = (code.parentElement.className + ' ' + code.className).split(/\s+/);
+                    if (classes.some((name) => SCHEME_LANGS.includes(name))) {
+                        code.innerHTML = EshkolRuntime.highlightScheme(code.textContent);
+                    }
+                });
+            } else {
+                target.innerHTML = this.renderMarkdown(text);
+            }
+            markActive();
+            if (isNav) return;
+            // The anchor only exists after this async load, so scroll now.
+            const anchor = request.anchor ? document.getElementById(request.anchor) : null;
+            if (anchor) anchor.scrollIntoView();
+            else if (!isDefault) window.scrollTo(0, 0);
+        }).catch((e) => {
+            target.innerHTML = '<p style="color:#ff4444">Failed to load: ' + e.message + '</p>';
+        });
+    }
+
     renderMarkdown(md) {
         let html = md;
         // Extract code blocks FIRST to protect them from markdown transforms
@@ -530,7 +588,17 @@ class EshkolRuntime {
                 eshkol_continuation_restore_handlers: () => { throw new Error('continuation handlers unsupported in WASM glue'); },
                 eshkol_i128_binary_tagged: () => { throw new Error('i128 arithmetic unsupported in WASM glue'); },
                 eshkol_i128_compare_tagged: () => { throw new Error('i128 comparison unsupported in WASM glue'); },
-                eshkol_is_i128_tagged: () => { throw new Error('i128 values unsupported in WASM glue'); },
+                eshkol_is_i128_tagged: (v) => {
+                    // Exact, as in lib/core/i128_runtime.cpp tagged_is_i128: a
+                    // HEAP_PTR (8) whose object header (8 bytes before the
+                    // payload) carries HEAP_SUBTYPE_I128 (25). Generic
+                    // arithmetic asks this of every heap operand.
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    if (!dv || !v) return 0;
+                    if ((dv.getUint8(Number(v)) & 0x0F) !== 8) return 0;
+                    const p = Number(dv.getBigUint64(Number(v) + 8, true) & 0xFFFFFFFFn);
+                    return (p >= 8 && dv.getUint8(p - 8) === 25) ? 1 : 0;
+                },
                 eshkol_format_double: () => 0,
                 eshkol_fprint_double: () => 0,
                 eshkol_set_error_location: () => {},
@@ -920,10 +988,19 @@ class EshkolRuntime {
                 // ESH_AD_NEST_NONE (0) keeps the lite lane on the unchanged
                 // non-nested seeding, exactly as the sibling stubs degrade.
                 eshkol_ad_nested_seed:          () => 0,
-                // ESH-0413 tower-context depth mirror (runtime_taylor.c): the
-                // browser build has no tower path at all, so both are no-ops.
-                eshkol_ad_tower_enter:          () => {},
-                eshkol_ad_tower_leave:          () => {},
+                // BEGIN GENERATED FLAT-AD IMPORTS
+                // Browser WASM has no Taylor tower lane. Keep the base lane's established
+                // flat behavior: extraction declines the tower and enter/leave do nothing.
+                eshkol_ad_tower_carry_result: () => 0,
+                eshkol_ad_jet_extract_tower: () => 0,
+                // Captured nested differentiation is explicitly unsupported in this lane.
+                // Throwing is required so unsupported semantics cannot silently look valid.
+                eshkol_ad_nested_capture_unsupported: () => {
+                    throw new Error('Nested autodiff through captured values is unsupported in the browser WASM runtime');
+                },
+                eshkol_ad_tower_enter: () => {},
+                eshkol_ad_tower_leave: () => {},
+                // END GENERATED FLAT-AD IMPORTS
                 eshkol_ad_nested_extract:       () => {},
                 eshkol_ad_nested_unsupported:   () => {},
                 eshkol_ad_curried_gradient_unsupported: () => {},
@@ -1375,29 +1452,11 @@ class EshkolRuntime {
                     return 0;
                 },
 
-                // Content loading (fetch URL, render as markdown into target element)
+                // Content loading (fetch URL into target element). The work
+                // is in loadContent so the sidebar click handler shares it.
                 web_load_content: (urlPtr, targetHandle) => {
-                    const url = rt.readString(urlPtr);
                     const target = rt.handles.get(targetHandle);
-                    if (target) {
-                        target.innerHTML = '<p style="color:#606078;font-style:italic">Loading...</p>';
-                        fetch(url).then(r => {
-                            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-                            return r.text();
-                        }).then(text => {
-                            // Render markdown to HTML with syntax highlighting
-                            target.innerHTML = rt.renderMarkdown(text);
-                            // Deep links (/docs#section): the anchor only
-                            // exists after this async load, so scroll now.
-                            const fragment = decodeURIComponent(window.location.hash.slice(1));
-                            if (fragment) {
-                                const anchor = document.getElementById(fragment);
-                                if (anchor) anchor.scrollIntoView();
-                            }
-                        }).catch(e => {
-                            target.innerHTML = '<p style="color:#ff4444">Failed to load: ' + e.message + '</p>';
-                        });
-                    }
+                    if (target) rt.loadContent(rt.readString(urlPtr), target);
                     return 0;
                 },
 

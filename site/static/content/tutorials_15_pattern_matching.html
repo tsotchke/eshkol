@@ -1,0 +1,53 @@
+<h1 id="tutorial-15-pattern-matching">Tutorial 15: Pattern Matching</h1>
+<p>Eshkol provides <code>match</code> expressions for structural pattern matching — destructure data, dispatch on shape, and bind variables in one expression.</p>
+<hr />
+<h2 id="basic-matching">Basic Matching</h2>
+<pre class="scheme"><code>;; Match on literal values
+(define (describe x)
+  (match x
+    (0 &quot;zero&quot;)
+    (1 &quot;one&quot;)
+    (_ &quot;other&quot;)))
+
+(display (describe 0))     ;; =&gt; zero
+(display (describe 1))     ;; =&gt; one
+(display (describe 42))    ;; =&gt; other</code></pre>
+<p>The <code>_</code> wildcard matches anything without binding.</p>
+<hr />
+<h2 id="destructuring-lists">Destructuring Lists</h2>
+<pre class="scheme"><code>;; Match list structure
+(define (first-two lst)
+  (match lst
+    ((cons a (cons b rest)) (list a b))
+    ((list a) (list a))
+    (_ &#39;())))
+
+(display (first-two &#39;(1 2 3 4)))   ;; =&gt; (1 2)
+(display (first-two &#39;(42)))        ;; =&gt; (42)
+(display (first-two &#39;()))          ;; =&gt; ()</code></pre>
+<hr />
+<h2 id="nested-patterns">Nested Patterns</h2>
+<pre class="scheme"><code>;; Match on nested structure
+(define (tree-sum tree)
+  (match tree
+    ((list left right) (+ (tree-sum left) (tree-sum right)))
+    (n n)))  ;; leaf node
+
+(display (tree-sum &#39;((1 2) (3 (4 5)))))
+;; =&gt; 15</code></pre>
+<hr />
+<h2 id="guard-expressions-with-cond">Guard Expressions with cond</h2>
+<p>When <code>match</code> isn’t available, <code>cond</code> provides multi-way dispatch:</p>
+<pre class="scheme"><code>(define (classify n)
+  (cond
+    ((&lt; n 0) &quot;negative&quot;)
+    ((= n 0) &quot;zero&quot;)
+    ((&lt; n 10) &quot;small&quot;)
+    ((&lt; n 100) &quot;medium&quot;)
+    (else &quot;large&quot;)))
+
+(display (classify -5))   ;; =&gt; negative
+(display (classify 0))    ;; =&gt; zero
+(display (classify 7))    ;; =&gt; small
+(display (classify 42))   ;; =&gt; medium
+(display (classify 999))  ;; =&gt; large</code></pre>

@@ -1,12 +1,22 @@
 # Eshkol v1.3.5 API Reference
 
 **Version**: 1.3.5
-**Last Updated**: 2026-09-07
+**Last Updated**: 2026-09-14
 **Audience**: Scientific Computing & AI Systems Programming
 
 This reference documents Eshkol's language surface and implementation contracts.
 The generated language-surface inventory and the AD support matrix distinguish
 implemented operations, engine-specific restrictions, and measured parity.
+
+> **Reading the `; =>` annotations.** They give an expression's **value**, and
+> an inexact value is written with its `.0` (`6.0`) where that is what makes the
+> example clear. What the compiler **prints** for an integral double omits the
+> decimal point — `(derivative (lambda (x) (* x x)) 3.0)` displays `6`, not
+> `6.0`, and it is still inexact. The one exception is `-0.0`, which prints in
+> full because reading `-0` back would lose both the inexactness and the sign.
+> Output shown inside a fenced result block is always the exact printed text.
+> See
+> [reference/language/numeric-tower.md](reference/language/numeric-tower.md#exactness).
 
 ---
 
@@ -480,11 +490,19 @@ Eshkol provides **three modes** of automatic differentiation:
 
 Symbolic differentiation at compile time. Returns S-expression of derivative formula.
 
+`diff` takes its expression and variable **unquoted** — it is a special form the
+parser recognises, not a procedure applied to data. A quoted argument raises a
+diagnostic naming the correct spelling rather than answering.
+
 **Examples**:
 ```scheme
-(diff '(* x x) 'x)  ; => (* 2 x)
-(diff '(sin (* 2 x)) 'x)  ; => (* 2 (cos (* 2 x)))
-(diff '(+ (* x x) (* 3 x) 5) 'x)  ; => (+ (* 2 x) 3)
+(diff (* x x) x)                ; => (* 2 x)
+(diff (sin (* 2 x)) x)          ; => (* (cos (* 2 x)) 2)
+(diff (+ (* x x) (* 3 x) 5) x)  ; => (+ (* 2 x) 3)
+
+(diff '(* x x) 'x)
+;; raises: diff: symbolic differentiation of a quoted expression is not yet
+;;         implemented (pass an unquoted expression, e.g. (diff (* x x) x))
 ```
 
 **Mode**: Compile-time symbolic transformation  
@@ -555,7 +573,13 @@ Computes gradient vector using reverse-mode AD (backpropagation).
 **Graph Construction**:
 - Forward pass builds computation graph (AD nodes on tape)
 - Backward pass propagates gradients via chain rule
-- Supports nested gradients (arbitrary depth) with tape stack
+- Nested gradients are supported through a tape stack, up to the forward
+  carrier's nesting ceiling: any depth of first-order passes composes, and one
+  pass of order >= 2 composes with one enclosing first-order pass. Two
+  enclosing levels over a pass of order >= 2 is not supported in v1.3.5
+  (ledger SW-154) — see
+  [the AD support matrix](reference/ad/support-matrix.md#nesting-ceiling-sw-154)
+  for the full table and the exact diagnostics.
 
 #### Native squared geodesic-distance bridge
 
@@ -798,7 +822,7 @@ N-dimensional tensor indexing with slicing support.
 
 **Examples**:
 ```scheme
-(define M #((1 2 3) (4 5 6)))
+(define M #(#(1 2 3) #(4 5 6)))
 (tensor-get M 0 1)   ; => 2 (scalar element)
 (tensor-get M 1)     ; => #(4 5 6) (row slice)
 (vref #(10 20 30) 1) ; => 20 (1D shorthand)
@@ -818,7 +842,7 @@ Sets tensor element (mutable).
 
 **Examples**:
 ```scheme
-(define M #((1 2) (3 4)))
+(define M #(#(1 2) #(3 4)))
 (tensor-set M 99 0 1)  ; M[0,1] := 99
 ```
 
@@ -834,7 +858,7 @@ Transposes 2D matrix (swaps rows and columns).
 
 **Examples**:
 ```scheme
-(transpose #((1 2 3) (4 5 6)))  ; => #((1 4) (2 5) (3 6))
+(transpose #(#(1 2 3) #(4 5 6)))  ; => #((1 4) (2 5) (3 6))
 ```
 
 **Type**: Matrix transformation  
@@ -867,7 +891,7 @@ Flattens N-dimensional tensor to 1D (zero-copy view).
 
 **Examples**:
 ```scheme
-(flatten #((1 2) (3 4)))  ; => #(1 2 3 4)
+(flatten #(#(1 2) #(3 4)))  ; => #(1 2 3 4)
 ```
 
 **Type**: Dimensionality reduction  
@@ -882,7 +906,7 @@ Returns dimension sizes as Scheme list.
 
 **Examples**:
 ```scheme
-(tensor-shape #((1 2 3) (4 5 6)))  ; => (2 3)
+(tensor-shape #(#(1 2 3) #(4 5 6)))  ; => (2 3)
 ```
 
 **Type**: Metadata query  
@@ -967,7 +991,7 @@ Element-wise arithmetic operations. Supports both tensors and Scheme vectors.
 **Examples**:
 ```scheme
 (tensor-add #(1 2 3) #(4 5 6))  ; => #(5 7 9)
-(tensor-mul #((1 2) (3 4)) #((2 2) (2 2)))  ; => #((2 4) (6 8))
+(tensor-mul #(#(1 2) #(3 4)) #(#(2 2) #(2 2)))  ; => #((2 4) (6 8))
 ```
 
 **Type**: Element-wise binary operations  
@@ -987,7 +1011,7 @@ Matrix multiplication for 2D, dot product for 1D.
 (tensor-dot #(1 2 3) #(4 5 6))  ; => 32
 
 ; 2D matrices: matmul
-(matmul #((1 2) (3 4)) #((5 6) (7 8)))  ; => #((19 22) (43 50))
+(matmul #(#(1 2) #(3 4)) #(#(5 6) #(7 8)))  ; => #((19 22) (43 50))
 ```
 
 **Type**: Linear algebra operation  
@@ -1003,7 +1027,7 @@ Sum of diagonal elements.
 
 **Examples**:
 ```scheme
-(trace #((1 2) (3 4)))  ; => 5
+(trace #(#(1 2) #(3 4)))  ; => 5
 ```
 
 **Type**: Matrix invariant  
@@ -1177,7 +1201,7 @@ diagonal, U is upper-triangular, and P is a permutation matrix.
 **Implementation:** `tensorLU` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
-(define A #((2.0 1.0) (1.0 3.0)))
+(define A #(#(2.0 1.0) #(1.0 3.0)))
 (let ((result (tensor-lu A)))
   (let ((L (car result)) (U (cadr result)) (P (caddr result)))
     ;; P·A = L·U
@@ -1195,8 +1219,8 @@ Matrix determinant computed via LU decomposition: det(A) = ∏ diag(U) · sign(P
 **Implementation:** `tensorDet` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
-(tensor-det #((2.0 1.0) (1.0 3.0)))   ; => 5.0
-(tensor-det #((1.0 0.0) (0.0 1.0)))   ; => 1.0 (identity)
+(tensor-det #(#(2.0 1.0) #(1.0 3.0)))   ; => 5.0
+(tensor-det #(#(1.0 0.0) #(0.0 1.0)))   ; => 1.0 (identity)
 ```
 
 #### `tensor-inverse`
@@ -1210,7 +1234,7 @@ Matrix inverse A⁻¹ via LU decomposition with forward and back substitution.
 **Implementation:** `tensorInverse` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
-(define A #((2.0 1.0) (1.0 3.0)))
+(define A #(#(2.0 1.0) #(1.0 3.0)))
 (define Ainv (tensor-inverse A))
 (tensor-matmul A Ainv)   ; => ~identity matrix
 ```
@@ -1226,7 +1250,7 @@ Solves the linear system Ax = b via LU decomposition with forward and back subst
 **Implementation:** `tensorSolve` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
-(define A #((2.0 1.0) (1.0 3.0)))
+(define A #(#(2.0 1.0) #(1.0 3.0)))
 (define b #(3.0 5.0))
 (tensor-solve A b)   ; => #(0.8 1.4) — solution x where Ax = b
 ```
@@ -1248,7 +1272,7 @@ matrices in Gaussian processes). Twice as efficient as general LU.
 **Implementation:** `tensorCholesky` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
-(define A #((4.0 2.0) (2.0 3.0)))   ; symmetric positive-definite
+(define A #(#(4.0 2.0) #(2.0 3.0)))   ; symmetric positive-definite
 (define L (tensor-cholesky A))
 ;; L·L^T = A
 ```
@@ -1268,7 +1292,7 @@ QR decomposition: A = QR where Q is orthogonal (Q^T Q = I) and R is upper-triang
 **Implementation:** `tensorQR` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
-(define A #((1.0 1.0) (0.0 1.0) (1.0 0.0)))   ; 3×2
+(define A #(#(1.0 1.0) #(0.0 1.0) #(1.0 0.0)))   ; 3×2
 (let ((result (tensor-qr A)))
   (let ((Q (car result)) (R (cadr result)))
     ;; Q is 3×2 orthogonal, R is 2×2 upper-triangular
@@ -1293,7 +1317,7 @@ matrix pseudoinverse, condition number computation.
 **Implementation:** `tensorSVD` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
-(define A #((1.0 2.0) (3.0 4.0) (5.0 6.0)))   ; 3×2
+(define A #(#(1.0 2.0) #(3.0 4.0) #(5.0 6.0)))   ; 3×2
 (let ((result (tensor-svd A)))
   (let ((U (car result)) (S (cadr result)) (Vt (caddr result)))
     ;; U is 3×2, S is #(σ₁ σ₂), Vt is 2×2
@@ -1320,8 +1344,8 @@ traces, transposes, and outer products. The `spec` string follows NumPy's einsum
 **Implementation:** `tensorEinsum` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 
 ```scheme
-(define A #((1.0 2.0) (3.0 4.0)))
-(define B #((5.0 6.0) (7.0 8.0)))
+(define A #(#(1.0 2.0) #(3.0 4.0)))
+(define B #(#(5.0 6.0) #(7.0 8.0)))
 (einsum "ij,jk->ik" A B)   ; matrix multiply: #((19.0 22.0) (43.0 50.0))
 (einsum "ii->" A)            ; trace: 5.0
 (einsum "ij->ji" A)          ; transpose: #((1.0 3.0) (2.0 4.0))
@@ -1507,7 +1531,7 @@ Eshkol's standard library provides 25 modules with 180+ functions. Access via:
 **Core Modules** (25):
 - `core.io` - File I/O, ports, display
 - `core.strings` - String manipulation
-- `core.json` - JSON parsing/generation
+- `core.json` - JSON parsing/generation: `json-parse`, `json-try-parse`, `json-stringify`, `json-get`, and nested path access with `(json-get-in obj keys)` (returns `#f` when a step is missing) or `(json-get-in obj keys default)` (returns `default` instead); see [stdlib/json.md](reference/stdlib/json.md)
 - `core.data.base64` - Base64 encoding
 - `core.data.csv` - CSV processing
 - `core.operators.arithmetic` - +, -, *, /, mod, quotient, gcd, lcm
@@ -1725,6 +1749,39 @@ All math functions support dual numbers (forward-mode AD) and AD nodes (reverse-
 
 ---
 
+### Directed Rounding
+
+**Functions**: `fl-next-up`, `fl-next-down`
+
+Unary `double -> double` builtins wrapping C99 `nextafter`: the next
+representable double strictly above / below the argument. Available on both
+engines with no `(require …)`. They take part in **no** automatic
+differentiation — directed rounding has no sound derivative — so they bypass
+the generic math dispatcher and reject complex, dual, AD-node and tensor
+operands with a typed error instead of misreading the payload as a double;
+they are not vector-mapped either.
+
+**Examples**:
+```scheme
+(fl-next-up 1.0)                          ; => 1.0000000000000002
+(fl-next-down 1.0)                        ; => 0.9999999999999999
+(= (fl-next-down (fl-next-up 0.1)) 0.1)   ; => #t
+```
+
+These are the primitive beneath **certified enclosures** — outward-rounded
+interval arithmetic (`ia+`, `ia*`, `ia-sqrt`, `ia-exp`, …) and rigorous
+Taylor models (`tm-var`, `tm+`, `tm*`, `tm-bound`, `tm-prove-bound`,
+`tm-prove-nonzero`), reached through `(require core.ad.taylor_models)`. Every
+result endpoint there is built from exactly one such nudge, which is what keeps
+the soundness argument valid across a whole computation. See
+[reference/stdlib/certified-enclosures.md](reference/stdlib/certified-enclosures.md).
+
+**Implementation**: `codegenNextafter()` in
+[`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp); native ids
+2228/2229 in [`lib/backend/vm_native.c`](../lib/backend/vm_native.c).
+
+---
+
 ### Numeric Predicates
 
 **Functions**: `number?`, `integer?`, `real?`, `zero?`, `positive?`, `negative?`, `even?`, `odd?`, `nan?`, `infinite?`, `finite?`
@@ -1900,10 +1957,22 @@ Output operations. `display` uses homoiconic S-expression printer for lambdas.
 #### `system`, `exit`
 **Syntax**: `(system command)`, `(exit [code])`
 
+`exit`'s argument may be a literal **or a computed expression**, on every
+engine (native JIT, native AOT and the bytecode VM). It is evaluated and
+converted by runtime type tag: an exact integer is truncated to a valid process
+status, a flonum is clamped to `[0, 255]` and truncated, and a boolean follows
+R7RS 6.11 (`#t` is 0, `#f` is 1). Any other runtime type raises a catchable
+runtime error rather than feeding an arbitrary bit pattern to the process exit
+status.
+
 **Examples**:
 ```scheme
 (system "ls -la")
 (exit 0)
+(exit (vector-length (vector 1 2 3)))   ; exits 3
+(exit 3.7)                              ; exits 3
+(exit #t)                               ; exits 0
+(exit #f)                               ; exits 1
 ```
 
 ---
@@ -2219,18 +2288,18 @@ All standard operators (`+`, `-`, `*`, `/`) work with complex numbers. Division 
 `sqrt`, `exp`, `log`, `exp2`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` and `expt` all accept complex arguments, on the principal branch with C99 Annex G branch cuts. `floor`, `ceiling`, `truncate`, `round`, `cbrt` and `abs` are real-domain only and signal a catchable type error on a complex (use `magnitude` for `|z|`).
 
 ```scheme
-(sqrt (make-rectangular -1.0 0.0))    ; => 0.0+1.0i
-(exp (make-rectangular 0.0 3.14159))  ; => -1.0+0.0i (approximately)
+(sqrt (make-rectangular -1.0 0.0))    ; => +i   (zero real part elided; +/-1 imaginary prints as +i/-i)
+(exp (make-rectangular 0.0 3.14159))  ; => -0.9999999999964793+2.65358979335273e-06i
 (expt (make-rectangular 0.0 1.0)
       (make-rectangular 0.0 1.0))     ; => 0.20787957635076193 (i^i)
 ```
 
 ```scheme
 (define z1 (make-rectangular 3.0 4.0))
-(magnitude z1)      ; => 5.0
-(angle z1)          ; => 0.9273... (atan(4/3))
-(+ z1 z1)           ; => 6.0+8.0i
-(* z1 (make-rectangular 0.0 1.0))  ; => -4.0+3.0i
+(magnitude z1)      ; => 5
+(angle z1)          ; => 0.9272952180016122 (atan(4/3))
+(+ z1 z1)           ; => 6+8i
+(* z1 (make-rectangular 0.0 1.0))  ; => -4+3i
 ```
 
 ---
@@ -3175,9 +3244,18 @@ particular, susceptibility to vanishing or exploding gradients, and the presence
 
 All activation functions operate element-wise on tensors and return a new tensor of the same shape.
 
+> **A number or a tensor.** Every activation below takes either, and returns
+> the same kind: `(softplus 0.0)` is `0.6931…` and `(softplus #(0.0))` is
+> `#(0.6931…)`. One dispatch point lowers both — a tensor (or a reverse-mode
+> node carrying one) through the tensor kernel, a number or a scalar
+> differentiation carrier through the same formula over scalar primitives — so
+> the two agree elementwise and both differentiate. A value that is neither
+> raises a catchable type error. The optional second argument applies to both
+> forms.
+
 #### `relu`
 
-**Syntax:** `(relu t)` → Tensor
+**Syntax:** `(relu x)` → Number or Tensor (whichever `x` is)
 
 Rectified Linear Unit: f(x) = max(0, x).
 
@@ -3192,7 +3270,7 @@ Backward: `tensorReluBackward` in [lib/backend/tensor_activation_codegen.cpp](..
 
 #### `sigmoid`
 
-**Syntax:** `(sigmoid t)` → Tensor
+**Syntax:** `(sigmoid x)` → Number or Tensor (whichever `x` is)
 
 Logistic sigmoid: σ(x) = 1 / (1 + e^(-x)).
 
@@ -3223,7 +3301,7 @@ Backward: [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
 #### `gelu`
 
-**Syntax:** `(gelu t)` → Tensor
+**Syntax:** `(gelu x)` → Number or Tensor (whichever `x` is)
 
 Gaussian Error Linear Unit: GELU(x) = x · Φ(x) ≈ x · σ(1.702x), where Φ is the standard
 Gaussian CDF.
@@ -3239,7 +3317,7 @@ Backward: [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
 #### `leaky-relu`
 
-**Syntax:** `(leaky-relu t [α])` → Tensor
+**Syntax:** `(leaky-relu x [α])` → Number or Tensor (whichever `x` is)
 
 Leaky ReLU: f(x) = x if x > 0, αx otherwise. Default α = 0.01.
 
@@ -3253,7 +3331,7 @@ Backward: [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
 #### `silu`
 
-**Syntax:** `(silu t)` → Tensor
+**Syntax:** `(silu x)` → Number or Tensor (whichever `x` is)
 
 Sigmoid Linear Unit (Swish): SiLU(x) = x · σ(x).
 
@@ -3265,9 +3343,21 @@ non-monotonic, and bounded below. Gradients flow more uniformly than ReLU.
 **Implementation:** `tensorSilu` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
 Backward: [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
+#### `swish`
+
+**Syntax:** `(swish x [β])` → Number or Tensor (whichever `x` is)
+
+Swish: f(x) = x · σ(βx). With the default β = 1 this is [`silu`](#silu).
+
+**Gradient:** f'(x) = σ(βx) + βx · σ(βx)(1 - σ(βx)).
+
+**Use case:** The self-gated activation of EfficientNet and friends, with β left free.
+
+**Implementation:** the activation family dispatch in [lib/backend/llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp); the tensor path reaches `tensorSilu` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
+
 #### `elu`
 
-**Syntax:** `(elu t [α])` → Tensor
+**Syntax:** `(elu x [α])` → Number or Tensor (whichever `x` is)
 
 Exponential Linear Unit: f(x) = x if x > 0, α(e^x - 1) otherwise. Default α = 1.0.
 
@@ -3280,7 +3370,7 @@ activations closer to zero, reducing the bias shift effect and accelerating conv
 
 #### `selu`
 
-**Syntax:** `(selu t)` → Tensor
+**Syntax:** `(selu x)` → Number or Tensor (whichever `x` is)
 
 Scaled Exponential Linear Unit: SELU(x) = λ · ELU(x, α) where λ ≈ 1.0507 and α ≈ 1.6733.
 
@@ -3297,7 +3387,7 @@ need for batch normalization.
 
 #### `mish`
 
-**Syntax:** `(mish t)` → Tensor
+**Syntax:** `(mish x)` → Number or Tensor (whichever `x` is)
 
 Mish: f(x) = x · tanh(softplus(x)) = x · tanh(ln(1 + e^x)).
 
@@ -3310,7 +3400,7 @@ differentiable), unlike ReLU (non-differentiable at 0) or Leaky ReLU (non-smooth
 
 #### `hard-swish`
 
-**Syntax:** `(hard-swish t)` → Tensor
+**Syntax:** `(hard-swish x)` → Number or Tensor (whichever `x` is)
 
 Piecewise linear approximation of Swish: f(x) = x · min(max(x + 3, 0), 6) / 6.
 
@@ -3324,7 +3414,7 @@ on resource-constrained devices.
 
 #### `hard-sigmoid`
 
-**Syntax:** `(hard-sigmoid t)` → Tensor
+**Syntax:** `(hard-sigmoid x)` → Number or Tensor (whichever `x` is)
 
 Piecewise linear approximation of sigmoid: f(x) = min(max(x + 3, 0), 6) / 6.
 
@@ -3337,7 +3427,7 @@ efficient architectures.
 
 #### `softplus`
 
-**Syntax:** `(softplus t)` → Tensor
+**Syntax:** `(softplus x [β])` → Number or Tensor (whichever `x` is)
 
 Smooth approximation of ReLU: f(x) = ln(1 + e^x).
 
@@ -3351,7 +3441,7 @@ concentration parameters in Bayesian models).
 
 #### `celu`
 
-**Syntax:** `(celu t [α])` → Tensor
+**Syntax:** `(celu x [α])` → Number or Tensor (whichever `x` is)
 
 Continuously Differentiable ELU: f(x) = max(0, x) + min(0, α(e^(x/α) - 1)). Default α = 1.0.
 
@@ -3385,17 +3475,29 @@ co-adaptation of feature detectors.
 
 ```scheme
 (define x #(-2.0 -1.0 0.0 1.0 2.0))
-(relu x)               ; => #(0.0 0.0 0.0 1.0 2.0)
-(sigmoid x)            ; => #(0.119 0.269 0.5 0.731 0.881)
-(softmax x)            ; => #(0.012 0.032 0.087 0.237 0.644)
-(gelu x)               ; => #(-0.045 -0.159 0.0 0.841 1.955)
-(leaky-relu x 0.1)     ; => #(-0.2 -0.1 0.0 1.0 2.0)
-(silu x)               ; => #(-0.238 -0.269 0.0 0.731 1.762)
-(elu x)                ; => #(-0.865 -0.632 0.0 1.0 2.0)
-(mish x)               ; => #(-0.252 -0.303 0.0 0.865 1.944)
+(relu x)               ; => #(0 0 0 1 2)
+(sigmoid x)            ; => #(0.11920292202211755 0.2689414213699951 0.5 0.7310585786300049 0.8807970779778823)
+(softmax x)            ; => #(0.011656230956039605 0.03168492079612427 0.0861285444362687 0.23412165725273662 0.6364086465588308)
+(gelu x)               ; => #(-0.04540230591222494 -0.15880800939172324 0 0.8411919906082768 1.954597694087775)
+(leaky-relu x)         ; => #(-0.02 -0.01 0 1 2)
+(silu x)               ; => #(-0.2384058440442351 -0.2689414213699951 0 0.7310585786300049 1.7615941559557646)
+(elu x)                ; => #(-0.8646647167633873 -0.6321205588285577 0 1 2)
+(mish x)               ; => #(-0.2525014826957091 -0.30340146137410895 0 0.8650983882673103 1.9439589595339946)
 (dropout x 0.5 #t)     ; => #(0.0 -2.0 0.0 2.0 0.0) (varies, scaled by 2)
 (dropout x 0.5 #f)     ; => #(-2.0 -1.0 0.0 1.0 2.0) (unchanged in inference)
 ```
+
+(An integral double prints without a decimal point — see
+[the numeric tower](reference/language/numeric-tower.md#exactness). `#(0 0 0 1 2)`
+above is five inexact values, not five exact integers.)
+
+> **Known limitation — `leaky-relu`'s α argument is ignored (build item).**
+> `(leaky-relu x 0.1)` and `(leaky-relu x 0.5)` both answer
+> `#(-0.02 -0.01 0 1 2)`: the documented α is accepted and then not applied, so
+> the negative slope is always the default 0.01. The signature and semantics
+> above are the contract; the codegen does not yet honour the second operand.
+> Until it does, use `(leaky-relu x)` for the default slope, or scale
+> explicitly.
 
 ### Loss Functions
 
@@ -3618,16 +3720,19 @@ Default margin = 0.0.
 (define pred #(2.0 1.0 0.1))
 (define target #(1.0 0.0 0.0))            ; one-hot: class 0
 
-(mse-loss pred target)                     ; => 0.67
-(cross-entropy-loss pred target)           ; => 0.417 (mean, after internal softmax)
-(focal-loss pred target 2.0)               ; => 0.0485 (downweights easy examples)
-(huber-loss pred target 1.0)               ; => 0.335
+(mse-loss pred target)                     ; => 0.6699999999999999
+(cross-entropy-loss pred target)           ; => 0.41703001627783376 (mean, after internal softmax)
+(focal-loss pred target 2.0)               ; => 0.04849234340769356 (downweights easy examples)
+(focal-loss pred target 0.0)               ; => 0.41703001627783376 (γ = 0 is cross-entropy)
+(huber-loss pred target 1.0)               ; => 0.33499999999999996
 
 ;; Metric learning
 (define anchor #(1.0 0.0 0.0))
 (define positive #(0.9 0.1 0.0))
 (define negative #(0.0 1.0 0.0))
-(triplet-loss anchor positive negative 1.0) ; => max(d(a,p) - d(a,n) + 1, 0)
+(triplet-loss anchor positive negative 1.0) ; => 0
+;; = max(d(a,p) - d(a,n) + 1, 0) = max(0.1414 - 1.4142 + 1, 0) = 0 — an easy
+;; triplet, already satisfying the margin, so no gradient signal.
 ```
 
 ### Optimizers
@@ -3941,12 +4046,24 @@ Continuous exponential decay — more aggressive than step decay as it reduces e
     (linear-warmup-lr 0.001 step 1000)
     (cosine-annealing-lr 0.001 0.0 (- step 1000) 9000)))
 
-(lr-schedule 0)       ; => 0.0 (start of warmup)
-(lr-schedule 500)     ; => 0.0005 (mid-warmup)
-(lr-schedule 1000)    ; => 0.001 (full learning rate)
-(lr-schedule 5500)    ; => 0.0005 (mid-cosine)
-(lr-schedule 10000)   ; => ~0.0 (end of training)
+;; called directly, each scheduler follows its documented curve:
+(linear-warmup-lr    0.001 0    1000)  ; => 0
+(linear-warmup-lr    0.001 500  1000)  ; => 5e-04
+(linear-warmup-lr    0.001 1000 1000)  ; => 0.001
+(cosine-annealing-lr 0.001 0.0 0    9000)  ; => 0.001
+(cosine-annealing-lr 0.001 0.0 4500 9000)  ; => 5e-04
+(cosine-annealing-lr 0.001 0.0 9000 9000)  ; => 0
 ```
+
+> **Known limitation — a scheduler called through a user function's parameter
+> answers 0 (build item).** The composition above is the intended shape, and
+> the direct calls show the intended values. But
+> `(define (w s) (linear-warmup-lr 0.001 s 1000))` makes `(w 500)` answer `0`
+> where `(linear-warmup-lr 0.001 500 1000)` answers `5e-04`: the `step` operand
+> arriving as a user function's parameter is not read the way a literal is.
+> `lr-schedule` above therefore prints `0` for both warmup queries on this
+> build. Call the scheduler with the step expression written at the call site,
+> or bind it to a top-level value, until the operand handling is fixed.
 
 ### Convolutional Neural Networks
 
@@ -4557,7 +4674,7 @@ string length, `124` execution timeout (matching GNU coreutils `timeout(1)`),
 Statistical analysis functions for tensors and lists. All functions accept tensors, vectors, or lists as input and internally flatten to a uniform representation before computation.
 
 **Module**: `lib/math/statistics.esk`
-**Import**: `(require statistics)`
+**Import**: `(require math.statistics)`
 
 ### Central Tendency and Spread
 
@@ -4780,7 +4897,7 @@ Horizontally stacks tensors by concatenating along axis 1. For 2D tensors, this 
 
 **Examples**:
 ```scheme
-(hstack #((1 2) (3 4)) #((5) (6)))  ; => #((1 2 5) (3 4 6))
+(hstack #(#(1 2) #(3 4)) #(#(5) #(6)))  ; => #((1 2 5) (3 4 6))
 ```
 
 **Returns**: Tensor (concatenated along axis 1)
@@ -4794,7 +4911,7 @@ Vertically stacks tensors by concatenating along axis 0. For 2D tensors, this jo
 
 **Examples**:
 ```scheme
-(vstack #((1 2) (3 4)) #((5 6)))  ; => #((1 2) (3 4) (5 6))
+(vstack #(#(1 2) #(3 4)) #(#(5 6)))  ; => #((1 2) (3 4) (5 6))
 ```
 
 **Returns**: Tensor (concatenated along axis 0)
@@ -4809,11 +4926,16 @@ Reshapes `tensor` to match the shape of `template`. The total number of elements
 **Examples**:
 ```scheme
 (define A #(1 2 3 4 5 6))
-(define B #((0 0 0) (0 0 0)))
+(define B #(#(0 0 0) #(0 0 0)))
 (reshape-as A B)  ; => #((1 2 3) (4 5 6))
 ```
 
 **Returns**: Tensor (reshaped to template's shape)
+
+> **Known limitation — `reshape-as` does not terminate (build item).** On this
+> build the call above runs without producing a result or a diagnostic. Use
+> `(reshape A (tensor-shape B))` instead, which answers `#((1 2 3) (4 5 6))`.
+> The contract above is what `reshape-as` is to do.
 
 ---
 
@@ -4898,7 +5020,7 @@ Returns the number of dimensions (rank) of the tensor.
 **Examples**:
 ```scheme
 (tensor-ndim #(1 2 3))           ; => 1
-(tensor-ndim #((1 2) (3 4)))     ; => 2
+(tensor-ndim #(#(1 2) #(3 4)))     ; => 2
 (tensor-ndim (zeros 2 3 4))      ; => 3
 ```
 
@@ -4914,7 +5036,7 @@ Returns the total number of elements in the tensor (product of all dimension siz
 **Examples**:
 ```scheme
 (tensor-size #(1 2 3 4 5))       ; => 5
-(tensor-size #((1 2) (3 4)))     ; => 4
+(tensor-size #(#(1 2) #(3 4)))     ; => 4
 (tensor-size (zeros 2 3 4))      ; => 24
 ```
 
@@ -4945,7 +5067,7 @@ Returns `#t` if the tensor is one-dimensional.
 **Examples**:
 ```scheme
 (is-vector? #(1 2 3))           ; => #t
-(is-vector? #((1 2) (3 4)))     ; => #f
+(is-vector? #(#(1 2) #(3 4)))     ; => #f
 ```
 
 **Returns**: Boolean
@@ -4959,7 +5081,7 @@ Returns `#t` if the tensor is two-dimensional.
 
 **Examples**:
 ```scheme
-(is-matrix? #((1 2) (3 4)))     ; => #t
+(is-matrix? #(#(1 2) #(3 4)))     ; => #t
 (is-matrix? #(1 2 3))           ; => #f
 ```
 
@@ -5675,6 +5797,22 @@ Pseudorandom and hardware-entropy random number generation with support for comm
 The seeded pseudorandom generator is a 48-bit drand48-compatible LCG owned by
 the Eshkol runtime. A given seed starts the same sequence on native JIT, native
 AOT, and the bytecode VM; backend choice does not change seeded results.
+
+```scheme
+(require "random")
+(set-random-seed! 42)
+(let* ((a (random-int 0 100)) (b (random-int 0 100)) (c (random-int 0 100)))
+  (display (list a b c)) (newline))
+```
+```
+(75 34 11)
+```
+
+Byte-identical under `eshkol-run -r`, under an AOT-compiled binary, and under
+the bytecode VM. Bind the draws in sequence (`let*`) rather than relying on the
+argument-evaluation order of an enclosing call, which is unspecified and does
+differ between engines — the *stream* is the same either way, but which draw
+lands in which argument position is not.
 
 ### Basic Pseudorandom Functions
 
@@ -6662,7 +6800,7 @@ eshkol-run -r <file.esk>         (JIT run file)
 ;; $ ./myprogram
 
 ;; JIT evaluate an expression
-;; $ eshkol-run -e '(+ 1 2 3)'
+;; $ eshkol-run -e '(display (+ 1 2 3))'
 ;; 6
 
 ;; Compile to WebAssembly
@@ -7198,8 +7336,8 @@ for composability and custom pipelines.
 ## Implementation Statistics
 
 **Codebase Size**: ~329,100 lines of production C++
-**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 46,007 lines
-**Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — 1,867-line dispatcher plus 22,355 lines across thirteen per-domain `tensor_*_codegen.cpp` modules
+**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 47,107 lines
+**Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — 2,012-line dispatcher plus 23,389 lines across thirteen per-domain `tensor_*_codegen.cpp` modules
 **Compiler Modules**: 36 specialized code generators
 **Test Suite**: 37 suites, 528 self-reported tests
 **Verified Operations**: 555+ builtins, 300+ standard library functions

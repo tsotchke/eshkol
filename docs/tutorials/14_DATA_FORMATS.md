@@ -6,6 +6,13 @@ Eshkol includes built-in support for common data interchange formats.
 
 ## JSON
 
+The file I/O part of this example reads `data.json`. Create it first:
+
+<!-- doc-example: file data.json: the input file the JSON example reads -->
+```json
+{"name": "Alice", "age": 30}
+```
+
 ```scheme
 (require core.json)
 
@@ -40,7 +47,8 @@ Eshkol includes built-in support for common data interchange formats.
 (define rows (csv-parse "name,age\nAlice,30\nBob,25"))
 (display rows)
 (newline)
-;; => list of rows, each row is a list of fields
+;; => ((name age) (Alice 30) (Bob 25))
+;; a list of rows, each row a list of field strings
 
 ;; Write CSV
 (define csv-str (csv-stringify '(("name" "age") ("Alice" "30") ("Bob" "25"))))

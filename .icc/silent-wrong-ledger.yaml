@@ -13124,3 +13124,825 @@ entries:
       (`(remove p (list 1.0 2.0 3.0))` with a parameter predicate prints
       (4607182418800017408)), so a capturing predicate is left on its loud
       failure rather than routed there.
+  - id: LE-28
+    bucket: SILENT-WRONG
+    subtag: semantic
+    status: closed
+    closed_at: "2ab7562be"
+    family: static-callee-binding-identity
+    title: >-
+      A static `<name>_func` alias outlived the binding that created it, so
+      reassignment, redefinition and same-name shadowing could call the wrong
+      differentiand or higher-order procedure; dynamic `remove` also lost tags
+    repro: >-
+      `(let ((H (lambda (Z) (* Z Z)))) (set! H (lambda (Z) (* Z Z Z)))
+      (derivative H 2.0))` must return 12. A static resolver used the first
+      lambda and returned 4. The same stale alias affected direct calls, `apply`,
+      `map`, `reduce`, `vector-map` and every differentiation operator. A sibling
+      `let` or parameter named `H` could inherit another binding's alias. For
+      dynamic `(remove p (list 1.0 2.0 3.0))`, a predicate that keeps values above
+      one returned raw floating-point bits rather than `(1.0)`.
+    observed_before: >-
+      The differentiand's direct call observed the reassigned lambda, but
+      `derivative` still lowered the name to its original LLVM Function. Named
+      high-order paths similarly bypassed the current runtime value. Dynamic
+      removal extracted untagged payload bits for item comparison and tested a
+      predicate result as an integer rather than a tagged Scheme value.
+    correct: >-
+      Every call and differentiation operation observes the procedure currently
+      stored in the binding. Sibling and parameter bindings resolve only aliases
+      owned by their own storage. A runtime remove predicate retains exactly the
+      elements for which it returns #f, and item removal preserves full tagged
+      values under equal?, eqv? and eq?.
+    root_cause: >-
+      Static callee resolution was keyed by spelling and LLVM function table
+      presence, not by the mutable storage location that the name denotes at the
+      use site. Binding registration did not retain the binding's storage owner;
+      direct-call, apply, map and AD fast paths consequently accepted stale or
+      shadowed aliases. The dynamic remove path unpacked predicate results and
+      list cars without retaining their type tags. During the fix, reassignment
+      analysis also exposed that ESHKOL_EXTERN_OP carries a distinct extern
+      signature layout, not the generic call_op child layout.
+    fix: >-
+      `inc/eshkol/backend/static_callee_binding.h` is the common static-callee
+      binding abstraction. It records the alias owner storage, refuses aliases
+      for reassigned bindings, and rejects same-name runtime storage unless the
+      alias owner is that binding. Top-level callable mutation facts are cached
+      before code generation with the existing lexical mutation analysis. Direct
+      calls, apply, map, reduce, remove and AD resolvers consult the same facts;
+      dynamic procedures dispatch through the closure value. Remove uses tagged
+      truthiness, tagged equality arguments and type-preserving list-cell copies.
+      The mutation walker routes ESHKOL_EXTERN_OP to its no-AST-children case.
+      `scripts/gate_compiler_architecture.py` now compares the duplicated
+      EshkolLLVMCodeGen member layout and member types across code-generation
+      translation units.
+    observed_after: >-
+      The combined reassigned-callee fixture passes 60/60 JIT checks. The focused
+      reassigned-callee HOF fixture passes 12/12 JIT checks, including captured
+      closures emitted before a later set!, tagged inexact remove results, and
+      comparator behavior. CTest passes all six focused AD/HOF JIT and AOT cases.
+      The standard library object and bitcode build successfully. The AD suite
+      passes 61/61; the list suite passes 129/129.
+    evidence: >-
+      tests/closures/reassigned_callee_identity_test.esk and
+      tests/closures/reassigned_callee_hof_test.esk, registered as cached JIT and
+      AOT CTest cases. The passing recorded ICC execution is
+      `reassigned_callee_full_jit_aot_final`; logs and build evidence are in
+      `.scratch/hardening-resume-20260914/callee-identity/logs/`.
+    caught_by: [user-reported]
+    missed_by: [existing-ad-regressions, existing-list-suite]
+    notes: >-
+      The compiler member-layout mismatch and extern AST child-route defect were
+      independently exposed while building the mandatory regressions. The
+      duplicated class layouts are now checked by the compiler architecture gate.
+  - id: LE-29
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: closed
+    closed_at: "cc10ab81"
+    closed_by: "branch fix/v135-typecheck-precision"
+    family: type-system/precision
+    title: "type checker: if claimed a concrete type over a Value branch unlike cond, recursive calls turned branch joins into Value, function signatures printed as unknown and were related to nothing, return annotations rejected Value bodies, and json-get-in had a different arity on each engine"
+    repro: >-
+      (1) `(define (f flag x) (label (if flag 42 x)))` warned "expected String,
+      got Int64" while `(label (cond (flag 42) (else x)))` was silent.
+      (2) `(define (label (s : string)) (string-length s))`,
+      `(define (to-int (x : number)) : integer 42)`, then `(label to-int)`
+      warned "expected String, got unknown"; passing a (-> Number Number)
+      function to a `(p : procedure)` parameter warned "expected ->, got unknown".
+      (3) `(define (first-number (xs : list)) : number (car xs))` warned "body
+      type Value doesn't match return annotation Number".
+      (4) `(json-get-in obj keys)`, the documented call, failed to compile for
+      the VM ("Arity mismatch: json-get-in expects 3 arguments but got 2"), and
+      `(json-get-in obj keys default)` failed natively ("expects 2 arguments but
+      got 3").
+    observed_before: >-
+      synthesizeIfTask() returned the concrete branch when the other was Value
+      and the then-branch when the branches shared no supertype, where cond,
+      case, when, unless, match and guard join. A function signature had no
+      node in the supertype graph: TypeEnvironment::getTypeName() printed it as
+      "unknown", isSubtype() related it to nothing but itself, so every
+      higher-order call with a declared arrow or procedure parameter warned
+      "expected unknown, got unknown". Return annotations, call arguments inside
+      signatures and checking mode used plain subtyping, so a Value body or a
+      (-> Value Value) lambda was reported. lib/core/json.esk defined
+      json-get-in with two parameters while the VM builtin required three, and
+      tests/vm/json_surface_regression.esk, a VM-only probe that also uses the
+      VM-only json-merge and json-stringify-pretty, exits 1 under the native
+      compile on both base and fix while passing 5/5 on its runner.
+    correct: >-
+      An if and its cond twin have one type. A function signature prints as
+      its arrow, is a subtype of the procedure and Closure types, and relates
+      to another signature contravariantly in the parameters and covariantly in
+      the result. Value is consistent with any annotation, at the top level and
+      inside a signature, while a concrete mismatch is still reported.
+      json-get-in takes an optional default on both engines, as
+      docs/reference/stdlib/json.md now documents.
+    root_cause: >-
+      lib/types/type_checker.cpp synthesizeIfTask() predated the shared
+      joinBranchTypes() rule. lib/types/hott_types.cpp kept function signatures
+      in function_type_cache_ only, outside getTypeName(), isSubtypeUncached()
+      and getSupertypeChain(). The return-annotation, argument and checkTask()
+      checks called isSubtype(), which has no notion of the dynamic type. The
+      if rule's preference for the concrete branch had been standing in for the
+      missing inference of a recursive procedure's own result, which was bound
+      as Value while its body was checked. json-get-in gained its default on
+      the VM (96ffd56e) without the stdlib or the documentation following.
+    fix: >-
+      (1) synthesizeIfTask() joins its branches with joinBranchTypes(). So that
+      a recursive branch does not turn that join into Value, a recursive
+      procedure's result is inferred as the least fixpoint over its own calls,
+      for a named let, a function define without a return annotation and a
+      letrec or letrec* lambda: the procedure is bound with result Never, a new
+      empty builtin type that is below every type, the identity of a join and
+      absorbing in arithmetic, and a pass that referred to the procedure is
+      repeated, speculatively and with LE-25's rollback, against the join of
+      the guess and the body type until the body adds nothing. A procedure no
+      path returns from, or one that exceeds eight passes, gets Value.
+      (2) TypeRelation owns static subtyping and arrow variance, structural
+      consistency, consistent subtyping, compatibility evidence, join/meet,
+      castability, narrowing, widening, pair projection, and printing.
+      TypeEnvironment's legacy static-subtype, join, and print entry points are
+      facades over that module; they no longer carry separate type-form rules.
+      (3) The checker routes branch and procedure-result joins, named-let and do
+      widening, occurrence narrowing, call-argument checks, return annotations,
+      checking mode, and `the` ascriptions through TypeRelation. InferenceSlot and
+      AdoptTop make the existing loop policy explicit in the relation. Concrete
+      mismatches still report, while Value/Invalid remain gradual.
+      (4) lib/core/json.esk defines (json-get-in obj keys . default) with
+      default #f; scripts/gen_builtin_min_arity.py derives the VM row's minimum
+      2 from that definition, the VM op maps an absent default to #f, and
+      tests/coverage/language_surface.json is regenerated.
+      scripts/run_vm_surface_tests.sh now fails a probe whose compile exits
+      nonzero instead of discarding the status with `|| true`.
+    observed_after: >-
+      All four probe shapes behave as stated in `correct`. Standard-library
+      compile: 0 [WARN] before and after.
+    evidence: >-
+      Measured through ICC alias eshkol-v135-typecheck-precision. Receipts:
+      type-relation-final-build PASS; cpp-type-relation-final PASS (3/3 test
+      programs, including the direct relation contract and 64/64 checker cases);
+      typesystem-final PASS (126/126 fixtures); stdlib-suite PASS (26/26);
+      vm-surface-regression-suite PASS (65/65, including json_get_in_default and
+      json_surface_regression); vm-parity-suite PASS (340/340); relevant-ctest-vm-
+      stdlib PASS (1/1); compiler-assurance-ctest PASS (7/7); api-doc-sync and
+      api-public-doc-coverage PASS (68/68 header symbols and 59/59 Eshkol exports).
+      The first type-system rerun exposed the tracked Pair<Value, Value> diagnostic
+      spelling; canonical Pair printing was restored and its direct relation test
+      added before the passing 126/126 rerun.
+    caught_by: [direct-measurement]
+    missed_by: [run_typesystem_tests, ctest]
+    notes: >-
+      Filed LOUD-ERROR by the SW-63, LE-25 and LE-26 precedent: type-checker
+      verdicts on stderr and a compile-time arity refusal, never a wrong value.
+      These are LE-26's four open findings. Making if join like cond removed the
+      diagnostic for `(label (count-up 3))` over
+      `(let loop ((i 0)) (if (< i n) (loop (+ i 1)) i))`, which the if rule had
+      reported by accident; the recursion result fixpoint restores it and
+      extends it to the cond form, which LE-26 had already left silent. The
+      The original native compile exit for json_surface_regression.esk did not
+      represent a failed VM-runner case: the fixture uses json-merge and
+      json-stringify-pretty, which exist only on the VM. run_vm_surface_tests.sh
+      compiles that fixture with --profile hosted-vm and checks the compile exit;
+      both json_surface_regression and json_get_in_default_surface_regression
+      passed on that runner. run_typesystem_tests.sh checks EXPECT-COMPILE plus
+      diagnostic patterns; its later full rerun passed all 126 fixtures. The C++
+      runner had declared a TypeRelation test path but omitted executing it; this
+      change adds that execution, and the relation contract passed. The prior
+      standalone native error therefore came from invoking the wrong substrate,
+      not a swallowed failing test.
+  - id: SW-179
+    bucket: SILENT-WRONG
+    family: native/vector-set-numeric-store
+    status: fixed
+    closed_at: "0da5a050"
+    title: "native: vector-set! of an exact integer into a `#(...)` literal stores the integer's bit pattern as a double, and reading the slot back with vector-ref crashes"
+    repro: >-
+      (1) (define v #(10 20 30))
+          (vector-set! v 0 99)
+          (display v)
+      (2) (define z #(1.5 2.5))
+          (vector-set! z 1 7)
+          (display (vector-ref z 1))
+    observed: >-
+      (1) prints `#(4.9e-322 20 30)` under `eshkol-run -r` and from an AOT binary,
+      exit 0, no diagnostic. 4.9e-322 is the 64-bit integer 99 read as an IEEE
+      double. (2) prints nothing and dies with "fatal signal: SIGSEGV
+      (segmentation fault) at address 0xffffffffffffffff" on both native engines.
+      Storing an inexact value is correct: `(vector-set! w 0 99.0)` prints
+      `#(99 20 30)`. A vector built with `(vector 10 20 30)` is correct for both.
+      The bytecode VM prints `#(99 20 30)` for (1).
+    correct: >-
+      `#(99 20 30)` and `7`. docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md,
+      "Element Access and Mutation", documents exactly program (1) with the result
+      `#(99 20 30 40 50)`, and R7RS vector-set! stores the object it is given.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+      arm64 macOS, JIT and AOT, by scripts/doc_audit/check_doc_examples.py: the
+      tutorial example fails with MISMATCH expected '#(99 20 30 40 50)' got
+      '#(4.9e-322 20 30 40 50)' on both engines.
+    root_cause: >-
+      A numeric `#(...)` literal is a tensor (f64 slots in a separate element
+      buffer). CollectionCodegen::vectorSet dispatched on the heap subtype but
+      stored `unpackDouble(value)`, which bit-casts the tagged payload: an exact
+      integer, a string pointer or a boolean was written as if it were a double.
+      vectorRef then decoded a small integer payload as a differentiation-node
+      pointer, which is the crash in program (2). The defect was one instance of
+      a missing facility: every mutator carried its own copy of the store.
+      vector-fill! had no tensor path and read the tensor descriptor as a length
+      (SIGSEGV even for a double); tensor-set! converted numbers but stored 0 for
+      a non-number and, taking its operand in coercing mode, updated a throwaway
+      copy of a Scheme vector; vector-copy!'s conversion did not know exact
+      rationals or bignums; the VM's vector-set! tensor path stored 0 for an exact
+      rational and every VM tensor writer stored 0 for a non-number.
+    fix: >-
+      ADR-0020, one store boundary. Invariant: a value stored into a container
+      slot is a value of the slot's declared representation. encode_tensor_slot()
+      in lib/core/runtime_vector_mutation.cpp is the only code that writes a
+      Scheme value into a tensor slot: a real number of any exactness becomes the
+      dtype-reduced f64, a differentiation node keeps its in-tensor carrier, and
+      any other value is refused with a catchable error before the destination is
+      modified. vector-set!, vector-fill!, vector-copy! and tensor-set! lower
+      through three CodegenContext emitters and one failure block; tensor-set!
+      takes its operand in RequireTensor mode; the VM's writers share
+      vm_tensor_slot_value(). The literal stays a tensor, as the language
+      specification defines it.
+    evidence: >-
+      tests/core/container_slot_store_test.esk stores every value kind through
+      every mutator on both representations: 90 checks, 0 failures on the cached
+      run path, the in-process JIT and AOT (ctest container_slot_store_
+      {runtime,jit,aot}_smoke); the base build crashes in it.
+      tests/vm/tensor_slot_store_test.esk: 23 checks on the VM (14 fail on the
+      base build). tests/vm_parity/corpus/85_container_slot_store.esk agrees
+      across native and VM. The tutorial example runs unmarked in
+      scripts/doc_audit/check_doc_examples.py.
+    caught_by: [doc-example-gate]
+    missed_by: [run_all_tests, vm_parity, doc_audit]
+    notes: >-
+      Found by executing the tutorials. Storing a value with no real-number
+      representation into a tensor-backed literal is a catchable error natively;
+      the VM materialises `#(...)` as a Scheme vector and accepts it. That is the
+      literal-representation difference already recorded in
+      tests/vm_parity/found/tensor_predicate_on_literal.esk, and it is loud.
+  - id: SW-180
+    bucket: SILENT-WRONG
+    family: ad/complex-carrier
+    status: open
+    needs_decision: true
+    title: "a derivative taken through a complex value is silently 0: the tangent is dropped when a differentiated number enters make-rectangular or complex arithmetic"
+    repro: >-
+      (1) (display (derivative (lambda (x) (real-part (make-rectangular (* x x) 0.0))) 3.0))
+      (2) (display (derivative (lambda (x) (magnitude (make-rectangular x 4.0))) 3.0))
+      (3) (require signal.filters)
+          (define (b0 c) (vector-ref (car (butterworth-lowpass 2 c)) 0))
+          (display (derivative b0 0.2))
+    observed: >-
+      All three print `0`, exit 0, no diagnostic, under `eshkol-run -r`, from an
+      AOT binary and on the bytecode VM ((1) measured on the VM). For (3) the
+      central difference (b0(0.2001) - b0(0.1999)) / 0.0002 is 0.5665767907.
+      butterworth-lowpass computes its poles in complex arithmetic, so every
+      derivative with respect to a filter cutoff is 0. Derivatives through the
+      real-valued parts of the same library are correct: fir-filter and
+      apply-window give 5 and 13 where those are the exact answers.
+    correct: >-
+      (1) 6, (2) 0.6, (3) 0.5665767907... Alternatively a diagnostic at the point
+      where a differentiated value enters a complex number, until a complex
+      carrier exists.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+      arm64 macOS. docs/tutorials/05_SIGNAL_PROCESSING.md Part 5 differentiates
+      filtered signal power with respect to the Butterworth cutoff;
+      scripts/doc_audit/check_doc_examples.py reports MISMATCH expected '73.81...'
+      got '0' on JIT and AOT (73.815 is the central difference).
+    caught_by: [doc-example-gate]
+    missed_by: [run_ad_oracle, run_ad_exactness_gate, doc_audit]
+    notes: >-
+      The documentation disagrees with itself, which is why this needs a ruling
+      rather than an edit. docs/reference/ad/architecture.md ("Numeric boundary")
+      and docs/breakdown/AUTODIFF.md state that complex values have no derivative
+      carrier. docs/tutorials/05_SIGNAL_PROCESSING.md says every signal-processing
+      function composes with autodiff, docs/tutorials/06_EXACT_ARITHMETIC.md says
+      complex numbers integrate with autodiff, and docs/KNOWN_ISSUES.md lists
+      complex numbers as a first-class type with AD support. The tutorials were
+      left as the statement of intent and the example carries
+      `doc-example: known-defect SW-180`. Filed SILENT-WRONG because a wrong
+      derivative with exit 0 and no diagnostic is that bucket's definition; a
+      refusal at the boundary would make it a loud limitation.
+  - id: SW-181
+    bucket: LOUD-ERROR
+    subtag: structural
+    family: ad/dense-tensor-operands
+    status: fixed
+    closed_at: "a3ec9f69"
+    title: "native: tensor-dot refuses the differentiated result of matmul, so gradient of a quadratic form x . (A x) raises a type error"
+    repro: >-
+      (display (gradient (lambda (x) (tensor-dot x (matmul (eye 3) x)))
+                         #(1.0 2.0 3.0)))
+    observed_before: >-
+      "Type error in tensor-dot: expected tensor, got ad-node", exit 1, under
+      `eshkol-run -r` and from an AOT binary. Each half works alone:
+      (gradient (lambda (x) (tensor-dot x x)) ...) is #(2 4 6),
+      (gradient (lambda (x) (tensor-sum (matmul (eye 3) x))) ...) is #(1 1 1), and
+      (gradient (lambda (x) (tensor-dot x (tensor-scale x 2.0))) ...) is #(4 8 12).
+    correct: >-
+      #(2 4 6): the gradient of x . (I x) is 2x.
+      docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md, "Integration with
+      Autodiff", documents this program as the example of differentiable tensor
+      operations.
+    root_cause: >-
+      The dense reverse path (ADR-0002 Position A) publishes a matmul or
+      elementwise result as ONE CALLABLE AD node whose tensor_value is an f64
+      buffer. Operators with a dense rule (tensor-sum, tensor-mean, tensor-add,
+      tensor-mul, matmul) recognise that node before reading it; every other
+      consumer reads its operand through eshkol_tensor_operand_checked, which
+      classified HEAP_PTR tensors and numeric collections and raised for anything
+      else, or classified the value by hand. tensor-dot, reshape, tensor-scale,
+      relu, tensor-exp, tensor-sqrt, softmax and tensor-get raised; the two-argument
+      tensor-ref returned the node itself; vector-length, vector-ref and
+      vector->list read it as a Scheme vector, which is how the stdlib's tensor-norm
+      (sqrt of a vref loop) answered 0 through a matmul.
+    fix: >-
+      One projection, eshkol_ad_dense_node_elements (lib/core/runtime_autodiff.cpp):
+      a dense node becomes the tensor of its shape whose element i is an
+      AD_NODE_DENSE_ELEM node (registry row 95) projecting element i, appended to
+      the tape, so every scalarising rule applies unchanged and the reverse sweep
+      scatters each element's adjoint into the dense node's gradient (identity, no
+      arithmetic; the inverse of TENSOR_PACK). The tensor boundary and the
+      collection builtins (TaggedValueCodegen::resolveDenseTensorNode) route a
+      CALLABLE dense node to it; the two-argument tensor-ref indexes the
+      projection. eshkol_ad_node_probe's node-type bound is the registry count
+      instead of the literal 63. Operators with dense rules are untouched. ADR-0023.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+      arm64 macOS, JIT and AOT, by scripts/doc_audit/check_doc_examples.py (EXIT 1
+      with the diagnostic above on both engines).
+      Fixed on fix/v135-ad-tensor-operands, Release build, arm64 macOS:
+      tests/ad/dense_tensor_operand_boundary_test.esk (24 checks: the ledger row
+      in both operand orders, reshape, tensor-scale, relu, tensor-exp,
+      tensor-sqrt, softmax, tensor-get, tensor-ref, vector-length, vector-ref,
+      vector->list, a chain through both representations, the stdlib tensor-norm,
+      and the dense-rule operators as controls) raises the ledger error on the
+      base build and passes 24/24 on the fix, cached and uncached JIT and AOT.
+      Tutorial 11's example runs with its marker removed and matches on JIT and
+      AOT.
+    caught_by: [doc-example-gate]
+    missed_by: [run_ad_oracle, run_dense_tensor_ad_gate, doc_audit]
+    notes: >-
+      Loud on the native engines, so LOUD-ERROR. The example carries
+      `doc-example: known-defect SW-181`. tensor-dot accepts a dense AD node for
+      its first operand and for a tensor-scale result, so the missing case looks
+      like the matmul result's carrier kind rather than tensor-dot as a whole.
+  - id: SW-182
+    bucket: SILENT-WRONG
+    family: ad/gradient-scalar-point-arguments
+    status: fixed
+    closed_at: "a41ac3f5"
+    title: "native: (gradient f a b ...) with the point given as separate scalar arguments differentiates at 0 unless every argument is a literal, so a gradient-descent loop written that way never moves off its first gradient"
+    repro: >-
+      (define (loss a b) (+ (* (- a 3.0) (- a 3.0)) (* (- b 1.0) (- b 1.0))))
+      (define p 0.6) (define q 0.2)
+      (display (gradient loss 0.6 0.2))
+      (display (gradient loss p q))
+      (display (gradient loss (+ p 0.0) (+ q 0.0)))
+      (display (gradient loss (list p q)))
+    observed_before: >-
+      `#(-4.8 -1.6)`, `#(-6 -2)`, `#(-6 -2)`, `#(-4.8 -1.6)` under `eshkol-run -r`
+      and from an AOT binary, exit 0, no diagnostic. #(-6 -2) is the gradient at
+      (0, 0): a point argument that is a variable, a parameter or any other
+      non-literal expression is read as 0. The literal form and the documented
+      `(list ...)` point form are correct. The bytecode VM answers #(-4.8 -1.6)
+      for all four.
+      In a loop the defect compounds: 100 steps of
+      (train (- a (* lr (vector-ref g 0))) (- b (* lr (vector-ref g 1))) ...)
+      from (0, 0) with lr 0.1 end at (60.0 20.0) natively, 100 times the first
+      step, and at (3.0 1.0) on the VM.
+    correct: >-
+      #(-4.8 -1.6) for every form, or a compile-time refusal of the scalar-argument
+      form if only literals are meant to be accepted.
+    root_cause: >-
+      The parser rewrote the separate-scalar form `(gradient f a b ...)` into a
+      vector point by assembling its own node, of the bare ESHKOL_TENSOR kind, in
+      place of the ESHKOL_TENSOR_OP node a written `#(...)` produces. Nothing else
+      produces that kind. Its lowering (codegenTensor in lib/backend/
+      llvm_codegen.cpp) handles an element that evaluates to a raw integer or
+      double and stored the constant 0 for anything else, so a variable, a
+      parameter, a loop variable or a call (all of which evaluate to a tagged
+      value) became 0. The VM compiles the form through its ordinary vector path,
+      which is why it was right. Every other operator (hessian, jacobian,
+      laplacian, divergence, curl, directional-derivative, derivative) takes a
+      single point expression and was already evaluated correctly; the vector,
+      list and `#(...)` point forms of gradient were too.
+    fix: >-
+      The ruling is to support the form, since tutorial 24 teaches it by name.
+      The parser now seeds parse_vector_body with the first point argument, so
+      `(gradient f a b ...)` is parsed as the literal `#(a b ...)` it stands for,
+      by the same rules and through the same element evaluator every vector
+      literal uses. The bare-node lowering no longer invents a value: an element
+      it cannot store is a compile-time error. docs/reference/ad/operators.md
+      lists the separate-scalar point form.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+      arm64 macOS, JIT and AOT. Three tutorial programs are written this way and
+      none of them works natively:
+      docs/tutorials/21_PROJECT_NEURAL_NETWORK.md trains XOR for 5000 epochs and
+      prints 0.5485 / 0.5653 / 0.5265 / 0.5448 with a final loss of
+      1.0108004956021113, which is exactly the loss at the initial weights; the
+      VM prints 0.0079 / 0.9909 / 0.9924 / 0.0070 and a loss of 0.000252.
+      docs/tutorials/24_PROJECT_OPTIMISATION.md problem 1 reports the Rosenbrock
+      minimum at (19.99, 0) with f = 16000360.99 against (0.9944, 0.9888) and
+      f = 3.14e-05 on the VM; problem 3 is written the same way.
+      scripts/doc_audit/check_doc_examples.py reports all three.
+      Fixed on fix/v135-ad-carriers, Release build, arm64 macOS:
+      tests/ad/gradient_scalar_point_arguments_test.esk (29 checks: the four
+      ledger rows, globals, calls, mixed literal and variable, parameters,
+      let-bound, named-let loop variables, three arguments, a 100-step descent
+      loop, and every other operator's point as a control) fails 13 of 29 on the
+      base build and passes 29/29 on the fix, cached and uncached JIT and AOT.
+      scripts/doc_audit/check_doc_examples.py runs the three tutorial programs
+      with their markers removed and they match on JIT and AOT.
+    caught_by: [doc-example-gate]
+    missed_by: [run_ad_oracle, run_ad_exactness_gate, run_dense_tensor_ad_gate, doc_audit]
+    notes: >-
+      docs/reference/ad/operators.md ("Accepted point types") lists vector, tensor,
+      `#(...)`, scalar and `(list ...)` points and does not list separate scalar
+      arguments, but the compiler accepts them and is right for literals, and
+      docs/tutorials/24_PROJECT_OPTIMISATION.md teaches the form by name
+      ("In Eshkol: `(gradient f x y)` -- that's it"). The three examples carry
+      `doc-example: known-defect SW-182`. Tutorial 24 problem 3 also reaches
+      SW-183.
+  - id: SW-183
+    bucket: LOUD-ERROR
+    subtag: structural
+    family: ad/closure-capture-through-map
+    status: fixed
+    closed_at: "d6ecd4fe"
+    title: "a derivative through `map` with a lambda that captures the differentiated variable is 0, with `Invalid type for int64 storage value: 6` on stderr and exit status 0"
+    repro: >-
+      (define (f a) (fold-left + 0.0 (map (lambda (x) (* a x)) '(1.0 2.0 3.0))))
+      (display (derivative f 2.0))
+    observed_before: >-
+      Prints `0` after three lines of "ERROR: Invalid type for int64 storage
+      value: 6" on stderr, exit 0, under `eshkol-run -r` and from an AOT binary.
+      The same sum written as a named-let loop over the list prints 6, and
+      (fold-left + 0.0 (list (* a 1.0) (* a 2.0))) prints 3, so the loss is in the
+      list `map` builds from the capturing lambda, not in fold-left.
+    correct: >-
+      6.
+    root_cause: >-
+      A cons slot is a tagged value, but emitted code never moved it as one.
+      codegenTaggedArenaConsCellFromTaggedValue branched at run time over storage
+      classes (null, double, pointer, else int64), and seven readers
+      (extractCarAsTaggedValue, extractCdrAsTaggedValue,
+      extractConsCarAsTaggedValue, CollectionCodegen::car and ::cdr, and two
+      copies inside codegenCompoundCarCdr) each branched over their own closed
+      list of representations and rebuilt the value through a typed runtime
+      accessor. A forward-mode dual number (type 6) and a complex number were in
+      none of the lists: arena_tagged_cons_set_int64 rejected the store with
+      "Invalid type for int64 storage value: 6" and left the slot empty, and
+      arena_tagged_cons_get_int64 answered 0. The lists had been extended one type
+      at a time as types were found missing (bool, char, logic variables) and had
+      drifted: the cdr reader never received the char arm, so
+      `(apply cdr (list (cons #\a #\b)))` answered 98, and the cdr builtin crashed
+      on a dual number in its slot.
+    fix: >-
+      TaggedValueCodegen::loadConsSlot and storeConsSlot are now the only way
+      emitted code reads or writes a cons element, and they move the tagged value
+      whole (type, flags and payload). The builder and all seven readers delegate
+      to them, so the set of value types a list can hold is open and no future
+      type needs a case. About 900 lines of emitted dispatch are gone.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+      arm64 macOS. Two tutorial programs compute their loss with this
+      map-then-fold shape. docs/tutorials/26_PROJECT_SELF_IMPROVING.md maps an
+      internal `define` that captures the three coefficients: under
+      `eshkol-run -r` it writes the diagnostic on every step, reports
+      "Learned coefficients: 1 0 0" and leaves the loss at 13.16, while the AOT
+      binary of the same file is correct (loss 0.0112), so that capture shape
+      fails on the JIT only. docs/tutorials/24_PROJECT_OPTIMISATION.md problem 3
+      maps a lambda over its data: natively it writes 75000 of these diagnostics in
+      5000 steps, reports "Fitted: 0x^2 + 0x + 0" with MSE 491.11 and exits 0,
+      where an independent gradient-descent computation gives
+      0.828x^2 + 0.900x + 1.026 with MSE 0.0183.
+      Fixed on fix/v135-ad-carriers, Release build, arm64 macOS:
+      tests/ad/differentiated_values_in_list_cells_test.esk (25 checks: the ledger
+      row, fold-right, reduce, apply, for-each, filter, two-list map, an internal
+      define, nested map, cons/car, cons/cdr, cadr, append/reverse/list-ref,
+      reverse mode, second order, least squares at scalar variables, a complex
+      number and a character kept by a list, and value-semantics controls) fails
+      on the base build (four derivatives 0, then a crash) and passes 25/25 on the
+      fix, cached and uncached JIT and AOT, with no diagnostic on stderr.
+      Tutorial 26 runs with its marker removed and matches on JIT and AOT.
+    caught_by: [doc-example-gate]
+    missed_by: [run_ad_oracle, doc_audit]
+    notes: >-
+      Filed LOUD-ERROR because a diagnostic is printed, although the exit status
+      is 0 and the value is wrong; scripts/doc_audit/check_doc_examples.py fails
+      an example that writes an error diagnostic for that reason. Tutorial 26
+      carries `doc-example: known-defect SW-183`; tutorial 24 problem 3 carries
+      SW-182, the first defect it reaches.
+  - id: LE-30
+    bucket: LOUD-ERROR
+    subtag: wrong-diagnostic-on-legal-code
+    status: open
+    title: "set! of a procedure bound by the (define (f ...) ...) shorthand is rejected as an undefined variable on the JIT and AOT"
+    repro: >-
+      (define (f x) x)
+      (set! f (lambda (x) (* 2 x)))
+      (display (f 21))
+      compiled with `eshkol-run -r` or `eshkol-run file.esk -o bin`.
+    observed: >-
+      Both engines refuse to compile: "ERROR: set!: undefined variable 'f'"
+      followed by "compilation reported 1 error(s); no artifact was written".
+      The same program with `(define f (lambda (x) x))` compiles and prints 42.
+    correct: >-
+      R7RS 5.3: `(define (f x) ...)` binds the variable f exactly as
+      `(define f (lambda (x) ...))` does, and `set!` may assign any bound
+      variable. The program prints 42. ADR-0015 (static callee binding identity)
+      already specifies how a reassigned procedure binding is called.
+    root_cause: >-
+      Not yet diagnosed. The set! lowering does not find a storage location for
+      a top-level binding introduced by the procedure-define shorthand, which
+      codegen emits as a function rather than as a variable holding a closure.
+    impact: >-
+      A legal program is refused at compile time. No wrong value is produced.
+      Found while documenting ADR-0015's reassignment rule for v1.3.5; the
+      documentation examples use the lambda spelling.
+    fix_requires: >-
+      A procedure-define shorthand gets the same assignable global storage as a
+      lambda-valued define when the lexical mutation analysis reports a set! of
+      it, so ADR-0015's binding facts apply unchanged.
+    evidence: >-
+      Reproduced on the v1.3.5 release cut d1295a42 with the JIT and AOT
+      drivers, 2026-09-17.
+    caught_by: [direct-measurement]
+    missed_by: [ctest]
+    notes: >-
+      Recorded only; no fix in this change.
+  - id: SW-184
+    bucket: SILENT-WRONG
+    family: stdlib/signal-fft-complex-base-case
+    status: fixed
+    closed_at: "ef302f8c"
+    title: "signal.fft: every transform of a complex input is all zeros, so (ifft (fft x)) and fast-convolve return zeros on the VM, the precompiled stdlib and an uncached -r"
+    repro: >-
+      (require signal.fft) (display (ifft (fft #(1.0 2.0 3.0 4.0))))
+      under ESHKOL_JIT_CACHE=0 eshkol-run -r, and on the bytecode VM.
+      (require signal.filters) (display (fast-convolve #(1.0 2.0 3.0 4.0 5.0) #(1.0 1.0 1.0)))
+      on every engine.
+    observed_before: >-
+      The round trip printed #(0 0 0 0) on the uncached JIT and
+      #(+0i +0i +0i +0i) on the VM, exit 0, no diagnostic; the cached run path
+      and AOT printed the right answer. fast-convolve printed #(0 0 0 0 0 0 0)
+      on every engine.
+    correct: >-
+      #(1 2+5.72e-18i 3 4-5.72e-18i) (the original signal up to rounding) and
+      #(1 3 6 9 12 9 5), as docs/reference/stdlib/signal_fft.md and the direct
+      convolve state.
+    root_cause: >-
+      lib/signal/fft.esk's length-1 base case wrapped its element as
+      (make-rectangular x 0.0) whenever (number? x). A complex value is a
+      number, and make-rectangular of a complex real part yields 0, so every
+      transform of a complex input was zeros: ifft conjugates its input into
+      complex values before calling fft, and fast-convolve multiplies complex
+      spectra before calling ifft. Two FFT implementations coexist -- the native
+      builtin (codegenFFT) and this module -- and which one a call binds to
+      depends on the engine: AOT and the cached run path reach the builtin, while
+      the VM, the precompiled stdlib (hence fast-convolve everywhere) and an
+      uncached -r that requires the module reach the module. That is why the
+      engines disagreed, and why the fast-convolve zeros were attributed to
+      shared-library code generation (ESH-0115) rather than to the library.
+    fix: >-
+      The base case wraps only a real element ((real? x)) and passes a complex
+      element through. The module stays the implementation for the VM, which has
+      no FFT builtin.
+    evidence: >-
+      tests/signal/fft_complex_input_test.esk: 11 checks (round trips at length 4
+      and 8, real and complex inputs, fft of a complex vector, fast-convolve
+      against convolve) with a 1e-9 tolerance. Base build: 8/11 on the cached
+      run path and AOT, 1/11 on the uncached JIT and the VM. Fix: 11/11 on all
+      four (ctest fft_complex_input_{runtime,jit,aot,vm}_smoke).
+    caught_by: [direct-measurement]
+    missed_by: [tests/signal/fft_comprehensive_test.esk (has the round trip but is
+      not registered in ctest; scripts/run_signal_tests.sh runs it by hand),
+      run_all_tests, vm_parity (fft is a recorded VM gap)]
+    notes: >-
+      The two implementations remain. Retiring either needs an FFT on the VM
+      that is not this module, or a native path that no longer prefers the
+      builtin; both are larger than this fix, and the round-trip test now pins
+      the engines to one answer.
+  - id: SW-185
+    bucket: PARITY-RATCHET
+    family: native/vector-literal-non-numeric-store
+    status: fixed
+    closed_at: "523371f1"
+    title: "a non-numeric store into a `#(...)` literal raised on the native engines and stored on the VM, because the native literal is a numeric tensor and the VM's is a heterogeneous vector"
+    repro: >-
+      (define v #(10 20 30)) (vector-set! v 0 "x") (display v)
+    observed_before: >-
+      The native engines raised `vector-set!: value has no representation in a
+      numeric tensor slot` (SW-179's store boundary, which refused what it could
+      not convert); the bytecode VM printed `#(x 20 30)`. Loud on the side that
+      differed, so not a silent wrong answer, but the two engines disagreed about
+      a program R7RS defines: a vector holds any object.
+    correct: >-
+      `#(x 20 30)` on every engine.
+    root_cause: >-
+      A numeric `#(...)` literal materialises as a tensor natively (the language
+      specification makes it the tensor-literal syntax) and as a Scheme vector on
+      the VM. The store boundary converted a value to the slot's representation or
+      refused it; for a tensor slot the only representable values are real numbers.
+    fix: >-
+      ADR-0020 amendment 1: the vector API promotes the carrier in place instead of
+      refusing. promote_tensor_to_boxed() gives the descriptor a tagged-value
+      element buffer under the new ESHKOL_TENSOR_DTYPE_BOXED dtype -- the shape the
+      dual-tensor carrier already used -- so every alias sees the promotion. The
+      tensor API still refuses, a promoted carrier answers `tensor?` with #f, and
+      every tensor kernel refuses it at the one operand check. Every reader of
+      tensor slots learned the dtype, including region evacuation, which walks the
+      tagged slots.
+    evidence: >-
+      tests/vm_parity/corpus/85_container_slot_store.esk: native and VM agree,
+      element for element, for a string, boolean, pair, character, symbol and
+      nested vector, and through vector-ref, vector->list, vector-copy,
+      vector-append, vector-map, vector-for-each and vector-copy!.
+      tests/core/container_slot_store_test.esk: 102 checks on the cached run path,
+      the in-process JIT and AOT.
+    caught_by: [engine-differential-review]
+    missed_by: [vm_parity corpus as it stood (the case was not in it), run_all_tests]
+    notes: >-
+      A constructed `(tensor 1.0 2.0)` promotes natively through the vector API but
+      raises on the VM, which has no promotion path for its tensors; that residual
+      difference is loud and is checked per engine rather than in the corpus.
+  - id: SW-186
+    bucket: SILENT-WRONG
+    family: ad/dense-tensor-operands
+    status: open
+    needs_decision: true
+    title: "native: inside a differentiated function a matmul result answers #f to tensor? and vector? and displays as #<ad-node>, because the dense AD node is a CALLABLE rather than a tensor"
+    repro: >-
+      (gradient (lambda (x) (let ((d (matmul (eye 3) x)))
+                              (display (tensor? d)) (display (vector? d)) (display d)
+                              (tensor-sum d)))
+                #(1.0 2.0 3.0))
+    observed: >-
+      Prints #f #f #<ad-node>, exit 0. Outside differentiation the same value
+      prints #t #t #(1 2 3).
+    correct: >-
+      #t #t #(1 2 3): a value's type does not depend on whether it is being
+      differentiated.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
+      arm64 macOS, while sweeping SW-181.
+    caught_by: [coordinator-sweep]
+    missed_by: [run_ad_oracle, run_dense_tensor_ad_gate, doc_audit]
+    notes: >-
+      SW-181 resolves a dense node wherever a tensor is READ. Type predicates and
+      the printer ask what the value IS, which is a representation-identity
+      question: the end state ADR-0023 names is a dense AD tensor that is a
+      HEAP_SUBTYPE_TENSOR object carrying its node, so no consumer needs a case.
+      Needs a ruling on that end state before the predicates are changed.
+  - id: SW-187
+    bucket: LOUD-ERROR
+    subtag: structural
+    family: ad/dense-tensor-operands
+    status: open
+    needs_decision: true
+    title: "native: jacobian of a function returning a dense tensor AD node (a matmul result) is a SIGSEGV, and hessian of a function using matmul on a 1-D point raises a dual-tensor rank error"
+    repro: >-
+      (1) (display (jacobian (lambda (v) (matmul (eye 2) v)) #(1.0 2.0)))
+      (2) (display (hessian (lambda (v) (tensor-dot v (matmul (eye 2) v))) #(1.0 2.0)))
+    observed: >-
+      (1) fatal signal SIGSEGV at address 0, exit 139, under `eshkol-run -r`.
+      (2) "matmul: dual-tensor (autodiff) matmul requires 2-D operands with
+      A.cols == B.rows", exit 1. Both on the base and after the SW-181 fix, which
+      covers operands of tensor builtins, not the function-result classification
+      of jacobian (autodiff_codegen.cpp, output_is_callable is accepted as a
+      vector type and then read as one) or the forward-dual matmul used by hessian.
+    correct: >-
+      (1) #((1 0) (0 1)); (2) #((2 0) (0 2)); or a precise error naming the
+      unsupported combination for (2).
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
+      arm64 macOS, while sweeping SW-181.
+    caught_by: [coordinator-sweep]
+    missed_by: [run_ad_oracle, run_dense_tensor_ad_gate]
+    notes: >-
+      The same class as SW-181 one level up: a dense node reaching a slot that
+      assumes a tensor, here the function-result slot of jacobian. The SW-181
+      projection (eshkol_ad_dense_node_elements) is the facility to apply there.
+  - id: SW-188
+    bucket: SILENT-WRONG
+    family: ad/dense-tensor-operands
+    status: open
+    needs_decision: true
+    title: "native: inside a differentiated function a matmul result answers #f to tensor? and vector? and displays as #<ad-node>, because the dense AD node is a CALLABLE rather than a tensor"
+    repro: >-
+      (gradient (lambda (x) (let ((d (matmul (eye 3) x)))
+                              (display (tensor? d)) (display (vector? d)) (display d)
+                              (tensor-sum d)))
+                #(1.0 2.0 3.0))
+    observed: >-
+      Prints #f #f #<ad-node>, exit 0. Outside differentiation the same value
+      prints #t #t #(1 2 3).
+    correct: >-
+      #t #t #(1 2 3): a value's type does not depend on whether it is being
+      differentiated.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
+      arm64 macOS, while sweeping SW-181.
+    caught_by: [coordinator-sweep]
+    missed_by: [run_ad_oracle, run_dense_tensor_ad_gate, doc_audit]
+    notes: >-
+      SW-181 resolves a dense node wherever a tensor is READ. Type predicates and
+      the printer ask what the value IS, which is a representation-identity
+      question: the end state ADR-0023 names is a dense AD tensor that is a
+      HEAP_SUBTYPE_TENSOR object carrying its node, so no consumer needs a case.
+      Needs a ruling on that end state before the predicates are changed.
+  - id: SW-189
+    bucket: SILENT-WRONG
+    family: vm/operand-stack-tracking
+    status: fixed
+    closed_at: "90f0b37c"
+    title: "VM: a let (or any binder) as an operand of list, vector or apply evaluated to (), because the binder's locals were allocated over the operands already pushed"
+    repro: >-
+      (display (list 'a (let ((v (vector 1 2))) (vector-set! v 0 9) v)))
+      (display (list 'a (let ((v 5)) v)))
+      (display (vector 'a (let ((v 5)) v)))
+      (display (apply + (list 1 (let ((v 2)) v))))
+    observed_before: >-
+      On eshkol-vm-standalone-test: (a ()), (a ()), #(a a), and "+: expected
+      numeric operands"; exit 0 and no diagnostic for the first three. Natively
+      (a #(9 2)), (a 5), #(a 5), 3. The mutation was a red herring: (list 'a
+      (let ((v 5)) v)) fails the same way.
+    correct: >-
+      The native answers.
+    root_cause: >-
+      The VM compiler tracks compile-time stack depth in c->n_locals, and a
+      binder allocates its variables at that depth. Every operand pushed and held
+      on the stack while another operand compiles must therefore be registered as
+      a local (the __operand__ slots compile_operands_tracked() creates).
+      `list` built its result as a running cons chain whose accumulator was never
+      registered; `vector` pushed its elements unregistered; `apply` pushed the
+      procedure unregistered; twelve more native-call lowerings pushed runs of
+      operands the same way. A let inside such an operand allocated its variable
+      over the pushed value: the accumulator became the let's local, so the list
+      came back as (), and a vector's earlier element was replaced by the later
+      binder's value.
+    fix: >-
+      One rule applied at every site: the list accumulator occupies a tracked
+      slot, `vector` uses compile_operands_tracked(), and every run of
+      consecutive operand pushes in vm_compiler.c registers each pushed operand
+      before compiling the next (apply, tensor-ref, tensor-set!, reshape,
+      arange, bytevector-copy!, string->utf8, make-tensor, display to a port,
+      write-char, call-with-values, exact-rational, make-parameter, gpu ops).
+    evidence: >-
+      tests/vm_parity/corpus/86_binder_in_operand_and_void.esk: native and VM
+      agree on a binder in every operand position (list, vector, apply, a user
+      call, string-append, nested list/vector, named let, letrec, do, let*, case,
+      cond, and, if) and on a vector escaping a let through list, cons, return,
+      a nested let, vector-set! into another vector and closure capture.
+    caught_by: [engine-differential-review]
+    missed_by: [vm_parity corpus as it stood, run_all_tests]
+    notes: >-
+      hash-table-ref and three-argument apply are recorded VM gaps and are kept
+      out of the corpus program.
+  - id: SW-190
+    bucket: SILENT-WRONG
+    family: vm/closure-capture-of-let-local
+    status: fixed
+    closed_at: "90f0b37c"
+    title: "VM: a closure created inside a top-level let held an open reference to the let's local, which the let retired and the next define reused, so (f) answered f itself"
+    repro: >-
+      (define f (let ((v 1)) (lambda () v))) (display (f))
+      (define f3 (let ((v 1)) (lambda (x) (+ v x)))) (display (f3 1))
+    observed_before: >-
+      On the VM: <closure@...> for (f), and "+: expected numeric operands" for
+      (f3 1); natively 1 and 2. Found by the SW-189 escape sweep (a vector
+      escaping a let through closure capture).
+    correct: >-
+      1 and 2.
+    root_cause: >-
+      At top level (c->enclosing == NULL) the VM compiler converts a closure's
+      local captures into open stack-slot references (native 151) so a closure
+      sees later redefinitions of a top-level binding. It applied that to every
+      local, including a `let`'s: the let's OP_POPN retired the slot when the
+      scope ended, the next define reused it, and the closure read the new
+      occupant.
+    fix: >-
+      The open reference is kept -- letrec siblings, forward references and
+      redefinition visibility all depend on it -- and CLOSED when the slot dies.
+      Native 151 registers every (closure, upvalue, slot) it opens in the VM's
+      open-upvalue table (VM.open_uvs); OP_POPN, the instruction that retires a
+      scope's locals, first calls vm_close_open_upvalues_from() on the slots it
+      is about to drop, which copies each slot's last value into the closure and
+      marks the capture closed. A top-level tail call retires its scope by
+      resetting the whole frame at program end, where nothing can observe the
+      slot. (A first attempt that captured let-scoped locals by value at closure
+      creation broke letrec: a sibling captured before it is assigned must be
+      read through the slot.)
+    evidence: >-
+      tests/vm_parity/corpus/86_binder_in_operand_and_void.esk: (f), (f3 1), a
+      vector escaping through a closure, and a counter closure over a let-local
+      all agree with native.
+    caught_by: [engine-differential-review]
+    missed_by: [vm_parity corpus as it stood, run_all_tests]

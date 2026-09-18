@@ -1,0 +1,848 @@
+<h1 id="eshkol-standard-library--v135-api-reference-index">Eshkol Standard Library — v1.3.5 API Reference Index</h1>
+<p>Complete module-by-function map of the Eshkol standard library. Every symbol below links to a per-module reference page in this directory; every documented function was verified by compiling and running it with <code>eshkol-run … -r</code>.</p>
+<p>See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/module-system.md" target="_blank" rel="noopener noreferrer">module-system.md</a> for how <code>require</code> resolution, <code>(require stdlib)</code>, and <code>stdlib.o</code> precompilation work. The v1.2-scale surface notes remain in <a href="/docs#page=stdlib_v1_2_api" data-url="/content/stdlib_v1_2_api.html">../../STDLIB_V1_2_API.md</a>.</p>
+<p><strong>Modules: 63</strong> (plus <code>stdlib</code> itself and the module system page) — <strong>provided symbols: 856</strong> (plus stdlib-level helpers in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/stdlib_extras.md" target="_blank" rel="noopener noreferrer">stdlib_extras.md</a>).</p>
+<p><em>Auto</em> = loaded automatically by <code>(require stdlib)</code>; otherwise the module must be required individually.</p>
+<p>The interval and Taylor-model family — <code>core.ad.interval</code>, <code>core.ad.taylor_models</code> and the proof-backed <code>core.ad.rigorous_interval</code> / <code>core.ad.rigorous_taylor_models</code> beneath them, all reached through <code>(require core.ad.taylor_models)</code> — is documented together in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">certified-enclosures.md</a>; its symbols are listed in the shipped-exports table further down this page. The directed-rounding primitives <code>fl-next-up</code> and <code>fl-next-down</code> that layer rests on are <strong>runtime builtins</strong> on both engines, so they need no <code>require</code>; see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md#1-directed-rounding-primitives-runtime" target="_blank" rel="noopener noreferrer">certified-enclosures.md §1</a> and <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exact-roots-and-exact-expt" target="_blank" rel="noopener noreferrer">the numeric tower</a>.</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Module</th>
+<th>Auto</th>
+<th>Reference</th>
+<th>Provided symbols</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/ad/tape.esk" target="_blank" rel="noopener noreferrer"><code>core.ad.tape</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/ad_tape.md" target="_blank" rel="noopener noreferrer">ad_tape.md</a></td>
+<td><code>ad-tape-new</code> <code>ad-const</code> <code>ad-var</code> <code>ad-add</code> <code>ad-sub</code> <code>ad-mul</code> <code>ad-div</code> <code>ad-sin</code> <code>ad-cos</code> <code>ad-exp</code> <code>ad-log</code> <code>ad-sqrt</code> <code>ad-neg</code> <code>ad-abs</code> <code>ad-relu</code> <code>ad-sigmoid</code> <code>ad-tanh</code> <code>ad-backward</code> <code>ad-gradient</code> <code>ad-node-value</code> <code>with-tape</code> <code>current-tape</code> <code>make-tape</code> <code>tape-input</code> <code>tape-const</code> <code>node-value</code> <code>node-grad</code> <code>record-op!</code> <code>record-fd-op!</code> <code>tape-add</code> <code>tape-sub</code> <code>tape-mul</code> <code>tape-div</code> <code>tape-sin</code> <code>tape-cos</code> <code>tape-exp</code> <code>tape-log</code> <code>tape-neg</code> <code>tape-square</code> <code>tape-sqrt</code> <code>tape-tanh</code> <code>tape-sigmoid</code> <code>tape-relu</code> <code>tape-pow</code> <code>tape-gradient</code> <code>tape-snapshot</code> <code>tape-restore</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/alist.esk" target="_blank" rel="noopener noreferrer"><code>core.alist</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/alist.md" target="_blank" rel="noopener noreferrer">alist.md</a></td>
+<td><code>alist-ref</code> <code>alist-ref-or</code> <code>alist-set</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/argparse.esk" target="_blank" rel="noopener noreferrer"><code>core.argparse</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/argparse.md" target="_blank" rel="noopener noreferrer">argparse.md</a></td>
+<td><code>parse-args</code> <code>arg-get</code> <code>arg-positional</code> <code>arg-has?</code> <code>argparse-help</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/cache.esk" target="_blank" rel="noopener noreferrer"><code>core.cache</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/cache.md" target="_blank" rel="noopener noreferrer">cache.md</a></td>
+<td><code>make-lru-cache</code> <code>lru-get</code> <code>lru-get/default</code> <code>lru-set!</code> <code>lru-has?</code> <code>lru-delete!</code> <code>lru-size</code> <code>lru-capacity</code> <code>lru-clear!</code> <code>memoize</code> <code>memoize/cap</code> <code>memoize1</code> <code>memoize1/cap</code> <code>memoize2</code> <code>memoize2/cap</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/capabilities.esk" target="_blank" rel="noopener noreferrer"><code>core.capabilities</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/capabilities.md" target="_blank" rel="noopener noreferrer">capabilities.md</a></td>
+<td><code>capability-install-policy!</code> <code>capability-clear-policy!</code> <code>capability-policy</code> <code>capability-policy-active?</code> <code>capability-allowed?</code> <code>capability-require!</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/channels.esk" target="_blank" rel="noopener noreferrer"><code>core.channels</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/channels.md" target="_blank" rel="noopener noreferrer">channels.md</a></td>
+<td><code>make-channel</code> <code>channel?</code> <code>channel-capacity</code> <code>channel-len</code> <code>channel-closed?</code> <code>channel-send!</code> <code>channel-recv!</code> <code>channel-try-send!</code> <code>channel-try-recv!</code> <code>channel-close!</code> <code>channel-closed-sentinel</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/collections.esk" target="_blank" rel="noopener noreferrer"><code>core.collections</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/collections.md" target="_blank" rel="noopener noreferrer">collections.md</a></td>
+<td><code>make-pq</code> <code>pq-push!</code> <code>pq-pop!</code> <code>pq-peek</code> <code>pq-size</code> <code>pq-empty?</code> <code>make-set</code> <code>set-add!</code> <code>set-remove!</code> <code>set-contains?</code> <code>set-size</code> <code>set-&gt;list</code> <code>set-clear!</code> <code>set-union</code> <code>set-intersect</code> <code>set-difference</code> <code>make-deque</code> <code>deque-push-front!</code> <code>deque-push-back!</code> <code>deque-pop-front!</code> <code>deque-pop-back!</code> <code>deque-peek-front</code> <code>deque-peek-back</code> <code>deque-size</code> <code>deque-empty?</code> <code>deque-&gt;list</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/control/trampoline.esk" target="_blank" rel="noopener noreferrer"><code>core.control.trampoline</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/control_trampoline.md" target="_blank" rel="noopener noreferrer">control_trampoline.md</a></td>
+<td><code>trampoline</code> <code>bounce</code> <code>done</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/data/base64.esk" target="_blank" rel="noopener noreferrer"><code>core.data.base64</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/data_base64.md" target="_blank" rel="noopener noreferrer">data_base64.md</a></td>
+<td><code>base64-encode</code> <code>base64-decode</code> <code>base64-encode-string</code> <code>base64-decode-string</code> <code>string-&gt;bytes</code> <code>bytes-&gt;string</code> <code>base64-char-at</code> <code>base64-value</code> <code>string-&gt;bytes-helper</code> <code>base64-encode-helper</code> <code>base64-decode-helper</code> <code>base64-remove-padding</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/data/csv.esk" target="_blank" rel="noopener noreferrer"><code>core.data.csv</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/data_csv.md" target="_blank" rel="noopener noreferrer">data_csv.md</a></td>
+<td><code>csv-parse</code> <code>csv-parse-file</code> <code>csv-stringify</code> <code>csv-write-file</code> <code>csv-parse-line</code> <code>csv-parse-lines</code> <code>csv-split-fields</code> <code>csv-stringify-row</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/data/dataframe.esk" target="_blank" rel="noopener noreferrer"><code>core.data.dataframe</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/data_dataframe.md" target="_blank" rel="noopener noreferrer">data_dataframe.md</a></td>
+<td><code>csv-parse-typed</code> <code>csv-header</code> <code>csv-rows</code> <code>csv-column</code> <code>csv-column-idx</code> <code>csv-select</code> <code>csv-filter</code> <code>csv-map-column</code> <code>csv-row-count</code> <code>csv-col-count</code> <code>csv-describe</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/dbsp.esk" target="_blank" rel="noopener noreferrer"><code>core.dbsp</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/dbsp.md" target="_blank" rel="noopener noreferrer">dbsp.md</a></td>
+<td><code>zset-empty</code> <code>zset?</code> <code>zset-singleton</code> <code>zset-from-weighted</code> <code>zset-weight</code> <code>zset-add</code> <code>zset-negate</code> <code>zset-sub</code> <code>zset-scale</code> <code>zset-consolidate</code> <code>zset-empty?</code> <code>zset-positive?</code> <code>zset=?</code> <code>zset-entries</code> <code>zset-rows</code> <code>zset-size</code> <code>zset-map</code> <code>zset-filter</code> <code>zset-project</code> <code>zset-union</code> <code>zset-join</code> <code>zset-distinct</code> <code>zset-count</code> <code>zset-sum</code> <code>stream-zero</code> <code>stream-delay</code> <code>dbsp-delay</code> <code>stream-D</code> <code>stream-I</code> <code>stream-add</code> <code>stream-negate</code> <code>stream-lift</code> <code>dbsp-compose</code> <code>dbsp-incrementalize</code> <code>incremental-map</code> <code>incremental-filter</code> <code>incremental-project</code> <code>incremental-union</code> <code>incremental-join</code> <code>incremental-distinct</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/distributed.esk" target="_blank" rel="noopener noreferrer"><code>core.distributed</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/distributed.md" target="_blank" rel="noopener noreferrer">distributed.md</a></td>
+<td><code>lamport-zero</code> <code>lamport-tick</code> <code>lamport-merge</code> <code>lamport-recv</code> <code>lamport-before?</code> <code>vector-clock-empty</code> <code>vector-clock-ref</code> <code>vector-clock-set</code> <code>vector-clock-tick</code> <code>vector-clock-merge</code> <code>vector-clock-compare</code> <code>vector-clock-before?</code> <code>vector-clock-after?</code> <code>vector-clock-concurrent?</code> <code>vector-clock-equal?</code> <code>vector-clock-nodes</code> <code>make-g-counter</code> <code>g-counter-counts</code> <code>g-counter-inc</code> <code>g-counter-value</code> <code>g-counter-merge</code> <code>make-pn-counter</code> <code>pn-counter-positive</code> <code>pn-counter-negative</code> <code>pn-counter-inc</code> <code>pn-counter-dec</code> <code>pn-counter-value</code> <code>pn-counter-merge</code> <code>make-or-set</code> <code>or-set-adds</code> <code>or-set-removes</code> <code>or-set-clock</code> <code>or-set-add</code> <code>or-set-remove</code> <code>or-set-member?</code> <code>or-set-elements</code> <code>or-set-merge</code> <code>make-lww-register</code> <code>lww-register-value</code> <code>lww-register-timestamp</code> <code>lww-register-writer</code> <code>lww-register-deleted?</code> <code>lww-register-present?</code> <code>lww-register-set</code> <code>lww-register-delete</code> <code>lww-register-merge</code> <code>make-lww-map</code> <code>lww-map-entries</code> <code>lww-map-set</code> <code>lww-map-remove</code> <code>lww-map-ref</code> <code>lww-map-contains?</code> <code>lww-map-visible-entries</code> <code>lww-map-merge</code> <code>make-rga</code> <code>rga-root-id</code> <code>rga-entries</code> <code>rga-clock</code> <code>rga-entry-id</code> <code>rga-entry-prev</code> <code>rga-entry-value</code> <code>rga-entry-deleted?</code> <code>rga-insert-after</code> <code>rga-append</code> <code>rga-delete</code> <code>rga-values</code> <code>rga-last-id</code> <code>rga-merge</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/dnc.esk" target="_blank" rel="noopener noreferrer"><code>core.dnc</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/dnc.md" target="_blank" rel="noopener noreferrer">dnc.md</a></td>
+<td><code>make-dnc-memory</code> <code>dnc-content-address</code> <code>dnc-loc-address</code> <code>dnc-read</code> <code>dnc-write!</code> <code>dnc-alloc-weights</code> <code>dnc-read-grad</code> <code>dnc-memory?</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/exact_linalg.esk" target="_blank" rel="noopener noreferrer"><code>core.exact_linalg</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/exact_linalg.md" target="_blank" rel="noopener noreferrer">exact_linalg.md</a></td>
+<td><code>exact-matrix?</code> <code>exact-matrix-ref</code> <code>exact-matrix-mul</code> <code>exact-matrix-transpose</code> <code>exact-det</code> <code>exact-solve</code> <code>exact-inverse</code> <code>exact-rank</code> <code>exact-nullspace</code> <code>torus-average</code> <code>torus-average-2d</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/files.esk" target="_blank" rel="noopener noreferrer"><code>core.files</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/files.md" target="_blank" rel="noopener noreferrer">files.md</a></td>
+<td><code>path-directory</code> <code>with-atomic-output-file</code> <code>atomic-write-file</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/functional/compose.esk" target="_blank" rel="noopener noreferrer"><code>core.functional.compose</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/functional_compose.md" target="_blank" rel="noopener noreferrer">functional_compose.md</a></td>
+<td><code>compose</code> <code>compose3</code> <code>identity</code> <code>constantly</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/functional/curry.esk" target="_blank" rel="noopener noreferrer"><code>core.functional.curry</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/functional_curry.md" target="_blank" rel="noopener noreferrer">functional_curry.md</a></td>
+<td><code>curry2</code> <code>curry3</code> <code>uncurry2</code> <code>partial1</code> <code>partial2</code> <code>partial3</code> <code>partial</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/functional/flip.esk" target="_blank" rel="noopener noreferrer"><code>core.functional.flip</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/functional_flip.md" target="_blank" rel="noopener noreferrer">functional_flip.md</a></td>
+<td><code>flip</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/http_server.esk" target="_blank" rel="noopener noreferrer"><code>core.http_server</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/http_server.md" target="_blank" rel="noopener noreferrer">http_server.md</a></td>
+<td><code>http-request-line</code> <code>http-request-method</code> <code>http-request-target</code> <code>http-request-path</code> <code>http-request-query</code> <code>http-request-version</code> <code>http-request-header</code> <code>http-request-content-length</code> <code>http-request-body</code> <code>http-request-body-too-large?</code> <code>http-max-request-body-size</code> <code>http-response</code> <code>http-response?</code> <code>http-response-status</code> <code>http-response-content-type</code> <code>http-response-body</code> <code>http-route</code> <code>http-route-request</code> <code>http-standard-response</code> <code>http-server-respond-response</code> <code>http-server-respond-standard</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/io.esk" target="_blank" rel="noopener noreferrer"><code>core.io</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/io.md" target="_blank" rel="noopener noreferrer">io.md</a></td>
+<td><code>print</code> <code>println</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/json.esk" target="_blank" rel="noopener noreferrer"><code>core.json</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/json.md" target="_blank" rel="noopener noreferrer">json.md</a></td>
+<td><code>json-parse</code> <code>json-try-parse</code> <code>json-parse-result?</code> <code>json-result-ok?</code> <code>json-result-value</code> <code>json-result-error</code> <code>json-stringify</code> <code>json-read</code> <code>json-write</code> <code>json-get</code> <code>json-get-in</code> <code>json-array-ref</code> <code>hash-table-&gt;alist</code> <code>alist-&gt;hash-table</code> <code>alist-&gt;json</code> <code>json-write-file</code> <code>alist-write-json</code> <code>json-read-file</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/json_schema.esk" target="_blank" rel="noopener noreferrer"><code>core.json_schema</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/json_schema.md" target="_blank" rel="noopener noreferrer">json_schema.md</a></td>
+<td><code>json-schema-valid?</code> <code>json-schema-validate</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/list/compound.esk" target="_blank" rel="noopener noreferrer"><code>core.list.compound</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/list_compound.md" target="_blank" rel="noopener noreferrer">list_compound.md</a></td>
+<td><code>caar</code> <code>cadr</code> <code>cdar</code> <code>cddr</code> <code>caaar</code> <code>caadr</code> <code>cadar</code> <code>caddr</code> <code>cdaar</code> <code>cdadr</code> <code>cddar</code> <code>cdddr</code> <code>caaaar</code> <code>caaadr</code> <code>caadar</code> <code>caaddr</code> <code>cadaar</code> <code>cadadr</code> <code>caddar</code> <code>cadddr</code> <code>cdaaar</code> <code>cdaadr</code> <code>cdadar</code> <code>cdaddr</code> <code>cddaar</code> <code>cddadr</code> <code>cdddar</code> <code>cddddr</code> <code>first</code> <code>second</code> <code>third</code> <code>fourth</code> <code>fifth</code> <code>sixth</code> <code>seventh</code> <code>eighth</code> <code>ninth</code> <code>tenth</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/list/convert.esk" target="_blank" rel="noopener noreferrer"><code>core.list.convert</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/list_convert.md" target="_blank" rel="noopener noreferrer">list_convert.md</a></td>
+<td><code>list-&gt;vector</code> <code>vector-&gt;list</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/list/generate.esk" target="_blank" rel="noopener noreferrer"><code>core.list.generate</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/list_generate.md" target="_blank" rel="noopener noreferrer">list_generate.md</a></td>
+<td><code>iota</code> <code>iota-from</code> <code>iota-step</code> <code>repeat</code> <code>make-list</code> <code>range</code> <code>zip</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/list/higher_order.esk" target="_blank" rel="noopener noreferrer"><code>core.list.higher_order</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/list_higher_order.md" target="_blank" rel="noopener noreferrer">list_higher_order.md</a></td>
+<td><code>map1</code> <code>map2</code> <code>map3</code> <code>fold</code> <code>fold-left</code> <code>foldl</code> <code>fold-right</code> <code>foldr</code> <code>for-each</code> <code>any</code> <code>every</code> <code>filter-map</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/list/query.esk" target="_blank" rel="noopener noreferrer"><code>core.list.query</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/list_query.md" target="_blank" rel="noopener noreferrer">list_query.md</a></td>
+<td><code>count-if</code> <code>find</code> <code>length</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/list/search.esk" target="_blank" rel="noopener noreferrer"><code>core.list.search</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/list_search.md" target="_blank" rel="noopener noreferrer">list_search.md</a></td>
+<td><code>member</code> <code>member?</code> <code>memq</code> <code>memv</code> <code>assoc</code> <code>assq</code> <code>assv</code> <code>list-ref</code> <code>list-tail</code> <code>list-set!</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/list/sort.esk" target="_blank" rel="noopener noreferrer"><code>core.list.sort</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/list_sort.md" target="_blank" rel="noopener noreferrer">list_sort.md</a></td>
+<td><code>sort</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/list/transform.esk" target="_blank" rel="noopener noreferrer"><code>core.list.transform</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/list_transform.md" target="_blank" rel="noopener noreferrer">list_transform.md</a></td>
+<td><code>take</code> <code>drop</code> <code>take-right</code> <code>drop-right</code> <code>append</code> <code>reverse</code> <code>filter</code> <code>unzip</code> <code>partition</code> <code>list-copy</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/logging.esk" target="_blank" rel="noopener noreferrer"><code>core.logging</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/logging.md" target="_blank" rel="noopener noreferrer">logging.md</a></td>
+<td><code>log-debug</code> <code>log-info</code> <code>log-warn</code> <code>log-error</code> <code>log-set-level!</code> <code>log-set-output!</code> <code>log-with-trace!</code> <code>log-level</code> <code>log-output-port</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/logic/boolean.esk" target="_blank" rel="noopener noreferrer"><code>core.logic.boolean</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/logic_boolean.md" target="_blank" rel="noopener noreferrer">logic_boolean.md</a></td>
+<td><code>negate</code> <code>all?</code> <code>none?</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/logic/predicates.esk" target="_blank" rel="noopener noreferrer"><code>core.logic.predicates</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/logic_predicates.md" target="_blank" rel="noopener noreferrer">logic_predicates.md</a></td>
+<td><code>is-zero?</code> <code>is-positive?</code> <code>is-negative?</code> <code>is-even?</code> <code>is-odd?</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/logic/types.esk" target="_blank" rel="noopener noreferrer"><code>core.logic.types</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/logic_types.md" target="_blank" rel="noopener noreferrer">logic_types.md</a></td>
+<td><code>is-null?</code> <code>is-pair?</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/manifold.esk" target="_blank" rel="noopener noreferrer"><code>core.manifold</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/manifold.md" target="_blank" rel="noopener noreferrer">manifold.md</a></td>
+<td><code>make-euclidean-manifold</code> <code>make-hyperbolic-manifold</code> <code>make-spherical-manifold</code> <code>manifold-exp-map</code> <code>manifold-log-map</code> <code>manifold-distance</code> <code>manifold-parallel-transport</code> <code>manifold-curvature</code> <code>manifold-dimension</code> <code>manifold-type</code> <code>metric-component</code> <code>manifold-metric</code> <code>manifold-metric-inverse</code> <code>christoffel-symbol</code> <code>manifold-christoffel</code> <code>manifold-sectional-curvature</code> <code>manifold-scalar-curvature</code> <code>ricci-component</code> <code>manifold-ricci</code> <code>riemann-component</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/memory.esk" target="_blank" rel="noopener noreferrer"><code>core.memory</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/memory.md" target="_blank" rel="noopener noreferrer">memory.md</a></td>
+<td><code>make-memory-log</code> <code>memory-append!</code> <code>memory-events</code> <code>memory-merge</code> <code>memory-verify-chain</code> <code>memory-verify-events</code> <code>memory-fold-lww</code> <code>memory-event?</code> <code>memory-event-id</code> <code>memory-event-prev</code> <code>memory-event-vclock</code> <code>memory-event-node</code> <code>memory-event-type</code> <code>memory-event-payload</code> <code>event-content-hash</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/memory_store.esk" target="_blank" rel="noopener noreferrer"><code>core.memory_store</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/memory_store.md" target="_blank" rel="noopener noreferrer">memory_store.md</a></td>
+<td><code>make-memory-store</code> <code>memory-store?</code> <code>memory-store-log</code> <code>memory-store-path</code> <code>memory-store-open</code> <code>memory-store-open-fast</code> <code>memory-store-open-durable</code> <code>memory-store-open-fast-durable</code> <code>memory-store-close!</code> <code>memory-store-append!</code> <code>memory-store-verify</code> <code>memory-store-audit</code> <code>memory-store-audit-linear</code> <code>memory-store-linear-evidence</code> <code>memory-store-count</code> <code>memory-store-head</code> <code>memory-store-tail</code> <code>memory-store-sanitize</code> <code>memory-store-test-fail-next-first-file-parent-sync!</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/merkle.esk" target="_blank" rel="noopener noreferrer"><code>core.merkle</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/merkle.md" target="_blank" rel="noopener noreferrer">merkle.md</a></td>
+<td><code>fnv1a-64</code> <code>hash-&gt;hex</code> <code>merkle-leaf</code> <code>merkle-leaf?</code> <code>merkle-inode?</code> <code>merkle-root</code> <code>merkle-data</code> <code>merkle-tree</code> <code>merkle-tree-with-hash</code> <code>merkle-leaves</code> <code>merkle-proof</code> <code>merkle-verify</code> <code>make-cas</code> <code>make-cas-with-hash</code> <code>cas?</code> <code>cas-put!</code> <code>cas-get</code> <code>cas-has?</code> <code>cas-size</code> <code>cas-keys</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/metrics.esk" target="_blank" rel="noopener noreferrer"><code>core.metrics</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/metrics.md" target="_blank" rel="noopener noreferrer">metrics.md</a></td>
+<td><code>make-counter</code> <code>counter-inc!</code> <code>counter-add!</code> <code>make-gauge</code> <code>gauge-set!</code> <code>gauge-inc!</code> <code>gauge-dec!</code> <code>make-histogram</code> <code>histogram-observe!</code> <code>histogram-buckets</code> <code>metrics-register!</code> <code>metrics-render</code> <code>metrics-reset!</code> <code>metric-name</code> <code>metric-help</code> <code>metric-kind</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/ml/gradient_estimators.esk" target="_blank" rel="noopener noreferrer"><code>core.ml.gradient_estimators</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/ml_gradient_estimators.md" target="_blank" rel="noopener noreferrer">ml_gradient_estimators.md</a></td>
+<td><code>gumbel-softmax</code> <code>gumbel-softmax-det</code> <code>straight-through</code> <code>straight-through-round</code> <code>straight-through-onehot</code> <code>categorical-pick</code> <code>argmax-onehot</code> <code>softmax</code> <code>sample-gumbel-noise</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/ml/neurosymbolic.esk" target="_blank" rel="noopener noreferrer"><code>core.ml.neurosymbolic</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/ml_neurosymbolic.md" target="_blank" rel="noopener noreferrer">ml_neurosymbolic.md</a></td>
+<td><code>make-embedding-table</code> <code>emb-dim</code> <code>embed!</code> <code>vdot</code> <code>soft-unify</code> <code>soft-unify-loss</code> <code>soft-unify-train!</code> <code>kb-attention</code> <code>kb-retrieve</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/msgpack.esk" target="_blank" rel="noopener noreferrer"><code>core.msgpack</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/msgpack.md" target="_blank" rel="noopener noreferrer">msgpack.md</a></td>
+<td><code>msgpack-null</code> <code>msgpack-null?</code> <code>msgpack-map</code> <code>msgpack-map?</code> <code>msgpack-map-entries</code> <code>msgpack-encode</code> <code>msgpack-decode</code> <code>msgpack-decode-prefix</code> <code>msgpack-bytes-&gt;bytevector</code> <code>msgpack-bytevector-&gt;bytes</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/numeric_extras.esk" target="_blank" rel="noopener noreferrer"><code>core.numeric_extras</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/numeric_extras.md" target="_blank" rel="noopener noreferrer">numeric_extras.md</a></td>
+<td><code>exact-integer-sqrt</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/operators/arithmetic.esk" target="_blank" rel="noopener noreferrer"><code>core.operators.arithmetic</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/operators_arithmetic.md" target="_blank" rel="noopener noreferrer">operators_arithmetic.md</a></td>
+<td><code>add</code> <code>sub</code> <code>mul</code> <code>divide</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/operators/compare.esk" target="_blank" rel="noopener noreferrer"><code>core.operators.compare</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/operators_compare.md" target="_blank" rel="noopener noreferrer">operators_compare.md</a></td>
+<td><code>lt</code> <code>gt</code> <code>le</code> <code>ge</code> <code>eq</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/pde/ns-residual.esk" target="_blank" rel="noopener noreferrer"><code>core.pde.ns-residual</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/ns-residual.md" target="_blank" rel="noopener noreferrer">ns-residual.md</a></td>
+<td><code>ns-flow</code> <code>ns-flow-ur</code> <code>ns-flow-utheta</code> <code>ns-flow-uz</code> <code>ns-flow-p</code> <code>ns-flow-nu</code> <code>ns-cflow</code> <code>ns-cflow-u</code> <code>ns-cflow-p</code> <code>ns-cflow-nu</code> <code>ns-residual</code> <code>ns-residual-cartesian</code> <code>ns-divergence</code> <code>ns-divergence-cartesian</code> <code>ns-simpson-nodes</code> <code>ns-simpson-weights</code> <code>ns-simpson-step</code> <code>ns-grid-integral</code> <code>ns-energy</code> <code>ns-dissipation</code> <code>ns-similarity-field</code> <code>ns-residual-tau-series</code> <code>ns-singular-orders</code> <code>ns-force-smoothness-probe</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/plot.esk" target="_blank" rel="noopener noreferrer"><code>core.plot</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/plot.md" target="_blank" rel="noopener noreferrer">plot.md</a></td>
+<td><code>sparkline</code> <code>bar-chart</code> <code>histogram</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/reflection.esk" target="_blank" rel="noopener noreferrer"><code>core.reflection</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/reflection.md" target="_blank" rel="noopener noreferrer">reflection.md</a></td>
+<td><code>describe</code> <code>type-name</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/sdnc.esk" target="_blank" rel="noopener noreferrer"><code>core.sdnc</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/sdnc.md" target="_blank" rel="noopener noreferrer">sdnc.md</a></td>
+<td><code>sdnc-program</code> <code>sdnc-run</code> <code>sdnc-weight-grad</code> <code>sdnc-params</code> <code>sdnc-set-params!</code> <code>sdnc-improve!</code> <code>sdnc?</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/sexp.esk" target="_blank" rel="noopener noreferrer"><code>core.sexp</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/sexp.md" target="_blank" rel="noopener noreferrer">sexp.md</a></td>
+<td><code>sexp-&gt;string</code> <code>sexp-&gt;canonical-string</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/streams.esk" target="_blank" rel="noopener noreferrer"><code>core.streams</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/streams.md" target="_blank" rel="noopener noreferrer">streams.md</a></td>
+<td><code>stream-null</code> <code>stream-null?</code> <code>stream-pair?</code> <code>stream?</code> <code>stream-cons</code> <code>stream-car</code> <code>stream-cdr</code> <code>stream-take</code> <code>stream-drop</code> <code>stream-ref</code> <code>stream-map</code> <code>stream-filter</code> <code>stream-for-each</code> <code>stream-zip</code> <code>stream-append</code> <code>stream-iterate</code> <code>stream-from</code> <code>stream-take-while</code> <code>stream-drop-while</code> <code>stream-length</code> <code>stream-&gt;list</code> <code>list-&gt;stream</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/strings.esk" target="_blank" rel="noopener noreferrer"><code>core.strings</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/strings.md" target="_blank" rel="noopener noreferrer">strings.md</a></td>
+<td><code>string-join</code> <code>string-trim</code> <code>string-trim-left</code> <code>string-trim-right</code> <code>string-replace</code> <code>string-reverse</code> <code>string-copy</code> <code>string-repeat</code> <code>string-starts-with?</code> <code>string-ends-with?</code> <code>string-starts-with</code> <code>string-ends-with</code> <code>string-index</code> <code>string-last-index</code> <code>string-contains</code> <code>string-contains?</code> <code>string-count</code> <code>string-find</code> <code>string-upcase</code> <code>string-downcase</code> <code>string-split-ordered</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/symbolic.esk" target="_blank" rel="noopener noreferrer"><code>core.symbolic</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/symbolic.md" target="_blank" rel="noopener noreferrer">symbolic.md</a></td>
+<td><code>poly?</code> <code>poly</code> <code>poly-const</code> <code>poly-var</code> <code>poly+</code> <code>poly-</code> <code>poly*</code> <code>poly-expt</code> <code>poly-scale</code> <code>poly-eval</code> <code>poly-deriv</code> <code>poly-degree</code> <code>poly-coeff</code> <code>poly=?</code> <code>poly-&gt;string</code> <code>series?</code> <code>series</code> <code>series+</code> <code>series-</code> <code>series*</code> <code>series-compose</code> <code>series-deriv</code> <code>series-integrate</code> <code>series-inverse</code> <code>series-coeff</code> <code>series-truncate</code> <code>series-&gt;poly</code> <code>series-exp</code> <code>series-log</code> <code>series-sin</code> <code>series-cos</code> <code>series-sqrt</code> <code>series-lowest-order</code> <code>series-singular-part</code> <code>poly-derivative-of</code> <code>series-derivative-of</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/testing.esk" target="_blank" rel="noopener noreferrer"><code>core.testing</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/testing.md" target="_blank" rel="noopener noreferrer">testing.md</a></td>
+<td><code>register-test</code> <code>check-equal?</code> <code>check-true</code> <code>check-false</code> <code>check-approx</code> <code>assert-close</code> <code>certify-kernel</code> <code>check-raises</code> <code>run-tests</code> <code>reset-tests!</code> <code>*tests*</code> <code>*test-pass-count*</code> <code>*test-fail-count*</code> <code>*current-test-fails*</code> <code>*current-test-name*</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/threads.esk" target="_blank" rel="noopener noreferrer"><code>core.threads</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/threads.md" target="_blank" rel="noopener noreferrer">threads.md</a></td>
+<td><code>make-mutex</code> <code>mutex-lock!</code> <code>mutex-trylock!</code> <code>mutex-unlock!</code> <code>mutex-destroy!</code> <code>with-mutex</code> <code>make-condvar</code> <code>condvar-wait!</code> <code>condvar-signal!</code> <code>condvar-broadcast!</code> <code>condvar-destroy!</code> <code>make-thread</code> <code>thread-join</code> <code>thread?</code> <code>thread-result-ready?</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/url.esk" target="_blank" rel="noopener noreferrer"><code>core.url</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/url.md" target="_blank" rel="noopener noreferrer">url.md</a></td>
+<td><code>url-encode</code> <code>url-decode</code> <code>base64url-encode</code> <code>base64url-decode</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/math.esk" target="_blank" rel="noopener noreferrer"><code>math</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/math.md" target="_blank" rel="noopener noreferrer">math.md</a></td>
+<td><code>mat-ref</code> <code>tensor-copy</code> <code>det</code> <code>inv</code> <code>solve</code> <code>cross</code> <code>dot</code> <code>normalize</code> <code>mat-vec-mul</code> <code>power-iteration</code> <code>integrate</code> <code>newton</code> <code>variance</code> <code>std</code> <code>covariance</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/ml/activations.esk" target="_blank" rel="noopener noreferrer"><code>ml.activations</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/ml_activations.md" target="_blank" rel="noopener noreferrer">ml_activations.md</a></td>
+<td><code>relu-scalar</code> <code>sigmoid-scalar</code> <code>tanh-scalar</code> <code>softplus-scalar</code> <code>silu</code> <code>swish</code> <code>mish</code> <code>normalize-minmax</code> <code>normalize-zscore</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/ml/optimization.esk" target="_blank" rel="noopener noreferrer"><code>ml.optimization</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/ml_optimization.md" target="_blank" rel="noopener noreferrer">ml_optimization.md</a></td>
+<td><code>gradient-descent</code> <code>adam</code> <code>l-bfgs</code> <code>conjugate-gradient</code> <code>line-search</code> <code>tensor-dot</code> <code>tensor-norm</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/signal/fft.esk" target="_blank" rel="noopener noreferrer"><code>signal.fft</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/signal_fft.md" target="_blank" rel="noopener noreferrer">signal_fft.md</a></td>
+<td><code>fft</code> <code>ifft</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/signal/filters.esk" target="_blank" rel="noopener noreferrer"><code>signal.filters</code></a></td>
+<td>yes</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/signal_filters.md" target="_blank" rel="noopener noreferrer">signal_filters.md</a></td>
+<td><code>hamming-window</code> <code>hann-window</code> <code>blackman-window</code> <code>kaiser-window</code> <code>apply-window</code> <code>convolve</code> <code>fast-convolve</code> <code>fir-filter</code> <code>iir-filter</code> <code>butterworth-lowpass</code> <code>butterworth-highpass</code> <code>butterworth-bandpass</code> <code>frequency-response</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/web/web.esk" target="_blank" rel="noopener noreferrer"><code>web.web</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/web.md" target="_blank" rel="noopener noreferrer">web.md</a></td>
+<td><code>web-get-document</code> <code>web-get-window</code> <code>web-get-body</code> <code>web-create-element</code> <code>web-create-text-node</code> <code>web-get-element-by-id</code> <code>web-query-selector</code> <code>web-query-selector-all</code> <code>web-append-child</code> <code>web-remove-child</code> <code>web-insert-before</code> <code>web-replace-child</code> <code>web-clone-node</code> <code>web-get-parent</code> <code>web-get-first-child</code> <code>web-get-last-child</code> <code>web-get-next-sibling</code> <code>web-get-prev-sibling</code> <code>web-get-children-count</code> <code>web-get-child-at</code> <code>web-set-attribute</code> <code>web-get-attribute</code> <code>web-remove-attribute</code> <code>web-has-attribute</code> <code>web-set-inner-html</code> <code>web-get-inner-html</code> <code>web-set-text-content</code> <code>web-get-text-content</code> <code>web-add-class</code> <code>web-remove-class</code> <code>web-toggle-class</code> <code>web-has-class</code> <code>web-set-style</code> <code>web-get-style</code> <code>web-get-value</code> <code>web-set-value</code> <code>web-get-checked</code> <code>web-set-checked</code> <code>web-focus</code> <code>web-blur</code> <code>web-add-event-listener</code> <code>web-remove-event-listener</code> <code>web-event-prevent-default</code> <code>web-event-stop-propagation</code> <code>web-event-get-target</code> <code>web-event-get-key</code> <code>web-event-get-key-code</code> <code>web-event-get-mouse-x</code> <code>web-event-get-mouse-y</code> <code>web-set-timeout</code> <code>web-set-interval</code> <code>web-clear-timeout</code> <code>web-clear-interval</code> <code>web-request-animation-frame</code> <code>web-cancel-animation-frame</code> <code>web-console-log</code> <code>web-console-warn</code> <code>web-console-error</code> <code>web-alert</code> <code>web-confirm</code> <code>web-prompt</code> <code>web-get-window-width</code> <code>web-get-window-height</code> <code>web-get-scroll-x</code> <code>web-get-scroll-y</code> <code>web-scroll-to</code> <code>web-get-href</code> <code>web-set-href</code> <code>web-get-hash</code> <code>web-set-hash</code> <code>web-storage-get</code> <code>web-storage-set</code> <code>web-storage-remove</code> <code>web-storage-clear</code> <code>web-fetch</code> <code>web-get-context-2d</code> <code>web-canvas-fill-rect</code> <code>web-canvas-stroke-rect</code> <code>web-canvas-clear-rect</code> <code>web-canvas-fill-style</code> <code>web-canvas-stroke-style</code> <code>web-canvas-line-width</code> <code>web-canvas-begin-path</code> <code>web-canvas-close-path</code> <code>web-canvas-move-to</code> <code>web-canvas-line-to</code> <code>web-canvas-arc</code> <code>web-canvas-fill</code> <code>web-canvas-stroke</code> <code>web-canvas-fill-text</code> <code>web-canvas-font</code> <code>web-canvas-save</code> <code>web-canvas-restore</code> <code>web-canvas-translate</code> <code>web-canvas-rotate</code> <code>web-canvas-scale</code> <code>web-release-handle</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="builtin-families">Builtin families</h2>
+<p>Some public surfaces are compiler or VM builtins rather than <code>.esk</code> modules, so they have no <code>require</code> line or <code>provide</code> block. They are documented here because from a user’s side they are ordinary callable names.</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Family</th>
+<th>Reference</th>
+<th>Names</th>
+<th>Engines</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Geometric manifolds, Lie groups, forms, geodesic attention</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/geometry.md" target="_blank" rel="noopener noreferrer">geometry.md</a></td>
+<td>62</td>
+<td>bytecode VM only</td>
+</tr>
+<tr>
+<td>Explicit reverse-mode AD tape and instrumentation counters</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/tape.md" target="_blank" rel="noopener noreferrer">../ad/tape.md</a></td>
+<td>33</td>
+<td>native AOT, native JIT, VM</td>
+</tr>
+</tbody>
+</table>
+<h2 id="dd-11-indexed-export-coverage">DD-11 indexed export coverage</h2>
+<p>The following shipped exports were missing from the index and now have stable reference anchors on <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md" target="_blank" rel="noopener noreferrer">shipped_exports.md</a>.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Source</th>
+<th>Export</th>
+<th>Reference</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent.http</code></td>
+<td><code>http-stream-error</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#http-stream-error" target="_blank" rel="noopener noreferrer">http-stream-error</a></td>
+</tr>
+<tr>
+<td><code>agent.http</code></td>
+<td><code>sse-event-id</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#sse-event-id" target="_blank" rel="noopener noreferrer">sse-event-id</a></td>
+</tr>
+<tr>
+<td><code>agent.http</code></td>
+<td><code>sse-event-retry-ms</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#sse-event-retry-ms" target="_blank" rel="noopener noreferrer">sse-event-retry-ms</a></td>
+</tr>
+<tr>
+<td><code>agent.quantum</code></td>
+<td><code>make-pauli-hamiltonian</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#make-pauli-hamiltonian" target="_blank" rel="noopener noreferrer">make-pauli-hamiltonian</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>interval-add</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#interval-add" target="_blank" rel="noopener noreferrer">interval-add</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>interval-cos</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#interval-cos" target="_blank" rel="noopener noreferrer">interval-cos</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>interval-div</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#interval-div" target="_blank" rel="noopener noreferrer">interval-div</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>interval-exp</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#interval-exp" target="_blank" rel="noopener noreferrer">interval-exp</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>interval-log</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#interval-log" target="_blank" rel="noopener noreferrer">interval-log</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>interval-mid</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#interval-mid" target="_blank" rel="noopener noreferrer">interval-mid</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>interval-mul</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#interval-mul" target="_blank" rel="noopener noreferrer">interval-mul</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>interval-neg</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#interval-neg" target="_blank" rel="noopener noreferrer">interval-neg</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>interval-pow</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#interval-pow" target="_blank" rel="noopener noreferrer">interval-pow</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>interval-sin</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#interval-sin" target="_blank" rel="noopener noreferrer">interval-sin</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>interval-sub</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#interval-sub" target="_blank" rel="noopener noreferrer">interval-sub</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>interval-union</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#interval-union" target="_blank" rel="noopener noreferrer">interval-union</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>interval-widen</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#interval-widen" target="_blank" rel="noopener noreferrer">interval-widen</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>interval?</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#interval" target="_blank" rel="noopener noreferrer">interval?</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>iv-abs-pad</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#iv-abs-pad" target="_blank" rel="noopener noreferrer">iv-abs-pad</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>iv-eps</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#iv-eps" target="_blank" rel="noopener noreferrer">iv-eps</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code></td>
+<td><code>iv-rel-pad</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#iv-rel-pad" target="_blank" rel="noopener noreferrer">iv-rel-pad</a></td>
+</tr>
+<tr>
+<td><code>core.ad.taylor_models</code></td>
+<td><code>taylor-model?</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#taylor-model" target="_blank" rel="noopener noreferrer">taylor-model?</a></td>
+</tr>
+<tr>
+<td><code>core.ad.taylor_models</code></td>
+<td><code>tm-nsamp</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tm-nsamp" target="_blank" rel="noopener noreferrer">tm-nsamp</a></td>
+</tr>
+<tr>
+<td><code>core.ad.taylor_models</code></td>
+<td><code>tm-safety</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tm-safety" target="_blank" rel="noopener noreferrer">tm-safety</a></td>
+</tr>
+<tr>
+<td><code>core.ad.tensor_tower</code></td>
+<td><code>tt-add</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tt-add" target="_blank" rel="noopener noreferrer">tt-add</a></td>
+</tr>
+<tr>
+<td><code>core.ad.tensor_tower</code></td>
+<td><code>tt-const</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tt-const" target="_blank" rel="noopener noreferrer">tt-const</a></td>
+</tr>
+<tr>
+<td><code>core.ad.tensor_tower</code></td>
+<td><code>tt-div</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tt-div" target="_blank" rel="noopener noreferrer">tt-div</a></td>
+</tr>
+<tr>
+<td><code>core.ad.tensor_tower</code></td>
+<td><code>tt-exp</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tt-exp" target="_blank" rel="noopener noreferrer">tt-exp</a></td>
+</tr>
+<tr>
+<td><code>core.ad.tensor_tower</code></td>
+<td><code>tt-hadamard-cauchy</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tt-hadamard-cauchy" target="_blank" rel="noopener noreferrer">tt-hadamard-cauchy</a></td>
+</tr>
+<tr>
+<td><code>core.ad.tensor_tower</code></td>
+<td><code>tt-neg</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tt-neg" target="_blank" rel="noopener noreferrer">tt-neg</a></td>
+</tr>
+<tr>
+<td><code>core.ad.tensor_tower</code></td>
+<td><code>tt-order</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tt-order" target="_blank" rel="noopener noreferrer">tt-order</a></td>
+</tr>
+<tr>
+<td><code>core.ad.tensor_tower</code></td>
+<td><code>tt-scale-const</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tt-scale-const" target="_blank" rel="noopener noreferrer">tt-scale-const</a></td>
+</tr>
+<tr>
+<td><code>core.ad.tensor_tower</code></td>
+<td><code>tt-sub</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tt-sub" target="_blank" rel="noopener noreferrer">tt-sub</a></td>
+</tr>
+<tr>
+<td><code>core.ad.tensor_tower</code></td>
+<td><code>tt-value</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tt-value" target="_blank" rel="noopener noreferrer">tt-value</a></td>
+</tr>
+<tr>
+<td><code>tensor.utils</code></td>
+<td><code>tensor.utils</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tensor.utils" target="_blank" rel="noopener noreferrer">tensor.utils</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-adapter-available?</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-adapter-available" target="_blank" rel="noopener noreferrer">tc-adapter-available?</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-adapter-status</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-adapter-status" target="_blank" rel="noopener noreferrer">tc-adapter-status</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-attention-forward</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-attention-forward" target="_blank" rel="noopener noreferrer">tc-attention-forward</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-buffer-alloc</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-buffer-alloc" target="_blank" rel="noopener noreferrer">tc-buffer-alloc</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-buffer-free</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-buffer-free" target="_blank" rel="noopener noreferrer">tc-buffer-free</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-buffer-map</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-buffer-map" target="_blank" rel="noopener noreferrer">tc-buffer-map</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-buffer-size</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-buffer-size" target="_blank" rel="noopener noreferrer">tc-buffer-size</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-device-info</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-device-info" target="_blank" rel="noopener noreferrer">tc-device-info</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-device-name</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-device-name" target="_blank" rel="noopener noreferrer">tc-device-name</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-gemm</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-gemm" target="_blank" rel="noopener noreferrer">tc-gemm</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-gemm-bf16</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-gemm-bf16" target="_blank" rel="noopener noreferrer">tc-gemm-bf16</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-gemm-fp16</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-gemm-fp16" target="_blank" rel="noopener noreferrer">tc-gemm-fp16</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-gemm-fp32</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-gemm-fp32" target="_blank" rel="noopener noreferrer">tc-gemm-fp32</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-init</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-init" target="_blank" rel="noopener noreferrer">tc-init</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-last-backend</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-last-backend" target="_blank" rel="noopener noreferrer">tc-last-backend</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-last-backend-name</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-last-backend-name" target="_blank" rel="noopener noreferrer">tc-last-backend-name</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-last-status</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-last-status" target="_blank" rel="noopener noreferrer">tc-last-status</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-runtime-capabilities</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-runtime-capabilities" target="_blank" rel="noopener noreferrer">tc-runtime-capabilities</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-runtime-capabilities-abi-version</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-runtime-capabilities-abi-version" target="_blank" rel="noopener noreferrer">tc-runtime-capabilities-abi-version</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-runtime-capabilities-status</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-runtime-capabilities-status" target="_blank" rel="noopener noreferrer">tc-runtime-capabilities-status</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-shutdown</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-shutdown" target="_blank" rel="noopener noreferrer">tc-shutdown</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-status-string</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-status-string" target="_blank" rel="noopener noreferrer">tc-status-string</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>tc-version</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tc-version" target="_blank" rel="noopener noreferrer">tc-version</a></td>
+</tr>
+<tr>
+<td><code>web.web</code></td>
+<td><code>web.web</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#web.web" target="_blank" rel="noopener noreferrer">web.web</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="not-covered-here">Not covered here</h2>
+<ul>
+<li>The VM geometric builtin surface is documented in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/geometry.md" target="_blank" rel="noopener noreferrer">geometry.md</a>; these names are native VM operations rather than a <code>require</code>-loaded standard-library module.</li>
+<li><code>core.test-module</code> (<code>lib/core/test-module.esk</code>) and <code>ml.nested_test_module</code> (<code>lib/ml/nested_test_module.esk</code>) are module-loader test fixtures, not user API.</li>
+<li><code>lib/agent/*</code> (HTTP client, sqlite, subprocess, regex, crypto/sha256, terminal, …) is the agent-FFI domain, documented separately from the stdlib reference.</li>
+<li><code>stdlib</code>-level helpers (<code>random-tensor</code>, <code>time-it</code>, <code>time-ns</code>, keyword-argument internals, …) are covered in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/stdlib_extras.md" target="_blank" rel="noopener noreferrer">stdlib_extras.md</a>.</li>
+</ul>
+<h3 id="modules-documented-outside-this-directory">Modules documented outside this directory</h3>
+<p>These shipped modules have no per-module page in this directory; their exports are documented, with signatures, on the pages listed.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Module</th>
+<th>Require</th>
+<th>Documented in</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>math.constants</code></td>
+<td><code>(require math.constants)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/MATH_STDLIB.md#1-mathematical-constants" target="_blank" rel="noopener noreferrer">MATH_STDLIB.md §1</a></td>
+</tr>
+<tr>
+<td><code>math.special</code></td>
+<td><code>(require math.special)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/MATH_STDLIB.md#2-special-functions" target="_blank" rel="noopener noreferrer">MATH_STDLIB.md §2</a></td>
+</tr>
+<tr>
+<td><code>math.ode</code></td>
+<td><code>(require math.ode)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/MATH_STDLIB.md#3-ode-solvers" target="_blank" rel="noopener noreferrer">MATH_STDLIB.md §3</a></td>
+</tr>
+<tr>
+<td><code>math.statistics</code></td>
+<td><code>(require math.statistics)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/MATH_STDLIB.md#4-statistics" target="_blank" rel="noopener noreferrer">MATH_STDLIB.md §4</a></td>
+</tr>
+<tr>
+<td><code>random.random</code></td>
+<td><code>(require random.random)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/QUANTUM_RNG.md" target="_blank" rel="noopener noreferrer">QUANTUM_RNG.md</a></td>
+</tr>
+<tr>
+<td><code>tensor.utils</code></td>
+<td><code>(require tensor.utils)</code></td>
+<td><a href="/docs#page=api_reference&amp;tensor-utilities" data-url="/content/api_reference.html">API_REFERENCE.md, Tensor Utilities</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>(require tensorcore)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tensorcore" target="_blank" rel="noopener noreferrer">shipped_exports.md</a></td>
+</tr>
+<tr>
+<td><code>core.blc</code></td>
+<td><code>(require core.blc)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/blc.md" target="_blank" rel="noopener noreferrer">blc.md</a> (reference); <a href="https://github.com/tsotchke/eshkol/blob/master/docs/guide/BINARY_LAMBDA_CALCULUS.md" target="_blank" rel="noopener noreferrer">BINARY_LAMBDA_CALCULUS.md</a> (guide)</td>
+</tr>
+<tr>
+<td><code>core.ad.guw</code></td>
+<td><code>(require core.ad.guw)</code></td>
+<td><a href="/docs#page=guide_automatic_differentiation&amp;4-multivariate-mixed-partials-guw" data-url="/content/guide_automatic_differentiation.html">AUTOMATIC_DIFFERENTIATION.md §4</a></td>
+</tr>
+<tr>
+<td><code>core.ad.tensor_tower</code></td>
+<td><code>(require core.ad.tensor_tower)</code></td>
+<td><a href="/docs#page=guide_automatic_differentiation&amp;5-tensor-ad--towers-of-tensors" data-url="/content/guide_automatic_differentiation.html">AUTOMATIC_DIFFERENTIATION.md §5</a></td>
+</tr>
+<tr>
+<td><code>core.ad.sparse_guw</code></td>
+<td><code>(require core.ad.sparse_guw)</code></td>
+<td><a href="/docs#page=guide_automatic_differentiation&amp;7-sparse-high-order--sparse-hessians" data-url="/content/guide_automatic_differentiation.html">AUTOMATIC_DIFFERENTIATION.md §7</a></td>
+</tr>
+<tr>
+<td><code>core.ad.checkpoint</code></td>
+<td><code>(require core.ad.checkpoint)</code></td>
+<td><a href="/docs#page=guide_automatic_differentiation&amp;8-reverse-mode--checkpointing" data-url="/content/guide_automatic_differentiation.html">AUTOMATIC_DIFFERENTIATION.md §8</a></td>
+</tr>
+<tr>
+<td><code>core.ad.taylor_numerics</code></td>
+<td><code>(require core.ad.taylor_numerics)</code></td>
+<td><a href="/docs#page=guide_automatic_differentiation&amp;10-tower-numerics--odes-roots-inversion" data-url="/content/guide_automatic_differentiation.html">AUTOMATIC_DIFFERENTIATION.md §10</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code>, <code>core.ad.rigorous_interval</code>, <code>core.ad.taylor_models</code>, <code>core.ad.rigorous_taylor_models</code></td>
+<td><code>(require core.ad.taylor_models)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">certified-enclosures.md</a></td>
+</tr>
+<tr>
+<td><code>agent.*</code></td>
+<td><code>(require agent.&lt;name&gt;)</code></td>
+<td><a href="/docs#page=reference_agent" data-url="/content/reference_agent.html">../agent/INDEX.md</a></td>
+</tr>
+</tbody>
+</table>
+<p>The modules under <code>lib/test/modules/</code> are module-system test fixtures, not user API.</p>

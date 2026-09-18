@@ -1,0 +1,34 @@
+;; Type System Test: the recursion result fixpoint claims nothing it cannot
+;; show. A procedure no path returns from, one whose result keeps growing, and
+;; one whose recursive branch passes a different kind of value through all get
+;; Value, and well-typed recursive code stays silent.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+;; No path returns: the result is Value, not Never.
+(define (forever x) (forever x))
+(define (use-forever) (label (forever 1)))
+
+;; Returns itself: the result is bounded by the pass budget and becomes Value.
+(define (returns-self) returns-self)
+(define (use-returns-self) ((returns-self)))
+
+;; The join of the two exits is Value, so nothing is claimed.
+(define (either flag x) (if flag (either #f x) x))
+(define (use-either s) (label (either #t s)))
+
+;; Correct uses of inferred recursive results.
+(define (count-up n) (let loop ((i 0)) (if (< i n) (loop (+ i 1)) i)))
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
+(define (joined n)
+  (define (walk i acc) (if (< i n) (walk (+ i 1) (string-append acc "x")) acc))
+  (label (walk 0 "")))
+
+(display (area (count-up 3) (fact 4)))
+(newline)
+(display (joined 3))
+(newline)

@@ -75,6 +75,9 @@ REPO_ROOT="$(pwd)"
 if eshkol_durable_enabled; then
     WASM_DIFF_WORK="$(eshkol_durable_prepare_dir wasm-differential)" || exit $?
     TRACE_DIR="${TRACE_DIR:-$WASM_DIFF_WORK/traces}"
+    # Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+    . "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+    eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 else
     TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 fi
@@ -109,6 +112,8 @@ VM_WASM_SRC="$REPO_ROOT/lib/backend/vm_wasm_repl.c"
 # shellcheck source=./scripts/lib/wasm_vm_sources.sh
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/wasm_vm_sources.sh"
+# shellcheck source=./scripts/lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 WASM_VM_SOURCES=("${ESHKOL_WASM_VM_SOURCES[@]}")
 # Per-file overrides for the supported subset (documented exclusions + xfails).
 MANIFEST="$REPO_ROOT/tests/wasm_diff/EXCLUSIONS.tsv"
@@ -217,7 +222,7 @@ if ! command -v emcc >/dev/null 2>&1; then
     exit 77
 fi
 NODE_BIN="${NODE:-node}"
-if ! command -v "$NODE_BIN" >/dev/null 2>&1; then
+if ! eshkol_command_available "$NODE_BIN"; then
     echo "run_wasm_differential.sh: SKIP — node not found on PATH." >&2
     emit_event "wasm_parity_gate" "SKIP" "node unavailable — WASM diff lane not exercised"
     exit 77

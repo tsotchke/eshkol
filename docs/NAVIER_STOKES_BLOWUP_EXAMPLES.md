@@ -33,7 +33,7 @@ nonzero if any check failed.
 | [`mathematics_navier_stokes_similarity_scales.esk`](../examples/mathematics_navier_stokes_similarity_scales.esk) | 2.1, 3.1, 4.1 (Lemma 4.1, (3.2), (4.3), (4.7)) | The self-similar axisymmetric ansatz in similarity coordinates: incompressibility and the centrifugal pressure balance as AD identities, the coordinate derivatives of Lemma 4.1 differentiated through the implicit solve for `q`, the nine scale-law exponents fitted from computed quantities, the core kinetic energy exponent, and the unbounded background residual | 23 |
 | [`mathematics_navier_stokes_first_principles.esk`](../examples/mathematics_navier_stokes_first_principles.esk) | 2.1, 3.1, 4.1 ((4.9), (4.12), (4.13)) | The scale exponents derived, not assumed: a linear system in the five unknown exponents with one free parameter `h`, solved exactly over the rationals, followed by the admissible range of `h` derived from the positivity requirements; then the leading profile series derived from the leading balance operator by exact interpolation and an exact linear solve, with a negative control | 21 |
 | [`mathematics_navier_stokes_pulse_stress.esk`](../examples/mathematics_navier_stokes_pulse_stress.esk) | 2.2, 3.2 (Figure 4), 3.3 and 7 | The oscillatory ring pulses: zero angular means, nonzero averaged momentum fluxes, the leading transversality that makes them divergence free, the two-family covariance system solved in exact rational arithmetic with positivity, and the Craik-Criminale growth-then-decay of a single mode on an affine background | 20 |
-| [`mathematics_navier_stokes_stress_cone.esk`](../examples/mathematics_navier_stokes_stress_cone.esk) | 4.3, Lemma 4.5, Appendix C | The cone equivalence (4.20)-(4.23) decided by exact rational sign tests on a quadratic (never a square root); the base flow's own radial equation (4.9)-(4.10) integrated exactly; a threshold `P_K` proven once (Part D) and reused (not reasserted) for the physical `(a, -b_s)` of the constructed stress, which lands inside the admissible cone | 21 |
+| [`mathematics_navier_stokes_stress_cone.esk`](../examples/mathematics_navier_stokes_stress_cone.esk) | 4.3, Lemma 4.5, Appendix C | The cone equivalence (4.20)-(4.23) decided by exact rational sign tests on a quadratic (never a square root); the base flow's own radial equation (4.9)-(4.10) integrated exactly; a threshold `P_K` established once (Part D) and reused (not reasserted) for the physical `(a, -b_s)` of the constructed stress, which lands inside the admissible cone | 21 |
 | [`mathematics_navier_stokes_residual_order_n.esk`](../examples/mathematics_navier_stokes_residual_order_n.esk) | 5, 5.1, equations (5.1)-(5.6) | Section 5's order-by-order recursion, reduced to a fixed linear operator against a known lower-order forcing, substituted as a formal expansion truncated at order N and read off with the exact-coefficient Taylor tower (`taylor`/`derivative-n`) | 8 |
 | [`mathematics_navier_stokes_heat_exterior.esk`](../examples/mathematics_navier_stokes_heat_exterior.esk) | 2.3, Appendix A, Lemma A.1 | The curvature-corrected radial heat equation for the azimuthal exterior, solved exactly by a triangular recursion in t; Appendix A's distinct-power-weight moment matrix, exact for a small case; the smooth limit at `t -> 1`, contrasted against a deliberately wrong blowing-up candidate | 8 |
 | [`mathematics_navier_stokes_oscillatory_realization.esk`](../examples/mathematics_navier_stokes_oscillatory_realization.esk) | 6, 7, 2.2 | Two pulse families as exact trigonometric polynomials on a 4-point auxiliary torus, their zero angular mean and nonzero flux products extracted by `torus-average`, and the stacked stress solve via `core.exact_linalg`'s `exact-solve` | 11 |
@@ -198,10 +198,10 @@ coefficient positive, `Pq(2) > 0`, `Pq(P_c) <= 0`) is itself certified rather
 than assumed; the floating-point value of `U(P_c,J_c)` is computed only to be
 compared against the exact decision, never to gate a verdict.
 
-Part D's threshold `P_K` is proven once, over a parameter sample K, and Part E
-reuses that SAME proof for the physical `(a, -b_s)` of the constructed base
-flow (added to K with `w = 0`) rather than re-deriving a second, disconnected
-argument: with `p_s = (P_K * factor, 0)`, the constructed stress lands inside
+Part D's threshold `P_K` is established once, over a parameter sample K, and
+Part E reuses that SAME derivation for the physical `(a, -b_s)` of the
+constructed base flow (added to K with `w = 0`) rather than re-deriving a
+second, disconnected argument: with `p_s = (P_K * factor, 0)`, the constructed stress lands inside
 the admissible cone at every sampled radius, the cone decision stays exact
 rational throughout, is homogeneous under rescaling, and a separate radius with
 `v_s <= 2` demonstrates the relaxed cone (the connecting interval) is genuinely
@@ -387,10 +387,18 @@ These are capability gaps, stated as such.
   one call each.
 - **Certified enclosures with directed rounding.** Every tolerance in this
   family is a numerical agreement at sampled points, not a bound over a
-  region. A certified bound needs directed-rounding interval arithmetic and a
-  proved (not sampled) Taylor-model remainder; `core.ad.interval` widens by a
-  relative epsilon and `core.ad.taylor_models` bounds its remainder by
-  sampling, so no statement here is a certified bound.
+  region, so no statement here is a certified bound. The capability itself is
+  no longer missing: v1.3.5 ships the directed-rounding builtins `fl-next-up` /
+  `fl-next-down` on both engines, outward-rounded interval arithmetic
+  (`core.ad.rigorous_interval`) and Makino-Berz rigorous Taylor models whose
+  remainder is **derived** rather than sampled
+  (`core.ad.rigorous_taylor_models`, with `tm-bound` / `tm-prove-bound` /
+  `tm-prove-nonzero`) — see
+  [reference/stdlib/certified-enclosures.md](reference/stdlib/certified-enclosures.md).
+  What remains is routing these programs' tolerances through that layer; the
+  validated `core.ad.interval` widens by a relative epsilon and
+  `core.ad.taylor_models` bounds its remainder by sampling, and it is those two
+  that the checks here currently rest on.
 - **Symbolic series values for the residual to every order.** Only a scalar
   model of the order-by-order recursion is closed here
   (`mathematics_navier_stokes_residual_order_n.esk`), not the paper's actual
