@@ -207,7 +207,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0018 — Signed-curvature stereographic geometry](design/adr/0018-signed-curvature-stereographic-geometry.md) — Accepted — one κ-stereographic chart for all curvature signs, analytic through `K = 0`, and the execution contract it implies (targets v1.4.0); carried the number 0012 until 2026-09-17
 - [ADR 0019 — Evergreen documentation architecture](design/adr/0019-evergreen-documentation-architecture.md) — Partially implemented
 - [ADR 0020 — One store boundary for every container slot](design/adr/0020-container-slot-store-boundary.md) — Implemented — a value stored into a vector or tensor slot is always a value of the slot's declared representation.
-- [ADR 0021 — One boundary for each place a value crosses a representation](design/adr/0021-ad-value-boundaries.md) — Accepted — a gradient point written as separate scalars is parsed as the vector literal it stands for, and a cons slot is read and written whole, so a derivative carrier survives both
+- [ADR 0022 — One boundary for each place a value crosses a representation](design/adr/0022-ad-value-boundaries.md) — Accepted — a gradient point written as separate scalars is parsed as the vector literal it stands for, and a cons slot is read and written whole, so a derivative carrier survives both
 
 ## Testing and Quality Gates
 

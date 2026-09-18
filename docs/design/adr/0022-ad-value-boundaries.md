@@ -11,7 +11,7 @@ sources:
   - .icc/ledger/entries/SW-182.yaml
   - .icc/ledger/entries/SW-183.yaml
 ---
-# ADR-0021: One boundary for each place a value crosses a representation
+# ADR-0022: One boundary for each place a value crosses a representation
 
 **Status:** Accepted
 **Ledger:** SW-182, SW-183
