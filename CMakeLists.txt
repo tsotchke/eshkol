@@ -5636,6 +5636,41 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
         endif()
     endif()
+    # kb-query returns one substitution per matching fact (API reference and
+    # language specification); the quick reference said facts. Pins the
+    # contract, including the quick reference's own example, on every engine.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/kb_query_substitutions_test.esk")
+        add_test(
+            NAME kb_query_substitutions_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/kb_query_substitutions_test.esk"
+        )
+        set_tests_properties(kb_query_substitutions_runtime_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME kb_query_substitutions_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/kb_query_substitutions_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/kb_query_substitutions_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/kb_query_substitutions_aot'"
+        )
+        set_tests_properties(kb_query_substitutions_aot_smoke PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        if(NOT WIN32)
+            add_test(
+                NAME kb_query_substitutions_vm_smoke
+                COMMAND sh -c
+                    "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/logic/kb_query_substitutions_test.esk"
+            )
+            set_tests_properties(kb_query_substitutions_vm_smoke PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "Failed: 0"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+        endif()
+    endif()
     # SW-163: a QUOTED bignum or bignum-rational literal must be the same
     # runtime value an evaluated one is. codegenQuotedAST() (lib/backend/
     # llvm_codegen.cpp) had no case for ESHKOL_BIGNUM_LITERAL and silently
