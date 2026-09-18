@@ -142,6 +142,11 @@ void save_readline_history();
     std::fflush(stderr);
     thread_pool_global_shutdown();
     eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_NONE);
+    // The REPL keeps ASTs across inputs (definitions, macros, imports), so AST
+    // strings live for the whole session. Nothing reads one after the runtime
+    // has shut down; release them here, where _Exit() cannot skip it
+    // (ADR-0020).
+    eshkol_ast_strings_teardown();
 #ifdef ESHKOL_HAS_ASAN
     /* _Exit() below skips LSan's atexit leak check; run it here so the REPL
      * is auditable at all. __lsan_do_leak_check() honours ASAN_OPTIONS'
@@ -1402,11 +1407,6 @@ static void handle_json_request(const std::string& line, eshkol::ReplJITContext&
 // don't need a forward declaration).
 
 int main(int argc, char** argv) {
-    // First local, so it is destroyed last: the REPL keeps ASTs across inputs
-    // (definitions, macros, imports), so AST strings live for the session and
-    // are released only once the session is over (ADR-0016).
-    eshkol::frontend::AstStringsTeardownOnReturn ast_strings_teardown;
-
     // Parse command-line arguments
     bool load_stdlib = false;
     bool machine_mode = false;
@@ -1745,5 +1745,6 @@ int main(int argc, char** argv) {
     }
 
     save_readline_history();
+    eshkol_ast_strings_teardown();
     std::_Exit(0);
 }

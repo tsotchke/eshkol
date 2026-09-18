@@ -9,7 +9,7 @@
 
 /**
  * @file ast_strings.h
- * @brief The one owner of AST string payloads (ADR-0016).
+ * @brief The one owner of AST string payloads (ADR-0020).
  *
  * Every `char*` hung off a frontend structure -- `eshkol_ast_t` identifiers
  * (`variable.id`, `eshkol_func.id`), string and bignum literal text
@@ -41,8 +41,9 @@
  *    LeakSanitizer sees the strings as live for as long as the compilation
  *    lives; they are rooted, not suppressed.
  *  - **Teardown.** eshkol_ast_strings_teardown() releases every chunk at once.
- *    The batch driver (eshkol-run) and the interactive REPL call it on their
- *    way out of main(), after the last AST consumer has finished. Embedders
+ *    The batch driver (eshkol-run) calls it when main() returns; the
+ *    interactive REPL calls it in its ordered exit, after the runtime has
+ *    shut down and before its explicit leak check. Embedders
  *    that parse repeatedly in one process (the C FFI, runtime `eval`) keep the
  *    process-lifetime default, exactly like the NodeId table.
  *
@@ -132,6 +133,10 @@ void eshkol_ast_strings_stats(eshkol_ast_strings_stats_t* out);
  * Every pointer the owner handed out becomes invalid. Call only when no AST
  * produced in this process will be read again. The owner stays usable: a
  * later allocation starts a fresh chunk.
+ *
+ * When the environment variable `ESHKOL_AST_STRINGS_STATS` is set (to
+ * anything but `0`/`false`), teardown first writes one line to stderr:
+ * `eshkol-ast-strings: allocations=N requested=N chunks=N reserved=N`.
  */
 void eshkol_ast_strings_teardown(void);
 
@@ -160,9 +165,10 @@ namespace eshkol::frontend {
  * main() returns.
  *
  * Declare it first in main(), before any object that could hold AST
- * pointers, so it is destroyed last. It does not run on std::exit() paths,
- * which is correct: the owner is rooted, so memory held at exit() is live,
- * not leaked.
+ * pointers, so it is destroyed last. It does not run on std::exit() or
+ * std::_Exit() paths, which is correct: the owner is rooted, so memory held
+ * at exit is live, not leaked. A driver that always leaves through
+ * std::_Exit() (the REPL) calls eshkol_ast_strings_teardown() itself.
  */
 struct AstStringsTeardownOnReturn {
     AstStringsTeardownOnReturn() = default;

@@ -6,7 +6,7 @@
  */
 /**
  * @file ast_strings.cpp
- * @brief Storage for AST string payloads (ADR-0016).
+ * @brief Storage for AST string payloads (ADR-0020).
  *
  * A singly linked list of chunks rooted at one global. Allocation bumps a
  * cursor in the newest chunk under a mutex; a request that does not fit
@@ -21,6 +21,7 @@
 #include <eshkol/frontend/ast_strings.h>
 
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -176,8 +177,38 @@ extern "C" void eshkol_ast_strings_stats(eshkol_ast_strings_stats_t* out) {
     out->teardowns = g_teardowns;
 }
 
+namespace {
+
+bool stats_enabled() {
+    /* Resolved once, like ESHKOL_NODE_IDENTITY_STATS: a measurement must not
+     * change discipline halfway through a process. */
+    static const bool enabled = [] {
+        const char* raw = std::getenv("ESHKOL_AST_STRINGS_STATS");
+        return raw && raw[0] != '\0' && std::strcmp(raw, "0") != 0 &&
+               std::strcmp(raw, "false") != 0 && std::strcmp(raw, "FALSE") != 0;
+    }();
+    return enabled;
+}
+
+}  // namespace
+
 extern "C" void eshkol_ast_strings_teardown(void) {
     std::lock_guard<std::mutex> lock(g_mutex);
+    if (stats_enabled()) {
+        /* One stable, machine-readable line, printed while the numbers still
+         * describe the compilation being torn down. tests/memory/
+         * leak_audit_gate.sh adds `requested` to LeakSanitizer's figure so
+         * rooted retention stays measured rather than disappearing from the
+         * per-line slope just because it is no longer a leak. */
+        std::fprintf(stderr,
+                     "eshkol-ast-strings: allocations=%llu requested=%llu "
+                     "chunks=%llu reserved=%llu\n",
+                     (unsigned long long)g_allocations.load(std::memory_order_relaxed),
+                     (unsigned long long)g_bytes_requested.load(std::memory_order_relaxed),
+                     (unsigned long long)g_live_chunks,
+                     (unsigned long long)g_live_bytes_reserved);
+        std::fflush(stderr);
+    }
     if (!g_head) return;
     Chunk* c = g_head;
     g_head = nullptr;

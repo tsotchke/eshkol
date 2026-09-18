@@ -3358,7 +3358,7 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/nod
         PASS_REGULAR_EXPRESSION "PASS: node identity substrate")
 endif()
 
-# ADR-0016: the one owner of AST string payloads.
+# ADR-0020: the one owner of AST string payloads.
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/ast_strings_test.cpp")
     add_executable(ast_strings_test tests/frontend/ast_strings_test.cpp)
     target_compile_features(ast_strings_test PRIVATE cxx_std_20)
@@ -7168,6 +7168,24 @@ if(ESHKOL_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         )
         set_tests_properties(oracle_schema_gate oracle_schema_gate_selftest PROPERTIES TIMEOUT 60)
+    endif()
+    # ADR-0020: AST string payloads have one owner. Fails on a raw
+    # new char[] / strdup in an AST producer, or a consumer freeing one.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_ast_string_owner.py")
+        add_test(
+            NAME ast_string_owner_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_ast_string_owner.py"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        add_test(
+            NAME ast_string_owner_gate_selftest
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_ast_string_owner.py"
+                    --self-test
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(ast_string_owner_gate ast_string_owner_gate_selftest PROPERTIES TIMEOUT 60)
     endif()
     # Every branch-protection required status context must be reportable on
     # every PR shape (docs-only included) — see the module docstring for the

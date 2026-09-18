@@ -6,7 +6,7 @@
  */
 /**
  * @file ast_strings_test.cpp
- * @brief Contract tests for the AST string owner (ADR-0016).
+ * @brief Contract tests for the AST string owner (ADR-0020).
  *
  * Three claims are under test:
  *

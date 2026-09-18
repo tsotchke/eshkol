@@ -200,6 +200,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0013 — One gradual type relation](design/adr/0013-gradual-type-relation.md) — centralizes static subtyping, gradual consistency, flow evidence, joins, casts, and type presentation
 - [ADR 0014 — Release invariant contracts are measured before grading](design/adr/0014-release-invariant-contracts.md)
 - [ADR 0015 — Static callee binding identity](design/adr/0015-static-callee-binding-identity.md) — makes direct-call aliases depend on the binding storage that still owns them
+- [ADR 0020 — One owner for AST string payloads](design/adr/0020-ast-string-owner.md) — every AST identifier, literal and synthesized name comes from one rooted arena released at teardown; sanitizer builds run leak-clean under one policy
 
 ## Testing and Quality Gates
 

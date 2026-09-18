@@ -369,16 +369,32 @@ if [ ! -x "$BUILD_DIR/eshkol-repl" ]; then
 else
     # Suppressions OFF here on purpose: section B is measuring exactly the
     # retention section A is allowed to ignore.
+    # Retention per line = what LeakSanitizer reports as leaked (the AST node
+    # storage, epic #182) PLUS what the AST string owner holds (ADR-0020).
+    # The owner's strings are rooted, so LeakSanitizer rightly no longer calls
+    # them leaks; they are still retained for the whole REPL session, and a
+    # gate that only summed leaks would have watched that retention vanish
+    # from its measurement the day it stopped being a leak. The owner reports
+    # its own figure at teardown (ESHKOL_AST_STRINGS_STATS), and a missing
+    # report fails the measurement rather than silently counting zero.
     measure_repl_leak() {
-        local lines="$1" i out
+        local lines="$1" i out leaked owned
         out="$( { for ((i = 1; i <= lines; i++)); do
                       echo "(define (fn$i x) (+ x $i))"
                   done; } \
-                | ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:allocator_may_return_null=1:report_objects=0" \
+                | ESHKOL_AST_STRINGS_STATS=1 \
+                  ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:allocator_may_return_null=1:report_objects=0" \
                   LSAN_OPTIONS="print_suppressions=0:report_objects=0" \
                   "$BUILD_DIR/eshkol-repl" 2>&1 )"
-        echo "$out" | grep -o 'SUMMARY: AddressSanitizer: [0-9]* byte' \
-                    | grep -o '[0-9]*' | head -1
+        leaked="$(echo "$out" | grep -o 'SUMMARY: AddressSanitizer: [0-9]* byte' \
+                    | grep -o '[0-9]*' | head -1)"
+        owned="$(echo "$out" | grep -o 'eshkol-ast-strings: .*requested=[0-9]*' \
+                    | grep -o 'requested=[0-9]*' | grep -o '[0-9]*' | tail -1)"
+        if [ -z "$leaked" ] || [ -z "$owned" ]; then
+            echo ""
+            return
+        fi
+        echo $(( leaked + owned ))
     }
 
     LOW_N=10
@@ -391,7 +407,7 @@ else
         # and then this section retires with epic #182) or leak detection is
         # not actually running (catastrophic, and indistinguishable from the
         # good news if we just pass). Fail loudly and make a human look.
-        fail "section B got no LeakSanitizer measurement from the REPL at ${LOW_N}/${HIGH_N} lines (low='$low' high='$high'). Either the front-end retention is gone -- in which case retire this section and its suppression rules -- or leak detection is not live in $BUILD_DIR, which would make section A meaningless too"
+        fail "section B got no complete measurement from the REPL at ${LOW_N}/${HIGH_N} lines (low='$low' high='$high'): it needs both a LeakSanitizer summary and the AST string owner's teardown report. Either the front-end node retention is gone -- in which case retire this section and its suppression rules -- or leak detection is not live in $BUILD_DIR, which would make section A meaningless too, or the REPL no longer reaches its ordered exit (eshkol_ast_strings_teardown)"
     else
         slope=$(( (high - low) / (HIGH_N - LOW_N) ))
         ceiling=$(( PINNED_BYTES_PER_LINE * (100 + SLOPE_TOLERANCE_PCT) / 100 ))

@@ -563,6 +563,17 @@ rather than an indistinguishable FAIL. Pinned by
   the compiled program, the VM and the REPL all run under `detect_leaks=1`,
   failing on any leak `.icc/lsan-suppressions.txt` does not already name and
   justify, plus a slope check on the one retention the suppressions do hide.
+  The slope counts AST node storage (suppressed) plus the AST string owner's
+  own report, so rooted retention stays measured (ADR-0020).
+- **`ast_strings_test`** and **`ast_string_owner_gate`** (ADR-0020) hold the
+  one-owner rule for AST string payloads. The first walks real parser,
+  macro-expander, rename and copy output and requires every string on every
+  node to come from `inc/eshkol/frontend/ast_strings.h`. The second
+  (`scripts/check_ast_string_owner.py`, with a `--self-test`) rejects a raw
+  `new char[]`/`strdup` in an AST producer, or a consumer freeing an AST
+  string. Sanitizer builds compile the standard library under
+  `detect_leaks=1` with the checked-in suppressions, in CI and in the release
+  producer alike.
 - **`tests/memory/vm_region_flat_rss_test.sh`**,
   **`tests/memory/vm_region_evac_subtype_coverage_test.sh`** and
   **`tests/memory/vm_region_growth_watchdog_test.sh`** gate the Stage-1 VM

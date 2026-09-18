@@ -65,27 +65,41 @@
 #         from a static, reachable driver-lifetime store -- rooted, not
 #         suppressed, so LSan no longer classes them as leaks at all.
 #
-#   * 8 sites are the compiler front end's AST, addressed below.
+#   * 8 sites were the compiler front end's AST, addressed below. Two of
+#     them (make_parser_string_ast, parse_extern_modifier_tail) allocated
+#     only AST *string payloads* and were retired by ADR-0020, which gave
+#     those payloads one rooted owner (inc/eshkol/frontend/ast_strings.h);
+#     6 remain, and they now cover AST *node* storage only.
 #
 #   * 1 site is a real defect in the VM bytecode compiler that is tracked
 #     rather than fixed here; see the TEMPORARY section at the end for why.
 #
 # ---------------------------------------------------------------------------
-# The compiler front-end AST (8 entries)
+# The compiler front-end AST node storage (6 entries)
 # ---------------------------------------------------------------------------
 # eshkol-run is a one-shot batch compiler: parse -> expand -> typecheck ->
-# codegen -> emit -> exit. `eshkol_ast_t` has no destructor and no owner: the
-# 353 `new eshkol_ast_t[N]` / `new char[N]` / `strdup()` sites across
-# lib/frontend/parser.cpp and lib/frontend/macro_expander.cpp allocate nodes
-# that are read until the process exits and then reaped by exit. That is the
-# same convention clang, rustc and gcc use for their internal IRs.
+# codegen -> emit -> exit. `eshkol_ast_t` NODES have no destructor and no
+# owner: the `new eshkol_ast_t[N]` sites across lib/frontend/parser.cpp and
+# lib/frontend/macro_expander.cpp allocate nodes that are read until the
+# process exits and then reaped by exit. That is the same convention clang,
+# rustc and gcc use for their internal IRs.
 #
-# Giving the AST a real owner is epic #182 (the arena-backed AST refactor);
-# it is a 353-site ownership change across an 11 316-line parser, which is
-# not a change to make as a side effect of a leak audit. Until it lands,
-# these 8 sites are named individually so that everything else -- the
-# runtime, the VM, the arena, the JIT, the agent FFI, the driver -- fails the
-# lane on a new leak.
+# AST STRING PAYLOADS are not in this section and must never be added to it.
+# Identifiers, literal text, operation names, rest parameters, type-variable
+# names and every synthesized name come from one owner -- the rooted,
+# chunked arena in inc/eshkol/frontend/ast_strings.h (ADR-0020) -- so
+# LeakSanitizer sees them as live, not leaked, and eshkol-run and the REPL
+# release them at teardown. A string leak report from the front end means a
+# producer bypassed that owner; fix the producer (scripts/
+# check_ast_string_owner.py names it), do not add a rule here. That is how
+# the retention in module-private renaming (module_visibility.cpp
+# replace_name) was closed, and why make_parser_string_ast and
+# parse_extern_modifier_tail, which allocated only strings, are gone.
+#
+# Giving the nodes a real owner is epic #182 (the arena-backed AST refactor).
+# Until it lands, these 6 sites are named individually so that everything
+# else -- the runtime, the VM, the arena, the JIT, the agent FFI, the driver,
+# and every AST string -- fails the lane on a new leak.
 #
 # KNOWN LIMIT, stated rather than hidden: each rule below is scoped to one
 # named function, but within that function it is total. A NEW leak introduced
@@ -99,19 +113,23 @@
 # Measured contribution of each site over the audit's workload set is given
 # for scale; a site is listed because it was observed, not because it is big.
 
-# 1 190 850 B / 109 657 objects. lib/frontend/parser.cpp parse_list():
-# `new eshkol_ast_t[N]` for each list's element array, plus the `new char[N]`
-# operator/identifier names hung off it. This is the bulk of the AST proper.
+# 1 190 850 B / 109 657 objects (measured before ADR-0020 moved the
+# identifier text out). lib/frontend/parser.cpp parse_list():
+# `new eshkol_ast_t[N]` for each list's element array. This is the bulk of
+# the AST proper.
 leak:parse_list
 
-# 291 155 B / 63 341 objects. lib/frontend/parser.cpp parse_atom():
-# `new char[N]` for every symbol, string and number literal's text. Owned by
-# the AST node it is attached to, freed by process exit with it.
+# 291 155 B / 63 341 objects before ADR-0020, almost all of it literal and
+# symbol text, which the AST string owner now holds. lib/frontend/parser.cpp
+# parse_atom(): what remains is node storage -- the `make-rational` call node
+# and its operand array for an exact rational literal, and the one-element
+# operand array of a `#:keyword` literal.
 leak:parse_atom
 
 # 168 583 B / 20 863 objects. lib/frontend/parser.cpp
-# parse_function_signature(): parameter-name and parameter-type arrays for
-# each `define`/`lambda`. Same AST lifetime as the node they describe.
+# parse_function_signature(): the parameter-node and parameter-type arrays
+# for each `define`/`lambda` (the parameter NAMES are AST strings, owned by
+# ADR-0020's owner). Same AST lifetime as the node they describe.
 leak:parse_function_signature
 
 # 255 469 B / 35 201 objects. lib/frontend/macro_expander.cpp
@@ -135,8 +153,9 @@ leak:parse_quoted_data_with_token
 # 25 120 B / 157 objects. lib/frontend/parser.cpp
 # parse_quoted_list_internal(): the same literal datum tree as the entry
 # above, for the branch that lowers a quoted list to a `(list e0 ... eN)`
-# call -- the `list` callee node, its identifier, and the element array are
-# allocated here and become part of the AST codegen materialises. Reported
+# call -- the `list` callee node and the element array are allocated here and
+# become part of the AST codegen materialises (the `list` identifier text is
+# an AST string, owned by ADR-0020's owner). Reported
 # as an INDIRECT leak, which is why it stayed invisible while this gate's
 # diagnostic printed only Direct blocks. It crossed the reporting threshold
 # in v1.3.5 because the shipped library gained a great deal of quoted list
@@ -144,25 +163,9 @@ leak:parse_quoted_data_with_token
 # section B slope check.
 leak:parse_quoted_list_internal
 
-# 5 277 B / 315 objects. lib/frontend/parser.cpp
-# make_parser_string_ast(): the NUL-terminated copy of a string literal's
-# text, wired into the AST by eshkol_ast_make_string() and read by codegen
-# when it materialises the constant. Reached from
-# parse_interpolated_string_token() for both halves of its contract -- a
-# plain literal and each piece of an interpolation. Whether this site is
-# reported at all depends on whether the host compiler inlines it into an
-# already-suppressed caller, which is why it appears on the CI toolchain
-# and not on every machine.
-leak:make_parser_string_ast
-
 # 5 336 B / 37 objects. lib/frontend/parser.cpp parse_expression(): the few
 # nodes this dispatcher allocates itself rather than delegating.
 leak:parse_expression
-
-# 1 664 B / 48 objects. lib/frontend/parser.cpp parse_extern_modifier_tail():
-# the modifier-name strings on an `extern` declaration, attached to the
-# extern AST node.
-leak:parse_extern_modifier_tail
 
 # ---------------------------------------------------------------------------
 # Third-party: LLVM's ORC JIT (1 entry)

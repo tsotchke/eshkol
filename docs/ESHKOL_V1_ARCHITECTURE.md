@@ -763,6 +763,25 @@ int64_t wrong = static_cast<int64_t>(value);  // → 3 (loses precision!)
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### AST ownership
+
+Every phase above reads the same AST, so its data lives for the whole
+compilation:
+
+- **Node identity and spans**: `NodeId -> SourceSpan`, minted by the parser
+  ([`node_identity.h`](../inc/eshkol/frontend/node_identity.h), ADR-0000
+  Stage 1).
+- **String payloads**: identifiers, literal text, operation names, rest
+  parameters, type-variable names, and every name that expansion, renaming,
+  the driver, the REPL or codegen synthesizes. These have one owner, a
+  process-rooted chunked arena
+  ([`ast_strings.h`](../inc/eshkol/frontend/ast_strings.h),
+  [ADR-0020](design/adr/0020-ast-string-owner.md)). Producers allocate from
+  it, and no consumer frees an individual string. `eshkol-run` releases it
+  when `main()` returns, and the REPL releases it in its ordered exit.
+- **Node storage** (`eshkol_ast_t` arrays) is still reclaimed only when the
+  process exits (epic #182).
+
 ### Special Forms (70+)
 
 **Core**: `define`, `define-type`, `define-syntax`, `set!`, `lambda`, `let`, `let*`, `letrec`, `if`, `cond`, `case`, `match`, `and`, `or`, `when`, `unless`, `do`

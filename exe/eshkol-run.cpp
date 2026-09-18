@@ -4084,7 +4084,7 @@ extern "C" {
  * never freed — process exit reaps them, the convention clang, rustc and
  * gcc use for their internal IRs. AST *string payloads* are different:
  * they have one owner, the rooted arena in inc/eshkol/frontend/ast_strings.h
- * (ADR-0016), which main() tears down on return, so none of them is a leak
+ * (ADR-0020), which main() tears down on return, so none of them is a leak
  * or needs a suppression.
  *
  * This hook USED TO return "exitcode=0", which made LeakSanitizer print
@@ -4183,7 +4183,7 @@ static char** intern_driver_module_name_array(const std::string& name) {
 int main(int argc, char **argv)
 {
     // First local, so it is destroyed last: every AST consumer in main() has
-    // finished before the AST string owner is released (ADR-0016).
+    // finished before the AST string owner is released (ADR-0020).
     eshkol::frontend::AstStringsTeardownOnReturn ast_strings_teardown;
 
     __eshkol_argc = (int32_t)argc;

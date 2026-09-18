@@ -17,7 +17,7 @@
  * Used only for the rendered diagnostic text hott_type_to_string() returns.
  * Strings stored IN frontend structures (AST names, literal text, HoTT
  * type-variable names) come from the AST string owner instead
- * (inc/eshkol/frontend/ast_strings.h, ADR-0016).
+ * (inc/eshkol/frontend/ast_strings.h, ADR-0020).
  *  @return Newly allocated copy of @p s (including terminator), or null if
  *          @p s is null. */
 static char* arena_strdup(const char* s) {
@@ -33,7 +33,7 @@ static char* arena_strdup(const char* s) {
  * Recursively cleans and frees the element/dimension arrays of an
  * ESHKOL_TENSOR node. String payloads (ESHKOL_STRING/ESHKOL_BIGNUM_LITERAL
  * text, identifiers) are NOT freed: they belong to the AST string owner
- * (inc/eshkol/frontend/ast_strings.h, ADR-0016) and are released at the
+ * (inc/eshkol/frontend/ast_strings.h, ADR-0020) and are released at the
  * compilation's teardown, so the pointer is only detached here. No-op if
  * @p ast is null. Does not free @p ast itself, and sets ast->type to
  * ESHKOL_INVALID when done.
