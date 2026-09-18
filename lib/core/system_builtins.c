@@ -5398,6 +5398,14 @@ void eshkol_builtin_workspace_p(sv_t* out, const sv_t* a) {
 }
 void eshkol_builtin_tensor_p(sv_t* out, const sv_t* a) {
     *out = check_heap_subtype(*a, HST_TENSOR);
+    /* ADR-0020: a carrier promoted by a non-numeric store is no longer a
+     * numeric tensor -- it is the heterogeneous vector it became, which is
+     * what the bytecode VM answers for the same program. Its dtype (field 4 of
+     * the descriptor, 8 bytes each) records the promotion. */
+    if (out->data) {
+        const uint64_t* descriptor = (const uint64_t*)(uintptr_t)a->data;
+        if (descriptor[4] == 65u /* ESHKOL_TENSOR_DTYPE_BOXED */) out->data = 0;
+    }
 }
 void eshkol_builtin_dual_p(sv_t* out, const sv_t* a) {
     /* Dual numbers have type 6 (ESHKOL_VALUE_DUAL_NUMBER) — they do not

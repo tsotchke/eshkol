@@ -182,7 +182,7 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
         const eshkol_tagged_value_t* vector_data =
             reinterpret_cast<const eshkol_tagged_value_t*>(
                 vector_base + sizeof(int64_t));
-        if (tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
+        if (eshkol_tensor_dtype_is_tagged(tensor->dtype)) {
             const eshkol_tagged_value_t* tensor_data =
                 reinterpret_cast<const eshkol_tagged_value_t*>(tensor->elements);
             for (int64_t i = 0; i < vector_len; ++i) {

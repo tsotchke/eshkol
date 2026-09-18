@@ -5,6 +5,7 @@ owner-area: runtime
 since: v1.3.5
 sources:
   - lib/core/runtime_vector_mutation.cpp
+  - tests/vm_parity/corpus/85_container_slot_store.esk
   - inc/eshkol/backend/codegen_context.h
   - .icc/ledger/entries/SW-179.yaml
 ---
@@ -118,15 +119,8 @@ Changing the literal's representation would remove a documented feature to
 repair a store that was simply not converting its operand.
 
 **Promote the container in place when a value of another kind is stored.**
-Rejected for this object model. A tensor object is a 40-byte descriptor with a
-separate element buffer; a Scheme vector stores its length and elements inline.
-One cannot become the other at the same address, and every reference to the
-container holds that address. A "tagged" tensor dtype could hold arbitrary
-values behind the same descriptor, but the numeric kernels do not all consult
-the dtype, so a promoted tensor reaching one of them would be read as doubles —
-the same class of defect this ADR closes, moved to every kernel. That route
-becomes available once every tensor consumer takes its operand through one
-checked gate; it is recorded here as the precondition, not scheduled.
+Adopted for the vector API in the amendment below; see it for why the original
+objection did not survive contact with the engine difference it left behind.
 
 **Store `0.0` for a value that is not a number** (the previous `tensor-set!`
 behaviour). Rejected: it is a silent wrong answer.
@@ -161,3 +155,52 @@ value kind on both representations and asserts exact results, under the
 in-process JIT, the cached run path and AOT. `tests/vm_parity/corpus/` carries
 the subset on which the VM and the native engines must agree. The tutorial
 example that exposed SW-179 runs unmarked in the documentation example gate.
+
+---
+
+## Amendment 1 (v1.3.5): the vector API promotes the carrier
+
+The decision above made a non-numeric store through the vector API a catchable
+error. That is honest, but it left the two engines disagreeing about a program
+R7RS defines: the bytecode VM materialises `#(10 20 30)` as a heterogeneous
+Scheme vector and stores `"x"` happily, while the native engines materialise it
+as a tensor and raised. R7RS vectors hold any object, so the error was a
+native-only restriction, not a language rule.
+
+The original objection to promotion was that a tensor descriptor cannot become
+a Scheme vector at the same address. It cannot — but it does not have to. The
+tensor object already supports a *tagged* element buffer: `ESHKOL_TENSOR_DTYPE_DUAL`
+stores 16-byte tagged values for the forward-mode Hessian sweep. Promotion
+reuses that shape under a new dtype, `ESHKOL_TENSOR_DTYPE_BOXED`:
+
+- `promote_tensor_to_boxed()` in `lib/core/runtime_vector_mutation.cpp`
+  allocates a tagged-value buffer, carries every existing element over as the
+  number it was, and re-points `elements` and `dtype` **on the descriptor
+  itself**, so every alias of the vector sees the promotion.
+- It runs only from the vector API — `vector-set!`, `vector-fill!`,
+  `vector-copy!` — and only for a value the numeric carrier cannot hold. The
+  tensor API (`tensor-set!`) keeps a tensor numeric and still refuses, because
+  a tensor is a numeric carrier by definition.
+- A promoted carrier is no longer a numeric tensor. `tensor?` answers `#f` for
+  it, and every tensor kernel refuses it through the one operand check
+  (`eshkol_tensor_operand_checked` and its destination/matrix variants), so no
+  kernel can read a tagged slot as an f64.
+- Every reader of tensor slots learned the dtype: `vector-ref`, `vector->list`,
+  `vector-copy`, `vector-append`, `vector-map`/`vector-for-each` (through one
+  shared element loader that replaced two copies), `display`, `equal?`, and
+  region evacuation, which walks the tagged slots so a promoted vector cannot
+  dangle into a popped region.
+
+**Consequence.** `(define v #(10 20 30)) (vector-set! v 0 "x") (display v)`
+prints `#(x 20 30)` on the JIT, on an AOT binary and on the VM.
+`tests/vm_parity/corpus/85_container_slot_store.esk` proves the agreement for a
+string, a boolean, a pair, a character, a symbol and a nested vector, and for
+every reader above.
+
+**Residual difference.** A *constructed* `(tensor 1.0 2.0)` promotes natively
+through the vector API but raises on the VM, whose tensors have no promotion
+path: the VM would have to re-dispatch every alias through its heap box. The
+difference is loud on the side that differs and is checked per engine
+(`tests/core/container_slot_store_test.esk`, `tests/vm/tensor_slot_store_test.esk`)
+rather than in the parity corpus. Numeric `#(...)` literals — the case the
+engines actually disagreed about — agree exactly.

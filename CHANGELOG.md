@@ -1334,6 +1334,23 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **A non-numeric store into a `#(...)` literal promotes the carrier instead of
+  raising, so the engines agree (ledger SW-185, ADR-0020 amendment 1).** A
+  numeric `#(...)` literal materialises as a tensor natively and as a
+  heterogeneous vector on the bytecode VM, so `(vector-set! v 0 "x")` raised
+  natively and stored on the VM. R7RS vectors hold any object, so the vector
+  API now widens the carrier in place: the descriptor gets a tagged-value
+  element buffer under a new boxed dtype -- the shape the dual-tensor carrier
+  already used -- and every alias of the vector sees the promotion. The tensor
+  API (`tensor-set!`) still keeps a tensor numeric, a promoted carrier answers
+  `tensor?` with `#f`, and every tensor kernel refuses it at the one operand
+  check. `vector-ref`, `vector->list`, `vector-copy`, `vector-append`,
+  `vector-map`, `vector-for-each`, `display`, `equal?` and region evacuation
+  all read the new representation; the two copies of the iterator element
+  loader became one. `tests/vm_parity/corpus/85_container_slot_store.esk`
+  proves native and VM agree for a string, boolean, pair, character, symbol and
+  nested vector.
+
 - **One store boundary for every container slot (ledger SW-179, ADR-0020).**
   A numeric `#(...)` literal is a tensor, and `vector-set!` wrote the payload
   bits of whatever value it was given into the tensor's f64 slot:

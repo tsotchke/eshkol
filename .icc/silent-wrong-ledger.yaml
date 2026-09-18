@@ -13638,3 +13638,46 @@ entries:
       that is not this module, or a native path that no longer prefers the
       builtin; both are larger than this fix, and the round-trip test now pins
       the engines to one answer.
+  - id: SW-185
+    bucket: PARITY-RATCHET
+    family: native/vector-literal-non-numeric-store
+    status: fixed
+    closed_at: "PENDING"
+    title: "a non-numeric store into a `#(...)` literal raised on the native engines and stored on the VM, because the native literal is a numeric tensor and the VM's is a heterogeneous vector"
+    repro: >-
+      (define v #(10 20 30)) (vector-set! v 0 "x") (display v)
+    observed_before: >-
+      The native engines raised `vector-set!: value has no representation in a
+      numeric tensor slot` (SW-179's store boundary, which refused what it could
+      not convert); the bytecode VM printed `#(x 20 30)`. Loud on the side that
+      differed, so not a silent wrong answer, but the two engines disagreed about
+      a program R7RS defines: a vector holds any object.
+    correct: >-
+      `#(x 20 30)` on every engine.
+    root_cause: >-
+      A numeric `#(...)` literal materialises as a tensor natively (the language
+      specification makes it the tensor-literal syntax) and as a Scheme vector on
+      the VM. The store boundary converted a value to the slot's representation or
+      refused it; for a tensor slot the only representable values are real numbers.
+    fix: >-
+      ADR-0020 amendment 1: the vector API promotes the carrier in place instead of
+      refusing. promote_tensor_to_boxed() gives the descriptor a tagged-value
+      element buffer under the new ESHKOL_TENSOR_DTYPE_BOXED dtype -- the shape the
+      dual-tensor carrier already used -- so every alias sees the promotion. The
+      tensor API still refuses, a promoted carrier answers `tensor?` with #f, and
+      every tensor kernel refuses it at the one operand check. Every reader of
+      tensor slots learned the dtype, including region evacuation, which walks the
+      tagged slots.
+    evidence: >-
+      tests/vm_parity/corpus/85_container_slot_store.esk: native and VM agree,
+      element for element, for a string, boolean, pair, character, symbol and
+      nested vector, and through vector-ref, vector->list, vector-copy,
+      vector-append, vector-map, vector-for-each and vector-copy!.
+      tests/core/container_slot_store_test.esk: 102 checks on the cached run path,
+      the in-process JIT and AOT.
+    caught_by: [engine-differential-review]
+    missed_by: [vm_parity corpus as it stood (the case was not in it), run_all_tests]
+    notes: >-
+      A constructed `(tensor 1.0 2.0)` promotes natively through the vector API but
+      raises on the VM, which has no promotion path for its tensors; that residual
+      difference is loud and is checked per engine rather than in the corpus.

@@ -17584,34 +17584,9 @@ private:
             Function* cur_func = builder->GetInsertBlock()->getParent();
             int n_vecs = op->call_op.num_vars - 1;
 
-            // Per-vector element loader: yields the i-th element as a tagged
-            // value, branching on whether the source is a tensor or a vector.
-            auto loadElem = [&](Value* is_t, Value* elems, Value* base, Value* idx) -> Value* {
-                Function* f = builder->GetInsertBlock()->getParent();
-                BasicBlock* tb = BasicBlock::Create(*context, "velt_t", f);
-                BasicBlock* vb = BasicBlock::Create(*context, "velt_v", f);
-                BasicBlock* mb = BasicBlock::Create(*context, "velt_m", f);
-                builder->CreateCondBr(is_t, tb, vb);
-                builder->SetInsertPoint(tb);
-                Value* ep = builder->CreateGEP(int64_type, elems, idx);
-                Value* ei = builder->CreateLoad(int64_type, ep);
-                Value* et = packDoubleToTaggedValue(builder->CreateBitCast(ei, double_type));
-                builder->CreateBr(mb);
-                BasicBlock* tb_exit = builder->GetInsertBlock();
-                builder->SetInsertPoint(vb);
-                Value* eptr = builder->CreateGEP(tagged_value_type, base, idx);
-                Value* ev = builder->CreateLoad(tagged_value_type, eptr);
-                builder->CreateBr(mb);
-                BasicBlock* vb_exit = builder->GetInsertBlock();
-                builder->SetInsertPoint(mb);
-                PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
-                phi->addIncoming(et, tb_exit);
-                phi->addIncoming(ev, vb_exit);
-                return phi;
-            };
 
             std::vector<Value*> is_tensors(n_vecs), elems_ptrs(n_vecs),
-                                base_ptrs(n_vecs), lengths(n_vecs);
+                                base_ptrs(n_vecs), lengths(n_vecs), tagged_slots(n_vecs);
             Value* nullp = ConstantPointerNull::get(PointerType::getUnqual(*context));
             for (int a = 0; a < n_vecs; a++) {
                 Value* va = (co_await codegenASTTask(&op->call_op.variables[a + 1]));
@@ -17629,6 +17604,11 @@ private:
                 builder->SetInsertPoint(tb);
                 Value* tlen = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 3));
                 Value* telems = builder->CreateLoad(PointerType::getUnqual(*context), builder->CreateStructGEP(tensor_type, vp, 2));
+                // ADR-0020: a promoted (boxed) carrier's slots are tagged values.
+                Value* tdtype = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 4));
+                Value* t_tagged = builder->CreateOr(
+                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_BOXED)),
+                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_DUAL)));
                 builder->CreateBr(mb);
                 BasicBlock* tb_exit = builder->GetInsertBlock();
                 builder->SetInsertPoint(vb);
@@ -17643,8 +17623,12 @@ private:
                 elems_phi->addIncoming(telems, tb_exit); elems_phi->addIncoming(nullp, vb_exit);
                 PHINode* base_phi = builder->CreatePHI(PointerType::getUnqual(*context), 2);
                 base_phi->addIncoming(nullp, tb_exit); base_phi->addIncoming(vbase, vb_exit);
+                PHINode* tagged_phi = builder->CreatePHI(builder->getInt1Ty(), 2);
+                tagged_phi->addIncoming(t_tagged, tb_exit);
+                tagged_phi->addIncoming(builder->getFalse(), vb_exit);
                 is_tensors[a] = is_t; lengths[a] = len_phi;
                 elems_ptrs[a] = elems_phi; base_ptrs[a] = base_phi;
+                tagged_slots[a] = tagged_phi;
             }
 
             // Iterate to the shortest length.
@@ -17667,9 +17651,9 @@ private:
             Value* ci = builder->CreateLoad(int64_type, idx_ptr);
             std::vector<Value*> call_args;
             for (int a = 0; a < n_vecs; a++)
-                call_args.push_back(loadElem(is_tensors[a], elems_ptrs[a], base_ptrs[a], ci));
+                call_args.push_back(loadSequenceElement(is_tensors[a], tagged_slots[a], elems_ptrs[a], base_ptrs[a], ci));
             codegenClosureCall(func_val, call_args, "vector-for-each");
-            // Reload the counter — loadElem/codegenClosureCall create blocks.
+            // Reload the counter — the element load and the closure call create blocks.
             Value* ci2 = builder->CreateLoad(int64_type, idx_ptr);
             builder->CreateStore(builder->CreateAdd(ci2, ConstantInt::get(int64_type, 1)), idx_ptr);
             builder->CreateBr(cond_bb);
@@ -17695,32 +17679,9 @@ private:
             Function* cur_func = builder->GetInsertBlock()->getParent();
             int n_vecs = op->call_op.num_vars - 1;
 
-            auto loadElem = [&](Value* is_t, Value* elems, Value* base, Value* idx) -> Value* {
-                Function* f = builder->GetInsertBlock()->getParent();
-                BasicBlock* tb = BasicBlock::Create(*context, "vmelt_t", f);
-                BasicBlock* vb = BasicBlock::Create(*context, "vmelt_v", f);
-                BasicBlock* mb = BasicBlock::Create(*context, "vmelt_m", f);
-                builder->CreateCondBr(is_t, tb, vb);
-                builder->SetInsertPoint(tb);
-                Value* ep = builder->CreateGEP(int64_type, elems, idx);
-                Value* ei = builder->CreateLoad(int64_type, ep);
-                Value* et = packDoubleToTaggedValue(builder->CreateBitCast(ei, double_type));
-                builder->CreateBr(mb);
-                BasicBlock* tb_exit = builder->GetInsertBlock();
-                builder->SetInsertPoint(vb);
-                Value* eptr = builder->CreateGEP(tagged_value_type, base, idx);
-                Value* ev = builder->CreateLoad(tagged_value_type, eptr);
-                builder->CreateBr(mb);
-                BasicBlock* vb_exit = builder->GetInsertBlock();
-                builder->SetInsertPoint(mb);
-                PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
-                phi->addIncoming(et, tb_exit);
-                phi->addIncoming(ev, vb_exit);
-                return phi;
-            };
 
             std::vector<Value*> is_tensors(n_vecs), elems_ptrs(n_vecs),
-                                base_ptrs(n_vecs), lengths(n_vecs);
+                                base_ptrs(n_vecs), lengths(n_vecs), tagged_slots(n_vecs);
             Value* nullp = ConstantPointerNull::get(PointerType::getUnqual(*context));
             for (int a = 0; a < n_vecs; a++) {
                 Value* va = (co_await codegenASTTask(&op->call_op.variables[a + 1]));
@@ -17738,6 +17699,11 @@ private:
                 builder->SetInsertPoint(tb);
                 Value* tlen = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 3));
                 Value* telems = builder->CreateLoad(PointerType::getUnqual(*context), builder->CreateStructGEP(tensor_type, vp, 2));
+                // ADR-0020: a promoted (boxed) carrier's slots are tagged values.
+                Value* tdtype = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 4));
+                Value* t_tagged = builder->CreateOr(
+                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_BOXED)),
+                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_DUAL)));
                 builder->CreateBr(mb);
                 BasicBlock* tb_exit = builder->GetInsertBlock();
                 builder->SetInsertPoint(vb);
@@ -17752,8 +17718,12 @@ private:
                 elems_phi->addIncoming(telems, tb_exit); elems_phi->addIncoming(nullp, vb_exit);
                 PHINode* base_phi = builder->CreatePHI(PointerType::getUnqual(*context), 2);
                 base_phi->addIncoming(nullp, tb_exit); base_phi->addIncoming(vbase, vb_exit);
+                PHINode* tagged_phi = builder->CreatePHI(builder->getInt1Ty(), 2);
+                tagged_phi->addIncoming(t_tagged, tb_exit);
+                tagged_phi->addIncoming(builder->getFalse(), vb_exit);
                 is_tensors[a] = is_t; lengths[a] = len_phi;
                 elems_ptrs[a] = elems_phi; base_ptrs[a] = base_phi;
+                tagged_slots[a] = tagged_phi;
             }
 
             // Result length is the shortest of the inputs.
@@ -17789,10 +17759,10 @@ private:
             Value* ci = builder->CreateLoad(int64_type, idx_ptr);
             std::vector<Value*> call_args;
             for (int a = 0; a < n_vecs; a++)
-                call_args.push_back(loadElem(is_tensors[a], elems_ptrs[a], base_ptrs[a], ci));
+                call_args.push_back(loadSequenceElement(is_tensors[a], tagged_slots[a], elems_ptrs[a], base_ptrs[a], ci));
             Value* result = codegenClosureCall(func_val, call_args, "vector-map");
             Value* result_tagged = ensureTaggedValue(result);
-            // Reload the counter — loadElem/codegenClosureCall create blocks.
+            // Reload the counter — the element load and the closure call create blocks.
             Value* ci2 = builder->CreateLoad(int64_type, idx_ptr);
             Value* new_elem_ptr = builder->CreateGEP(tagged_value_type, new_elem_base, ci2);
             builder->CreateStore(result_tagged, new_elem_ptr);
@@ -21927,6 +21897,50 @@ private:
         result->addIncoming(tensor_result, tensor_exit);
         result->addIncoming(scalar_result, scalar_exit);
         return result;
+    }
+
+    // One element loader for the multi-sequence iterators (vector-map,
+    // vector-for-each): the i-th element of a source as a tagged value. A
+    // Scheme vector slot is the value; a tensor slot is a double bit pattern,
+    // unless the carrier was promoted by a non-numeric store or is a dual
+    // tensor (ADR-0020), where the slot is already a tagged value.
+    Value* loadSequenceElement(Value* is_tensor, Value* tagged_slots,
+                               Value* elems, Value* base, Value* idx) {
+        Function* f = builder->GetInsertBlock()->getParent();
+        BasicBlock* tb = BasicBlock::Create(*context, "velt_t", f);
+        BasicBlock* boxed_bb = BasicBlock::Create(*context, "velt_boxed", f);
+        BasicBlock* numeric_bb = BasicBlock::Create(*context, "velt_numeric", f);
+        BasicBlock* vb = BasicBlock::Create(*context, "velt_v", f);
+        BasicBlock* mb = BasicBlock::Create(*context, "velt_m", f);
+        builder->CreateCondBr(is_tensor, tb, vb);
+
+        builder->SetInsertPoint(tb);
+        builder->CreateCondBr(tagged_slots, boxed_bb, numeric_bb);
+
+        builder->SetInsertPoint(boxed_bb);
+        Value* boxed = builder->CreateLoad(tagged_value_type,
+            builder->CreateGEP(tagged_value_type, elems, idx));
+        builder->CreateBr(mb);
+        BasicBlock* boxed_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(numeric_bb);
+        Value* ei = builder->CreateLoad(int64_type, builder->CreateGEP(int64_type, elems, idx));
+        Value* et = packDoubleToTaggedValue(builder->CreateBitCast(ei, double_type));
+        builder->CreateBr(mb);
+        BasicBlock* numeric_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(vb);
+        Value* ev = builder->CreateLoad(tagged_value_type,
+            builder->CreateGEP(tagged_value_type, base, idx));
+        builder->CreateBr(mb);
+        BasicBlock* vb_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(mb);
+        PHINode* phi = builder->CreatePHI(tagged_value_type, 3);
+        phi->addIncoming(boxed, boxed_exit);
+        phi->addIncoming(et, numeric_exit);
+        phi->addIncoming(ev, vb_exit);
+        return phi;
     }
 
     // Polymorphic abs - handles AD/dual, then delegates to ArithmeticCodegen::abs
