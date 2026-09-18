@@ -83,6 +83,9 @@ SCOPE = [
 # Extend this table to put more documentation under the gate.
 GATED_SCOPES = {
     "tutorials": ["docs/tutorials"],
+    # Guides join one page at a time, as each page's examples are brought
+    # under the gate. A path may be a directory or a single file.
+    "guides": ["docs/guide/GRADUAL_TYPING.md"],
 }
 
 SKIP_REASONS = (

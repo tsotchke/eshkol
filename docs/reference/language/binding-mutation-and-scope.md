@@ -66,6 +66,56 @@ each activation gets its own shared cell, isolated from other activations
 (see the `counter-factory` example in
 [special-forms.md](special-forms.md#per-activation-instance-isolation-fixed-esh-0075)).
 
+## Procedure bindings that change
+
+A call through a name always reaches the procedure the name denotes **at that
+moment**. The compiler calls a procedure directly when it can prove which one a
+name denotes, and that proof is tied to the binding that owns the name: a
+binding that is reassigned with `set!`, a top-level name that is defined again,
+and a parameter or sibling `let` binding that reuses a name are all evaluated
+and called through the closure ABI. The rule is the same for a direct call, for
+`apply`, for `map`, `vector-map`, `reduce` and `remove`, and for the
+differentiation operators
+(see [the AD capture rules](../ad/operators.md#where-a-capture-is-resolved)).
+The decision record is
+[ADR 0015](../../design/adr/0015-static-callee-binding-identity.md).
+
+```scheme
+;; A variable bound to a procedure is called as it stands now: directly,
+;; through apply, and through the list operations.
+(define twice (lambda (x) (* 2 x)))
+(define before (twice 5))
+(set! twice (lambda (x) (* 3 x)))
+(display (list before (twice 5) (apply twice (list 5)) (map twice (list 1 2 3))))
+(newline)
+
+;; A top-level redefinition replaces the procedure everywhere.
+(define (step x) (+ x 1))
+(define (step x) (+ x 10))
+(display (map step (list 1 2)))
+(newline)
+
+;; A parameter of the same name hides the outer procedure.
+(define (scale x) (* 10 x))
+(define (use scale) (scale 2))
+(display (use (lambda (x) (- x))))
+(newline)
+
+;; remove with a predicate computed at run time keeps each element's type.
+(define (drop-if pred xs) (remove pred xs))
+(display (drop-if (lambda (x) (> x 1.5)) (list 1.0 2.0 3.0)))
+(newline)
+```
+```
+(10 15 15 (3 6 9))
+(11 12)
+-2
+(1)
+```
+Identical on the JIT (`-r`) and as an AOT binary. Bindings that are never
+reassigned keep direct-call resolution; only a binding that can change takes the
+closure path.
+
 ## Shadowing
 
 User bindings shadow one another normally following lexical scope. There are two
@@ -105,3 +155,30 @@ Verified for each of those names on both the JIT (`-r`) and an AOT binary. The
 earlier symptoms — a SIGBUS at teardown (**ESH-0092**) and a `set!` on a global
 named `log` silently lost under cached-JIT/AOT (**ESH-0103**) — no longer
 reproduce.
+
+### Names shared with the C math library
+
+A user procedure may be named after a C math library function (`exp`, `log`,
+`tanh`, `pow`, ...). The compiler never finds a math routine by its bare module
+name: it asks for the LLVM intrinsic (`llvm.exp.f64` and its siblings), whose
+name is reserved, and where the LLVM version in use has no intrinsic it
+verifies the signature of what it finds and otherwise declares a distinctly
+named routine. A user's `exp` and the `exp` inside a tensor activation therefore
+never meet, in either order of appearance:
+
+```scheme
+(define (exp x) (+ x 1))
+(define t (tensor (list -2.0 1.0)))
+(display (exp 2))
+(newline)
+(display (tensor-ref (elu t 2) 0))
+(newline)
+```
+```
+3
+-1.7293294335267746
+```
+The single access point is
+[`libm_codegen.h`](../../../inc/eshkol/backend/libm_codegen.h); the regressions
+are `tests/ml/math_symbol_collision_test.esk` and
+`tests/ml/math_symbol_user_shadow_test.esk`.

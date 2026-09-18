@@ -1,3 +1,14 @@
+---
+kind: explanation
+status: current
+owner-area: types
+since: v1.0.0
+sources:
+  - inc/eshkol/eshkol.h
+  - inc/eshkol/types/hott_types.h
+  - inc/eshkol/types/type_relation.h
+  - lib/types/type_checker.cpp
+---
 # Type System in Eshkol
 
 ## Table of Contents
@@ -21,8 +32,11 @@
   - [Synthesis Mode](#synthesis-mode)
   - [Checking Mode](#checking-mode)
   - [Constraint Generation and Unification](#constraint-generation-and-unification)
+  - [Which Forms Are Synthesized](#which-forms-are-synthesized)
+  - [Inferred Slots: Loop Parameters and Recursive Results](#inferred-slots-loop-parameters-and-recursive-results)
 - [Gradual Typing Semantics](#gradual-typing-semantics)
   - [Consistency Relation](#consistency-relation)
+  - [The Type Relation](#the-type-relation)
   - [Cast Insertion](#cast-insertion)
   - [Practical Implications](#practical-implications)
 - [Numeric Type Hierarchy](#numeric-type-hierarchy)
@@ -546,8 +560,11 @@ the expected type is known from context (e.g., function parameter types, explici
          Γ ⊢ e ⇐ B
 ```
 
-The subsumption rule uses the **consistency relation** `~` from gradual typing (see below),
-not strict equality. This allows typed and untyped code to interoperate seamlessly.
+The subsumption rule uses **consistent subtyping** from gradual typing (see
+[The Type Relation](#the-type-relation) below), not strict equality. This allows typed and
+untyped code to interoperate seamlessly. Arguments, return annotations, branch results and
+`the` ascriptions all go through the same judgment, so a type that fits in one position fits
+in the others.
 
 ### Constraint Generation and Unification
 
@@ -573,6 +590,78 @@ maintains a scope stack for lexical scoping, type aliases from `define-type`, an
 the current checking mode. Each AST node is processed by `checkExpression` (checking mode)
 or `synthesizeExpression` (synthesis mode).
 
+### Which Forms Are Synthesized
+
+The checker synthesizes **every evaluated subexpression of every form it receives**
+(since v1.3.5). A call is therefore checked against its callee's annotations wherever it is
+written: inside a `cond` clause, a `do` step, a `guard` handler or a quasiquote escape
+exactly as at top level.
+
+| Group | Operations | What is synthesized |
+|---|---|---|
+| Sequencing and binding | `SEQUENCE`, `DEFINE`, `LET`, `LET*`, `LETREC`, `LETREC*`, `LAMBDA`, `SET` | every expression of a body, not only the last; every initialiser; the assigned value |
+| Conditionals | `IF`, `COND`, `CASE`, `MATCH`, `WHEN`, `UNLESS`, `AND`, `OR` | tests, keys, the scrutinee, every branch body, every operand |
+| Iteration | `DO`, named `let` | initialisers, steps, test, result and body |
+| Control transfer | `GUARD`, `RAISE`, `CALL_CC`, `DYNAMIC_WIND` | body, handler clauses, the raised operand, the procedure and all three thunks |
+| Multiple values | `VALUES`, `CALL_WITH_VALUES`, `LET_VALUES`, `LET_STAR_VALUES` | operands, producer, consumer and body |
+| Quotation | `QUASIQUOTE`, `UNQUOTE`, `UNQUOTE_SPLICING` | escapes only, tracked by nesting level; quoted data is not evaluated |
+| Ownership and regions | `WITH_REGION`, `BORROW`, `OWNED`, `MOVE`, `SHARED`, `WEAK_REF` | the body or operand |
+| Calculus | `DERIVATIVE`, `GRADIENT`, `JACOBIAN`, `HESSIAN`, `DIVERGENCE`, `CURL`, `LAPLACIAN`, `DIRECTIONAL_DERIV`, `TAYLOR`, `DERIVATIVE_N` | the function, the point, the direction and the order |
+| Calls and data | `CALL` (including a computed callee), `THE`, `TENSOR`, arithmetic with more than two operands, the logic, workspace and memory-machine primitives, `MAKE_PARAMETER` | the callee expression, every argument, every element |
+
+Forms with no evaluated subexpression reach the checker as declarations or data (`QUOTE`,
+`EXTERN`, `DEFINE_SYNTAX`, `DEFINE_TYPE`, `IMPORT`, `REQUIRE`, `PROVIDE`, ...), or never
+reach it because the parser lowers them first: `case-lambda` to a lambda,
+`define-record-type` to defines, `parameterize` to `let` plus `dynamic-wind`, `delay` to a
+call on a lambda, `receive` and `define-values` to `call-with-values`. The expression of
+`diff` is differentiated symbolically, not evaluated, and is left alone.
+
+The typing rules for the multi-branch forms:
+
+- **Scope.** Clause tests are expressions. Each branch body is checked in its own scope, so
+  backward inference inside one branch cannot narrow an enclosing function's parameter.
+  `cond`, `when` and the later operands of `and` see their test's predicate refinements, as
+  `if` does. Linear-usage counters take the maximum over mutually exclusive branches.
+- **Result.** The result is the join of the branch types, plus the value the form yields when
+  no branch runs: `#f` for `cond`, `case`, `when` and `unless`. `match` raises and `guard`
+  re-raises, so they add nothing. A branch that cannot be typed contributes `Value` and does
+  not fail the form. `and` yields the join of `Boolean` with its last operand; `or` yields
+  the join of its operands. `dynamic-wind` and `call-with-values` yield their thunk's or
+  consumer's codomain; `with-region` and `borrow` yield their body's type.
+- **Bound variables.** A `match` variable at the top of a pattern has the scrutinee's type;
+  `(? pred name)` gives `name` the type a narrowing predicate proves. Variables inside cons,
+  list and or patterns, a `guard` condition variable and `let-values` variables are `Value`.
+- **Calculus operators.** An operator applied at a point yields `Value`; without a point it
+  yields a function.
+
+### Inferred Slots: Loop Parameters and Recursive Results
+
+A named `let` binds a procedure whose parameters carry no annotation. Each parameter is an
+**inferred slot**: its type is the least common supertype of its seed and of every argument
+passed to it at a call that resolves to that loop's own binding (same scope index and bound
+type, so an inner binding that shadows the name does not count). The checker finds it by
+iterating to a fixpoint over the body:
+
+1. Check the body with diagnostics held back.
+2. If the pass widened a slot, roll back its diagnostics, recorded errors, linearity count
+   and linear-usage counters, and check again.
+3. The pass that widens nothing is the real check; its diagnostics are emitted.
+
+A slot only moves strictly up its finite supertype chain, so the iteration terminates. The
+`InferenceSlot` policy refuses a join that reaches `Value`: the slot keeps its type and the
+offending argument is reported, as in `(loop "three")` for a slot seeded with `0`. The one
+exception is a `Boolean` slot, because `#f` is Scheme's "nothing yet": a flag-or-value slot
+widens to `Value`. Annotated and linear parameters are contracts and are never widened.
+
+A `do` variable uses the `AdoptTop` policy: it is the fixpoint join of its initialiser and
+its step, and adopts the join even at `Value`, because a step is an assignment and not an
+argument check.
+
+A recursive procedure's **result** is inferred the same way, as the least fixpoint over its
+own calls: the first pass types a recursive call as `Never`, which a join ignores, and later
+passes check against the inferred result. This covers a named `let` under `if` or `cond`, a
+function `define`, an internal `define` and non-tail recursion.
+
 ---
 
 ## Gradual Typing Semantics
@@ -595,6 +684,48 @@ Two types `τ` and `σ` are **consistent** (written `τ ~ σ`) if and only if:
 
 Consistency is **reflexive** and **symmetric** but **not transitive** — this is the key
 difference from subtyping that makes gradual typing work.
+
+### The Type Relation
+
+One module owns every judgment over types: `TypeRelation`
+([type_relation.h](../../inc/eshkol/types/type_relation.h),
+[type_relation.cpp](../../lib/types/type_relation.cpp)), decided in
+[ADR 0013](../design/adr/0013-gradual-type-relation.md). It is a lightweight view over the
+interned types of one `TypeEnvironment`; the checker constructs it wherever it needs a
+judgment. `TypeEnvironment` keeps small facades for static subtyping, join and printing
+that delegate to it and contain no rules of their own.
+
+| Judgment | Meaning |
+|---|---|
+| `isSubtype(sub, super)` | Static subtyping. `Never` is bottom and `Value` is top. An unresolved type carries no evidence for a static judgment. |
+| `isConsistent(a, b)` | Gradual consistency. `Value` and an unresolved type are consistent with every type. Function types are compared component by component. |
+| `isConsistentSubtype(sub, super)` | The judgment used at arguments and return annotations: subtyping in which every dynamic component is acceptable. |
+| `compatibility(from, to)` | The evidence for a flow: `Identity`, `Upcast` (static subtype, no runtime work), `Dynamic` (consistent only through `Value`: a checked cast), `Numeric` (both in the numeric tower) or `Incompatible`. `accepts` is everything but `Incompatible`. |
+| `castable(actual, ascribed)` | The rule for `(the T expr)`: accepted whenever the two types can overlap. Callable types are mutually castable. |
+| `join`, `joinAll`, `meet` | The lattice. Joins and meets recurse through unions, pairs and function types, then use the nominal graph. `Never` is the join identity; disjoint concrete types meet at `Never`. |
+| `narrow(current, proven)` | Occurrence typing: the type of a variable inside a branch guarded by a predicate. |
+| `widen(slot, incoming, policy)` | How an inferred slot absorbs an incoming type, under the `InferenceSlot` or `AdoptTop` policy described above. |
+| `pairProjection(pair, side)` | The type of `car` or `cdr` of a pair type. `cdr` of a value not known to be a pair is `Value`. |
+| `print(type)` | The spelling used in every diagnostic. |
+
+Structural rules:
+
+- **Function types** are contravariant in their parameters and covariant in their result.
+  `(-> Int64 Number)` does not fit `(-> Number Number)`; `(-> Number Int64)` does. A
+  different number of parameters never fits. A dynamic parameter or result stays acceptable
+  inside a signature, so an unannotated lambda fits any function type of its arity.
+  `Function` (the annotation `procedure`) is the top of the function types.
+- **Pair components** are covariant. A fully dynamic pair prints as `Pair`; a tracked one as
+  `Pair<A, B>`.
+- **Unions.** A type fits a union if it fits one arm; a union fits a target if every arm does.
+- **Branches.** Every branch-producing form uses the same `join`, so `if` and the equivalent
+  `cond` have the same type. Branches with no more specific representable common type
+  produce `Value`.
+
+Diagnostics use the relation printer, so a function signature prints as its arrow
+(`(-> Number Int64)`, `(-> String ... Value)` for a variadic procedure) and the generic
+procedure type prints as `Function`. The user-facing account of these rules, with runnable
+examples, is [the gradual typing guide](../guide/GRADUAL_TYPING.md).
 
 ### Cast Insertion
 
@@ -1240,7 +1371,11 @@ The type system is implemented across several files:
 | `inc/eshkol/types/dependent.h` | Dependent type support: CTValue (compile-time values for array dimensions, type-level naturals, booleans, symbolic expressions), DependentType for types parameterized by compile-time values |
 | `lib/types/dependent.cpp` | Dependent type checking implementation (Phase 5 of HoTT) |
 | `inc/eshkol/types/type_checker.h` | Bidirectional type checker interface |
-| `lib/types/type_checker.cpp` | Type checker implementation: synthesis mode, checking mode, constraint generation, unification |
+| `lib/types/type_checker.cpp` | Type checker implementation: synthesis mode, checking mode, synthesis of every control form, inferred-slot fixpoints, constraint generation, unification |
+| `inc/eshkol/types/type_relation.h` | The gradual type relation: subtyping, consistency, consistent subtyping, flow evidence, casts, join and meet, narrowing, slot widening, pair projection, printing |
+| `lib/types/type_relation.cpp` | Type relation implementation |
+| `tests/types/type_relation_test.cpp` | Direct contract for the relation: arrow variance, dynamic components, disjoint joins and meets, pair covariance, printing, both widening policies |
+| `tests/typesystem/` | Scheme fixtures in accept/reject pairs for every control form, branch joins, return annotations, arrow subtyping, loop-parameter widening and recursive results (`scripts/run_typesystem_tests.sh`) |
 
 ### Key Type System Concepts in Code
 
@@ -1273,6 +1408,8 @@ CTValue kinds: `Nat` (uint64_t), `Bool`, `Expr` (AST reference), `Unknown` (runt
 - [Memory Management (OALR System)](MEMORY_MANAGEMENT.md) — Arena allocation, object headers, lifetimes
 - [Vector Operations](VECTOR_OPERATIONS.md) — Scheme vectors vs. tensors, heterogeneous vs. homogeneous
 - [Automatic Differentiation](AUTODIFF.md) — Dual numbers, AD nodes, computational graphs
+- [Gradual typing guide](../guide/GRADUAL_TYPING.md) — Annotations, what is checked where, function types, branch joins, loop typing, reading a diagnostic
+- [ADR 0013 — One gradual type relation](../design/adr/0013-gradual-type-relation.md)
 - [Compiler Architecture](COMPILER_ARCHITECTURE.md) — Type checking pipeline, LLVM codegen
 - [Exact Arithmetic](EXACT_ARITHMETIC.md) — Bignums, rationals, numeric tower implementation
 - [API Reference](../API_REFERENCE.md) — Complete function reference with types

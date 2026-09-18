@@ -172,3 +172,10 @@ with the `init` values. Tail-recursive calls to `name` are fully optimized (see
 
 Named-let captures are passed as per-call arguments, which makes the loop
 thread-safe and correct across parallel execution.
+
+**Typing.** An unannotated loop parameter is typed by what the loop carries: the
+join of its initial value and of every argument passed back to it. An
+accumulator seeded with `'()` or `(cons 0.0 0)` and fed larger values is
+accepted; an argument with nothing in common with the seed (a string passed to
+a parameter seeded with `0`) is reported by the type checker. See
+[the gradual typing guide](../../guide/GRADUAL_TYPING.md#7-loops-are-typed-by-what-they-carry).

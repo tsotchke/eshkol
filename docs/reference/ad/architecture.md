@@ -576,6 +576,44 @@ See [support-matrix.md](support-matrix.md) for the per-cell evidence.
 
 ---
 
+## Capture resolution — one resolver for every operator
+
+An AD operator that resolves its differentiand to an `llvm::Function` calls it
+directly and passes the function's capture arguments itself.
+`AutodiffCodegen::appendDifferentiandCaptures`
+([`autodiff_codegen.h`](../../../inc/eshkol/backend/autodiff_codegen.h)) is the
+only place that decides where a capture comes from (since v1.3.5):
+
+- For a **named** differentiand it reads the captures from the closure object
+  the name evaluates to. `emitClosureCaptureArguments` in
+  [`closure_capture_scope.h`](../../../inc/eshkol/backend/closure_capture_scope.h)
+  follows the closure-call ABI, including the environment-pointer ABI used above
+  64 captures.
+- For an **inline** lambda, created at the same site, it resolves captures by
+  name in that scope. A local define's module-level capture cells are used
+  directly.
+- **Structural safeguard.** Every resolved capture value must belong to the
+  function being emitted (`valueUsableInFunction`). A value of an enclosing
+  function is reached through the current function's own `captured_<var>` /
+  `<var>_cap` pointer; if there is none, code generation fails with a diagnostic
+  naming the variable, the owning function, the function being emitted and the
+  source position. The check costs two `dyn_cast`s per capture at compile time.
+
+The derivative family (`derivative`, `derivative-n`, `taylor`), every `gradient`
+path (exact tower, jet, structured vector, scalar, reverse), `jacobian` (and
+through it `divergence` and `curl`), `hessian` (and through it `laplacian`) and
+`directional-derivative` all go through this resolver, as do
+`MapCodegen::loadCapturedValues` for a named procedure and `reduce`, which
+dispatches on the closure value. Whether a name may be resolved statically at
+all is a binding fact owned by
+[`static_callee_binding.h`](../../../inc/eshkol/backend/static_callee_binding.h)
+([ADR 0015](../../design/adr/0015-static-callee-binding-identity.md)): a
+reassigned or redefined binding gets no static alias, so its current value is
+evaluated and called through the closure ABI. User-facing rules and a runnable
+example are in [operators.md](operators.md#where-a-capture-is-resolved).
+
+---
+
 ## Callable-arity recovery — `gradient` through wrappers and curried forms
 
 `gradient` is exact reverse-mode AD **regardless of how the callable is reached**
