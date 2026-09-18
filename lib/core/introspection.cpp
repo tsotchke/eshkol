@@ -1280,6 +1280,9 @@ eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value) {
         case ESHKOL_VALUE_NULL:
             type_name = "null";
             break;
+        case ESHKOL_VALUE_UNSPECIFIED:
+            type_name = "unspecified";
+            break;
         case ESHKOL_VALUE_INT64:
             type_name = "integer";
             break;

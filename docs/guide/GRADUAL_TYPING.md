@@ -89,12 +89,13 @@ warns and still runs:
   (when flag
     (area "wide" 3)))
 
-(display (report #f))
+(report #f)
+(display "still runs")
 (newline)
 ```
 
 ```text
-#f
+still runs
 ```
 
 The compiler writes this on standard error:

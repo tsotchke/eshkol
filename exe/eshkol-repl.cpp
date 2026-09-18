@@ -399,6 +399,24 @@ bool is_definition_statement(const eshkol_ast_t& ast) {
     return false;
 }
 
+// Runs one REPL form. A form whose value the REPL shows (everything but a
+// definition or an explicit output call, see is_definition_statement) is
+// evaluated through executeTagged() and its value printed here: nothing for
+// the unspecified value (ADR-0024), the value and a newline otherwise. The
+// former (begin (display expr) (newline)) wrapper could not tell "nothing to
+// show" from the empty list, so `(when #t (display "hi"))` echoed `hi()`.
+static void* repl_run_form(eshkol::ReplJITContext& repl_ctx, eshkol_ast_t* ast,
+                           bool should_display) {
+    if (!should_display) return repl_ctx.execute(ast);
+    eshkol_tagged_value_t tv = repl_ctx.executeTagged(ast);
+    if (tv.type != ESHKOL_VALUE_UNSPECIFIED) {
+        eshkol_display_value(&tv);
+        std::fputs("\n", stdout);
+    }
+    std::fflush(stdout);
+    return nullptr;
+}
+
 // Helper: Get defined name from AST
 const char* get_defined_name(const eshkol_ast_t& ast) {
     if (ast.type != ESHKOL_OP || ast.operation.op != ESHKOL_DEFINE_OP) {
@@ -539,14 +557,9 @@ bool load_file(const std::string& filename, eshkol::ReplJITContext& repl_ctx) {
                 g_defined_symbols.push_back(defined_name);
             }
 
-            eshkol_ast_t* ast_to_execute = &ast;
             bool should_display = !is_definition_statement(ast);
 
-            if (should_display) {
-                ast_to_execute = eshkol_wrap_with_display(&ast);
-            }
-
-            void* result = repl_ctx.execute(ast_to_execute);
+            void* result = repl_run_form(repl_ctx, &ast, should_display);
 
             eshkol_ast_clean(&ast);
             if (result) {
@@ -743,16 +756,11 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
                 auto parse_time = std::chrono::duration_cast<std::chrono::microseconds>(parse_end - parse_start);
 
                 if (ast.type != ESHKOL_INVALID) {
-                    eshkol_ast_t* ast_to_execute = &ast;
                     bool should_display = !is_definition_statement(ast);
-
-                    if (should_display) {
-                        ast_to_execute = eshkol_wrap_with_display(&ast);
-                    }
 
                     // Time JIT compilation + execution
                     auto exec_start = std::chrono::high_resolution_clock::now();
-                    void* result = repl_ctx.execute(ast_to_execute);
+                    void* result = repl_run_form(repl_ctx, &ast, should_display);
                     auto exec_end = std::chrono::high_resolution_clock::now();
 
                     auto exec_time = std::chrono::duration_cast<std::chrono::microseconds>(exec_end - exec_start);
@@ -1673,12 +1681,7 @@ int main(int argc, char** argv) {
             }
 
             // Wrap expressions with display
-            eshkol_ast_t* ast_to_execute = &ast;
             bool should_display = !is_definition_statement(ast);
-
-            if (should_display) {
-                ast_to_execute = eshkol_wrap_with_display(&ast);
-            }
 
             // Execute using JIT with crash recovery and exception handling
             void* result = nullptr;
@@ -1692,7 +1695,7 @@ int main(int argc, char** argv) {
 
                 if (setjmp(g_repl_exception_jmp_buf) == 0) {
                     // Normal execution path
-                    result = repl_ctx.execute(ast_to_execute);
+                    result = repl_run_form(repl_ctx, &ast, should_display);
                 } else {
                     // Exception was raised - handle it
                     had_error = true;

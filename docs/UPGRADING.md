@@ -53,12 +53,13 @@ v1.3.5. Each one is a call whose argument contradicts an annotation:
   (when flag
     (area "wide" 3)))
 
-(display (report #f))
+(report #f)
+(display "still runs")
 (newline)
 ```
 
 ```text
-#f
+still runs
 ```
 
 ```console

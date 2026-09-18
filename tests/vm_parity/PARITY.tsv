@@ -809,6 +809,7 @@ substitution?	vm-supported
 substring	vm-supported	
 sum-tag	gap	no VM name binding
 sum-value	gap	no VM name binding
+swish	gap	ml faculty has no VM fid coverage
 symbol->string	vm-supported
 symbol=?	gap	no VM name binding
 symbol?	vm-supported	

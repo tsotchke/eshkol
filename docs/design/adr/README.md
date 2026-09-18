@@ -50,6 +50,7 @@ documentation hub lists the same records in
 | [0020](0020-container-slot-store-boundary.md) | One store boundary for every container slot (amended: the vector API promotes a numeric carrier) | Accepted — implemented (#701) | 2026-09-17 | v1.3.5 |
 | [0021](0021-ast-string-owner.md) | One owner for AST string payloads, one spelling for recorded paths | Accepted — implemented in v1.3.5-evolve | 2026-09-18 | `inc/eshkol/frontend/ast_strings.h`, `inc/eshkol/frontend/source_paths.h`, gates `ast_strings_test`, `source_paths_test`, `scripts/check_ast_string_owner.py`, `scripts/check_artifact_paths.py` |
 | [0022](0022-ad-value-boundaries.md) | One boundary for each place a value crosses a representation | Accepted — implemented (#706) | 2026-09-18 | v1.3.5 |
+| [0024](0024-unspecified-value.md) | One unspecified value | Accepted — implemented (#709) | 2026-09-18 | v1.3.5 |
 
 ## Numbering
 

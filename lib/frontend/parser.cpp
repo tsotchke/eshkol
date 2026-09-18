@@ -5651,8 +5651,14 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             bool has_else = false;
 
             if (token.type == TOKEN_RPAREN) {
-                // No else clause - use null as default (Scheme unspecified value)
-                eshkol_ast_make_null(&else_expr);
+                // No else clause: the form evaluates to the unspecified value
+                // (ADR-0024), spelled as a call to `void`, not to '().
+                else_expr = *eshkol_alloc_symbolic_ast();
+                else_expr.type = ESHKOL_OP;
+                else_expr.operation.op = ESHKOL_CALL_OP;
+                else_expr.operation.call_op.func = eshkol_make_var_ast("void");
+                else_expr.operation.call_op.num_vars = 0;
+                else_expr.operation.call_op.variables = nullptr;
                 has_else = false;
             } else if (token.type == TOKEN_EOF) {
                 PARSE_ERROR_AT(token, "unexpected end of input in if expression");

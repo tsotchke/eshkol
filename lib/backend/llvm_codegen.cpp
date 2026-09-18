@@ -6648,6 +6648,11 @@ private:
         return tagged_->packNull();
     }
 
+    /** The unspecified value (ADR-0024). */
+    Value* packUnspecifiedToTaggedValue() {
+        return tagged_->packUnspecified();
+    }
+
     // Ensure a value is in tagged format
     // codegenAST returns raw i64/double for primitives, but tagged structs for complex types
     // This function checks the LLVM type and packs raw values into tagged format
@@ -12311,8 +12316,8 @@ private:
             builder->CreateStore(store_value, var_ptr);
             eshkol_debug("set! updated variable: %s", var_name);
 
-            // Return the new value (set! returns an unspecified value, but we return the stored value)
-            return new_value->getType() == tagged_value_type ? new_value : typedValueToTaggedValue(typed);
+            // ADR-0024: set! evaluates to the unspecified value.
+            return tagged_->packUnspecified();
         } else {
             // Variable is not mutable (might be a function argument passed by value)
             eshkol_error("set!: variable '%s' is not mutable (not an alloca, global, or capture pointer)", var_name);
@@ -14592,7 +14597,7 @@ private:
                         {PointerType::getUnqual(*context)}, false));
                 builder->CreateCall(write_func, {arg_ptr});
             }
-            co_return tagged_->packNull();
+            co_return packUnspecifiedToTaggedValue();  // ADR-0024
         }
 
         // R7RS read: parse S-expression from port (or stdin)
@@ -15439,7 +15444,7 @@ private:
         // R7RS unspecified-value constructor.  Eshkol represents the single
         // unspecified value as its canonical null tagged value.
         if (func_name == "void" && op->call_op.num_vars == 0)
-            co_return packNullToTaggedValue();
+            co_return packUnspecifiedToTaggedValue();  // ADR-0024
 
         // Handle if conditional
         if (func_name == "if") co_return codegenIfCall(op);
@@ -16995,7 +17000,7 @@ private:
             builder->CreateStore(builder->CreateAdd(ci2, ConstantInt::get(int64_type, 1)), idx_ptr);
             builder->CreateBr(cond_bb);
             builder->SetInsertPoint(done_bb);
-            co_return packNullToTaggedValue();
+            co_return packUnspecifiedToTaggedValue();  // ADR-0024
         }
         // R7RS vector-map: (vector-map proc vector) → vector
         // Handles both Scheme vectors (16-byte tagged elements) and tensors (8-byte doubles)
@@ -41284,7 +41289,7 @@ private:
             builder->CreateStore(barriered, tv_slot);
             builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
                                 {cons_ptr, slot_flag, tv_slot});
-            return new_value;
+            return packUnspecifiedToTaggedValue();  // ADR-0024
         }
 
         // Fallback: non-tagged scalar. detectValueType still classifies
@@ -41306,7 +41311,7 @@ private:
                 {cons_ptr, slot_flag, new_val_typed.llvm_value,
                  ConstantInt::get(int8_type, type_tag)});
         }
-        return new_value;
+        return packUnspecifiedToTaggedValue();  // ADR-0024
     }
 
     Value* codegenSetCar(const eshkol_operations_t* op) {
