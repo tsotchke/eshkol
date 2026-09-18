@@ -1453,6 +1453,23 @@ the source changes; the verification record for the tagged commit is the
   and `tests/vm_parity/corpus/88_differentiated_values_in_list_cells.esk`, and
   tutorials 21, 24 and 26, which now run unmarked in the documentation example
   gate. (#706)
+- **A dense tensor AD node is a tensor wherever a tensor is read.** Under
+  differentiation `matmul` and the dense elementwise operators publish their
+  result as one AD node with an f64 buffer. `tensor-dot`, `reshape`,
+  `tensor-scale`, `relu`, `tensor-exp`, `tensor-sqrt`, `softmax` and
+  `tensor-get` now accept it, the two-argument `tensor-ref` indexes it, and
+  `vector-length`, `vector-ref` and `vector->list` read it as the tensor it
+  is, so `(gradient (lambda (x) (tensor-dot x (matmul A x))) v)` is
+  `(A + A^T) v` and the stdlib's `tensor-norm` differentiates through a
+  `matmul` (SW-181). One resolver, `eshkol_ad_dense_node_elements`, turns the
+  node into a tensor of `AD_NODE_DENSE_ELEM` projections (registry row 95)
+  whose backward is the identity scatter into the dense node's gradient; the
+  tensor boundary and `TaggedValueCodegen::resolveDenseTensorNode` route to
+  it, and operators with dense rules keep one node per operation.
+  `eshkol_ad_node_probe` bounds a node's type by the registry count. Design in
+  ADR-0023. Tests: `tests/ad/dense_tensor_operand_boundary_test.esk` (JIT,
+  cached run path and AOT) and tutorial 11's differentiation example, which
+  now runs unmarked in the documentation example gate. (#708)
 
 - **Exact rationals reach the derivative carrier, a vanishing tangent keeps
   the seed's exactness, the three scalar AD operators nest safely through a
