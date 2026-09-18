@@ -206,6 +206,36 @@ This is an atomic-replacement contract, not a power-loss durability guarantee.
 Checkpoint save does not `fsync` both the file and its parent directory, and
 abrupt machine loss or `SIGKILL` cleanup is not promised.
 
+### Types that follow the program
+
+The optional type checker reads every evaluated position of every control form.
+A call inside a `cond` clause, a `do` step, a `guard` handler, a quasiquote
+escape or a `dynamic-wind` thunk is checked against its callee's annotations
+exactly as the same call at top level, and the form's own type is the join of
+its branches, so an `if` and the equivalent `cond` agree. One module,
+`TypeRelation`, owns every judgment the checker makes: subtyping, gradual
+consistency, joins, casts and the spelling of types in diagnostics. Function
+types are first-class in it, contravariant in their parameters, and print as
+arrows: `expected (-> Number Number), got (-> Int64 Number)`. A named-let loop
+parameter is typed by what the loop carries, the join of its seed and every
+value passed back to it, so an accumulator may start as a literal and grow.
+The standard library compiles with **zero** type warnings.
+
+```scheme
+(define (area (w : number) (h : number)) (* w h))
+(define (describe flag)
+  (cond (flag (area "wide" 3))   ; argument 1 of 'area': expected Number, got String
+        (else 0)))
+```
+
+The same discipline reaches procedure values. A direct call to a compiled
+procedure is a fact tied to the binding that owns it, so a variable reassigned
+with `set!` is called as it stands on every path: a direct call, `apply`,
+`map`, `reduce` and `derivative` alike. A differentiated closure's captures are
+read from the closure itself, wherever the derivative is taken. The user guide
+is [docs/guide/GRADUAL_TYPING.md](docs/guide/GRADUAL_TYPING.md); what a v1.3.4
+program meets is in [docs/UPGRADING.md](docs/UPGRADING.md).
+
 ### Assurance gates that are measured against deliberate mutations
 
 A gate that has never rejected anything is not evidence. The compiler-assurance
@@ -241,6 +271,27 @@ is bound to the exact checkout it graded, so evidence from an earlier branch run
 cannot certify a later cut.
 
 ## Also in this release
+
+- **Documentation that is executed and accounted for.** Every tutorial
+  example, and the examples of the gradual-typing guide and the upgrade page,
+  runs on the JIT and as an AOT binary in CI, and what it prints is compared
+  with the page. Every merged pull request in the release range is referenced
+  by the changelog or listed, with a reason, in a checked ledger. Release facts
+  (tag, date, status, evidence totals) have one source,
+  `tests/coverage/release_record.json`, and every release-facing document is
+  graded against it. Pages carry front matter naming their kind, status and
+  sources; the system is described in
+  [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md) and
+  [ADR 0019](docs/design/adr/0019-evergreen-documentation-architecture.md).
+  New pages: [upgrading](docs/UPGRADING.md),
+  [troubleshooting](docs/TROUBLESHOOTING.md),
+  [the release process](docs/platform/RELEASE_PROCESS.md) and
+  [a glossary](docs/GLOSSARY.md).
+- **Build.** GCC 13 and Clang/LLVM 21 are the verified host compilers. The
+  Python bindings build on ELF platforms with position-independent archives and
+  the Python development component, and the runtime supplies `roundeven` where
+  the platform C library does not. Coverage instrumentation records each site
+  once, behind a guard in the generated code.
 
 - **Exact and nested differentiation.** Foreign-epoch perturbations are opaque
   with respect to the current value recurrence rather than flattened to a

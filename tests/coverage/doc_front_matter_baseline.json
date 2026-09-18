@@ -1,5 +1,5 @@
 {
   "schema": "eshkol.doc-front-matter-baseline.v1",
   "_comment": "Number of documentation pages in the scope of scripts/check_doc_front_matter.py that carry no front-matter block (kind, status, owner-area, since, sources). The gate fails when the live count is above this number (a new page must carry the block) and when it is below it (lower the number with `python3 scripts/check_doc_front_matter.py --update-baseline`), so the recorded number can only go down. Never raise it by hand.",
-  "pages_without_front_matter": 319
+  "pages_without_front_matter": 318
 }

@@ -18,6 +18,9 @@ pages and lets them fan out to their siblings.
 - [Examples](../examples/README.md) — the runnable example collection (AD, parallelism, consciousness engine, streaming, simulation, quantum chemistry, and exact mathematics)
 - [AI-driven mathematics examples](AI_MATHEMATICS_EXAMPLES.md) — exact and AD-verified public witnesses, including the Jacobian counterexample, AlphaTensor factorizations, and a FunSearch cap set
 - [FAQ](FAQ.md) — installation, troubleshooting, common questions
+- [Upgrading to v1.3.5-evolve](UPGRADING.md) — what a program, a build or a contributor workflow written against v1.3.4 meets on v1.3.5
+- [Troubleshooting](TROUBLESHOOTING.md) — build and run problems with known causes: LLVM discovery, host compilers, `ESHKOL_PATH`, caches, stack size, Python bindings, Windows, WebAssembly
+- [Glossary](GLOSSARY.md) — the terms the documentation uses, each linked to its home page
 - [Getting Started (breakdown)](breakdown/GETTING_STARTED.md) — installation and first programs, implementation-level detail
 - [Overview](breakdown/OVERVIEW.md) — design philosophy and competitive positioning, start here for "why Eshkol"
 
@@ -28,6 +31,7 @@ pages and lets them fan out to their siblings.
 - [Complete Language Specification](COMPLETE_LANGUAGE_SPECIFICATION.md) — full technical specification, v1.3.5-evolve
 - [Quick Reference](ESHKOL_QUICK_REFERENCE.md) — one-page cheat sheet over the 1,052-builtin surface
 - [API Reference](API_REFERENCE.md) — comprehensive function documentation
+- [Gradual typing guide](guide/GRADUAL_TYPING.md) — annotations, what is checked where, function types, branch joins, loop typing, reading a diagnostic
 - [Standard Library API index](reference/stdlib/INDEX.md) — module-by-function map of the standard library (63 modules)
 - [Standard Library API (v1.2 surface notes)](STDLIB_V1_2_API.md) — stdlib module surfaces, including infrastructure modules
 - [Design Document](DESIGN.md) — architecture and design rationale (last revised for v1.3.0-evolve)
@@ -137,6 +141,7 @@ pages and lets them fan out to their siblings.
 - [Platform program index](platform/README.md) — freestanding/kernel/embedded platform program, fans out to program overview, architecture, roadmap alignment, governance, workstreams, milestones, decisions
 - [Build-system integration](BUILD_INTEGRATION.md) — compiling `.esk` sources from a CMake project (e.g. embedding Eshkol in a larger C/C++ project)
 - [Build notes](platform/BUILD_NOTES.md)
+- [Release process](platform/RELEASE_PROCESS.md) — how a release is verified and published: the release workflow, the readiness gate, the evidence recipe, the release record and what the maintainer does by hand
 - [CI lanes](platform/CI_LANES.md) — required vs. non-required CI lanes and what each covers
 - [Self-hosted runners](platform/SELF_HOSTED_RUNNERS.md) — attaching the maintainer's own machines as GitHub Actions runners: label taxonomy, provisioning, registration, why no mesh lane is a required check
 - [ICC contract surface](platform/ICC_CONTRACT_SURFACE.md)
@@ -204,6 +209,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 
 ## Testing and Quality Gates
 
+- [Writing documentation](DOCUMENTATION.md) — page kinds, front matter, evergreen wording, facts rendered from sources, executed examples and every documentation gate
 - [Public Benchmarks reference index](reference/benchmarks/INDEX.md) — reproducible, one-command benchmark suite on the four axes Eshkol claims superiority (exact-AD cost curves, Ozaki-II CRT GEMM, flat-RSS, differentiable quantum kernels); see [`bench/README.md`](../bench/README.md) for the full reproduction guide and [`bench/reference-run/results.md`](../bench/reference-run/results.md) for the published reference run
 - [Testing & Adversarial Harnesses](TESTING.md) — SICP gate plus the adversarial harnesses and how to run them
 - [Test Coverage](TEST_COVERAGE.md) — what the suite gate verifies on the v1.3.5-evolve release: 46/46 suites, <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->, <!-- release-record:vm-parity -->VM parity differential **340/340**<!-- /release-record -->
