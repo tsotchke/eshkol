@@ -1,6 +1,6 @@
 # ADR-0006: Binding-resolved libraries and proper tail invocation
 
-- Status: Proposed
+- Status: Accepted — partially implemented: binding resolution by identity and the recursive import algebra (`BindingId`, `ImportSet`, `ImportResolver` and `BindingResolver` in `inc/eshkol/frontend/semantic_identity.h`, shared by the native compiler, the VM, the REPL and the tooling) are in v1.3.5-evolve; remaining slices, including the tail-call verifier, Proposed
 - Date: 2026-07-09
 - Owners: frontend, module loader, type system, native/VM backends
 - Scope: R7RS-small language profile, Eshkol `require`/`provide`, AOT, ORC JIT/REPL, precompiled libraries, and proper tail calls

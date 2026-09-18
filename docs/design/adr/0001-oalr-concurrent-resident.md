@@ -1,6 +1,6 @@
 # ADR-0001: Concurrent, resident-grade OALR
 
-- **Status:** Proposed
+- **Status:** Accepted — partially implemented: the Phase A memory-context accessor (`eshkol_memctx_current` and `eshkol_current_arena` in `lib/core/runtime_regions.cpp`) and the Phase C 32-byte header definition behind the `ESHKOL_MEMORY_ABI_V2` build option (`eshkol_object_header_v2_t` in `inc/eshkol/memory_abi_v2.h`, migration staged by ADR-0012) are in v1.3.5-evolve; remaining phases Proposed
 - **Date:** 2026-07-09
 - **Decision owners:** Eshkol memory/runtime architecture
 - **Cluster:** OALR / concurrency / residence

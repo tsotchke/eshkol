@@ -1,0 +1,22 @@
+{
+  "consequences": "",
+  "context": "Status: Accepted \u2014 implemented in v1.3.5-evolve (`scripts/lib/release_invariant_probes.sh`, `scripts/run_release_invariant_probes.sh`, and the CTest contracts `tests/toolchain/test_release_invariant_contracts.py` and `tests/toolchain/wasm_flat_ad_import_test.py`)\nDate: 2026-09-14\nDecision Owners: Eshkol compiler/runtime maintainers; release assurance maintainers\nRelated: ADR-0000 (frontend identity substrate), ADR-0001 (OALR object model),",
+  "created_at": "2026-09-14T00:00:00Z",
+  "decision": "- Status: Accepted \u2014 implemented in v1.3.5-evolve (`scripts/lib/release_invariant_probes.sh`, `scripts/run_release_invariant_probes.sh`, and the CTest contracts `tests/toolchain/test_release_invariant_contracts.py` and `tests/toolchain/wasm_flat_ad_import_test.py`)\n- Date: 2026-09-14\n- Decision owners: Eshkol compiler/runtime maintainers; release assurance maintainers\n- Related: ADR-0000 (frontend identity substrate), ADR-0001 (OALR object model),\n  ADR-0010 (closed-loop assurance), `.icc/architecture-model.yaml`\n\n## Context\n\nThe architecture model checks compiler and runtime invariants from source, but\nthe release architecture grade also needs evidence that the corresponding\nruntime and ABI checks actually ran on the release build. Several contracts\ncross type, layout, generated glue, and shell-harness boundaries. A declaration\nor a green process exit alone cannot establish those contracts.\n\n## Decision\n\nRelease invariants use executable, fail-closed contracts at each boundary:\n\n- The parser's `eshkol_ast_t::node_id`, the NodeId allocator, and semantic\n  queries share the `eshkol_node_id_t` key type. The AST field remains a\n  32-bit alias, preserving its public layout.\n- Each heap subtype marked `[DEEPWALK]` has a corresponding native evacuation\n  handler. Leaf evacuation cases do not count as deep walks.\n- The flat automatic-differentiation WASM imports are generated from the\n  checked-in import fragment and a single core-key manifest. The import test\n  checks generated freshness, required keys, and runtime behavior.\n- Smoke probes distinguish a measured `PASS` or `FAIL` from harness\n  infrastructure failure. Only measured outcomes emit typed `test_result`\n  receipts; infrastructure failure emits no result that could be mistaken\n  for a verdict.\n- The release workflow emits ABI/layout, closed-enum, live AD-counter, and VM-parity receipts\n  before the ICC architecture grade. The VM parity gate supplies its own\n  aggregate receipt. The AD counter gate measures both an exact positive case\n  and a real finite-difference negative control before grading.\n- Package verification is required on both archive-producing workflow paths.\n- Bridge backward functions must match their canonical registry rows, including\n  the squared-distance implementation in its separate translation unit.\n\nCTest registers the source-contract, receipt-contract, and generated WASM\nimport tests so local and CI test runs exercise the same assertions.\n\n## Consequences\n\nAn invariant grade is not treated as release evidence until its concrete probe\nhas run against the release build. Missing receipts remain missing, and a\ntooling failure cannot be promoted to a passing or failing product result.\nChanges to AST identity types, evacuation coverage, the flat-AD import surface,\nor receipt order now fail at the closest contract test.\n\nThe ABI proof in this change is limited to the shared public C/C++ header and\nthe asserted AST field type and layout. It does not claim cross-architecture\nbinary equivalence for serialized or compiler-generated artifacts.",
+  "id": "ADR-0014",
+  "links": {
+    "audit_policy_refs": [],
+    "graph_nodes": [],
+    "release_streams": [],
+    "tasks": []
+  },
+  "schema_version": "1.0",
+  "source_anchor": "docs/design/adr/0014-release-invariant-contracts.md:1",
+  "source_path": "docs/design/adr/0014-release-invariant-contracts.md",
+  "status": "accepted",
+  "tags": [
+    "imported-markdown"
+  ],
+  "title": "Release invariant contracts are measured before grading",
+  "updated_at": "2026-09-17T21:28:15Z"
+}

@@ -1,7 +1,8 @@
-# ADR 0012: Signed-curvature stereographic geometry and the K = 0 execution contract
+# ADR 0018: Signed-curvature stereographic geometry and the K = 0 execution contract
 
 - **Status:** Accepted (maintainer ruling 2026-08-30)
 - **Date:** 2026-08-30
+- **Renumbered:** was ADR 0012 until 2026-09-17; renumbered to give every record a unique id.
 - **Decision owners:** geometry core (`riemannian_core.h`), VM geometry, qLLM bridge, AD, Moonlab integration maintainers
 - **Depends on:** the shared geometry core established by the VM-geometry and squared-distance work (SW-73 lineage); ADR-0002 (external oracle) for reference grids
 - **Scope:** the curvature parameter and chart used by every constant-curvature primitive (distance, exp/log maps, parallel transport, conformal factor, curvature derivatives, geodesic attention), the behaviour at and through `K = 0`, and the serialization/migration contract

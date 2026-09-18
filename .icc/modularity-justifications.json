@@ -108,9 +108,9 @@
      "inc/eshkol/backend/riemannian_core.h"
     ],
     "status": "temporary_legacy_boundary",
-    "task_id": "adr-0012-signed-curvature-stereographic-geometry",
-    "reason": "riemannian_core.h is a temporary boundary, named directly in docs/design/adr/0012-signed-curvature-stereographic-geometry.md's decision-owner list (\"geometry core (riemannian_core.h)\"), which is actively adding the shared rho/lambda/generalized-ratio helpers and the signed stereographic forward/domain checks to this header. Splitting it before that ADR's migration lands would fork a header mid-change across the VM geometry, qLLM bridge, AD, and Moonlab integration consumers it lists as decision owners.",
-    "mitigation": "No split ahead of ADR-0012 landing. Once the signed-curvature migration and its documented consumer updates (docs/reference/stdlib/geometry.md, docs/api/backend/riemannian_core.md) are complete, split the header along the chart/metric boundary that migration establishes."
+    "task_id": "adr-0018-signed-curvature-stereographic-geometry",
+    "reason": "riemannian_core.h is a temporary boundary, named directly in docs/design/adr/0018-signed-curvature-stereographic-geometry.md's decision-owner list (\"geometry core (riemannian_core.h)\"), which is actively adding the shared rho/lambda/generalized-ratio helpers and the signed stereographic forward/domain checks to this header. Splitting it before that ADR's migration lands would fork a header mid-change across the VM geometry, qLLM bridge, AD, and Moonlab integration consumers it lists as decision owners.",
+    "mitigation": "No split ahead of ADR-0018 landing. Once the signed-curvature migration and its documented consumer updates (docs/reference/stdlib/geometry.md, docs/api/backend/riemannian_core.md) are complete, split the header along the chart/metric boundary that migration establishes."
    },
    {
     "path_patterns": [

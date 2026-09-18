@@ -179,27 +179,28 @@ pages and lets them fan out to their siblings.
 - [Navier-Stokes construction: proof ledger](design/NAVIER_STOKES_PROOF_LEDGER.md) — per-step record of what is exact, what is validated by enclosure, and what is analytic-only in the mechanization design note
 - [Incompressible porous media: local velocity expansion, proof ledger](design/IPM_LOCAL_EXPANSION_LEDGER.md) — the companion ledger for the local velocity expansion
 
-Architecture Decision Records (`docs/design/adr/`) — design proposals and decisions, not all yet implemented (see each doc's own `Status:` line):
+Architecture Decision Records (`docs/design/adr/`) — design proposals and decisions, not all yet implemented. The [ADR index](design/adr/README.md) holds the full table (status, date, where each decision is implemented), the numbering rule, the status vocabulary and the registration steps. Every record has exactly one number; the status word on each line summarises the record's own `Status:` line:
 
-- [ADR 0000 — Unified architectural trajectory](design/adr/0000-unified-trajectory.md)
-- [ADR 0001 — Concurrent, resident-grade OALR](design/adr/0001-oalr-concurrent-resident.md)
-- [ADR 0002 — Staged dense-tensor reverse-mode AD and `value_and_grad`](design/adr/0002-ad-alt-architect.md)
-- [ADR 0002 — Dense tensor AD nodes and a staged value-and-grad kernel](design/adr/0002-ad-staged-dense-kernels.md)
-- [VM/LLVM parity conformance matrix + modularization notes](design/adr/0003-codegen-vm-parity.md)
-- [ADR 0004 — One quantitative dependent type system for Eshkol](design/adr/0004-type-system-trajectory.md)
-- [ADR 0005 — Lambda foundations to resident programs-as-weights](design/adr/0005-lambda-foundations-programs-to-weights.md)
-- [ADR 0006 — Binding-resolved libraries and proper tail invocation](design/adr/0006-language-conformance-modules.md)
-- [ADR 0007 — PGO, whole-program optimization, and staged training throughput](design/adr/0007-performance-pgo-wpo.md)
-- [ADR 0008 — One semantic tooling core for Eshkol developer experience](design/adr/0008-dev-experience-tooling.md)
-- [ADR 0009 — Native DBSP-style incremental dataflow](design/adr/0009-incremental-dataflow-dbsp.md) — see also [reference/stdlib/dbsp.md](reference/stdlib/dbsp.md) for the implemented subset
-- [ADR 0010 — Closed-loop assurance architecture](design/adr/0010-closed-loop-assurance.md)
-- [ADR 0011 — Stochastic Binary Lambda Calculus](design/adr/0011-stochastic-binary-lambda-calculus.md) — `core.sblc`, the self-delimiting binary program grammar, exact rational distribution semantics under a step bound (first slice targets v1.4.0)
-- [ADR 0011 — Hosted guest collectors over OALR regions](design/adr/0011-guest-collector-adapter.md) — how a garbage-collected guest language (Python, Common Lisp) is hosted in a region without Eshkol ever tracing; includes a runnable falsifier in [`0011-gc-adapter-falsifier/`](design/adr/0011-gc-adapter-falsifier/)
-- [ADR 0012 — Signed-curvature stereographic geometry](design/adr/0012-signed-curvature-stereographic-geometry.md) — one κ-stereographic chart for all curvature signs, analytic through `K = 0`, and the execution contract it implies (targets v1.4.0)
-- [ADR 0012 — Object ABI: discrimination, enforcement, and the staged migration](design/adr/0012-object-abi-staged-migration.md) — how a heap object is discriminated, where the invariant is enforced, and the staged path from the 8-byte v1 header to the 32-byte v2 header; the site inventory it migrates is [`design/ABI_V2_MIGRATION_INVENTORY.md`](design/ABI_V2_MIGRATION_INVENTORY.md)
-- [ADR 0013 — One gradual type relation](design/adr/0013-gradual-type-relation.md) — centralizes static subtyping, gradual consistency, flow evidence, joins, casts, and type presentation
-- [ADR 0014 — Release invariant contracts are measured before grading](design/adr/0014-release-invariant-contracts.md)
-- [ADR 0015 — Static callee binding identity](design/adr/0015-static-callee-binding-identity.md) — makes direct-call aliases depend on the binding storage that still owns them
+- [ADR 0000 — Unified architectural trajectory](design/adr/0000-unified-trajectory.md) — Partially implemented
+- [ADR 0001 — Concurrent, resident-grade OALR](design/adr/0001-oalr-concurrent-resident.md) — Partially implemented
+- [ADR 0002 — Dense tensor AD nodes and a staged value-and-grad kernel](design/adr/0002-ad-staged-dense-kernels.md) — Partially implemented
+- [VM/LLVM parity conformance matrix + modularization notes](design/adr/0003-codegen-vm-parity.md) — Superseded
+- [ADR 0004 — One quantitative dependent type system for Eshkol](design/adr/0004-type-system-trajectory.md) — Partially implemented
+- [ADR 0005 — Lambda foundations to resident programs-as-weights](design/adr/0005-lambda-foundations-programs-to-weights.md) — Proposed
+- [ADR 0006 — Binding-resolved libraries and proper tail invocation](design/adr/0006-language-conformance-modules.md) — Partially implemented
+- [ADR 0007 — PGO, whole-program optimization, and staged training throughput](design/adr/0007-performance-pgo-wpo.md) — Partially implemented
+- [ADR 0008 — One semantic tooling core for Eshkol developer experience](design/adr/0008-dev-experience-tooling.md) — Partially implemented
+- [ADR 0009 — Native DBSP-style incremental dataflow](design/adr/0009-incremental-dataflow-dbsp.md) — Partially implemented — see also [reference/stdlib/dbsp.md](reference/stdlib/dbsp.md) for the implemented subset
+- [ADR 0010 — Closed-loop assurance architecture](design/adr/0010-closed-loop-assurance.md) — Partially implemented
+- [ADR 0011 — Hosted guest collectors over OALR regions](design/adr/0011-guest-collector-adapter.md) — Proposed — how a garbage-collected guest language (Python, Common Lisp) is hosted in a region without Eshkol ever tracing; includes a runnable falsifier in [`0011-gc-adapter-falsifier/`](design/adr/0011-gc-adapter-falsifier/)
+- [ADR 0012 — Object ABI: discrimination, enforcement, and the staged migration](design/adr/0012-object-abi-staged-migration.md) — Partially implemented — how a heap object is discriminated, where the invariant is enforced, and the staged path from the 8-byte v1 header to the 32-byte v2 header; the site inventory it migrates is [`design/ABI_V2_MIGRATION_INVENTORY.md`](design/ABI_V2_MIGRATION_INVENTORY.md)
+- [ADR 0013 — One gradual type relation](design/adr/0013-gradual-type-relation.md) — Accepted — centralizes static subtyping, gradual consistency, flow evidence, joins, casts, and type presentation
+- [ADR 0014 — Release invariant contracts are measured before grading](design/adr/0014-release-invariant-contracts.md) — Accepted — release invariants are executable, fail-closed contracts at each boundary, and the release workflow emits the ABI/layout, closed-enum, AD-counter and VM-parity receipts before the architecture grade is taken
+- [ADR 0015 — Static callee binding identity](design/adr/0015-static-callee-binding-identity.md) — Accepted — makes direct-call aliases depend on the binding storage that still owns them
+- [ADR 0016 — Staged dense-tensor reverse-mode AD and `value_and_grad`](design/adr/0016-ad-alt-architect.md) — Proposed — the typed static reverse schedule, the companion proposal to ADR 0002 (carried the number 0002 until 2026-09-17)
+- [ADR 0017 — Stochastic Binary Lambda Calculus](design/adr/0017-stochastic-binary-lambda-calculus.md) — Proposed — `core.sblc`, the self-delimiting binary program grammar, exact rational distribution semantics under a step bound (first slice targets v1.4.0); carried the number 0011 until 2026-09-17
+- [ADR 0018 — Signed-curvature stereographic geometry](design/adr/0018-signed-curvature-stereographic-geometry.md) — Accepted — one κ-stereographic chart for all curvature signs, analytic through `K = 0`, and the execution contract it implies (targets v1.4.0); carried the number 0012 until 2026-09-17
+- [ADR 0019 — Evergreen documentation architecture](design/adr/0019-evergreen-documentation-architecture.md) — Partially implemented
 
 ## Testing and Quality Gates
 

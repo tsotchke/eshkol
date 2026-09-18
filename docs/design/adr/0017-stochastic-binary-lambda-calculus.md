@@ -1,7 +1,8 @@
-# ADR 0011: Stochastic Binary Lambda Calculus (Λ⊕ on a self-delimiting binary program grammar)
+# ADR 0017: Stochastic Binary Lambda Calculus (Λ⊕ on a self-delimiting binary program grammar)
 
 - **Status:** Proposed
 - **Date:** 2026-08-30
+- **Renumbered:** was ADR 0011 until 2026-09-17; renumbered to give every record a unique id.
 - **Decision owners:** `core.blc`, exact arithmetic, PRNG/VM parity, search, and Noesis maintainers
 - **Depends on:** ADR-0005 (lambda foundations), `core.blc`, exact bignum rationals, the isolated PRNG, ADR-0009 / `core.dbsp` (v1.5 integration)
 - **Scope:** SBLC syntax and codec, fair binary choice, sampled and distribution semantics, the exact `2^-length` prior, conditioning, search receipts, a universal interpreter, and experimental proposal learning
