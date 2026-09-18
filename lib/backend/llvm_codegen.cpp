@@ -21666,18 +21666,22 @@ private:
     }
     static eshkol_ast_t* actNum(double v) { return eshkol_make_double_ast(v); }
 
+    // An activation's definition as an AST over the operand x and the optional
+    // parameter p, and the TensorCodegen kernel it pairs with.
+    using ActivationFormula = eshkol_ast_t* (*)(eshkol_ast_t* x, eshkol_ast_t* p);
+    using ActivationKernel = Value* (eshkol::TensorCodegen::*)(const eshkol_operations_t*);
     struct ActivationSpec {
         const char* name;
         uint64_t min_args;
         uint64_t max_args;
         double param_default;  // value of the optional second argument
-        Value* (eshkol::TensorCodegen::*tensor_fn)(const eshkol_operations_t*);
-        // Scalar definition over the operand x and parameter p; null for the
-        // activations with a dedicated scalar lowering (relu, sigmoid).
-        eshkol_ast_t* (*scalar)(eshkol_ast_t* x, eshkol_ast_t* p);
+        ActivationKernel tensor_fn;
+        // Scalar definition; null for the activations with a dedicated scalar
+        // lowering (relu, sigmoid).
+        ActivationFormula scalar;
         // Tensor definition used when the optional parameter is supplied and
         // the tensor kernel has no parameter of its own (swish's beta).
-        eshkol_ast_t* (*tensor_with_param)(eshkol_ast_t* x, eshkol_ast_t* p);
+        ActivationFormula tensor_with_param;
     };
 
     static const ActivationSpec* findActivation(const std::string& name) {
