@@ -226,18 +226,34 @@ Eshkol includes 555+ builtins for ML. Here are the most useful:
 ### Activation Functions
 
 ```scheme
-;; sigmoid, tanh and relu take a number or a tensor
+;; All take and return doubles or tensors
 (sigmoid 0.0)           ;; => 0.5
 (tanh 1.0)              ;; => 0.7616...
 (relu -0.5)             ;; => 0.0
 (relu 0.5)              ;; => 0.5
+(softplus 0.0)          ;; => 0.6931... (ln(2))
+(leaky-relu -0.5)       ;; => -0.005 (alpha=0.01)
+(elu -1.0)              ;; => -0.6321...
+(gelu 0.5)              ;; => 0.3457...
+(swish 1.0)             ;; => 0.7311...
+```
 
-;; The rest are tensor operations: pass a tensor, get a tensor back
-(softplus #(0.0))       ;; => #(0.6931...) (ln(2))
-(leaky-relu #(-0.5))    ;; => #(-0.005) (alpha=0.01)
-(elu #(-1.0))           ;; => #(-0.6321...)
+The same names take a tensor and return a tensor, elementwise:
+
+```scheme
+(softplus #(0.0 1.0))   ;; => #(0.6931... 1.3132...)
 (gelu #(0.5))           ;; => #(0.3457...)
-(silu #(1.0))           ;; => #(0.7311...) (also known as swish)
+(silu #(1.0))           ;; => #(0.7311...)   ; silu is swish with beta = 1
+```
+
+Several take an optional second argument — `softplus`'s beta, `leaky-relu`'s
+and `elu`'s and `celu`'s alpha, `swish`'s beta — and it applies to a number and
+to a tensor alike:
+
+```scheme
+(leaky-relu -2.0 0.1)   ;; => -0.2
+(elu -1.0 2.0)          ;; => -1.2642...
+(swish 1.0 2.0)         ;; => 0.8807...
 ```
 
 ### Loss Functions

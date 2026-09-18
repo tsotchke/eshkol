@@ -1190,7 +1190,7 @@ eshkol/
 │   │   └── *.esk            # Stdlib modules (33 files)
 │   │
 │   ├── frontend/
-│   │   ├── parser.cpp       # S-expr parser (11,116 lines)
+│   │   ├── parser.cpp       # S-expr parser (11,115 lines)
 │   │   └── macro_expander.cpp # Macro system (1,658 lines)
 │   │
 │   ├── types/

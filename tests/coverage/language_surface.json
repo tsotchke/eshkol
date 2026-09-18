@@ -15,11 +15,11 @@
     }
   },
   "counts": {
-    "builtins_total": 1052,
+    "builtins_total": 1053,
     "builtins_in_native_closure_table": 435,
     "builtins_in_vm_table": 741,
-    "builtins_in_llvm_aot_dispatch": 796,
-    "builtins_aot_only": 271,
+    "builtins_in_llvm_aot_dispatch": 797,
+    "builtins_aot_only": 272,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 113,
@@ -34,7 +34,7 @@
     "list_pair": 53,
     "io_port": 52,
     "string_char": 42,
-    "misc": 37,
+    "misc": 38,
     "consciousness": 37,
     "vector": 23,
     "hash": 22,
@@ -10795,6 +10795,16 @@
         "native_llvm"
       ],
       "category": "string_char"
+    },
+    {
+      "name": "swish",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "misc"
     },
     {
       "name": "symbol->string",

@@ -5671,6 +5671,41 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
         endif()
     endif()
+    # Every ML activation takes a number or a tensor (docs/tutorials/01,
+    # API reference). softplus, gelu, leaky-relu, silu, swish, elu, selu, mish,
+    # hard-swish, hard-sigmoid and celu were tensor-only and raised on a number.
+    # Checks the values, the optional parameter, agreement with the tensor
+    # kernel elementwise, exactness, and derivatives in both modes.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/scalar_activations_test.esk")
+        add_test(
+            NAME scalar_activations_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/scalar_activations_test.esk"
+        )
+        set_tests_properties(scalar_activations_runtime_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME scalar_activations_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/scalar_activations_test.esk"
+        )
+        set_tests_properties(scalar_activations_jit_smoke PROPERTIES
+            TIMEOUT 180
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME scalar_activations_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/scalar_activations_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/scalar_activations_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/scalar_activations_aot'"
+        )
+        set_tests_properties(scalar_activations_aot_smoke PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     # SW-163: a QUOTED bignum or bignum-rational literal must be the same
     # runtime value an evaluated one is. codegenQuotedAST() (lib/backend/
     # llvm_codegen.cpp) had no case for ESHKOL_BIGNUM_LITERAL and silently

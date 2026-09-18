@@ -162,9 +162,9 @@ Eshkol uses **S-expression syntax** familiar to Lisp/Scheme programmers:
 | Factor Graph | `(make-factor-graph n)` | Probabilistic graphical model |
 | Workspace | `(make-workspace dim max-modules)` | Global workspace (consciousness) |
 
-### 1,052 Built-in Functions
+### 1,053 Built-in Functions
 
-Eshkol v1.3.5-evolve ships 1,052 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
+Eshkol v1.3.5-evolve ships 1,053 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
 
 **Arithmetic:** `+`, `-`, `*`, `/`, `abs`, `floor`, `ceiling`, `round`, `truncate`, `modulo`, `remainder`, `quotient`, `gcd`, `lcm`, `min`, `max`, `expt`, `exact->inexact`, `inexact->exact`
 
@@ -1201,7 +1201,7 @@ Map Eshkol names to C names:
 
 ### Features
 
-- **Tab completion** for all 1,052 builtins
+- **Tab completion** for all 1,053 builtins
 - **Syntax highlighting** with ANSI colors
 - **Command history** (persistent across sessions)
 - **Multi-line input** with balanced parenthesis detection
