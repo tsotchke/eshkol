@@ -209,6 +209,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0020 — One store boundary for every container slot](design/adr/0020-container-slot-store-boundary.md) — Implemented — a value stored into a vector or tensor slot is always a value of the slot's declared representation.
 - [ADR 0021 — One owner for AST string payloads, one spelling for recorded paths](design/adr/0021-ast-string-owner.md) — every AST identifier, literal and synthesized name comes from one rooted arena released at teardown; recorded source paths are normalized at one place so no artifact carries a build-host path; sanitizer builds run leak-clean under one policy
 - [ADR 0022 — One boundary for each place a value crosses a representation](design/adr/0022-ad-value-boundaries.md) — Accepted — a gradient point written as separate scalars is parsed as the vector literal it stands for, and a cons slot is read and written whole, so a derivative carrier survives both
+- [ADR 0023 — One unspecified value](design/adr/0023-unspecified-value.md) — Implemented — every form R7RS leaves unspecified evaluates to one value, distinct from the empty list, printed as nothing, shared with the VM
 
 ## Testing and Quality Gates
 

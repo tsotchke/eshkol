@@ -436,7 +436,7 @@ llvm::Value* HashCodegen::hashSet(const eshkol_operations_t* op) {
     builder.CreateCall(hash_table_set_func_, {arena_ptr, table_ptr, key_ptr, value_ptr});
 
     // Return the table (for chaining)
-    return table_arg;
+    return tagged_.packUnspecified();  // ADR-0023
 }
 
 // hash-ref: Get value by key

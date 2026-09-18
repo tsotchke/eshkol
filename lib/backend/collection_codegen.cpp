@@ -2056,8 +2056,8 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
     }
 
     ctx_.builder().SetInsertPoint(vset_merge);
-    // Return the vector/tensor
-    return vec_arg;
+    // ADR-0023: vector-set! evaluates to the unspecified value.
+    return tagged_.packUnspecified();
 }
 
 /**
@@ -2154,7 +2154,7 @@ llvm::Value* CollectionCodegen::vectorCopy(const eshkol_operations_t* op) {
 
     // One status vocabulary and one failure block for every slot store.
     ctx_.emitSlotStoreStatusCheck(status, "vector-copy!");
-    return tagged_.packNull();
+    return tagged_.packUnspecified();  // ADR-0023
 }
 
 /**
@@ -2671,7 +2671,7 @@ llvm::Value* CollectionCodegen::vectorFill(const eshkol_operations_t* op) {
     // the value once to the slot's declared representation, fills every slot,
     // and runs the region write barrier for tagged destinations.
     ctx_.emitSequenceFill(vec_arg, fill_val, "vector-fill!");
-    return tagged_.packNull();
+    return tagged_.packUnspecified();  // ADR-0023
 }
 
 /**

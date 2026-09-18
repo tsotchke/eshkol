@@ -15969,8 +15969,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int slot = (int)as_number(slot_v);
             int absolute_slot = vm->fp + slot;
             if (uv_idx >= 0 && uv_idx < cl->closure.n_upvalues &&
-                absolute_slot >= 0 && absolute_slot < vm->sp)
+                absolute_slot >= 0 && absolute_slot < vm->sp) {
                 cl->closure.open_slots[uv_idx] = absolute_slot;
+                vm_register_open_upvalue(vm, cl_val.as.ptr, uv_idx, absolute_slot);
+            }
         }
         vm_push(vm, NIL_VAL);
         break;

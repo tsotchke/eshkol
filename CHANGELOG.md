@@ -1334,6 +1334,43 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **One unspecified value (ADR-0023).** The native value model had no value
+  for what R7RS leaves unspecified: `display` and `newline` returned the empty
+  list, `when` and `unless` returned `#f`, `set!` and `set-car!` returned the
+  stored value, `vector-set!` the vector, `hash-table-set!` the table, and the
+  REPL, which wrapped every shown form in `display`, echoed `()` after
+  `(when (> x 1) (display "hi"))`. There is now one unspecified value,
+  distinct from `'()` (`null?` is `#f`, `eq?` to `'()` is `#f`), printed as
+  nothing, the native counterpart of the bytecode VM's void. Every
+  unspecified form returns it on both engines: a one-armed `if`, `when`,
+  `unless`, `set!`, `display`, `newline`, `write`, `for-each`,
+  `vector-for-each`, `vector-set!`, `vector-fill!`, `vector-copy!`,
+  `set-car!`, `set-cdr!`, `hash-table-set!` and `(void)`; the VM's `set!`,
+  `vector-set!`, `set-car!` and `set-cdr!` push its void where they pushed
+  nil. The REPL evaluates a form through the same path machine mode uses and
+  prints the value itself, nothing for the unspecified value; machine mode
+  reports it as `value_type: "unspecified"` (it said `null`). Tests:
+  `tests/core/unspecified_value_test.esk` (three native lanes),
+  `tests/vm_parity/corpus/86_binder_in_operand_and_void.esk`, the piped REPL
+  test and the EREPL v1 self test.
+
+- **VM: a binder as an operand, and a closure escaping a top-level let
+  (ledger SW-186, SW-187).** `(list 'a (let ((v 5)) v))` printed `(a ())` on
+  the bytecode VM and `(vector 'a (let ((v 5)) v))` printed `#(a a)`: the VM
+  compiler allocates a binder's variables at its compile-time stack depth,
+  and `list`, `vector`, `apply` and twelve native-call lowerings pushed
+  operands without registering them, so the binder's local landed on the
+  pushed operand. Every run of pushed operands is now a run of tracked
+  locals. Separately, `(define f (let ((v 1)) (lambda () v)))` then `(f)`
+  answered `f` itself: the open-slot conversion that lets a top-level closure
+  see later redefinitions was applied to a `let`'s local, which the `let`
+  retired and the next define reused; the VM now keeps a table of the
+  captures it has opened and closes each one -- copying the slot's last value
+  into the closure -- when the scope that owns the slot retires it. The parity corpus
+  program above proves native and VM agree on a binder in every operand
+  position and on a vector escaping a `let` through a list, `cons`, a return,
+  a nested `let`, `vector-set!` into another vector and closure capture.
+
 - **Every ML activation takes a number or a tensor, from one dispatch point
   (#705).** `relu` and `sigmoid` accepted either; `softplus`, `gelu`,
   `leaky-relu`, `silu`, `elu`, `selu`, `mish`, `hard-swish`, `hard-sigmoid` and

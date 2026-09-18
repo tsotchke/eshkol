@@ -253,6 +253,7 @@ const char* eshkol_format_value_type_tag(eshkol_tagged_value_t v) {
     uint8_t base_type = (uint8_t)(v.type & 0x0F);
     switch (base_type) {
         case ESHKOL_VALUE_NULL:        return "null";
+        case ESHKOL_VALUE_UNSPECIFIED: return "unspecified";
         case ESHKOL_VALUE_INT64:       return "integer";
         case ESHKOL_VALUE_DOUBLE:      return "double";
         case ESHKOL_VALUE_BOOL:        return "boolean";

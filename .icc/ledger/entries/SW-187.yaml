@@ -1,0 +1,40 @@
+id: SW-187
+bucket: SILENT-WRONG
+family: vm/closure-capture-of-let-local
+status: fixed
+closed_at: "PENDING"
+title: "VM: a closure created inside a top-level let held an open reference to the let's local, which the let retired and the next define reused, so (f) answered f itself"
+repro: >-
+  (define f (let ((v 1)) (lambda () v))) (display (f))
+  (define f3 (let ((v 1)) (lambda (x) (+ v x)))) (display (f3 1))
+observed_before: >-
+  On the VM: <closure@...> for (f), and "+: expected numeric operands" for
+  (f3 1); natively 1 and 2. Found by the SW-186 escape sweep (a vector
+  escaping a let through closure capture).
+correct: >-
+  1 and 2.
+root_cause: >-
+  At top level (c->enclosing == NULL) the VM compiler converts a closure's
+  local captures into open stack-slot references (native 151) so a closure
+  sees later redefinitions of a top-level binding. It applied that to every
+  local, including a `let`'s: the let's OP_POPN retired the slot when the
+  scope ended, the next define reused it, and the closure read the new
+  occupant.
+fix: >-
+  The open reference is kept -- letrec siblings, forward references and
+  redefinition visibility all depend on it -- and CLOSED when the slot dies.
+  Native 151 registers every (closure, upvalue, slot) it opens in the VM's
+  open-upvalue table (VM.open_uvs); OP_POPN, the instruction that retires a
+  scope's locals, first calls vm_close_open_upvalues_from() on the slots it
+  is about to drop, which copies each slot's last value into the closure and
+  marks the capture closed. A top-level tail call retires its scope by
+  resetting the whole frame at program end, where nothing can observe the
+  slot. (A first attempt that captured let-scoped locals by value at closure
+  creation broke letrec: a sibling captured before it is assigned must be
+  read through the slot.)
+evidence: >-
+  tests/vm_parity/corpus/86_binder_in_operand_and_void.esk: (f), (f3 1), a
+  vector escaping through a closure, and a counter closure over a let-local
+  all agree with native.
+caught_by: [engine-differential-review]
+missed_by: [vm_parity corpus as it stood, run_all_tests]

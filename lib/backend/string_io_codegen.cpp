@@ -238,7 +238,7 @@ llvm::Value* StringIOCodegen::newline(const eshkol_operations_t* op) {
     ctx_.builder().CreateCall(fputc_func, {
         llvm::ConstantInt::get(ctx_.int32Type(), '\n'), file_ptr
     });
-    return tagged_.packNull();
+    return tagged_.packUnspecified();  // ADR-0023
 }
 
 // Note: The following implementations are complex and depend on:
@@ -2241,7 +2241,7 @@ llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
             ctx_.builder().CreateBr(display_done);
 
             ctx_.builder().SetInsertPoint(display_done);
-            return llvm::ConstantInt::get(ctx_.int32Type(), 0);
+            return tagged_.packUnspecified();  // ADR-0023
         }
     }
 
@@ -2262,7 +2262,7 @@ llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
         ctx_.builder().CreateCall(display_value_func_, {display_ptr});
     }
 
-    return llvm::ConstantInt::get(ctx_.int32Type(), 0);
+    return tagged_.packUnspecified();  // ADR-0023
 }
 
 // === File I/O Operations ===

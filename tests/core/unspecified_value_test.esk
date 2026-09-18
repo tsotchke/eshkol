@@ -1,0 +1,75 @@
+;;; core.unspecified_value -- ADR-0023: one unspecified value.
+;;;
+;;; Every form R7RS leaves unspecified evaluates to the unspecified value: an
+;;; immediate distinct from the empty list, printed as nothing, the native
+;;; counterpart of the bytecode VM's void. Before the fix the native engines
+;;; returned '() from display and newline (so the REPL echoed `()` after them),
+;;; #f from when/unless and for-each, the stored value from set! and
+;;; set-car!, the vector from vector-set! and the table from hash-table-set!.
+
+(define pass 0)
+(define fail 0)
+(define (check nm ok)
+  (if ok
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display nm) (newline))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display nm) (newline))))
+(define (unspecified? x) (and (not (null? x)) (eq? x (void))))
+
+(define x 5)
+(define v (vector 1 2 3))
+(define p (cons 1 2))
+(define h (make-hash-table))
+
+;; ---- every unspecified form yields the one value ----
+(check "one-armed if, false test" (unspecified? (if #f 1)))
+(check "when, false test" (unspecified? (when #f 1)))
+(check "unless, true test" (unspecified? (unless #t 1)))
+(check "(void)" (unspecified? (void)))
+(check "set!" (unspecified? (set! x 6)))
+(check "set! did assign" (= x 6))
+(check "display" (unspecified? (display "")))
+(check "newline" (unspecified? (let ((r (newline))) r)))
+(check "write" (unspecified? (write "")))
+(check "vector-set!" (unspecified? (vector-set! v 0 9)))
+(check "vector-set! did store" (= (vector-ref v 0) 9))
+(check "vector-fill!" (unspecified? (vector-fill! v 0)))
+(check "vector-copy!" (unspecified? (vector-copy! v 0 (vector 1))))
+(check "set-car!" (unspecified? (set-car! p 9)))
+(check "set-cdr!" (unspecified? (set-cdr! p 8)))
+(check "set-car!/set-cdr! did store" (equal? p (cons 9 8)))
+(check "hash-table-set!" (unspecified? (hash-table-set! h 'k 1)))
+(check "hash-table-set! did store" (= (hash-table-ref h 'k) 1))
+(check "for-each" (unspecified? (for-each display '())))
+(check "for-each over elements" (unspecified? (for-each (lambda (e) e) (list 1 2))))
+(check "vector-for-each" (unspecified? (vector-for-each (lambda (e) e) (vector 1))))
+(check "when with a body that runs returns the body's value" (= (when #t 7) 7))
+(check "unless with a body that runs returns the body's value" (= (unless #f 7) 7))
+
+;; ---- it is not the empty list, and it is itself ----
+(check "not null?" (not (null? (when #f 1))))
+(check "not eq? to '()" (not (eq? (when #f 1) '())))
+(check "not equal? to '()" (not (equal? (when #f 1) '())))
+(check "not a pair, not a boolean, not a number"
+       (and (not (pair? (void))) (not (boolean? (void))) (not (number? (void)))))
+(check "eq? to itself" (eq? (void) (when #f 1)))
+(check "equal? to itself" (equal? (if #f #f) (display "")))
+(check "'() is still '()" (null? '()))
+
+;; ---- it prints as nothing ----
+(define (shown thunk) (let ((port (open-output-string))) (thunk port) (get-output-string port)))
+(check "display prints nothing" (string=? (shown (lambda (port) (display (void) port))) ""))
+(check "a list holding it shows a gap" (string=? (shown (lambda (port) (display (list 'a (void) 'b) port))) "(a  b)"))
+(check "'() still prints" (string=? (shown (lambda (port) (display '() port))) "()"))
+
+;; ---- it survives being stored and passed ----
+(define cell (vector 0))
+(vector-set! cell 0 (void))
+(check "stored in a vector slot" (unspecified? (vector-ref cell 0)))
+(check "passed through a lambda" (unspecified? ((lambda (u) u) (void))))
+(check "returned from a named function" (unspecified? (let () (define (f) (set! x 8)) (f))))
+(check "let body value" (unspecified? (let ((a 1)) (set! a 2))))
+(check "begin value" (unspecified? (begin 1 (display ""))))
+
+(newline)
+(display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)

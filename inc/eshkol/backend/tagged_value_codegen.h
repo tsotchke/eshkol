@@ -165,6 +165,9 @@ public:
      * @return A tagged_value struct with NULL type
      */
     llvm::Value* packNull();
+    /** Pack the unspecified value (ADR-0023): the result of every form R7RS
+     *  leaves unspecified. Distinct from packNull(), which is the empty list. */
+    llvm::Value* packUnspecified();
 
     // === Cons slots ===
     //

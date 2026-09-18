@@ -48,6 +48,11 @@ VM* vm_create(void) {
  *         dlopen'd libraries, the heap's arena, and the code buffer) and
  *         free @p vm itself. */
 void vm_free(VM* vm) {
+    if (vm && vm->open_uvs) {  /* SW-187 open-upvalue table */
+        free(vm->open_uvs);
+        vm->open_uvs = NULL;
+        vm->n_open_uvs = vm->cap_open_uvs = 0;
+    }
     if (!vm) return;
     vm_regex_free_all(vm);
     vm_dlopen_close_all(vm);
