@@ -3244,9 +3244,18 @@ particular, susceptibility to vanishing or exploding gradients, and the presence
 
 All activation functions operate element-wise on tensors and return a new tensor of the same shape.
 
+> **A number or a tensor.** Every activation below takes either, and returns
+> the same kind: `(softplus 0.0)` is `0.6931…` and `(softplus #(0.0))` is
+> `#(0.6931…)`. One dispatch point lowers both — a tensor (or a reverse-mode
+> node carrying one) through the tensor kernel, a number or a scalar
+> differentiation carrier through the same formula over scalar primitives — so
+> the two agree elementwise and both differentiate. A value that is neither
+> raises a catchable type error. The optional second argument applies to both
+> forms.
+
 #### `relu`
 
-**Syntax:** `(relu t)` → Tensor
+**Syntax:** `(relu x)` → Number or Tensor (whichever `x` is)
 
 Rectified Linear Unit: f(x) = max(0, x).
 
@@ -3261,7 +3270,7 @@ Backward: `tensorReluBackward` in [lib/backend/tensor_activation_codegen.cpp](..
 
 #### `sigmoid`
 
-**Syntax:** `(sigmoid t)` → Tensor
+**Syntax:** `(sigmoid x)` → Number or Tensor (whichever `x` is)
 
 Logistic sigmoid: σ(x) = 1 / (1 + e^(-x)).
 
@@ -3292,7 +3301,7 @@ Backward: [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
 #### `gelu`
 
-**Syntax:** `(gelu t)` → Tensor
+**Syntax:** `(gelu x)` → Number or Tensor (whichever `x` is)
 
 Gaussian Error Linear Unit: GELU(x) = x · Φ(x) ≈ x · σ(1.702x), where Φ is the standard
 Gaussian CDF.
@@ -3308,7 +3317,7 @@ Backward: [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
 #### `leaky-relu`
 
-**Syntax:** `(leaky-relu t [α])` → Tensor
+**Syntax:** `(leaky-relu x [α])` → Number or Tensor (whichever `x` is)
 
 Leaky ReLU: f(x) = x if x > 0, αx otherwise. Default α = 0.01.
 
@@ -3322,7 +3331,7 @@ Backward: [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
 #### `silu`
 
-**Syntax:** `(silu t)` → Tensor
+**Syntax:** `(silu x)` → Number or Tensor (whichever `x` is)
 
 Sigmoid Linear Unit (Swish): SiLU(x) = x · σ(x).
 
@@ -3334,9 +3343,21 @@ non-monotonic, and bounded below. Gradients flow more uniformly than ReLU.
 **Implementation:** `tensorSilu` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
 Backward: [lib/backend/tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp).
 
+#### `swish`
+
+**Syntax:** `(swish x [β])` → Number or Tensor (whichever `x` is)
+
+Swish: f(x) = x · σ(βx). With the default β = 1 this is [`silu`](#silu).
+
+**Gradient:** f'(x) = σ(βx) + βx · σ(βx)(1 - σ(βx)).
+
+**Use case:** The self-gated activation of EfficientNet and friends, with β left free.
+
+**Implementation:** the activation family dispatch in [lib/backend/llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp); the tensor path reaches `tensorSilu` in [lib/backend/tensor_activation_codegen.cpp](../lib/backend/tensor_activation_codegen.cpp).
+
 #### `elu`
 
-**Syntax:** `(elu t [α])` → Tensor
+**Syntax:** `(elu x [α])` → Number or Tensor (whichever `x` is)
 
 Exponential Linear Unit: f(x) = x if x > 0, α(e^x - 1) otherwise. Default α = 1.0.
 
@@ -3349,7 +3370,7 @@ activations closer to zero, reducing the bias shift effect and accelerating conv
 
 #### `selu`
 
-**Syntax:** `(selu t)` → Tensor
+**Syntax:** `(selu x)` → Number or Tensor (whichever `x` is)
 
 Scaled Exponential Linear Unit: SELU(x) = λ · ELU(x, α) where λ ≈ 1.0507 and α ≈ 1.6733.
 
@@ -3366,7 +3387,7 @@ need for batch normalization.
 
 #### `mish`
 
-**Syntax:** `(mish t)` → Tensor
+**Syntax:** `(mish x)` → Number or Tensor (whichever `x` is)
 
 Mish: f(x) = x · tanh(softplus(x)) = x · tanh(ln(1 + e^x)).
 
@@ -3379,7 +3400,7 @@ differentiable), unlike ReLU (non-differentiable at 0) or Leaky ReLU (non-smooth
 
 #### `hard-swish`
 
-**Syntax:** `(hard-swish t)` → Tensor
+**Syntax:** `(hard-swish x)` → Number or Tensor (whichever `x` is)
 
 Piecewise linear approximation of Swish: f(x) = x · min(max(x + 3, 0), 6) / 6.
 
@@ -3393,7 +3414,7 @@ on resource-constrained devices.
 
 #### `hard-sigmoid`
 
-**Syntax:** `(hard-sigmoid t)` → Tensor
+**Syntax:** `(hard-sigmoid x)` → Number or Tensor (whichever `x` is)
 
 Piecewise linear approximation of sigmoid: f(x) = min(max(x + 3, 0), 6) / 6.
 
@@ -3406,7 +3427,7 @@ efficient architectures.
 
 #### `softplus`
 
-**Syntax:** `(softplus t)` → Tensor
+**Syntax:** `(softplus x [β])` → Number or Tensor (whichever `x` is)
 
 Smooth approximation of ReLU: f(x) = ln(1 + e^x).
 
@@ -3420,7 +3441,7 @@ concentration parameters in Bayesian models).
 
 #### `celu`
 
-**Syntax:** `(celu t [α])` → Tensor
+**Syntax:** `(celu x [α])` → Number or Tensor (whichever `x` is)
 
 Continuously Differentiable ELU: f(x) = max(0, x) + min(0, α(e^(x/α) - 1)). Default α = 1.0.
 

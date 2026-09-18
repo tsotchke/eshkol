@@ -221,7 +221,8 @@ public:
      * runtime encoder.
      */
     void emitTensorSlotStore(llvm::Value* tensor_ptr, llvm::Value* index,
-                             llvm::Value* tagged_value, const char* who);
+                             llvm::Value* tagged_value, const char* who,
+                             bool promote_on_non_numeric = false);
 
     /**
      * Branch on an eshkol_slot_store_status_t returned by a runtime half of

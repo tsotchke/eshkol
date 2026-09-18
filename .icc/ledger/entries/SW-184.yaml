@@ -1,34 +1,52 @@
 id: SW-184
 bucket: SILENT-WRONG
-family: ad/vm-tensor-carrier
-status: open
-needs_decision: true
-title: "VM: a gradient through any tensor operator (tensor-dot, tensor-mul, matmul, tensor-sum) is silently #(0 0 ...) although PARITY.tsv marks every one of them vm-supported"
+family: stdlib/signal-fft-complex-base-case
+status: fixed
+closed_at: "ef302f8c"
+title: "signal.fft: every transform of a complex input is all zeros, so (ifft (fft x)) and fast-convolve return zeros on the VM, the precompiled stdlib and an uncached -r"
 repro: >-
-  (1) (display (gradient (lambda (x) (tensor-dot x x)) #(1.0 2.0 3.0)))
-  (2) (display (gradient (lambda (x) (tensor-sum (tensor-mul x x))) #(1.0 2.0 3.0)))
-  (3) (display (gradient (lambda (x) (tensor-sum (matmul (eye 3) x))) #(1.0 2.0 3.0)))
-observed: >-
-  All three print #(0 0 0) on eshkol-vm-standalone-test, exit 0, no
-  diagnostic. Native prints #(2 4 6), #(2 4 6), #(1 1 1). The VM's scalar
-  gradient path (84_named_closure_derivative_capture.esk, vector-ref over a
-  vector point) is correct, so the loss is specific to the tensor operators:
-  the VM tensor natives do not carry the forward dual through tensor
-  operations, and the reverse tape does not record them.
+  (require signal.fft) (display (ifft (fft #(1.0 2.0 3.0 4.0))))
+  under ESHKOL_JIT_CACHE=0 eshkol-run -r, and on the bytecode VM.
+  (require signal.filters) (display (fast-convolve #(1.0 2.0 3.0 4.0 5.0) #(1.0 1.0 1.0)))
+  on every engine.
+observed_before: >-
+  The round trip printed #(0 0 0 0) on the uncached JIT and
+  #(+0i +0i +0i +0i) on the VM, exit 0, no diagnostic; the cached run path
+  and AOT printed the right answer. fast-convolve printed #(0 0 0 0 0 0 0)
+  on every engine.
 correct: >-
-  #(2 4 6), #(2 4 6), #(1 1 1), or PARITY.tsv rows for the tensor operators
-  under differentiation marked as a gap so the parity manifest is truthful.
+  #(1 2+5.72e-18i 3 4-5.72e-18i) (the original signal up to rounding) and
+  #(1 3 6 9 12 9 5), as docs/reference/stdlib/signal_fft.md and the direct
+  convolve state.
+root_cause: >-
+  lib/signal/fft.esk's length-1 base case wrapped its element as
+  (make-rectangular x 0.0) whenever (number? x). A complex value is a
+  number, and make-rectangular of a complex real part yields 0, so every
+  transform of a complex input was zeros: ifft conjugates its input into
+  complex values before calling fft, and fast-convolve multiplies complex
+  spectra before calling ifft. Two FFT implementations coexist -- the native
+  builtin (codegenFFT) and this module -- and which one a call binds to
+  depends on the engine: AOT and the cached run path reach the builtin, while
+  the VM, the precompiled stdlib (hence fast-convolve everywhere) and an
+  uncached -r that requires the module reach the module. That is why the
+  engines disagreed, and why the fast-convolve zeros were attributed to
+  shared-library code generation (ESH-0115) rather than to the library.
+fix: >-
+  The base case wraps only a real element ((real? x)) and passes a complex
+  element through. The module stays the implementation for the VM, which has
+  no FFT builtin.
 evidence: >-
-  Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
-  arm64 macOS, while sweeping SW-181. tensor-dot, matmul, tensor-sum, eye and
-  gradient are all `vm-supported` in tests/vm_parity/PARITY.tsv; the AD
-  carrier manifest names the VM gradient carrier vm-dual-forward.
-caught_by: [coordinator-sweep]
-missed_by: [run_vm_parity, run_engine_parity_coverage, gate_ad_shared_node_model]
+  tests/signal/fft_complex_input_test.esk: 11 checks (round trips at length 4
+  and 8, real and complex inputs, fft of a complex vector, fast-convolve
+  against convolve) with a 1e-9 tolerance. Base build: 8/11 on the cached
+  run path and AOT, 1/11 on the uncached JIT and the VM. Fix: 11/11 on all
+  four (ctest fft_complex_input_{runtime,jit,aot,vm}_smoke).
+caught_by: [direct-measurement]
+missed_by: [tests/signal/fft_comprehensive_test.esk (has the round trip but is
+  not registered in ctest; scripts/run_signal_tests.sh runs it by hand),
+  run_all_tests, vm_parity (fft is a recorded VM gap)]
 notes: >-
-  Found while closing SW-181 (native). Not a corpus program for SW-181 for
-  this reason: the native fix cannot be held to a VM that answers zero. Needs
-  a ruling: either the VM tensor natives gain the dual carrier (the manifest's
-  own end state), or the parity rows are demoted until they do. Filed
-  SILENT-WRONG because exit 0 with a wrong derivative is that bucket's
-  definition.
+  The two implementations remain. Retiring either needs an FFT on the VM
+  that is not this module, or a native path that no longer prefers the
+  builtin; both are larger than this fix, and the round-trip test now pins
+  the engines to one answer.

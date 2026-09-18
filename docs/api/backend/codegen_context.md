@@ -282,14 +282,15 @@ Store `tagged_value` at linear `index` of the vector-or-tensor operand
 
 ```c
 void emitTensorSlotStore(llvm::Value* tensor_ptr, llvm::Value* index,
- llvm::Value* tagged_value, const char* who);
+ llvm::Value* tagged_value, const char* who,
+ bool promote_on_non_numeric = false);
 ```
 
 Store `tagged_value` at linear `index` of the tensor `tensor_ptr` (payload pointer; the index is NOT bounds-checked inline because tensor callers have already checked it per dimension). A DOUBLE into an f64 tensor is stored inline; every other combination goes through the runtime encoder.
 
 ### `CodegenContext::emitSlotStoreStatusCheck`
 
-*Function* — line 231
+*Function* — line 232
 
 ```c
 void emitSlotStoreStatusCheck(llvm::Value* status, const char* who);
@@ -299,7 +300,7 @@ Branch on an eshkol_slot_store_status_t returned by a runtime half of the bounda
 
 ### `CodegenContext::emitSequenceFill`
 
-*Function* — line 234
+*Function* — line 235
 
 ```c
 void emitSequenceFill(llvm::Value* sequence_tagged, llvm::Value* tagged_value,
@@ -310,7 +311,7 @@ Store `tagged_value` into every slot of `sequence_tagged.`
 
 ### `CodegenContext::emitRegionWriteBarrier`
 
-*Function* — line 256
+*Function* — line 257
 
 ```c
 llvm::Value* emitRegionWriteBarrier(llvm::Value* dst_ptr,
@@ -330,7 +331,7 @@ The value to store (barriered when necessary).
 
 ### `CodegenContext::emitRaise`
 
-*Function* — line 294
+*Function* — line 295
 
 ```c
 void emitRaise(const char* message);
@@ -344,7 +345,7 @@ Emit a catchable runtime error and terminate the current basic block. This is th
 
 ### `CodegenContext::emitRaiseFmt`
 
-*Function* — line 309
+*Function* — line 310
 
 ```c
 void emitRaiseFmt(const char* format, llvm::ArrayRef<llvm::Value*> args);
@@ -359,7 +360,7 @@ printf-style variant of emitRaise() for diagnostics that need to report a runtim
 
 ### `CodegenContext::globalArena`
 
-*Function* — line 314
+*Function* — line 315
 
 ```c
 llvm::GlobalVariable* globalArena() { ... }
@@ -369,7 +370,7 @@ Get/set the global arena variable
 
 ### `CodegenContext::currentArenaPtr`
 
-*Function* — line 338
+*Function* — line 339
 
 ```c
 llvm::GlobalVariable* currentArenaPtr() { ... }
@@ -379,7 +380,7 @@ Single accessor for "the arena that allocations should currently target". Every 
 
 ### `CodegenContext::arenaScopeDepth`
 
-*Function* — line 341
+*Function* — line 342
 
 ```c
 size_t arenaScopeDepth() const { ... }
@@ -389,7 +390,7 @@ Get/set arena scope depth
 
 ### `CodegenContext::adModeActive`
 
-*Function* — line 350
+*Function* — line 351
 
 ```c
 llvm::GlobalVariable* adModeActive() { ... }
@@ -399,7 +400,7 @@ Get/set the global i1 flag that is true while forward- or reverse-mode AD instru
 
 ### `CodegenContext::currentAdTape`
 
-*Function* — line 355
+*Function* — line 356
 
 ```c
 llvm::GlobalVariable* currentAdTape() { ... }
@@ -409,7 +410,7 @@ Get/set the global pointer to the AD tape currently being recorded to (reverse-m
 
 ### `CodegenContext::adTapeStack`
 
-*Function* — line 360
+*Function* — line 361
 
 ```c
 llvm::GlobalVariable* adTapeStack() { ... }
@@ -419,7 +420,7 @@ Get/set the global stack of saved AD tapes used to restore currentAdTape() when 
 
 ### `CodegenContext::adTapeDepth`
 
-*Function* — line 365
+*Function* — line 366
 
 ```c
 llvm::GlobalVariable* adTapeDepth() { ... }
@@ -429,7 +430,7 @@ Get/set the global counter tracking how many tapes are pushed on adTapeStack(), 
 
 ### `CodegenContext::sourceLocationOverrideUsable`
 
-*Function* — line 454
+*Function* — line 455
 
 ```c
 bool sourceLocationOverrideUsable() const { ... }
@@ -439,7 +440,7 @@ True when an override is installed AND the builder is currently emitting into th
 
 ### `CodegenContext::isLibraryMode`
 
-*Function* — line 471
+*Function* — line 472
 
 ```c
 bool isLibraryMode() const { ... }
@@ -449,7 +450,7 @@ Get/set whether the module is being compiled as a library (no standalone entry p
 
 ### `CodegenContext::isReplMode`
 
-*Function* — line 476
+*Function* — line 477
 
 ```c
 bool isReplMode() const { ... }
@@ -459,7 +460,7 @@ Get/set whether code is being generated for incremental REPL evaluation, which a
 
 ### `CodegenContext::modulePrefix`
 
-*Function* — line 481
+*Function* — line 482
 
 ```c
 const std::string& modulePrefix() const { ... }
@@ -469,7 +470,7 @@ Get/set the name-mangling prefix applied to this module's globals, used to disam
 
 ### `CodegenContext::deepEqualFunc`
 
-*Function* — line 489
+*Function* — line 490
 
 ```c
 llvm::Function* deepEqualFunc() { ... }
@@ -479,7 +480,7 @@ Get/set the declaration for `eshkol_deep_equal`, the runtime helper implementing
 
 ### `CodegenContext::displayValueFunc`
 
-*Function* — line 494
+*Function* — line 495
 
 ```c
 llvm::Function* displayValueFunc() { ... }
@@ -489,7 +490,7 @@ Get/set the declaration for `eshkol_display_value`, the runtime helper that prin
 
 ### `CodegenContext::lambdaRegistryInitFunc`
 
-*Function* — line 500
+*Function* — line 501
 
 ```c
 llvm::Function* lambdaRegistryInitFunc() { ... }
@@ -499,7 +500,7 @@ Get/set the declaration for `eshkol_lambda_registry_init`, which initializes the
 
 ### `CodegenContext::lambdaRegistryAddFunc`
 
-*Function* — line 505
+*Function* — line 506
 
 ```c
 llvm::Function* lambdaRegistryAddFunc() { ... }
@@ -509,7 +510,7 @@ Get/set the declaration for `eshkol_lambda_registry_add`, which registers a (fun
 
 ### `CodegenContext::lambdaRegistryLookupFunc`
 
-*Function* — line 511
+*Function* — line 512
 
 ```c
 llvm::Function* lambdaRegistryLookupFunc() { ... }
@@ -519,7 +520,7 @@ Get/set the declaration for `eshkol_lambda_registry_lookup`, which resolves a fu
 
 ### `CodegenContext::spillTaggedToEntrySlot`
 
-*Function* — line 541
+*Function* — line 542
 
 ```c
 llvm::Value* spillTaggedToEntrySlot(llvm::Value* tagged_value, const char* name);
@@ -559,90 +560,89 @@ Spill a tagged value to an entry-block slot and return its address.
 | `CodegenContext::double2Type` | Function | 104 |
 | `CodegenContext::double4Type` | Function | 105 |
 | `CodegenContext::double8Type` | Function | 106 |
-| `CodegenContext::setGlobalArena` | Function | 315 |
-| `CodegenContext::currentArena` | Function | 320 |
-| `CodegenContext::setArenaScopeDepth` | Function | 342 |
-| `CodegenContext::incrementArenaScopeDepth` | Function | 343 |
-| `CodegenContext::decrementArenaScopeDepth` | Function | 344 |
-| `CodegenContext::setAdModeActive` | Function | 351 |
-| `CodegenContext::setCurrentAdTape` | Function | 356 |
-| `CodegenContext::setAdTapeStack` | Function | 361 |
-| `CodegenContext::setAdTapeDepth` | Function | 366 |
-| `CodegenContext::adPertLevel` | Function | 374 |
-| `CodegenContext::setAdPertLevel` | Function | 375 |
-| `CodegenContext::adTowerActive` | Function | 377 |
-| `CodegenContext::setAdTowerActive` | Function | 378 |
-| `CodegenContext::adTowerOrder` | Function | 379 |
-| `CodegenContext::setAdTowerOrder` | Function | 380 |
-| `CodegenContext::outerAdNodeStorage` | Function | 383 |
-| `CodegenContext::setOuterAdNodeStorage` | Function | 384 |
-| `CodegenContext::outerAdNodeToInner` | Function | 386 |
-| `CodegenContext::setOuterAdNodeToInner` | Function | 387 |
-| `CodegenContext::outerGradAccumulator` | Function | 389 |
-| `CodegenContext::setOuterGradAccumulator` | Function | 390 |
-| `CodegenContext::innerVarNodePtr` | Function | 392 |
-| `CodegenContext::setInnerVarNodePtr` | Function | 393 |
-| `CodegenContext::gradientXDegree` | Function | 395 |
-| `CodegenContext::setGradientXDegree` | Function | 396 |
-| `CodegenContext::outerAdNodeStack` | Function | 399 |
-| `CodegenContext::setOuterAdNodeStack` | Function | 400 |
-| `CodegenContext::outerAdNodeDepth` | Function | 402 |
-| `CodegenContext::setOuterAdNodeDepth` | Function | 403 |
-| `CodegenContext::currentSourceFile` | Function | 410 |
-| `CodegenContext::currentSourceLine` | Function | 411 |
-| `CodegenContext::currentSourceColumn` | Function | 412 |
-| `CodegenContext::setCurrentSourceLocation` | Function | 413 |
-| `CodegenContext::SourceLocationOverride` | Struct | 438 |
-| `CodegenContext::SourceLocationOverride::nullptr` | Variable | 439 |
+| `CodegenContext::setGlobalArena` | Function | 316 |
+| `CodegenContext::currentArena` | Function | 321 |
+| `CodegenContext::setArenaScopeDepth` | Function | 343 |
+| `CodegenContext::incrementArenaScopeDepth` | Function | 344 |
+| `CodegenContext::decrementArenaScopeDepth` | Function | 345 |
+| `CodegenContext::setAdModeActive` | Function | 352 |
+| `CodegenContext::setCurrentAdTape` | Function | 357 |
+| `CodegenContext::setAdTapeStack` | Function | 362 |
+| `CodegenContext::setAdTapeDepth` | Function | 367 |
+| `CodegenContext::adPertLevel` | Function | 375 |
+| `CodegenContext::setAdPertLevel` | Function | 376 |
+| `CodegenContext::adTowerActive` | Function | 378 |
+| `CodegenContext::setAdTowerActive` | Function | 379 |
+| `CodegenContext::adTowerOrder` | Function | 380 |
+| `CodegenContext::setAdTowerOrder` | Function | 381 |
+| `CodegenContext::outerAdNodeStorage` | Function | 384 |
+| `CodegenContext::setOuterAdNodeStorage` | Function | 385 |
+| `CodegenContext::outerAdNodeToInner` | Function | 387 |
+| `CodegenContext::setOuterAdNodeToInner` | Function | 388 |
+| `CodegenContext::outerGradAccumulator` | Function | 390 |
+| `CodegenContext::setOuterGradAccumulator` | Function | 391 |
+| `CodegenContext::innerVarNodePtr` | Function | 393 |
+| `CodegenContext::setInnerVarNodePtr` | Function | 394 |
+| `CodegenContext::gradientXDegree` | Function | 396 |
+| `CodegenContext::setGradientXDegree` | Function | 397 |
+| `CodegenContext::outerAdNodeStack` | Function | 400 |
+| `CodegenContext::setOuterAdNodeStack` | Function | 401 |
+| `CodegenContext::outerAdNodeDepth` | Function | 403 |
+| `CodegenContext::setOuterAdNodeDepth` | Function | 404 |
+| `CodegenContext::currentSourceFile` | Function | 411 |
+| `CodegenContext::currentSourceLine` | Function | 412 |
+| `CodegenContext::currentSourceColumn` | Function | 413 |
+| `CodegenContext::setCurrentSourceLocation` | Function | 414 |
+| `CodegenContext::SourceLocationOverride` | Struct | 439 |
 | `CodegenContext::SourceLocationOverride::nullptr` | Variable | 440 |
 | `CodegenContext::SourceLocationOverride::nullptr` | Variable | 441 |
 | `CodegenContext::SourceLocationOverride::nullptr` | Variable | 442 |
-| `CodegenContext::setSourceLocationOverride` | Function | 444 |
-| `CodegenContext::clearSourceLocationOverride` | Function | 448 |
-| `CodegenContext::sourceLocationOverride` | Function | 449 |
-| `CodegenContext::markFatalCodegenError` | Function | 464 |
-| `CodegenContext::hasFatalCodegenError` | Function | 465 |
-| `CodegenContext::setLibraryMode` | Function | 472 |
-| `CodegenContext::setReplMode` | Function | 477 |
-| `CodegenContext::setModulePrefix` | Function | 482 |
-| `CodegenContext::setDeepEqualFunc` | Function | 490 |
-| `CodegenContext::setDisplayValueFunc` | Function | 495 |
-| `CodegenContext::setLambdaRegistryInitFunc` | Function | 501 |
-| `CodegenContext::setLambdaRegistryAddFunc` | Function | 506 |
-| `CodegenContext::setLambdaRegistryLookupFunc` | Function | 512 |
-| `CodegenContext::lengthImplFunc` | Function | 515 |
-| `CodegenContext::setLengthImplFunc` | Function | 516 |
-| `CodegenContext::appendImplFunc` | Function | 518 |
-| `CodegenContext::setAppendImplFunc` | Function | 519 |
-| `CodegenContext::reverseImplFunc` | Function | 521 |
-| `CodegenContext::setReverseImplFunc` | Function | 522 |
-| `CodegenContext::listRefImplFunc` | Function | 524 |
-| `CodegenContext::setListRefImplFunc` | Function | 525 |
-| `CodegenContext::listTailImplFunc` | Function | 527 |
-| `CodegenContext::setListTailImplFunc` | Function | 528 |
-| `CodegenContext::displayTensorRecursiveFunc` | Function | 530 |
-| `CodegenContext::setDisplayTensorRecursiveFunc` | Function | 531 |
-| `CodegenContext::emitRaiseWithMessagePtr` | Function | 533 |
-| `CodegenContext::context_` | Variable | 544 |
-| `CodegenContext::module_` | Variable | 545 |
-| `CodegenContext::builder_` | Variable | 546 |
-| `CodegenContext::types_` | Variable | 549 |
-| `CodegenContext::funcs_` | Variable | 550 |
-| `CodegenContext::memory_` | Variable | 551 |
-| `CodegenContext::hott_types_` | Variable | 554 |
-| `CodegenContext::scope_stack_` | Variable | 557 |
-| `CodegenContext::global_symbols_` | Variable | 558 |
-| `CodegenContext::function_table_` | Variable | 559 |
-| `CodegenContext::variadic_info_` | Variable | 562 |
-| `CodegenContext::function_captures_` | Variable | 563 |
-| `CodegenContext::functions_returning_lambda_` | Variable | 564 |
-| `CodegenContext::interned_strings_` | Variable | 567 |
-| `CodegenContext::headered_strings_` | Variable | 568 |
-| `CodegenContext::nullptr` | Variable | 571 |
+| `CodegenContext::SourceLocationOverride::nullptr` | Variable | 443 |
+| `CodegenContext::setSourceLocationOverride` | Function | 445 |
+| `CodegenContext::clearSourceLocationOverride` | Function | 449 |
+| `CodegenContext::sourceLocationOverride` | Function | 450 |
+| `CodegenContext::markFatalCodegenError` | Function | 465 |
+| `CodegenContext::hasFatalCodegenError` | Function | 466 |
+| `CodegenContext::setLibraryMode` | Function | 473 |
+| `CodegenContext::setReplMode` | Function | 478 |
+| `CodegenContext::setModulePrefix` | Function | 483 |
+| `CodegenContext::setDeepEqualFunc` | Function | 491 |
+| `CodegenContext::setDisplayValueFunc` | Function | 496 |
+| `CodegenContext::setLambdaRegistryInitFunc` | Function | 502 |
+| `CodegenContext::setLambdaRegistryAddFunc` | Function | 507 |
+| `CodegenContext::setLambdaRegistryLookupFunc` | Function | 513 |
+| `CodegenContext::lengthImplFunc` | Function | 516 |
+| `CodegenContext::setLengthImplFunc` | Function | 517 |
+| `CodegenContext::appendImplFunc` | Function | 519 |
+| `CodegenContext::setAppendImplFunc` | Function | 520 |
+| `CodegenContext::reverseImplFunc` | Function | 522 |
+| `CodegenContext::setReverseImplFunc` | Function | 523 |
+| `CodegenContext::listRefImplFunc` | Function | 525 |
+| `CodegenContext::setListRefImplFunc` | Function | 526 |
+| `CodegenContext::listTailImplFunc` | Function | 528 |
+| `CodegenContext::setListTailImplFunc` | Function | 529 |
+| `CodegenContext::displayTensorRecursiveFunc` | Function | 531 |
+| `CodegenContext::setDisplayTensorRecursiveFunc` | Function | 532 |
+| `CodegenContext::emitRaiseWithMessagePtr` | Function | 534 |
+| `CodegenContext::context_` | Variable | 545 |
+| `CodegenContext::module_` | Variable | 546 |
+| `CodegenContext::builder_` | Variable | 547 |
+| `CodegenContext::types_` | Variable | 550 |
+| `CodegenContext::funcs_` | Variable | 551 |
+| `CodegenContext::memory_` | Variable | 552 |
+| `CodegenContext::hott_types_` | Variable | 555 |
+| `CodegenContext::scope_stack_` | Variable | 558 |
+| `CodegenContext::global_symbols_` | Variable | 559 |
+| `CodegenContext::function_table_` | Variable | 560 |
+| `CodegenContext::variadic_info_` | Variable | 563 |
+| `CodegenContext::function_captures_` | Variable | 564 |
+| `CodegenContext::functions_returning_lambda_` | Variable | 565 |
+| `CodegenContext::interned_strings_` | Variable | 568 |
+| `CodegenContext::headered_strings_` | Variable | 569 |
 | `CodegenContext::nullptr` | Variable | 572 |
-| `CodegenContext::nullptr` | Variable | 575 |
-| `CodegenContext::arena_scope_depth_` | Variable | 576 |
-| `CodegenContext::nullptr` | Variable | 579 |
+| `CodegenContext::nullptr` | Variable | 573 |
+| `CodegenContext::nullptr` | Variable | 576 |
+| `CodegenContext::arena_scope_depth_` | Variable | 577 |
 | `CodegenContext::nullptr` | Variable | 580 |
 | `CodegenContext::nullptr` | Variable | 581 |
 | `CodegenContext::nullptr` | Variable | 582 |
@@ -656,15 +656,15 @@ Spill a tagged value to an entry-block slot and return its address.
 | `CodegenContext::nullptr` | Variable | 590 |
 | `CodegenContext::nullptr` | Variable | 591 |
 | `CodegenContext::nullptr` | Variable | 592 |
-| `CodegenContext::current_source_file_` | Variable | 595 |
-| `CodegenContext::current_source_line_` | Variable | 596 |
-| `CodegenContext::current_source_column_` | Variable | 597 |
-| `CodegenContext::source_location_override_` | Variable | 598 |
-| `CodegenContext::false` | Variable | 599 |
-| `CodegenContext::false` | Variable | 602 |
+| `CodegenContext::nullptr` | Variable | 593 |
+| `CodegenContext::current_source_file_` | Variable | 596 |
+| `CodegenContext::current_source_line_` | Variable | 597 |
+| `CodegenContext::current_source_column_` | Variable | 598 |
+| `CodegenContext::source_location_override_` | Variable | 599 |
+| `CodegenContext::false` | Variable | 600 |
 | `CodegenContext::false` | Variable | 603 |
-| `CodegenContext::module_prefix_` | Variable | 604 |
-| `CodegenContext::nullptr` | Variable | 607 |
+| `CodegenContext::false` | Variable | 604 |
+| `CodegenContext::module_prefix_` | Variable | 605 |
 | `CodegenContext::nullptr` | Variable | 608 |
 | `CodegenContext::nullptr` | Variable | 609 |
 | `CodegenContext::nullptr` | Variable | 610 |
@@ -675,3 +675,4 @@ Spill a tagged value to an entry-block slot and return its address.
 | `CodegenContext::nullptr` | Variable | 615 |
 | `CodegenContext::nullptr` | Variable | 616 |
 | `CodegenContext::nullptr` | Variable | 617 |
+| `CodegenContext::nullptr` | Variable | 618 |

@@ -3,9 +3,12 @@
 ;;; Invariant under test: a value stored into a container slot is a value of
 ;;; the slot's declared representation. A Scheme vector slot holds any tagged
 ;;; value unchanged. A tensor slot -- a numeric `#(...)` literal is a tensor --
-;;; holds a real number, converted exactly as `inexact` converts it; a value
-;;; with no real-number representation is refused with a catchable error and
-;;; the destination is left untouched. No mutator reinterprets payload bits.
+;;; holds a real number, converted exactly as `inexact` converts it. A value
+;;; with no real-number representation promotes the carrier to the general
+;;; boxed representation through the vector API (ADR-0020), which is what the
+;;; bytecode VM's heterogeneous `#(...)` has always held, and is refused
+;;; through the tensor API, which keeps a tensor numeric. No mutator
+;;; reinterprets payload bits.
 ;;;
 ;;; Before the fix `vector-set!` wrote the raw payload of any non-double into a
 ;;; tensor slot (`(vector-set! #(10 20 30) 0 99)` displayed 4.9e-322 and a
@@ -71,30 +74,83 @@
 (check "integer returned by a call into literal" (= (vector-ref t 0) 81))
 (check "a tensor slot reads back inexact" (not (exact? (vector-ref t 0))))
 
-;; ---- 3. vector-set! of a value with no real-number representation ----
-;; Refused with a catchable error; the destination keeps its value.
+;; ---- 3. a value with no real-number representation promotes the carrier ----
+;; ADR-0020: the vector API widens a numeric carrier rather than refusing a
+;; value R7RS vectors may hold; the bytecode VM's `#(...)` is a heterogeneous
+;; vector from the start, and this is what makes the engines agree.
+
+(define (refused? thunk) (eq? (guard (e (#t 'refused)) (thunk) 'stored) 'refused))
+(define (fresh) (let ((v #(10 20 30))) v))
 
 (define r #(10 20 30))
-(define (refused? thunk) (eq? (guard (e (#t 'refused)) (thunk) 'stored) 'refused))
-(check "string into literal is refused" (refused? (lambda () (vector-set! r 0 "x"))))
-(check "boolean #t into literal is refused" (refused? (lambda () (vector-set! r 0 #t))))
-(check "boolean #f into literal is refused" (refused? (lambda () (vector-set! r 0 #f))))
-(check "character into literal is refused" (refused? (lambda () (vector-set! r 0 #\a))))
-(check "symbol into literal is refused" (refused? (lambda () (vector-set! r 0 'sym))))
-(check "pair into literal is refused" (refused? (lambda () (vector-set! r 0 (list 1 2)))))
-(check "empty list into literal is refused" (refused? (lambda () (vector-set! r 0 '()))))
-(check "nested vector into literal is refused"
-       (refused? (lambda () (vector-set! r 0 (vector 1 2)))))
-(check "nested literal into literal is refused"
-       (refused? (lambda () (vector-set! r 0 #(1 2)))))
-(check "procedure into literal is refused" (refused? (lambda () (vector-set! r 0 sq))))
-(check "refused stores left slot 0 at 10" (= (vector-ref r 0) 10))
-(check "refused stores left slot 1 at 20" (= (vector-ref r 1) 20))
-(check "refused stores left slot 2 at 30" (= (vector-ref r 2) 30))
+(check "the literal starts as a numeric carrier" (tensor? r))
+(vector-set! r 0 "x")
+(check "a string is stored" (equal? (vector-ref r 0) "x"))
+(check "the promoted carrier is a vector" (vector? r))
+(check "the promoted carrier is no longer a tensor" (not (tensor? r)))
+(check "the other slots survive promotion as their numbers"
+       (and (= (vector-ref r 1) 20) (= (vector-ref r 2) 30)))
+(check "the length is unchanged" (= (vector-length r) 3))
+(check "a promoted carrier displays as its elements"
+       (equal? (vector->list r) (list "x" 20.0 30.0)))
+(check "a promoted carrier equals the vector of the same elements"
+       (equal? r (vector "x" 20.0 30.0)))
+(vector-set! r 1 #t)
+(check "a boolean is stored" (eq? (vector-ref r 1) #t))
+(vector-set! r 2 (list 1 2))
+(check "a pair is stored" (equal? (vector-ref r 2) (list 1 2)))
+(vector-set! r 0 (vector 7 8))
+(check "a nested vector is stored" (= (vector-ref (vector-ref r 0) 1) 8))
+(vector-set! r 1 #\a)
+(check "a character is stored" (eqv? (vector-ref r 1) #\a))
+(vector-set! r 1 'sym)
+(check "a symbol is stored" (eq? (vector-ref r 1) 'sym))
+(vector-set! r 1 sq)
+(check "a procedure is stored" (= ((vector-ref r 1) 5) 25))
+(vector-set! r 1 2.5)
+(check "a number stores into a promoted carrier" (= (vector-ref r 1) 2.5))
+(vector-set! r 1 1/2)
+(check "an exact rational keeps its exactness in a promoted carrier"
+       (and (exact? (vector-ref r 1)) (= (vector-ref r 1) 1/2)))
+
+;; promotion survives every reader
+(define p2 #(1 2 3))
+(vector-set! p2 1 "mid")
+(check "vector-copy of a promoted carrier" (equal? (vector->list (vector-copy p2)) (list 1.0 "mid" 3.0)))
+(check "vector-append of a promoted carrier"
+       (equal? (vector->list (vector-append p2 (vector 'end))) (list 1.0 "mid" 3.0 'end)))
+(check "vector-map over a promoted carrier"
+       (equal? (vector->list (vector-map (lambda (e) (if (string? e) 'S e)) p2))
+               (list 1.0 'S 3.0)))
+(define seen '())
+(vector-for-each (lambda (e) (set! seen (cons e seen))) p2)
+(check "vector-for-each over a promoted carrier" (= (length seen) 3))
+(check "list->vector round trip" (equal? (vector->list (list->vector (vector->list p2)))
+                                         (list 1.0 "mid" 3.0)))
+(define p3 #(1 2 3))
+(vector-copy! p3 0 (vector "a" "b"))
+(check "vector-copy! promotes the destination"
+       (equal? (vector->list p3) (list "a" "b" 3.0)))
+(define p4 #(1 2 3))
+(vector-fill! p4 "same")
+(check "vector-fill! promotes the destination"
+       (equal? (vector->list p4) (list "same" "same" "same")))
+
+;; a promoted carrier is not a numeric tensor, and every tensor kernel says so
+(define p5 #(1.0 2.0))
+(vector-set! p5 0 "x")
+(check "a tensor kernel refuses a promoted carrier"
+       (refused? (lambda () (tensor-sum p5))))
+(check "tensor-set! refuses a promoted carrier"
+       (refused? (lambda () (tensor-set! p5 1 1.0))))
+
+;; bounds are still bounds
+(define r2 #(10 20 30))
 (check "out-of-range index on a literal is refused"
-       (refused? (lambda () (vector-set! r 3 1))))
+       (refused? (lambda () (vector-set! r2 3 1))))
 (check "negative index on a literal is refused"
-       (refused? (lambda () (vector-set! r -1 1))))
+       (refused? (lambda () (vector-set! r2 -1 1))))
+(check "a refused index left the carrier numeric" (tensor? r2))
 
 ;; ---- 4. vector-set! into a Scheme vector keeps every kind unchanged ----
 
@@ -171,10 +227,11 @@
 (vector-fill! f1 big)
 (check "vector-fill! literal with a bignum" (= (vector-ref f1 2) (inexact big)))
 (vector-fill! f1 3)
-(check "vector-fill! of a string into a literal is refused"
-       (refused? (lambda () (vector-fill! f1 "x"))))
-(check "refused fill left the literal at 3"
-       (equal? (vector->list f1) (list 3.0 3.0 3.0)))
+(vector-fill! f1 "x")
+(check "vector-fill! of a string promotes the literal"
+       (equal? (vector->list f1) (list "x" "x" "x")))
+(vector-fill! f1 3)
+(check "and a number fills it again" (equal? (vector->list f1) (list 3 3 3)))
 (check "vector-fill! keeps the literal's length" (= (vector-length f1) 3))
 (define f2 (vector 1 2 3))
 (vector-fill! f2 "x")
@@ -200,10 +257,9 @@
 (check "vector-copy! vector->literal converts a bignum"
        (= (vector-ref c1 2) (inexact big)))
 (define c2 #(10 20 30))
-(check "vector-copy! of a string into a literal is refused"
-       (refused? (lambda () (vector-copy! c2 0 (vector 1 "x")))))
-(check "refused copy modified nothing (validated before the first write)"
-       (equal? (vector->list c2) (list 10.0 20.0 30.0)))
+(vector-copy! c2 0 (vector 1 "x"))
+(check "vector-copy! of a string promotes the destination"
+       (equal? (vector->list c2) (list 1.0 "x" 30.0)))
 (define c3 (vector 0 0 0))
 (vector-copy! c3 0 #(1 2 3))
 (check "vector-copy! literal->vector" (equal? (vector->list c3) (list 1.0 2.0 3.0)))
@@ -228,7 +284,7 @@
 (check "tensor-set! bignum" (= (tensor-ref ts 2) (inexact big)))
 (tensor-set! ts 2 2.5)
 (check "tensor-set! double" (= (tensor-ref ts 2) 2.5))
-(check "tensor-set! of a string is refused"
+(check "tensor-set! of a string is refused (the tensor API keeps a tensor numeric)"
        (refused? (lambda () (tensor-set! ts 0 "x"))))
 (check "tensor-set! of a boolean is refused"
        (refused? (lambda () (tensor-set! ts 0 #t))))

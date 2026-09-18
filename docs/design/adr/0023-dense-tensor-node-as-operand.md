@@ -14,9 +14,9 @@ sources:
 # ADR-0023: A dense tensor AD node is read as a tensor through one resolver
 
 **Status:** Accepted
-**Ledger:** SW-181; follow-ups SW-184, SW-185, SW-186
+**Ledger:** SW-181; follow-ups SW-186, SW-187, SW-188
 **Scope:** Native LLVM code generation, JIT and AOT, and the C runtime the
-emitted code calls. The bytecode VM has no dense tensor carrier (SW-184).
+emitted code calls. The bytecode VM has no dense tensor carrier (SW-186).
 
 ## Context
 
@@ -70,9 +70,9 @@ bound is `AD_NODE_TYPE_COUNT`.
   element, the same order as the scalarising path it feeds; dense chains are
   unaffected.
 - What a dense node *is* (`tensor?`, `display`) is still answered by its
-  CALLABLE tag (SW-186); jacobian's function-result slot and the forward-dual
-  matmul used by hessian have not been given the resolver (SW-185); the VM
-  carries no derivative through tensor operators at all (SW-184). The end
+  CALLABLE tag (SW-188); jacobian's function-result slot and the forward-dual
+  matmul used by hessian have not been given the resolver (SW-187); the VM
+  carries no derivative through tensor operators at all (SW-186). The end
   state this ADR points at is a dense AD tensor that is a `HEAP_SUBTYPE_TENSOR`
   object carrying its node, after which no consumer needs a case and this
   resolver becomes internal to the tape.

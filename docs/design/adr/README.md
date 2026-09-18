@@ -47,7 +47,7 @@ documentation hub lists the same records in
 | [0017](0017-stochastic-binary-lambda-calculus.md) | Stochastic Binary Lambda Calculus | Proposed | 2026-08-30 | — (first slice targets v1.4.0) |
 | [0018](0018-signed-curvature-stereographic-geometry.md) | Signed-curvature stereographic geometry and the K = 0 execution contract | Accepted (maintainer ruling 2026-08-30) | 2026-08-30 | — (targets v1.4.0) |
 | [0019](0019-evergreen-documentation-architecture.md) | Evergreen documentation architecture | Accepted — partially implemented | 2026-09-17 | The v1.3.5 stage named in the record; contributor guide [`docs/DOCUMENTATION.md`](../../DOCUMENTATION.md) |
-| [0020](0020-container-slot-store-boundary.md) | One store boundary for every container slot | Accepted — implemented (#701) | 2026-09-17 | v1.3.5 |
+| [0020](0020-container-slot-store-boundary.md) | One store boundary for every container slot (amended: the vector API promotes a numeric carrier) | Accepted — implemented (#701) | 2026-09-17 | v1.3.5 |
 | [0021](0021-ast-string-owner.md) | One owner for AST string payloads, one spelling for recorded paths | Accepted — implemented in v1.3.5-evolve | 2026-09-18 | `inc/eshkol/frontend/ast_strings.h`, `inc/eshkol/frontend/source_paths.h`, gates `ast_strings_test`, `source_paths_test`, `scripts/check_ast_string_owner.py`, `scripts/check_artifact_paths.py` |
 | [0022](0022-ad-value-boundaries.md) | One boundary for each place a value crosses a representation | Accepted — implemented (#706) | 2026-09-18 | v1.3.5 |
 

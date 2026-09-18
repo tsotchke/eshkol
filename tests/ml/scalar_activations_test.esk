@@ -1,0 +1,124 @@
+;;; ml.scalar_activations -- every activation takes a number or a tensor.
+;;;
+;;; docs/tutorials/01_AUTODIFF_AND_ML.md has always said the activation family
+;;; "take and return doubles or tensors", and relu/sigmoid did. softplus, gelu,
+;;; leaky-relu, silu, swish, elu, selu, mish, hard-swish, hard-sigmoid and celu
+;;; were tensor-only: a number raised "expected tensor, got double". They now
+;;; share one dispatch point with the tensor lowering, and the scalar branch is
+;;; the activation's own formula over the differentiable scalar primitives, so
+;;; it is the same number the tensor kernel computes for that element and it
+;;; differentiates in every mode.
+
+(define pass 0)
+(define fail 0)
+(define (check nm ok)
+  (if ok
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display nm) (newline))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display nm) (newline))))
+(define (near nm got want)
+  (check nm (< (abs (- got want)) 1e-12)))
+;; A scalar activation must equal the tensor kernel on the same element.
+(define (agrees nm got tensor-result)
+  (check nm (= got (vector-ref tensor-result 0))))
+
+;; ---- the tutorial's own examples ----
+(near "sigmoid 0.0" (sigmoid 0.0) 0.5)
+(near "tanh 1.0" (tanh 1.0) 0.7615941559557649)
+(near "relu -0.5" (relu -0.5) 0.0)
+(near "relu 0.5" (relu 0.5) 0.5)
+(near "softplus 0.0 is ln 2" (softplus 0.0) 0.6931471805599453)
+(near "leaky-relu -0.5" (leaky-relu -0.5) -0.005)
+(near "elu -1.0" (elu -1.0) -0.6321205588285577)
+(near "gelu 0.5" (gelu 0.5) 0.34571400982514394)
+(near "swish 1.0" (swish 1.0) 0.7310585786300049)
+
+;; ---- the rest of the family, scalar ----
+(near "silu 1.0" (silu 1.0) 0.7310585786300049)
+(near "selu -1.0" (selu -1.0) -1.1113307378125625)
+(near "mish 1.0" (mish 1.0) 0.8650983882673103)
+(near "hard-swish 1.0" (hard-swish 1.0) 0.6666666666666666)
+(near "hard-sigmoid 1.0" (hard-sigmoid 1.0) 0.6666666666666666)
+(near "celu -1.0" (celu -1.0) -0.6321205588285577)
+(near "hard-sigmoid saturates low" (hard-sigmoid -5.0) 0.0)
+(near "hard-sigmoid saturates high" (hard-sigmoid 5.0) 1.0)
+(near "hard-swish saturates low" (hard-swish -5.0) 0.0)
+
+;; ---- the optional parameter ----
+(near "softplus with beta" (softplus 2.0 2.0) 2.0090749639589047)
+(near "leaky-relu with alpha" (leaky-relu -2.0 0.1) -0.2)
+(near "elu with alpha" (elu -1.0 2.0) -1.2642411176571153)
+(near "celu with alpha" (celu -1.0 2.0) -0.7869386805747332)
+(near "swish with beta" (swish 1.0 2.0) 0.8807970779778823)
+
+;; ---- a scalar equals the tensor kernel on the same element ----
+(agrees "softplus scalar = tensor" (softplus 0.7) (softplus #(0.7)))
+(agrees "gelu scalar = tensor" (gelu 0.5) (gelu #(0.5)))
+(agrees "leaky-relu scalar = tensor" (leaky-relu -0.5) (leaky-relu #(-0.5)))
+(agrees "silu scalar = tensor" (silu 1.0) (silu #(1.0)))
+(agrees "elu scalar = tensor" (elu -1.0) (elu #(-1.0)))
+(agrees "selu scalar = tensor" (selu -1.0) (selu #(-1.0)))
+(agrees "mish scalar = tensor" (mish 1.0) (mish #(1.0)))
+(agrees "hard-swish scalar = tensor" (hard-swish 1.0) (hard-swish #(1.0)))
+(agrees "hard-sigmoid scalar = tensor" (hard-sigmoid 1.0) (hard-sigmoid #(1.0)))
+(agrees "celu scalar = tensor" (celu -1.0) (celu #(-1.0)))
+(agrees "softplus beta scalar = tensor" (softplus 2.0 2.0) (softplus #(2.0) 2.0))
+(agrees "elu alpha scalar = tensor" (elu -1.0 2.0) (elu #(-1.0) 2.0))
+(agrees "swish beta scalar = tensor" (swish 1.0 2.0) (swish #(1.0) 2.0))
+
+;; ---- the tensor forms still return tensors ----
+(check "softplus of a tensor is a tensor" (tensor? (softplus #(0.0 1.0))))
+(check "gelu of a tensor keeps its length" (= (vector-length (gelu #(0.0 1.0 2.0))) 3))
+(check "silu of a tensor is a tensor" (tensor? (silu #(1.0 2.0))))
+
+;; ---- exactness: an activation's value is inexact, like a tensor element ----
+(check "softplus of an exact integer is inexact" (not (exact? (softplus 30))))
+(check "leaky-relu of an exact integer is inexact" (not (exact? (leaky-relu 3))))
+(near "softplus of an exact rational" (softplus 1/2) 0.9740769841801067)
+(near "softplus past its threshold is the operand" (softplus 30) 30.0)
+(near "mish past its threshold" (mish 25.0) 25.0)
+(near "gelu of an exact integer" (gelu 3) 2.996362607918227)
+
+;; ---- differentiable, forward mode ----
+(near "d/dx softplus at 0 is sigmoid 0" (derivative (lambda (x) (softplus x)) 0.0) 0.5)
+(near "d/dx gelu at 0.5" (derivative (lambda (x) (gelu x)) 0.5) 0.8673699035346424)
+(near "d/dx elu at -1 is exp(-1)" (derivative (lambda (x) (elu x)) -1.0) 0.36787944117144233)
+(near "d/dx swish at 1" (derivative (lambda (x) (swish x)) 1.0) 0.9276705118714867)
+(near "d/dx leaky-relu below 0 is alpha" (derivative (lambda (x) (leaky-relu x)) -2.0) 0.01)
+(near "d/dx silu at 0 is 0.5" (derivative (lambda (x) (silu x)) 0.0) 0.5)
+(near "d/dx celu at -1 is exp(-1)" (derivative (lambda (x) (celu x)) -1.0) 0.36787944117144233)
+(near "d/dx hard-sigmoid in the ramp is 1/6" (derivative (lambda (x) (hard-sigmoid x)) 0.0) 0.16666666666666666)
+(near "second derivative of softplus at 0"
+      (derivative (lambda (x) (derivative (lambda (y) (softplus y)) x)) 0.0) 0.25)
+
+;; ---- differentiable, reverse mode ----
+(define g (gradient (lambda (v) (+ (softplus (vector-ref v 0)) (mish (vector-ref v 1)))) #(0.0 1.0)))
+(near "gradient: softplus component" (vector-ref g 0) 0.5)
+(near "gradient: mish component" (vector-ref g 1) 1.0490362200997922)
+(define g2 (gradient (lambda (v) (gelu (vector-ref v 0))) #(0.5)))
+(near "gradient: gelu component" (vector-ref g2 0) 0.8673699035346424)
+
+;; ---- the operand is evaluated once ----
+(define evals 0)
+(define (once) (set! evals (+ evals 1)) 1.0)
+(softplus (once))
+(check "a scalar operand is evaluated once" (= evals 1))
+(define tevals 0)
+(define (once-tensor) (set! tevals (+ tevals 1)) #(1.0))
+(softplus (once-tensor))
+(check "a tensor operand is evaluated once" (= tevals 1))
+
+;; ---- an activation through a parameter and as a value ----
+(define (apply-activation f x) (f x))
+(near "activation passed as a value" (apply-activation softplus 0.0) 0.6931471805599453)
+(check "activation mapped over a list"
+       (< (abs (- (car (map gelu (list 0.5))) 0.34571400982514394)) 1e-12))
+(define (in-a-function x) (softplus x))
+(near "activation inside a named function" (in-a-function 0.0) 0.6931471805599453)
+
+;; ---- a value with no activation meaning is refused, not misread ----
+(check "a string operand raises" (eq? (guard (e (#t 'raised)) (softplus "x")) 'raised))
+(check "a boolean operand raises" (eq? (guard (e (#t 'raised)) (gelu #t)) 'raised))
+
+(newline)
+(display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)

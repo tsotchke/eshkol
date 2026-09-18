@@ -824,7 +824,8 @@ static void display_char(uint32_t codepoint, eshkol_display_opts_t* opts) {
 
 // Recursive helper for displaying N-dimensional tensors
 static void display_tensor_recursive(FILE* out, const eshkol_tensor_t* tensor,
-                                      uint64_t current_dim, uint64_t offset) {
+                                      uint64_t current_dim, uint64_t offset,
+                                      eshkol_display_opts_t* opts_for_elements) {
     if (tensor->num_dimensions == 0) {
         fprintf(out, "#()");
         return;
@@ -835,8 +836,17 @@ static void display_tensor_recursive(FILE* out, const eshkol_tensor_t* tensor,
     // Base case: innermost dimension - print actual elements
     if (current_dim == tensor->num_dimensions - 1) {
         fprintf(out, "(");
+        const bool tagged = eshkol_tensor_dtype_is_tagged(tensor->dtype) != 0;
         for (uint64_t i = 0; i < dim_size; i++) {
             if (i > 0) fprintf(out, " ");
+            if (tagged) {
+                // A promoted carrier (ADR-0020) or a dual tensor holds tagged
+                // values; each prints as the value it is, like a vector slot.
+                const eshkol_tagged_value_t* slots =
+                    (const eshkol_tagged_value_t*)tensor->elements;
+                eshkol_display_value_opts(&slots[offset + i], opts_for_elements);
+                continue;
+            }
             // Elements stored as int64 bit pattern of double
             int64_t bits = tensor->elements[offset + i];
             double value;
@@ -856,7 +866,8 @@ static void display_tensor_recursive(FILE* out, const eshkol_tensor_t* tensor,
     fprintf(out, "(");
     for (uint64_t i = 0; i < dim_size; i++) {
         if (i > 0) fprintf(out, " ");
-        display_tensor_recursive(out, tensor, current_dim + 1, offset + i * stride);
+        display_tensor_recursive(out, tensor, current_dim + 1, offset + i * stride,
+                                 opts_for_elements);
     }
     fprintf(out, ")");
 }
@@ -885,7 +896,7 @@ static void display_tensor(uint64_t tensor_ptr, eshkol_display_opts_t* opts) {
 
     // Print tensor prefix then contents
     fprintf(out, "#");
-    display_tensor_recursive(out, tensor, 0, 0);
+    display_tensor_recursive(out, tensor, 0, 0, opts);
 }
 
 // Scheme vector structure:

@@ -127,6 +127,15 @@ void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
             if (hdr) {
                 if (hdr->subtype == HEAP_SUBTYPE_TENSOR) {
                     const auto* t = static_cast<const eshkol_tensor_t*>(ptr);
+                    /* ADR-0020: a carrier promoted by a non-numeric store holds
+                     * tagged values, not f64s. It is no longer a numeric
+                     * tensor, so every tensor kernel refuses it here rather
+                     * than reading its slots as doubles. */
+                    if (t->dtype == ESHKOL_TENSOR_DTYPE_BOXED) {
+                        eshkol_type_error_with_operand(
+                            op_name, "numeric tensor (this vector holds non-numeric elements)", val);
+                        return nullptr;  /* not reached */
+                    }
                     if (!eshkol_tensor_metadata_valid(
                             reinterpret_cast<const int64_t*>(t->dimensions),
                             static_cast<int64_t>(t->num_dimensions), t->elements,
@@ -289,6 +298,13 @@ void* eshkol_tensor_destination_checked(const eshkol_tagged_value_t* val,
             void* ptr = (void*)(uintptr_t)val->data.ptr_val;
             const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(ptr);
             if (hdr && hdr->subtype == HEAP_SUBTYPE_TENSOR) {
+                /* ADR-0020: a promoted (boxed) carrier is not a numeric tensor. */
+                if (static_cast<const eshkol_tensor_t*>(ptr)->dtype ==
+                        ESHKOL_TENSOR_DTYPE_BOXED) {
+                    eshkol_type_error_with_operand(
+                        op_name, "numeric tensor (this vector holds non-numeric elements)", val);
+                    return nullptr;  /* not reached */
+                }
                 return ptr;
             }
         }
@@ -348,6 +364,13 @@ void* eshkol_tensor_matrix_operand_checked(const eshkol_tagged_value_t* val,
             void* ptr = (void*)(uintptr_t)val->data.ptr_val;
             const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(ptr);
             if (hdr && hdr->subtype == HEAP_SUBTYPE_TENSOR) {
+                /* ADR-0020: a promoted (boxed) carrier is not a numeric tensor. */
+                if (static_cast<const eshkol_tensor_t*>(ptr)->dtype ==
+                        ESHKOL_TENSOR_DTYPE_BOXED) {
+                    eshkol_type_error_with_operand(
+                        op_name, "numeric tensor (this vector holds non-numeric elements)", val);
+                    return nullptr;  /* not reached */
+                }
                 t = (const eshkol_tensor_t*)ptr;
             }
         } else if (val->type == ESHKOL_VALUE_TENSOR_PTR && val->data.ptr_val) {
