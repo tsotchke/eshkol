@@ -10,6 +10,7 @@
 #include "eshkol/eshkol.h"
 #include <eshkol/llvm_backend.h>
 #include <eshkol/abi_fingerprint.h>
+#include <eshkol/frontend/ast_strings.h>
 #include <eshkol/frontend/node_identity.h>
 #include <eshkol/frontend/semantic_identity.h>
 #include <eshkol/frontend/diagnostic.h>
@@ -10622,10 +10623,9 @@ private:
             // Use resolveLambdaFunction with appropriate arity
             eshkol_ast_t var_ast;
             var_ast.type = ESHKOL_VAR;
-            var_ast.variable.id = strdup(var_name.c_str());
+            var_ast.variable.id = eshkol_ast_string_copy(var_name);
             size_t arity = (var_name == "cons") ? 2 : 1;
             Value* builtin_func = resolveLambdaFunction(&var_ast, arity);
-            free((void*)var_ast.variable.id);
             if (builtin_func && isa<Function>(builtin_func)) {
                 // Wrap in closure for proper first-class function use
                 Function* func = cast<Function>(builtin_func);

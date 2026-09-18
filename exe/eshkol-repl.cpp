@@ -7,6 +7,7 @@
 //
 
 #include <eshkol/eshkol.h>
+#include <eshkol/frontend/ast_strings.h>
 #include <eshkol/platform_runtime.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/backend/thread_pool.h>
@@ -1401,6 +1402,11 @@ static void handle_json_request(const std::string& line, eshkol::ReplJITContext&
 // don't need a forward declaration).
 
 int main(int argc, char** argv) {
+    // First local, so it is destroyed last: the REPL keeps ASTs across inputs
+    // (definitions, macros, imports), so AST strings live for the session and
+    // are released only once the session is over (ADR-0016).
+    eshkol::frontend::AstStringsTeardownOnReturn ast_strings_teardown;
+
     // Parse command-line arguments
     bool load_stdlib = false;
     bool machine_mode = false;

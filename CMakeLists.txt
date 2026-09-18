@@ -2757,6 +2757,7 @@ target_link_libraries(eshkol-runtime PUBLIC eshkol-qllm-abi)
 # hosted reader/runtime support but no LLVM libraries or code-generation TU.
 add_library(eshkol-workspace STATIC
   lib/frontend/parser.cpp
+  lib/frontend/ast_strings.cpp
   lib/frontend/node_identity.cpp
   lib/frontend/semantic_identity.cpp
   lib/frontend/diagnostic.cpp
@@ -3355,6 +3356,21 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/nod
     add_test(NAME node_identity_test COMMAND node_identity_test)
     set_tests_properties(node_identity_test PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: node identity substrate")
+endif()
+
+# ADR-0016: the one owner of AST string payloads.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/ast_strings_test.cpp")
+    add_executable(ast_strings_test tests/frontend/ast_strings_test.cpp)
+    target_compile_features(ast_strings_test PRIVATE cxx_std_20)
+    target_include_directories(ast_strings_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(ast_strings_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(ast_strings_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(ast_strings_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME ast_strings_test COMMAND ast_strings_test)
+    set_tests_properties(ast_strings_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: AST string owner")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/semantic_identity_test.cpp")

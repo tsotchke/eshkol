@@ -17,6 +17,7 @@
 
 #include <eshkol/llvm_backend.h>
 #include <eshkol/module_visibility.h>
+#include <eshkol/frontend/ast_strings.h>
 #include "../lib/repl/repl_jit.h"
 #include "../lib/frontend/library_registry.h"
 
@@ -3386,8 +3387,7 @@ static void update_ast_references(eshkol_ast_t* ast,
             if (ast->variable.id) {
                 auto it = rename_map.find(ast->variable.id);
                 if (it != rename_map.end()) {
-                    delete[] ast->variable.id;
-                    ast->variable.id = strdup(it->second.c_str());
+                    ast->variable.id = eshkol_ast_string_copy(it->second);
                 }
             }
             break;
@@ -3455,8 +3455,7 @@ static void update_ast_references(eshkol_ast_t* ast,
                     if (ast->operation.set_op.name) {
                         auto it = rename_map.find(ast->operation.set_op.name);
                         if (it != rename_map.end()) {
-                            delete[] ast->operation.set_op.name;
-                            ast->operation.set_op.name = strdup(it->second.c_str());
+                            ast->operation.set_op.name = eshkol_ast_string_copy(it->second);
                         }
                     }
                     update_ast_references(ast->operation.set_op.value, rename_map);
@@ -3777,8 +3776,7 @@ static void rename_private_symbols(std::vector<eshkol_ast_t>& asts,
             if (ast.operation.define_op.name) {
                 auto it = rename_map.find(ast.operation.define_op.name);
                 if (it != rename_map.end()) {
-                    delete[] ast.operation.define_op.name;
-                    ast.operation.define_op.name = strdup(it->second.c_str());
+                    ast.operation.define_op.name = eshkol_ast_string_copy(it->second);
                 }
             }
         }
@@ -4081,12 +4079,13 @@ extern "C" {
 /* LeakSanitizer policy for eshkol-run.
  *
  * eshkol-run is a one-shot batch compiler: parse → typecheck → codegen
- * → emit object → exit. AST nodes (every `new eshkol_ast_t[N]` and
- * `new char[N]` in lib/frontend/parser.cpp) are owned by the AST tree
- * and intentionally never freed — process exit reaps them. This is
- * the same convention clang, rustc, and gcc use for their internal
- * IRs, since walking and freeing a multi-hundred-thousand-node AST at
- * exit is pure busywork on the way to _exit().
+ * → emit object → exit. AST node arrays (every `new eshkol_ast_t[N]` in
+ * lib/frontend/parser.cpp) are owned by the AST tree and intentionally
+ * never freed — process exit reaps them, the convention clang, rustc and
+ * gcc use for their internal IRs. AST *string payloads* are different:
+ * they have one owner, the rooted arena in inc/eshkol/frontend/ast_strings.h
+ * (ADR-0016), which main() tears down on return, so none of them is a leak
+ * or needs a suppression.
  *
  * This hook USED TO return "exitcode=0", which made LeakSanitizer print
  * exit-time leaks without failing on them. The intent was to keep the
@@ -4173,7 +4172,9 @@ static const char* intern_driver_string(const std::string& s) {
  * `(require stdlib)` AST node needs a stable array-of-one module name. */
 static char** intern_driver_module_name_array(const std::string& name) {
     static std::deque<std::vector<char*>> storage;
-    storage.push_back({const_cast<char*>(intern_driver_string(name))});
+    // The element is an AST string payload, so its text comes from the AST
+    // string owner like every other name on a node; only the array is here.
+    storage.push_back({eshkol_ast_string_copy(name)});
     return storage.back().data();
 }
 
@@ -4181,6 +4182,10 @@ static char** intern_driver_module_name_array(const std::string& name) {
 
 int main(int argc, char **argv)
 {
+    // First local, so it is destroyed last: every AST consumer in main() has
+    // finished before the AST string owner is released (ADR-0016).
+    eshkol::frontend::AstStringsTeardownOnReturn ast_strings_teardown;
+
     __eshkol_argc = (int32_t)argc;
     __eshkol_argv = argv;
 
