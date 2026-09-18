@@ -601,7 +601,7 @@ Continuations are `HEAP_PTR` objects with `HEAP_SUBTYPE_PROMISE` (for promises) 
 
 ### Machine Learning Framework (75+ Builtins)
 
-**Implementation:** [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (1,867-line dispatcher; thirteen sibling `tensor_*_codegen.cpp` files after the v1.2 split), [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) (1,876 lines)
+**Implementation:** [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (2,012-line dispatcher; thirteen sibling `tensor_*_codegen.cpp` files after the v1.2 split), [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) (1,876 lines)
 
 Categories: activations (16), loss functions (14), optimizers (5+3), weight initializers (5), LR schedulers (4), CNN layers (7), transformer operations (8), data loading (6), plus tensor creation/manipulation ops.
 

@@ -706,7 +706,7 @@ Enables type-directed optimizations in higher-order functions.
 
 ## N-Dimensional Tensors
 
-**Implementation**: [`lib/backend/tensor_codegen.cpp`](../lib/backend/tensor_codegen.cpp) (1,867-line dispatcher; per-domain ops in thirteen `tensor_*_codegen.cpp` siblings totalling 22,355 lines)
+**Implementation**: [`lib/backend/tensor_codegen.cpp`](../lib/backend/tensor_codegen.cpp) (2,012-line dispatcher; per-domain ops in thirteen `tensor_*_codegen.cpp` siblings totalling 23,389 lines)
 
 ### Tensor Structure
 
@@ -1162,7 +1162,7 @@ eshkol/
 │   │   ├── llvm_codegen.cpp      # Main engine (44,003 lines)
 │   │   ├── arithmetic_codegen.cpp# Polymorphic arithmetic (4,012 lines)
 │   │   ├── autodiff_codegen.cpp  # AD operations (14,545 lines)
-│   │   ├── tensor_codegen.cpp    # Tensor-op dispatcher (1,867 lines); per-domain in tensor_*_codegen.cpp
+│   │   ├── tensor_codegen.cpp    # Tensor-op dispatcher (2,012 lines); per-domain in tensor_*_codegen.cpp
 │   │   ├── collection_codegen.cpp# Lists/vectors (3,173 lines)
 │   │   ├── control_flow_codegen.cpp # if/cond/and/or (1,107 lines)
 │   │   ├── binding_codegen.cpp   # define/let/set! (1,662 lines)

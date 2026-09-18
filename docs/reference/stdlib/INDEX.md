@@ -192,7 +192,7 @@ are documented, with signatures, on the pages listed.
 | `random.random` | `(require random.random)` | [QUANTUM_RNG.md](../../breakdown/QUANTUM_RNG.md) |
 | `tensor.utils` | `(require tensor.utils)` | [API_REFERENCE.md, Tensor Utilities](../../API_REFERENCE.md#tensor-utilities) |
 | `tensorcore` | `(require tensorcore)` | [shipped_exports.md](shipped_exports.md#tensorcore) |
-| `core.blc` | `(require core.blc)` | [BINARY_LAMBDA_CALCULUS.md](../../guide/BINARY_LAMBDA_CALCULUS.md) |
+| `core.blc` | `(require core.blc)` | [blc.md](blc.md) (reference); [BINARY_LAMBDA_CALCULUS.md](../../guide/BINARY_LAMBDA_CALCULUS.md) (guide) |
 | `core.ad.guw` | `(require core.ad.guw)` | [AUTOMATIC_DIFFERENTIATION.md §4](../../guide/AUTOMATIC_DIFFERENTIATION.md#4-multivariate-mixed-partials-guw) |
 | `core.ad.tensor_tower` | `(require core.ad.tensor_tower)` | [AUTOMATIC_DIFFERENTIATION.md §5](../../guide/AUTOMATIC_DIFFERENTIATION.md#5-tensor-ad--towers-of-tensors) |
 | `core.ad.sparse_guw` | `(require core.ad.sparse_guw)` | [AUTOMATIC_DIFFERENTIATION.md §7](../../guide/AUTOMATIC_DIFFERENTIATION.md#7-sparse-high-order--sparse-hessians) |
