@@ -795,7 +795,7 @@ the REPL, and the agent-FFI test binaries — was run under ASan+LSan over
 | category | sites | disposition |
 |---|---|---|
 | **Runtime, VM, arena, compiled programs** | 0 | Nothing. These paths are leak-clean: every report from a compiled binary or a `--vm` run came from platform framework init, not from Eshkol code. |
-| **Compiler front-end AST** | 8 | Retained for process lifetime by design (`eshkol_ast_t` has no destructor), the convention clang/rustc/gcc use. Named individually with a reason in `.icc/lsan-suppressions.txt`. Retires with epic #182. |
+| **Compiler front-end AST** | 8 | Node storage is retained for process lifetime by design (`eshkol_ast_t` has no destructor), the convention clang/rustc/gcc use. Named individually with a reason in `.icc/lsan-suppressions.txt`. Retires with epic #182. Two of the eight covered only string payloads. They were retired when those payloads got one rooted owner ([ADR-0020](../../design/adr/0020-ast-string-owner.md)), so six rules remain. |
 | **In-process JIT and driver** | 3 | **Fixed — see below.** All three grew with the work done, none was process-init. |
 | **LLVM ORC JIT** | 1 | Third-party: `DynamicLibrarySearchGenerator` holds a `dlopen` handle for the life of the JITDylib. Suppressed, scoped to that class. |
 | **Platform frameworks** | 7 | macOS `libobjc` / CoreFoundation / CFNetwork / libxpc process init. Not in the shipped suppression file — that file describes the Linux lane, where these frames do not exist. |
@@ -825,7 +825,13 @@ The front-end suppressions are scoped to one function each, but within a
 function they are total, so a new leak inside `parse_list()` would be swallowed
 by them. `tests/memory/leak_audit_gate.sh` closes that: it measures front-end
 retention per REPL input line at two horizons **with suppressions off** and
-gates on the slope.
+gates on the slope. The measured retention is LeakSanitizer's leaked bytes
+(node storage) plus the AST string owner's own report
+(`ESHKOL_AST_STRINGS_STATS`). Since ADR-0020, identifiers are rooted rather
+than leaked, and a slope that counted only leaks would have lost them. The
+figure stayed at 1628 bytes per line when that change landed: 1608 bytes of
+node storage and 20 bytes of rooted identifier text, measured on Linux with
+gcc-13 ASan at 10 and 40 lines.
 
 Measured at 10 / 20 / 40 input lines: 21 171 / 37 451 / 70 009 bytes, i.e.
 **1628 bytes per input line, linear across a 4× span**. A batch compile reaps
@@ -840,6 +846,23 @@ a regression. Both numbers are recorded in the gate so the increase is
 accounted for rather than silently absorbed by its tolerance. This is growth, not a wrong answer, so it is a defect rather
 than a silent-wrong, and the honest statement of it is: **`eshkol-run` is
 bounded by its input, `eshkol-repl` is not**. The number is pinned in the gate
-so it can go down freely and cannot go up. Giving `eshkol_ast_t` a real owner
-(epic #182) is what makes it zero; that is a 353-site ownership change across
-the parser and macro expander, tracked separately.
+so it can go down freely and cannot go up. Giving `eshkol_ast_t` nodes a real
+owner (epic #182) is what removes the node share. The string share already has
+an owner that releases it at teardown, but a REPL session still holds it until
+it exits.
+
+### Leak detection during builds
+
+A sanitizer build runs the instrumented compiler on the standard library
+while building `stdlib.o`. That is a real compiler workload, so it runs under
+the same policy as every other LeakSanitizer workload: `detect_leaks=1` with
+`.icc/lsan-suppressions.txt`. `scripts/build-sanitizer.sh` applies this
+policy by default on Linux, the CI sanitizer lane's Build step exports it,
+and the release producer (`scripts/run_v1_3_release_producers.sh`) passes
+it. macOS keeps detection off, because its system toolchain has no working
+LeakSanitizer. A leak in the compiler therefore fails the build that
+exercises it, in CI and in the release producer alike, instead of being
+found only when the two disagree. The first defect this policy caught was
+module-private renaming dropping renamed identifiers. The fix gave AST
+strings an owner ([ADR-0020](../../design/adr/0020-ast-string-owner.md)); it
+did not add a suppression.

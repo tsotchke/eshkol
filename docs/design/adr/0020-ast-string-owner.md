@@ -115,7 +115,9 @@ off because its system toolchain has no working LeakSanitizer.
   section B adds the owner's own report (`ESHKOL_AST_STRINGS_STATS`) to
   LeakSanitizer's figure. The rooted retention stays in the per-line slope it
   pins; it does not disappear from the measurement because it is no longer a
-  leak.
+  leak. Re-measured on Linux with gcc-13 ASan, the slope is still 1628 bytes
+  per line: 1608 bytes of node storage and 20 bytes of rooted identifier
+  text.
 - Long-running processes that parse on every request (the language server's
   workspace checks, `eshkol-server`, runtime `eval`, the C FFI and the Python
   binding) keep the process-lifetime default. Before this decision they leaked
@@ -126,7 +128,13 @@ off because its system toolchain has no working LeakSanitizer.
 - Allocation is a bump in a 64 KiB chunk under a mutex, not one heap block
   per string. Compiling the standard library allocates 37 843 AST strings,
   295 050 bytes requested, in 7 chunks (459 KB reserved), against a peak RSS
-  of about 2.2 GB. Compile time and RSS are unchanged within noise.
+  of about 2.2 GB. On a Release build the standard-library compile took
+  33.1 s and 2159 MiB before this change, and 32.2 s and 2141 MiB after. The
+  nested-expression scaling gate is within run-to-run noise.
+- Under the release producer's sanitizer build, the front-end rule
+  `parse_atom` now matches 22 objects (5 280 bytes) while compiling the
+  standard library. It matched 63 341 objects in the original audit, and
+  nearly all of those were literal and symbol text.
 
 ## Verification
 

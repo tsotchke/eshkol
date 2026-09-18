@@ -22,9 +22,10 @@
 #     swallowed by section A. Section B closes that by measuring, with
 #     suppressions OFF, how many bytes the compiler front end retains per REPL
 #     input line at two horizons, and gating on the SLOPE. The front end
-#     currently retains a measured, exactly-linear 1628 bytes per line (epic
-#     #182: eshkol_ast_t has no destructor). That number is pinned here: it may
-#     go DOWN freely, and going up fails.
+#     currently retains a measured, exactly-linear 1628 bytes per line: node
+#     storage LeakSanitizer reports (epic #182: eshkol_ast_t has no
+#     destructor) plus the AST string owner's rooted bytes (ADR-0020).
+#     That number is pinned here: it may go DOWN freely, and going up fails.
 #
 # ---------------------------------------------------------------------------
 # IF YOU CHANGE THIS GATE: the red-proof must itself be proven
@@ -136,6 +137,13 @@ PROBE_ID="leak_audit_gate"
 # accounted for rather than silently absorbed by the tolerance. Re-pin, with
 # the reason, whenever a deliberate front-end change moves it; do not widen
 # the tolerance instead.
+#
+# ADR-0020 changed WHAT is measured, not the number. AST string payloads
+# moved to a rooted owner, so LeakSanitizer stopped reporting identifier text
+# as leaked; section B now adds the owner's own report to the leak summary.
+# Re-measured on Linux gcc-13 ASan at 10 / 40 lines: 16080 + 182 and
+# 64320 + 782 bytes, i.e. 1608 B/line of node storage plus 20 B/line of
+# identifier text = 1628 B/line, the same pin.
 #
 # TOLERANCE is generous on purpose: this gate must catch a real regression (a
 # new per-line retention is at minimum tens of bytes and usually far more),
