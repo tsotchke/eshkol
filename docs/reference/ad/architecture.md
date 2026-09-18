@@ -39,7 +39,7 @@ which re-derives every declaration from the source rather than believing it.
 
 | Carrier | Where | Vocabulary | Substrates |
 |---------|-------|------------|------------|
-| `ad_node_t` reverse tape | `inc/eshkol/eshkol.h`, emitted by `autodiff_codegen.cpp` | 95 registered node types incl. `AD_NODE_CUSTOM` | native |
+| `ad_node_t` reverse tape | `inc/eshkol/eshkol.h`, emitted by `autodiff_codegen.cpp` | 96 registered node types incl. `AD_NODE_CUSTOM` | native |
 | forward jet | `autodiff_codegen.cpp` (`seedForwardAndPush`) | e1/e2/ep slots + Taylor tower | native |
 | `VmDual {primal, tangent}` | `vm_dual.c`; dual tensor carrier in `vm_tensor.c` | 16 flat forward-dual ops plus first-order transformer tensor propagation | VM |
 | `VmHyperDual {f, f1, f2, f12}` | `vm_hyperdual.c` | second-order forward | VM |
@@ -147,6 +147,19 @@ by default (ADR-0002 Position A, `.icc/silent-wrong-ledger.yaml` SW-48):
    node, whose backward is the identity scatter from the dense gradient onto
    the scalar nodes. A pack node performs no arithmetic, so it can change the
    *representation* of a gradient and not its value.
+4. **Every other consumer reads it as a tensor.** An operator with no dense
+   rule (`tensor-dot`, `reshape`, `relu`, `softmax`, `tensor-get`, the
+   two-argument `tensor-ref`, `vector-length`, `vector-ref`, `vector->list`)
+   receives the dense node through one resolver,
+   `eshkol_ad_dense_node_elements`: the tensor of the node's shape whose
+   element `i` is an `AD_NODE_DENSE_ELEM` node projecting element `i`, appended
+   to the tape. The operator's scalarizing rule then applies unchanged, and the
+   reverse sweep scatters each element's adjoint into the dense node's
+   gradient at `i` — the inverse of a pack node, and like it an identity that
+   cannot change a gradient's value. The tensor boundary
+   (`eshkol_tensor_operand_checked`) and the collection builtins
+   (`TaggedValueCodegen::resolveDenseTensorNode`) both route to it, so a new
+   consumer needs no case of its own ([ADR-0023](../../design/adr/0023-dense-tensor-node-as-operand.md)).
 
 The cost claim is measured, not asserted.
 [`tests/ad/matmul_tape_node_count_test.esk`](../../../tests/ad/matmul_tape_node_count_test.esk)
@@ -267,7 +280,7 @@ an X-macro row:
 ESHKOL_AD_NODE(NAME, VALUE, PAYLOAD, TENSOR_BACKWARD, BRIDGE_FN)
 ```
 
-There are **95 rows**, values `0`–`94`, dense. `VALUE` is explicit and asserted
+There are **96 rows**, values `0`–`95`, dense. `VALUE` is explicit and asserted
 equal to the row's ordinal, because these values are an ABI: emitted LLVM IR
 compares `node->type` against integer literals and serialized tapes carry them.
 
@@ -285,7 +298,7 @@ vanish.
 |---|---:|---|
 | `SCALAR_ADJOINT` | 44 | the adjoint is computed by the scalar reverse sweep |
 | `BRIDGE` | 19 | an exact tensor backward, named by `BRIDGE_FN` |
-| `INLINE` | 25 | the backward is emitted inline at the recording site |
+| `INLINE` | 26 | the backward is emitted inline at the recording site |
 | `UNREGISTERED` | 4 | an **explicit registered refusal** |
 | `LEAF` | 2 | a tape leaf; nothing to propagate |
 | `CUSTOM_VJP` | 1 | caller-provided vector-Jacobian product |

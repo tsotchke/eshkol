@@ -132,7 +132,6 @@ to GPU (Metal on macOS, CUDA on Linux/Windows):
 
 Tensor operations are differentiable:
 
-<!-- doc-example: known-defect SW-181: the gradient is #(2 4 6); the native engines raise a type error in tensor-dot -->
 ```scheme
 ;; Gradient of a function that uses tensors
 (define (quadratic-form x)

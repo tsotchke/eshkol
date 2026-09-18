@@ -4363,6 +4363,46 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: differentiated_values_in_list_cells"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Invalid type for int64 storage|non-int-storage cell")
+    # The dense reverse path publishes matmul and elementwise results as one AD
+    # node with an f64 buffer. Every consumer without a dense rule read it
+    # through the tensor boundary or classified it by hand and had no case for
+    # it: tensor-dot, reshape, relu, softmax raised a type error, tensor-ref
+    # returned the node, vector-length misread it (SW-181). A dense node now
+    # resolves in one place to a tensor of DENSE_ELEM projections (ADR-0023).
+    # JIT with and without the run cache, and AOT.
+    add_test(
+        NAME dense_tensor_operand_boundary_cached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/dense_tensor_operand_boundary_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(dense_tensor_operand_boundary_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: dense_tensor_operand_boundary"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|expected tensor, got ad-node")
+    add_test(
+        NAME dense_tensor_operand_boundary_uncached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/dense_tensor_operand_boundary_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(dense_tensor_operand_boundary_uncached
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: dense_tensor_operand_boundary"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|expected tensor, got ad-node")
+    add_test(
+        NAME dense_tensor_operand_boundary_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/dense_tensor_operand_boundary_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/dense_tensor_operand_boundary_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/dense_tensor_operand_boundary_aot'"
+    )
+    set_tests_properties(dense_tensor_operand_boundary_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: dense_tensor_operand_boundary"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|expected tensor, got ad-node")
     # map and reduce call a statically known procedure directly. map re-resolved
     # a named closure's captures by name at the call site (cross-function IR
     # inside a nested lambda); reduce passed none. map now reads the closure's

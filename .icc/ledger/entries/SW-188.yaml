@@ -1,0 +1,28 @@
+id: SW-188
+bucket: SILENT-WRONG
+family: ad/dense-tensor-operands
+status: open
+needs_decision: true
+title: "native: inside a differentiated function a matmul result answers #f to tensor? and vector? and displays as #<ad-node>, because the dense AD node is a CALLABLE rather than a tensor"
+repro: >-
+  (gradient (lambda (x) (let ((d (matmul (eye 3) x)))
+                          (display (tensor? d)) (display (vector? d)) (display d)
+                          (tensor-sum d)))
+            #(1.0 2.0 3.0))
+observed: >-
+  Prints #f #f #<ad-node>, exit 0. Outside differentiation the same value
+  prints #t #t #(1 2 3).
+correct: >-
+  #t #t #(1 2 3): a value's type does not depend on whether it is being
+  differentiated.
+evidence: >-
+  Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
+  arm64 macOS, while sweeping SW-181.
+caught_by: [coordinator-sweep]
+missed_by: [run_ad_oracle, run_dense_tensor_ad_gate, doc_audit]
+notes: >-
+  SW-181 resolves a dense node wherever a tensor is READ. Type predicates and
+  the printer ask what the value IS, which is a representation-identity
+  question: the end state ADR-0023 names is a dense AD tensor that is a
+  HEAP_SUBTYPE_TENSOR object carrying its node, so no consumer needs a case.
+  Needs a ruling on that end state before the predicates are changed.
