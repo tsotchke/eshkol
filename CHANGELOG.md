@@ -2335,6 +2335,17 @@ the source changes; the verification record for the tagged commit is the
   `scripts/check_doc_front_matter.py` validates page front matter and evergreen
   wording; both are CI and release-evidence gates. The documentation example
   gate covers the gradual typing guide and the upgrade page. (#702)
+- **Website built from the release record.** The site names the release only
+  through one release-facts block checked against
+  `tests/coverage/release_record.json`; `scripts/verify_site_release.py` fails on
+  a stale tag, headline or download link and on any unsourced homepage figure.
+  `site/pages.json` declares every published documentation page, so 78 pages
+  are published instead of 9, and `scripts/site_smoke.py` renders the site in a
+  real browser before the Pages deploy. (#703)
+- **Generated site pages graded through the page manifest.** The consistency
+  gate maps each generated page to its Markdown source via `site/pages.json`,
+  the site is regenerated with every listed page present, and the contributor
+  guide documents the manifest and the three site checks. (#704)
 
 ### Contributors
 
