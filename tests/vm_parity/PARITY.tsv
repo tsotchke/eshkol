@@ -327,7 +327,7 @@ gpu-matmul	vm-supported
 gpu-reduce	vm-supported	
 gpu-softmax	vm-supported	
 gpu-transpose	vm-supported	
-gradient	vm-supported
+gradient	vm-supported	tensor operands carry the forward tangent through + - * / tensor-scale tensor-dot matmul, full tensor-sum and tensor-mean, tensor-ref tensor-get vector-ref tensor-data reshape tensor-apply and attention; every other tensor operation refuses a differentiated tensor with a message instead of reading its primal (SW-186); complex values carry a first-order tangent (ADR-0025)
 gradient-descent	gap	ml faculty has no VM fid coverage
 hamming-window	gap	signal faculty has no VM fid coverage
 hann-window	gap	signal faculty has no VM fid coverage

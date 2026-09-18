@@ -11011,8 +11011,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 475: { /* layer-norm(tensor, gamma, beta, epsilon) */
         Value eps_val = vm_pop(vm), beta_val = vm_pop(vm), gamma_val = vm_pop(vm);
         Value input_val = vm_pop(vm);
-        VmTensor* input = vm_tensor_operand(vm, input_val, "layer-norm");
+        VmTensor* input = vm_tensor_operand_carrier(vm, input_val, "layer-norm");
         if (!input) break;
+        /* The kernel carries the input's tangent; a derivative in the scalar
+         * parameters has no rule here and is refused, not read as its primal. */
+        if (gamma_val.type == VAL_DUAL || beta_val.type == VAL_DUAL || eps_val.type == VAL_DUAL ||
+            gamma_val.type == VAL_HYPER_DUAL || beta_val.type == VAL_HYPER_DUAL || eps_val.type == VAL_HYPER_DUAL) {
+            vm_raise_error_msg(vm, "layer-norm: a derivative with respect to gamma, beta or epsilon cannot pass through layer-norm on the VM; use the native backend");
+            break;
+        }
         VmTensor* out = vm_tensor_layer_norm_scalar(&vm->heap.regions, input,
             as_number_vm(vm, gamma_val), as_number_vm(vm, beta_val),
             as_number_vm(vm, eps_val));

@@ -239,6 +239,18 @@ to miss.
   (gradient-of-derivative / Taylor tower, `op:DERIVATIVE_N`) stays native-only.
   The public low-level AD tape surface (`ad-pow`, `ad-gradient-of`,
   `ad-value-of`, `ad-tape-length`) is also complete on JIT and AOT.
+- **A derivative through a tensor or a complex value on the VM (SW-186, SW-180).**
+  The VM's forward carrier rides a tensor as a parallel tangent array. The
+  linear operations propagate it on their own kernels (`+ - * /`,
+  `tensor-scale`, `tensor-dot`, `matmul`), full `tensor-sum` and `tensor-mean`
+  reduce it, and `tensor-ref`, `tensor-get`, `vector-ref`, `tensor-data`,
+  `reshape`, `tensor-apply` and attention keep it. Every other tensor operation
+  refuses a differentiated tensor with a message naming itself; it used to read
+  the primal and answer a gradient of `#(0 0 0)`. A complex value carries the
+  dual's first-order tangent through every complex operation
+  ([ADR-0025](design/adr/0025-complex-values-carry-derivatives.md)); corpus
+  programs `89_complex_value_derivative` and `90_tensor_forward_tangent` hold
+  the engines to the same answers.
 - **`(the <type> expr)` is `native-only-justified`.** The checked type
   ascription is a compile-time construct on the native type checker with no VM
   surface; it is a runtime no-op, so a VM program that omits it computes the
