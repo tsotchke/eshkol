@@ -13775,32 +13775,38 @@ entries:
       difference is loud and is checked per engine rather than in the corpus.
   - id: SW-186
     bucket: SILENT-WRONG
-    family: ad/dense-tensor-operands
+    family: ad/vm-tensor-carrier
     status: open
     needs_decision: true
-    title: "native: inside a differentiated function a matmul result answers #f to tensor? and vector? and displays as #<ad-node>, because the dense AD node is a CALLABLE rather than a tensor"
+    title: "VM: a gradient through any tensor operator (tensor-dot, tensor-mul, matmul, tensor-sum) is silently #(0 0 ...) although PARITY.tsv marks every one of them vm-supported"
     repro: >-
-      (gradient (lambda (x) (let ((d (matmul (eye 3) x)))
-                              (display (tensor? d)) (display (vector? d)) (display d)
-                              (tensor-sum d)))
-                #(1.0 2.0 3.0))
+      (1) (display (gradient (lambda (x) (tensor-dot x x)) #(1.0 2.0 3.0)))
+      (2) (display (gradient (lambda (x) (tensor-sum (tensor-mul x x))) #(1.0 2.0 3.0)))
+      (3) (display (gradient (lambda (x) (tensor-sum (matmul (eye 3) x))) #(1.0 2.0 3.0)))
     observed: >-
-      Prints #f #f #<ad-node>, exit 0. Outside differentiation the same value
-      prints #t #t #(1 2 3).
+      All three print #(0 0 0) on eshkol-vm-standalone-test, exit 0, no
+      diagnostic. Native prints #(2 4 6), #(2 4 6), #(1 1 1). The VM's scalar
+      gradient path (84_named_closure_derivative_capture.esk, vector-ref over a
+      vector point) is correct, so the loss is specific to the tensor operators:
+      the VM tensor natives do not carry the forward dual through tensor
+      operations, and the reverse tape does not record them.
     correct: >-
-      #t #t #(1 2 3): a value's type does not depend on whether it is being
-      differentiated.
+      #(2 4 6), #(2 4 6), #(1 1 1), or PARITY.tsv rows for the tensor operators
+      under differentiation marked as a gap so the parity manifest is truthful.
     evidence: >-
       Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
-      arm64 macOS, while sweeping SW-181.
+      arm64 macOS, while sweeping SW-181. tensor-dot, matmul, tensor-sum, eye and
+      gradient are all `vm-supported` in tests/vm_parity/PARITY.tsv; the AD
+      carrier manifest names the VM gradient carrier vm-dual-forward.
     caught_by: [coordinator-sweep]
-    missed_by: [run_ad_oracle, run_dense_tensor_ad_gate, doc_audit]
+    missed_by: [run_vm_parity, run_engine_parity_coverage, gate_ad_shared_node_model]
     notes: >-
-      SW-181 resolves a dense node wherever a tensor is READ. Type predicates and
-      the printer ask what the value IS, which is a representation-identity
-      question: the end state ADR-0023 names is a dense AD tensor that is a
-      HEAP_SUBTYPE_TENSOR object carrying its node, so no consumer needs a case.
-      Needs a ruling on that end state before the predicates are changed.
+      Found while closing SW-181 (native). Not a corpus program for SW-181 for
+      this reason: the native fix cannot be held to a VM that answers zero. Needs
+      a ruling: either the VM tensor natives gain the dual carrier (the manifest's
+      own end state), or the parity rows are demoted until they do. Filed
+      SILENT-WRONG because exit 0 with a wrong derivative is that bucket's
+      definition.
   - id: SW-187
     bucket: LOUD-ERROR
     subtag: structural
