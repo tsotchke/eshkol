@@ -4251,6 +4251,85 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: named_differentiand_closure_capture"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # `(gradient f a b ...)` is sugar for the vector point `#(a b ...)`. The parser
+    # built its own node for it, of a kind whose lowering stored 0 for any element
+    # that was not a numeric literal, so a point given as variables was
+    # differentiated at the origin with exit status 0 (SW-182). The form is now
+    # parsed as the vector literal it stands for. Every operator's point is
+    # exercised here. JIT with and without the run cache, and AOT.
+    add_test(
+        NAME gradient_scalar_point_arguments_cached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/gradient_scalar_point_arguments_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(gradient_scalar_point_arguments_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: gradient_scalar_point_arguments"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Invalid type for int64 storage|non-int-storage cell")
+    add_test(
+        NAME gradient_scalar_point_arguments_uncached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/gradient_scalar_point_arguments_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(gradient_scalar_point_arguments_uncached
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: gradient_scalar_point_arguments"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Invalid type for int64 storage|non-int-storage cell")
+    add_test(
+        NAME gradient_scalar_point_arguments_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/gradient_scalar_point_arguments_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/gradient_scalar_point_arguments_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/gradient_scalar_point_arguments_aot'"
+    )
+    set_tests_properties(gradient_scalar_point_arguments_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: gradient_scalar_point_arguments"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Invalid type for int64 storage|non-int-storage cell")
+    # A cons slot is a tagged value. Writing and reading one used to branch over
+    # a closed list of representations that a forward-mode dual number was not
+    # in, so a derivative through map, reduce, apply or a compound accessor with
+    # a lambda capturing the differentiated variable was 0, with a diagnostic on
+    # stderr and exit status 0 (SW-183). A slot is now moved whole
+    # (TaggedValueCodegen::loadConsSlot / storeConsSlot). The diagnostics are
+    # failure patterns because the old behaviour still exited 0.
+    add_test(
+        NAME differentiated_values_in_list_cells_cached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/differentiated_values_in_list_cells_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(differentiated_values_in_list_cells_cached
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: differentiated_values_in_list_cells"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Invalid type for int64 storage|non-int-storage cell")
+    add_test(
+        NAME differentiated_values_in_list_cells_uncached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/differentiated_values_in_list_cells_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(differentiated_values_in_list_cells_uncached
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: differentiated_values_in_list_cells"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Invalid type for int64 storage|non-int-storage cell")
+    add_test(
+        NAME differentiated_values_in_list_cells_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/differentiated_values_in_list_cells_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/differentiated_values_in_list_cells_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/differentiated_values_in_list_cells_aot'"
+    )
+    set_tests_properties(differentiated_values_in_list_cells_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: differentiated_values_in_list_cells"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Invalid type for int64 storage|non-int-storage cell")
     # map and reduce call a statically known procedure directly. map re-resolved
     # a named closure's captures by name at the call site (cross-function IR
     # inside a nested lambda); reduce passed none. map now reads the closure's
