@@ -1360,6 +1360,18 @@ the source changes; the verification record for the tagged commit is the
   `tests/vm_parity/corpus/85_container_slot_store.esk`, and tutorial 11's
   element-mutation example, which now runs unmarked in the documentation
   example gate. (#701)
+- **`signal.fft` transforms complex input on every engine; `fast-convolve`
+  agrees with `convolve` (ledger SW-184).** The module's length-1 base case
+  wrapped any number as `(make-rectangular x 0.0)`, and a complex element is a
+  number, so every transform of a complex input came out all zeros. The module
+  is what the bytecode VM, the precompiled stdlib and an uncached
+  `eshkol-run -r` that requires `signal.fft` run, so on those paths
+  `(ifft (fft x))` returned zeros and so did `fast-convolve`; the native
+  builtin used by AOT and the cached run path was unaffected. The base case
+  now wraps only a real element. `fast-convolve`'s known-limitation text is
+  removed; the defect had been attributed to a shared-library code-generation
+  problem, which it was not. Test: `tests/signal/fft_complex_input_test.esk`
+  on the cached run path, the in-process JIT, AOT and the VM.
 
 - **Exact rationals reach the derivative carrier, a vanishing tangent keeps
   the seed's exactness, the three scalar AD operators nest safely through a
