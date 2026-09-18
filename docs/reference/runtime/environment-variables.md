@@ -18,6 +18,8 @@ including `0`, takes effect — the row says so.
 | `ESHKOL_JIT_CACHE_TRACE` | Print `[jit-cache] <hit\|miss\|bypass>` to stderr. | off |
 | `ESHKOL_JIT_COMPILE_THREADS` | ORC compile-thread count (accepts 1-64). More threads reduce materialization-lock contention (which serializes parallel-map workers) at higher memory cost. | `hardware_concurrency()/2`, clamped to [1,16] |
 | `ESHKOL_JIT_NO_BRANCH26_VENEER` | Disable the arm64 Branch26 range-extension veneer in the JIT linker (escape hatch). | off (veneer on) |
+| `ESHKOL_AOT_MODULE_CACHE_DIR` | Directory of the content-addressed AOT module cache: the reusable object `-c` produces for a single source file, keyed on the source, its transitive dependencies, the compiler, target, options, libraries and object ABI. A directory under `/tmp` or `/private/tmp` is refused with a warning. Not used with `-d`, `-g`, `-i` or `-a`. | `$XDG_CACHE_HOME/eshkol/modules` or `$HOME/.cache/eshkol/modules` (Unix); `%LOCALAPPDATA%\eshkol\modules` (Windows); else `.eshkol-aot-cache/modules` relative to the working directory |
+| `ESHKOL_AOT_MODULE_CACHE_TRACE` | Print `ESH-0089: AOT module cache <hit\|miss> key=<key>` to stderr. Any value other than empty or `0` enables it. | off |
 
 See [JIT internals](jit-internals.md) for details, including cache-key
 invalidation and the stdlib object cache.
@@ -71,10 +73,10 @@ equivalent. A value below a variable's own floor (`ESHKOL_STACK_SIZE`'s is
 1 MiB) falls back to the default silently.
 
 A value that fails to parse at all is **reported, then ignored** (SW-165).
-Every size variable now names itself, the offending value and the accepted
-grammar on stderr before falling back to its default — previously only
-`ESHKOL_STACK_SIZE` did, and a silent fallback left an operator who had set a
-bound believing one was in force when it was not.
+Every size variable names itself, the offending value and the accepted
+grammar on stderr before falling back to its default (since v1.3.5), so an
+operator who set a bound is never left believing one is in force when it is
+not.
 
 **The heap ceiling is a fail-closed contract (SW-165).** With no
 `ESHKOL_MAX_HEAP` set, the default is an accounting reference only: nothing is
@@ -82,9 +84,9 @@ printed and no run is stopped. With one set, crossing it is reported **once**,
 in the unit it was given, and the process exits nonzero without completing — a
 one-shot warning at 80% may precede it, and only for a ceiling that was asked
 for. Under `ESHKOL_ENFORCE_LIMITS=false` the breach is recorded and warned about
-instead. It previously did neither job: the diagnostic repeated for every arena
-block, it fired on the default ceiling nobody had asked for, and the run
-finished with exit 0 regardless.
+instead (since v1.3.5). The diagnostic is not repeated per arena block, it
+never fires on a default ceiling nobody asked for, and a breach under
+enforcement never finishes with exit 0.
 
 | Variable | Effect | Default | Exit status when exceeded |
 |----------|--------|---------|---------------------------|
@@ -252,6 +254,9 @@ See [parallelism & threading](parallelism.md).
 | `ESHKOL_GPU_VERBOSE` | CUDA dispatch logging. Presence-based: any value, including `0`, enables it. The Metal backend ignores this variable; use `ESHKOL_VERBOSE=1` there. | off |
 | `ESHKOL_BLAS_THRESHOLD` | Min size to use the CPU BLAS backend. | 64 |
 | `ESHKOL_XLA_THRESHOLD` | Min size to use the XLA backend. | 100000 |
+| `ESHKOL_SF64_KERNEL` | Metal exact-tier (float64) matmul kernel: `fp53` (fixed-point exact, the default tier-0 kernel), `legacy` or `v2` (software float64), `ozaki` (Ozaki-II exact, for matrices of at least 512 in every dimension), `ozaki-fast` (enables the reduced-precision Ozaki-II fast tier, which falls back to the exact tier on any failure). | fp53 |
+| `ESHKOL_F32_KERNEL` | Metal `fast` tier: `simd` selects the SIMD-group float32 kernel instead of Metal Performance Shaders. | MPS |
+| `ESHKOL_CUDA_LIBRARY_PATH` | Path list (`:`, `;` on Windows) searched first for the CUDA runtime libraries, ahead of `CUDAToolkit_ROOT`, `CUDA_HOME`, `CUDA_PATH`, `LIBRARY_PATH` and `LD_LIBRARY_PATH`. | unset |
 
 More GPU tuning vars (`ESHKOL_GPU_PEAK_GFLOPS`, `ESHKOL_GPU_WAIT_TIMEOUT`,
 `ESHKOL_BLAS_PEAK_GFLOPS`, `ESHKOL_OZAKI_*`) exist for backend benchmarking —
@@ -278,6 +283,7 @@ Resource caps applied to children spawned by [`agent.subprocess`](../agent/subpr
 | `ESHKOL_SUBPROC_MEM_MB` | `RLIMIT_AS` (virtual memory) MB. | 4096 |
 | `ESHKOL_SUBPROC_NOFILE` | `RLIMIT_NOFILE` (file descriptors). | 1024 |
 | `ESHKOL_SUBPROC_NPROC` | `RLIMIT_NPROC` (processes per user). | 512 |
+| `ESHKOL_SUBPROC_MAX_CONCURRENT` | Maximum number of concurrently running spawned children; a spawn beyond it is refused. A value that is not a positive base-10 integer falls back to the default; values above 4096 are clamped to 4096. | 64 |
 
 ## Server & misc
 
@@ -288,6 +294,8 @@ Resource caps applied to children spawned by [`agent.subprocess`](../agent/subpr
 | `ESHKOL_ARENA_POISON` | Poison freed arena memory (debug). See the VM region table above for the accepted-value caveat; set it to exactly `1`. | off |
 | `ESHKOL_ARENA_REPORT` | Set to exactly `1` to print the process-global arena's own byte total once at exit, on stderr, as `[eshkol-arena] global_total_allocated_bytes=N`. Diagnostic only — it changes no allocation behaviour. This is the retention signal `tests/memory/resident_longrun_flat_gate.sh` gates on, because it is deterministic to the byte, whereas peak RSS is a high-water mark of *instantaneous* residency and reads low on a loaded host. | off |
 | `ESHKOL_VM_NO_DISASM` | Suppress the VM disassembly dump in `eshkol-vm-standalone`. | off |
+| `ESHKOL_REGISTRY` | Git URL of the package registry `eshkol-pkg` uses. | the project registry |
+| `ESHKOL_COMPILER` | Compiler `eshkol-pkg build` invokes. | `eshkol-run` |
 | `ESHKOL_DUMP_BC` / `ESHKOL_DUMP_REPL_IR` | Dump bitcode / REPL IR (debug). | off |
 
 ## Compiler and codegen diagnostics
@@ -307,9 +315,14 @@ undocumented.
 | `ESHKOL_AOT_PHASE_TRACE` | Emit per-phase AOT compile tracing. | off |
 | `ESHKOL_PHASE_TIME` | Print per-phase wall-clock timings from `eshkol-run`. | off |
 | `ESHKOL_NODE_IDENTITY_STATS` | Print `eshkol-node-identity: allocated=N queried=N resolved=N located=N extent=N` at process exit. Read by `scripts/run_node_identity_gate.py` (ADR-0000 Stage 1). | off |
-| `ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR` | Directory for executable language-coverage traces. Setting it changes which execution path `eshkol-run` takes, which is the divergence the `module_load_path_engine_parity_gate` pins. | unset |
+| `ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR` | Directory for executable language-coverage traces. When set, native codegen instruments every executed construct and the VM reports its native-dispatch, call and form markers. Each process appends to its own `language-coverage-<pid>.tsv` in the directory, created if absent, and writes each distinct record once. Each instrumented site in generated code owns a guard, so the runtime is entered once per site however often a loop runs it; the VM consults direct-mapped first-sighting tables before entering the runtime. Fork is detected through a `pthread_atfork` child handler, so a forked child writes its own trace stream rather than sharing the parent's buffer. Records are flushed every 256 records and at normal exit, and `emergency-exit` flushes before `_exit`. Setting it also bypasses the `-r` run cache, so `eshkol-run` takes the in-process path; that divergence is what the `module_load_path_engine_parity_gate` pins. | unset |
 | `ESHKOL_LANGUAGE_COVERAGE_HOOK_STATS` | Print `eshkol-language-coverage: exec-hook-entries=N` at process exit: how many times generated code or the VM entered a language-coverage execution hook. Each instrumented site and VM marker is guarded to enter once, so N is bounded by the number of distinct sites, not by iteration counts. Read by `scripts/test_language_coverage_hook_guard.py`. | off |
 | `ESHKOL_DEBUG_DL` | REPL/JIT dynamic-loader debug output. | off |
+| `ESHKOL_DUMP_IR_ON_VERIFY_FAIL` | When LLVM module verification fails, print the whole module to stderr before the error. Presence-based. | off |
+| `ESHKOL_DENSE_TENSOR_AD_NODES` | `0`, `off`, `false` or `no` (any case) makes `matmul`, `tensor-sum` and `tensor-mean` record scalarized tape nodes instead of one dense node each. Gradients are the same either way; `scripts/run_dense_tensor_ad_gate.sh` runs both and compares. | on (dense) |
+| `ESHKOL_AD_STRICT` | Strict AD validation. Read by `eshkol_ad_strict_enabled()` (`lib/core/config.cpp`); any value other than empty, `0`, `false` or `FALSE` sets it. No code path consults the predicate yet, so setting it changes nothing; the intended behaviour is in [ADR-0002](../../design/adr/0002-ad-staged-dense-kernels.md). | off |
+| `ESHKOL_COMMAND_DEFINES` | Set by `eshkol-run` from its `-D NAME[=VALUE]` options (comma separated) so the bytecode-VM compiler and a cold-cache child see the same `cond-expand` features; not intended to be set by hand. | unset |
+| `ESHKOL_TEST_MODEL_IO_FAIL` | Failure-injection point for the atomic model-checkpoint writer. Read only in builds compiled with `ESHKOL_MODEL_IO_TEST_HOOKS` (the model-I/O tests); release binaries do not read it. | unset |
 | `ESHKOL_INTERNAL_CACHE_BUILD` | Set and cleared by `eshkol-run` around its own internal cache build; not intended to be set by hand. | unset |
 | `ESHKOL_LINSOLVE_FORCE_DGESV` | Force `linear-solve` onto the LAPACK `dgesv` path instead of the mixed-precision solver. | off |
 | `ESHKOL_WEIGHTS_OUT` / `ESHKOL_BC` | Output paths for the weight-matrix transformer's QLMW and bytecode artifacts. | unset |
@@ -332,7 +345,56 @@ are the environment overrides for the TOML configuration file; see
 
 `eshkol-run` **writes** `LD_LIBRARY_PATH` and `PATH` when it re-execs a
 compiled artifact. It **reads** `LLVM_HOME` / `LLVM_ROOT` / `LLVM_DIR`,
-`CUDAToolkit_ROOT` / `CUDA_HOME` / `CUDA_PATH`, `LIBRARY_PATH`, and
+`CUDAToolkit_ROOT` / `CUDA_HOME` / `CUDA_PATH` (and, on Windows,
+`ProgramFiles` / `ProgramFiles(x86)` to find an installed CUDA toolkit),
+`LIBRARY_PATH` and `LD_LIBRARY_PATH` for library directories, `XDG_CACHE_HOME`
+and `LOCALAPPDATA` for the run and module cache roots, and
 `HOME` / `USERPROFILE` / `APPDATA` for cache and config locations. The REPL
 honours `NO_COLOR`, `TERM`, `COLORTERM`, `WT_SESSION` and `ANSICON` for colour
-detection.
+detection, and the terminal-capability builtin also reads `LANG` for UTF-8
+support. The system builtins read `TMPDIR`, then `TMP`, then `TEMP` for the
+temporary directory, and `USER` (`USERNAME` on Windows) for the current user.
+
+## Test, gate and release harness variables
+
+Read by the scripts under `scripts/` and `tests/`, not by the compiler or the
+runtime. How the release uses them is in
+[RELEASE_PROCESS.md](../../platform/RELEASE_PROCESS.md).
+
+**Evidence paths.** A relative `TRACE_DIR` or `ICC_TRACE_DIR` is relative to
+the repository root. Every script that reads one from its environment makes it
+absolute before first use (`scripts/lib/evidence_paths.sh`), because producers
+change directory: `ctest --test-dir build --output-junit P` would otherwise
+resolve a relative `P` inside `build/`. The path does not have to exist yet, and
+symlinks are not resolved.
+
+| Variable | Effect | Default |
+|----------|--------|---------|
+| `TRACE_DIR` | Completion-oracle evidence directory the gates write to and read from. | `scripts/icc_traces` |
+| `ICC_TRACE_DIR` | Evidence directory for `scripts/run_language_coverage.sh`; the readiness recipe and the smoke battery export it equal to `TRACE_DIR`. | `scripts/icc_traces` |
+| `ESHKOL_TRACE_DIR`, `ESH0103_TRACE_DIR` | Exported equal to `TRACE_DIR` by the readiness recipe for producers that read these names. | `TRACE_DIR` |
+| `BUILD_DIR` | Build tree the harnesses test; a relative value is read against the repository root. | `build` |
+| `QUANTUM_BUILD_DIR` | Quantum-enabled build tree that complete language coverage uses. | `build-quantum` |
+| `ICC_BIN`, `ICC_REPO` | The ICC binary and the registered repository name the readiness recipe queries. | `icc`, `eshkol_lang` |
+| `ARCH_MODEL`, `ARCH_TRACE_GLOB` | Architecture model graded by `icc architecture-verify`, and the glob of its verification traces read at the readiness step. | `.icc/architecture-model.yaml`, `.icc/runtime-traces-oracle-view/*architecture-model-verify-*.jsonl` |
+| `ESHKOL_RELEASE_PHASE_ID` | Identity binding the split readiness phases together. Required for a single `--phase`; derived from the workflow run id and attempt under GitHub Actions, and generated for a full run. | derived |
+| `ESHKOL_RELEASE_TRACE_ARCHIVE_ROOT` | Where the recipe moves a previous trace cohort, outside the active trace root. | `.scratch/release-readiness-history` |
+| `ESHKOL_RELEASE_SANITIZER_ROOT`, `ESHKOL_RELEASE_SANITIZER_REPORT` | Work directory and report of the release sanitizer corpus run. | under `.scratch/v1-3-readiness/` |
+| `ESHKOL_DURABLE_WORK_ROOT` | Absolute directory for deterministic evidence roots. Each gate claims a fresh child directory and refuses one that already exists, so a run cannot consume earlier evidence. | unset (scratch space) |
+| `ESHKOL_LANGUAGE_COVERAGE_ALREADY_RUN` | `1` stops the smoke battery from re-running language coverage that the baseline phase already produced. | `0` |
+| `ESHKOL_EVIDENCE_MAX_AGE_DAYS` | Staleness window of `scripts/check_evidence_staleness.py` (also `--max-age-days`). | 14 |
+| `ESHKOL_PYTHON_MODULE_DIR` | Directory holding the built `eshkol` Python module; CTest sets it for `python_bindings_capsule_lifetime`. | `build` |
+| `ESHKOL_TEST_TMP_ROOT` | Parent of the per-run scratch directories of the shell suites (`scripts/lib/test_isolation.sh`). | `$TMPDIR` |
+| `ESHKOL_TEST_TMP_MAX_AGE_MIN`, `ESHKOL_TEST_TMP_MAX_DIRS`, `ESHKOL_TEST_TMP_MAX_MB` | Pruning bounds for leftover scratch directories from interrupted runs. | 720, 64, 2048 |
+| `ESHKOL_TEST_KEEP_TMPDIR` | Keep a suite's scratch directory after it exits, for inspection. | off |
+| `ESHKOL_GATE_DISK_CAP_MB` | Disk cap of the long-running memory gates. | 512 or 1024, per gate |
+| `ESHKOL_FUZZ_GATE_LIMIT`, `ESHKOL_FUZZ_FULL` | Corpus size of `scripts/run_sanitizer_fuzz.sh`, and `1` for the full generated and test corpus. | 150, `0` |
+| `ESHKOL_FUZZ_MAX_MB`, `ESHKOL_FUZZ_MAX_GB` | Artifact disk cap of the fuzz run; the MB value wins. | 300 MB |
+| `ESHKOL_RUN_BIN_OVERRIDE`, `ESHKOL_ROSETTE_BUILD_DIR` | Compiler and build tree used by the Rosette Wire oracle. | `BUILD_DIR` |
+| `ESHKOL_HTTP_SERVER_SMOKE_TIMEOUT`, `ESHKOL_REPL_MACHINE_READY_TIMEOUT`, `ESHKOL_REPL_MACHINE_DONE_TIMEOUT` | Timeouts, in seconds, of the HTTP-server smoke and the machine-mode REPL tests. | 120, 120, 30 |
+| `ESHKOL_EDGE_FAILURE_LINES`, `ESHKOL_TEST_FAILURE_LINES` | Lines of a failing test's output the suites print. | 40 |
+
+Variables local to one script (for example the continuation suite's
+`ESHKOL_CONT_*` or the TensorCore integration test's `ESHKOL_TENSORCORE_*`
+paths) are documented in that script's header. Self-hosted runner provisioning
+variables are in [SELF_HOSTED_RUNNERS.md](../../platform/SELF_HOSTED_RUNNERS.md).
