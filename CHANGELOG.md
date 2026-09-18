@@ -1334,6 +1334,25 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **One owner for AST string payloads, one spelling for recorded source paths
+  (ADR-0021).** The sanitizer build of the standard library stopped on
+  LeakSanitizer: module-private renaming replaced identifiers with `new[]`
+  and nothing owned the replacements, and the parser, macro expander, driver
+  and REPL each allocated and freed AST strings their own way. Every AST
+  identifier, literal and synthesized name now comes from one process-rooted
+  arena (`inc/eshkol/frontend/ast_strings.h`) that `eshkol-run` and the REPL
+  release at teardown, no consumer frees an individual string, and two
+  string-only rules left `.icc/lsan-suppressions.txt`. Recorded source paths
+  (the interned file table, diagnostics, the location constants the backend
+  embeds) are normalized at one place (`inc/eshkol/frontend/source_paths.h`)
+  to a repository- or module-relative spelling, so the site WebAssembly
+  module no longer embeds the build machine's absolute path of
+  `lib/core/ad/interval.esk` and a build is reproducible across hosts.
+  Sanitizer builds compile the stdlib under `detect_leaks=1` with the
+  checked-in suppressions in CI and in the release producer alike. Gates:
+  `ast_strings_test`, `source_paths_test`, `ast_string_owner_gate`,
+  `artifact_host_path_gate` (also layer 3 of `scripts/check_disclosure.py`).
+  (#707)
 - **One store boundary for every container slot (ledger SW-179, ADR-0020).**
   A numeric `#(...)` literal is a tensor, and `vector-set!` wrote the payload
   bits of whatever value it was given into the tensor's f64 slot:
