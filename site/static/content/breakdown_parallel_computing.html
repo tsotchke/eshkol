@@ -265,7 +265,7 @@ try {
 <hr />
 <h2 id="12-ad-tape-isolation">12. AD Tape Isolation</h2>
 <h3 id="121-per-thread-tape-stack">12.1 Per-Thread Tape Stack</h3>
-<p>The AD (automatic differentiation) tape state uses <code>thread_local</code> storage in <code>arena_memory.cpp</code> (lines 88–104):</p>
+<p>The AD (automatic differentiation) tape state uses <code>thread_local</code> storage in <code>lib/core/runtime_autodiff.cpp</code> (lines 102–103):</p>
 <pre class="c"><code>#define MAX_TAPE_DEPTH 32
 thread_local ad_tape_t* __ad_tape_stack[MAX_TAPE_DEPTH] = {nullptr};
 thread_local uint64_t __ad_tape_depth = 0;
@@ -284,7 +284,7 @@ thread_local uint64_t __outer_ad_node_depth = 0;</code></pre>
 <h3 id="122-gradient-computation-in-parallel-closures">12.2 Gradient Computation in Parallel Closures</h3>
 <p>When a closure passed to <code>parallel-map</code> contains a <code>gradient</code> call, each worker thread records operations on its own per-thread tape. The LLVM-generated code for <code>gradient</code> pushes a new tape context onto <code>__ad_tape_stack[__ad_tape_depth]</code> (line 3183 in <code>autodiff_codegen.cpp</code>), performs the forward pass with tape recording, then backpropagates and pops the tape. Since <code>__ad_tape_stack</code> and <code>__ad_tape_depth</code> are <code>thread_local</code>, workers operating concurrently on different list elements maintain fully independent tape contexts.</p>
 <h3 id="123-the-__ad_mode_active-global-flag-issue">12.3 The <code>__ad_mode_active</code> Global Flag Issue</h3>
-<p>The tape stack is thread-local, but two critical AD state variables are <strong>not</strong> thread-local – they are plain global variables in <code>arena_memory.cpp</code> (lines 37, 41):</p>
+<p>The tape stack is thread-local, but two critical AD state variables are <strong>not</strong> thread-local – they are plain global variables in <code>lib/core/runtime_autodiff.cpp</code> (lines 26, 30):</p>
 <pre class="c"><code>ad_tape_t* __current_ad_tape = nullptr;   // line 37
 bool __ad_mode_active = false;            // line 41</code></pre>
 <p>The comment at line 35 explains why: “Not thread_local because REPL JIT resolves these via dlsym/ADD_DATA_SYMBOL.” In REPL mode, <code>__ad_mode_active</code> must be visible across multiple JIT-compiled modules so that lambdas from one module can observe AD mode set by another (line 400 in <code>repl_jit.cpp</code>).</p>
@@ -349,7 +349,7 @@ bool __ad_mode_active = false;            // line 41</code></pre>
 <li>The codegen path that submits tasks to the thread pool (<code>parallelMap</code> in <code>lib/backend/parallel_llvm_codegen.cpp</code> §1437) was gated behind a default-off environment flag. The fallback was a sequential inlined loop (<code>parallelMapSequentialInline</code>, line 1527), so <code>parallel-map</code> was functionally indistinguishable from <code>map</code>.</li>
 <li>When <code>ESHKOL_PARALLEL_ENABLE=1</code> was set, AOT workers crashed with <code>+: operand is not a number, vector, or tensor</code>. Profiler traces on a 24-core M2 Max showed 100% of worker time inside <code>llvm::orc::MaterializationTask::run</code> — superficially indicating ORC compile contention, but actually a symptom of the next layer.</li>
 </ol>
-<p>The root cause was at the C/LLVM task-boundary in <code>parallel_codegen.cpp</code> §<code>llvm_parallel_map_task</code> and the matching reconstruction in <code>parallel_llvm_codegen.cpp</code> §<code>generateMapWorker</code>. The C-side struct decomposes each tagged value into i64 fields, so no aggregate crosses the C/LLVM boundary. The old code packed only the <code>type</code> byte (low 8 bits of <code>item_type i64</code>) and the worker reconstructed the tagged value with <code>flags = 0</code> hardcoded. For an integer item like <code>'(1 2 3 4 5)</code>, that produced <code>{type=INT64, flags=0}</code> at the worker — losing <code>ESHKOL_VALUE_EXACT_FLAG = 0x10</code> which the arithmetic-dispatch path checks to decide INT64-fast versus bignum-or-double-fallback. With <code>flags=0</code>, arithmetic on the worker mis-dispatched into the bignum path, which then triggered ORC materialization of bignum runtime helpers and crashed when the supposed bignum pointer was actually a small immediate integer.</p>
+<p>The root cause was at the C/LLVM task-boundary in <code>parallel_codegen.cpp</code> §<code>eshkol_parallel_map_task</code> and the matching reconstruction in <code>parallel_llvm_codegen.cpp</code> §<code>generateMapWorker</code>. The C-side struct decomposes each tagged value into i64 fields, so no aggregate crosses the C/LLVM boundary. The old code packed only the <code>type</code> byte (low 8 bits of <code>item_type i64</code>) and the worker reconstructed the tagged value with <code>flags = 0</code> hardcoded. For an integer item like <code>'(1 2 3 4 5)</code>, that produced <code>{type=INT64, flags=0}</code> at the worker — losing <code>ESHKOL_VALUE_EXACT_FLAG = 0x10</code> which the arithmetic-dispatch path checks to decide INT64-fast versus bignum-or-double-fallback. With <code>flags=0</code>, arithmetic on the worker mis-dispatched into the bignum path, which then triggered ORC materialization of bignum runtime helpers and crashed when the supposed bignum pointer was actually a small immediate integer.</p>
 <p>The fix repacks both bytes into <code>item_type i64</code>:</p>
 <pre><code>bits  0..7  : type  (eshkol_value_type_t)
 bits  8..15 : flags (EXACT_FLAG=0x10, INEXACT_FLAG=0x20, ...)
@@ -366,7 +366,7 @@ llvm::Value* item_flags = ctx_.builder().CreateTrunc(
     ctx_.int8Type(), &quot;item_flags&quot;);
 item = ctx_.builder().CreateInsertValue(item, item_flags, {1});     // flags
 item = ctx_.builder().CreateInsertValue(item, item_data, {4});      // data</code></pre>
-<p>The same <code>{type, flags}</code> packing is now used for <code>parallel_fold_task</code> (<code>arg1_type</code>, <code>arg2_type</code> — see <code>parallel_llvm_codegen.cpp</code> §<code>generateFoldWorker</code> lines 978–1000) and <code>parallel_filter_task</code> (lines 1097–1107).</p>
+<p>The same <code>{type, flags}</code> packing is now used for <code>parallel_fold_task</code> (<code>arg1_type</code>, <code>arg2_type</code> — see <code>parallel_llvm_codegen.cpp</code> §<code>generateFoldWorker</code> lines 621–738) and the filter worker, which reuses the map-task layout (§<code>generateFilterWorker</code>, lines 745–841).</p>
 <p>With the flags-byte issue fixed, the default at the codegen gate was flipped from opt-in to default-on. The current gate in <code>parallel_llvm_codegen.cpp</code> §1493–1497 is:</p>
 <pre class="cpp"><code>const char* enable_env = std::getenv(&quot;ESHKOL_PARALLEL_ENABLE&quot;);
 const char* disable_env = std::getenv(&quot;ESHKOL_PARALLEL_DISABLE&quot;);

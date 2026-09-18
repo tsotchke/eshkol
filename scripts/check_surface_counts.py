@@ -587,14 +587,36 @@ def check_release_doc(doc_rel: str, record: dict, *, mirror: bool = False) -> tu
 
 
 def site_mirrors() -> list[str]:
-    """Generated HTML pages whose Markdown source is a registered release doc."""
-    sources = {os.path.splitext(os.path.basename(d))[0].lower() for d in RELEASE_DOCS}
+    """Generated HTML pages whose Markdown source is a registered release doc.
+
+    The page manifest (site/pages.json) maps each generated page to its source
+    file, so a page is graded whenever its source is a registered release doc,
+    whatever slug the site gives it. Pages without a manifest entry fall back
+    to matching the source basename, which is how the manifest-less site worked.
+    """
+    sources = {os.path.normpath(d).replace(os.sep, "/") for d in RELEASE_DOCS}
+    basenames = {os.path.splitext(os.path.basename(d))[0].lower() for d in RELEASE_DOCS}
     root = os.path.join(REPO_ROOT, SITE_MIRROR_DIR)
     if not os.path.isdir(root):
         return []
-    return sorted(os.path.join(SITE_MIRROR_DIR, name).replace(os.sep, "/")
-                  for name in os.listdir(root)
-                  if name.endswith(".html") and os.path.splitext(name)[0] in sources)
+    manifest = os.path.join(REPO_ROOT, "site", "pages.json")
+    by_slug: dict[str, str] = {}
+    if os.path.isfile(manifest):
+        with open(manifest, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        for entry in data.get("pages", data if isinstance(data, list) else []):
+            slug, src = entry.get("slug"), entry.get("file") or entry.get("source")
+            if slug and src:
+                by_slug[slug] = os.path.normpath(src).replace(os.sep, "/")
+    mirrors = []
+    for name in os.listdir(root):
+        if not name.endswith(".html"):
+            continue
+        slug = os.path.splitext(name)[0]
+        src = by_slug.get(slug)
+        if (src in sources) or (src is None and slug in basenames):
+            mirrors.append(os.path.join(SITE_MIRROR_DIR, name).replace(os.sep, "/"))
+    return sorted(mirrors)
 
 
 def apply_edits(edits: list[dict]) -> list[str]:

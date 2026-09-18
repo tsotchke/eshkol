@@ -25,10 +25,13 @@
 <li><a href="/docs#page=breakdown_type_system&amp;synthesis-mode" data-url="/content/breakdown_type_system.html">Synthesis Mode</a></li>
 <li><a href="/docs#page=breakdown_type_system&amp;checking-mode" data-url="/content/breakdown_type_system.html">Checking Mode</a></li>
 <li><a href="/docs#page=breakdown_type_system&amp;constraint-generation-and-unification" data-url="/content/breakdown_type_system.html">Constraint Generation and Unification</a></li>
+<li><a href="/docs#page=breakdown_type_system&amp;which-forms-are-synthesized" data-url="/content/breakdown_type_system.html">Which Forms Are Synthesized</a></li>
+<li><a href="/docs#page=breakdown_type_system&amp;inferred-slots-loop-parameters-and-recursive-results" data-url="/content/breakdown_type_system.html">Inferred Slots: Loop Parameters and Recursive Results</a></li>
 </ul></li>
 <li><a href="/docs#page=breakdown_type_system&amp;gradual-typing-semantics" data-url="/content/breakdown_type_system.html">Gradual Typing Semantics</a>
 <ul>
 <li><a href="/docs#page=breakdown_type_system&amp;consistency-relation" data-url="/content/breakdown_type_system.html">Consistency Relation</a></li>
+<li><a href="/docs#page=breakdown_type_system&amp;the-type-relation" data-url="/content/breakdown_type_system.html">The Type Relation</a></li>
 <li><a href="/docs#page=breakdown_type_system&amp;cast-insertion" data-url="/content/breakdown_type_system.html">Cast Insertion</a></li>
 <li><a href="/docs#page=breakdown_type_system&amp;practical-implications" data-url="/content/breakdown_type_system.html">Practical Implications</a></li>
 </ul></li>
@@ -661,7 +664,7 @@ nothing                  ; Bottom type (uninhabited)
     Γ ⊢ e ⇒ A      A ~ B
     ─────────────────────── (Chk-Subsumption)
          Γ ⊢ e ⇐ B</code></pre>
-<p>The subsumption rule uses the <strong>consistency relation</strong> <code>~</code> from gradual typing (see below), not strict equality. This allows typed and untyped code to interoperate seamlessly.</p>
+<p>The subsumption rule uses <strong>consistent subtyping</strong> from gradual typing (see <a href="/docs#page=breakdown_type_system&amp;the-type-relation" data-url="/content/breakdown_type_system.html">The Type Relation</a> below), not strict equality. This allows typed and untyped code to interoperate seamlessly. Arguments, return annotations, branch results and <code>the</code> ascriptions all go through the same judgment, so a type that fits in one position fits in the others.</p>
 <h3 id="constraint-generation-and-unification">Constraint Generation and Unification</h3>
 <p>The type checker processes the AST in a single pass, generating constraints and solving them via <strong>unification</strong>:</p>
 <ol type="1">
@@ -670,7 +673,88 @@ nothing                  ; Bottom type (uninhabited)
 <li><p><strong>Subtype resolution</strong> — Subtype constraints use the type hierarchy: <code>Integer &lt;: Number</code>, <code>Number &lt;: Value</code>, etc. The type environment caches subtype judgments in a <code>map&lt;(sub_id, super_id), bool&gt;</code> for O(1) amortized lookup.</p></li>
 <li><p><strong>Error reporting</strong> — When unification fails, the checker emits a <strong>warning</strong> (not an error) with diagnostic context: expected type, actual type, source location, and a suggested fix. The program compiles regardless.</p></li>
 </ol>
-<p><strong>Implementation:</strong> The <code>Context</code> class (<a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer">type_checker.cpp</a>) maintains a scope stack for lexical scoping, type aliases from <code>define-type</code>, and tracks the current checking mode. Each AST node is processed by <code>checkExpression</code> (checking mode) or <code>synthesizeExpression</code> (synthesis mode).</p>
+<p><strong>Implementation:</strong> The <code>Context</code> class (<a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer">type_checker.cpp</a>) maintains a scope stack for lexical scoping, type aliases from <code>define-type</code>, and tracks the current checking mode. Each AST node is processed by <code>TypeChecker::check</code> (checking mode) or <code>TypeChecker::synthesize</code> (synthesis mode).</p>
+<h3 id="which-forms-are-synthesized">Which Forms Are Synthesized</h3>
+<p>The checker synthesizes <strong>every evaluated subexpression of every form it receives</strong> (since v1.3.5). A call is therefore checked against its callee’s annotations wherever it is written: inside a <code>cond</code> clause, a <code>do</code> step, a <code>guard</code> handler or a quasiquote escape exactly as at top level.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Group</th>
+<th>Operations</th>
+<th>What is synthesized</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sequencing and binding</td>
+<td><code>SEQUENCE</code>, <code>DEFINE</code>, <code>LET</code>, <code>LET*</code>, <code>LETREC</code>, <code>LETREC*</code>, <code>LAMBDA</code>, <code>SET</code></td>
+<td>every expression of a body, not only the last; every initialiser; the assigned value</td>
+</tr>
+<tr>
+<td>Conditionals</td>
+<td><code>IF</code>, <code>COND</code>, <code>CASE</code>, <code>MATCH</code>, <code>WHEN</code>, <code>UNLESS</code>, <code>AND</code>, <code>OR</code></td>
+<td>tests, keys, the scrutinee, every branch body, every operand</td>
+</tr>
+<tr>
+<td>Iteration</td>
+<td><code>DO</code>, named <code>let</code></td>
+<td>initialisers, steps, test, result and body</td>
+</tr>
+<tr>
+<td>Control transfer</td>
+<td><code>GUARD</code>, <code>RAISE</code>, <code>CALL_CC</code>, <code>DYNAMIC_WIND</code></td>
+<td>body, handler clauses, the raised operand, the procedure and all three thunks</td>
+</tr>
+<tr>
+<td>Multiple values</td>
+<td><code>VALUES</code>, <code>CALL_WITH_VALUES</code>, <code>LET_VALUES</code>, <code>LET_STAR_VALUES</code></td>
+<td>operands, producer, consumer and body</td>
+</tr>
+<tr>
+<td>Quotation</td>
+<td><code>QUASIQUOTE</code>, <code>UNQUOTE</code>, <code>UNQUOTE_SPLICING</code></td>
+<td>escapes only, tracked by nesting level; quoted data is not evaluated</td>
+</tr>
+<tr>
+<td>Ownership and regions</td>
+<td><code>WITH_REGION</code>, <code>BORROW</code>, <code>OWNED</code>, <code>MOVE</code>, <code>SHARED</code>, <code>WEAK_REF</code></td>
+<td>the body or operand</td>
+</tr>
+<tr>
+<td>Calculus</td>
+<td><code>DERIVATIVE</code>, <code>GRADIENT</code>, <code>JACOBIAN</code>, <code>HESSIAN</code>, <code>DIVERGENCE</code>, <code>CURL</code>, <code>LAPLACIAN</code>, <code>DIRECTIONAL_DERIV</code>, <code>TAYLOR</code>, <code>DERIVATIVE_N</code></td>
+<td>the function, the point, the direction and the order</td>
+</tr>
+<tr>
+<td>Calls and data</td>
+<td><code>CALL</code> (including a computed callee), <code>THE</code>, <code>TENSOR</code>, arithmetic with more than two operands, the logic, workspace and memory-machine primitives, <code>MAKE_PARAMETER</code></td>
+<td>the callee expression, every argument, every element</td>
+</tr>
+</tbody>
+</table>
+<p>Forms with no evaluated subexpression reach the checker as declarations or data (<code>QUOTE</code>, <code>EXTERN</code>, <code>DEFINE_SYNTAX</code>, <code>DEFINE_TYPE</code>, <code>IMPORT</code>, <code>REQUIRE</code>, <code>PROVIDE</code>, …), or never reach it because the parser lowers them first: <code>case-lambda</code> to a lambda, <code>define-record-type</code> to defines, <code>parameterize</code> to <code>let</code> plus <code>dynamic-wind</code>, <code>delay</code> to a call on a lambda, <code>receive</code> and <code>define-values</code> to <code>call-with-values</code>. The expression of <code>diff</code> is differentiated symbolically, not evaluated, and is left alone.</p>
+<p>The typing rules for the multi-branch forms:</p>
+<ul>
+<li><strong>Scope.</strong> Clause tests are expressions. Each branch body is checked in its own scope, so backward inference inside one branch cannot narrow an enclosing function’s parameter. <code>cond</code>, <code>when</code> and the later operands of <code>and</code> see their test’s predicate refinements, as <code>if</code> does. Linear-usage counters take the maximum over mutually exclusive branches.</li>
+<li><strong>Result.</strong> The result is the join of the branch types, plus the value the form yields when no branch runs: <code>#f</code> for <code>cond</code>, <code>case</code>, <code>when</code> and <code>unless</code>. <code>match</code> raises and <code>guard</code> re-raises, so they add nothing. A branch that cannot be typed contributes <code>Value</code> and does not fail the form. <code>and</code> yields the join of <code>Boolean</code> with its last operand; <code>or</code> yields the join of its operands. <code>dynamic-wind</code> and <code>call-with-values</code> yield their thunk’s or consumer’s codomain; <code>with-region</code> and <code>borrow</code> yield their body’s type.</li>
+<li><strong>Bound variables.</strong> A <code>match</code> variable at the top of a pattern has the scrutinee’s type; <code>(? pred name)</code> gives <code>name</code> the type a narrowing predicate proves. Variables inside cons, list and or patterns, a <code>guard</code> condition variable and <code>let-values</code> variables are <code>Value</code>.</li>
+<li><strong>Calculus operators.</strong> An operator applied at a point yields <code>Value</code>; without a point it yields a function.</li>
+</ul>
+<h3 id="inferred-slots-loop-parameters-and-recursive-results">Inferred Slots: Loop Parameters and Recursive Results</h3>
+<p>A named <code>let</code> binds a procedure whose parameters carry no annotation. Each parameter is an <strong>inferred slot</strong>: its type is the least common supertype of its seed and of every argument passed to it at a call that resolves to that loop’s own binding (same scope index and bound type, so an inner binding that shadows the name does not count). The checker finds it by iterating to a fixpoint over the body:</p>
+<ol type="1">
+<li>Check the body with diagnostics held back.</li>
+<li>If the pass widened a slot, roll back its diagnostics, recorded errors, linearity count and linear-usage counters, and check again.</li>
+<li>The pass that widens nothing is the real check; its diagnostics are emitted.</li>
+</ol>
+<p>A slot only moves strictly up its finite supertype chain, so the iteration terminates. The <code>InferenceSlot</code> policy refuses a join that reaches <code>Value</code>: the slot keeps its type and the offending argument is reported, as in <code>(loop "three")</code> for a slot seeded with <code>0</code>. The one exception is a <code>Boolean</code> slot, because <code>#f</code> is Scheme’s “nothing yet”: a flag-or-value slot widens to <code>Value</code>. Annotated and linear parameters are contracts and are never widened.</p>
+<p>A <code>do</code> variable uses the <code>AdoptTop</code> policy: it is the fixpoint join of its initialiser and its step, and adopts the join even at <code>Value</code>, because a step is an assignment and not an argument check.</p>
+<p>A recursive procedure’s <strong>result</strong> is inferred the same way, as the least fixpoint over its own calls: the first pass types a recursive call as <code>Never</code>, which a join ignores, and later passes check against the inferred result. This covers a named <code>let</code> under <code>if</code> or <code>cond</code>, a function <code>define</code>, an internal <code>define</code> and non-tail recursion.</p>
 <hr />
 <h2 id="gradual-typing-semantics">Gradual Typing Semantics</h2>
 <p>Eshkol implements <strong>gradual typing</strong> (Siek &amp; Taha, 2006), where type annotations are optional and type mismatches produce warnings rather than errors. This design enables rapid prototyping with progressive type safety.</p>
@@ -688,6 +772,70 @@ nothing                  ; Bottom type (uninhabited)
 </ul></li>
 </ol>
 <p>Consistency is <strong>reflexive</strong> and <strong>symmetric</strong> but <strong>not transitive</strong> — this is the key difference from subtyping that makes gradual typing work.</p>
+<h3 id="the-type-relation">The Type Relation</h3>
+<p>One module owns every judgment over types: <code>TypeRelation</code> (<a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/types/type_relation.h" target="_blank" rel="noopener noreferrer">type_relation.h</a>, <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_relation.cpp" target="_blank" rel="noopener noreferrer">type_relation.cpp</a>), decided in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0013-gradual-type-relation.md" target="_blank" rel="noopener noreferrer">ADR 0013</a>. It is a lightweight view over the interned types of one <code>TypeEnvironment</code>; the checker constructs it wherever it needs a judgment. <code>TypeEnvironment</code> keeps small facades for static subtyping, join and printing that delegate to it and contain no rules of their own.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Judgment</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>isSubtype(sub, super)</code></td>
+<td>Static subtyping. <code>Never</code> is bottom and <code>Value</code> is top. An unresolved type carries no evidence for a static judgment.</td>
+</tr>
+<tr>
+<td><code>isConsistent(a, b)</code></td>
+<td>Gradual consistency. <code>Value</code> and an unresolved type are consistent with every type. Function types are compared component by component.</td>
+</tr>
+<tr>
+<td><code>isConsistentSubtype(sub, super)</code></td>
+<td>The judgment used at arguments and return annotations: subtyping in which every dynamic component is acceptable.</td>
+</tr>
+<tr>
+<td><code>compatibility(from, to)</code></td>
+<td>The evidence for a flow: <code>Identity</code>, <code>Upcast</code> (static subtype, no runtime work), <code>Dynamic</code> (consistent only through <code>Value</code>: a checked cast), <code>Numeric</code> (both in the numeric tower) or <code>Incompatible</code>. <code>accepts</code> is everything but <code>Incompatible</code>.</td>
+</tr>
+<tr>
+<td><code>castable(actual, ascribed)</code></td>
+<td>The rule for <code>(the T expr)</code>: accepted whenever the two types can overlap. Callable types are mutually castable.</td>
+</tr>
+<tr>
+<td><code>join</code>, <code>joinAll</code>, <code>meet</code></td>
+<td>The lattice. Joins and meets recurse through unions, pairs and function types, then use the nominal graph. <code>Never</code> is the join identity; disjoint concrete types meet at <code>Never</code>.</td>
+</tr>
+<tr>
+<td><code>narrow(current, proven)</code></td>
+<td>Occurrence typing: the type of a variable inside a branch guarded by a predicate.</td>
+</tr>
+<tr>
+<td><code>widen(slot, incoming, policy)</code></td>
+<td>How an inferred slot absorbs an incoming type, under the <code>InferenceSlot</code> or <code>AdoptTop</code> policy described above.</td>
+</tr>
+<tr>
+<td><code>pairProjection(pair, side)</code></td>
+<td>The type of <code>car</code> or <code>cdr</code> of a pair type. <code>cdr</code> of a value not known to be a pair is <code>Value</code>.</td>
+</tr>
+<tr>
+<td><code>print(type)</code></td>
+<td>The spelling used in every diagnostic.</td>
+</tr>
+</tbody>
+</table>
+<p>Structural rules:</p>
+<ul>
+<li><strong>Function types</strong> are contravariant in their parameters and covariant in their result. <code>(-&gt; Int64 Number)</code> does not fit <code>(-&gt; Number Number)</code>; <code>(-&gt; Number Int64)</code> does. A different number of parameters never fits. A dynamic parameter or result stays acceptable inside a signature, so an unannotated lambda fits any function type of its arity. <code>Function</code> (the annotation <code>procedure</code>) is the top of the function types.</li>
+<li><strong>Pair components</strong> are covariant. A fully dynamic pair prints as <code>Pair</code>; a tracked one as <code>Pair&lt;A, B&gt;</code>.</li>
+<li><strong>Unions.</strong> A type fits a union if it fits one arm; a union fits a target if every arm does.</li>
+<li><strong>Branches.</strong> Every branch-producing form uses the same <code>join</code>, so <code>if</code> and the equivalent <code>cond</code> have the same type. Branches with no more specific representable common type produce <code>Value</code>.</li>
+</ul>
+<p>Diagnostics use the relation printer, so a function signature prints as its arrow (<code>(-&gt; Number Int64)</code>, <code>(-&gt; String ... Value)</code> for a variadic procedure) and the generic procedure type prints as <code>Function</code>. The user-facing account of these rules, with runnable examples, is <a href="/docs#page=guide_gradual_typing" data-url="/content/guide_gradual_typing.html">the gradual typing guide</a>.</p>
 <h3 id="cast-insertion">Cast Insertion</h3>
 <p>At type boundaries (where typed code meets untyped code), the compiler conceptually inserts <strong>runtime casts</strong>. In Eshkol, these casts are trivially satisfied by the tagged value system: every value already carries its type tag at runtime, so “casting” is simply a runtime type check.</p>
 <pre class="scheme"><code>;; Typed function
@@ -1754,7 +1902,23 @@ bool is_port = (type_tag == ESHKOL_VALUE_HEAP_PTR);  // BUG</code></pre>
 </tr>
 <tr>
 <td><code>lib/types/type_checker.cpp</code></td>
-<td>Type checker implementation: synthesis mode, checking mode, constraint generation, unification</td>
+<td>Type checker implementation: synthesis mode, checking mode, synthesis of every control form, inferred-slot fixpoints, constraint generation, unification</td>
+</tr>
+<tr>
+<td><code>inc/eshkol/types/type_relation.h</code></td>
+<td>The gradual type relation: subtyping, consistency, consistent subtyping, flow evidence, casts, join and meet, narrowing, slot widening, pair projection, printing</td>
+</tr>
+<tr>
+<td><code>lib/types/type_relation.cpp</code></td>
+<td>Type relation implementation</td>
+</tr>
+<tr>
+<td><code>tests/types/type_relation_test.cpp</code></td>
+<td>Direct contract for the relation: arrow variance, dynamic components, disjoint joins and meets, pair covariance, printing, both widening policies</td>
+</tr>
+<tr>
+<td><code>tests/typesystem/</code></td>
+<td>Scheme fixtures in accept/reject pairs for every control form, branch joins, return annotations, arrow subtyping, loop-parameter widening and recursive results (<code>scripts/run_typesystem_tests.sh</code>)</td>
 </tr>
 </tbody>
 </table>
@@ -1786,6 +1950,8 @@ bool is_port = (type_tag == ESHKOL_VALUE_HEAP_PTR);  // BUG</code></pre>
 <li><a href="/docs#page=breakdown_memory_management" data-url="/content/breakdown_memory_management.html">Memory Management (OALR System)</a> — Arena allocation, object headers, lifetimes</li>
 <li><a href="/docs#page=breakdown_vector_operations" data-url="/content/breakdown_vector_operations.html">Vector Operations</a> — Scheme vectors vs. tensors, heterogeneous vs. homogeneous</li>
 <li><a href="/docs#page=breakdown_autodiff" data-url="/content/breakdown_autodiff.html">Automatic Differentiation</a> — Dual numbers, AD nodes, computational graphs</li>
+<li><a href="/docs#page=guide_gradual_typing" data-url="/content/guide_gradual_typing.html">Gradual typing guide</a> — Annotations, what is checked where, function types, branch joins, loop typing, reading a diagnostic</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0013-gradual-type-relation.md" target="_blank" rel="noopener noreferrer">ADR 0013 — One gradual type relation</a></li>
 <li><a href="/docs#page=breakdown_compiler_architecture" data-url="/content/breakdown_compiler_architecture.html">Compiler Architecture</a> — Type checking pipeline, LLVM codegen</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/EXACT_ARITHMETIC.md" target="_blank" rel="noopener noreferrer">Exact Arithmetic</a> — Bignums, rationals, numeric tower implementation</li>
 <li><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a> — Complete function reference with types</li>

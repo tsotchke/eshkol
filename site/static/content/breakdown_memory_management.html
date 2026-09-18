@@ -699,7 +699,7 @@ tls_arena_size = pool-&gt;thread_arena_size;  // from config, default 1MB</code>
 <p>The current parallel primitives (<code>parallel-map</code>, <code>parallel-filter</code>, <code>parallel-fold</code>, <code>parallel-for-each</code>, <code>parallel-execute</code>) do <strong>not</strong> use per-thread arenas for task execution. Instead, the architecture works as follows:</p>
 <ol type="1">
 <li><p><strong>Task decomposition</strong> happens on the main thread. The input Scheme list is converted to a <code>std::vector&lt;eshkol_tagged_value_t&gt;</code> (heap-allocated via the C++ allocator, not the arena).</p></li>
-<li><p><strong>Task structs</strong> (<code>llvm_parallel_map_task</code>) are allocated in a <code>std::vector</code> on the main thread’s stack/heap. Each task contains decomposed i64 fields (closure pointer, item type, item data, result pointer) – no tagged value structs cross the C/LLVM boundary.</p></li>
+<li><p><strong>Task structs</strong> (<code>eshkol_parallel_map_task</code>) are allocated in a <code>std::vector</code> on the main thread’s stack/heap. Each task contains decomposed i64 fields (closure pointer, item type, item data, result pointer) – no tagged value structs cross the C/LLVM boundary.</p></li>
 <li><p><strong>Workers</strong> execute LLVM-generated functions (<code>__parallel_map_worker</code>, etc.) that reconstruct tagged values in pure LLVM IR and call the closure dispatcher. The worker writes its result via a pointer to a pre-allocated result slot in the main thread’s <code>results</code> vector.</p></li>
 <li><p><strong>Result marshaling</strong> back to the main thread uses <code>vector_to_list(results, arena)</code>, which allocates cons cells in the <strong>main thread’s arena</strong> (the global arena passed to the parallel function).</p></li>
 </ol>
@@ -826,7 +826,7 @@ Check g_buffer_pool[bucket] for available buffer
 <h2 id="platform-specific-abi-considerations">Platform-Specific ABI Considerations</h2>
 <p>Eshkol’s runtime passes <code>eshkol_tagged_value_t</code> (a 16-byte struct) across function boundaries in several places. Platform ABIs differ in how they handle 16-byte aggregate return values and aggregate parameters, which required explicit platform dispatch in two functions.</p>
 <h3 id="arm64-thunk-calling-convention-call_thunk_closure">ARM64 Thunk Calling Convention (<code>call_thunk_closure</code>)</h3>
-<p><strong>File:</strong> <code>lib/core/arena_memory.cpp</code></p>
+<p><strong>File:</strong> <code>lib/core/runtime_continuations.cpp</code></p>
 <p>Dynamic-wind and <code>call/cc</code> thunks are zero-argument closures invoked through a trampoline (<code>call_thunk_closure</code>). The trampoline bridges a typed function pointer (stored as <code>void*</code> in the closure) back to a call returning <code>eshkol_tagged_value_t</code>.</p>
 <p>The problem: the two dominant ABI families handle 16-byte aggregate return differently. - <strong>x86-64 (System V) and Windows x64</strong>: The caller passes a hidden first argument — a pointer to the caller’s return slot. The function writes the return value there and returns <code>void</code>. - <strong>AArch64</strong>: Returns the 16-byte struct directly in register pairs (<code>x0:x1</code>). No hidden buffer is passed.</p>
 <p>Without the fix, ARM64 would treat the caller-provided hidden buffer pointer as the first data argument, shifting all real arguments by one slot and corrupting the return value.</p>
@@ -846,7 +846,7 @@ Check g_buffer_pool[bucket] for available buffer
 #endif</code></pre>
 <p><code>call_thunk_closure</code> is used by <code>call_thunk_from_tagged</code> (line ~3975) which is called during <code>call/cc</code> continuation unwinding and dynamic-wind before/after thunk invocation. See also <a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/CONTINUATIONS.md" target="_blank" rel="noopener noreferrer">CONTINUATIONS.md</a> for the call/cc and dynamic-wind implementation that depends on this trampoline.</p>
 <h3 id="windows-x64-struct-by-value-parameter-fix-region_escape_tagged_value_into">Windows x64 Struct-by-Value Parameter Fix (<code>region_escape_tagged_value_into</code>)</h3>
-<p><strong>File:</strong> <code>lib/core/arena_memory.cpp</code></p>
+<p><strong>File:</strong> <code>lib/core/runtime_regions.cpp</code></p>
 <p>The Windows x64 ABI requires that structs larger than 8 bytes be passed by pointer, not by value. <code>region_escape_tagged_value_into</code> previously took <code>eshkol_tagged_value_t val</code> by value (16 bytes), violating this convention and causing misaligned stack frames on Windows.</p>
 <p>The fix changes the signature:</p>
 <pre class="c"><code>// Before:
@@ -883,10 +883,10 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_object_header_t) == 8,
 <p>Total: 8 bytes, statically asserted. The header is prepended to every heap-allocated object; the data pointer returned by <code>arena_allocate_with_header</code> points to the byte immediately after the header. <code>ESHKOL_GET_HEADER(data_ptr)</code> in §446 is the macro that walks backwards by <code>sizeof(eshkol_object_header_t)</code> to recover the header pointer.</p>
 <p>The 4-byte <code>size</code> field caps the maximum single-object data size at <code>UINT32_MAX</code> = 4 GiB − 1 (see “Allocation Hardening” below). The <code>ref_count</code> is <code>uint16_t</code>, so 65 535 shared references is the upper bound before saturation. The <code>flags</code> byte is a bitfield of <code>ESHKOL_OBJ_FLAG_*</code> constants (§315–319): MARKED, LINEAR, BORROWED, CONSUMED, SHARED, WEAK, PINNED, EXTERNAL.</p>
 <h3 id="arena-block-size-1024-byte-floor-8192-byte-default">Arena Block Size: 1024-Byte Floor, 8192-Byte Default</h3>
-<p><code>arena_create</code> (<code>lib/core/arena_memory.cpp</code> §169–195) enforces a minimum block size of 1024 bytes. The common case is <code>arena_create(8192)</code> from <code>Arena</code> (the C++ wrapper, §2417). The REPL shared arena passes 8192 as well. Per-thread worker arenas pass 1 MB. The global arena and per-thread arenas are <em>not</em> a fixed size — the field is <code>default_block_size</code>, applied when a <em>new</em> block needs to be allocated. The initial block is created at arena creation time.</p>
+<p><code>arena_create</code> (<code>lib/core/runtime_arena_core.cpp</code> §113–145) enforces a minimum block size of 1024 bytes. The common case is <code>arena_create(8192)</code> from <code>Arena</code> (the C++ wrapper, §2417). The REPL shared arena passes 8192 as well. Per-thread worker arenas pass 1 MB. The global arena and per-thread arenas are <em>not</em> a fixed size — the field is <code>default_block_size</code>, applied when a <em>new</em> block needs to be allocated. The initial block is created at arena creation time.</p>
 <p>When the current block cannot satisfy an allocation, <code>arena_allocate_aligned</code> (§290–339) allocates a new block sized <code>max(aligned_size, arena-&gt;default_block_size)</code> and links it at the head of the singly-linked block chain. Old blocks remain reachable for the arena’s lifetime (until <code>arena_reset</code> or <code>arena_destroy</code>).</p>
 <h3 id="allocation-hardening-size_max-and-uint32_max-guards">Allocation Hardening: SIZE_MAX and UINT32_MAX Guards</h3>
-<p><code>arena_allocate_with_header</code> (<code>lib/core/arena_memory.cpp</code> §358–403) guards against two integer-overflow classes flagged in docs/HARDENING.md §192:</p>
+<p><code>arena_allocate_with_header</code> (<code>lib/core/runtime_object_alloc.cpp</code> §20–62) guards against two integer-overflow classes flagged in docs/HARDENING.md §192:</p>
 <pre class="c"><code>// #192 CRITICAL: total_size overflow if data_size is near SIZE_MAX
 if (data_size &gt; SIZE_MAX - sizeof(eshkol_object_header_t) - 8) {
     eshkol_error(&quot;arena_allocate_with_header: data_size=%zu would overflow&quot;, data_size);
@@ -901,7 +901,7 @@ if (data_size &gt; UINT32_MAX) {
 }</code></pre>
 <p>The first check prevents wrap-around: <code>data_size + sizeof(header) + 8</code> must not exceed <code>SIZE_MAX</code>, so the comparison is rearranged as <code>data_size &gt; SIZE_MAX − sizeof(header) − 8</code>. Without this, a caller passing <code>data_size = SIZE_MAX − 4</code> would see the total compute to a small positive value (well under the requested data size), the alignment round-up would succeed, and the caller would receive a buffer much smaller than expected — an immediate heap-overflow primitive.</p>
 <p>The second check protects the header’s 4-byte <code>size</code> field. Without it, a 5 GB allocation would succeed but record <code>size = 5G mod 2^32 ≈ 705 MB</code>, causing every downstream user that walks the object by header size to under-copy by 4 GB. Reject rather than truncate.</p>
-<p>Similar guards appear at every variable-size allocation site in <code>arena_memory.cpp</code>:</p>
+<p>Similar guards appear at every variable-size allocation site in the arena runtime (<code>lib/core/runtime_object_alloc.cpp</code>, <code>runtime_tagged_cons.cpp</code>, <code>runtime_tensor_alloc.cpp</code>):</p>
 <ul>
 <li><code>arena_allocate_multi_value</code> §421–434 — `count * sizeof(tagged_value)
 <ul>
@@ -920,7 +920,7 @@ void     arena_merge_to_parent(arena_t* dest, arena_t* src);
 int      arena_is_worker_thread(void);
 void     eshkol_thread_init_worker(size_t arena_size_hint);
 void     eshkol_thread_shutdown_worker(void);</code></pre>
-<p><code>arena_create_thread_local</code> (§1752–1760 in <code>arena_memory.cpp</code>):</p>
+<p><code>arena_create_thread_local</code> (§224–230 in <code>lib/core/runtime_regions.cpp</code>):</p>
 <pre class="c"><code>arena_t* arena_create_thread_local(size_t size_hint) {
     if (__thread_local_arena) return __thread_local_arena;   // idempotent
     size_t block_size = size_hint &gt; 0 ? size_hint : (1024 * 1024);
@@ -976,7 +976,7 @@ void     eshkol_thread_shutdown_worker(void);</code></pre>
 
 void arena_push_scope(arena_t* arena);
 void arena_pop_scope(arena_t* arena);</code></pre>
-<p><code>arena_push_scope</code> (<code>arena_memory.cpp</code> §706–721) snapshots <code>{current_block, current_block-&gt;used}</code> into a malloc-allocated <code>arena_scope_t</code>, prepended to <code>arena-&gt;current_scope</code> (LIFO). No allocation of arena memory happens during push; this is a pure checkpoint.</p>
+<p><code>arena_push_scope</code> (<code>lib/core/runtime_arena_core.cpp</code> §381–400) snapshots <code>{current_block, current_block-&gt;used}</code> into a malloc-allocated <code>arena_scope_t</code>, prepended to <code>arena-&gt;current_scope</code> (LIFO). No allocation of arena memory happens during push; this is a pure checkpoint.</p>
 <p><code>arena_pop_scope</code> (§723–792) restores arena state to the scope start:</p>
 <pre class="c"><code>void arena_pop_scope(arena_t* arena) {
     if (!arena || !arena-&gt;current_scope) {
@@ -1018,7 +1018,7 @@ target_link_options(eshkol-run PRIVATE &quot;-Wl,-stack_size,0x20000000&quot;)</
 <pre class="cmake"><code># 512MB stack for deep recursion
 target_link_options(eshkol-run PRIVATE &quot;-Wl,-z,stack-size=536870912&quot;)</code></pre>
 <p><code>536870912</code> = 512 × 1024 × 1024 bytes.</p>
-<p><strong>Runtime, both platforms</strong>: <code>eshkol_init_stack_size</code> (<code>lib/core/arena_memory.cpp</code> §62–90) uses <code>setrlimit(RLIMIT_STACK, ...)</code> to raise the soft limit for spawned threads, and as a Linux fallback if the link-time flag was not applied. <code>ESHKOL_STACK_SIZE</code> env var overrides:</p>
+<p><strong>Runtime, both platforms</strong>: <code>eshkol_init_stack_size</code> (<code>lib/core/runtime_stack_hosted.cpp</code> §400–446) uses <code>setrlimit(RLIMIT_STACK, ...)</code> to raise the soft limit for spawned threads, and as a Linux fallback if the link-time flag was not applied. <code>ESHKOL_STACK_SIZE</code> env var overrides:</p>
 <pre class="c"><code>extern &quot;C&quot; void eshkol_init_stack_size() {
 #ifdef _WIN32
     return;   // Windows thread stack sizing is handled at link/thread creation time

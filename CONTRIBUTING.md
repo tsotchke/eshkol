@@ -128,7 +128,17 @@ ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test
 
 ### Building the Website
 
-The website is written in Eshkol and compiled to WebAssembly:
+The website is written in Eshkol and compiled to WebAssembly. Its published
+documentation pages come from one manifest, `site/pages.json`, which names each
+Markdown source, its slug and its navigation section. To publish a page, add a
+manifest entry and run `scripts/build-site-content.sh`; the generated sidebars
+pick it up with no change to `site/src/main.esk`. Before opening a pull request,
+run `python3 scripts/build_site_content.py --check` (manifest, fragments and
+navigation agree), `python3 scripts/verify_site_release.py` (release facts match
+`tests/coverage/release_record.json`) and `python3 scripts/site_smoke.py`
+(the pages render in a real browser with no console errors); the Pages deploy
+runs the same three.
+
 
 ```bash
 # Compile the website

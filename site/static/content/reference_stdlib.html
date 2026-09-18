@@ -1,7 +1,7 @@
 <h1 id="eshkol-standard-library--v135-api-reference-index">Eshkol Standard Library — v1.3.5 API Reference Index</h1>
 <p>Complete module-by-function map of the Eshkol standard library. Every symbol below links to a per-module reference page in this directory; every documented function was verified by compiling and running it with <code>eshkol-run … -r</code>.</p>
 <p>See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/module-system.md" target="_blank" rel="noopener noreferrer">module-system.md</a> for how <code>require</code> resolution, <code>(require stdlib)</code>, and <code>stdlib.o</code> precompilation work. The v1.2-scale surface notes remain in <a href="/docs#page=stdlib_v1_2_api" data-url="/content/stdlib_v1_2_api.html">../../STDLIB_V1_2_API.md</a>.</p>
-<p><strong>Modules: 61</strong> (plus <code>stdlib</code> itself and the module system page) — <strong>provided symbols: 714</strong> (plus stdlib-level helpers in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/stdlib_extras.md" target="_blank" rel="noopener noreferrer">stdlib_extras.md</a>).</p>
+<p><strong>Modules: 63</strong> (plus <code>stdlib</code> itself and the module system page) — <strong>provided symbols: 856</strong> (plus stdlib-level helpers in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/stdlib_extras.md" target="_blank" rel="noopener noreferrer">stdlib_extras.md</a>).</p>
 <p><em>Auto</em> = loaded automatically by <code>(require stdlib)</code>; otherwise the module must be required individually.</p>
 <p>The interval and Taylor-model family — <code>core.ad.interval</code>, <code>core.ad.taylor_models</code> and the proof-backed <code>core.ad.rigorous_interval</code> / <code>core.ad.rigorous_taylor_models</code> beneath them, all reached through <code>(require core.ad.taylor_models)</code> — is documented together in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">certified-enclosures.md</a>; its symbols are listed in the shipped-exports table further down this page. The directed-rounding primitives <code>fl-next-up</code> and <code>fl-next-down</code> that layer rests on are <strong>runtime builtins</strong> on both engines, so they need no <code>require</code>; see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md#1-directed-rounding-primitives-runtime" target="_blank" rel="noopener noreferrer">certified-enclosures.md §1</a> and <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exact-roots-and-exact-expt" target="_blank" rel="noopener noreferrer">the numeric tower</a>.</p>
 <table>
@@ -246,7 +246,7 @@
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/memory_store.esk" target="_blank" rel="noopener noreferrer"><code>core.memory_store</code></a></td>
 <td>no</td>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/memory_store.md" target="_blank" rel="noopener noreferrer">memory_store.md</a></td>
-<td><code>make-memory-store</code> <code>memory-store?</code> <code>memory-store-log</code> <code>memory-store-path</code> <code>memory-store-open</code> <code>memory-store-open-fast</code> <code>memory-store-append!</code> <code>memory-store-verify</code> <code>memory-store-audit</code> <code>memory-store-count</code> <code>memory-store-head</code> <code>memory-store-sanitize</code></td>
+<td><code>make-memory-store</code> <code>memory-store?</code> <code>memory-store-log</code> <code>memory-store-path</code> <code>memory-store-open</code> <code>memory-store-open-fast</code> <code>memory-store-open-durable</code> <code>memory-store-open-fast-durable</code> <code>memory-store-close!</code> <code>memory-store-append!</code> <code>memory-store-verify</code> <code>memory-store-audit</code> <code>memory-store-audit-linear</code> <code>memory-store-linear-evidence</code> <code>memory-store-count</code> <code>memory-store-head</code> <code>memory-store-tail</code> <code>memory-store-sanitize</code> <code>memory-store-test-fail-next-first-file-parent-sync!</code></td>
 </tr>
 <tr>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/merkle.esk" target="_blank" rel="noopener noreferrer"><code>core.merkle</code></a></td>
@@ -288,7 +288,7 @@
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/operators/arithmetic.esk" target="_blank" rel="noopener noreferrer"><code>core.operators.arithmetic</code></a></td>
 <td>yes</td>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/operators_arithmetic.md" target="_blank" rel="noopener noreferrer">operators_arithmetic.md</a></td>
-<td><code>add</code> <code>sub</code> <code>mul</code> <code>div</code></td>
+<td><code>add</code> <code>sub</code> <code>mul</code> <code>divide</code></td>
 </tr>
 <tr>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/operators/compare.esk" target="_blank" rel="noopener noreferrer"><code>core.operators.compare</code></a></td>
@@ -391,6 +391,12 @@
 <td>yes</td>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/signal_filters.md" target="_blank" rel="noopener noreferrer">signal_filters.md</a></td>
 <td><code>hamming-window</code> <code>hann-window</code> <code>blackman-window</code> <code>kaiser-window</code> <code>apply-window</code> <code>convolve</code> <code>fast-convolve</code> <code>fir-filter</code> <code>iir-filter</code> <code>butterworth-lowpass</code> <code>butterworth-highpass</code> <code>butterworth-bandpass</code> <code>frequency-response</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/web/web.esk" target="_blank" rel="noopener noreferrer"><code>web.web</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/web.md" target="_blank" rel="noopener noreferrer">web.md</a></td>
+<td><code>web-get-document</code> <code>web-get-window</code> <code>web-get-body</code> <code>web-create-element</code> <code>web-create-text-node</code> <code>web-get-element-by-id</code> <code>web-query-selector</code> <code>web-query-selector-all</code> <code>web-append-child</code> <code>web-remove-child</code> <code>web-insert-before</code> <code>web-replace-child</code> <code>web-clone-node</code> <code>web-get-parent</code> <code>web-get-first-child</code> <code>web-get-last-child</code> <code>web-get-next-sibling</code> <code>web-get-prev-sibling</code> <code>web-get-children-count</code> <code>web-get-child-at</code> <code>web-set-attribute</code> <code>web-get-attribute</code> <code>web-remove-attribute</code> <code>web-has-attribute</code> <code>web-set-inner-html</code> <code>web-get-inner-html</code> <code>web-set-text-content</code> <code>web-get-text-content</code> <code>web-add-class</code> <code>web-remove-class</code> <code>web-toggle-class</code> <code>web-has-class</code> <code>web-set-style</code> <code>web-get-style</code> <code>web-get-value</code> <code>web-set-value</code> <code>web-get-checked</code> <code>web-set-checked</code> <code>web-focus</code> <code>web-blur</code> <code>web-add-event-listener</code> <code>web-remove-event-listener</code> <code>web-event-prevent-default</code> <code>web-event-stop-propagation</code> <code>web-event-get-target</code> <code>web-event-get-key</code> <code>web-event-get-key-code</code> <code>web-event-get-mouse-x</code> <code>web-event-get-mouse-y</code> <code>web-set-timeout</code> <code>web-set-interval</code> <code>web-clear-timeout</code> <code>web-clear-interval</code> <code>web-request-animation-frame</code> <code>web-cancel-animation-frame</code> <code>web-console-log</code> <code>web-console-warn</code> <code>web-console-error</code> <code>web-alert</code> <code>web-confirm</code> <code>web-prompt</code> <code>web-get-window-width</code> <code>web-get-window-height</code> <code>web-get-scroll-x</code> <code>web-get-scroll-y</code> <code>web-scroll-to</code> <code>web-get-href</code> <code>web-set-href</code> <code>web-get-hash</code> <code>web-set-hash</code> <code>web-storage-get</code> <code>web-storage-set</code> <code>web-storage-remove</code> <code>web-storage-clear</code> <code>web-fetch</code> <code>web-get-context-2d</code> <code>web-canvas-fill-rect</code> <code>web-canvas-stroke-rect</code> <code>web-canvas-clear-rect</code> <code>web-canvas-fill-style</code> <code>web-canvas-stroke-style</code> <code>web-canvas-line-width</code> <code>web-canvas-begin-path</code> <code>web-canvas-close-path</code> <code>web-canvas-move-to</code> <code>web-canvas-line-to</code> <code>web-canvas-arc</code> <code>web-canvas-fill</code> <code>web-canvas-stroke</code> <code>web-canvas-fill-text</code> <code>web-canvas-font</code> <code>web-canvas-save</code> <code>web-canvas-restore</code> <code>web-canvas-translate</code> <code>web-canvas-rotate</code> <code>web-canvas-scale</code> <code>web-release-handle</code></td>
 </tr>
 </tbody>
 </table>
@@ -746,3 +752,97 @@
 <li><code>lib/agent/*</code> (HTTP client, sqlite, subprocess, regex, crypto/sha256, terminal, …) is the agent-FFI domain, documented separately from the stdlib reference.</li>
 <li><code>stdlib</code>-level helpers (<code>random-tensor</code>, <code>time-it</code>, <code>time-ns</code>, keyword-argument internals, …) are covered in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/stdlib_extras.md" target="_blank" rel="noopener noreferrer">stdlib_extras.md</a>.</li>
 </ul>
+<h3 id="modules-documented-outside-this-directory">Modules documented outside this directory</h3>
+<p>These shipped modules have no per-module page in this directory; their exports are documented, with signatures, on the pages listed.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Module</th>
+<th>Require</th>
+<th>Documented in</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>math.constants</code></td>
+<td><code>(require math.constants)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/MATH_STDLIB.md#1-mathematical-constants" target="_blank" rel="noopener noreferrer">MATH_STDLIB.md §1</a></td>
+</tr>
+<tr>
+<td><code>math.special</code></td>
+<td><code>(require math.special)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/MATH_STDLIB.md#2-special-functions" target="_blank" rel="noopener noreferrer">MATH_STDLIB.md §2</a></td>
+</tr>
+<tr>
+<td><code>math.ode</code></td>
+<td><code>(require math.ode)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/MATH_STDLIB.md#3-ode-solvers" target="_blank" rel="noopener noreferrer">MATH_STDLIB.md §3</a></td>
+</tr>
+<tr>
+<td><code>math.statistics</code></td>
+<td><code>(require math.statistics)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/MATH_STDLIB.md#4-statistics" target="_blank" rel="noopener noreferrer">MATH_STDLIB.md §4</a></td>
+</tr>
+<tr>
+<td><code>random.random</code></td>
+<td><code>(require random.random)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/QUANTUM_RNG.md" target="_blank" rel="noopener noreferrer">QUANTUM_RNG.md</a></td>
+</tr>
+<tr>
+<td><code>tensor.utils</code></td>
+<td><code>(require tensor.utils)</code></td>
+<td><a href="/docs#page=api_reference&amp;tensor-utilities" data-url="/content/api_reference.html">API_REFERENCE.md, Tensor Utilities</a></td>
+</tr>
+<tr>
+<td><code>tensorcore</code></td>
+<td><code>(require tensorcore)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/shipped_exports.md#tensorcore" target="_blank" rel="noopener noreferrer">shipped_exports.md</a></td>
+</tr>
+<tr>
+<td><code>core.blc</code></td>
+<td><code>(require core.blc)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/blc.md" target="_blank" rel="noopener noreferrer">blc.md</a> (reference); <a href="https://github.com/tsotchke/eshkol/blob/master/docs/guide/BINARY_LAMBDA_CALCULUS.md" target="_blank" rel="noopener noreferrer">BINARY_LAMBDA_CALCULUS.md</a> (guide)</td>
+</tr>
+<tr>
+<td><code>core.ad.guw</code></td>
+<td><code>(require core.ad.guw)</code></td>
+<td><a href="/docs#page=guide_automatic_differentiation&amp;4-multivariate-mixed-partials-guw" data-url="/content/guide_automatic_differentiation.html">AUTOMATIC_DIFFERENTIATION.md §4</a></td>
+</tr>
+<tr>
+<td><code>core.ad.tensor_tower</code></td>
+<td><code>(require core.ad.tensor_tower)</code></td>
+<td><a href="/docs#page=guide_automatic_differentiation&amp;5-tensor-ad--towers-of-tensors" data-url="/content/guide_automatic_differentiation.html">AUTOMATIC_DIFFERENTIATION.md §5</a></td>
+</tr>
+<tr>
+<td><code>core.ad.sparse_guw</code></td>
+<td><code>(require core.ad.sparse_guw)</code></td>
+<td><a href="/docs#page=guide_automatic_differentiation&amp;7-sparse-high-order--sparse-hessians" data-url="/content/guide_automatic_differentiation.html">AUTOMATIC_DIFFERENTIATION.md §7</a></td>
+</tr>
+<tr>
+<td><code>core.ad.checkpoint</code></td>
+<td><code>(require core.ad.checkpoint)</code></td>
+<td><a href="/docs#page=guide_automatic_differentiation&amp;8-reverse-mode--checkpointing" data-url="/content/guide_automatic_differentiation.html">AUTOMATIC_DIFFERENTIATION.md §8</a></td>
+</tr>
+<tr>
+<td><code>core.ad.taylor_numerics</code></td>
+<td><code>(require core.ad.taylor_numerics)</code></td>
+<td><a href="/docs#page=guide_automatic_differentiation&amp;10-tower-numerics--odes-roots-inversion" data-url="/content/guide_automatic_differentiation.html">AUTOMATIC_DIFFERENTIATION.md §10</a></td>
+</tr>
+<tr>
+<td><code>core.ad.interval</code>, <code>core.ad.rigorous_interval</code>, <code>core.ad.taylor_models</code>, <code>core.ad.rigorous_taylor_models</code></td>
+<td><code>(require core.ad.taylor_models)</code></td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">certified-enclosures.md</a></td>
+</tr>
+<tr>
+<td><code>agent.*</code></td>
+<td><code>(require agent.&lt;name&gt;)</code></td>
+<td><a href="/docs#page=reference_agent" data-url="/content/reference_agent.html">../agent/INDEX.md</a></td>
+</tr>
+</tbody>
+</table>
+<p>The modules under <code>lib/test/modules/</code> are module-system test fixtures, not user API.</p>
