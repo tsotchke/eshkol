@@ -106,8 +106,10 @@ Where provenance helps the reader, annotate the statement: "(since v1.3.5)".
 | "Previously this crashed; it has been fixed." | State the behaviour. The fix is a `CHANGELOG.md` line. |
 | "New in v1.3.5: `json-get-in` takes a default." | "`(json-get-in obj path [default])`" with the default described. |
 
-The front-matter gate enforces this on every evergreen page that carries front
-matter. A line that must keep such a phrase (a quotation, a heading of a
+The front-matter gate enforces a fixed list of release-narrative phrases ("new
+in v", "what's new", "recently", "refreshed candidate", "release candidate",
+"this release adds", "in this release") on every evergreen page that carries
+front matter; the rest of this section is the reviewer's rule. A line that must keep such a phrase (a quotation, a heading of a
 historical table) carries `<!-- evergreen: allow <reason> -->`.
 
 ## 4. Facts come from sources

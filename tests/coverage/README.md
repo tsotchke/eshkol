@@ -22,6 +22,7 @@ failure — it is the next ratchet.
 | `coverage_gap.md` | analysis | Human-readable gap report ranked by silent-wrong risk. |
 | `release_record.json` | release cut | The release tag, the previous release's tag, the date, status label and the CTest and VM-parity totals. `scripts/check_surface_counts.py` grades every release-facing document and generated site page against it, and `--sync` rewrites their claims from it. |
 | `changelog_no_user_facing_change.json` | hand-maintained, gated | The merged pull requests of the release range that deliberately have no `CHANGELOG.md` entry, each with a class from a closed set and a specific reason. Graded by `scripts/check_changelog_completeness.py` (see below). |
+| `doc_front_matter_baseline.json` | `scripts/check_doc_front_matter.py --update-baseline` | The number of documentation pages that carry no front-matter block. It can only go down (see below). |
 
 Collect evidence and regenerate everything:
 
@@ -271,3 +272,35 @@ docs-only pull requests too), and `scripts/release_autopilot.py` runs it with
 the other documentation checks before a release. When the record's tag moves to
 the next release, set the ledger's `release` to the new tag and delete the
 entries the gate then reports as stale.
+
+## Documentation front matter
+
+`scripts/check_doc_front_matter.py` is a build-free gate over every tracked
+`*.md` under `docs/` (except the generated `docs/api/`) and the root project
+pages. The block and its vocabulary are defined in `docs/DOCUMENTATION.md`.
+
+- A page without front matter is valid and is counted. The count is recorded
+  in `doc_front_matter_baseline.json`: a higher count fails (a new page carries
+  the block), and a lower count fails until the number is lowered with
+  `--update-baseline`, so it only goes down. `--update-baseline` refuses to
+  raise it unless `--allow-increase` is passed for a reviewed scope change.
+- A page with front matter must have exactly the keys `kind`, `status`,
+  `owner-area`, `since` and `sources` (plus `superseded-by` when, and only
+  when, the status is `superseded`), values from the closed sets, source paths
+  that exist, and its H1 as the first line after the block. A `report` is never
+  `current`.
+- A current tutorial, guide, reference or explanation page carries no release
+  narrative outside code fences; a line that must keep such a phrase carries
+  `<!-- evergreen: allow <reason> -->` (on the line or the one above), and every
+  exemption is printed.
+- A current page that links to a historical or superseded page says
+  "historical", "superseded", "dated" or "archived" on the same line.
+
+```sh
+python3 scripts/check_doc_front_matter.py --no-trace          # grade the tree
+python3 scripts/check_doc_front_matter.py --self-test         # every rule, red and green
+python3 scripts/check_doc_front_matter.py --update-baseline   # after adding front matter to a page
+```
+
+CI runs it in the `assurance-gates` job, and `scripts/release_autopilot.py`
+runs it with the other documentation checks.

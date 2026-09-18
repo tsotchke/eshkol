@@ -644,6 +644,7 @@ jobs:
           python3 scripts/gate_public_api_linkage.py --self-test
           python3 scripts/check_surface_counts.py --self-test
           python3 scripts/check_changelog_completeness.py --self-test
+          python3 scripts/check_doc_front_matter.py --self-test
           python3 scripts/check_self_verdicts.py --self-test
           python3 scripts/check_build_fingerprint.py --self-test
           python3 scripts/doc_audit/check_results_schema.py --self-test
@@ -848,6 +849,22 @@ jobs:
           pending=()
           if [ -n "${PR_NUMBER:-}" ]; then pending=(--pending-pr "$PR_NUMBER"); fi
           python3 scripts/check_changelog_completeness.py ${pending[@]+"${pending[@]}"}
+
+      # Documentation pages declare what they are in a front-matter block
+      # (kind, status, owner-area, since, sources; docs/DOCUMENTATION.md and
+      # ADR 0019). A block nobody checks decays like the prose it replaced, so
+      # this gate validates every block, refuses release narrative ("new in
+      # v", "recently", "in this release", ...) outside code fences in current
+      # tutorial/guide/reference/explanation pages unless the line carries
+      # `<!-- evergreen: allow <reason> -->`, fails a current page that links
+      # to a historical or superseded page without saying so on the line, and
+      # ratchets the count of pages with no block in
+      # tests/coverage/doc_front_matter_baseline.json (it can only go down).
+      # Build-free and history-free, and it belongs in this job because this
+      # job runs on docs-only pull requests, which is where pages change.
+      - name: Documentation front matter, evergreen wording and historical links
+        shell: bash
+        run: python3 scripts/check_doc_front_matter.py
 
       # 2026-08-28: a squash-merge commit body is assembled out of the PR's
       # own branch commit messages, and nothing in review treats commit prose

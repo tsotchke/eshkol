@@ -105,7 +105,7 @@ All gates are build-free unless noted, and each has a self-test.
 | Surface and release-record consistency (`scripts/check_surface_counts.py`) | a stated count, date, tag or status disagrees with its source | In force |
 | Documentation example execution (`scripts/doc_audit/check_doc_examples.py`, needs a build) | an unmarked example fails, or the marked count changes | In force for `docs/tutorials` and the gated guides; scope grows page by page |
 | Changelog completeness (`scripts/check_changelog_completeness.py`) | a merged pull request in the release range is neither referenced by the changelog nor listed in `tests/coverage/changelog_no_user_facing_change.json` | In force |
-| Front matter, evergreen wording and historical links (`scripts/check_doc_front_matter.py`) | a front-matter block is malformed, names a source that does not exist, an evergreen page carries release narrative, a current page presents a historical page as current, or the unmarked-page count rises | In force for pages that carry front matter |
+| Front matter, evergreen wording and historical links (`scripts/check_doc_front_matter.py`) | a front-matter block is malformed, names a source that does not exist, an evergreen page carries release narrative, a current page presents a historical page as current, or the count of pages without front matter differs from the recorded baseline (it may only be lowered, with `--update-baseline`) | In force for pages that carry front matter |
 | Generated API reference (`scripts/gen_api_docs.py --check`) | `docs/api/` differs from a fresh harvest of the public headers | In force |
 | Language surface (`scripts/gen_language_surface.py --check`) | the surface manifest differs from the builtin tables | In force |
 | Typed claims (`scripts/check_doc_claims_residual.py`, needs ICC) | a wrong typed claim is neither corrected, allowlisted with a reason, nor an open build item | In force in the release evidence run |
@@ -153,8 +153,8 @@ that would leave the changelog or a gated page behind fails before it merges.
 The cost is a front-matter block per page and a marker on every example that
 cannot run; both are small, local and checked.
 
-Front matter is YAML and is ignored by the Markdown renderers in use; pages
-without it remain valid, which is what lets adoption be incremental.
+Front matter is a leading YAML block: the site build consumes it as metadata,
+so it does not appear in the rendered site pages, and pages without it remain valid, which is what lets adoption be incremental.
 
 ## Verification
 
