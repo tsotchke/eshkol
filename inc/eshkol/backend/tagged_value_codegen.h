@@ -205,6 +205,24 @@ public:
      */
     bool storeConsSlot(llvm::Value* cell, bool is_cdr, llvm::Value* tagged);
 
+    // === Dense tensor AD nodes ===
+    //
+    // The dense reverse path (ADR-0002 Position A) publishes a tensor result as
+    // ONE CALLABLE AD node whose tensor_value is an f64 buffer. A consumer that
+    // reads a tensor by its elements (a collection builtin, an indexer) has no
+    // rule for that representation and used to misread the node as a Scheme
+    // vector. This resolves the value once: a dense AD node becomes the tensor
+    // of its shape whose elements project it (eshkol_ad_dense_node_elements,
+    // ADR-0023); anything else is returned unchanged. Tensor operators reach
+    // the same projection through eshkol_tensor_operand_checked.
+
+    /**
+     * Resolve a possible dense tensor AD node to the tensor it denotes.
+     * @param tagged A tagged value (a non-tagged value is returned as is).
+     * @return A HEAP_PTR tensor for a dense AD node, else @p tagged.
+     */
+    llvm::Value* resolveDenseTensorNode(llvm::Value* tagged);
+
     /**
      * Pack a character (Unicode codepoint) into a tagged value.
      * @param char_val The LLVM i64 or smaller integer value

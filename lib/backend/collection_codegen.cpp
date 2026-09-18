@@ -1470,6 +1470,7 @@ llvm::Value* CollectionCodegen::vectorLength(const eshkol_operations_t* op) {
 
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!vec_arg) return nullptr;
+    vec_arg = tagged_.resolveDenseTensorNode(vec_arg);  // ADR-0023
 
     llvm::Value* length = nullptr;
 
@@ -1570,6 +1571,7 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     void* idx_typed = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
     if (!vec_arg || !idx_typed) return nullptr;
+    vec_arg = tagged_.resolveDenseTensorNode(vec_arg);  // ADR-0023
 
     llvm::Value* idx_tagged = typed_to_tagged_callback_(idx_typed, callback_context_);
     if (!idx_tagged) return nullptr;
@@ -2622,6 +2624,7 @@ llvm::Value* CollectionCodegen::vectorToList(const eshkol_operations_t* op) {
     // Get vector
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!vec_arg) return nullptr;
+    vec_arg = tagged_.resolveDenseTensorNode(vec_arg);  // ADR-0023
 
     // Vector literals may be represented either as Scheme vectors
     // ([length][tagged elements...]) or as tensor-backed numeric vectors.

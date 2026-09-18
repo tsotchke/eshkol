@@ -658,7 +658,10 @@ static int ad_node_resident_in(const arena_t* arena, uint64_t bits, int32_t expe
     if (!arena_contains(arena, (const void*)((uintptr_t)bits + sizeof(int32_t) - 1))) return 0;
     const ad_node_t* node = (const ad_node_t*)candidate;
     const int32_t type = (int32_t)node->type;
-    if (type < 0 || type > 63) return 0;
+    /* The registry is the bound. A literal here was a second copy of the
+     * node-type count that stopped at 63 while the registry grew to 96, so a
+     * resident node of a newer type read as a double bit pattern. */
+    if (type < 0 || type >= (int32_t)AD_NODE_TYPE_COUNT) return 0;
     return (expect_type < 0 || type == expect_type) ? 1 : 0;
 }
 
@@ -736,6 +739,65 @@ arena_t* eshkol_ad_home_arena(arena_t* fallback) {
     const ad_tape_t* tape = __current_ad_tape;
     if (tape && tape->owner_arena) return tape->owner_arena;
     return fallback;
+}
+
+/*
+ * A dense tensor AD node, seen as a tensor of scalar nodes (ADR-0023).
+ *
+ * The dense reverse path (ADR-0002 Position A) publishes its result as ONE
+ * CALLABLE node whose tensor_value is an f64 buffer. Every tensor operator
+ * that has no dense rule of its own reads its operand through
+ * eshkol_tensor_operand_checked and then, in AD mode, treats each element slot
+ * as "a double or a scalar node pointer". This function is the bridge between
+ * the two representations: it returns a tensor of the dense node's shape whose
+ * element i is an AD_NODE_DENSE_ELEM node projecting element i of the dense
+ * node, appended to the recording tape in order. The scalarising operator
+ * then works unchanged, and the reverse sweep scatters each element's adjoint
+ * back into the dense node's tensor_gradient, exactly, with no arithmetic.
+ *
+ * With no tape recording (the node is being read after differentiation) the
+ * tensor holds the plain f64 bit patterns: the value, and nothing to record.
+ *
+ * Returns NULL only for a node without a shape, which the caller reports.
+ */
+extern "C" void* eshkol_ad_dense_node_elements(void* dense_node_v) {
+    ad_node_t* dense = (ad_node_t*)dense_node_v;
+    if (!dense || !dense->tensor_value || !dense->shape || dense->ndim == 0) return nullptr;
+    int64_t total = 1;
+    for (size_t d = 0; d < dense->ndim; d++) {
+        if (dense->shape[d] <= 0 || (uint64_t)total > (uint64_t)INT64_MAX / (uint64_t)dense->shape[d]) return nullptr;
+        total *= dense->shape[d];
+    }
+    arena_t* arena = get_global_arena();
+    eshkol_tensor_t* t = arena_allocate_tensor_full(arena, (uint64_t)dense->ndim, (uint64_t)total);
+    if (!t || !t->dimensions || !t->elements) return nullptr;
+    for (size_t d = 0; d < dense->ndim; d++) t->dimensions[d] = (uint64_t)dense->shape[d];
+
+    const double* values = (const double*)dense->tensor_value;
+    ad_tape_t* tape = __current_ad_tape;
+    if (!tape) {
+        std::memcpy(t->elements, values, (size_t)total * sizeof(double));
+        return t;
+    }
+    arena_t* home = eshkol_ad_home_arena(arena);
+    for (int64_t i = 0; i < total; i++) {
+        ad_node_t* elem = arena_allocate_ad_node_with_header(home);
+        double* one = (double*)arena_allocate_aligned(home, sizeof(double), 8);
+        int64_t* shape1 = (int64_t*)arena_allocate_aligned(home, sizeof(int64_t), 8);
+        if (!elem || !one || !shape1) return nullptr;
+        *one = values[i];
+        *shape1 = 1;
+        elem->type = AD_NODE_DENSE_ELEM;
+        elem->value = values[i];
+        elem->input1 = dense;
+        elem->tensor_value = one;
+        elem->shape = shape1;
+        elem->ndim = 1;
+        ((int64_t*)&elem->params)[0] = i;
+        arena_tape_add_node(tape, elem);
+        t->elements[i] = (int64_t)(intptr_t)elem;
+    }
+    return t;
 }
 
 extern "C" int64_t* eshkol_ad_copy_shape_to_home(

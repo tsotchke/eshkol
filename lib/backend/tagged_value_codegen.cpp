@@ -278,6 +278,56 @@ llvm::Value* TaggedValueCodegen::loadConsSlot(llvm::Value* cell, bool is_cdr) {
     return slot;
 }
 
+llvm::Value* TaggedValueCodegen::resolveDenseTensorNode(llvm::Value* tagged) {
+    if (!tagged || tagged->getType() != ctx_.taggedValueType()) return tagged;
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    auto null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+
+    llvm::BasicBlock* from_bb = b.GetInsertBlock();
+    llvm::BasicBlock* header_bb = llvm::BasicBlock::Create(ctx_.context(), "dense_node_header", fn);
+    llvm::BasicBlock* field_bb = llvm::BasicBlock::Create(ctx_.context(), "dense_node_field", fn);
+    llvm::BasicBlock* project_bb = llvm::BasicBlock::Create(ctx_.context(), "dense_node_project", fn);
+    llvm::BasicBlock* join_bb = llvm::BasicBlock::Create(ctx_.context(), "dense_node_join", fn);
+
+    llvm::Value* is_callable = b.CreateICmpEQ(getBaseType(getType(tagged)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    b.CreateCondBr(is_callable, header_bb, join_bb);
+
+    // Every CALLABLE object carries an object header at ptr-8; only an AD
+    // node's fields may be read past it.
+    b.SetInsertPoint(header_bb);
+    llvm::Value* ptr = b.CreateIntToPtr(unpackInt64(tagged), ctx_.ptrType());
+    llvm::Value* subtype = b.CreateLoad(ctx_.int8Type(),
+        b.CreateGEP(ctx_.int8Type(), ptr, llvm::ConstantInt::get(ctx_.int64Type(), -8)));
+    llvm::Value* is_ad_node = b.CreateICmpEQ(subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), CALLABLE_SUBTYPE_AD_NODE));
+    b.CreateCondBr(is_ad_node, field_bb, join_bb);
+
+    b.SetInsertPoint(field_bb);
+    llvm::Value* tensor_value = b.CreateLoad(ctx_.ptrType(),
+        b.CreateStructGEP(ctx_.adNodeType(), ptr, 6));
+    b.CreateCondBr(b.CreateICmpNE(tensor_value, null_ptr), project_bb, join_bb);
+
+    b.SetInsertPoint(project_bb);
+    llvm::FunctionCallee project = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_dense_node_elements",
+        llvm::FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
+    llvm::Value* projected = b.CreateCall(project, {ptr}, "dense_node_elements");
+    llvm::Value* projected_tagged = packPtr(
+        b.CreatePtrToInt(projected, ctx_.int64Type()), ESHKOL_VALUE_HEAP_PTR);
+    llvm::BasicBlock* project_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(join_bb);
+    llvm::PHINode* out = b.CreatePHI(ctx_.taggedValueType(), 4, "dense_resolved");
+    out->addIncoming(tagged, from_bb);
+    out->addIncoming(tagged, header_bb);
+    out->addIncoming(tagged, field_bb);
+    out->addIncoming(projected_tagged, project_exit);
+    return out;
+}
+
 bool TaggedValueCodegen::storeConsSlot(llvm::Value* cell, bool is_cdr, llvm::Value* tagged) {
     if (!tagged || tagged->getType() != ctx_.taggedValueType()) return false;
     llvm::Value* cell_ptr = consCellAsPointer(ctx_, cell);
