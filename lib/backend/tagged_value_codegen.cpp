@@ -294,14 +294,11 @@ llvm::Value* TaggedValueCodegen::resolveDenseTensorNode(llvm::Value* tagged) {
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
     b.CreateCondBr(is_callable, header_bb, join_bb);
 
-    // Every CALLABLE object carries an object header at ptr-8; only an AD
-    // node's fields may be read past it.
+    // Only an AD node's fields may be read; the subtype comes through the one
+    // header accessor every subtype check in this component uses.
     b.SetInsertPoint(header_bb);
     llvm::Value* ptr = b.CreateIntToPtr(unpackInt64(tagged), ctx_.ptrType());
-    llvm::Value* subtype = b.CreateLoad(ctx_.int8Type(),
-        b.CreateGEP(ctx_.int8Type(), ptr, llvm::ConstantInt::get(ctx_.int64Type(), -8)));
-    llvm::Value* is_ad_node = b.CreateICmpEQ(subtype,
-        llvm::ConstantInt::get(ctx_.int8Type(), CALLABLE_SUBTYPE_AD_NODE));
+    llvm::Value* is_ad_node = checkCallableSubtype(tagged, CALLABLE_SUBTYPE_AD_NODE);
     b.CreateCondBr(is_ad_node, field_bb, join_bb);
 
     b.SetInsertPoint(field_bb);
