@@ -4,6 +4,16 @@
 
 ---
 
+## Macro bindings cannot shadow parser-lowered special forms (SW-192)
+
+`define-syntax`, `let-syntax`, and `letrec-syntax` bindings whose names are
+parser-lowered special forms are rejected with an explicit
+"unsupported macro binding" diagnostic. The native and bytecode frontends use
+the same canonical guard table. This is deliberately a fail-loud boundary:
+true special-form shadowing semantics are not implemented and require a
+separate language-design decision. User-defined `syntax-rules` names and
+forward references remain supported.
+
 ## Resolved in v1.3.5-evolve
 
 - **The bytecode VM accepts a call that omits a documented optional argument.**

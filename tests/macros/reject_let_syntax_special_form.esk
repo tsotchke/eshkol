@@ -1,0 +1,3 @@
+; SW-192: local parser-lowered special-form macro bindings must fail loudly.
+(let-syntax ((let (syntax-rules () ((let x body) body))))
+  (let () 1))

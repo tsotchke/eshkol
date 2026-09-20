@@ -17,6 +17,7 @@
 #include <eshkol/logger.h>
 #include <eshkol/types/hott_types.h>
 #include <eshkol/frontend/binding_forms.h>
+#include <eshkol/frontend/macro_binding_guards.h>
 #include "parser_task.h"
 
 #include <string.h>
@@ -6885,6 +6886,14 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 co_return ast;
             }
 
+            if (eshkol_is_unsupported_macro_shadow(token.value.c_str())) {
+                PARSE_ERROR_AT(token,
+                    "unsupported macro binding '%s': parser-lowered special-form names cannot be shadowed",
+                    token.value.c_str());
+                ast.type = ESHKOL_INVALID;
+                co_return ast;
+            }
+
             eshkol_macro_def_t *macro = new eshkol_macro_def_t;
             macro->name = eshkol_ast_strdup(token.value.c_str());
             macro->literals = nullptr;
@@ -7132,6 +7141,14 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_SYMBOL) {
                     PARSE_ERROR_AT(token, "let-syntax binding requires a name");
+                    ast.type = ESHKOL_INVALID;
+                    co_return ast;
+                }
+
+                if (eshkol_is_unsupported_macro_shadow(token.value.c_str())) {
+                    PARSE_ERROR_AT(token,
+                        "unsupported macro binding '%s': parser-lowered special-form names cannot be shadowed",
+                        token.value.c_str());
                     ast.type = ESHKOL_INVALID;
                     co_return ast;
                 }

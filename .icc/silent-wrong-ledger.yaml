@@ -13859,7 +13859,10 @@ entries:
       unsupported combination for (2).
     evidence: >-
       Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
-      arm64 macOS, while sweeping SW-181.
+      arm64 macOS, while sweeping SW-181. Fixed at 2c0eb81f5: jacobian resolves
+      dense AD tensor results before shape/element dispatch; the SIGSEGV repro now
+      returns #((1 0) (0 1)), and the dense boundary test passes cached, uncached,
+      and AOT.
     caught_by: [coordinator-sweep]
     missed_by: [run_ad_oracle, run_dense_tensor_ad_gate]
     notes: >-
@@ -13886,7 +13889,9 @@ entries:
       differentiated.
     evidence: >-
       Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
-      arm64 macOS, while sweeping SW-181.
+      arm64 macOS, while sweeping SW-181. Fixed at 2c0eb81f5: tensor?/vector?
+      and hosted display recognize dense AD tensor results; the repro now returns
+      #t #t #(1 2 3), and the dense boundary test passes cached, uncached, and AOT.
     caught_by: [coordinator-sweep]
     missed_by: [run_ad_oracle, run_dense_tensor_ad_gate, doc_audit]
     notes: >-
@@ -14014,3 +14019,29 @@ entries:
       contract for non-holomorphic functions (refuse, return df/dz, or return the
       Wirtinger pair) before it is built. The tutorial sentence is left as the
       statement of intent.
+  - id: SW-192
+    bucket: LOUD-LIMITATION
+    family: macro/special-form-shadowing
+    status: in-progress
+    needs_decision: false
+    title: "syntax-rules bindings cannot shadow parser-lowered special-form names"
+    repro: >-
+      (define-syntax when (syntax-rules () ((when test body) (if test body #f))))
+      (when #t 1)
+    observed: >-
+      Before this guard, the native parser produced a dedicated WHEN AST before
+      macro expansion and the VM compiler could silently keep the built-in route;
+      the user macro binding was accepted but ignored at use sites.
+    correct: >-
+      Reject define-syntax, let-syntax, and letrec-syntax bindings whose names are
+      parser-lowered special forms with an explicit unsupported-shadowing error.
+      Ordinary syntax-rules names and forward references remain supported.
+    evidence: >-
+      tests/macros/special_form_macro_shadow_test.sh exercises define-syntax,
+      let-syntax, and letrec-syntax on native and VM. The shared parser-lowered
+      spelling table in inc/eshkol/frontend/macro_binding_guards.h is used by both
+      frontends. Final closure awaits the exact integration build's focused test.
+    notes: >-
+      True special-form shadowing is intentionally out of scope and requires a
+      language-design decision; this is a fail-loud boundary, not an implementation
+      of lexical shadowing semantics.

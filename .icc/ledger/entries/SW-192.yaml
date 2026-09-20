@@ -1,0 +1,26 @@
+id: SW-192
+bucket: LOUD-LIMITATION
+family: macro/special-form-shadowing
+status: in-progress
+needs_decision: false
+title: "syntax-rules bindings cannot shadow parser-lowered special-form names"
+repro: >-
+  (define-syntax when (syntax-rules () ((when test body) (if test body #f))))
+  (when #t 1)
+observed: >-
+  Before this guard, the native parser produced a dedicated WHEN AST before
+  macro expansion and the VM compiler could silently keep the built-in route;
+  the user macro binding was accepted but ignored at use sites.
+correct: >-
+  Reject define-syntax, let-syntax, and letrec-syntax bindings whose names are
+  parser-lowered special forms with an explicit unsupported-shadowing error.
+  Ordinary syntax-rules names and forward references remain supported.
+evidence: >-
+  tests/macros/special_form_macro_shadow_test.sh exercises define-syntax,
+  let-syntax, and letrec-syntax on native and VM. The shared parser-lowered
+  spelling table in inc/eshkol/frontend/macro_binding_guards.h is used by both
+  frontends. Final closure awaits the exact integration build's focused test.
+notes: >-
+  True special-form shadowing is intentionally out of scope and requires a
+  language-design decision; this is a fail-loud boundary, not an implementation
+  of lexical shadowing semantics.

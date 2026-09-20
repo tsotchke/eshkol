@@ -20,6 +20,11 @@
 
 (check "double macro: (double 5) = 5*2" 10 (double 5))
 
+; Forward references to ordinary macro names remain supported.
+(check "forward ordinary macro reference" 9 (forward-nine))
+(define-syntax forward-nine
+  (syntax-rules () ((forward-nine) 9)))
+
 ; Test 2: Macro with two arguments
 (define-syntax my-add
   (syntax-rules ()
@@ -31,22 +36,25 @@
 (check "nested macros: (double (my-add 2 3)) = (2+3)*2" 10 (double (my-add 2 3)))
 
 ; Test 4: Macro with literal keyword
-(define-syntax when
+; Use a non-special-form name: `when` is a built-in form lowered before
+; user macro expansion, so defining `when` here would not exercise CALL
+; macro expansion.
+(define-syntax my-when
   (syntax-rules ()
-    ((when test body)
+    ((my-when test body)
      (if test body #f))))
 
-(check "when macro, true test" 42 (when #t 42))
-(check "when macro, false test" #f (when #f 42))
+(check "my-when macro, true test" 42 (my-when #t 42))
+(check "my-when macro, false test" #f (my-when #f 42))
 
 ; Test 5: unless macro
-(define-syntax unless
+(define-syntax my-unless
   (syntax-rules ()
-    ((unless test body)
+    ((my-unless test body)
      (if test #f body))))
 
-(check "unless macro, false test" 99 (unless #f 99))
-(check "unless macro, true test" #f (unless #t 99))
+(check "my-unless macro, false test" 99 (my-unless #f 99))
+(check "my-unless macro, true test" #f (my-unless #t 99))
 
 ; Argument expressions must be substituted, not re-evaluated into the wrong
 ; place: (double (+ 1 2)) must be (* (+ 1 2) 2) = 6, never (* 1 2) or (+ 1 4).

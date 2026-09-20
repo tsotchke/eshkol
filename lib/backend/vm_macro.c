@@ -22,6 +22,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <eshkol/frontend/macro_binding_guards.h>
+
+/* Defined by vm_compiler.c; macro admission must arm the VM's fail-closed
+ * compile flag instead of merely returning an ignored parse failure. */
+static void vm_compile_error(const char* message, const char* detail);
 
 /*******************************************************************************
  * AST Node (matches stackvm_codegen.c Node)
@@ -1033,6 +1038,14 @@ static int vm_macro_define_syntax(const MacroNode* form) {
     if (form->children[1]->type != N_SYMBOL) return 0;
 
     const char* name = form->children[1]->symbol;
+    if (eshkol_is_unsupported_macro_shadow(name)) {
+        char detail[192];
+        snprintf(detail, sizeof(detail),
+                 "macro '%s' names a parser-lowered special form; shadowing "
+                 "is unsupported", name);
+        vm_compile_error("unsupported macro binding", detail);
+        return 0;
+    }
     const MacroNode* syntax_rules = form->children[2];
 
     if (syntax_rules->type != N_LIST || syntax_rules->n_children < 2) return 0;
