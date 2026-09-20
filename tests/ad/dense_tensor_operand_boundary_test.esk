@@ -49,6 +49,7 @@
 
 (define x0 #(1.0 2.0 3.0))
 (define (Ax x) (matmul (eye 3) x))
+(define nonsym-A (reshape #(2.0 3.0 5.0 7.0) '(2 2)))
 
 ;; Dense AD nodes remain tensor/vector values even while the tape is active
 ;; (SW-188), and jacobian accepts a dense tensor-valued function result
@@ -62,12 +63,11 @@
                              0.0)))
                     x0)
            '(1.0 1.0 1.0))
-(check "jacobian dense tensor result [0,0]"
-       (tensor-ref (jacobian (lambda (v) (matmul (eye 2) v)) #(1.0 2.0)) 0 0)
-       1.0)
-(check "jacobian dense tensor result [1,1]"
-       (tensor-ref (jacobian (lambda (v) (matmul (eye 2) v)) #(1.0 2.0)) 1 1)
-       1.0)
+(define nonsym-J (jacobian (lambda (v) (matmul nonsym-A v)) #(1.0 2.0)))
+(check "jacobian dense result nonsym [0,0]" (tensor-ref nonsym-J 0 0) 2.0)
+(check "jacobian dense result nonsym [0,1]" (tensor-ref nonsym-J 0 1) 3.0)
+(check "jacobian dense result nonsym [1,0]" (tensor-ref nonsym-J 1 0) 5.0)
+(check "jacobian dense result nonsym [1,1]" (tensor-ref nonsym-J 1 1) 7.0)
 
 ;; ── The ledger program: x . (A x) has gradient (A + A^T) x = 2x ──────────
 (check-vec "ledger: tensor-dot x (matmul A x)" (gradient (lambda (x) (tensor-dot x (Ax x))) x0) '(2.0 4.0 6.0))

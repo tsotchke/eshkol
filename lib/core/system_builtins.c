@@ -5403,9 +5403,10 @@ void eshkol_builtin_tensor_p(sv_t* out, const sv_t* a) {
      * is active.  Their representation must not change the observable tensor
      * predicate (SW-188). */
     if (a->type == SYS_TYPE_CALLABLE && a->data) {
-        const uint8_t* header = (const uint8_t*)(uintptr_t)a->data - 8;
         const struct ad_node* node = (const struct ad_node*)(uintptr_t)a->data;
-        if (header[0] == CALLABLE_SUBTYPE_AD_NODE && node->tensor_value) {
+        const eshkol_object_header_t* header = ESHKOL_GET_HEADER((void*)(uintptr_t)a->data);
+        if (eshkol_callable_subtype_is_declared(header->subtype) &&
+            header->subtype == CALLABLE_SUBTYPE_AD_NODE && node->tensor_value) {
             *out = sys_make_bool(1);
             return;
         }
