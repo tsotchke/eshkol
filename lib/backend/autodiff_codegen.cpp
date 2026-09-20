@@ -8480,6 +8480,11 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     // otherwise fall through to the tensor arm and read the cons cell's car/cdr
     // words as the tensor's dims/elements pointers.
     test_output_tagged = normalizeFieldOutputList(test_output_tagged, "jac_test");
+    // A dense reverse-mode tensor result is published as a CALLABLE AD node.
+    // Resolve it to its tensor projection before inspecting the output shape;
+    // treating the callable payload as a tensor struct here used to segfault
+    // jacobian for functions returning matmul results (SW-187).
+    test_output_tagged = tagged_.resolveDenseTensorNode(test_output_tagged);
 
     // ENHANCED TYPE CHECK: Accept tensors, AD tensors, AND Scheme vectors as valid outputs
     Value* output_type = tagged_.getType(test_output_tagged);
@@ -8824,6 +8829,10 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     // are AD nodes, and eshkol_list_to_svec_raw copies them verbatim so the
     // backpropagation below still finds them.
     jac_output_tagged = normalizeFieldOutputList(jac_output_tagged, "jac_ad");
+    // The AD invocation can likewise return a dense CALLABLE node.  Project
+    // it before the element loop so the reverse sweep sees tensor elements,
+    // not the callable header (SW-187).
+    jac_output_tagged = tagged_.resolveDenseTensorNode(jac_output_tagged);
 
     Value* jac_output_int = tagged_.unpackInt64(jac_output_tagged);
     Value* jac_output_ptr = ctx_.builder().CreateIntToPtr(jac_output_int, ctx_.builder().getPtrTy());

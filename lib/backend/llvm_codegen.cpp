@@ -25314,6 +25314,10 @@ private:
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
         if (!tv.llvm_value) return nullptr;
         Value* arg = typedValueToTaggedValue(tv);
+        // Dense AD tensor results use a callable carrier internally.  Resolve
+        // that carrier before applying the public vector? predicate so type
+        // identity remains stable inside differentiation (SW-188).
+        arg = tagged_->resolveDenseTensorNode(arg);
 
         // Check for both HEAP_SUBTYPE_VECTOR (Scheme vectors) and HEAP_SUBTYPE_TENSOR (numeric tensors)
         // In Eshkol, #(...) syntax creates tensors, but vector? should return #t for them

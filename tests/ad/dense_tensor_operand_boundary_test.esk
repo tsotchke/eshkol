@@ -50,6 +50,25 @@
 (define x0 #(1.0 2.0 3.0))
 (define (Ax x) (matmul (eye 3) x))
 
+;; Dense AD nodes remain tensor/vector values even while the tape is active
+;; (SW-188), and jacobian accepts a dense tensor-valued function result
+;; (SW-187).  These are representation-boundary checks, not just arithmetic
+;; checks, so a CALLABLE wrapper cannot regress unnoticed.
+(check-vec "tensor/vector predicates on dense result"
+           (gradient (lambda (x)
+                       (let ((d (Ax x)))
+                         (if (and (tensor? d) (vector? d))
+                             (tensor-sum d)
+                             0.0)))
+                    x0)
+           '(1.0 1.0 1.0))
+(check "jacobian dense tensor result [0,0]"
+       (tensor-ref (jacobian (lambda (v) (matmul (eye 2) v)) #(1.0 2.0)) 0 0)
+       1.0)
+(check "jacobian dense tensor result [1,1]"
+       (tensor-ref (jacobian (lambda (v) (matmul (eye 2) v)) #(1.0 2.0)) 1 1)
+       1.0)
+
 ;; ── The ledger program: x . (A x) has gradient (A + A^T) x = 2x ──────────
 (check-vec "ledger: tensor-dot x (matmul A x)" (gradient (lambda (x) (tensor-dot x (Ax x))) x0) '(2.0 4.0 6.0))
 (check-vec "tensor-dot (matmul A x) x"        (gradient (lambda (x) (tensor-dot (Ax x) x)) x0) '(2.0 4.0 6.0))

@@ -476,7 +476,24 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                     eshkol_display_lambda(value->data.ptr_val, opts);
                     break;
                 case CALLABLE_SUBTYPE_AD_NODE:
-                    fprintf(get_output(opts), "#<ad-node>");
+                    /* A dense AD result is a callable wrapper around its
+                     * tensor payload.  Render its visible 1-D value like the
+                     * tensor it represents (SW-188), while scalar AD nodes
+                     * retain the diagnostic representation. */
+                    {
+                        const ad_node* node = (const ad_node*)data_ptr;
+                        if (node->tensor_value && node->shape && node->ndim == 1) {
+                            const double* values = (const double*)node->tensor_value;
+                            fprintf(get_output(opts), "#(");
+                            for (int64_t i = 0; i < node->shape[0]; ++i) {
+                                if (i) fputc(' ', get_output(opts));
+                                eshkol_fprint_double(get_output(opts), values[i]);
+                            }
+                            fprintf(get_output(opts), ")");
+                        } else {
+                            fprintf(get_output(opts), "#<ad-node>");
+                        }
+                    }
                     break;
                 case CALLABLE_SUBTYPE_PRIMITIVE:
                     fprintf(get_output(opts), "#<primitive>");
