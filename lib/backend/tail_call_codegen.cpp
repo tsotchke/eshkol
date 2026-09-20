@@ -118,8 +118,10 @@ bool TailCallCodegen::isOperationInTailPosition(const eshkol_operations_t* op,
             >{}
         )) {
         case AstRoute::If:
-            // Both branches of if are in tail position
-            return (parent->if_op.if_true == op || parent->if_op.if_false == op);
+            for (uint64_t i = 1; i < parent->call_op.num_vars && i < 3; ++i)
+                if (parent->call_op.variables[i].type == ESHKOL_OP &&
+                    &parent->call_op.variables[i].operation == op) return true;
+            return false;
 
         case AstRoute::Let:
             // Body of let/let*/letrec/letrec* is in tail position
@@ -448,26 +450,9 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
         }
 
         case AstRoute::If: {
-            // The condition is NOT in tail position
-            // Both branches inherit the tail position status
-            // Note: if_op uses eshkol_operations_t* not eshkol_ast_t*
-            // We need to create a temporary wrapper... or handle directly
-            // if_op has if_true and if_false as operations pointers
-            // Wrap them for recursive check
-            eshkol_ast_t true_wrapper = {};
-            true_wrapper.type = ESHKOL_OP;
-            if (op->if_op.if_true) {
-                true_wrapper.operation = *op->if_op.if_true;
-                if (!allSelfCallsInTailPosition(&true_wrapper, func_name, in_tail_pos))
-                    return false;
-            }
-            if (op->if_op.if_false) {
-                eshkol_ast_t false_wrapper = {};
-                false_wrapper.type = ESHKOL_OP;
-                false_wrapper.operation = *op->if_op.if_false;
-                if (!allSelfCallsInTailPosition(&false_wrapper, func_name, in_tail_pos))
-                    return false;
-            }
+            for (uint64_t i = 0; i < op->call_op.num_vars; ++i)
+                if (!allSelfCallsInTailPosition(&op->call_op.variables[i], func_name,
+                                               i > 0 && in_tail_pos)) return false;
             return true;
         }
 

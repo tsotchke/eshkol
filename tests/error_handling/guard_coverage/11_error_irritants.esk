@@ -1,9 +1,6 @@
 ;; ESH-0101 guard coverage — `error` IRRITANTS through a guard.
-;; Split out of 06 because the VM's `error` is a fixed 1-argument native
-;; (fid 237) whose error-object-irritants stub always answers '(), a filed
-;; divergence (tests/vm_parity/found/error_object_irritants_empty.esk). Keeping
-;; the variadic-irritant checks here means that one known gap costs a narrow
-;; ENGINES.tsv waiver instead of the whole accessor surface on the VM axes.
+;; Variadic error values are required on every engine and are checked here
+;; independently from the basic error-object predicate/message coverage.
 
 (define (chk name ok)
   (if ok

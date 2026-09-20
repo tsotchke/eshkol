@@ -56,6 +56,10 @@ typedef struct Node {
                        * append site so the macro expander's doubling growth and
                        * the parser's exact growth share one invariant
                        * (_cap >= n_children).  See the MacroNode note below. */
+    int macro_scope_limit; /* 0: call-site, -1: global, otherwise registry limit + 1 */
+    int macro_value_owner; /* 0: caller, -1: global, positive: lexical frame id */
+    int macro_value_slot;
+    int macro_value_context;
 } Node;
 
 /* Hygienic macro expansion (syntax-rules).
@@ -848,6 +852,7 @@ typedef struct {
 #define CHUNK_INIT_UPVALUES 16
 
 typedef struct FuncChunk {
+    int binding_env_id;
     Instr* code;         int code_len;     int code_cap;
     Value* constants;    int n_constants;  int const_cap;
     Local* locals;       int n_locals;     int local_cap;
@@ -866,6 +871,8 @@ typedef struct FuncChunk {
     int guard_pop_on_self_tail; /* collapsible guards to retire before TCO */
 } FuncChunk;
 
+static int g_vm_binding_env_serial = 0;
+
 /** @brief Zero-initialize a stack-allocated FuncChunk and allocate its
  *         dynamic code/constants/locals/entries arrays at their initial
  *         capacities (CHUNK_INIT_*). On partial allocation failure, frees
@@ -874,6 +881,7 @@ typedef struct FuncChunk {
  */
 static int chunk_init_arrays(FuncChunk* c) {
     memset(c, 0, sizeof(FuncChunk));
+    c->binding_env_id = ++g_vm_binding_env_serial;
     c->code_cap = CHUNK_INIT_CODE;
     c->code = (Instr*)calloc(c->code_cap, sizeof(Instr));
     c->const_cap = CHUNK_INIT_CONSTS;

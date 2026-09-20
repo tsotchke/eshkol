@@ -161,7 +161,7 @@ struct eshkol_tensor {
 
 **Memory Layout:**
 - Header: 8 bytes (object header with HEAP_SUBTYPE_TENSOR)
-- Tensor struct: 32 bytes
+- Tensor struct: 40 bytes (8-byte aligned; includes dtype tag)
 - Dimensions array: 8 × num_dimensions bytes
 - Elements array: 8 × total_elements bytes (doubles stored as int64 bit patterns)
 

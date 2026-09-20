@@ -87,7 +87,23 @@ public:
 private:
     // Macro definition table - scope stack for hygiene
     // scope_stack_[0] is global scope, higher indices are nested let-syntax scopes
-    std::vector<std::map<std::string, eshkol_macro_def_t*>> scope_stack_;
+    struct MacroBinding {
+        eshkol_macro_def_t* macro = nullptr;
+        // Definition-site lexical value names.  The expander alpha-renames
+        // binders as it walks the tree; retaining this snapshot makes a free
+        // identifier in a template refer to the definition environment.
+        std::map<std::string, std::string> value_env;
+        std::vector<std::map<std::string, eshkol_macro_def_t*>> macro_env;
+    };
+    std::vector<std::map<std::string, MacroBinding>> scope_stack_;
+    std::map<const eshkol_macro_def_t*, MacroBinding> definition_bindings_;
+    std::map<std::string, const eshkol_macro_def_t*> macro_aliases_;
+    std::map<const eshkol_macro_def_t*, std::string> macro_alias_names_;
+    std::set<const char*> definition_identifiers_;
+    std::map<std::string, std::string> value_renames_;
+    std::map<std::string, std::string> active_template_value_env_;
+    std::set<std::string> active_template_pattern_names_;
+    std::vector<std::map<std::string, eshkol_macro_def_t*>> active_template_macro_env_;
 
     // Push/pop macro scopes for let-syntax/letrec-syntax
     void pushScope();
@@ -95,6 +111,8 @@ private:
 
     // Look up a macro in the scope stack (inner scopes shadow outer)
     eshkol_macro_def_t* lookupMacro(const std::string& name) const;
+    const MacroBinding* lookupBinding(const std::string& name) const;
+    eshkol_ast_t expandQuasiquoted(const eshkol_ast_t& ast, unsigned depth);
 
     // A matched value at some ellipsis-nesting depth (R7RS 4.3.2).
     //   depth == 0 : a single AST node (scalar match, no ellipsis).
@@ -176,6 +194,8 @@ private:
      * Register a macro definition.
      */
     void registerMacro(const eshkol_macro_def_t* macro);
+    void registerMacroWithEnv(const eshkol_macro_def_t* macro,
+                              const std::vector<std::map<std::string, eshkol_macro_def_t*>>& env);
 
     /**
      * Expand a single AST node.

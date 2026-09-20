@@ -1774,10 +1774,17 @@ typedef struct eshkol_exception_handler {
 } eshkol_exception_handler_t;
 
 // Global exception state (thread-local in multi-threaded context)
+#if defined(__cplusplus)
+#define ESHKOL_RUNTIME_THREAD_LOCAL thread_local
+#elif defined(_MSC_VER)
+#define ESHKOL_RUNTIME_THREAD_LOCAL __declspec(thread)
+#else
+#define ESHKOL_RUNTIME_THREAD_LOCAL _Thread_local
+#endif
 // Current exception being handled (NULL if none)
-extern eshkol_exception_t* g_current_exception;
+extern ESHKOL_RUNTIME_THREAD_LOCAL eshkol_exception_t* g_current_exception;
 // Top of exception handler stack (NULL if no handlers)
-extern eshkol_exception_handler_t* g_exception_handler_stack;
+extern ESHKOL_RUNTIME_THREAD_LOCAL eshkol_exception_handler_t* g_exception_handler_stack;
 
 // Exception API functions (implemented in arena_memory.cpp)
 /**
@@ -2073,7 +2080,7 @@ typedef struct eshkol_dynamic_wind_entry {
 } eshkol_dynamic_wind_entry_t;
 
 // Global dynamic-wind stack
-extern eshkol_dynamic_wind_entry_t* g_dynamic_wind_stack;
+extern ESHKOL_RUNTIME_THREAD_LOCAL eshkol_dynamic_wind_entry_t* g_dynamic_wind_stack;
 
 // Continuation runtime functions
 

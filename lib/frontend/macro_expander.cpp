@@ -12,6 +12,7 @@
 #include <eshkol/logger.h>
 #include <cstring>
 #include <algorithm>
+#include <functional>
 
 namespace eshkol {
 
@@ -60,8 +61,31 @@ void MacroExpander::popScope() {
  */
 void MacroExpander::registerMacro(const eshkol_macro_def_t* macro) {
     if (macro && macro->name && !scope_stack_.empty()) {
-        scope_stack_.back()[macro->name] = const_cast<eshkol_macro_def_t*>(macro);
+        MacroBinding binding;
+        binding.macro = const_cast<eshkol_macro_def_t*>(macro);
+        binding.value_env = value_renames_;
+        binding.macro_env.reserve(scope_stack_.size());
+        for (const auto& scope : scope_stack_) {
+            std::map<std::string, eshkol_macro_def_t*> snapshot;
+            for (const auto& item : scope) snapshot[item.first] = item.second.macro;
+            binding.macro_env.push_back(std::move(snapshot));
+        }
+        binding.macro_env.back()[macro->name] = const_cast<eshkol_macro_def_t*>(macro);
+        definition_bindings_[macro] = binding;
+        scope_stack_.back()[macro->name] = std::move(binding);
     }
+}
+
+void MacroExpander::registerMacroWithEnv(
+    const eshkol_macro_def_t* macro,
+    const std::vector<std::map<std::string, eshkol_macro_def_t*>>& env) {
+    if (!macro || !macro->name || scope_stack_.empty()) return;
+    MacroBinding binding;
+    binding.macro = const_cast<eshkol_macro_def_t*>(macro);
+    binding.value_env = value_renames_;
+    binding.macro_env = env;
+    definition_bindings_[macro] = binding;
+    scope_stack_.back()[macro->name] = std::move(binding);
 }
 
 /**
@@ -72,12 +96,29 @@ void MacroExpander::registerMacro(const eshkol_macro_def_t* macro) {
  * to a macro in any active scope.
  */
 eshkol_macro_def_t* MacroExpander::lookupMacro(const std::string& name) const {
+    auto alias = macro_aliases_.find(name);
+    if (alias != macro_aliases_.end())
+        return const_cast<eshkol_macro_def_t*>(alias->second);
+    if (value_renames_.count(name)) return nullptr;
     // Search from innermost scope to outermost
     for (auto it = scope_stack_.rbegin(); it != scope_stack_.rend(); ++it) {
         auto found = it->find(name);
         if (found != it->end()) {
-            return found->second;
+            return found->second.macro;
         }
+    }
+    return nullptr;
+}
+
+const MacroExpander::MacroBinding* MacroExpander::lookupBinding(const std::string& name) const {
+    auto alias = macro_aliases_.find(name);
+    if (alias != macro_aliases_.end()) {
+        auto binding = definition_bindings_.find(alias->second);
+        return binding == definition_bindings_.end() ? nullptr : &binding->second;
+    }
+    for (auto it = scope_stack_.rbegin(); it != scope_stack_.rend(); ++it) {
+        auto found = it->find(name);
+        if (found != it->end()) return &found->second;
     }
     return nullptr;
 }
@@ -111,6 +152,14 @@ std::vector<eshkol_ast_t> MacroExpander::expandAll(const std::vector<eshkol_ast_
                 registerMacro(ast.operation.define_syntax_op.macro);
             }
         }
+    }
+
+    // Global definitions share one region, including forward references.
+    std::map<std::string, eshkol_macro_def_t*> global_macros;
+    for (const auto& item : scope_stack_.front()) global_macros[item.first] = item.second.macro;
+    for (auto& item : scope_stack_.front()) {
+        item.second.macro_env = {global_macros};
+        definition_bindings_[item.second.macro] = item.second;
     }
 
     // Second pass: expand macros (skip define-syntax forms)
@@ -161,6 +210,8 @@ eshkol_ast_t MacroExpander::expand(const eshkol_ast_t& ast) {
  * @return The fully macro-expanded AST for this node and its subtree.
  */
 eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
+    if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_QUASIQUOTE_OP)
+        return expandQuasiquoted(ast, 0);
     // Use iterative re-expansion for macro calls to prevent unbounded recursion.
     // A macro expanding to another macro call is handled by looping, not recursing.
     // We track seen macro names per expansion chain to detect cycles.
@@ -215,14 +266,39 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
         if (current.type == ESHKOL_OP &&
             (current.operation.op == ESHKOL_LET_SYNTAX_OP || current.operation.op == ESHKOL_LETREC_SYNTAX_OP)) {
             const auto* ls = &current.operation.let_syntax_op;
+            const auto outer_values = value_renames_;
+            std::vector<std::map<std::string, eshkol_macro_def_t*>> outer_macro_env;
+            for (const auto& scope : scope_stack_) {
+                std::map<std::string, eshkol_macro_def_t*> snapshot;
+                for (const auto& item : scope) snapshot[item.first] = item.second.macro;
+                outer_macro_env.push_back(std::move(snapshot));
+            }
             pushScope();
             for (uint64_t i = 0; i < ls->num_macros; i++) {
                 if (ls->macros[i]) {
-                    registerMacro(ls->macros[i]);
+                    if (current.operation.op == ESHKOL_LET_SYNTAX_OP)
+                        registerMacroWithEnv(ls->macros[i], outer_macro_env);
+                    else
+                        registerMacro(ls->macros[i]);
+                }
+            }
+            for (uint64_t i = 0; i < ls->num_macros; ++i)
+                if (ls->macros[i] && ls->macros[i]->name)
+                    value_renames_.erase(ls->macros[i]->name);
+            if (current.operation.op == ESHKOL_LETREC_SYNTAX_OP) {
+                auto recursive_env = outer_macro_env;
+                std::map<std::string, eshkol_macro_def_t*> group;
+                for (const auto& item : scope_stack_.back()) group[item.first] = item.second.macro;
+                recursive_env.push_back(std::move(group));
+                for (auto& item : scope_stack_.back()) {
+                    item.second.macro_env = recursive_env;
+                    item.second.value_env = value_renames_;
+                    definition_bindings_[item.second.macro] = item.second;
                 }
             }
             eshkol_ast_t expanded_body = expandNode(*ls->body);
             popScope();
+            value_renames_ = outer_values;
             return expanded_body;
         }
 
@@ -242,6 +318,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                     continue; // Re-expand iteratively
                 }
             }
+
         }
 
         // Not a macro call — break out to do tree traversal
@@ -249,6 +326,37 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
     }
 
     // Recursively expand sub-expressions (tree depth is bounded by input nesting)
+    if (current.type == ESHKOL_OP && current.operation.op == ESHKOL_QUASIQUOTE_OP)
+        return expandQuasiquoted(current, 0);
+    if (current.type == ESHKOL_VAR && current.variable.id) {
+        if (definition_identifiers_.count(current.variable.id)) return copyAst(current);
+        auto template_name = active_template_value_env_.find(current.variable.id);
+        if (template_name != active_template_value_env_.end() &&
+            active_template_pattern_names_.count(current.variable.id) == 0) {
+            eshkol_ast_t protected_name = copyAst(current);
+            protected_name.variable.id = eshkol_ast_string_copy(template_name->second);
+            return protected_name;
+        }
+        auto value_name = value_renames_.find(current.variable.id);
+        if (value_name != value_renames_.end()) {
+            eshkol_ast_t renamed = copyAst(current);
+            renamed.variable.id = eshkol_ast_string_copy(value_name->second);
+            return renamed;
+        }
+    }
+    // CONS nodes are used by the parser for structural operands (notably the
+    // binding/test clauses of `do` and let bindings).  They are still AST
+    // trees: skipping them leaves identifiers introduced inside those
+    // operands unrenamed, producing backend-only "undefined variable"
+    // failures.
+    if (current.type == ESHKOL_CONS) {
+        eshkol_ast_t result = current;
+        result.cons_cell.car = current.cons_cell.car
+            ? new eshkol_ast_t(expandNode(*current.cons_cell.car)) : nullptr;
+        result.cons_cell.cdr = current.cons_cell.cdr
+            ? new eshkol_ast_t(expandNode(*current.cons_cell.cdr)) : nullptr;
+        return result;
+    }
     eshkol_ast_t result = copyAst(current);
 
     if (result.type == ESHKOL_OP) {
@@ -262,7 +370,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
             };
             switch (eshkol::routeAstOperation(op->op,
                 eshkol::AstRouteGroup<AstRoute::Call,
-                    ESHKOL_CALL_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP
+                    ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP
                 >{},
                 eshkol::AstRouteGroup<AstRoute::Sequence,
                     ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
@@ -285,7 +393,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 eshkol::AstRouteGroup<AstRoute::DynamicWind, ESHKOL_DYNAMIC_WIND_OP>{},
                 eshkol::AstRouteGroup<AstRoute::The, ESHKOL_THE_OP>{},
                 eshkol::AstRouteGroup<AstRoute::OtherOperations,
-                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_IF_OP, ESHKOL_ADD_OP,
+                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP,
                     ESHKOL_SUB_OP, ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP,
                     ESHKOL_EXTERN_VAR_OP, ESHKOL_QUOTE_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
                     ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
@@ -352,35 +460,81 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case AstRoute::Lambda:
+            case AstRoute::Lambda: {
+                const auto saved = value_renames_;
+                pushScope();
+                const auto count = op->lambda_op.num_params;
+                auto* parameters = count ? new eshkol_ast_t[count] : nullptr;
+                for (uint64_t i = 0; i < count; ++i) {
+                    parameters[i] = copyAst(op->lambda_op.parameters[i]);
+                    if (parameters[i].type == ESHKOL_VAR && parameters[i].variable.id) {
+                        const std::string name = parameters[i].variable.id;
+                        const std::string fresh = "_v" + std::to_string(rename_counter_++) + "." + name;
+                        value_renames_[name] = fresh;
+                        parameters[i].variable.id = eshkol_ast_string_copy(fresh);
+                    }
+                }
+                op->lambda_op.parameters = parameters;
+                if (op->lambda_op.rest_param) {
+                    const std::string name = op->lambda_op.rest_param;
+                    const std::string fresh = "_v" + std::to_string(rename_counter_++) + "." + name;
+                    value_renames_[name] = fresh;
+                    op->lambda_op.rest_param = eshkol_ast_string_copy(fresh);
+                }
                 if (op->lambda_op.body) {
                     eshkol_ast_t* new_body = new eshkol_ast_t;
                     *new_body = expandNode(*op->lambda_op.body);
                     op->lambda_op.body = new_body;
                 }
+                popScope();
+                value_renames_ = saved;
                 break;
+            }
 
-            case AstRoute::Let:
-                if (op->let_op.num_bindings > 0 && op->let_op.bindings) {
-                    eshkol_ast_t* new_bindings = new eshkol_ast_t[op->let_op.num_bindings];
-                    for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                        // Bindings are CONS cells (var . val) — expand the value (cdr)
-                        eshkol_ast_t binding = op->let_op.bindings[i];
-                        if (binding.type == ESHKOL_CONS && binding.cons_cell.cdr) {
-                            eshkol_ast_t* new_cdr = new eshkol_ast_t;
-                            *new_cdr = expandNode(*binding.cons_cell.cdr);
-                            binding.cons_cell.cdr = new_cdr;
-                        }
-                        new_bindings[i] = binding;
+            case AstRoute::Let: {
+                const auto saved = value_renames_;
+                pushScope();
+                auto body_env = saved;
+                if (op->let_op.name) {
+                    const std::string old_name = op->let_op.name;
+                    const std::string fresh = "_v" + std::to_string(rename_counter_++) + "." + old_name;
+                    body_env[old_name] = fresh;
+                    op->let_op.name = eshkol_ast_string_copy(fresh);
+                }
+                const auto count = op->let_op.num_bindings;
+                auto* bindings = count ? new eshkol_ast_t[count] : nullptr;
+                std::vector<std::pair<std::string, std::string>> names(count);
+                for (uint64_t i = 0; i < count; ++i) {
+                    bindings[i] = op->let_op.bindings[i];
+                    auto& binding = bindings[i];
+                    if (binding.type == ESHKOL_CONS && binding.cons_cell.car &&
+                        binding.cons_cell.car->type == ESHKOL_VAR && binding.cons_cell.car->variable.id) {
+                        names[i].first = binding.cons_cell.car->variable.id;
+                        names[i].second = "_v" + std::to_string(rename_counter_++) + "." + names[i].first;
+                        auto* variable = new eshkol_ast_t(copyAst(*binding.cons_cell.car));
+                        variable->variable.id = eshkol_ast_string_copy(names[i].second);
+                        binding.cons_cell.car = variable;
+                        body_env[names[i].first] = names[i].second;
                     }
-                    op->let_op.bindings = new_bindings;
                 }
-                if (op->let_op.body) {
-                    eshkol_ast_t* new_body = new eshkol_ast_t;
-                    *new_body = expandNode(*op->let_op.body);
-                    op->let_op.body = new_body;
+                const bool recursive = op->op == ESHKOL_LETREC_OP || op->op == ESHKOL_LETREC_STAR_OP;
+                auto sequential_env = saved;
+                for (uint64_t i = 0; i < count; ++i) {
+                    value_renames_ = recursive ? body_env :
+                        (op->op == ESHKOL_LET_STAR_OP ? sequential_env : saved);
+                    auto& binding = bindings[i];
+                    if (binding.type == ESHKOL_CONS && binding.cons_cell.cdr)
+                        binding.cons_cell.cdr = new eshkol_ast_t(expandNode(*binding.cons_cell.cdr));
+                    if (!names[i].first.empty()) sequential_env[names[i].first] = names[i].second;
                 }
+                op->let_op.bindings = bindings;
+                value_renames_ = body_env;
+                if (op->let_op.body)
+                    op->let_op.body = new eshkol_ast_t(expandNode(*op->let_op.body));
+                popScope();
+                value_renames_ = saved;
                 break;
+            }
 
             case AstRoute::Match:
                 if (op->match_op.expr) {
@@ -389,18 +543,126 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                     op->match_op.expr = new_expr;
                 }
                 if (op->match_op.num_clauses > 0 && op->match_op.clauses) {
+                    const auto saved = value_renames_;
+                    auto* clauses = new eshkol_match_clause_t[op->match_op.num_clauses];
                     for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
-                        if (op->match_op.clauses[i].body) {
-                            eshkol_ast_t* new_body = new eshkol_ast_t;
-                            *new_body = expandNode(*op->match_op.clauses[i].body);
-                            op->match_op.clauses[i].body = new_body;
-                        }
+                        value_renames_ = saved;
+                        clauses[i] = op->match_op.clauses[i];
+                        std::map<std::string, std::string> pattern_names;
+                        auto bind_name = [&](const char* name) {
+                            auto& fresh = pattern_names[name];
+                            if (fresh.empty()) fresh = "_v" + std::to_string(rename_counter_++) + "." + name;
+                            value_renames_[name] = fresh;
+                            return eshkol_ast_string_copy(fresh);
+                        };
+                        std::function<eshkol_pattern_t*(const eshkol_pattern_t*)> rename_pattern;
+                        rename_pattern = [&](const eshkol_pattern_t* pattern) -> eshkol_pattern_t* {
+                            if (!pattern) return nullptr;
+                            auto* renamed = new eshkol_pattern_t(*pattern);
+                            if (pattern->type == PATTERN_VARIABLE && pattern->variable.name)
+                                renamed->variable.name = bind_name(pattern->variable.name);
+                            else if (pattern->type == PATTERN_CONS) {
+                                renamed->cons.car_pattern = rename_pattern(pattern->cons.car_pattern);
+                                renamed->cons.cdr_pattern = rename_pattern(pattern->cons.cdr_pattern);
+                            } else if (pattern->type == PATTERN_LIST || pattern->type == PATTERN_OR) {
+                                const auto count = pattern->type == PATTERN_LIST ? pattern->list.num_patterns : pattern->or_pat.num_patterns;
+                                auto** original = pattern->type == PATTERN_LIST ? pattern->list.patterns : pattern->or_pat.patterns;
+                                auto** children = count ? new eshkol_pattern_t*[count] : nullptr;
+                                for (uint64_t j = 0; j < count; ++j) children[j] = rename_pattern(original[j]);
+                                if (pattern->type == PATTERN_LIST) renamed->list.patterns = children;
+                                else renamed->or_pat.patterns = children;
+                            } else if (pattern->type == PATTERN_PREDICATE) {
+                                const auto bindings = value_renames_;
+                                value_renames_ = saved;
+                                if (pattern->predicate.predicate)
+                                    renamed->predicate.predicate = new eshkol_ast_t(expandNode(*pattern->predicate.predicate));
+                                value_renames_ = bindings;
+                                if (pattern->predicate.binding_name)
+                                    renamed->predicate.binding_name = bind_name(pattern->predicate.binding_name);
+                            }
+                            return renamed;
+                        };
+                        clauses[i].pattern = rename_pattern(clauses[i].pattern);
+                        if (clauses[i].body) clauses[i].body = new eshkol_ast_t(expandNode(*clauses[i].body));
                     }
+                    op->match_op.clauses = clauses;
+                    value_renames_ = saved;
                 }
                 break;
 
             // Ops that reuse call_op struct layout
             case AstRoute::Cond:
+                if (op->op == ESHKOL_DO_OP && op->call_op.func &&
+                    op->call_op.func->type == ESHKOL_CONS &&
+                    op->call_op.func->cons_cell.car &&
+                    op->call_op.func->cons_cell.car->type == ESHKOL_OP &&
+                    op->call_op.func->cons_cell.car->operation.op == ESHKOL_CALL_OP) {
+                    // `do` stores bindings and its test clause in a CONS
+                    // scaffold.  Binding initializers see the outer scope;
+                    // steps, test/results, and body see all loop variables.
+                    const auto saved = value_renames_;
+                    pushScope();
+                    auto* main = op->call_op.func;
+                    auto* binding_list = main->cons_cell.car;
+                    const uint64_t n = binding_list->operation.call_op.num_vars;
+                    auto* new_bindings = n ? new eshkol_ast_t[n] : nullptr;
+                    std::vector<std::pair<std::string, std::string>> names(n);
+                    for (uint64_t i = 0; i < n; ++i) {
+                        const auto& old_binding = binding_list->operation.call_op.variables[i];
+                        new_bindings[i] = old_binding;
+                        if (old_binding.type == ESHKOL_CONS && old_binding.cons_cell.cdr) {
+                            new_bindings[i].cons_cell.cdr =
+                                new eshkol_ast_t(*old_binding.cons_cell.cdr);
+                        }
+                        if (old_binding.type != ESHKOL_CONS || !old_binding.cons_cell.car ||
+                            old_binding.cons_cell.car->type != ESHKOL_VAR ||
+                            !old_binding.cons_cell.car->variable.id) continue;
+                        names[i].first = old_binding.cons_cell.car->variable.id;
+                        names[i].second = "_v" + std::to_string(rename_counter_++) + "." + names[i].first;
+                        auto* var = new eshkol_ast_t(copyAst(*old_binding.cons_cell.car));
+                        var->variable.id = eshkol_ast_string_copy(names[i].second);
+                        new_bindings[i].cons_cell.car = var;
+                        value_renames_[names[i].first] = names[i].second;
+                    }
+                    for (uint64_t i = 0; i < n; ++i) {
+                        auto& b = new_bindings[i];
+                        if (b.type != ESHKOL_CONS || !b.cons_cell.cdr ||
+                            b.cons_cell.cdr->type != ESHKOL_CONS) continue;
+                        auto* init_step = b.cons_cell.cdr;
+                        const auto& original = binding_list->operation.call_op.variables[i];
+                        value_renames_ = saved;
+                        init_step->cons_cell.car = original.cons_cell.cdr &&
+                            original.cons_cell.cdr->type == ESHKOL_CONS &&
+                            original.cons_cell.cdr->cons_cell.car
+                            ? new eshkol_ast_t(expandNode(*original.cons_cell.cdr->cons_cell.car))
+                            : nullptr;
+                        // Steps execute in the loop-variable environment.
+                        for (const auto& item : names)
+                            if (!item.first.empty()) value_renames_[item.first] = item.second;
+                        if (original.cons_cell.cdr && original.cons_cell.cdr->type == ESHKOL_CONS &&
+                            original.cons_cell.cdr->cons_cell.cdr)
+                            init_step->cons_cell.cdr = new eshkol_ast_t(
+                                expandNode(*original.cons_cell.cdr->cons_cell.cdr));
+                    }
+                    value_renames_ = saved;
+                    for (const auto& item : names) if (!item.first.empty()) value_renames_[item.first] = item.second;
+                    binding_list->operation.call_op.variables = new_bindings;
+                    if (main->cons_cell.cdr && main->cons_cell.cdr->type == ESHKOL_CONS) {
+                        auto* test_clause = main->cons_cell.cdr;
+                        if (test_clause->cons_cell.car)
+                            test_clause->cons_cell.car = new eshkol_ast_t(expandNode(*test_clause->cons_cell.car));
+                        if (test_clause->cons_cell.cdr && test_clause->cons_cell.cdr->type == ESHKOL_OP) {
+                            auto* results = test_clause->cons_cell.cdr;
+                            for (uint64_t i = 0; i < results->operation.call_op.num_vars; ++i)
+                                results->operation.call_op.variables[i] = expandNode(results->operation.call_op.variables[i]);
+                        }
+                    }
+                    for (uint64_t i = 0; i < op->call_op.num_vars; ++i)
+                        op->call_op.variables[i] = expandNode(op->call_op.variables[i]);
+                    popScope();
+                    value_renames_ = saved;
+                    break;
+                }
                 if (op->call_op.func) {
                     eshkol_ast_t* new_func = new eshkol_ast_t;
                     *new_func = expandNode(*op->call_op.func);
@@ -416,6 +678,11 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 break;
 
             case AstRoute::Set:
+                if (op->set_op.name && !definition_identifiers_.count(op->set_op.name)) {
+                    auto target_name = value_renames_.find(op->set_op.name);
+                    if (target_name != value_renames_.end())
+                        op->set_op.name = eshkol_ast_string_copy(target_name->second);
+                }
                 if (op->set_op.value) {
                     eshkol_ast_t* new_val = new eshkol_ast_t;
                     *new_val = expandNode(*op->set_op.value);
@@ -423,7 +690,14 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case AstRoute::Guard:
+            case AstRoute::Guard: {
+                const auto saved = value_renames_;
+                if (op->guard_op.var_name) {
+                    const std::string name = op->guard_op.var_name;
+                    const std::string fresh = "_v" + std::to_string(rename_counter_++) + "." + name;
+                    value_renames_[name] = fresh;
+                    op->guard_op.var_name = eshkol_ast_string_copy(fresh);
+                }
                 if (op->guard_op.num_clauses > 0 && op->guard_op.clauses) {
                     eshkol_ast_t* new_clauses = new eshkol_ast_t[op->guard_op.num_clauses];
                     for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
@@ -431,6 +705,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                     }
                     op->guard_op.clauses = new_clauses;
                 }
+                value_renames_ = saved;
                 if (op->guard_op.num_body_exprs > 0 && op->guard_op.body) {
                     eshkol_ast_t* new_body = new eshkol_ast_t[op->guard_op.num_body_exprs];
                     for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
@@ -439,6 +714,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                     op->guard_op.body = new_body;
                 }
                 break;
+            }
 
             case AstRoute::Raise:
                 if (op->raise_op.exception) {
@@ -495,6 +771,108 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 break;
 
             case AstRoute::OtherOperations:
+                // The route table intentionally groups many payload shapes
+                // here, but they are not leaves: all AST-bearing operands
+                // still need macro expansion and value alpha-renaming.
+                {
+                auto expand_ptr = [&](eshkol_ast_t*& child) {
+                    if (child) child = new eshkol_ast_t(expandNode(*child));
+                };
+                auto expand_array = [&](eshkol_ast_t*& items, uint64_t count) {
+                    if (!items) return;
+                    auto* fresh = new eshkol_ast_t[count];
+                    for (uint64_t i = 0; i < count; ++i) fresh[i] = expandNode(items[i]);
+                    items = fresh;
+                };
+                switch (op->op) {
+                    case ESHKOL_COMPOSE_OP:
+                        expand_ptr(op->compose_op.func_a); expand_ptr(op->compose_op.func_b); break;
+                    case ESHKOL_TENSOR_OP:
+                        expand_array(op->tensor_op.elements, op->tensor_op.total_elements); break;
+                    case ESHKOL_DIFF_OP:
+                        if (op->diff_op.variable) {
+                            auto it = value_renames_.find(op->diff_op.variable);
+                            if (it != value_renames_.end())
+                                op->diff_op.variable = eshkol_ast_string_copy(it->second);
+                        }
+                        expand_ptr(op->diff_op.expression); break;
+                    case ESHKOL_DERIVATIVE_OP:
+                        expand_ptr(op->derivative_op.function); expand_ptr(op->derivative_op.point); break;
+                    case ESHKOL_GRADIENT_OP:
+                        expand_ptr(op->gradient_op.function); expand_ptr(op->gradient_op.point); break;
+                    case ESHKOL_JACOBIAN_OP:
+                        expand_ptr(op->jacobian_op.function); expand_ptr(op->jacobian_op.point); break;
+                    case ESHKOL_HESSIAN_OP:
+                        expand_ptr(op->hessian_op.function); expand_ptr(op->hessian_op.point); break;
+                    case ESHKOL_DIVERGENCE_OP:
+                        expand_ptr(op->divergence_op.function); expand_ptr(op->divergence_op.point); break;
+                    case ESHKOL_CURL_OP:
+                        expand_ptr(op->curl_op.function); expand_ptr(op->curl_op.point); break;
+                    case ESHKOL_LAPLACIAN_OP:
+                        expand_ptr(op->laplacian_op.function); expand_ptr(op->laplacian_op.point); break;
+                    case ESHKOL_DIRECTIONAL_DERIV_OP:
+                        expand_ptr(op->directional_deriv_op.function);
+                        expand_ptr(op->directional_deriv_op.point);
+                        expand_ptr(op->directional_deriv_op.direction); break;
+                    case ESHKOL_TAYLOR_OP:
+                    case ESHKOL_DERIVATIVE_N_OP:
+                        expand_ptr(op->taylor_op.function); expand_ptr(op->taylor_op.point);
+                        expand_ptr(op->taylor_op.order); break;
+                    case ESHKOL_WITH_REGION_OP:
+                        expand_array(op->with_region_op.body, op->with_region_op.num_body_exprs); break;
+                    case ESHKOL_OWNED_OP: expand_ptr(op->owned_op.value); break;
+                    case ESHKOL_MOVE_OP: expand_ptr(op->move_op.value); break;
+                    case ESHKOL_SHARED_OP: expand_ptr(op->shared_op.value); break;
+                    case ESHKOL_WEAK_REF_OP: expand_ptr(op->weak_ref_op.value); break;
+                    case ESHKOL_BORROW_OP:
+                        expand_ptr(op->borrow_op.value);
+                        expand_array(op->borrow_op.body, op->borrow_op.num_body_exprs); break;
+                    case ESHKOL_CALL_WITH_VALUES_OP:
+                        expand_ptr(op->call_with_values_op.producer);
+                        expand_ptr(op->call_with_values_op.consumer); break;
+                    case ESHKOL_LET_VALUES_OP:
+                    case ESHKOL_LET_STAR_VALUES_OP: {
+                        const auto saved = value_renames_;
+                        auto body_env = saved;
+                        const bool sequential = op->op == ESHKOL_LET_STAR_VALUES_OP;
+                        auto* producers = op->let_values_op.num_bindings ?
+                            new eshkol_ast_t[op->let_values_op.num_bindings] : nullptr;
+                        auto*** variables = op->let_values_op.num_bindings ?
+                            new char**[op->let_values_op.num_bindings] : nullptr;
+                        for (uint64_t i = 0; i < op->let_values_op.num_bindings; ++i) {
+                            value_renames_ = sequential ? body_env : saved;
+                            producers[i] = expandNode(op->let_values_op.producers[i]);
+                            variables[i] = new char*[op->let_values_op.binding_var_counts[i]];
+                            for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; ++j) {
+                                const char* old = op->let_values_op.binding_vars[i][j];
+                                const std::string fresh = "_v" + std::to_string(rename_counter_++) + "." + old;
+                                variables[i][j] = eshkol_ast_string_copy(fresh);
+                                body_env[old] = fresh;
+                            }
+                        }
+                        op->let_values_op.producers = producers;
+                        op->let_values_op.binding_vars = variables;
+                        value_renames_ = body_env;
+                        op->let_values_op.body = op->let_values_op.body ?
+                            new eshkol_ast_t(expandNode(*op->let_values_op.body)) : nullptr;
+                        value_renames_ = saved;
+                        break;
+                    }
+                    case ESHKOL_CASE_LAMBDA_OP:
+                        expand_array(op->case_lambda_op.clauses, op->case_lambda_op.num_clauses); break;
+                    case ESHKOL_PARAMETERIZE_OP:
+                        expand_array(op->parameterize_op.params, op->parameterize_op.num_bindings);
+                        expand_array(op->parameterize_op.values, op->parameterize_op.num_bindings);
+                        expand_ptr(op->parameterize_op.body); break;
+                    default: break;
+                }
+                // Neuro-symbolic operations all carry their arguments in the
+                // generic call_op payload, despite having distinct op tags.
+                if ((op->op >= ESHKOL_UNIFY_OP && op->op <= ESHKOL_WORKSPACE_PRED_OP) ||
+                    op->op == ESHKOL_KB_QUERY_PREFIX_OP ||
+                    (op->op >= ESHKOL_DNC_MAKE_OP && op->op <= ESHKOL_SDNC_PRED_OP))
+                    expand_array(op->call_op.variables, op->call_op.num_vars);
+                }
                 break;
         }
         }
@@ -555,8 +933,22 @@ eshkol_ast_t MacroExpander::tryExpandMacroCall(const eshkol_ast_t& call) {
                                         call_op->variables, call_op->num_vars, literals, bindings);
 
         if (matched) {
-            // Rule matched! Instantiate the template
-            return instantiateTemplate(rule->template_, bindings);
+            // Rule matched! Instantiate under the transformer's definition
+            // environment. Pattern substitutions remain caller ASTs.
+            const auto definition = definition_bindings_.find(macro);
+            const auto* binding = definition == definition_bindings_.end() ? nullptr : &definition->second;
+            const auto saved_value_env = active_template_value_env_;
+            const auto saved_macro_env = active_template_macro_env_;
+            const auto saved_pattern_names = active_template_pattern_names_;
+            if (binding) active_template_value_env_ = binding->value_env;
+            if (binding) active_template_macro_env_ = binding->macro_env;
+            active_template_pattern_names_.clear();
+            for (const auto& item : bindings) active_template_pattern_names_.insert(item.first);
+            eshkol_ast_t expanded = instantiateTemplate(rule->template_, bindings);
+            active_template_value_env_ = saved_value_env;
+            active_template_macro_env_ = saved_macro_env;
+            active_template_pattern_names_ = saved_pattern_names;
+            return expanded;
         }
     }
 
@@ -782,7 +1174,7 @@ bool MacroExpander::findEllipsisDriver(const eshkol_ast_t& ast,
         };
         switch (eshkol::routeAstOperation(op->op,
             eshkol::AstRouteGroup<AstRoute::Call,
-                ESHKOL_CALL_OP, ESHKOL_COND_OP, ESHKOL_CASE_OP, ESHKOL_WHEN_OP,
+                ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP, ESHKOL_CASE_OP, ESHKOL_WHEN_OP,
                 ESHKOL_UNLESS_OP, ESHKOL_DO_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
                 ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_QUOTE_OP
             >{},
@@ -802,7 +1194,7 @@ bool MacroExpander::findEllipsisDriver(const eshkol_ast_t& ast,
             eshkol::AstRouteGroup<AstRoute::CallCc, ESHKOL_CALL_CC_OP>{},
             eshkol::AstRouteGroup<AstRoute::DynamicWind, ESHKOL_DYNAMIC_WIND_OP>{},
             eshkol::AstRouteGroup<AstRoute::OtherOperations,
-                ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_IF_OP, ESHKOL_ADD_OP,
+                ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP,
                 ESHKOL_SUB_OP, ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP,
                 ESHKOL_EXTERN_VAR_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
                 ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
@@ -1102,7 +1494,30 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
             result.variable.id = eshkol_ast_string_copy(rn->second);
             return result;
         }
-        return copyAst(ast);
+        auto def_name = active_template_value_env_.find(name);
+        if (!in_datum_ && def_name != active_template_value_env_.end()) {
+            eshkol_ast_t result = copyAst(ast);
+            result.variable.id = eshkol_ast_string_copy(def_name->second);
+            definition_identifiers_.insert(result.variable.id);
+            return result;
+        }
+        eshkol_ast_t result = copyAst(ast);
+        if (!in_datum_) {
+            for (auto scope = active_template_macro_env_.rbegin();
+                 scope != active_template_macro_env_.rend(); ++scope) {
+                auto found = scope->find(name);
+                if (found == scope->end()) continue;
+                auto& alias = macro_alias_names_[found->second];
+                if (alias.empty()) {
+                    alias = "__eshkol_macro_binding_" + std::to_string(rename_counter_++);
+                    macro_aliases_[alias] = found->second;
+                }
+                result.variable.id = eshkol_ast_string_copy(alias);
+                break;
+            }
+            definition_identifiers_.insert(result.variable.id);
+        }
+        return result;
     }
 
     // Recursively substitute in cons cells (used for let bindings: (var . val))
@@ -1133,7 +1548,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
             };
             switch (eshkol::routeAstOperation(op->op,
                 eshkol::AstRouteGroup<AstRoute::Call,
-                    ESHKOL_CALL_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
+                    ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
                     ESHKOL_QUOTE_OP
                 >{},
                 eshkol::AstRouteGroup<AstRoute::Sequence,
@@ -1156,7 +1571,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 eshkol::AstRouteGroup<AstRoute::CallCc, ESHKOL_CALL_CC_OP>{},
                 eshkol::AstRouteGroup<AstRoute::DynamicWind, ESHKOL_DYNAMIC_WIND_OP>{},
                 eshkol::AstRouteGroup<AstRoute::OtherOperations,
-                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_IF_OP, ESHKOL_ADD_OP,
+                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP,
                     ESHKOL_SUB_OP, ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP,
                     ESHKOL_EXTERN_VAR_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
                     ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
@@ -1434,7 +1849,13 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                         auto rn = active_renames_.find(target);
                         if (rn != active_renames_.end()) {
                             op->set_op.name = eshkol_ast_string_copy(rn->second);
+                        } else {
+                            auto dn = active_template_value_env_.find(target);
+                            if (dn != active_template_value_env_.end())
+                                op->set_op.name = eshkol_ast_string_copy(dn->second);
                         }
+                        op->set_op.name = eshkol_ast_strdup(op->set_op.name);
+                        definition_identifiers_.insert(op->set_op.name);
                     }
                 }
                 if (op->set_op.value) {
@@ -1548,6 +1969,34 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
  *
  * @return The copied AST node.
  */
+eshkol_ast_t MacroExpander::expandQuasiquoted(const eshkol_ast_t& ast, unsigned depth) {
+    eshkol_ast_t result = copyAst(ast);
+    if (ast.type == ESHKOL_CONS) {
+        if (ast.cons_cell.car) result.cons_cell.car = new eshkol_ast_t(expandQuasiquoted(*ast.cons_cell.car, depth));
+        if (ast.cons_cell.cdr) result.cons_cell.cdr = new eshkol_ast_t(expandQuasiquoted(*ast.cons_cell.cdr, depth));
+    } else if (ast.type == ESHKOL_OP) {
+        auto* op = &result.operation;
+        const bool escape = op->op == ESHKOL_UNQUOTE_OP || op->op == ESHKOL_UNQUOTE_SPLICING_OP;
+        if (op->op == ESHKOL_TENSOR_OP) {
+            auto* elements = new eshkol_ast_t[op->tensor_op.total_elements];
+            for (uint64_t i = 0; i < op->tensor_op.total_elements; ++i)
+                elements[i] = expandQuasiquoted(op->tensor_op.elements[i], depth);
+            op->tensor_op.elements = elements;
+        } else if (op->op == ESHKOL_CALL_OP || op->op == ESHKOL_QUOTE_OP ||
+                   op->op == ESHKOL_QUASIQUOTE_OP || escape) {
+            const unsigned child_depth = op->op == ESHKOL_QUASIQUOTE_OP ? depth + 1 :
+                (escape && depth ? depth - 1 : depth);
+            auto* arguments = op->call_op.num_vars ? new eshkol_ast_t[op->call_op.num_vars] : nullptr;
+            for (uint64_t i = 0; i < op->call_op.num_vars; ++i)
+                arguments[i] = escape && depth == 1 ? expandNode(op->call_op.variables[i]) :
+                    expandQuasiquoted(op->call_op.variables[i], child_depth);
+            op->call_op.variables = arguments;
+            if (op->call_op.func) op->call_op.func = new eshkol_ast_t(copyAst(*op->call_op.func));
+        }
+    }
+    return result;
+}
+
 eshkol_ast_t MacroExpander::copyAst(const eshkol_ast_t& ast) {
     eshkol_ast_t result = ast;
 
@@ -1565,6 +2014,8 @@ eshkol_ast_t MacroExpander::copyAst(const eshkol_ast_t& ast) {
         case ESHKOL_VAR:
             if (ast.variable.id) {
                 result.variable.id = eshkol_ast_strdup(ast.variable.id);
+                if (definition_identifiers_.count(ast.variable.id))
+                    definition_identifiers_.insert(result.variable.id);
             }
             break;
 
@@ -1668,7 +2119,8 @@ bool MacroExpander::matchPattern(const eshkol_macro_pattern_t* pattern,
             if (ast.type != ESHKOL_OP) return false;
 
             const auto* op = &ast.operation;
-            if (op->op != ESHKOL_CALL_OP || !op->call_op.func) return false;
+            if ((op->op != ESHKOL_CALL_OP && op->op != ESHKOL_IF_OP) ||
+                !op->call_op.func) return false;
 
             std::vector<eshkol_ast_t> args;
             args.reserve(op->call_op.num_vars + 1);

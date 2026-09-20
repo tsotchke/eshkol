@@ -1,0 +1,26 @@
+id: SW-195
+bucket: SILENT-WRONG
+family: conditions/error-irritants
+status: in-progress
+needs_decision: false
+title: "VM error objects drop their irritant list"
+repro: >-
+  (display (guard (e (#t (error-object-irritants e))) (error "boom" 1 2)))
+observed: >-
+  The public browser VM prints () without diagnostics instead of (1 2).
+correct: >-
+  Preserve and return the supplied Scheme values in order, including after
+  region escape, first-class error calls, and re-raising.
+evidence: >-
+  Published-site browser audit on 2026-09-20; uninstrumented direct probe
+  confirmed the loss. Local source VM and new ESKB regressions pass after
+  storing a typed Value-compatible head and tracing/cloning its graph.
+  Private native 2231 carries the packed list; legacy native 237 retains its
+  original single-argument ABI. An older ESKB fixture retains its original
+  message/stack behavior, rather than consuming unrelated stack values.
+caught_by: [published-site-browser-oracle-audit]
+missed_by: [site_smoke, doc_audit]
+notes: >-
+  Source is not yet committed/integrated or deployed. Lifetime and callback
+  tests exposed SW-196, which is separately tracked. No waiver or refusal
+  counts as a fix.

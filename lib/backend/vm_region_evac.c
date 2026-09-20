@@ -218,7 +218,7 @@ static const VmEvacSpec vm_evac_subtype_table[VM_EVAC_TYPE_COUNT] = {
     [HEAP_PROMISE]      = { "promise",      VM_EVAC_WALK, "VmVector.items[0..3): forced flag, thunk, cached" },
     [HEAP_CONTINUATION] = { "continuation", VM_EVAC_WALK, "promise_mark + saved stack/handlers/winds/parameter arrays" },
     [HEAP_HASH]         = { "hash-table",   VM_EVAC_WALK, "keys/values are raw scalars; marked CONSERVATIVELY" },
-    [HEAP_ERROR]        = { "error-object", VM_EVAC_WALK, "message/type inline; irritants chain must be NULL" },
+    [HEAP_ERROR]        = { "error-object", VM_EVAC_WALK, "message/type inline; Value irritant list head is walked" },
     [HEAP_BYTEVECTOR]   = { "bytevector",   VM_EVAC_WALK, "payload only (VmBytevector.data)" },
     [HEAP_PARAMETER]    = { "parameter",    VM_EVAC_WALK, "current_value, converter, save_stack[0..stack_depth)" },
     [HEAP_HYPER_DUAL]   = { "hyper-dual",   VM_EVAC_WALK, "payload only (four doubles)" },
@@ -441,7 +441,7 @@ static int vm_evac_walk_object(VM* vm, int32_t idx) {
      * are covered by the conservative block sweep, which is why this arm can
      * be a no-op without being a shallow leaf copy. */
     case HEAP_STRING:                 /* VmString: byte_len/char_len/char* data */
-    case HEAP_COMPLEX:                /* two doubles                            */
+    case HEAP_COMPLEX:                /* doubles plus optional dual carriers   */
     case HEAP_RATIONAL:               /* int64 pair, or two VmBignum*            */
     case HEAP_BIGNUM:                 /* sign/limbs/n_limbs/capacity             */
     /* HEAP_DUAL's exact halves (SW-85) are ARENA pointers, not heap indices,
@@ -555,11 +555,13 @@ static int vm_evac_walk_object(VM* vm, int32_t idx) {
     case HEAP_ERROR: {
         VmError* e = (VmError*)o->opaque.ptr;
         if (!e) return 1;
-        /* `message` and `type` are inline char arrays. `irritants` is a chain
-         * of untyped VmCons cells; every VM constructor passes NULL, and there
-         * is no tag to walk one safely, so a non-NULL chain pins rather than
-         * being skipped. */
-        return e->irritants == NULL;
+        /* `message`/`type` are inline. The VM error path stores its real
+         * Scheme list head as an inline Value-compatible field, so retain it
+         * as an ordinary heap root while the guard region is evacuated. */
+        const void* raw = vm_error_value_irritants(e);
+        Value irritants = NIL_VAL;
+        if (raw) memcpy(&irritants, raw, sizeof(irritants));
+        return e->irritants == NULL && vm_evac_mark_value(h, irritants);
     }
 
     case HEAP_SUBST: {
@@ -771,6 +773,15 @@ static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
      * (old rational -> old bignum -> region-grown limbs) is not reachable by
      * scanning alone. */
     switch ((int)o->type) {
+    case HEAP_COMPLEX: {
+        const VmComplex* z = (const VmComplex*)p;
+        const VmDual* parts[2] = { z->creal, z->cimag };
+        for (int i = 0; i < 2; i++) if (parts[i]) {
+            vm_evac_retain_ptr(bs, (void*)parts[i]);
+            vm_evac_scan_range(bs, (void*)parts[i], sizeof(VmDual));
+        }
+        break;
+    }
     case HEAP_RATIONAL: {
         const VmRational* r = (const VmRational*)p;
         if (r->is_big) {
@@ -805,22 +816,22 @@ static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
                               vm_evac_scan_range(bs, r->big_den, sizeof(VmBignum)); }
         }
         if (d->kind == VM_DUAL_KIND_TAYLOR) {
-            if (d->coeff) {
-                vm_evac_retain_ptr(bs, d->coeff);
-                vm_evac_scan_range(bs, d->coeff,
-                                   (size_t)(d->order + 1) * sizeof(double));
-            }
-            if (d->tangent_coeff) {
-                vm_evac_retain_ptr(bs, d->tangent_coeff);
-                vm_evac_scan_range(bs, d->tangent_coeff,
-                                   (size_t)(d->order + 1) * sizeof(double));
-            }
-            if (d->exact_coeff) {
-                vm_evac_retain_ptr(bs, d->exact_coeff);
-                vm_evac_scan_range(bs, d->exact_coeff,
-                                   (size_t)(d->order + 1) * sizeof(VmRational*));
+            double* channels[4] = {d->coeff, d->tangent_coeff,
+                                   d->tangent2_coeff, d->mixed_coeff};
+            VmRational** exact[4] = {d->exact_coeff, d->exact_tangent_coeff,
+                                     d->exact_tangent2_coeff, d->exact_mixed_coeff};
+            for (int channel = 0; channel < 4; ++channel) {
+                if (channels[channel]) {
+                    vm_evac_retain_ptr(bs, channels[channel]);
+                    vm_evac_scan_range(bs, channels[channel],
+                                       ((size_t)d->order + 1) * sizeof(double));
+                }
+                if (!exact[channel]) continue;
+                vm_evac_retain_ptr(bs, exact[channel]);
+                vm_evac_scan_range(bs, exact[channel],
+                                   ((size_t)d->order + 1) * sizeof(VmRational*));
                 for (uint32_t i = 0; i <= d->order; i++) {
-                    const VmRational* er = d->exact_coeff[i];
+                    const VmRational* er = exact[channel][i];
                     if (!er) continue;
                     vm_evac_retain_ptr(bs, er);
                     vm_evac_scan_range(bs, er, sizeof(VmRational));

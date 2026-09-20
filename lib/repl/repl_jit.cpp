@@ -3386,6 +3386,19 @@ void ReplJITContext::rememberPersistentMacros(const std::vector<eshkol_ast_t>& a
     }
 }
 
+void ReplJITContext::seedParserMacroNames(std::istream& stream) const {
+    std::set<std::string> names;
+    for (const auto& ast_item : persistent_macro_asts_) {
+        if (ast_item.type == ESHKOL_OP &&
+            ast_item.operation.op == ESHKOL_DEFINE_SYNTAX_OP &&
+            ast_item.operation.define_syntax_op.macro &&
+            ast_item.operation.define_syntax_op.macro->name) {
+            names.insert(ast_item.operation.define_syntax_op.macro->name);
+        }
+    }
+    eshkol_parser_seed_macro_names(stream, names);
+}
+
 /**
  * @brief Parses every top-level form in @p content into a vector of ASTs, skipping blank lines and `;`-comments.
  *
@@ -3847,6 +3860,16 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         throw std::runtime_error("Cannot execute null AST");
     }
 
+    // Interactive evaluations compile one AST at a time (unlike module
+    // batches), so retain a define-syntax form here as well.  This makes the
+    // persisted macro-name set available when the next fresh input stream is
+    // seeded before parsing.
+    if (ast->type == ESHKOL_OP &&
+        ast->operation.op == ESHKOL_DEFINE_SYNTAX_OP) {
+        std::vector<eshkol_ast_t> macro_form{*ast};
+        rememberPersistentMacros(macro_form);
+    }
+
     // TOP-LEVEL SEQUENCE FLATTENING (Noesis#3 / v1.2.1-hardened)
     //
     // define-record-type, make-parameter, and other macro-style parser
@@ -4073,8 +4096,21 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     // Generate LLVM IR using the existing Eshkol compiler
     std::string module_name = "__repl_module_" + std::to_string(eval_id);
 
-    // Call the existing compiler to generate LLVM IR from AST
-    LLVMModuleRef c_module = eshkol_generate_llvm_ir(ast, 1, module_name.c_str());
+    // Carry persistent macro definitions into single-form interactive
+    // compilations as well as executeBatch().  Without this, stream seeding
+    // lets the parser preserve a later keyword call, but the expander has no
+    // definition to apply to that AST.
+    std::vector<eshkol_ast_t> codegen_asts;
+    if (!persistent_macro_asts_.empty()) {
+        codegen_asts.reserve(persistent_macro_asts_.size() + 1);
+        codegen_asts.insert(codegen_asts.end(), persistent_macro_asts_.begin(),
+                            persistent_macro_asts_.end());
+    }
+    codegen_asts.push_back(*ast);
+    // Call the existing compiler to generate LLVM IR from the complete
+    // interactive macro environment plus the current form.
+    LLVMModuleRef c_module = eshkol_generate_llvm_ir(
+        codegen_asts.data(), codegen_asts.size(), module_name.c_str());
 
     if (!c_module) {
         throw std::runtime_error("Failed to generate LLVM IR from AST");

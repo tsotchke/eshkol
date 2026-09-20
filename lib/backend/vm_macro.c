@@ -47,6 +47,10 @@ typedef struct MacroNode {
     struct MacroNode** children;
     int              n_children;
     int              _cap;       /* allocation capacity for children */
+    int              macro_scope_limit;
+    int              macro_value_owner;
+    int              macro_value_slot;
+    int              macro_value_context;
 } MacroNode;
 
 #endif /* VM_MACRO_NODE_DEFINED */
@@ -262,6 +266,7 @@ typedef struct {
     int         n_rules;
     char        literals[MAX_LITERALS][64];
     int         n_literals;
+    int         definition_limit;
 } VmMacro;
 
 /*******************************************************************************
@@ -273,6 +278,9 @@ typedef struct {
 static VmMacro g_macros[MAX_MACROS];
 static int     g_n_macros = 0;
 static int     g_gensym_counter = 0;
+static int     g_macro_global_limit = 0;
+static int     g_macro_scope_depth = 0;
+static int     g_macro_value_context_serial = 0;
 
 /** @brief Generate a fresh, globally-unique symbol name (`_prefix_N` or
  *         `_g_N` if @p prefix is null) for hygienic macro expansion. */
@@ -308,6 +316,8 @@ static int vm_macro_register(const char* name,
     }
 
     g_n_macros++;
+    m->definition_limit = g_macro_scope_depth ? g_n_macros + 1 : -1;
+    if (!g_macro_scope_depth) g_macro_global_limit = g_n_macros;
     return 1;
 }
 
@@ -315,7 +325,7 @@ static int vm_macro_register(const char* name,
  *         found. */
 static VmMacro* vm_macro_lookup(const char* name) {
     if (!name) return NULL;
-    for (int i = 0; i < g_n_macros; i++) {
+    for (int i = g_n_macros - 1; i >= 0; --i) {
         if (strcmp(g_macros[i].name, name) == 0) {
             return &g_macros[i];
         }
@@ -323,18 +333,45 @@ static VmMacro* vm_macro_lookup(const char* name) {
     return NULL;
 }
 
+/* Introduced identifiers resolve where their template was defined; substituted
+ * pattern nodes retain the caller's context. A live global boundary preserves
+ * forward references without admitting a later local shadow. */
+static VmMacro* vm_macro_lookup_node(const MacroNode* identifier) {
+    if (!identifier || identifier->type != N_SYMBOL) return NULL;
+    int limit = identifier->macro_scope_limit;
+    limit = limit < 0 ? g_macro_global_limit : (limit ? limit - 1 : g_n_macros);
+    if (limit > g_n_macros) limit = g_n_macros;
+    for (int i = limit - 1; i >= 0; --i)
+        if (strcmp(g_macros[i].name, identifier->symbol) == 0) return &g_macros[i];
+    return NULL;
+}
+
+static void vm_macro_stamp_definition_scope(MacroNode* node, int limit) {
+    if (!node) return;
+    node->macro_scope_limit = limit;
+    for (int i = 0; i < node->n_children; ++i)
+        vm_macro_stamp_definition_scope(node->children[i], limit);
+}
+
 /** @brief Free every registered macro's rule ASTs and reset the global
  *         macro registry and gensym counter (used between test runs). */
-static void vm_macro_reset(void) {
-    for (int i = 0; i < g_n_macros; i++) {
+static void vm_macro_restore(int saved) {
+    for (int i = saved; i < g_n_macros; i++) {
         VmMacro* m = &g_macros[i];
         for (int j = 0; j < m->n_rules; j++) {
             macro_node_free(m->rules[j].pattern);
             macro_node_free(m->rules[j].template_node);
         }
     }
-    g_n_macros = 0;
+    g_n_macros = saved;
+}
+
+static void vm_macro_reset(void) {
+    vm_macro_restore(0);
     g_gensym_counter = 0;
+    g_macro_global_limit = 0;
+    g_macro_scope_depth = 0;
+    g_macro_value_context_serial = 0;
 }
 
 /*******************************************************************************
@@ -661,7 +698,16 @@ static MacroNode* vm_macro_alpha_rename(const MacroNode* t,
         const char* to = macro_renames_lookup(rn, t->symbol);
         /* Copy first, then overwrite only the name, so every other field
          * (exactness/char tags — see the SW-13 deep-copy fix) survives. */
-        if (c && to) snprintf(c->symbol, sizeof(c->symbol), "%s", to);
+        if (c && to) {
+            snprintf(c->symbol, sizeof(c->symbol), "%s", to);
+            /* A fresh template binder belongs to the expansion's local
+             * scope, not to a same-named value at macro-definition time.
+             * Keeping that captured owner makes swap!'s fresh tmp resolve
+             * as a nonexistent definition-site global. */
+            c->macro_value_owner = 0;
+            c->macro_value_slot = -1;
+            c->macro_value_context = 0;
+        }
         return c;
     }
 
@@ -914,7 +960,7 @@ static MacroNode* vm_macro_expand_once(const MacroNode* node) {
         return macro_node_deep_copy(node);
     }
 
-    VmMacro* macro = vm_macro_lookup(node->children[0]->symbol);
+    VmMacro* macro = vm_macro_lookup_node(node->children[0]);
     if (!macro) {
         return macro_node_deep_copy(node);
     }
@@ -936,6 +982,7 @@ static MacroNode* vm_macro_expand_once(const MacroNode* node) {
             renames.datum = 0;
             MacroNode* hygienic = vm_macro_alpha_rename(macro->rules[r].template_node,
                                                         &bindings, &renames);
+            vm_macro_stamp_definition_scope(hygienic, macro->definition_limit);
             MacroNode* expanded = vm_macro_instantiate(
                 hygienic ? hygienic : macro->rules[r].template_node, &bindings);
             /* instantiate() deep-copies everything it keeps, so the renamed
@@ -966,7 +1013,7 @@ static MacroNode* vm_macro_expand(const MacroNode* node) {
     /* Check if expansion changed anything (compare names for macro re-expansion) */
     if (expanded->type == N_LIST && expanded->n_children > 0 &&
         expanded->children[0]->type == N_SYMBOL) {
-        VmMacro* m = vm_macro_lookup(expanded->children[0]->symbol);
+        VmMacro* m = vm_macro_lookup_node(expanded->children[0]);
         if (m) {
             /* The expansion is itself a macro call — expand again (up to a limit) */
             int max_iterations = 100;
@@ -992,7 +1039,7 @@ static MacroNode* vm_macro_expand(const MacroNode* node) {
                 if (!changed) break;
                 if (expanded->type != N_LIST || expanded->n_children == 0) break;
                 if (expanded->children[0]->type != N_SYMBOL) break;
-                if (!vm_macro_lookup(expanded->children[0]->symbol)) break;
+                if (!vm_macro_lookup_node(expanded->children[0])) break;
             }
         }
     }
@@ -1026,14 +1073,10 @@ static MacroNode* vm_macro_expand(const MacroNode* node) {
  *        template) ...))` form and vm_macro_register() it.
  * @return 1 on success, 0 if @p form doesn't match the expected shape.
  */
-static int vm_macro_define_syntax(const MacroNode* form) {
-    if (!form || form->type != N_LIST || form->n_children < 3) return 0;
-    if (form->children[0]->type != N_SYMBOL ||
-        strcmp(form->children[0]->symbol, "define-syntax") != 0) return 0;
-    if (form->children[1]->type != N_SYMBOL) return 0;
-
-    const char* name = form->children[1]->symbol;
-    const MacroNode* syntax_rules = form->children[2];
+static int vm_macro_define_binding(const MacroNode* identifier,
+                                   const MacroNode* syntax_rules) {
+    if (!identifier || identifier->type != N_SYMBOL || !syntax_rules) return 0;
+    const char* name = identifier->symbol;
 
     if (syntax_rules->type != N_LIST || syntax_rules->n_children < 2) return 0;
     if (syntax_rules->children[0]->type != N_SYMBOL ||
@@ -1065,6 +1108,13 @@ static int vm_macro_define_syntax(const MacroNode* form) {
     }
 
     return vm_macro_register(name, lits, n_lits, rules, n_rules);
+}
+
+static int vm_macro_define_syntax(const MacroNode* form) {
+    if (!form || form->type != N_LIST || form->n_children != 3) return 0;
+    if (form->children[0]->type != N_SYMBOL ||
+        strcmp(form->children[0]->symbol, "define-syntax") != 0) return 0;
+    return vm_macro_define_binding(form->children[1], form->children[2]);
 }
 
 /*******************************************************************************

@@ -109,10 +109,13 @@ def run_one(rec, eshkol_run, mode, workroot, repo, timeout=None, variant=""):
     if mode == "jit":
         cmd = [eshkol_run, "-r", src]
     elif mode == "vm":
-        cmd = [eshkol_run, "--vm", src]
-    else:
+        module = os.path.join(d, "ex.eskb")
+        cmd = [eshkol_run, "--profile", "hosted-vm", "--emit-eskb", module, src]
+    elif mode == "aot":
         out = os.path.join(d, "ex.out")
         cmd = [eshkol_run, "-o", out, src]
+    else:
+        raise ValueError("unsupported example engine: " + mode)
     t0 = time.time()
     try:
         p = subprocess.run(
@@ -124,15 +127,29 @@ def run_one(rec, eshkol_run, mode, workroot, repo, timeout=None, variant=""):
         rc, so, se = -9, (e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or ""), "TIMEOUT"
     except Exception as e:  # noqa: BLE001
         rc, so, se = -99, "", "HARNESS-ERROR: %r" % (e,)
-    if mode == "aot" and rc == 0:
-        exe = os.path.join(d, "ex.out")
-        if os.path.exists(exe):
+    if mode in ("aot", "vm") and rc == 0:
+        if mode == "aot":
+            exe = os.path.join(d, "ex.out")
+            artifact = exe
+            run_cmd = [exe]
+        else:
+            artifact = os.path.join(d, "ex.eskb")
+            build_dir = os.path.dirname(os.path.abspath(eshkol_run))
+            candidates = [os.path.join(build_dir, name) for name in
+                          ("eshkol-vm-standalone-test", "eshkol-vm-standalone")]
+            exe = next((p for p in candidates if os.path.isfile(p)), candidates[0])
+            run_cmd = [exe, artifact]
+        if not os.path.isfile(artifact) or not os.path.isfile(exe):
+            rc, se = -99, se + "HARNESS-ERROR: compiled artifact or engine missing\n"
+        else:
             try:
-                p2 = subprocess.run([exe], cwd=d, env=env, capture_output=True, text=True,
+                p2 = subprocess.run(run_cmd, cwd=d, env=env, capture_output=True, text=True,
                                     timeout=limit, stdin=subprocess.DEVNULL)
                 rc, so, se = p2.returncode, p2.stdout, se + p2.stderr
             except subprocess.TimeoutExpired:
                 rc, se = -9, se + "TIMEOUT(run)"
+            except OSError as exc:
+                rc, se = -99, se + "HARNESS-ERROR: %r" % (exc,)
     return {
         "file": rec["file"],
         "start_line": rec["start_line"],

@@ -1,0 +1,41 @@
+;; Analytic Hessian checks, including both base and exponent perturbations.
+(define failures 0)
+(define (near label a b)
+  (if (< (abs (- a b)) 1e-9) #t
+      (begin (display "FAIL ") (display label) (display ": ")
+             (display a) (display " expected ") (display b) (newline)
+             (set! failures (+ failures 1)))))
+(define (check-matrix label h xx xy yy)
+  (near label (tensor-ref h 0 0) xx)
+  (near label (tensor-ref h 0 1) xy)
+  (near label (tensor-ref h 1 0) xy)
+  (near label (tensor-ref h 1 1) yy))
+(check-matrix "positive integer"
+  (hessian (lambda (x y) (+ (expt x 4) (expt y 3))) (vector 2.0 3.0)) 48 0 18)
+(check-matrix "negative base integer"
+  (hessian (lambda (x y) (+ (expt x 4) (expt y 3))) (vector -2.0 -3.0)) 48 0 -18)
+(check-matrix "active exponent"
+  (hessian (lambda (x y) (expt x y)) (vector 2.0 3.0))
+  12 (* 4 (+ 1 (* 3 (log 2)))) (* 8 (log 2) (log 2)))
+(check-matrix "zero exponent at origin"
+  (hessian (lambda (x y) (+ (expt x 0) (* y y))) (vector 0.0 2.0)) 0 0 2)
+(check-matrix "identity at origin"
+  (hessian (lambda (x y) (+ (expt x 1) (* y y))) (vector 0.0 2.0)) 0 0 2)
+(check-matrix "square at origin"
+  (hessian (lambda (x y) (+ (expt x 2) (* y y))) (vector 0.0 2.0)) 2 0 2)
+(check-matrix "fractional constant"
+  (hessian (lambda (x y) (expt x 1/2)) (vector 4.0 2.0)) -0.03125 0 0)
+(check-matrix "primal controls branch"
+  (hessian (lambda (x y)
+    (if (= (expt x y) 8.0) (+ (* x x) (* y y)) 0.0)) (vector 2.0 3.0)) 2 0 2)
+(near "scalar active exponent" (derivative (lambda (x) (expt 2.0 x)) 3.0)
+      (* 8 (log 2)))
+(near "scalar both operands" (derivative (lambda (x) (expt x x)) 2.0)
+      (* 4 (+ (log 2) 1)))
+(near "scalar Hessian active exponent" (hessian (lambda (x) (expt x x)) 2.0)
+      (* 4 (+ (* (+ (log 2) 1) (+ (log 2) 1)) 0.5)))
+(near "constant carrier negative base"
+      (derivative (lambda (x) (expt x (+ 2 (* 0 x)))) -2.0) -4)
+(if (= failures 0)
+    (begin (display "Hessian power carriers PASS") (newline))
+    (error "Hessian power mismatch" failures))

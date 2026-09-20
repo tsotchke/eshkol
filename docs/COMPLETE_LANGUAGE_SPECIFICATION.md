@@ -216,13 +216,14 @@ struct {
 
 ##### TENSOR
 - **Subtype:** `HEAP_SUBTYPE_TENSOR` (3)
-- **Structure:** `eshkol_tensor_t` (32 bytes)
+- **Structure:** `eshkol_tensor_t` (40 bytes; 8-byte aligned)
   ```c
   struct {
       uint64_t* dimensions;      // Dimension sizes array
       uint64_t  num_dimensions;  // Rank (number of dimensions)
       int64_t*  elements;        // Element data (doubles as int64 bits)
       uint64_t  total_elements;  // Product of all dimensions
+      uint64_t  dtype;           // Tensor dtype tag (default f64)
   }
   ```
 - **Syntax:** 
@@ -1664,7 +1665,7 @@ and `foldl` are exact synonyms. See
 **Example:**
 ```scheme
 (apply + '(1 2 3))    ; => 6
-(apply + 1 2 '(3 4))  ; => 10   (native only, see below)
+(apply + 1 2 '(3 4))  ; => 10
 (apply vector-copy (list (vector 7 8 9)))   ; => #(7 8 9)
 ```
 
@@ -1674,11 +1675,9 @@ the same route `map` and a user higher-order call use, so a builtin gains a
 value representation exactly once. A genuinely undefined name fails compilation
 with a diagnostic, never a silent `()`.
 
-> **Engine difference — the leading-args form is native-only.** The bytecode VM
-> supports `(apply proc arg-list)`. It does **not** support arguments before the
-> list, for any operator: under the VM, `(apply + 1 2 '(3 4))` raises
-> `arity mismatch: expected 2 arguments, got 4`. Write
-> `(apply + (append '(1 2) '(3 4)))` for a form that runs on both engines.
+> Both native and bytecode engines support leading arguments before the final
+> list operand. The full-list and prefix forms are covered by
+> `tests/vm_parity/corpus/apply_variadic_full_list.esk`.
 
 ### 4.7 String Operations
 

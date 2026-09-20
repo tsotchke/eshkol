@@ -364,9 +364,11 @@ int get_paren_depth(const std::string& input) {
 // Helper: Parse a string to AST using istringstream (no temp file needed).
 // Resets the parser's cumulative line counter so each REPL form starts at
 // line 1 — otherwise diagnostics would creep forward across commands.
-eshkol_ast_t parse_string(const std::string& input) {
+eshkol_ast_t parse_string(const std::string& input,
+                          eshkol::ReplJITContext* repl_ctx = nullptr) {
     std::string parse_input = input + "\n";
     std::istringstream stream(parse_input);
+    if (repl_ctx) repl_ctx->seedParserMacroNames(stream);
     eshkol_reset_parse_line_counter();
     return eshkol_parse_next_ast_from_stream(stream);
 }
@@ -537,7 +539,7 @@ bool load_file(const std::string& filename, eshkol::ReplJITContext& repl_ctx) {
         remaining = remaining.substr(end);
 
         try {
-            eshkol_ast_t ast = parse_string(expr);
+            eshkol_ast_t ast = parse_string(expr, &repl_ctx);
             if (ast.type == ESHKOL_INVALID) {
                 print_error("Failed to parse expression in file");
                 continue;
@@ -657,7 +659,7 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
 
             if (!expr.empty()) {
                 try {
-                    eshkol_ast_t ast = parse_string(expr);
+                    eshkol_ast_t ast = parse_string(expr, &repl_ctx);
                     if (ast.type != ESHKOL_INVALID) {
                         std::string type_str = get_ast_type_string(&ast);
                         std::cout << color::type() << "Type: " << color::reset();
@@ -706,7 +708,7 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
 
         if (!expr.empty()) {
             try {
-                eshkol_ast_t ast = parse_string(expr);
+                eshkol_ast_t ast = parse_string(expr, &repl_ctx);
                 if (ast.type != ESHKOL_INVALID) {
                     std::cout << color::dim() << "AST Structure:" << color::reset() << "\n";
                     eshkol_ast_pretty_print(&ast, 0);
@@ -751,7 +753,7 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
             try {
                 // Time parsing
                 auto parse_start = std::chrono::high_resolution_clock::now();
-                eshkol_ast_t ast = parse_string(expr);
+                eshkol_ast_t ast = parse_string(expr, &repl_ctx);
                 auto parse_end = std::chrono::high_resolution_clock::now();
                 auto parse_time = std::chrono::duration_cast<std::chrono::microseconds>(parse_end - parse_start);
 
@@ -1299,7 +1301,7 @@ static void handle_eval_request(const std::string& id, const std::string& code,
     }
 
     try {
-        eshkol_ast_t ast = parse_string(code);
+        eshkol_ast_t ast = parse_string(code, &repl_ctx);
         if (ast.type == ESHKOL_INVALID) {
             emit_result_error_simple(id, "parse-error", "failed to parse input");
             return;
@@ -1657,7 +1659,7 @@ int main(int argc, char** argv) {
 
         // Parse and evaluate
         try {
-            eshkol_ast_t ast = parse_string(input_str);
+            eshkol_ast_t ast = parse_string(input_str, &repl_ctx);
 
             if (ast.type == ESHKOL_INVALID) {
                 print_error("Failed to parse input");

@@ -1,0 +1,37 @@
+;; SW-193: each complex coordinate retains its enclosing numeric carrier.
+(define failures 0)
+(define checks 0)
+(define (check name got expected)
+  (set! checks (+ checks 1))
+  (if (< (abs (- got expected)) 1e-9)
+      #t
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (display " got ")
+             (write got) (newline))))
+(define (check-z name got r i)
+  (check name (real-part got) r)
+  (check name (imag-part got) i))
+(define p (make-rectangular 1.0 1.0))
+(define (cube z) (* z (* z z)))
+(define (fourth z) (* z (* z (* z z))))
+(check-z "second cubic"
+  (derivative (lambda (z) (derivative cube z)) p) 6.0 6.0)
+(check-z "third quartic"
+  (derivative (lambda (z)
+    (derivative (lambda (w) (derivative fourth w)) z)) p) 24.0 24.0)
+(check-z "composed complex point"
+  (derivative (lambda (z) (derivative cube (* z z))) p) -24.0 24.0)
+(check-z "nested exponential"
+  (derivative (lambda (z) (derivative exp z)) p)
+  (* (exp 1.0) (cos 1.0)) (* (exp 1.0) (sin 1.0)))
+(check-z "seed independent"
+  (derivative (lambda (z) (make-rectangular 2.0 3.0)) p) 0.0 0.0)
+(check-z "derivative-n" (derivative-n cube p 2) 6.0 6.0)
+(define coefficients (taylor cube p 3))
+(check-z "Taylor c0" (list-ref coefficients 0) -2.0 2.0)
+(check-z "Taylor c1" (list-ref coefficients 1) 0.0 6.0)
+(check-z "Taylor c2" (list-ref coefficients 2) 3.0 3.0)
+(check-z "Taylor c3" (list-ref coefficients 3) 1.0 0.0)
+(if (= failures 0)
+    (begin (display "PASS: complex_nested_carrier ") (display checks) (newline))
+    (exit 1))

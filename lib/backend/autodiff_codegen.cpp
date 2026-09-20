@@ -545,6 +545,45 @@ llvm::Function* getAdNestedUnsupportedFunc(CodegenContext& ctx) {
  * @return the seeded point as a tagged dual number or tower, ready to pass into the differentiated closure.
  */
 llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
+                                               llvm::Value** out_level) {
+    auto& b = ctx_.builder();
+    auto* fn = b.GetInsertBlock()->getParent();
+    llvm::Value* level = adPertLevelLoad();
+    if (out_level) *out_level = level;
+    llvm::IRBuilder<> entry(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    auto* result = entry.CreateAlloca(ctx_.taggedValueType(), nullptr, "complex_seed_result");
+    auto* route = entry.CreateAlloca(ctx_.int32Type(), nullptr, "complex_seed_route");
+    auto* complex_bb = llvm::BasicBlock::Create(ctx_.context(), "seed_complex", fn);
+    auto* scalar_bb = llvm::BasicBlock::Create(ctx_.context(), "seed_scalar", fn);
+    auto* done = llvm::BasicBlock::Create(ctx_.context(), "seed_join", fn);
+    b.CreateCondBr(b.CreateICmpEQ(tagged_.getBaseType(tagged_.getType(point_tagged)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX)), complex_bb, scalar_bb);
+
+    b.SetInsertPoint(complex_bb);
+    ComplexCodegen complex(ctx_, tagged_, mem_);
+    auto* real = complex.componentTagged(point_tagged, false);
+    auto* imag = complex.componentTagged(point_tagged, true);
+    // dz=1: seed only the real coordinate. The imaginary coordinate is a
+    // constant for this pass, retaining any enclosing carrier it already has.
+    auto* seeded_real = seedForwardAndPushPlain(real, nullptr);
+    b.CreateStore(b.CreateLoad(ctx_.int32Type(), nestedRouteSlot_), route);
+    auto* carrier = complex.packCarrierComplex(
+        adPointToDouble(real, "complex derivative real coordinate"),
+        adPointToDouble(imag, "complex derivative imaginary coordinate"), seeded_real, imag);
+    b.CreateStore(carrier, result);
+    b.CreateBr(done);
+
+    b.SetInsertPoint(scalar_bb);
+    auto* seeded_scalar = seedForwardAndPushPlain(point_tagged, nullptr);
+    b.CreateStore(b.CreateLoad(ctx_.int32Type(), nestedRouteSlot_), route);
+    b.CreateStore(seeded_scalar, result);
+    b.CreateBr(done);
+    b.SetInsertPoint(done);
+    nestedRouteSlot_ = route;
+    return b.CreateLoad(ctx_.taggedValueType(), result);
+}
+
+llvm::Value* AutodiffCodegen::seedForwardAndPushPlain(llvm::Value* point_tagged,
                                                  llvm::Value** out_level) {
     auto& b = ctx_.builder();
     llvm::Value* level = adPertLevelLoad();
@@ -635,6 +674,11 @@ llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
  */
 llvm::Value* AutodiffCodegen::seedForwardAndPushCore(llvm::Value* point_tagged,
                                                      llvm::Value* level) {
+    return seedForwardAndPushCorePlain(point_tagged, level);
+}
+
+llvm::Value* AutodiffCodegen::seedForwardAndPushCorePlain(llvm::Value* point_tagged,
+                                                          llvm::Value* level) {
     auto& b = ctx_.builder();
 
     // ── Taylor-tower mode (ESH-0186): seed a heap tower {x0,1,0,...} of the
@@ -720,7 +764,54 @@ llvm::Value* AutodiffCodegen::seedForwardAndPushCore(llvm::Value* point_tagged,
  * @return the extracted derivative (or vector of derivatives), tagged.
  */
 llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
-                                                   llvm::Value* level) {
+                                                 llvm::Value* level) {
+    auto& b = ctx_.builder();
+    auto* fn = b.GetInsertBlock()->getParent();
+    auto* route = nestedRouteSlot_;
+    llvm::IRBuilder<> entry(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    auto* result = entry.CreateAlloca(ctx_.taggedValueType(), nullptr, "complex_extract_result");
+    auto* complex_bb = llvm::BasicBlock::Create(ctx_.context(), "extract_complex", fn);
+    auto* scalar_bb = llvm::BasicBlock::Create(ctx_.context(), "extract_scalar", fn);
+    auto* done = llvm::BasicBlock::Create(ctx_.context(), "extract_join", fn);
+    b.CreateCondBr(b.CreateICmpEQ(tagged_.getBaseType(tagged_.getType(result_tagged)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX)), complex_bb, scalar_bb);
+
+    b.SetInsertPoint(complex_bb);
+    ComplexCodegen complex(ctx_, tagged_, mem_);
+    auto* real = complex.componentTagged(result_tagged, false);
+    auto* imag = complex.componentTagged(result_tagged, true);
+    nestedRouteSlot_ = route;
+    auto* real_derivative = popAndExtractForwardPlain(real, level);
+    nestedRouteSlot_ = route;
+    auto* imag_derivative = popAndExtractForwardPlain(imag, level, false);
+    if (adTowerMode_ == TowerMode::COEFFS && adTowerOrder_) {
+        auto* rs = entry.CreateAlloca(ctx_.taggedValueType());
+        auto* is = entry.CreateAlloca(ctx_.taggedValueType());
+        b.CreateStore(real_derivative, rs);
+        b.CreateStore(imag_derivative, is);
+        auto zip = ctx_.module().getOrInsertFunction("eshkol_complex_coefficients_zip",
+            llvm::FunctionType::get(ctx_.voidType(),
+                {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false));
+        b.CreateCall(zip, {getArenaPtr(), rs, is, result});
+    } else {
+        b.CreateStore(complex.packCarrierComplex(
+            adPointToDouble(real_derivative, "complex real derivative"),
+            adPointToDouble(imag_derivative, "complex imaginary derivative"),
+            real_derivative, imag_derivative), result);
+    }
+    b.CreateBr(done);
+
+    b.SetInsertPoint(scalar_bb);
+    nestedRouteSlot_ = route;
+    b.CreateStore(popAndExtractForwardPlain(result_tagged, level), result);
+    b.CreateBr(done);
+    b.SetInsertPoint(done);
+    nestedRouteSlot_ = nullptr;
+    return b.CreateLoad(ctx_.taggedValueType(), result);
+}
+
+llvm::Value* AutodiffCodegen::popAndExtractForwardPlain(llvm::Value* result_tagged,
+                                                       llvm::Value* level, bool pop_context) {
     auto& b = ctx_.builder();
 
     // ── ESH-0402: nested-carrier extraction (ledger SW-03/SW-04) ────────────
@@ -755,7 +846,7 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
 
         b.SetInsertPoint(xnest_bb);
         adPertLevelStore(level);
-        if (adTowerMode_ != TowerMode::NONE && adTowerOrder_) towerCtxPop();
+        if (pop_context && adTowerMode_ != TowerMode::NONE && adTowerOrder_) towerCtxPop();
         b.CreateStore(result_tagged, xin_slot);
         llvm::Value* x_order = (adTowerMode_ != TowerMode::NONE && adTowerOrder_)
             ? adTowerOrder_ : llvm::ConstantInt::get(ctx_.int32Type(), 1);
@@ -765,14 +856,14 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
         b.CreateBr(xdone_bb);
 
         b.SetInsertPoint(xcore_bb);
-        llvm::Value* core_res = popAndExtractForwardCore(result_tagged, level);
+        llvm::Value* core_res = popAndExtractForwardCore(result_tagged, level, pop_context);
         b.CreateStore(core_res ? core_res : tagged_.packNull(), xres_slot);
         b.CreateBr(xdone_bb);
 
         b.SetInsertPoint(xdone_bb);
         return b.CreateLoad(ctx_.taggedValueType(), xres_slot, "nest_ex_sel");
     }
-    return popAndExtractForwardCore(result_tagged, level);
+    return popAndExtractForwardCore(result_tagged, level, pop_context);
 }
 
 /**
@@ -786,7 +877,12 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
  * @return the extracted derivative (or vector of derivatives), tagged.
  */
 llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagged,
-                                                       llvm::Value* level) {
+                                                       llvm::Value* level, bool pop_context) {
+    return popAndExtractForwardCorePlain(result_tagged, level, pop_context);
+}
+
+llvm::Value* AutodiffCodegen::popAndExtractForwardCorePlain(llvm::Value* result_tagged,
+                                                            llvm::Value* level, bool pop_context) {
     auto& b = ctx_.builder();
     // Pop: restore the level the outer context expects.
     adPertLevelStore(level);
@@ -795,7 +891,7 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
     // the differentiated function. DERIV_N -> f^(k)=k!*c[k] (a double); COEFFS
     // -> the K+1-element coefficient list. Short-circuits the jet R->Rⁿ logic. ──
     if (adTowerMode_ == TowerMode::DERIV_N && adTowerOrder_) {
-        towerCtxPop();     // leave the tower differentiation context
+        if (pop_context) towerCtxPop();
         llvm::Value* res_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_res");
         llvm::Value* out_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_extract_out");
         b.CreateStore(result_tagged, res_slot);
@@ -974,7 +1070,7 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
         return dres;
     }
     if (adTowerMode_ == TowerMode::COEFFS && adTowerOrder_) {
-        towerCtxPop();     // leave the tower differentiation context
+        if (pop_context) towerCtxPop();
         llvm::Value* res_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_res");
         llvm::Value* out_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_list_out");
         b.CreateStore(result_tagged, res_slot);
@@ -984,6 +1080,22 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
         b.CreateCall(getTaylorCoeffsFunc(ctx_),
                      {getArenaPtr(), res_slot, adTowerOrder_, coeff_tape, out_slot});
         return b.CreateLoad(ctx_.taggedValueType(), out_slot, "twr_coeffs");
+    }
+
+    // A holomorphic complex result carries one tagged tangent per component.
+    // At the ordinary (non-tower) derivative level, return those two tangent
+    // components as a plain complex value (SW-191).
+    llvm::Value* result_base_type = tagged_.getBaseType(tagged_.getType(result_tagged));
+    if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(result_base_type);
+        ci && ci->getZExtValue() == ESHKOL_VALUE_COMPLEX) {
+        ComplexCodegen complex(ctx_, tagged_, mem_);
+        llvm::Value* rr = complex.componentTagged(result_tagged, false);
+        llvm::Value* ri = complex.componentTagged(result_tagged, true);
+        llvm::Value* rd = safeUnpackDualFromTagged(rr);
+        llvm::Value* id = safeUnpackDualFromTagged(ri);
+        llvm::Value* real_deriv = dualField(ctx_, rd, 1);
+        llvm::Value* imag_deriv = dualField(ctx_, id, 1);
+        return complex.packComplexToTagged(complex.createComplex(real_deriv, imag_deriv));
     }
 
     llvm::Function* fn = b.GetInsertBlock()->getParent();
@@ -1928,13 +2040,21 @@ llvm::Value* AutodiffCodegen::dualPow(llvm::Value* dual_base, llvm::Value* dual_
     llvm::Value* bm1 = bld.CreateFSub(bexp, one);
     llvm::Value* bm2 = bld.CreateFSub(bexp, llvm::ConstantFP::get(ctx_.doubleType(), 2.0));
     llvm::Value* bm3 = bld.CreateFSub(bexp, llvm::ConstantFP::get(ctx_.doubleType(), 3.0));
-    llvm::Value* gpa = bld.CreateFMul(bexp, bld.CreateCall(pow_func, {a, bm1}));   // b a^{b-1}
-    llvm::Value* gppa = bld.CreateFMul(bld.CreateFMul(bexp, bm1),
-                                       bld.CreateCall(pow_func, {a, bm2}));        // b(b-1) a^{b-2}
+    // A vanishing falling-factorial coefficient means this derivative is
+    // identically zero. Do not let 0 * pow(0, negative) manufacture NaN for
+    // x^0, x^1, or the third derivative of x^2 at the origin.
+    auto power_derivative = [&](llvm::Value* coefficient, llvm::Value* exponent) {
+        if (auto* constant = llvm::dyn_cast<llvm::ConstantFP>(coefficient))
+            if (constant->isZero()) return zero;
+        llvm::Value* product = bld.CreateFMul(coefficient,
+                                             bld.CreateCall(pow_func, {a, exponent}));
+        return bld.CreateSelect(bld.CreateFCmpOEQ(coefficient, zero), zero, product);
+    };
+    llvm::Value* gpa = power_derivative(bexp, bm1);
+    llvm::Value* gppa = power_derivative(bld.CreateFMul(bexp, bm1), bm2);
     // g'''=b(b-1)(b-2) a^{b-3} for the ESH-0117 ep-derivative triple term.
-    llvm::Value* gpppa = bld.CreateFMul(
-        bld.CreateFMul(bld.CreateFMul(bexp, bm1), bm2),
-        bld.CreateCall(pow_func, {a, bm3}));
+    llvm::Value* gpppa = power_derivative(
+        bld.CreateFMul(bld.CreateFMul(bexp, bm1), bm2), bm3);
     llvm::Value* const_jet = dualUnaryChain(ctx_, dual_base, value, gpa, gppa, gpppa);
 
     // --- general dual-exponent jet: exp(b * log(a)) ---
@@ -1948,6 +2068,9 @@ llvm::Value* AutodiffCodegen::dualPow(llvm::Value* dual_base, llvm::Value* dual_
     llvm::Value* exp_is_const =
         bld.CreateAnd(bld.CreateAnd(bld.CreateFCmpOEQ(e1, zero), bld.CreateFCmpOEQ(e2, zero)),
                       bld.CreateFCmpOEQ(e12, zero));
+    for (unsigned i = 4; i < 8; ++i)
+        exp_is_const = bld.CreateAnd(exp_is_const,
+            bld.CreateFCmpOEQ(dualField(ctx_, dual_exp, i), zero));
     llvm::Value* r[8];
     for (unsigned i = 0; i < 8; ++i)
         r[i] = bld.CreateSelect(exp_is_const, dualField(ctx_, const_jet, i),
@@ -9798,9 +9921,9 @@ llvm::Value* AutodiffCodegen::adExactTowerGate(llvm::Value* point_tagged) {
     return gate;
 }
 
-// ESH-0394 (runtime-property redesign): a small, deliberately WHOLE-TREE
-// conservative scan for whether a differentiand's body can ever produce a
-// NON-NUMBER (vector/list/tensor/string/hash/...). The Taylor tower this tier
+// ESH-0394 (runtime-property redesign): a small return-shape scan for whether
+// a differentiand's body can produce a NON-NUMBER
+// (vector/list/tensor/string/hash/...). The Taylor tower this tier
 // routes through has no representation for anything but a number: `derivative`
 // (unlike `derivative-n`/`taylor`) is documented to support R -> R^n through
 // the jet path, e.g. `(derivative (lambda (t) (vector (* t t) (* t t t))) 2)`
@@ -9817,16 +9940,15 @@ llvm::Value* AutodiffCodegen::adExactTowerGate(llvm::Value* point_tagged) {
 // in `tests/ad/exact_point_ad_test.esk`'s R -> R^n case once the exact tier
 // stopped requiring a body whitelist.
 //
-// Scanned on the WHOLE source subtree, not just the tail/return position --
-// the same conservative choice lib/backend/autodiff_codegen.cpp's sibling
-// adAstUsesTensorOps() makes just above -- so a body that merely USES a
-// vector/list internally without returning one is also declined; that costs
-// nothing beyond the exact tier (jet_arm() is unaffected and already correct
-// for every one of these shapes). Follows one call into a top-level define's
-// own body (mirroring adAstUsesTensorOps' `bodies` parameter), guarded by
-// `visited` + a depth cap, so a helper that constructs the non-number several
-// frames down the SAME composed call chain SW-159 exists to keep exact is
-// still caught.
+// This must follow VALUE-PRODUCING positions rather than every operand. A
+// scalar differentiand may legitimately build a list internally and consume
+// it through fold-left; rejecting the list operand routes an exact seed back
+// through the floating dual carrier and loses rational exactness (and can
+// underflow a tiny rational) even though derivative-n's tower evaluates the
+// same body exactly. Calls inspect the callee's declared result shape, while
+// their arguments are intermediates and therefore do not determine the call's
+// result shape. Sequences inspect their last value and lets their body. A
+// referenced top-level helper is followed with a visited set and depth cap.
 static bool adBodyMayEscapeNumber(
         const eshkol_ast_t* ast,
         const std::unordered_map<std::string, const eshkol_ast_t*>* bodies = nullptr,
@@ -9906,18 +10028,23 @@ static bool adBodyMayEscapeNumber(
                     }
                 }
             }
+            // IF/COND operands contain the alternative result expressions, so
+            // every arm remains value-producing. Ordinary call operands are
+            // inputs/intermediates; only the callee determines return shape.
             if (f && adBodyMayEscapeNumber(f, bodies, visited, depth)) return true;
-            for (uint64_t i = 0; i < op->call_op.num_vars; i++)
-                if (adBodyMayEscapeNumber(&op->call_op.variables[i], bodies, visited, depth)) return true;
+            if (op->op == ESHKOL_IF_OP || op->op == ESHKOL_COND_OP) {
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++)
+                    if (adBodyMayEscapeNumber(&op->call_op.variables[i], bodies, visited, depth))
+                        return true;
+            }
             return false;
         }
         case AstRoute::Sequence:
-            for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
-                if (adBodyMayEscapeNumber(&op->sequence_op.expressions[i], bodies, visited, depth)) return true;
-            return false;
+            return op->sequence_op.num_expressions != 0 &&
+                adBodyMayEscapeNumber(
+                    &op->sequence_op.expressions[op->sequence_op.num_expressions - 1],
+                    bodies, visited, depth);
         case AstRoute::Let:
-            for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
-                if (adBodyMayEscapeNumber(&op->let_op.bindings[i], bodies, visited, depth)) return true;
             return adBodyMayEscapeNumber(op->let_op.body, bodies, visited, depth);
         case AstRoute::Lambda:
             return adBodyMayEscapeNumber(op->lambda_op.body, bodies, visited, depth);

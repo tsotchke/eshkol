@@ -570,10 +570,10 @@ op:LAPLACIAN	gap	AD surface diverges in VM
 op:LET	vm-supported	vm_compiler special-form dispatch (incl named let); a named let is treated as a lambda scope by the capture analysis and opens its captured slots by reference (corpus/36_set_from_named_let.esk)
 op:LETREC	vm-supported	vm_compiler special-form dispatch
 op:LETREC_STAR	vm-supported	vm_compiler special-form dispatch (verified 2026-07)
-op:LETREC_SYNTAX	gap	same as op:LET_SYNTAX
+op:LETREC_SYNTAX	vm-supported	corpus/92_macro_definition_scope.esk: recursive group, definition/caller environments, scoped restoration
 op:LET_STAR	vm-supported	vm_compiler special-form dispatch
 op:LET_STAR_VALUES	gap	same family as op:LET_VALUES silent-wrong divergence
-op:LET_SYNTAX	gap	let-syntax not expanded by vm_macro (undefined-variable error)
+op:LET_SYNTAX	vm-supported	corpus/92_macro_definition_scope.esk: scoped registration and hygienic macro/value bindings
 op:LET_VALUES	vm-supported	verified by corpus/28_multiple_values_complete.esk across vm-src and vm-eskb
 op:LOGIC_VAR	vm-supported	task #100: a ?-prefixed token is a logic variable bare AND inside quoted data on both substrates; logic-var? answers #t for `?x` and `'?x` and #f for a ?-prefixed STRING, a plain symbol and every other value. Was a gap because the VM's three logic-variable representations disagreed (KB matcher wanted a "?"-string, unify wanted a raw int id, logic-var? wanted a HEAP_LOGIC_VAR nothing constructed) and native had no codegen arm for a quoted logic variable. Pinned by corpus/54_logic_var_kb_query.esk
 op:LOGIC_VAR_PRED	vm-supported	BUILTINS fid 501

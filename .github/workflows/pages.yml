@@ -50,6 +50,8 @@ on:
       - '.github/workflows/release.yml'
       - 'scripts/build-site.sh'
       - 'scripts/build-site-content.sh'
+      - 'scripts/check_site_runtime.cjs'
+      - 'scripts/check_site_examples.cjs'
       - 'scripts/build_site_content.py'
       - 'scripts/verify_site_release.py'
       - 'scripts/site_smoke.py'
@@ -116,6 +118,8 @@ jobs:
           test -s site/static/eshkol-vm.wasm
           test -s site/static/eshkol-runtime.js
           test -s site/static/index.html
+          node scripts/check_site_runtime.cjs
+          node scripts/check_site_examples.cjs
           node <<'NODE'
           const fs = require('fs');
           const html = fs.readFileSync('site/static/index.html', 'utf8');

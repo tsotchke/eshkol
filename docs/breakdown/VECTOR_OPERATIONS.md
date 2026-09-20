@@ -184,12 +184,13 @@ Tensors are **N-dimensional numeric arrays** optimized for scientific computing:
 ```
 Tensor Memory Layout:
 ┌───────────────────────────────────────────────────────────┐
-│ eshkol_tensor_t structure (32 bytes, cache-aligned)      │
+│ eshkol_tensor_t structure (40 bytes, 8-byte aligned)     │
 ├───────────────────────────────────────────────────────────┤
 │ dimensions*    (8 bytes) → [dim0, dim1, ..., dimN]       │
 │ num_dimensions (8 bytes)   Rank (1-4 typical)            │
 │ elements*      (8 bytes) → flat array of int64 bit patterns │
 │ total_elements (8 bytes)   Total element count           │
+│ dtype          (8 bytes)   Tensor dtype tag              │
 └───────────────────────────────────────────────────────────┘
 
 Elements stored as int64 bit patterns of doubles (reinterpret_cast)

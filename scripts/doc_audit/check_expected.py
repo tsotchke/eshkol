@@ -79,8 +79,8 @@ CAPTURE_RE = re.compile(r"@@DOCAUDIT:B(\d+)@@(.*?)@@DOCAUDIT:E\1@@", re.S)
 TEMP_NAME = "docaudit-captured-value"
 TRANSCRIPT_PROMPT_RE = re.compile(r"^\s*(?:eshkol)?>\s+(\S.*)$")
 
-# A form whose text calls one of these already writes to stdout; it is run as
-# written and its output captured, instead of being wrapped in `display`.
+# A direct output call is captured as output. A containing expression may
+# also return a meaningful value, so nested calls do not select this mode.
 OUTPUT_CALL_RE = re.compile(
     r"\((?:display|write|write-string|write-char|write-line|newline|print|println|printf|displayln)(?=[\s()])"
 )
@@ -332,7 +332,7 @@ def instrument_block(code):
                 claimed.add(above)
                 group = earlier + group
             text = code[group[0][0]:group[-1][1]]
-            if OUTPUT_CALL_RE.search(text):
+            if all(OUTPUT_CALL_RE.match(code[f[0]:f[1]]) for f in group):
                 exp["mode"] = "prints"
                 inserts.append((group[0][0], depth, begin + " "))
                 inserts.append((group[-1][1], -depth, " " + finish))

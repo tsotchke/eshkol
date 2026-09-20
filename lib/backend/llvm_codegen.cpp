@@ -1588,6 +1588,7 @@ namespace ControlFlowCallbacks {
     llvm::Value* codegenLambdaWrapper(const eshkol_operations_t* op, void* context);
     llvm::Value* closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context);
     llvm::Value* closureSpreadCallWrapper(llvm::Value*, llvm::Value*, llvm::Value*, int, void*);
+    llvm::Value* closureListCallWrapper(llvm::Value*, llvm::Value*, void*);
     llvm::Value* closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
     llvm::Value* gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
                                                   llvm::Value* dual_elems, llvm::Value* declared_arity,
@@ -1657,6 +1658,7 @@ class EshkolLLVMCodeGen {
     friend llvm::Value* ControlFlowCallbacks::applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
     friend llvm::Value* ControlFlowCallbacks::applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
     friend llvm::Value* ControlFlowCallbacks::closureSpreadCallWrapper(llvm::Value*, llvm::Value*, llvm::Value*, int, void*);
+    friend llvm::Value* ControlFlowCallbacks::closureListCallWrapper(llvm::Value*, llvm::Value*, void*);
     friend llvm::Value* ControlFlowCallbacks::closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
     friend llvm::Value* ControlFlowCallbacks::gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
                                                                         llvm::Value* dual_elems, llvm::Value* declared_arity,
@@ -6853,6 +6855,11 @@ private:
         Value* args_ptr = nullptr;
         Value* count = nullptr;
         int width = 0;
+        // When set, variadic dispatch forwards this original proper list
+        // after splitting the runtime fixed prefix; no argument cap applies
+        // to the rest tail.
+        Value* list_int = nullptr;
+        Value* full_count = nullptr;
     };
 
     // A resolved ABI signature (e.g. a checked REPL forward reference) already
@@ -6885,6 +6892,7 @@ private:
             ? ArrayType::get(tagged_value_type, spread->width) : nullptr;
         std::vector<Value*> spread_arg_vals;
         Value* spread_count = nullptr;
+        Value* full_spread_count = nullptr;
         if (spread) {
             spread_arg_vals.reserve((size_t)spread->width);
             for (int i = 0; i < spread->width; i++) {
@@ -6895,10 +6903,12 @@ private:
             }
             // Re-clamp here rather than trusting the caller: this value feeds
             // both dispatches, and neither may select an arm that does not exist.
+            Value* supplied_count = spread->full_count ? spread->full_count : spread->count;
+            full_spread_count = supplied_count;
             spread_count = builder->CreateSelect(
-                builder->CreateICmpUGT(spread->count,
+                builder->CreateICmpUGT(supplied_count,
                     ConstantInt::get(int64_type, spread->width)),
-                ConstantInt::get(int64_type, spread->width), spread->count,
+                    ConstantInt::get(int64_type, spread->width), spread->count,
                 "spread_count");
         }
         // A spread call always carries at least one argument (the caller routes
@@ -7421,7 +7431,42 @@ private:
          * form costs O(width²) cons sites per call.
          */
         Value* spread_rest_list = nullptr;
-        if (spread) {
+        if (spread && spread->list_int) {
+            // Preserve the complete source list.  Advance exactly the
+            // runtime fixed prefix; the resulting tagged pointer is already
+            // the proper rest list and must not be rebuilt through the
+            // bounded staging array.
+            Value* cursor_ptr = builder->CreateAlloca(int64_type, nullptr, "var_list_cursor");
+            Value* cursor_i = builder->CreateAlloca(int64_type, nullptr, "var_list_i");
+            builder->CreateStore(spread->list_int, cursor_ptr);
+            builder->CreateStore(ConstantInt::get(int64_type, 0), cursor_i);
+            BasicBlock* skip_cond = BasicBlock::Create(*context, "var_list_skip_cond", current_func);
+            BasicBlock* skip_body = BasicBlock::Create(*context, "var_list_skip_body", current_func);
+            BasicBlock* skip_done = BasicBlock::Create(*context, "var_list_skip_done", current_func);
+            builder->CreateBr(skip_cond);
+            builder->SetInsertPoint(skip_cond);
+            Value* skip_cursor = builder->CreateLoad(int64_type, cursor_ptr);
+            Value* skip_index = builder->CreateLoad(int64_type, cursor_i);
+            Value* can_skip = builder->CreateAnd(
+                builder->CreateICmpULT(skip_index, fixed_params),
+                builder->CreateICmpNE(skip_cursor, ConstantInt::get(int64_type, 0)));
+            builder->CreateCondBr(can_skip, skip_body, skip_done);
+            builder->SetInsertPoint(skip_body);
+            Value* skip_cons = builder->CreateIntToPtr(skip_cursor, builder->getPtrTy());
+            Value* skip_next = builder->CreateCall(getTaggedConsGetPtrFunc(),
+                {skip_cons, ConstantInt::getTrue(*context)});
+            builder->CreateStore(skip_next, cursor_ptr);
+            builder->CreateStore(builder->CreateAdd(skip_index, ConstantInt::get(int64_type, 1)), cursor_i);
+            builder->CreateBr(skip_cond);
+            builder->SetInsertPoint(skip_done);
+            Value* tail_ptr = builder->CreateLoad(int64_type, cursor_ptr);
+            Value* tail_heap = packPtrToTaggedValue(tail_ptr, ESHKOL_VALUE_HEAP_PTR);
+            Value* tail_null = packPtrToTaggedValue(
+                ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
+            spread_rest_list = builder->CreateSelect(
+                builder->CreateICmpEQ(tail_ptr, ConstantInt::get(int64_type, 0)),
+                tail_null, tail_heap, "var_list_tail");
+        } else if (spread) {
             Value* null_rest = packPtrToTaggedValue(
                 ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
             builder->CreateStore(null_rest, spread_rest_acc);
@@ -7555,6 +7600,33 @@ private:
         // the variadic/non-variadic split above.)
         builder->SetInsertPoint(non_variadic_bb);
 
+        // List-aware apply knows the complete runtime count.  A fixed-arity
+        // callable must reject surplus elements instead of clamping to the
+        // staging window (which would silently drop arguments).
+        BasicBlock* nonvar_overflow = nullptr;
+        BasicBlock* nonvar_checked = nullptr;
+        if (spread && spread->full_count) {
+            nonvar_overflow = BasicBlock::Create(*context, "apply_fixed_overflow", current_func);
+            nonvar_checked = BasicBlock::Create(*context, "apply_fixed_checked", current_func);
+            builder->CreateCondBr(builder->CreateICmpUGT(spread->full_count, fixed_params),
+                                  nonvar_overflow, nonvar_checked);
+            builder->SetInsertPoint(nonvar_overflow);
+            Function* arity_err = module->getFunction("eshkol_type_error_with_operand");
+            if (!arity_err) {
+                arity_err = Function::Create(FunctionType::get(builder->getVoidTy(),
+                    {builder->getPtrTy(), builder->getPtrTy(), builder->getPtrTy()}, false),
+                    Function::ExternalLinkage, "eshkol_type_error_with_operand", module.get());
+                arity_err->setDoesNotReturn();
+            }
+            Value* proc_name = builder->CreateGlobalString("apply", "apply_fixed_proc");
+            Value* expected = builder->CreateGlobalString("fixed-arity procedure", "apply_fixed_expected");
+            Value* operand_slot = builder->CreateAlloca(tagged_value_type, nullptr, "apply_fixed_operand");
+            builder->CreateStore(func_result, operand_slot);
+            builder->CreateCall(arity_err, {proc_name, expected, operand_slot});
+            builder->CreateUnreachable();
+            builder->SetInsertPoint(nonvar_checked);
+        }
+
         // ARITY MISMATCH FIX (x86_64 crash prevention):
         // When call_args.size() < fixed_params, we need to pad with undefined values.
         // This happens when a closure is called with fewer arguments than it expects,
@@ -7609,7 +7681,8 @@ private:
         // Spread mode's argument count is a runtime value; everything downstream
         // already treats this as one.
         Value* call_args_count = spread
-            ? spread_count : ConstantInt::get(int64_type, call_args.size());
+            ? (full_spread_count ? full_spread_count : spread_count)
+            : ConstantInt::get(int64_type, call_args.size());
         Value* use_fixed = builder->CreateICmpUGT(fixed_params, call_args_count);
         Value* actual_arg_count = builder->CreateSelect(use_fixed, fixed_params, call_args_count,
             "actual_arg_count");
@@ -7821,6 +7894,91 @@ private:
         builder->CreateBr(done);
         builder->SetInsertPoint(done);
         PHINode* result = builder->CreatePHI(tagged_value_type, 2, "spread_result");
+        result->addIncoming(empty_result, empty_exit);
+        result->addIncoming(spread_result, spread_exit);
+        return result;
+    }
+
+    // Apply a tagged list without materialising its unbounded tail.  The
+    // staging array contains only the fixed-prefix window; variadic dispatch
+    // receives the original list and forwards its complete remaining tail.
+    Value* codegenClosureListCall(Value* closure, Value* list_int) {
+        constexpr int PREFIX_WINDOW = 16;
+        Function* function = builder->GetInsertBlock()->getParent();
+        BasicBlock* pre = builder->GetInsertBlock();
+        BasicBlock* empty_call = BasicBlock::Create(*context, "apply_list_empty", function);
+        BasicBlock* nonempty_call = BasicBlock::Create(*context, "apply_list_nonempty", function);
+        BasicBlock* merge_call = BasicBlock::Create(*context, "apply_list_merge", function);
+        builder->CreateCondBr(builder->CreateICmpEQ(list_int, ConstantInt::get(int64_type, 0)),
+                              empty_call, nonempty_call);
+        builder->SetInsertPoint(empty_call);
+        Value* empty_result = codegenClosureCall(closure, {}, "apply-list-empty");
+        BasicBlock* empty_exit = builder->GetInsertBlock();
+        builder->CreateBr(merge_call);
+        builder->SetInsertPoint(nonempty_call);
+        ArrayType* args_type = ArrayType::get(tagged_value_type, PREFIX_WINDOW);
+        IRBuilderBase::InsertPoint saved = builder->saveIP();
+        builder->SetInsertPoint(&function->getEntryBlock(), function->getEntryBlock().begin());
+        Value* args = builder->CreateAlloca(args_type, nullptr, "apply_list_prefix");
+        Value* total_ptr = builder->CreateAlloca(int64_type, nullptr, "apply_list_total");
+        Value* tail_ptr = builder->CreateAlloca(int64_type, nullptr, "apply_list_tail");
+        builder->restoreIP(saved);
+        builder->CreateStore(Constant::getNullValue(args_type), args);
+        BasicBlock* cond = BasicBlock::Create(*context, "apply_list_cond", function);
+        BasicBlock* body = BasicBlock::Create(*context, "apply_list_body", function);
+        BasicBlock* done = BasicBlock::Create(*context, "apply_list_done", function);
+        pre = builder->GetInsertBlock();
+        builder->CreateBr(cond);
+        builder->SetInsertPoint(cond);
+        PHINode* i = builder->CreatePHI(int64_type, 2, "apply_list_i");
+        PHINode* cur = builder->CreatePHI(int64_type, 2, "apply_list_cur");
+        i->addIncoming(ConstantInt::get(int64_type, 0), pre);
+        cur->addIncoming(list_int, pre);
+        Value* keep = builder->CreateAnd(
+            builder->CreateICmpULT(i, ConstantInt::get(int64_type, PREFIX_WINDOW)),
+            builder->CreateICmpNE(cur, ConstantInt::get(int64_type, 0)));
+        builder->CreateCondBr(keep, body, done);
+        builder->SetInsertPoint(body);
+        Value* cell = builder->CreateIntToPtr(cur, builder->getPtrTy());
+        Value* elem = extractConsCarAsTaggedValue(cell);
+        builder->CreateStore(elem, builder->CreateGEP(args_type, args,
+            {ConstantInt::get(int64_type, 0), i}));
+        Value* next = builder->CreateCall(getTaggedConsGetPtrFunc(),
+            {cell, ConstantInt::getTrue(*context)});
+        Value* next_i = builder->CreateAdd(i, ConstantInt::get(int64_type, 1));
+        BasicBlock* back = builder->GetInsertBlock();
+        builder->CreateBr(cond);
+        i->addIncoming(next_i, back);
+        cur->addIncoming(next, back);
+        builder->SetInsertPoint(done);
+        // Count the complete proper list separately from the bounded prefix;
+        // fixed-arity dispatch must observe overflow instead of mistaking a
+        // 256-element list for a 16-element call.
+        builder->CreateStore(i, total_ptr);
+        builder->CreateStore(cur, tail_ptr);
+        BasicBlock* total_cond = BasicBlock::Create(*context, "apply_list_total_cond", function);
+        BasicBlock* total_body = BasicBlock::Create(*context, "apply_list_total_body", function);
+        BasicBlock* total_done = BasicBlock::Create(*context, "apply_list_total_done", function);
+        builder->CreateBr(total_cond);
+        builder->SetInsertPoint(total_cond);
+        Value* total_cur = builder->CreateLoad(int64_type, tail_ptr);
+        builder->CreateCondBr(builder->CreateICmpNE(total_cur, ConstantInt::get(int64_type, 0)), total_body, total_done);
+        builder->SetInsertPoint(total_body);
+        Value* total_cell = builder->CreateIntToPtr(total_cur, builder->getPtrTy());
+        Value* total_next = builder->CreateCall(getTaggedConsGetPtrFunc(),
+            {total_cell, ConstantInt::getTrue(*context)});
+        builder->CreateStore(total_next, tail_ptr);
+        Value* total_old = builder->CreateLoad(int64_type, total_ptr);
+        builder->CreateStore(builder->CreateAdd(total_old, ConstantInt::get(int64_type, 1)), total_ptr);
+        builder->CreateBr(total_cond);
+        builder->SetInsertPoint(total_done);
+        Value* total = builder->CreateLoad(int64_type, total_ptr);
+        ClosureSpreadArgs spread{args, i, PREFIX_WINDOW, list_int, total};
+        Value* spread_result = codegenClosureCall(closure, {}, "apply-list", true, &spread);
+        BasicBlock* spread_exit = builder->GetInsertBlock();
+        builder->CreateBr(merge_call);
+        builder->SetInsertPoint(merge_call);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 2, "apply_list_result");
         result->addIncoming(empty_result, empty_exit);
         result->addIncoming(spread_result, spread_exit);
         return result;
@@ -10348,6 +10506,110 @@ private:
      * compromise, now reached only for rows that say so. */
     Value* makeVariadicBuiltinClosureValue(const std::string& name,
                                            const InlineBuiltinSpec& spec) {
+        // `error` is variadic in R7RS, but unlike the ordinary rest-list
+        // builtins it raises rather than returning a value.  Its wrapper must
+        // preserve every irritant; a fixed-arity first-class wrapper silently
+        // discarded them.  Build the closure directly over the tagged rest
+        // list and use the canonical exception runtime entry points.
+        if (name == "error") {
+            const std::string wrapper_name = "builtin_error_varargs";
+            if (Function* existing = module->getFunction(wrapper_name))
+                return makeVariadicClosureValueFor(existing);
+            FunctionType* wrap_ty = FunctionType::get(tagged_value_type, {tagged_value_type}, false);
+            Function* wrap_fn = Function::Create(wrap_ty,
+#ifdef _WIN32
+                                                  Function::InternalLinkage,
+#else
+                                                  Function::LinkOnceODRLinkage,
+#endif
+                                                  wrapper_name, module.get());
+            IRBuilderBase::InsertPoint old_point = builder->saveIP();
+            Function* old_current_function = current_function;
+            current_function = wrap_fn;
+            BasicBlock* entry = BasicBlock::Create(*context, "entry", wrap_fn);
+            BasicBlock* first = BasicBlock::Create(*context, "error_first", wrap_fn);
+            BasicBlock* empty = BasicBlock::Create(*context, "error_empty", wrap_fn);
+            BasicBlock* loop = BasicBlock::Create(*context, "error_irritants", wrap_fn);
+            BasicBlock* done = BasicBlock::Create(*context, "error_done", wrap_fn);
+            builder->SetInsertPoint(entry);
+            AllocaInst* irr_slot = builder->CreateAlloca(tagged_value_type, nullptr, "error_irritant");
+            Value* rest = &*wrap_fn->arg_begin();
+            Value* rest_tag = getBaseType(getTaggedValueType(rest));
+            Value* has_first = builder->CreateICmpEQ(rest_tag, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+            builder->CreateCondBr(has_first, first, empty);
+
+            auto declare_make = [&]() {
+                Function* f = module->getFunction("eshkol_make_exception_with_header");
+                if (!f) f = Function::Create(FunctionType::get(builder->getPtrTy(),
+                    {builder->getInt32Ty(), builder->getPtrTy()}, false), Function::ExternalLinkage,
+                    "eshkol_make_exception_with_header", module.get());
+                return f;
+            };
+            auto declare_raise = [&]() {
+                Function* f = module->getFunction("eshkol_raise");
+                if (!f) f = Function::Create(FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false),
+                    Function::ExternalLinkage, "eshkol_raise", module.get());
+                f->setDoesNotReturn();
+                return f;
+            };
+            Function* make_exc = declare_make();
+            Function* raise_exc = declare_raise();
+            Function* add_irr = module->getFunction("eshkol_exception_add_irritant_ptr");
+            if (!add_irr) add_irr = Function::Create(FunctionType::get(builder->getVoidTy(),
+                {builder->getPtrTy(), builder->getPtrTy()}, false), Function::ExternalLinkage,
+                "eshkol_exception_add_irritant_ptr", module.get());
+
+            builder->SetInsertPoint(empty);
+            Value* empty_exc = builder->CreateCall(make_exc, {ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR),
+                codegenString("error")});
+            builder->CreateCall(raise_exc, {empty_exc});
+            builder->CreateUnreachable();
+
+            builder->SetInsertPoint(first);
+            Value* rest_int = unpackInt64FromTaggedValue(rest);
+            Value* car = extractCarAsTaggedValue(rest_int);
+            Value* car_tag = getBaseType(getTaggedValueType(car));
+            Value* is_string = builder->CreateICmpEQ(car_tag, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+            Value* car_data = builder->CreateExtractValue(car, {4});
+            Value* car_str = builder->CreateIntToPtr(car_data, builder->getPtrTy());
+            Value* msg_default = codegenString("error");
+            BasicBlock* msg_yes = BasicBlock::Create(*context, "error_message", wrap_fn);
+            BasicBlock* msg_no = BasicBlock::Create(*context, "error_default", wrap_fn);
+            BasicBlock* msg_merge = BasicBlock::Create(*context, "error_message_merge", wrap_fn);
+            builder->CreateCondBr(is_string, msg_yes, msg_no);
+            builder->SetInsertPoint(msg_yes); builder->CreateBr(msg_merge);
+            builder->SetInsertPoint(msg_no); builder->CreateBr(msg_merge);
+            builder->SetInsertPoint(msg_merge);
+            PHINode* msg = builder->CreatePHI(builder->getPtrTy(), 2);
+            msg->addIncoming(car_str, msg_yes); msg->addIncoming(msg_default, msg_no);
+            Value* exc = builder->CreateCall(make_exc, {ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR), msg});
+            Value* cdr = extractCdrAsTaggedValue(rest_int);
+            BasicBlock* first_end = builder->GetInsertBlock();
+            builder->CreateBr(loop);
+
+            builder->SetInsertPoint(loop);
+            PHINode* current = builder->CreatePHI(tagged_value_type, 2);
+            current->addIncoming(cdr, first_end);
+            Value* cur_base = getBaseType(getTaggedValueType(current));
+            Value* cur_done = builder->CreateICmpEQ(cur_base, ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
+            BasicBlock* add = BasicBlock::Create(*context, "error_add_irritant", wrap_fn);
+            builder->CreateCondBr(cur_done, done, add);
+            builder->SetInsertPoint(add);
+            Value* cur_int = unpackInt64FromTaggedValue(current);
+            Value* irr = extractCarAsTaggedValue(cur_int);
+            builder->CreateStore(irr, irr_slot);
+            builder->CreateCall(add_irr, {exc, irr_slot});
+            Value* next = extractCdrAsTaggedValue(cur_int);
+            current->addIncoming(next, builder->GetInsertBlock());
+            builder->CreateBr(loop);
+            builder->SetInsertPoint(done);
+            builder->CreateCall(raise_exc, {exc});
+            builder->CreateUnreachable();
+            current_function = old_current_function;
+            if (old_point.isSet()) builder->restoreIP(old_point);
+            return makeVariadicClosureValueFor(wrap_fn);
+        }
+
         if (!spec.variadic || spec.rest == VariadicRest::None) return nullptr;
 
         const std::string wrapper_name =
@@ -44068,212 +44330,10 @@ private:
 
     // Create wrapper function for builtin unary math functions (abs, etc.)
     Function* createBuiltinUnaryMathFunction(const std::string& func_name_in) {
-        std::string func_name = "builtin_math_" + func_name_in;
-
-        // Check if function already exists
-        auto existing_it = function_table.find(func_name);
-        if (existing_it != function_table.end()) {
-            return existing_it->second;
-        }
-
-        // Create function type: (tagged_value) -> tagged_value
-        std::vector<Type*> param_types = {tagged_value_type};
-        FunctionType* func_type = FunctionType::get(
-            tagged_value_type,
-            param_types,
-            false
-        );
-
-        Function* builtin_func = Function::Create(
-            func_type,
-            Function::ExternalLinkage,
-            func_name,
-            module.get()
-        );
-
-        // Save current insertion point
-        IRBuilderBase::InsertPoint old_point = builder->saveIP();
-
-        // Create function body
-        BasicBlock* entry = BasicBlock::Create(*context, "entry", builtin_func);
-        builder->SetInsertPoint(entry);
-
-        Value* arg = &*builtin_func->arg_begin();
-
-        // UNIFIED MATH BUILTIN HANDLING: All math functions use the same pattern
-        // Map Scheme-style names to C library names
-        std::string c_func_name = func_name_in;
-        if (func_name_in == "abs") c_func_name = "fabs";
-        else if (func_name_in == "ceiling") c_func_name = "ceil";
-        else if (func_name_in == "truncate") c_func_name = "trunc";
-
-        // Get or declare the C math function
-        Function* c_math_func = nullptr;
-        auto c_it = function_table.find(c_func_name);
-        if (c_it != function_table.end()) {
-            c_math_func = c_it->second;
-        } else {
-            // Declare it
-            FunctionType* math_type = FunctionType::get(double_type, {double_type}, false);
-            c_math_func = Function::Create(math_type, Function::ExternalLinkage, c_func_name, module.get());
-            function_table[c_func_name] = c_math_func;
-        }
-
-        Value* result;
-        if (c_math_func) {
-            // UNIVERSAL AD AWARENESS: 3-way dispatch — AD node → dual number → regular
-            // This ensures (gradient exp 0.0) works correctly with bare builtins
-            // ESH-0093: freeze reverse-tape operands to jets inside forward-mode AD
-            arg = autodiff_->maybeJetLiftTapeOperand(arg);
-            Value* arg_type = getTaggedValueType(arg);
-            Value* arg_base_type = getBaseType(arg_type);
-
-            // Map function name to AD operation type for reverse-mode AD
-            uint32_t ad_op_type = 0;  // 0 = not differentiable
-            if (func_name_in == "sin") ad_op_type = 6;
-            else if (func_name_in == "cos") ad_op_type = 7;
-            else if (func_name_in == "exp") ad_op_type = 8;
-            else if (func_name_in == "log") ad_op_type = 9;
-            else if (func_name_in == "abs" || func_name_in == "fabs") ad_op_type = 42;
-            else if (func_name_in == "sqrt") ad_op_type = 41;
-            else if (func_name_in == "tanh") ad_op_type = 15;
-            else if (func_name_in == "tan") ad_op_type = 54;
-            else if (func_name_in == "asin") ad_op_type = 55;
-            else if (func_name_in == "acos") ad_op_type = 56;
-            else if (func_name_in == "atan") ad_op_type = 57;
-            else if (func_name_in == "sinh") ad_op_type = 58;
-            else if (func_name_in == "cosh") ad_op_type = 59;
-            else if (func_name_in == "asinh") ad_op_type = 60;
-            else if (func_name_in == "acosh") ad_op_type = 61;
-            else if (func_name_in == "atanh") ad_op_type = 62;
-            else if (func_name_in == "log10") ad_op_type = 63;
-            else if (func_name_in == "log2") ad_op_type = 64;
-            else if (func_name_in == "exp2") ad_op_type = 65;
-            else if (func_name_in == "cbrt") ad_op_type = 66;
-            // floor/ceil/ceiling/trunc/truncate/round → 0 (not differentiable)
-
-            // Check if argument is an AD node (CALLABLE type with AD_NODE subtype)
-            Value* arg_is_callable = builder->CreateICmpEQ(arg_base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-
-            Function* parent_func = builtin_func;
-            BasicBlock* ad_check_bb = BasicBlock::Create(*context, "ad_check", parent_func);
-            BasicBlock* ad_node_bb = BasicBlock::Create(*context, "ad_node", parent_func);
-            BasicBlock* check_dual_bb = BasicBlock::Create(*context, "check_dual", parent_func);
-            BasicBlock* dual_bb = BasicBlock::Create(*context, "dual_path", parent_func);
-            BasicBlock* regular_bb = BasicBlock::Create(*context, "regular", parent_func);
-            BasicBlock* merge_bb = BasicBlock::Create(*context, "merge", parent_func);
-
-            builder->CreateCondBr(arg_is_callable, ad_check_bb, check_dual_bb);
-
-            // AD CHECK: Verify subtype is CALLABLE_SUBTYPE_AD_NODE
-            builder->SetInsertPoint(ad_check_bb);
-            Value* is_ad = tagged_->checkCallableSubtype(arg, CALLABLE_SUBTYPE_AD_NODE);
-            builder->CreateCondBr(is_ad, ad_node_bb, check_dual_bb);
-
-            // AD NODE PATH: Record unary operation on the AD tape
-            builder->SetInsertPoint(ad_node_bb);
-            Value* ad_result_tagged;
-            BasicBlock* ad_exit_bb;
-            if (ad_op_type != 0) {
-                // Differentiable function: record on tape
-                Value* ad_ptr_int = unpackInt64FromTaggedValue(arg);
-                Value* ad_ptr = builder->CreateIntToPtr(ad_ptr_int, PointerType::getUnqual(*context));
-                Value* ad_result_node = recordADNodeUnary(ad_op_type, ad_ptr);
-                Value* ad_result_int = builder->CreatePtrToInt(ad_result_node, int64_type);
-                ad_result_tagged = packPtrToTaggedValue(ad_result_int, ESHKOL_VALUE_CALLABLE);
-                builder->CreateBr(merge_bb);
-                ad_exit_bb = builder->GetInsertBlock();
-            } else {
-                // Non-differentiable (floor/ceil/round/trunc): extract primal, compute normally
-                Value* ad_ptr_int = unpackInt64FromTaggedValue(arg);
-                Value* ad_ptr = builder->CreateIntToPtr(ad_ptr_int, PointerType::getUnqual(*context));
-                Value* primal_ptr = builder->CreateStructGEP(ad_node_type, ad_ptr, 1);
-                Value* primal_val = builder->CreateLoad(double_type, primal_ptr);
-                Value* primal_result = builder->CreateCall(c_math_func, {primal_val});
-                ad_result_tagged = packDoubleToTaggedValue(primal_result);
-                builder->CreateBr(merge_bb);
-                ad_exit_bb = builder->GetInsertBlock();
-            }
-
-            // DUAL NUMBER CHECK (forward-mode AD)
-            builder->SetInsertPoint(check_dual_bb);
-            Value* arg_is_dual = builder->CreateICmpEQ(arg_base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-            builder->CreateCondBr(arg_is_dual, dual_bb, regular_bb);
-
-            // DUAL NUMBER PATH
-            builder->SetInsertPoint(dual_bb);
-            Value* arg_dual = unpackDualFromTaggedValue(arg);
-            Value* dual_result = nullptr;
-            if (func_name_in == "sin") dual_result = dualSin(arg_dual);
-            else if (func_name_in == "cos") dual_result = dualCos(arg_dual);
-            else if (func_name_in == "exp") dual_result = dualExp(arg_dual);
-            else if (func_name_in == "log") dual_result = dualLog(arg_dual);
-            else if (func_name_in == "tan") dual_result = dualTan(arg_dual);
-            else if (func_name_in == "tanh") dual_result = dualTanh(arg_dual);
-            else if (func_name_in == "sinh") dual_result = dualSinh(arg_dual);
-            else if (func_name_in == "cosh") dual_result = dualCosh(arg_dual);
-            else if (func_name_in == "abs" || func_name_in == "fabs") dual_result = dualAbs(arg_dual);
-            else if (func_name_in == "sqrt") dual_result = dualSqrt(arg_dual);
-            else if (func_name_in == "asin") dual_result = dualAsin(arg_dual);
-            else if (func_name_in == "acos") dual_result = dualAcos(arg_dual);
-            else if (func_name_in == "atan") dual_result = dualAtan(arg_dual);
-            else if (func_name_in == "asinh") dual_result = dualAsinh(arg_dual);
-            else if (func_name_in == "acosh") dual_result = dualAcosh(arg_dual);
-            else if (func_name_in == "atanh") dual_result = dualAtanh(arg_dual);
-            else if (func_name_in == "log10") dual_result = dualLog10(arg_dual);
-            else if (func_name_in == "log2") dual_result = dualLog2(arg_dual);
-            else if (func_name_in == "exp2") dual_result = dualExp2(arg_dual);
-            else if (func_name_in == "cbrt") dual_result = dualCbrt(arg_dual);
-            else {
-                // Non-differentiable: derivative = 0
-                auto [a, a_prime] = unpackDualNumber(arg_dual);
-                Value* value = builder->CreateCall(c_math_func, {a});
-                dual_result = packDualNumber(value, ConstantFP::get(double_type, 0.0));
-            }
-            Value* tagged_dual_result = packDualToTaggedValue(dual_result);
-            builder->CreateBr(merge_bb);
-            BasicBlock* dual_exit_bb = builder->GetInsertBlock();
-
-            // REGULAR PATH: existing double/int64 dispatch
-            builder->SetInsertPoint(regular_bb);
-            Value* arg_is_double = builder->CreateICmpEQ(arg_base_type,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-            Value* double_val = builder->CreateSelect(arg_is_double,
-                unpackDoubleFromTaggedValue(arg),
-                builder->CreateSIToFP(unpackInt64FromTaggedValue(arg), double_type));
-            Value* math_result = builder->CreateCall(c_math_func, {double_val});
-            Value* regular_result = packDoubleToTaggedValue(math_result);
-            builder->CreateBr(merge_bb);
-            BasicBlock* regular_exit_bb = builder->GetInsertBlock();
-
-            // MERGE all paths
-            builder->SetInsertPoint(merge_bb);
-            PHINode* result_phi = builder->CreatePHI(tagged_value_type, 3, "builtin_math_result");
-            result_phi->addIncoming(ad_result_tagged, ad_exit_bb);
-            result_phi->addIncoming(tagged_dual_result, dual_exit_bb);
-            result_phi->addIncoming(regular_result, regular_exit_bb);
-            result = result_phi;
-        } else {
-            eshkol_error("Unknown unary math function: %s", func_name_in.c_str());
-            result = tagged_->packNull();
-        }
-
-        builder->CreateRet(result);
-
-        // Restore IRBuilder state
-        if (old_point.isSet()) {
-            builder->restoreIP(old_point);
-        }
-
-        // Add to function table
-        registerContextFunction(func_name, builtin_func);
-
-        eshkol_debug("Created builtin unary math function: %s for '%s'",
-                    func_name.c_str(), func_name_in.c_str());
-
-        return builtin_func;
+        // Value and call positions share the same runtime-tag dispatch.
+        // The former handwritten wrapper handled scalar jets but stripped
+        // complex component carriers, so (derivative exp z) returned zero.
+        return createInlineBuiltinWrapper(func_name_in, 1);
     }
 
     /* Quirk 11: create a unary (or nullary for `newline`) closure wrapper
@@ -45033,6 +45093,10 @@ namespace ControlFlowCallbacks {
                                          llvm::Value* count, int width, void* context) {
         return static_cast<EshkolLLVMCodeGen*>(context)->codegenClosureSpreadCall(
             closure, slots, count, width);
+    }
+
+    llvm::Value* closureListCallWrapper(llvm::Value* closure, llvm::Value* list, void* context) {
+        return static_cast<EshkolLLVMCodeGen*>(context)->codegenClosureListCall(closure, list);
     }
 
     llvm::Value* gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,

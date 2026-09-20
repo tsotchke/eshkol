@@ -1,0 +1,23 @@
+id: SW-194
+bucket: SILENT-WRONG
+family: ad/scalar-hessian
+status: in-progress
+needs_decision: false
+title: "browser VM scalar Hessian drops the second derivative of expt"
+repro: >-
+  (display (hessian (lambda (x) (expt x 4)) 1/3))
+observed: >-
+  The public browser VM prints 0 without diagnostics, instead of exact 4/3.
+correct: >-
+  4/3, exact, agreeing with derivative-n of order two; an inexact point
+  produces the corresponding inexact result.
+evidence: >-
+  Direct public-WASM probe on 2026-09-20. The local fix routes scalar
+  Hessians through the shared Taylor application/extraction path with the
+  original seed. site_scalar_hessian_jit, site_scalar_hessian_aot and
+  site_scalar_hessian_vm pass in both the AD and integration worktrees.
+caught_by: [published-site-browser-oracle-audit]
+missed_by: [site_smoke, doc_audit]
+notes: >-
+  Not yet committed to the release cut or deployed. Final artifact and
+  release qualification remain required; a refusal is not a resolution.

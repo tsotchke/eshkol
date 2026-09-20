@@ -716,7 +716,8 @@ typedef struct eshkol_tensor {
     uint64_t  num_dimensions; // Rank (8 bytes)
     int64_t*  elements;       // Elements as int64 bit patterns (8 bytes)
     uint64_t  total_elements; // Product of dimensions (8 bytes)
-} eshkol_tensor_t;           // Total: 32 bytes (cache-aligned)
+    uint64_t  dtype;          // Tensor dtype tag (8 bytes)
+} eshkol_tensor_t;           // Total: 40 bytes (8-byte aligned)
 ```
 
 **Storage Convention**: Elements stored as `int64_t` containing **bit patterns** of doubles.

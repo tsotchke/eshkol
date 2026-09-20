@@ -135,11 +135,32 @@ VmHyperDual* vm_hd_sqrt(VmRegionStack* rs, const VmHyperDual* a) {
 /** @brief Native call 425: hyper-dual power with constant exponent @p n
  *         (g=a^n), per the unary chain-rule formula above. */
 VmHyperDual* vm_hd_pow(VmRegionStack* rs, const VmHyperDual* a, double n) {
+    if (n == 0.0) return hd_new(rs, 1.0, 0.0, 0.0, 0.0);
+    if (n == 1.0) return hd_new(rs, a->f, a->f1, a->f2, a->f12);
     double p = pow(a->f, n);
     double gp = n * pow(a->f, n - 1.0);
     double gpp = n * (n - 1.0) * pow(a->f, n - 2.0);
     return hd_new(rs, p, gp * a->f1, gp * a->f2,
                   gpp * a->f1 * a->f2 + gp * a->f12);
+}
+
+/** Power with an active hyper-dual exponent: a^b = exp(b*log(a)). */
+VmHyperDual* vm_hd_pow_hd(VmRegionStack* rs, const VmHyperDual* a,
+                           const VmHyperDual* b) {
+    /* A constant exponent keeps the real integer-power domain, including
+     * negative bases, and the exact zero/one rules in vm_hd_pow. */
+    if (b->f1 == 0.0 && b->f2 == 0.0 && b->f12 == 0.0)
+        return vm_hd_pow(rs, a, b->f);
+    VmHyperDual* la = vm_hd_log(rs, a);
+    if (!la) return NULL;
+    VmHyperDual* prod = vm_hd_mul(rs, b, la);
+    if (!prod) return NULL;
+    /* Keep the ordinary expt primal exactly: exp(b*log(a)) can round to a
+     * different value and would then choose a different control-flow branch.
+     * The logarithmic jet still supplies the chain-rule factors. */
+    double value = pow(a->f, b->f);
+    return hd_new(rs, value, value * prod->f1, value * prod->f2,
+                  value * (prod->f12 + prod->f1 * prod->f2));
 }
 
 /** @brief Native call 426: hyper-dual absolute value, scaling all

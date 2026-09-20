@@ -672,6 +672,7 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         call_apply_->setApplyForwardRefCallback(ControlFlowCallbacks::applyForwardRefWrapper);
         call_apply_->setClosureCallbacks(ControlFlowCallbacks::closureCallWithInfoWrapper,
                                          ControlFlowCallbacks::closureSpreadCallWrapper);
+        call_apply_->setClosureListCallback(ControlFlowCallbacks::closureListCallWrapper);
         eshkol_debug("Created CallApplyCodegen with callbacks");
 
         // Initialize MapCodegen - higher-order list mapping operations

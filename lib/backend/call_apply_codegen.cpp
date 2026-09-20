@@ -382,7 +382,7 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             if (!isa<Function>(func_value)) {
                 Value* resolved = codegen_ast_callback_(func_arg, callback_context_);
                 if (resolved) {
-                    return applyClosure(resolved, list_int);
+                    return applyCallable(resolved, list_int);
                 }
             }
 
@@ -397,7 +397,7 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             }
 
             // Treat as a closure/tagged value
-            return applyClosure(func_value, list_int);
+            return applyCallable(func_value, list_int);
         }
 
         // Bug P (2026-04-23): cross-file user defines (e.g. (load
@@ -477,7 +477,7 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
         if (codegen_ast_callback_) {
             llvm::Value* resolved = codegen_ast_callback_(func_arg, callback_context_);
             if (resolved) {
-                return applyClosure(resolved, list_int);
+                return applyCallable(resolved, list_int);
             }
         }
 
@@ -492,7 +492,7 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             eshkol_warn("apply: Could not compile lambda");
             return tagged_.packNull();
         }
-        return applyClosure(lambda_val, list_int);
+        return applyCallable(lambda_val, list_int);
     }
 
     // Handle any expression that returns a function/closure (e.g., function calls like (factory-fn))
@@ -502,11 +502,17 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             eshkol_warn("apply: Could not evaluate function expression");
             return tagged_.packNull();
         }
-        return applyClosure(func_val, list_int);
+        return applyCallable(func_val, list_int);
     }
 
     eshkol_warn("apply: First argument must be a function");
     return tagged_.packNull();
+}
+
+Value* CallApplyCodegen::applyCallable(Value* func_value, Value* list_int) {
+    if (closure_list_callback_)
+        return closure_list_callback_(func_value, list_int, callback_context_);
+    return applyClosure(func_value, list_int);
 }
 
 /**
@@ -750,6 +756,19 @@ Value* CallApplyCodegen::applyUserFunction(Function* func, Value* list_int) {
             return applyArithmetic("*", list_int);
         } else if (func_name.find("_/_") != std::string::npos) {
             return applyArithmetic("/", list_int);
+        }
+        // Genuine variadic builtin wrappers consume one tagged rest-list
+        // argument.  They can arrive here as a raw Function* (aliases such as
+        // `(define v vector)`), bypassing closure dispatch; extracting one
+        // element would silently truncate apply to arity one.
+        if (func_name.size() >= 8 && func_name.rfind("_varargs") == func_name.size() - 8) {
+            Value* rest = tagged_.packHeapPtr(list_int);
+            Value* empty = tagged_.packNull();
+            rest = ctx_.builder().CreateSelect(
+                ctx_.builder().CreateICmpEQ(list_int,
+                    ConstantInt::get(ctx_.int64Type(), 0)), empty, rest, "apply_empty_rest");
+            return ctx_.builder().CreateCall(func,
+                {rest});
         }
     }
 

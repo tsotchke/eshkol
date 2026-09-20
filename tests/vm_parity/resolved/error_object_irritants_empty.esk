@@ -1,0 +1,7 @@
+; SW-195: retained reproducer, now matching native in measured parity runs.
+; The VM now agrees with native: both print (1 2), while the no-irritant form
+; prints (). The broader first-class and re-raise coverage is in the corpus.
+(display (guard (e (#t (error-object-irritants e))) (error "boom" 1 2)))
+(newline)
+(display (guard (e (#t (error-object-message e))) (error "boom" 1 2)))
+(newline)

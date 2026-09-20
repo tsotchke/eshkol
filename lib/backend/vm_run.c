@@ -86,18 +86,20 @@ static int vm_enter_call(VM* vm, int argc, int32_t return_pc) {
 }
 
 void vm_run(VM* vm) {
-    const int owns_native_escape = !vm->native_escape_ready;
-    if (owns_native_escape) {
-        vm->native_escape_ready = 1;
-        if (setjmp(vm->native_escape_jmp) != 0) {
-            /* A handled raise or continuation crossed one or more native C
-             * helper frames.  Its handler/continuation already restored pc,
-             * stack, frames, winds, parameters, and promise state; resume the
-             * owning interpreter loop from that exact state. */
-            vm->native_call_depth = 0;
-            vm->halted = 0;
-            vm->error = 0;
-        }
+    VmNativeEscape escape;
+    escape.previous = vm->native_escape_context;
+    escape.frame_floor = escape.previous ? vm->frame_count : 0;
+    escape.frame_generation = escape.frame_floor > 0 ?
+        vm->frames[escape.frame_floor - 1].generation : 0;
+    escape.native_depth = vm->native_call_depth;
+    vm->native_escape_context = &escape;
+    if (setjmp(escape.destination) != 0) {
+        /* A handled raise or continuation crossed one or more native C
+         * helper frames. Resume the nearest still-owning interpreter loop
+         * from the restored VM state, preserving its native callback depth. */
+        vm->native_call_depth = escape.native_depth;
+        vm->halted = 0;
+        vm->error = 0;
     }
 #if defined(__GNUC__) || defined(__clang__)
 /* =========================================================================
@@ -655,7 +657,7 @@ void vm_run(VM* vm) {
 
 vm_exit:
     #undef DISPATCH
-    if (owns_native_escape) vm->native_escape_ready = 0;
+    vm->native_escape_context = escape.previous;
 
 #else
 /* =========================================================================
@@ -1051,6 +1053,6 @@ vm_exit:
             break;
         }
     }
-    if (owns_native_escape) vm->native_escape_ready = 0;
+    vm->native_escape_context = escape.previous;
 #endif
 }

@@ -187,9 +187,7 @@ op:HESSIAN	behavioral-divergence	tests/vm_parity/found/ad_gradient_wrong.esk	ret
 op:JACOBIAN	behavioral-divergence	tests/vm_parity/found/ad_gradient_wrong.esk	returns tensor handle, wrong values (found/ad_gradient_wrong.esk)
 op:KB_QUERY_PREFIX	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	kb-query-prefix has no VM binding
 op:LAPLACIAN	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	AD surface diverges in VM
-op:LETREC_SYNTAX	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	same as op:LET_SYNTAX
 op:LET_STAR_VALUES	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	same family as op:LET_VALUES silent-wrong divergence
-op:LET_SYNTAX	vm-unsupported-clean-error	generated:scripts/canonicalize_vm_gaps.py	let-syntax not expanded by vm_macro (undefined-variable error)
 op:MAKE_PARAMETER	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	make-parameter undefined in VM
 op:MATCH	vm-unsupported-clean-error	generated:scripts/canonicalize_vm_gaps.py	match unsupported in VM (clean undefined-variable error)
 op:PARAMETERIZE	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	depends on make-parameter; fids 702/703 exist but surface incomplete

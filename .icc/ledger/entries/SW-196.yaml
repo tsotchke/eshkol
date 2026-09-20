@@ -1,0 +1,31 @@
+id: SW-196
+bucket: SILENT-WRONG
+family: vm/native-callback-control
+status: in-progress
+needs_decision: false
+title: "VM worker callbacks can unwind through the caller thread's interpreter context"
+repro: >-
+  Run tests/vm_parity/corpus/error_irritants_lifetime.esk: a parallel-map
+  callback catches an error and returns its condition object.
+observed: >-
+  The parent interpreter exits early, then a worker reads the freed parent
+  VM. AddressSanitizer reports heap-use-after-free in vm_worker_call_closure.
+  The current browser bundle, where parallel-map runs sequentially, also
+  returns early without any diagnostic: mapping a locally guarded callback
+  over (1 2 3) prints only 1 and discards the remaining program, instead of
+  printing (1 2 3) and the following "after" sentinel. repl_eval reports success.
+correct: >-
+  Callback-local handlers resume the callback. Transfers to an outer handler
+  or continuation resume its owning interpreter scope. Workers never execute
+  the caller VM; unsafe shared-state callbacks remain on the caller thread.
+evidence: >-
+  .scratch/error-irritants-lifetime-asan.log records the original use-after-free.
+  The local fix provides one escape destination per interpreter invocation,
+  matched by frame depth and generation; schedulers admit only isolated-safe
+  worker closures and propagate failures after joining. Source/ESKB callback
+  checks and focused ASan/UBSan lifetime checks now pass.
+caught_by: [error-irritants-lifetime-review, address-sanitizer]
+missed_by: [vm_parity, site_smoke]
+notes: >-
+  Broader VM parity and final release qualification remain outstanding.
+  Do not close until the final integrated source and artifacts are qualified.

@@ -1,6 +1,11 @@
 #include "eshkol/backend/vm_limits.h"
 #include <limits.h>
 
+/* Private packed-tail error ABI. Native 237 keeps its historical one-message
+ * argument contract so existing ESKB modules cannot consume an unrelated slot. */
+#define VM_NATIVE_ERROR_WITH_IRRITANTS 2231
+#define VM_NATIVE_APPLY_PACKED 2232
+
 /* Pack a function's declared fixed arity into bits 32..40 of its func-PC
  * constant. The low 32 bits remain the code offset, so the metadata survives
  * ESKB serialization and code relocation. A value of 255 denotes variadic;
@@ -177,6 +182,15 @@ typedef struct {
         int32_t ptr;     /* heap pointer (index into heap array) */
     } as;
 } Value;
+
+/* vm_error.c precedes Value in the unity build; its byte-copy carrier must
+ * remain layout-compatible. No access through an aliased Value pointer. */
+typedef char VmErrorValueSizeCheck[
+    sizeof(((VmError*)0)->value_irritants) == sizeof(Value) ? 1 : -1];
+typedef char VmErrorValuePayloadOffsetCheck[
+    offsetof(Value, as) == offsetof(VmErrorValueMirror, as) ? 1 : -1];
+typedef char VmErrorValueTagSizeCheck[
+    sizeof(((Value*)0)->type) == sizeof(((VmErrorValueMirror*)0)->type) ? 1 : -1];
 
 #define NIL_VAL    ((Value){.type = VAL_NIL})
 #define INT_VAL(v) ((Value){.type = VAL_INT, .as.i = (v)})
@@ -746,6 +760,18 @@ typedef struct {
  * VM State
  ******************************************************************************/
 
+/* One native escape destination per active interpreter invocation. A nested
+ * callback's local handler must resume that callback, not unwind the caller's
+ * native operation. Frame generations distinguish re-entered continuations
+ * from a different activation at the same stack depth. */
+typedef struct VmNativeEscape {
+    jmp_buf destination;
+    struct VmNativeEscape* previous;
+    int frame_floor;
+    uint64_t frame_generation;
+    int native_depth;
+} VmNativeEscape;
+
 typedef struct VM {
     /* Program */
     Instr* code;
@@ -839,8 +865,7 @@ typedef struct VM {
      * C helper frame and resume the owning interpreter loop at the restored
      * VM state, rather than letting the nested loop consume the handler. */
     int native_call_depth;
-    int native_escape_ready;
-    jmp_buf native_escape_jmp;
+    VmNativeEscape* native_escape_context;
 
     uint32_t language_coverage_call_hash;
     int32_t language_coverage_call_pc;

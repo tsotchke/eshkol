@@ -157,6 +157,7 @@ namespace ControlFlowCallbacks {
     llvm::Value* codegenLambdaWrapper(const eshkol_operations_t* op, void* context);
     llvm::Value* closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context);
     llvm::Value* closureSpreadCallWrapper(llvm::Value*, llvm::Value*, llvm::Value*, int, void*);
+    llvm::Value* closureListCallWrapper(llvm::Value*, llvm::Value*, void*);
     llvm::Value* closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
     llvm::Value* gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
                                                   llvm::Value* dual_elems, llvm::Value* declared_arity,

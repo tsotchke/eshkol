@@ -13859,7 +13859,10 @@ entries:
       unsupported combination for (2).
     evidence: >-
       Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
-      arm64 macOS, while sweeping SW-181.
+      arm64 macOS, while sweeping SW-181. Fixed at 2c0eb81f5: jacobian resolves
+      dense AD tensor results before shape/element dispatch; the SIGSEGV repro now
+      returns #((1 0) (0 1)), and the dense boundary test passes cached, uncached,
+      and AOT.
     caught_by: [coordinator-sweep]
     missed_by: [run_ad_oracle, run_dense_tensor_ad_gate]
     notes: >-
@@ -13886,7 +13889,9 @@ entries:
       differentiated.
     evidence: >-
       Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
-      arm64 macOS, while sweeping SW-181.
+      arm64 macOS, while sweeping SW-181. Fixed at 2c0eb81f5: tensor?/vector?
+      and hosted display recognize dense AD tensor results; the repro now returns
+      #t #t #(1 2 3), and the dense boundary test passes cached, uncached, and AOT.
     caught_by: [coordinator-sweep]
     missed_by: [run_ad_oracle, run_dense_tensor_ad_gate, doc_audit]
     notes: >-
@@ -14014,3 +14019,161 @@ entries:
       contract for non-holomorphic functions (refuse, return df/dz, or return the
       Wirtinger pair) before it is built. The tutorial sentence is left as the
       statement of intent.
+  - id: SW-192
+    bucket: SILENT-WRONG
+    family: macro/definition-site-scope
+    status: in-progress
+    title: "Macro bindings and template references must preserve lexical definition scope"
+    repro: >-
+      Define a macro named when whose false branch explicitly returns #f; use
+      let-syntax and letrec-syntax with an outer macro of the same name; reference
+      and mutate a template's free value beneath a caller binding of that name.
+    observed_before: >-
+      Native keyword lowering ignored the when binding. VM scoped bindings were
+      never registered. Both engines resolved template references at the use site.
+    correct: >-
+      Both engines execute the user macro, distinguish let-syntax from letrec-syntax,
+      preserve definition-site free identifiers, and preserve caller pattern syntax.
+    evidence: >-
+      tests/vm_parity/corpus/92_macro_definition_scope.esk has fourteen independent
+      expected-value checks. The current VM passes all fourteen. Native integration
+      validation is still in progress; no refusal or waiver constitutes closure.
+  - id: SW-194
+    bucket: SILENT-WRONG
+    family: ad/scalar-hessian
+    status: in-progress
+    needs_decision: false
+    title: "browser VM scalar Hessian drops the second derivative of expt"
+    repro: >-
+      (display (hessian (lambda (x) (expt x 4)) 1/3))
+    observed: >-
+      The public browser VM prints 0 without diagnostics, instead of exact 4/3.
+    correct: >-
+      4/3, exact, agreeing with derivative-n of order two; an inexact point
+      produces the corresponding inexact result.
+    evidence: >-
+      Direct public-WASM probe on 2026-09-20. The local fix routes scalar
+      Hessians through the shared Taylor application/extraction path with the
+      original seed. site_scalar_hessian_jit, site_scalar_hessian_aot and
+      site_scalar_hessian_vm pass in both the AD and integration worktrees.
+    caught_by: [published-site-browser-oracle-audit]
+    missed_by: [site_smoke, doc_audit]
+    notes: >-
+      Not yet committed to the release cut or deployed. Final artifact and
+      release qualification remain required; a refusal is not a resolution.
+  - id: SW-195
+    bucket: SILENT-WRONG
+    family: conditions/error-irritants
+    status: in-progress
+    needs_decision: false
+    title: "VM error objects drop their irritant list"
+    repro: >-
+      (display (guard (e (#t (error-object-irritants e))) (error "boom" 1 2)))
+    observed: >-
+      The public browser VM prints () without diagnostics instead of (1 2).
+    correct: >-
+      Preserve and return the supplied Scheme values in order, including after
+      region escape, first-class error calls, and re-raising.
+    evidence: >-
+      Published-site browser audit on 2026-09-20; uninstrumented direct probe
+      confirmed the loss. Local source VM and new ESKB regressions pass after
+      storing a typed Value-compatible head and tracing/cloning its graph.
+      Private native 2231 carries the packed list; legacy native 237 retains its
+      original single-argument ABI. An older ESKB fixture retains its original
+      message/stack behavior, rather than consuming unrelated stack values.
+    caught_by: [published-site-browser-oracle-audit]
+    missed_by: [site_smoke, doc_audit]
+    notes: >-
+      Source is not yet committed/integrated or deployed. Lifetime and callback
+      tests exposed SW-196, which is separately tracked. No waiver or refusal
+      counts as a fix.
+  - id: SW-196
+    bucket: SILENT-WRONG
+    family: vm/native-callback-control
+    status: in-progress
+    needs_decision: false
+    title: "VM worker callbacks can unwind through the caller thread's interpreter context"
+    repro: >-
+      Run tests/vm_parity/corpus/error_irritants_lifetime.esk: a parallel-map
+      callback catches an error and returns its condition object.
+    observed: >-
+      The parent interpreter exits early, then a worker reads the freed parent
+      VM. AddressSanitizer reports heap-use-after-free in vm_worker_call_closure.
+      The current browser bundle, where parallel-map runs sequentially, also
+      returns early without any diagnostic: mapping a locally guarded callback
+      over (1 2 3) prints only 1 and discards the remaining program, instead of
+      printing (1 2 3) and the following "after" sentinel. repl_eval reports success.
+    correct: >-
+      Callback-local handlers resume the callback. Transfers to an outer handler
+      or continuation resume its owning interpreter scope. Workers never execute
+      the caller VM; unsafe shared-state callbacks remain on the caller thread.
+    evidence: >-
+      .scratch/error-irritants-lifetime-asan.log records the original use-after-free.
+      The local fix provides one escape destination per interpreter invocation,
+      matched by frame depth and generation; schedulers admit only isolated-safe
+      worker closures and propagate failures after joining. Source/ESKB callback
+      checks and focused ASan/UBSan lifetime checks now pass.
+    caught_by: [error-irritants-lifetime-review, address-sanitizer]
+    missed_by: [vm_parity, site_smoke]
+    notes: >-
+      Broader VM parity and final release qualification remain outstanding.
+      Do not close until the final integrated source and artifacts are qualified.
+  - id: SW-197
+    bucket: SILENT-WRONG
+    family: ad/native-exact-tier
+    status: in-progress
+    needs_decision: false
+    title: "native derivative loses exactness when a scalar body uses collection intermediates"
+    repro: >-
+      Differentiate a scalar fold over map or parallel-map at 1/3, for example
+      d/dx fold-left(+, 0, map(y -> y*y, [x x x x])).
+    observed: >-
+      Native JIT and AOT return the inexact double 2.6666666666666665 with exit 0
+      instead of exact 8/3; a sufficiently tiny exact input underflows and fails
+      equality with the analytic exact derivative. Direct scalar arithmetic and
+      derivative-n remain exact.
+    correct: >-
+      An exact point stays on the exact Taylor tier when the differentiand's final
+      value is numeric, even if list/vector values are built and consumed only as
+      intermediate operands. A genuinely collection-valued result retains the
+      existing R-to-R^n derivative semantics.
+    evidence: >-
+      .scratch/NATIVE-PARALLEL-AD-EXACTNESS.md and the isolation logs reproduce
+      the loss in both serial and parallel collection paths. The local fix makes
+      the safety scan follow value-producing positions instead of every operand.
+      Four exact-point/exact-rational native CTests and the four-engine
+      parallel_ad_carrier_lifetime corpus case pass.
+    caught_by: [release-ad-carrier-audit]
+    missed_by: [vm_parity, exact_rational_derivative_runtime_smoke]
+    notes: >-
+      Source is not yet committed to the release cut. Keep open until current-head
+      parity and final release qualification pass; no inexact fallback is a fix.
+  - id: SW-198
+    bucket: CRASH
+    family: vm/parallel-ad-carrier-ownership
+    status: in-progress
+    needs_decision: false
+    title: "VM parallel AD results retain worker-owned exact carrier storage"
+    repro: >-
+      Differentiate and Hessian a fold over parallel-map at exact rational points,
+      including a tiny bignum rational, then let the worker VM be destroyed.
+    observed: >-
+      Normal builds can print plausible values, but AddressSanitizer reports a
+      heap-use-after-free in vm_rational_arith_exact -> vm_dual_add when the parent
+      consumes exact halves owned by a destroyed worker. Taylor coefficient arrays
+      and their exact rational sidecars have the same ownership defect.
+    correct: >-
+      Publishing a worker result deep-copies every dual/Taylor coefficient channel,
+      bignum limb buffer and exact rational sidecar into parent-owned storage; the
+      region evacuator retains every channel it can later expose.
+    evidence: >-
+      .scratch/parallel-ad-transfer-asan.log records the original UAF. The local
+      fix deep-clones scalar halves plus all four coefficient/exact channels and
+      extends region retention. Source VM, emitted ESKB and an ASan/UBSan VM run of
+      parallel_ad_carrier_lifetime pass; leak detection was disabled and native
+      runtime libraries were not sanitizer-instrumented.
+    caught_by: [address-sanitizer, release-ad-carrier-audit]
+    missed_by: [vm_parity, normal-runtime-smoke]
+    notes: >-
+      Source is not yet committed to the release cut. Keep open until integrated
+      sanitizer and release qualification complete.

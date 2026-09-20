@@ -1,0 +1,19 @@
+id: SW-192
+bucket: SILENT-WRONG
+family: macro/definition-site-scope
+status: in-progress
+title: "Macro bindings and template references must preserve lexical definition scope"
+repro: >-
+  Define a macro named when whose false branch explicitly returns #f; use
+  let-syntax and letrec-syntax with an outer macro of the same name; reference
+  and mutate a template's free value beneath a caller binding of that name.
+observed_before: >-
+  Native keyword lowering ignored the when binding. VM scoped bindings were
+  never registered. Both engines resolved template references at the use site.
+correct: >-
+  Both engines execute the user macro, distinguish let-syntax from letrec-syntax,
+  preserve definition-site free identifiers, and preserve caller pattern syntax.
+evidence: >-
+  tests/vm_parity/corpus/92_macro_definition_scope.esk has fourteen independent
+  expected-value checks. The current VM passes all fourteen. Native integration
+  validation is still in progress; no refusal or waiver constitutes closure.

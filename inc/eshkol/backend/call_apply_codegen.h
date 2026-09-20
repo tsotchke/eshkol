@@ -126,6 +126,7 @@ public:
      * @return Function result as tagged value
      */
     llvm::Value* applyClosure(llvm::Value* func_value, llvm::Value* list_int);
+    llvm::Value* applyCallable(llvm::Value* func_value, llvm::Value* list_int);
 
     // === Closure Calls ===
 
@@ -278,10 +279,12 @@ public:
 
     using ClosureCallCallback = llvm::Value* (*)(llvm::Value*, const std::vector<llvm::Value*>&, const char*, void*);
     using ClosureSpreadCallback = llvm::Value* (*)(llvm::Value*, llvm::Value*, llvm::Value*, int, void*);
+    using ClosureListCallback = llvm::Value* (*)(llvm::Value*, llvm::Value*, void*);
     void setClosureCallbacks(ClosureCallCallback call, ClosureSpreadCallback spread) {
         closure_call_callback_ = call;
         closure_spread_callback_ = spread;
     }
+    void setClosureListCallback(ClosureListCallback callback) { closure_list_callback_ = callback; }
 
 private:
     // Shared codegen state and helper modules (not owned; refs injected via
@@ -305,6 +308,7 @@ private:
     IsTopLevelCalleeReassignedCallback is_top_level_callee_reassigned_callback_ = nullptr;
     ClosureCallCallback closure_call_callback_ = nullptr;
     ClosureSpreadCallback closure_spread_callback_ = nullptr;
+    ClosureListCallback closure_list_callback_ = nullptr;
     void* callback_context_ = nullptr;
 
     // Cons cell operation callbacks

@@ -25,13 +25,13 @@
 // ===== EXCEPTION HANDLING IMPLEMENTATION =====
 // Runtime support for R7RS-compatible exception handling
 
-// Global exception state
-eshkol_exception_t* g_current_exception = nullptr;
-eshkol_exception_handler_t* g_exception_handler_stack = nullptr;
+// A worker must never observe another thread's setjmp destination or condition.
+thread_local eshkol_exception_t* g_current_exception = nullptr;
+thread_local eshkol_exception_handler_t* g_exception_handler_stack = nullptr;
 
 // R7RS: stores the original raised tagged_value for with-exception-handler
-eshkol_tagged_value_t g_raised_tagged_value = {0, 0, 0, {0}};
-static bool g_raised_value_set_by_user = false;
+thread_local eshkol_tagged_value_t g_raised_tagged_value = {0, 0, 0, {0}};
+static thread_local bool g_raised_value_set_by_user = false;
 
 // Promise evaluation is an intrusive, thread-local chain. While a promise is
 // being evaluated its cached-value slot temporarily stores the previous chain

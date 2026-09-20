@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: tensors
+since: v1.3.5
+sources:
+  - lib/core/eskm_v2_preflight.c
+  - lib/core/eskm_v2_preflight.h
+  - docs/design/ESKM_V2_FORMAT_DECISION.md
+---
 # ESKM v2: experimental internal preflight contract
 
 **Status: experimental, test-only; the format decision remains Proposed.**

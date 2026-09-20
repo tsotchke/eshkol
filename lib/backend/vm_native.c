@@ -8002,8 +8002,16 @@ static void vm_promise_eval_unwind_to(VM* vm, Value mark) {
 }
 
 static void vm_escape_native_control(VM* vm) {
-    if (vm->native_call_depth > 0 && vm->native_escape_ready) {
-        longjmp(vm->native_escape_jmp, 1);
+    if (vm->native_call_depth > 0 && vm->native_escape_context) {
+        VmNativeEscape* target = vm->native_escape_context;
+        while (target->previous &&
+               (vm->frame_count < target->frame_floor ||
+                (target->frame_floor > 0 &&
+                 vm->frames[target->frame_floor - 1].generation != target->frame_generation))) {
+            target = target->previous;
+        }
+        vm->native_escape_context = target;
+        longjmp(target->destination, 1);
     }
 }
 
@@ -8168,9 +8176,11 @@ static void vm_raise_secondary_exception(VM* vm) {
  * Pushes nothing: control transfers to the innermost handler, or the
  * unhandled-exception path flags vm->error.  Callers must `break` immediately.
  */
-static void vm_raise_error_msg(VM* vm, const char* msg) {
+static void vm_raise_error_msg_with_irritants(VM* vm, const char* msg,
+                                              Value irritants) {
     vm->error = 0;
     VmError* e = vm_error_make(&vm->heap.regions, "error", msg, NULL, 0);
+    if (e) vm_error_set_value_irritants(e, &irritants);
     Value exn = NIL_VAL;
     if (e) {
         int32_t ep = heap_alloc(&vm->heap);
@@ -8181,6 +8191,10 @@ static void vm_raise_error_msg(VM* vm, const char* msg) {
         }
     }
     vm_dispatch_exception(vm, exn);
+}
+
+static void vm_raise_error_msg(VM* vm, const char* msg) {
+    vm_raise_error_msg_with_irritants(vm, msg, NIL_VAL);
 }
 
 /*
@@ -8345,9 +8359,9 @@ static Value vm_force_promise_value(VM* vm, Value initial) {
  *
  * The VM's forward carrier is a first-order dual. A real value entering a
  * complex operation is lifted here, and only here: a dual becomes a complex
- * with a tangent in its real part, so the derivative survives. A carrier this
- * representation cannot hold (a Taylor tower, a hyper-dual) is refused with a
- * message instead of being read as its primal. */
+ * with a tangent in its real part, so the derivative survives. Taylor towers
+ * remain attached to the component carrier; the separate hyper-dual lane is
+ * still rejected rather than being read as its primal. */
 static int vm_real_with_tangent(VM* vm, Value v, double* primal, double* tangent, const char* who) {
     *tangent = 0.0;
     if (v.type == VAL_HYPER_DUAL) {
@@ -8358,12 +8372,6 @@ static int vm_real_with_tangent(VM* vm, Value v, double* primal, double* tangent
     }
     if (v.type == VAL_DUAL) {
         VmDual d = vm_dual_operand(vm, v);
-        if (vm_dual_is_taylor(&d)) {
-            char msg[200];
-            snprintf(msg, sizeof msg, "%s: a higher-order derivative cannot pass through a complex number on the VM; use the native backend", who);
-            vm_raise_error_msg(vm, msg);
-            return 0;
-        }
         *primal = d.primal;
         *tangent = d.tangent;
         return 1;
@@ -8378,7 +8386,12 @@ static int vm_complex_operand(VM* vm, Value v, VmComplex* out, const char* who) 
         *out = *(VmComplex*)vm->heap.objects[v.as.ptr]->opaque.ptr;
         return 1;
     }
-    return vm_real_with_tangent(vm, v, &out->real, &out->dreal, who);
+    if (!vm_real_with_tangent(vm, v, &out->real, &out->dreal, who)) return 0;
+    if (v.type == VAL_DUAL && v.as.ptr >= 0 && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmDual* d = (VmDual*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        out->creal = d;
+    }
+    return 1;
 }
 
 /* A real result with a tangent is a dual; without one, a plain float. */
@@ -8419,6 +8432,43 @@ static void vm_push_complex_result(VM* vm, VmComplex* result) {
     vm->heap.objects[ptr]->type = HEAP_COMPLEX;
     vm->heap.objects[ptr]->opaque.ptr = result;
     vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+}
+
+static Value vm_complex_value(VM* vm, VmComplex* result) {
+    if (!result) return NIL_VAL;
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return NIL_VAL; }
+    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
+    vm->heap.objects[ptr]->opaque.ptr = result;
+    return (Value){.type = VAL_COMPLEX, .as.ptr = ptr};
+}
+
+static VmComplex* vm_complex_taylor_apply(VM* vm, Value f, Value point,
+                                          uint32_t order) {
+    if (point.type != VAL_COMPLEX || point.as.ptr < 0 ||
+        !is_valid_heap_ptr(vm, point.as.ptr)) return NULL;
+    VmComplex* z = (VmComplex*)vm->heap.objects[point.as.ptr]->opaque.ptr;
+    if (!z) return NULL;
+    uint32_t epoch = vm_dual_next_taylor_epoch();
+    VmComplex* seed = vm_complex_new(&vm->heap.regions, z->real, z->imag);
+    if (!seed) return NULL;
+    seed->creal = vm_dual_make_taylor_seed(&vm->heap.regions, NULL, z->real,
+                                           order, 0, epoch);
+    seed->cimag = vm_dual_make_taylor_seed(&vm->heap.regions, NULL, z->imag,
+                                           order, 0, epoch);
+    if (!seed->creal || !seed->cimag) return NULL;
+    if (order >= 1) seed->cimag->coeff[1] = 0.0;
+    seed->creal->primal = z->real; seed->creal->tangent = order >= 1 ? 1.0 : 0.0;
+    seed->cimag->primal = z->imag; seed->cimag->tangent = 0.0;
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return NULL; }
+    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
+    vm->heap.objects[ptr]->opaque.ptr = seed;
+    Value arg = (Value){.type = VAL_COMPLEX, .as.ptr = ptr};
+    Value result = vm_ad_call_closure(vm, f, &arg, 1);
+    if (result.type != VAL_COMPLEX || result.as.ptr < 0 ||
+        !is_valid_heap_ptr(vm, result.as.ptr)) return NULL;
+    return (VmComplex*)vm->heap.objects[result.as.ptr]->opaque.ptr;
 }
 
 static int vm_math_complex_dispatch(VM* vm, Value a, int fid) {
@@ -8731,6 +8781,19 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 31: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 31)) break; vm_push_real_unary(vm, a, atan, vm_d_atan, "atan"); break; }
     case 32: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,382); break; }
+        if ((a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) &&
+            a.type != VAL_COMPLEX && b.type != VAL_COMPLEX) {
+            VmHyperDual ah = {as_number_vm(vm, a), 0, 0, 0};
+            VmHyperDual bh = {as_number_vm(vm, b), 0, 0, 0};
+            if (a.type == VAL_HYPER_DUAL)
+                ah = *(VmHyperDual*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            if (b.type == VAL_HYPER_DUAL)
+                bh = *(VmHyperDual*)vm->heap.objects[b.as.ptr]->opaque.ptr;
+            VmHyperDual* result = vm_hd_pow_hd(&vm->heap.regions, &ah, &bh);
+            if (!result) { vm_raise_error_msg(vm, "expt: carrier allocation failed"); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, result);
+            break;
+        }
         /* Task #113: a complex base OR exponent promotes both and takes the
          * principal a^b = exp(b log a). Without it as_number() answered 0 for
          * the complex side and (expt z 2) silently became 0^2. */
@@ -9086,39 +9149,69 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * List/apply (70-73)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 70: { /* apply */
+    case 70: case VM_NATIVE_APPLY_PACKED: { /* apply */
+        /* Legacy 70 still consumes (procedure, final-list). New variadic
+         * preambles pack after two fixed arguments and supply a third tail
+         * containing any further leading operands and the final list. */
+        Value packed = fid == VM_NATIVE_APPLY_PACKED ? vm_pop(vm) : NIL_VAL;
         Value args_list = vm_pop(vm);
         Value func = vm_pop(vm);
-        if (func.type != VAL_CLOSURE) { vm->error = 1; break; }
         /* Push closure below args (OP_CALL convention: closure at fp-1) */
         vm_push(vm, func);
         int argc = 0;
+        int invalid_prefix = 0;
+        while (packed.type == VAL_PAIR) {
+            if (!is_heap_type(vm, packed, HEAP_CONS) || vm->sp >= STACK_SIZE) {
+                invalid_prefix = 1;
+                break;
+            }
+            vm_push(vm, args_list);
+            argc++;
+            args_list = vm->heap.objects[packed.as.ptr]->cons.car;
+            packed = vm->heap.objects[packed.as.ptr]->cons.cdr;
+        }
+        if (vm->error) break;
+        if (invalid_prefix) {
+            vm_raise_error_msg(vm, "apply: invalid prefix or VM stack capacity exceeded");
+            break;
+        }
+        if (packed.type != VAL_NIL) {
+            vm_raise_error_msg(vm, "apply: invalid packed argument tail");
+            break;
+        }
         Value cur = args_list;
+        int invalid_tail = 0;
         /* `apply` has no language-level sixteen-argument limit.  The old
          * fixed cap silently dropped the tail of a proper argument list, so
          * (apply + (list ...)) returned a plausible partial sum with exit 0.
          * Use the VM stack as the actual finite resource and fail loudly if
          * the caller asks for more arguments than this invocation can hold. */
         while (cur.type == VAL_PAIR && vm->sp < STACK_SIZE) {
+            if (!is_heap_type(vm, cur, HEAP_CONS)) {
+                invalid_tail = 1;
+                break;
+            }
             vm_push(vm, vm->heap.objects[cur.as.ptr]->cons.car);
             cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
             argc++;
+        }
+        if (vm->error) break;
+        if (invalid_tail) {
+            vm_raise_error_msg(vm, "apply: final argument must be a proper list");
+            break;
         }
         if (cur.type == VAL_PAIR) {
             fprintf(stderr, "ERROR: apply: argument list exceeds VM stack capacity\n");
             vm->error = 1;
             break;
         }
-        HeapObject* cl70 = vm->heap.objects[func.as.ptr];
-        if (vm->frame_count >= MAX_FRAMES) { vm->error = 1; break; }
-        vm->frames[vm->frame_count].return_pc = vm->pc;
-        vm->frames[vm->frame_count].return_fp = vm->fp;
-        vm->frames[vm->frame_count].func_pc = cl70->closure.func_pc;
-        vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
-        vm->frames[vm->frame_count].exception_handler_frame = 0;
-        vm->frame_count++;
-        vm->fp = vm->sp - argc;
-        vm->pc = cl70->closure.func_pc;
+        if (cur.type != VAL_NIL) {
+            vm_raise_error_msg(vm, "apply: final argument must be a proper list");
+            break;
+        }
+        /* Parameters, continuations and closures share OP_CALL's exact
+         * admission/arity contract instead of bypassing it here. */
+        (void)vm_enter_call(vm, argc, vm->pc);
         break;
     }
     case 71: { /* length */
@@ -9917,6 +10010,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
         case 377: case 378: case 379: case 380: case 381:
         case 383: case 384: case 385: case 386: case 387: {
             Value v = vm_pop(vm);
+            /* First-class transcendental closures use the dual entry IDs
+             * (377..), but a nested complex derivative must stay on the
+             * complex carrier path instead of vm_dual_operand's scalar
+             * coercion.  Inline opcode dispatch already handles this case;
+             * mirror it here for the first-class/native closure route. */
+            if (v.type == VAL_COMPLEX) {
+                VmComplex z = *(VmComplex*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                VmComplex* cz = NULL;
+                switch (fid) {
+                    case 377: cz = vm_complex_sin(&vm->heap.regions, &z); break;
+                    case 378: cz = vm_complex_cos(&vm->heap.regions, &z); break;
+                    case 379: cz = vm_complex_exp(&vm->heap.regions, &z); break;
+                    case 380: cz = vm_complex_log(&vm->heap.regions, &z); break;
+                    case 381: cz = vm_complex_sqrt(&vm->heap.regions, &z); break;
+                    default: break;
+                }
+                vm_push_complex_result(vm, cz);
+                break;
+            }
             VmDual a_d = vm_dual_operand(vm, v);   /* ESH-0410: heap-aware */
             VmDual* result = NULL;
             switch (fid) { case 377: result=vm_dual_sin(dual_rs,&a_d); break; case 378: result=vm_dual_cos(dual_rs,&a_d); break;
@@ -9928,8 +10040,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, result); break; }
         case 382: { Value exp_val = vm_pop(vm), base_val = vm_pop(vm);
             VmDual a_d = vm_dual_operand(vm, base_val);   /* ESH-0410 */
-            VmDual* result = vm_dual_pow(dual_rs, &a_d, as_number_vm(vm, exp_val));
-            if (!result) { vm_push(vm, NIL_VAL); break; }
+            VmDual b_d = vm_dual_operand(vm, exp_val);
+            VmDual* result = vm_dual_pow_active(dual_rs, &a_d, &b_d);
+            if (!result) { vm_raise_error_msg(vm, "expt: carrier allocation failed"); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, result); break; }
         case 388: { Value v = vm_pop(vm);
             VmDual* d = vm_dual_from_double(dual_rs, as_number_vm(vm, v));   /* ESH-0410 */
@@ -10009,9 +10122,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, result); break; }
         case 1915: { /* pow(base, exp) */
             Value exp_val = vm_pop(vm), base_val = vm_pop(vm);
-            VmHyperDual a_h = {as_number(base_val), 0, 0, 0};
+            VmHyperDual a_h = {as_number_vm(vm, base_val), 0, 0, 0};
             if (base_val.type == VAL_HYPER_DUAL) a_h = *(VmHyperDual*)vm->heap.objects[base_val.as.ptr]->opaque.ptr;
-            VmHyperDual* result = vm_hd_pow(hd_rs, &a_h, as_number(exp_val));
+            VmHyperDual* result;
+            if (exp_val.type == VAL_HYPER_DUAL) {
+                VmHyperDual b_h = *(VmHyperDual*)vm->heap.objects[exp_val.as.ptr]->opaque.ptr;
+                result = vm_hd_pow_hd(hd_rs, &a_h, &b_h);
+            } else {
+                result = vm_hd_pow(hd_rs, &a_h, as_number_vm(vm, exp_val));
+            }
             if (!result) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, result); break; }
         case 1920: { /* from-double */
@@ -10135,13 +10254,114 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 "use the native backend");
             break;
         }
-        /* A complex evaluation point needs a complex-valued perturbation;
-         * derivative is defined over the reals (ADR-0025). Refused exactly as
-         * the native engine refuses it, instead of seeding the point's real
-         * reading and answering a derivative of 0. */
+        /* SW-191: seed a complex evaluation point with the holomorphic unit
+         * tangent dz=1, then return the complex tangent of the result. */
         if (x_val.type == VAL_COMPLEX) {
-            vm_raise_error_msg(vm, "derivative: evaluation point is not a real number (a complex point); "
-                                   "derivative differentiates with respect to a real parameter");
+            VmComplex *z = (VmComplex*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+            VmComplex *seed = vm_complex_new_d(&vm->heap.regions,
+                                               z->real, z->imag, 1.0, 0.0);
+            if (seed) {
+                if (z->creal) {
+                    seed->creal = z->creal->kind == VM_DUAL_KIND_TAYLOR
+                        ? vm_dual_make_taylor_ride_seed(&vm->heap.regions, z->creal)
+                        : vm_dual_make_taylor_scalar_seed(&vm->heap.regions, z->creal);
+                    seed->cimag = z->cimag->kind == VM_DUAL_KIND_TAYLOR
+                        ? vm_dual_make_taylor_ride_seed(&vm->heap.regions, z->cimag)
+                        : vm_dual_make_taylor_scalar_seed(&vm->heap.regions, z->cimag);
+                    if (!seed->creal || !seed->cimag) {
+                        seed->creal = vm_dual_make(&vm->heap.regions, z->real, 1.0);
+                        seed->cimag = vm_dual_make(&vm->heap.regions, z->imag, 0.0);
+                    }
+                    /* The real and imaginary coordinates are one holomorphic
+                     * perturbation.  Scalar-to-Taylor promotion allocates a
+                     * fresh epoch per component, so unify those epochs before
+                     * complex arithmetic; otherwise the carrier is treated
+                     * as a two-lane hyper-dual and its c1 coefficient is
+                     * discarded during tangent extraction. */
+                    if (seed->creal && seed->cimag &&
+                        seed->creal->kind == VM_DUAL_KIND_TAYLOR &&
+                        seed->cimag->kind == VM_DUAL_KIND_TAYLOR)
+                        seed->cimag->epoch = seed->creal->epoch;
+                    /* Holomorphic dz=1 perturbs only the real coordinate;
+                     * the imaginary coordinate is carried as a constant in
+                     * the inner pass.  Taylor seeds default c1=1, so clear
+                     * that coefficient explicitly and retain its enclosing
+                     * outer tangent in tangent_coeff[0]. */
+                    if (seed->cimag && seed->cimag->kind == VM_DUAL_KIND_TAYLOR) {
+                        if (z->cimag->kind == VM_DUAL_KIND_TAYLOR) {
+                            /* ride_seed's coefficients already contain the
+                             * enclosing perturbation.  The imaginary
+                             * component is constant only in the new
+                             * holomorphic direction, so clear its tangent
+                             * lane while retaining coeff[1]. */
+                            if (seed->cimag->tangent_coeff)
+                                seed->cimag->tangent_coeff[0] = 0.0;
+                            seed->cimag->tangent_epoch = seed->creal->tangent_epoch;
+                        } else {
+                            /* A scalar carrier has no enclosing Taylor
+                             * coefficient: c1 is the new direction and the
+                             * old scalar tangent rides the orthogonal lane. */
+                            seed->cimag->coeff[1] = 0.0;
+                            if (seed->cimag->tangent_coeff)
+                                seed->cimag->tangent_coeff[0] = z->cimag ? z->cimag->tangent : 0.0;
+                        }
+                    }
+                    if (seed->creal && seed->creal->kind == VM_DUAL_KIND_TAYLOR &&
+                        z->creal->kind == VM_DUAL_KIND_SCALAR &&
+                        seed->creal->tangent_coeff)
+                        seed->creal->tangent_coeff[0] = z->creal ? z->creal->tangent : 1.0;
+                } else {
+                    VmDual zr = {0}, zi = {0};
+                    zr.primal = z->real; zr.tangent = 1.0;
+                    zi.primal = z->imag; zi.tangent = 0.0;
+                    /* Keep several enclosing coefficients so repeated
+                     * first-order derivative calls can consume one lane per
+                     * nesting level.  The public Taylor API remains bounded
+                     * at 4096; complex derivative nesting uses this compact
+                     * default tower unless an explicit Taylor order is used. */
+                    seed->creal = vm_dual_make_taylor_scalar_seed_order(&vm->heap.regions, &zr, 16);
+                    seed->cimag = vm_dual_make_taylor_scalar_seed_order(&vm->heap.regions, &zi, 16);
+                    if (seed->creal && seed->cimag) {
+                        seed->cimag->epoch = seed->creal->epoch;
+                        seed->cimag->coeff[1] = 0.0;
+                    }
+                }
+            }
+            if (!seed) { vm_push(vm, NIL_VAL); break; }
+            int32_t seed_ptr = heap_alloc(&vm->heap);
+            if (seed_ptr < 0) { vm->error = 1; break; }
+            vm->heap.objects[seed_ptr]->type = HEAP_COMPLEX;
+            vm->heap.objects[seed_ptr]->opaque.ptr = seed;
+            Value complex_arg = (Value){.type = VAL_COMPLEX, .as.ptr = seed_ptr};
+            Value result = vm_ad_call_closure(vm, f_val, &complex_arg, 1);
+            if (result.type != VAL_COMPLEX || result.as.ptr < 0) {
+                vm_raise_error_msg(vm, "derivative: complex function did not return a complex value");
+                break;
+            }
+            VmComplex *rz = (VmComplex*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+            if (!rz || !vm_complex_has_tangent(rz)) {
+                /* A complex-valued constant has the valid holomorphic
+                 * derivative 0.  Keep the result in the complex domain so a
+                 * later enclosing derivative can continue normally. */
+                VmComplex *zero = vm_complex_new(&vm->heap.regions, 0.0, 0.0);
+                vm_push_complex_result(vm, zero);
+                break;
+            }
+            VmComplex *out = vm_complex_new(&vm->heap.regions, rz->dreal, rz->dimag);
+            if (!out) { vm_push(vm, NIL_VAL); break; }
+            if (rz->creal && rz->creal->kind == VM_DUAL_KIND_TAYLOR) {
+                out->real = vm_dual_taylor_coeff(rz->creal, 1);
+                out->imag = rz->cimag ? vm_dual_taylor_coeff(rz->cimag, 1) : 0.0;
+                out->creal = rz->creal->tangent_coeff
+                    ? vm_dual_taylor_promote_tangent(&vm->heap.regions, rz->creal)
+                    : vm_dual_taylor_derivative_series(&vm->heap.regions, rz->creal);
+                out->cimag = rz->cimag && rz->cimag->tangent_coeff
+                    ? vm_dual_taylor_promote_tangent(&vm->heap.regions, rz->cimag)
+                    : (rz->cimag ? vm_dual_taylor_derivative_series(&vm->heap.regions, rz->cimag) : NULL);
+                if (out->creal) out->dreal = out->creal->tangent;
+                if (out->cimag) out->dimag = out->cimag->tangent;
+            }
+            vm_push_complex_result(vm, out);
             break;
         }
         /* Create dual number: x + 1ε
@@ -14266,7 +14486,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
          * WASM target has no pthread → vm_parallel.c is excluded; always sequential. */
 #ifndef ESHKOL_VM_WASM
         VmThreadPool* pool = vm_parallel_ensure_pool();
-        if (pool && n >= 4) {
+        if (pool && n >= 4 && vm_closure_is_worker_safe(vm, fn)) {
             VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
                                       (size_t)n * sizeof(VmParMapTask));
             if (tasks) {
@@ -14275,13 +14495,21 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     tasks[i].closure = fn;
                     tasks[i].input = elems[i];
                     tasks[i].output = NIL_VAL;
+                    tasks[i].failed = 0;
                 }
                 for (int i = 0; i < n; i++) {
-                    vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL);
+                    if (vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL) != 0)
+                        tasks[i].failed = 1;
                 }
                 vm_pool_wait_all(pool);
+                int worker_failed = 0;
                 for (int i = 0; i < n; i++) {
+                    worker_failed |= tasks[i].failed;
                     results[i] = tasks[i].output;
+                }
+                if (worker_failed) {
+                    vm_raise_error_msg(vm, "parallel-map: worker closure failed");
+                    break;
                 }
             } else {
                 /* Fallback: sequential */
@@ -14332,18 +14560,28 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* Evaluate predicates (parallel via pool if available; WASM is sequential). */
 #ifndef ESHKOL_VM_WASM
         VmThreadPool* pool = vm_parallel_ensure_pool();
-        if (pool && n >= 4) {
+        if (pool && n >= 4 && vm_closure_is_worker_safe(vm, pred)) {
             VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
                                       (size_t)n * sizeof(VmParMapTask));
             if (tasks) {
                 for (int i = 0; i < n; i++) {
                     tasks[i].main_vm = vm; tasks[i].closure = pred;
                     tasks[i].input = elems[i]; tasks[i].output = NIL_VAL;
+                    tasks[i].failed = 0;
                 }
                 for (int i = 0; i < n; i++)
-                    vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL);
+                    if (vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL) != 0)
+                        tasks[i].failed = 1;
                 vm_pool_wait_all(pool);
-                for (int i = 0; i < n; i++) preds[i] = tasks[i].output;
+                int worker_failed = 0;
+                for (int i = 0; i < n; i++) {
+                    worker_failed |= tasks[i].failed;
+                    preds[i] = tasks[i].output;
+                }
+                if (worker_failed) {
+                    vm_raise_error_msg(vm, "parallel-filter: worker closure failed");
+                    break;
+                }
             } else {
                 for (int i = 0; i < n; i++)
                     preds[i] = vm_call_closure_from_native(vm, pred, &elems[i], 1);
@@ -14402,17 +14640,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* parallel-for-each: parallel via pool if available; WASM is sequential. */
 #ifndef ESHKOL_VM_WASM
         VmThreadPool* pool = vm_parallel_ensure_pool();
-        if (pool && n >= 4) {
+        if (pool && n >= 4 && vm_closure_is_worker_safe(vm, fn)) {
             VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
                                       (size_t)n * sizeof(VmParMapTask));
             if (tasks) {
                 for (int i = 0; i < n; i++) {
                     tasks[i].main_vm = vm; tasks[i].closure = fn;
                     tasks[i].input = elems[i]; tasks[i].output = NIL_VAL;
+                    tasks[i].failed = 0;
                 }
                 for (int i = 0; i < n; i++)
-                    vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL);
+                    if (vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL) != 0)
+                        tasks[i].failed = 1;
                 vm_pool_wait_all(pool);
+                int worker_failed = 0;
+                for (int i = 0; i < n; i++) worker_failed |= tasks[i].failed;
+                if (worker_failed) {
+                    vm_raise_error_msg(vm, "parallel-for-each: worker closure failed");
+                    break;
+                }
             } else {
                 for (int i = 0; i < n; i++)
                     vm_call_closure_from_native(vm, fn, &elems[i], 1);
@@ -14456,7 +14702,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
 #ifndef ESHKOL_VM_WASM
         VmThreadPool* pool = vm_parallel_ensure_pool();
-        if (pool && n >= 2) {
+        int all_worker_safe = 1;
+        for (int i = 0; i < n; i++)
+            if (!vm_closure_is_worker_safe(vm, closures[i])) { all_worker_safe = 0; break; }
+        if (pool && n >= 2 && all_worker_safe) {
             VmParThunkTask* tasks = (VmParThunkTask*)vm_alloc(&vm->heap.regions,
                                         (size_t)n * sizeof(VmParThunkTask));
             if (tasks) {
@@ -14464,11 +14713,21 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     tasks[i].main_vm = vm;
                     tasks[i].closure = closures[i];
                     tasks[i].output = NIL_VAL;
+                    tasks[i].failed = 0;
                 }
                 for (int i = 0; i < n; i++)
-                    vm_pool_submit(pool, vm_parthunk_task_fn, &tasks[i], NULL);
+                    if (vm_pool_submit(pool, vm_parthunk_task_fn, &tasks[i], NULL) != 0)
+                        tasks[i].failed = 1;
                 vm_pool_wait_all(pool);
-                for (int i = 0; i < n; i++) results[i] = tasks[i].output;
+                int worker_failed = 0;
+                for (int i = 0; i < n; i++) {
+                    worker_failed |= tasks[i].failed;
+                    results[i] = tasks[i].output;
+                }
+                if (worker_failed) {
+                    vm_raise_error_msg(vm, "parallel-execute: worker closure failed");
+                    break;
+                }
             } else {
                 for (int i = 0; i < n; i++)
                     results[i] = vm_call_closure_from_native(vm, closures[i], NULL, 0);
@@ -14510,6 +14769,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
             VmThreadPool* pool = vm_parallel_ensure_pool();
             if (pool && thunk_or_value.type == VAL_CLOSURE &&
+                vm_closure_is_worker_safe(vm, thunk_or_value) &&
                 vm_pool_submit(pool, vm_future_task_fn, fut, NULL) == 0) {
                 vm_push(vm, fut_value);
                 break;
@@ -14517,7 +14777,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             Value result = thunk_or_value;
             if (thunk_or_value.type == VAL_CLOSURE)
                 result = vm_call_closure_from_native(vm, thunk_or_value, NULL, 0);
-            vm_future_mark_ready(fut, result);
+            vm_future_mark_ready(fut, result, 0);
             vm_push(vm, fut_value);
             break;
         }
@@ -14533,7 +14793,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (fut.type == VAL_FUTURE && fut.as.ptr >= 0 && fut.as.ptr < vm->heap.next_free &&
             vm->heap.objects[fut.as.ptr]->type == HEAP_FUTURE) {
             VmFuture* handle = (VmFuture*)vm->heap.objects[fut.as.ptr]->opaque.ptr;
-            vm_push(vm, vm_future_force(handle));
+            Value result = vm_future_force(handle);
+            if (handle->failed) {
+                vm_raise_error_msg(vm, "force-future: worker closure failed");
+                break;
+            }
+            vm_push(vm, result);
             break;
         }
 #endif
@@ -15141,8 +15406,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 713: { /* error-irritants — returns nil (no irritant list support in Value system) */
-        Value e_val = vm_pop(vm); (void)e_val;
+    case 713: { /* error-irritants */
+        Value e_val = vm_pop(vm);
+        if (is_heap_type(vm, e_val, HEAP_ERROR)) {
+            VmError* e = (VmError*)vm->heap.objects[e_val.as.ptr]->opaque.ptr;
+            const void* raw = vm_error_value_irritants(e);
+            if (raw) {
+                Value irritants;
+                memcpy(&irritants, raw, sizeof(irritants));
+                vm_push(vm, irritants);
+                break;
+            }
+        }
         vm_push(vm, NIL_VAL);
         break;
     }
@@ -15324,16 +15599,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
 
         if (!is_collection) {
-            /* Scalar hessian via hyper-dual: seed (x, 1, 1, 0) → f₁₂ = f''(x) */
-            Value hd_arg;
-            VM_HD_MAKE(vm, point[0], 1.0, 1.0, 0.0, hd_arg);
-            Value result = vm_ad_call_closure(vm, f_val, &hd_arg, 1);
-            if (result.type == VAL_HYPER_DUAL && result.as.ptr >= 0) {
-                VmHyperDual* rh = (VmHyperDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-                vm_push(vm, FLOAT_VAL(rh ? rh->f12 : 0.0));
-            } else {
-                vm_push(vm, FLOAT_VAL(0.0));
-            }
+            /* Scalar Hessian is the shared order-two Taylor derivative.
+             * Preserve the original exact seed and any outer carrier. */
+            int nested_result = 0;
+            Value result = vm_taylor_apply(vm, f_val, x_val, 2, &nested_result);
+            if (!vm->error)
+                vm_push(vm, nested_result ? result :
+                        vm_taylor_result_value(vm, result, 2, 1));
         } else {
             /* Multi-variable Hessian via hyper-dual: H[i][j] = ∂²f/∂xᵢ∂xⱼ
              * Seed xₖ = (point[k], δₖᵢ, δₖⱼ, 0) → result.f12 = H[i][j] */
@@ -15645,6 +15917,33 @@ static void vm_dispatch_native(VM* vm, int fid) {
             break;
         }
         uint32_t order = (uint32_t)order_d;
+        if (point_val.type == VAL_COMPLEX) {
+            VmComplex* rz = vm_complex_taylor_apply(vm, f_val, point_val, order);
+            if (!rz || !rz->creal || !rz->cimag ||
+                rz->creal->kind != VM_DUAL_KIND_TAYLOR ||
+                rz->cimag->kind != VM_DUAL_KIND_TAYLOR || order > rz->creal->order) {
+                vm_raise_error_msg(vm, "taylor/derivative-n: complex function did not return a Taylor-carried complex value");
+                break;
+            }
+            if (fid == 758) {
+                double factor = 1.0;
+                for (uint32_t i = 2; i <= order; ++i) factor *= (double)i;
+                VmComplex* out = vm_complex_new(&vm->heap.regions,
+                    factor * rz->creal->coeff[order],
+                    factor * rz->cimag->coeff[order]);
+                vm_push_complex_result(vm, out);
+            } else {
+                Value list = NIL_VAL;
+                for (uint32_t k = order + 1; k-- > 0;) {
+                    VmComplex* ck = vm_complex_new(&vm->heap.regions,
+                        rz->creal->coeff[k], rz->cimag->coeff[k]);
+                    Value cv = vm_complex_value(vm, ck);
+                    list = vm_cons_value(vm, cv, list);
+                }
+                vm_push(vm, list);
+            }
+            break;
+        }
         int nested_result = 0;
         Value result = vm_taylor_apply(vm, f_val, point_val, order,
                                        &nested_result);
@@ -16240,7 +16539,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
             promise.as.ptr < vm->heap.next_free &&
             vm->heap.objects[promise.as.ptr]->type == HEAP_FUTURE) {
             VmFuture* handle = (VmFuture*)vm->heap.objects[promise.as.ptr]->opaque.ptr;
-            vm_push(vm, vm_future_force(handle));
+            Value result = vm_future_force(handle);
+            if (handle->failed)
+                vm_raise_error_msg(vm, "force: worker closure failed");
+            else
+                vm_push(vm, result);
             break;
         }
 #endif
@@ -16430,12 +16733,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 237: { /* error */
+    case 237: case VM_NATIVE_ERROR_WITH_IRRITANTS: { /* error */
         /* Raise it as a catchable condition, like (error msg) on every other
          * substrate, and keep the text on STDERR. It used to print through
          * print_value(), which writes to stdout, so a failing run appended its
          * error text to the PROGRAM's output — and it set vm->error directly,
          * so no `guard` could intercept `(error ...)` at all. */
+        Value irritants = fid == VM_NATIVE_ERROR_WITH_IRRITANTS ? vm_pop(vm) : NIL_VAL;
         Value msg = vm_pop(vm);
         const char* text = NULL;
         if ((msg.type == VAL_STRING || msg.type == VAL_SYMBOL)
@@ -16443,7 +16747,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VmString* s = (VmString*)vm->heap.objects[msg.as.ptr]->opaque.ptr;
             if (s && s->data) text = s->data;
         }
-        vm_raise_error_msg(vm, text ? text : "error");
+        vm_raise_error_msg_with_irritants(vm, text ? text : "error", irritants);
         break;
     }
     case 238: { /* void */

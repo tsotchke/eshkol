@@ -1,0 +1,10 @@
+;; Renaming lexical values must preserve the enclosing language's binders and
+;; literal data. Expected lines: 3, 4, 7, 6, 2, 3, 5, (x 1).
+(display (let ((x 1) (y 2)) (+ x y))) (newline)
+(display (let* ((x 1) (y (+ x 2))) (+ x y))) (newline)
+(display (let ((x 1)) ((lambda (x) (if #t x 0)) 7))) (newline)
+(display (let loop ((n 3) (s 0)) (if (= n 0) s (loop (- n 1) (+ s n))))) (newline)
+(display (let ((x 1)) (match '(2) ((list x) x) (_ 0)))) (newline)
+(display (let ((x 1)) (do ((x 0 (+ x 1))) ((= x 3) x)))) (newline)
+(display (let ((x 1)) (guard (x (else x)) (raise 5)))) (newline)
+(display (let ((x 1)) `(x ,x))) (newline)

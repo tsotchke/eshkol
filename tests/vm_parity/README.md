@@ -136,7 +136,7 @@ header. Filed while building this gate, 2026-07:
 | `bignum_exact_rational.esk` | historical exact bignum-rational limitation; superseded by the bignum-capable `inexact->exact` path |
 | `internal_define_then_body_form.esk` | internal `define` + any later body form loses its slot |
 | `sqrt_exact_negative.esk` | `(sqrt -4)` → `+nan.0`, not the complex `+2i` |
-| `error_object_irritants_empty.esk` | `error-object-irritants` always `()` (`error` is a 1-arg native) |
+| `error_object_irritants_roundtrip.esk` | error-object-irritants preserves ordered values, empty lists, first-class calls, and re-raise |
 | `quotient_inexact_native_vm.esk` | `quotient` with an inexact operand comes back **exact** and **wraps past 2^63**; `(remainder <flonum> 0.0)` answers `+nan.0` where every other representation raises |
 
 Divergences where **native is the wrong side** (filed rather than "fixed" in

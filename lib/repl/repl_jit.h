@@ -10,6 +10,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <iosfwd>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 // Forward declarations for LLVM types
@@ -29,6 +31,9 @@ namespace llvm {
 // C interface
 #include <eshkol/eshkol.h>
 #include <eshkol/logger.h>  // eshkol_diagnostic_error_count() for the JIT gate
+
+void eshkol_parser_seed_macro_names(std::istream& stream,
+                                    const std::set<std::string>& names);
 
 namespace eshkol {
 
@@ -128,6 +133,10 @@ public:
      * @return true on success, false on error
      */
     bool loadStdlib();
+
+    // Seed a fresh interactive parser stream with macros retained from prior
+    // REPL evaluations; file/module streams remain isolated.
+    void seedParserMacroNames(std::istream& stream) const;
 
     /**
      * Load a module by name (e.g., "core.functional.compose" or "stdlib")

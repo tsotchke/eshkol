@@ -4,13 +4,66 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
 static Node** vm_collect_body_nodes(Node* node, int body_start, int* out_n);
 
+/* Template-origin value references carry the definition's lexical frame.
+ * Alpha-renamed binders and substituted arguments create/copy their own nodes,
+ * so they retain local/caller resolution instead of inheriting this context. */
+static void vm_macro_capture_values(Node* node, FuncChunk* owner, int context) {
+    if (!node) return;
+    node->macro_value_owner = -1;
+    node->macro_value_slot = -1;
+    if (node->type == N_SYMBOL) {
+        for (FuncChunk* frame = owner; frame; frame = frame->enclosing) {
+            int found = 0;
+            for (int i = frame->n_locals - 1; i >= 0; --i) {
+                if (strcmp(frame->locals[i].name, node->symbol) != 0) continue;
+                if (frame->enclosing || frame->locals[i].depth != 0) {
+                    node->macro_value_owner = frame->binding_env_id;
+                    node->macro_value_slot = frame->locals[i].slot;
+                }
+                found = 1;
+                break;
+            }
+            if (found) break;
+        }
+    }
+    node->macro_value_context = context;
+    for (int i = 0; i < node->n_children; ++i)
+        vm_macro_capture_values(node->children[i], owner, context);
+}
+
+static void vm_macro_capture_definition(VmMacro* macro, FuncChunk* owner) {
+    int context = ++g_macro_value_context_serial;
+    for (int i = 0; i < macro->n_rules; ++i)
+        vm_macro_capture_values((Node*)macro->rules[i].template_node, owner, context);
+}
+
+static int resolve_macro_local(FuncChunk* c, const Node* identifier) {
+    int owner = identifier->macro_value_owner;
+    if (!owner) return resolve_local(c, identifier->symbol);
+    if (owner == c->binding_env_id) return identifier->macro_value_slot;
+    if (owner < 0 && !c->enclosing)
+        for (int i = c->n_locals - 1; i >= 0; --i)
+            if (c->locals[i].depth == 0 &&
+                strcmp(c->locals[i].name, identifier->symbol) == 0)
+                return c->locals[i].slot;
+    return -1;
+}
+
+static const char* vm_macro_capture_name(const Node* identifier, char* buffer,
+                                         size_t size) {
+    if (!identifier->macro_value_owner) return identifier->symbol;
+    snprintf(buffer, size, "__macro_value_%d_%s",
+             identifier->macro_value_context, identifier->symbol);
+    return buffer;
+}
+
 static int vm_is_definition_form(Node* node) {
     return node && node->type == N_LIST && node->n_children >= 3 &&
            node->children[0]->type == N_SYMBOL &&
            (strcmp(node->children[0]->symbol, "define") == 0 ||
             strcmp(node->children[0]->symbol, "define-values") == 0);
 }
-static int vm_head_user_rebound(FuncChunk* c, const char* name);
+static int vm_head_user_rebound(FuncChunk* c, const Node* identifier);
 
 static int vm_tail_call_allowed(FuncChunk* c, Node* head, int tail) {
     if (!tail) return 0;
@@ -30,7 +83,7 @@ static int vm_guard_expr_cannot_raise(FuncChunk* c, const Node* node) {
     if (node->n_children == 0 || node->children[0]->type != N_SYMBOL) return 0;
     const char* name = node->children[0]->symbol;
     if (strcmp(name, "quote") == 0) return 1;
-    if (vm_head_user_rebound(c, name)) return 0;
+    if (vm_head_user_rebound(c, node->children[0])) return 0;
     int safe = 0;
     for (size_t i = 0; i < sizeof(safe_calls) / sizeof(safe_calls[0]); i++) {
         if (strcmp(name, safe_calls[i]) == 0) { safe = 1; break; }
@@ -431,9 +484,9 @@ static int vm_redefinition_target_slot(FuncChunk* c, const char* name) {
  * exactly those. A watermark of 0 means user code has not started yet (the
  * prelude itself is being compiled), so nothing counts as a user rebinding.
  */
-static int vm_head_user_rebound(FuncChunk* c, const char* name) {
+static int vm_head_user_rebound(FuncChunk* c, const Node* identifier) {
     for (FuncChunk* p = c; p; p = p->enclosing) {
-        int slot = resolve_local(p, name);
+        int slot = resolve_macro_local(p, identifier);
         if (slot >= 0) {
             if (p->enclosing == NULL)
                 return g_vm_user_locals_base > 0 && slot >= g_vm_user_locals_base;
@@ -890,6 +943,58 @@ static int vm_compile_failed(void) { return g_vm_compile_failed; }
 
 /** @brief Clears the fail-closed flag at the start of a compilation. */
 static void vm_clear_compile_failure(void) { g_vm_compile_failed = 0; }
+
+/** @brief Find simple top-level value definitions whose locations are
+ *         mutated anywhere in @p source.
+ *
+ * Guard handlers are compiler-generated closures, so a mutation performed in
+ * a guard clause is a capture even though the source contains no explicit
+ * lambda around it. The source runner boxes these locations before compiling;
+ * the ESKB emitter must make the same decision before its form-by-form pass or
+ * serialized bytecode silently loses the clause's write (SW-85/SW-85b).
+ */
+static int vm_prescan_boxed_toplevel_names(const char* source,
+                                           char names[][128], int max_names) {
+    if (!source || !names || max_names <= 0) return 0;
+
+    const char* saved_src = src_ptr;
+    Node* forms[VM_MAX_FORWARD_FUNCTIONS * 8];
+    int n_forms = 0;
+    src_ptr = source;
+    while (n_forms < (int)(sizeof(forms) / sizeof(forms[0]))) {
+        skip_ws();
+        if (!*src_ptr) break;
+        Node* expr = parse_sexp();
+        if (!expr) break;
+        forms[n_forms++] = expr;
+    }
+    skip_ws();
+    if (*src_ptr && n_forms == (int)(sizeof(forms) / sizeof(forms[0])))
+        vm_compile_error("source unit contains too many forms", NULL);
+
+    int n_names = 0;
+    for (int i = 0; i < n_forms && n_names < max_names; ++i) {
+        Node* form = forms[i];
+        if (!form || form->type != N_LIST || form->n_children < 3 ||
+            form->children[0]->type != N_SYMBOL ||
+            strcmp(form->children[0]->symbol, "define") != 0 ||
+            form->children[1]->type != N_SYMBOL)
+            continue;
+        const char* name = form->children[1]->symbol;
+        int has_set = 0;
+        for (int j = 0; j < n_forms && !has_set; ++j)
+            has_set = scan_for_set(forms[j], name);
+        if (has_set) {
+            strncpy(names[n_names], name, 127);
+            names[n_names][127] = '\0';
+            n_names++;
+        }
+    }
+
+    for (int i = 0; i < n_forms; ++i) free_node(forms[i]);
+    src_ptr = saved_src;
+    return n_names;
+}
 
 /* Libraries this compilation unit defines somewhere BELOW the point currently
  * being compiled.  Populated before compilation begins, and emptied name by
@@ -1670,12 +1775,13 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
             continue;
         const char* name = form->children[1]->symbol;
         int has_set = 0;
-        int has_capture = 0;
         for (int j = 0; j < n_forms; ++j) {
             if (scan_for_set(forms[j], name)) has_set = 1;
-            if (scan_for_capture(forms[j], name, 0)) has_capture = 1;
         }
-        if (has_set && has_capture) {
+        /* A guard clause is an implicit closure even when no source lambda
+         * captures this binding. Conservatively box every mutated module
+         * value so loaded modules share the entry unit's semantics. */
+        if (has_set) {
             strncpy(boxed_names[n_boxed], name, 127);
             boxed_names[n_boxed][127] = '\0';
             n_boxed++;
@@ -2610,11 +2716,13 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     c->guard_self_tail_only = tail && c->function_name != NULL;
     if (c->guard_self_tail_only && vm_guard_is_collapsible(c, clause_list))
         c->guard_pop_on_self_tail++;
-    for (int i = 2; i < node->n_children; i++) {
-        int is_last = (i == node->n_children - 1);
-        compile_expr(c, node->children[i], is_last ? tail : 0);
-        if (!is_last) chunk_emit(c, OP_POP, 0);
-    }
+    /* A guard body is a lexical body just like let/lambda: internal defines
+     * stay live for later body forms, then are removed while preserving the
+     * body's result. Merely suppressing POP for a define leaves those locals
+     * between an enclosing call's callee/arguments and makes the subsequent
+     * CALL read a local value as its function (SW-86b). */
+    int saved_body_locals = c->n_locals;
+    vm_compile_scope_body(c, node, 2, saved_body_locals, tail);
     c->guard_self_tail_only = saved_guard_self_tail_only;
     c->guard_pop_on_self_tail = saved_guard_pop_on_self_tail;
 
@@ -3655,8 +3763,8 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
 static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
-    const char* var_name = node->children[1]->symbol;
-    int slot = resolve_local(c, var_name);
+    const Node* identifier = node->children[1];
+    int slot = resolve_macro_local(c, identifier);
 
     /* Check if the target variable is boxed */
     int is_boxed = 0;
@@ -3688,7 +3796,9 @@ static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_SET_LOCAL, slot);
     } else {
         /* Try upvalue resolution for outer-scope mutation */
-        const char* name = node->children[1]->symbol;
+        char capture_key[192];
+        const char* name = vm_macro_capture_name(identifier, capture_key,
+                                                 sizeof(capture_key));
         FuncChunk* chain[32]; int depth = 0;
         for (FuncChunk* p = c; p && depth < 32; p = p->enclosing)
             chain[depth++] = p;
@@ -3697,7 +3807,7 @@ static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
          * outermost-first made `set!` on a shadowed name assign the TOP-LEVEL
          * binding rather than the nearer one the reference reads. */
         for (int d = 1; d < depth && !found; d++) {
-            int enc_slot = resolve_local(chain[d], name);
+            int enc_slot = resolve_macro_local(chain[d], identifier);
             if (enc_slot >= 0) {
                 /* Check if the source variable is boxed */
                 int var_boxed = 0;
@@ -4444,7 +4554,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     /* Check for macro expansion — must come before all other dispatch */
     if (node->type == N_LIST && node->n_children > 0 &&
         node->children[0]->type == N_SYMBOL) {
-        VmMacro* macro = vm_macro_lookup(node->children[0]->symbol);
+        VmMacro* macro = vm_macro_lookup_node((const MacroNode*)node->children[0]);
         if (macro) {
             MacroNode* expanded = vm_macro_expand((const MacroNode*)node);
             if (expanded && expanded != (MacroNode*)node) {
@@ -4511,8 +4621,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (node->type == N_SYMBOL) {
         if (strcmp(node->symbol, "#t") == 0) { chunk_emit(c, OP_TRUE, 0); return; }
         if (strcmp(node->symbol, "#f") == 0) { chunk_emit(c, OP_FALSE, 0); return; }
+        char capture_key[192];
+        const char* capture_name = vm_macro_capture_name(node, capture_key,
+                                                         sizeof(capture_key));
         /* Variable lookup: local → enclosing (upvalue) → error */
-        int slot = resolve_local(c, node->symbol);
+        int slot = resolve_macro_local(c, node);
         if (slot == -99) {
             /* Special: guard exception variable → use OP_GET_EXN */
             chunk_emit(c, OP_GET_EXN, 0);
@@ -4551,7 +4664,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
              * lambda captured main's `qg` rather than g's parameter. Nearest
              * binding wins, as R7RS 4.1.1 requires. */
             for (int d = 1; d < depth; d++) {
-                int enc_slot = resolve_local(chain[d], node->symbol);
+                int enc_slot = resolve_macro_local(chain[d], node);
                 if (enc_slot >= 0) {
                     /* Found at level d. Check if it's boxed at the source. */
                     int var_boxed = 0;
@@ -4569,14 +4682,14 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                         FuncChunk* fc = chain[level];
                         int uv_idx = -1;
                         for (int i = 0; i < fc->n_upvalues; i++) {
-                            if (strcmp(fc->upvalues[i].name, node->symbol) == 0) {
+                            if (strcmp(fc->upvalues[i].name, capture_name) == 0) {
                                 uv_idx = fc->upvalues[i].index;
                                 break;
                             }
                         }
                         if (uv_idx < 0 && chunk_ensure_upvalue_cap(fc, fc->n_upvalues + 1)) {
                             uv_idx = fc->n_upvalues;
-                            fc->upvalues[fc->n_upvalues].name = strdup(node->symbol);
+                            fc->upvalues[fc->n_upvalues].name = strdup(capture_name);
                             fc->upvalues[fc->n_upvalues].enclosing_slot = prev_slot;
                             fc->upvalues[fc->n_upvalues].index = uv_idx;
                             fc->upvalues[fc->n_upvalues].is_local = prev_is_local;
@@ -4594,7 +4707,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                     int final_uv = -1;
                     int final_boxed = 0;
                     for (int i = 0; i < c->n_upvalues; i++) {
-                        if (strcmp(c->upvalues[i].name, node->symbol) == 0) {
+                        if (strcmp(c->upvalues[i].name, capture_name) == 0) {
                             final_uv = c->upvalues[i].index;
                             final_boxed = c->upvalues[i].boxed;
                             break;
@@ -4650,7 +4763,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * of this function emits. Macros were already dispatched above, so
      * user-defined syntax is unaffected. */
     if (head->type == N_SYMBOL && head->symbol &&
-        vm_head_user_rebound(c, head->symbol)) {
+        vm_head_user_rebound(c, head)) {
         int argc = node->n_children - 1;
         int saved_locals = c->n_locals;
         compile_expr(c, head, 0);  /* push the (rebound) function */
@@ -5379,7 +5492,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * body read slot k+1, so (hyg 1) printed 1 instead of 101 and the user's
      * same-named top-level variable read back as (). */
     if (is_sym(head, "define-syntax") && node->n_children >= 3) {
-        vm_macro_define_syntax((const MacroNode*)node);
+        if (!vm_macro_define_syntax((const MacroNode*)node)) {
+            vm_compile_error("invalid macro definition", "define-syntax");
+            return;
+        }
+        vm_macro_capture_definition(&g_macros[g_n_macros - 1], c);
         chunk_emit(c, OP_NIL, 0);
         return;
     }
@@ -5930,27 +6047,39 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * include, include-ci, OALR forms, with-region, define-type
      ***************************************************************************/
 
-    /* -- let-syntax -- */
-    if (is_sym(head, "let-syntax") && node->n_children >= 3) {
+    /* Scoped bindings are (name rules), not complete define-syntax forms.
+     * Register the shared rule representation and restore the outer registry
+     * after compiling the body, including error paths. */
+    if (is_sym(head, "let-syntax") || is_sym(head, "letrec-syntax")) {
+        if (node->n_children < 3 || node->children[1]->type != N_LIST) {
+            vm_compile_error("invalid scoped macro bindings", head->symbol);
+            return;
+        }
         Node* bindings = node->children[1];
         int saved = g_n_macros;
-        for (int i = 0; i < bindings->n_children; i++)
-            vm_macro_define_syntax((const MacroNode*)bindings->children[i]);
-        for (int i = 2; i < node->n_children; i++)
+        ++g_macro_scope_depth;
+        for (int i = 0; i < bindings->n_children; ++i) {
+            Node* binding = bindings->children[i];
+            if (binding->type != N_LIST || binding->n_children != 2 ||
+                !vm_macro_define_binding((const MacroNode*)binding->children[0],
+                                         (const MacroNode*)binding->children[1])) {
+                vm_compile_error("invalid scoped macro binding", head->symbol);
+                vm_macro_restore(saved);
+                --g_macro_scope_depth;
+                return;
+            }
+            vm_macro_capture_definition(&g_macros[g_n_macros - 1], c);
+        }
+        const int definition_limit =
+            (is_sym(head, "letrec-syntax") ? g_n_macros : saved) + 1;
+        for (int i = saved; i < g_n_macros; ++i)
+            g_macros[i].definition_limit = definition_limit;
+        for (int i = 2; i < node->n_children; ++i) {
             compile_expr(c, node->children[i], tail && i == node->n_children - 1);
-        g_n_macros = saved;
-        return;
-    }
-
-    /* -- letrec-syntax -- */
-    if (is_sym(head, "letrec-syntax") && node->n_children >= 3) {
-        Node* bindings = node->children[1];
-        int saved = g_n_macros;
-        for (int i = 0; i < bindings->n_children; i++)
-            vm_macro_define_syntax((const MacroNode*)bindings->children[i]);
-        for (int i = 2; i < node->n_children; i++)
-            compile_expr(c, node->children[i], tail && i == node->n_children - 1);
-        g_n_macros = saved;
+            if (i + 1 < node->n_children) chunk_emit(c, OP_POP, 0);
+        }
+        vm_macro_restore(saved);
+        --g_macro_scope_depth;
         return;
     }
 
@@ -6185,11 +6314,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
              * wrote — the memory-unsafe direction, and the one the axis-3
              * sweep probes (it builds its wrong-arity program with arity-1).
              * Surplus arguments are simply never loaded, and several public
-             * procedures reach their raw op that way today: `(error msg a b)`
-             * hits the arity-1 `error` op and its irritants are dropped. That
-             * dropping is its own fidelity gap against native, which prints
-             * them; refusing the call here would break working programs
-             * instead of closing it. */
+             * procedures reach their raw op that way today. The raw `error`
+             * entry is explicitly variadic and packs its tail before native
+             * dispatch, so `(error msg a b)` preserves both irritants. */
             if (decl_arity >= 0 && argc < decl_arity) {
                 /* The wording is the SHARED one (arity_contract.h), not a
                  * private snprintf: native lowering renders the same sentence

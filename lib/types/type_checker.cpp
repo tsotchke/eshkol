@@ -1149,6 +1149,14 @@ TypeCheckResult TypeChecker::synthesizeVariable(eshkol_ast_t* expr) {
             return TypeCheckResult::ok(
                 env_.makeFunctionType({BuiltinTypes::Value}, BuiltinTypes::Null));
         }
+        // These R7RS variadic builtins are also procedures when referenced
+        // as values. Keep the gradual Value result for constructors and for
+        // error (which raises), rather than diagnosing valid aliases as unbound.
+        if (name == "error" || name == "list" || name == "vector" || name == "string") {
+            return TypeCheckResult::ok(
+                env_.makeFunctionType({BuiltinTypes::Value}, BuiltinTypes::Value,
+                                      /*is_variadic=*/true));
+        }
         return errorAt(expr, "Unbound variable: " + name);
     }
 

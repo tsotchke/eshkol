@@ -734,13 +734,14 @@ Computes directional derivative: `D_v f = ∇f · v`
 
 Tensors are N-dimensional arrays with homogeneous double-precision elements stored as int64 bit patterns.
 
-**Tensor Structure** (32 bytes):
+**Tensor Structure** (40 bytes; 8-byte aligned):
 ```c
 struct eshkol_tensor_t {
     uint64_t* dims;          // Dimension sizes [d0, d1, ..., d(n-1)]
     uint64_t num_dimensions; // Rank of tensor
     int64_t* elements;       // Flattened data (double bits as int64)
     uint64_t total_elements; // Product of all dimensions
+    uint64_t dtype;          // Tensor dtype tag (default f64)
 };
 ```
 
@@ -2159,13 +2160,14 @@ struct eshkol_closure_env_t {
 
 ### Tensor Memory Layout
 
-**Tensor Structure** (32 bytes):
+**Tensor Structure** (40 bytes; 8-byte aligned):
 ```c
 struct eshkol_tensor_t {
     uint64_t* dims;          // [d0, d1, ..., d(n-1)]
     uint64_t num_dimensions; // Rank
     int64_t* elements;       // Doubles stored as int64 bits
     uint64_t total_elements; // Product of dims
+    uint64_t dtype;          // Tensor dtype tag (default f64)
 };
 ```
 

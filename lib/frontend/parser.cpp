@@ -43,6 +43,54 @@ static thread_local std::string g_parse_filename = "<unknown>";
  * file happened to be the ambient source context at codegen time. */
 static thread_local uint32_t g_parse_filename_id = 0;
 static thread_local const char* g_parse_source = NULL;
+static thread_local std::set<std::string>* g_parser_macro_names = nullptr;
+
+namespace {
+int parser_macro_names_slot() {
+    static const int slot = std::ios_base::xalloc();
+    return slot;
+}
+void parser_macro_names_event(std::ios_base::event event, std::ios_base& stream, int slot) {
+    auto*& stored = stream.pword(slot);
+    if (event == std::ios_base::erase_event) {
+        delete static_cast<std::set<std::string>*>(stored);
+        stored = nullptr;
+    } else if (event == std::ios_base::copyfmt_event && stored) {
+        stored = new std::set<std::string>(*static_cast<std::set<std::string>*>(stored));
+    }
+}
+class ParserMacroStreamBinding {
+    std::set<std::string>* previous_;
+public:
+    explicit ParserMacroStreamBinding(std::istream& stream)
+        : previous_(g_parser_macro_names) {
+        const int slot = parser_macro_names_slot();
+        auto*& stored = stream.pword(slot);
+        if (!stored) {
+            stored = new std::set<std::string>;
+            stream.register_callback(parser_macro_names_event, slot);
+        }
+        g_parser_macro_names = static_cast<std::set<std::string>*>(stored);
+    }
+    ~ParserMacroStreamBinding() { g_parser_macro_names = previous_; }
+};
+}
+
+// C++-only hook for long-lived clients (the REPL) that parse each input in a
+// fresh stream but retain macro definitions across evaluations.  The names are
+// stored in the same stream-owned pword set used by ParserMacroStreamBinding,
+// so ordinary file/import streams remain isolated.
+void eshkol_parser_seed_macro_names(std::istream& stream,
+                                    const std::set<std::string>& names) {
+    const int slot = parser_macro_names_slot();
+    auto*& stored = stream.pword(slot);
+    if (!stored) {
+        stored = new std::set<std::string>;
+        stream.register_callback(parser_macro_names_event, slot);
+    }
+    auto* seeded = static_cast<std::set<std::string>*>(stored);
+    seeded->insert(names.begin(), names.end());
+}
 /* Cumulative file line across successive eshkol_parse_next_ast_from_stream
  * calls.  Each call advances the counter by however many newlines it
  * consumed (form text + skipped leading whitespace + comment lines). The
@@ -320,13 +368,36 @@ private:
     size_t line_start_;  // Position of current line start for column calculation
     std::vector<Token> pushback_buffer;  // Buffer for pushed back tokens
     bool fold_case_symbols_;
+    std::vector<std::set<std::string>> macro_names_;
 
 public:
     SchemeTokenizer(const std::string& text, uint32_t start_line = 1,
                     uint32_t start_column = 1, bool fold_case_symbols = false)
         : input(text), pos(0), length(text.length()),
           line_(start_line), column_(start_column),
-          line_start_(0), fold_case_symbols_(fold_case_symbols) {}
+          line_start_(0), fold_case_symbols_(fold_case_symbols),
+          macro_names_{g_parser_macro_names ? *g_parser_macro_names : std::set<std::string>{}} {}
+
+    bool isMacroName(const std::string& name) const {
+        for (auto scope = macro_names_.rbegin(); scope != macro_names_.rend(); ++scope)
+            if (scope->count(name)) return true;
+        return false;
+    }
+    void declareMacroName(const std::string& name) {
+        macro_names_.back().insert(name);
+        if (macro_names_.size() == 1 && g_parser_macro_names)
+            g_parser_macro_names->insert(name);
+    }
+    class MacroScope {
+        SchemeTokenizer& tokenizer_;
+        bool enabled_;
+    public:
+        MacroScope(SchemeTokenizer& tokenizer, bool enabled)
+            : tokenizer_(tokenizer), enabled_(enabled) {
+            if (enabled_) tokenizer_.macro_names_.emplace_back();
+        }
+        ~MacroScope() { if (enabled_) tokenizer_.macro_names_.pop_back(); }
+    };
 
     // Push a token back to be returned by the next nextToken() call
     void pushBack(const Token& token) {
@@ -4959,6 +5030,33 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
     // body sequences, named-let/do/case/record-type expansions, ...) are
     // born with the form's own location, the same one stamped above.
     EshkolAstBirthLocationScope birth_location(token.line, token.column);
+
+    // Resolve explicit syntax bindings before lowering keyword grammar. Keep
+    // unrelated streams (stdlib, imports, user program) separate: a user macro
+    // must not retroactively reinterpret a previously parsed library form.
+    if (token.type == TOKEN_SYMBOL && tokenizer.isMacroName(token.value)) {
+        std::vector<eshkol_ast_t> arguments;
+        while (true) {
+            Token next = tokenizer.nextToken();
+            if (next.type == TOKEN_RPAREN) break;
+            if (next.type == TOKEN_EOF) {
+                PARSE_ERROR_AT(next, "unexpected end of input in macro call");
+                ast.type = ESHKOL_INVALID;
+                co_return ast;
+            }
+            tokenizer.pushBack(next);
+            eshkol_ast_t argument = co_await parse_expression(tokenizer);
+            if (argument.type == ESHKOL_INVALID) co_return argument;
+            arguments.push_back(argument);
+        }
+        co_return make_parser_call_ast(token.value.c_str(), arguments, token.line, token.column);
+    }
+    const bool syntax_scope = token.type == TOKEN_SYMBOL &&
+        (token.value == "lambda" || token.value == "let" || token.value == "let*" ||
+         token.value == "letrec" || token.value == "letrec*" ||
+         token.value == "let-syntax" || token.value == "letrec-syntax" ||
+         (token.value == "define" && tokenizer.peekToken().type == TOKEN_LPAREN));
+    SchemeTokenizer::MacroScope macro_scope(tokenizer, syntax_scope);
     
     // Empty list (ESH-0217).
     //
@@ -5693,9 +5791,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 }
             }
             
-            // Store the if operation as a call to builtin "if" with 3 arguments.
-            // The codegen recognizes "if" calls and emits proper conditional branches.
-            ast.operation.op = ESHKOL_CALL_OP;
+            // Preserve the resolved builtin binding. IF_OP uses the same
+            // three call_op operands but cannot be captured by a later macro.
+            ast.operation.op = ESHKOL_IF_OP;
             
             // Create function name AST node for "if"
             ast.operation.call_op.func = new eshkol_ast_t;
@@ -6887,6 +6985,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
             eshkol_macro_def_t *macro = new eshkol_macro_def_t;
             macro->name = eshkol_ast_strdup(token.value.c_str());
+            tokenizer.declareMacroName(token.value);
             macro->literals = nullptr;
             macro->num_literals = 0;
             macro->rules = nullptr;
@@ -7114,6 +7213,28 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
             std::vector<eshkol_macro_def_t*> macro_defs;
 
+            if (ast.operation.op == ESHKOL_LETREC_SYNTAX_OP) {
+                // All names are in scope in every transformer of the group.
+                auto lookahead = tokenizer;
+                int depth = 0;
+                bool binding_head = false;
+                while (true) {
+                    const Token next = lookahead.nextToken();
+                    if (next.type == TOKEN_EOF) break;
+                    if (next.type == TOKEN_LPAREN) {
+                        ++depth;
+                        binding_head = depth == 1;
+                    } else if (next.type == TOKEN_RPAREN) {
+                        if (depth == 0) break;
+                        --depth;
+                        binding_head = false;
+                    } else if (binding_head) {
+                        if (next.type == TOKEN_SYMBOL) tokenizer.declareMacroName(next.value);
+                        binding_head = false;
+                    }
+                }
+            }
+
             while (true) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;  // End of bindings list
@@ -7336,6 +7457,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
                 macro_defs.push_back(macro);
             }
+
+            for (const auto* macro : macro_defs)
+                if (macro && macro->name) tokenizer.declareMacroName(macro->name);
 
             // Parse body expressions
             std::vector<eshkol_ast_t> body_exprs;
@@ -11216,6 +11340,7 @@ static ParserTask<eshkol_ast_t> parse_expression(SchemeTokenizer& tokenizer) {
 eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
 {
     StreamPositionBinding stream_position(in_stream);
+    ParserMacroStreamBinding macro_stream(in_stream);
     std::string input;
     bool in_quote = false;
     bool in_bar_symbol = false;  // inside an R7RS 7.1.1 |...| vertical-line symbol

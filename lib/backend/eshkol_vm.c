@@ -460,7 +460,7 @@ static const BuiltinDef BUILTINS[] = {
     {"_newline1", 2230, 1},  /* mirrors: newline */
     /* Apply — ID 70; list/accessor operations — IDs 71-106
      * (100-101 remain reserved for packed literal construction). */
-    {"apply", 70, 2}, {"length", 71, 1},
+    {"apply", 70, 2, 0, 1}, {"length", 71, 1},
     /* Compound list accessors — IDs 77-106.  The VM native dispatcher
      * interprets this family from the accessor path, so every
      * c[ad]+r spelling has the same first-class representation. */
@@ -1199,15 +1199,19 @@ static void vm_language_coverage_native_dispatch(VM* vm, int native_id) {
     if (marker.op != OP_LANGUAGE_COVERAGE || marker.operand < 0) return;
 
     const int builtin_index = marker.operand;
+    const int builtin_count = vm_builtin_count();
+    if (builtin_index >= builtin_count) return;
+    const BuiltinDef* def = &BUILTINS[builtin_index];
+    /* Private packed-tail ABIs still execute the named public builtin.
+     * Validate that exact mapping before de-duplication, and record the
+     * actual dispatch ID rather than attributing execution to the old ABI. */
+    if (def->native_id != native_id &&
+        !(def->native_id == 237 && native_id == VM_NATIVE_ERROR_WITH_IRRITANTS) &&
+        !(def->native_id == 70 && native_id == VM_NATIVE_APPLY_PACKED)) return;
     if (!vm_language_coverage_first_sighting(vm_language_coverage_seen_native,
                                              (uint32_t)builtin_index)) {
         return;
     }
-    const int builtin_count = vm_builtin_count();
-    if (builtin_index >= builtin_count) return;
-
-    const BuiltinDef* def = &BUILTINS[builtin_index];
-    if (def->native_id != native_id) return;
     eshkol_language_coverage_vm_dispatch(def->name, (uint32_t)native_id);
 #else
     (void)vm;
@@ -1269,13 +1273,22 @@ static void emit_builtin_preamble(FuncChunk* c) {
             func_pc, def->variadic ? 255 : def->arity);
 
         /* Function body: load args from local slots, call native, return */
-        for (int a = 0; a < def->arity; a++) {
-            chunk_emit(c, OP_GET_LOCAL, a);
+        /* Preserve variadic error/apply tails in their new private ABIs.
+         * Legacy 237 and 70 retain their original operand layouts for ESKB. */
+        if (def->variadic && (def->native_id == 237 || def->native_id == 70)) {
+            chunk_emit(c, OP_PACK_REST, def->arity);
+        } else {
+            for (int a = 0; a < def->arity; a++)
+                chunk_emit(c, OP_GET_LOCAL, a);
         }
         if (vm_language_coverage_compilation_enabled()) {
             chunk_emit(c, OP_LANGUAGE_COVERAGE, b);
         }
-        chunk_emit(c, OP_NATIVE_CALL, def->native_id);
+        chunk_emit(c, OP_NATIVE_CALL,
+                   def->variadic && def->native_id == 237 ?
+                   VM_NATIVE_ERROR_WITH_IRRITANTS :
+                   (def->variadic && def->native_id == 70 ?
+                    VM_NATIVE_APPLY_PACKED : def->native_id));
         chunk_emit(c, OP_RETURN, 0);
 
         patch(c, jover, OP_JUMP, c->code_len);
@@ -1486,11 +1499,12 @@ static int compile_and_run(const char* source) {
      * body that gets spliced in below it. */
     vm_plan_unit_libraries(top_exprs, n_top_exprs);
 
-    /* Pass 2: Scan for top-level defines that need boxing.
-     * A define needs boxing if its variable is both:
-     * (a) captured by a lambda somewhere in the program, AND
-     * (b) mutated via set! somewhere in the program.
-     * We record which define names need boxing. */
+    /* Pass 2: Scan for top-level defines that need boxing. A handler closure
+     * created by guard is an implicit closure even though it is not spelled
+     * as a lambda, so a set! in a guard clause must share the enclosing
+     * top-level location as well (SW-85b). Box every user top-level location
+     * mutated anywhere in the unit; this is conservative but preserves the
+     * same location for ordinary closures, handlers, and continuations. */
     char boxed_names[256][128];
     int n_boxed = 0;
     int program_has_set = 0;
@@ -1505,12 +1519,11 @@ static int compile_and_run(const char* source) {
             && expr->children[1]->type == N_SYMBOL) {
             const char* name = expr->children[1]->symbol;
             /* Scan ALL subsequent expressions for set! + capture */
-            int has_set = 0, has_capture = 0;
+            int has_set = 0;
             for (int j = 0; j < n_top_exprs; j++) {
                 if (scan_for_set(top_exprs[j], name)) has_set = 1;
-                if (scan_for_capture(top_exprs[j], name, 0)) has_capture = 1;
             }
-            if (has_set && has_capture && n_boxed < 256) {
+            if (has_set && n_boxed < 256) {
                 strncpy(boxed_names[n_boxed], name, 127);
                 boxed_names[n_boxed][127] = 0;
                 n_boxed++;
@@ -1892,13 +1905,31 @@ static void compile_source_to_chunk_with_options(const char* source,
     vm_set_user_locals_base(chunk->n_locals);
     vm_prescan_forward_function_slots(chunk, source);
 
+    char boxed_names[256][128];
+    const int n_boxed = vm_prescan_boxed_toplevel_names(
+        source, boxed_names, (int)(sizeof(boxed_names) / sizeof(boxed_names[0])));
+
     src_ptr = source;
     while (1) {
         skip_ws(); if (!*src_ptr) break;
         Node* expr = parse_sexp(); if (!expr) break;
         int lb = chunk->n_locals;
-        compile_expr(chunk, expr, 0);
+        int do_box = 0;
+        if (expr->type == N_LIST && expr->n_children >= 3 &&
+            expr->children[0]->type == N_SYMBOL &&
+            strcmp(expr->children[0]->symbol, "define") == 0 &&
+            expr->children[1]->type == N_SYMBOL) {
+            for (int b = 0; b < n_boxed; ++b) {
+                if (strcmp(boxed_names[b], expr->children[1]->symbol) == 0) {
+                    do_box = 1;
+                    break;
+                }
+            }
+        }
+        if (do_box) vm_compile_boxed_variable_define(chunk, expr);
+        else compile_expr(chunk, expr, 0);
         if (chunk->n_locals == lb) chunk_emit(chunk, OP_POP, 0);
+        chunk_emit(chunk, OP_GLOBAL_MARK, chunk->n_locals);
         free_node(expr);
     }
     vm_clear_redefined_toplevel_names();
@@ -2447,7 +2478,11 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
             if (operand < 0 || operand >= vm_builtin_count()) return -1;
             if (pc + 1 >= mod->code_len ||
                 mod->opcodes[pc + 1] != OP_NATIVE_CALL ||
-                mod->operands[pc + 1] != BUILTINS[operand].native_id) {
+                (mod->operands[pc + 1] != BUILTINS[operand].native_id &&
+                 !(BUILTINS[operand].native_id == 237 &&
+                   mod->operands[pc + 1] == VM_NATIVE_ERROR_WITH_IRRITANTS) &&
+                 !(BUILTINS[operand].native_id == 70 &&
+                   mod->operands[pc + 1] == VM_NATIVE_APPLY_PACKED))) {
                 return -1;
             }
             break;
@@ -2643,7 +2678,7 @@ static void eshkol_vm_prepare_entry(EshkolVmHandle* h, int function_index) {
     vm->n_winds = 0;
     vm->promise_eval_head = NIL_VAL;
     vm->native_call_depth = 0;
-    vm->native_escape_ready = 0;
+    vm->native_escape_context = NULL;
     vm->current_exception = NIL_VAL;
     memset(vm->ad_node_map, -1, sizeof(vm->ad_node_map));
 }

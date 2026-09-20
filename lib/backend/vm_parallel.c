@@ -443,6 +443,55 @@ static VmBignum* vm_bignum_clone_to(VmRegionStack* rs, const VmBignum* src) {
 static int vm_clone_value_graph(VM* worker, VM* main_vm, Value v,
                                 int32_t base_next, int depth);
 
+/* AD payloads own rational and coefficient storage, not just their outer
+ * struct. A copied pointer into a worker arena dies when that worker returns. */
+static VmRational* vm_rational_clone_to(VmRegionStack* rs, const VmRational* src) {
+    if (!src) return NULL;
+    VmRational* dst = (VmRational*)vm_alloc(rs, sizeof(VmRational));
+    if (!dst) return NULL;
+    *dst = *src;
+    if (src->is_big) {
+        dst->big_num = vm_bignum_clone_to(rs, src->big_num);
+        dst->big_den = vm_bignum_clone_to(rs, src->big_den);
+        if (!dst->big_num || !dst->big_den) return NULL;
+    }
+    return dst;
+}
+
+static VmDual* vm_dual_clone_payload_to(VmRegionStack* rs, const VmDual* src) {
+    if (!src) return NULL;
+    VmDual* dst = (VmDual*)vm_alloc(rs, sizeof(VmDual));
+    if (!dst) return NULL;
+    *dst = *src;
+    dst->eprimal = vm_rational_clone_to(rs, src->eprimal);
+    dst->etangent = vm_rational_clone_to(rs, src->etangent);
+    if ((src->eprimal && !dst->eprimal) || (src->etangent && !dst->etangent)) return NULL;
+    const size_t count = (size_t)src->order + 1;
+    if (count > SIZE_MAX / sizeof(VmRational*) || count > SIZE_MAX / sizeof(double)) return NULL;
+    double* values[4] = {src->coeff, src->tangent_coeff, src->tangent2_coeff, src->mixed_coeff};
+    double** copies[4] = {&dst->coeff, &dst->tangent_coeff, &dst->tangent2_coeff, &dst->mixed_coeff};
+    VmRational** exact[4] = {src->exact_coeff, src->exact_tangent_coeff,
+                            src->exact_tangent2_coeff, src->exact_mixed_coeff};
+    VmRational*** exact_copies[4] = {&dst->exact_coeff, &dst->exact_tangent_coeff,
+                                    &dst->exact_tangent2_coeff, &dst->exact_mixed_coeff};
+    for (int channel = 0; channel < 4; ++channel) {
+        if (values[channel]) {
+            *copies[channel] = (double*)vm_alloc(rs, count * sizeof(double));
+            if (!*copies[channel]) return NULL;
+            memcpy(*copies[channel], values[channel], count * sizeof(double));
+        }
+        if (exact[channel]) {
+            *exact_copies[channel] = (VmRational**)vm_alloc(rs, count * sizeof(VmRational*));
+            if (!*exact_copies[channel]) return NULL;
+            for (size_t k = 0; k < count; ++k) {
+                (*exact_copies[channel])[k] = vm_rational_clone_to(rs, exact[channel][k]);
+                if (exact[channel][k] && !(*exact_copies[channel])[k]) return NULL;
+            }
+        }
+    }
+    return dst;
+}
+
 /**
  * @brief Clone the heap object at index @p idx from @p main_vm's heap into
  *        @p worker's isolated heap at the same index, recursing into
@@ -559,7 +608,11 @@ static int vm_clone_object_at(VM* worker, VM* main_vm, int32_t idx,
             VmComplex* src_z = (VmComplex*)src->opaque.ptr;
             VmComplex* dst_z = src_z ? (VmComplex*)vm_alloc(&worker->heap.regions, sizeof(VmComplex)) : NULL;
             if (src_z && !dst_z) return 0;
-            if (src_z) *dst_z = *src_z;
+            if (src_z) {
+                *dst_z = *src_z;
+                if (src_z->creal) { dst_z->creal = (VmDual*)vm_alloc(&worker->heap.regions,sizeof(VmDual)); if (!dst_z->creal) return 0; *dst_z->creal=*src_z->creal; }
+                if (src_z->cimag) { dst_z->cimag = (VmDual*)vm_alloc(&worker->heap.regions,sizeof(VmDual)); if (!dst_z->cimag) return 0; *dst_z->cimag=*src_z->cimag; }
+            }
             dst->opaque.ptr = dst_z;
             return 1;
         }
@@ -591,9 +644,8 @@ static int vm_clone_object_at(VM* worker, VM* main_vm, int32_t idx,
 
         case HEAP_DUAL: {
             VmDual* src_d = (VmDual*)src->opaque.ptr;
-            VmDual* dst_d = src_d ? (VmDual*)vm_alloc(&worker->heap.regions, sizeof(VmDual)) : NULL;
+            VmDual* dst_d = vm_dual_clone_payload_to(&worker->heap.regions, src_d);
             if (src_d && !dst_d) return 0;
-            if (src_d) *dst_d = *src_d;
             dst->opaque.ptr = dst_d;
             return 1;
         }
@@ -606,6 +658,24 @@ static int vm_clone_object_at(VM* worker, VM* main_vm, int32_t idx,
             VmBytevector* bv = (VmBytevector*)src->opaque.ptr;
             dst->opaque.ptr = bv ? vm_bv_copy(&worker->heap.regions, bv, 0, bv->len) : NULL;
             return !bv || dst->opaque.ptr != NULL;
+        }
+
+        case HEAP_ERROR: {
+            VmError* se = (VmError*)src->opaque.ptr;
+            VmError* de = se ? (VmError*)vm_alloc(&worker->heap.regions, sizeof(VmError)) : NULL;
+            if (se && !de) return 0;
+            if (!se) { dst->opaque.ptr = NULL; return 1; }
+            *de = *se;
+            dst->opaque.ptr = de;
+            const void* raw = vm_error_value_irritants(se);
+            if (raw) {
+                Value copied;
+                memcpy(&copied, raw, sizeof(copied));
+                if (!vm_clone_value_graph(worker, main_vm, copied,
+                                          base_next, depth + 1)) return 0;
+                vm_error_set_value_irritants(de, &copied);
+            }
+            return 1;
         }
 
         case HEAP_HYPER_DUAL: {
@@ -900,7 +970,11 @@ static int vm_publish_object_locked(VM* main_vm, VM* worker, Value in,
             VmComplex* src_z = (VmComplex*)src->opaque.ptr;
             VmComplex* dst_z = src_z ? (VmComplex*)vm_alloc(&main_vm->heap.regions, sizeof(VmComplex)) : NULL;
             if (src_z && !dst_z) return 0;
-            if (src_z) *dst_z = *src_z;
+            if (src_z) {
+                *dst_z = *src_z;
+                if (src_z->creal) { dst_z->creal = (VmDual*)vm_alloc(&main_vm->heap.regions,sizeof(VmDual)); if (!dst_z->creal) return 0; *dst_z->creal=*src_z->creal; }
+                if (src_z->cimag) { dst_z->cimag = (VmDual*)vm_alloc(&main_vm->heap.regions,sizeof(VmDual)); if (!dst_z->cimag) return 0; *dst_z->cimag=*src_z->cimag; }
+            }
             dst->opaque.ptr = dst_z;
             return 1;
         }
@@ -932,9 +1006,8 @@ static int vm_publish_object_locked(VM* main_vm, VM* worker, Value in,
 
         case HEAP_DUAL: {
             VmDual* src_d = (VmDual*)src->opaque.ptr;
-            VmDual* dst_d = src_d ? (VmDual*)vm_alloc(&main_vm->heap.regions, sizeof(VmDual)) : NULL;
+            VmDual* dst_d = vm_dual_clone_payload_to(&main_vm->heap.regions, src_d);
             if (src_d && !dst_d) return 0;
-            if (src_d) *dst_d = *src_d;
             dst->opaque.ptr = dst_d;
             return 1;
         }
@@ -947,6 +1020,25 @@ static int vm_publish_object_locked(VM* main_vm, VM* worker, Value in,
             VmBytevector* bv = (VmBytevector*)src->opaque.ptr;
             dst->opaque.ptr = bv ? vm_bv_copy(&main_vm->heap.regions, bv, 0, bv->len) : NULL;
             return !bv || dst->opaque.ptr != NULL;
+        }
+
+        case HEAP_ERROR: {
+            VmError* se = (VmError*)src->opaque.ptr;
+            VmError* de = se ? (VmError*)vm_alloc(&main_vm->heap.regions, sizeof(VmError)) : NULL;
+            if (se && !de) return 0;
+            if (!se) { dst->opaque.ptr = NULL; return 1; }
+            *de = *se;
+            dst->opaque.ptr = de;
+            const void* raw = vm_error_value_irritants(se);
+            if (raw) {
+                Value original, copied;
+                memcpy(&original, raw, sizeof(original));
+                if (!vm_publish_value_locked(main_vm, worker, original,
+                                              base_next, remap, remap_len,
+                                              &copied, depth + 1)) return 0;
+                vm_error_set_value_irritants(de, &copied);
+            }
+            return 1;
         }
 
         case HEAP_HYPER_DUAL: {
@@ -1052,6 +1144,14 @@ static int vm_call_closure_from_native_isolated(VM* main_vm, Value closure,
     }
 
     Value worker_result = vm_call_closure_from_native(worker, closure, args, argc);
+    /* A failed worker call returns NIL as its value but leaves worker->error
+     * set.  Do not publish that sentinel as a successful task result. */
+    if (worker->error) {
+        heap_destroy(&worker->heap);
+        free(worker->constants);
+        free(worker);
+        return 0;
+    }
     int remap_len = worker->heap.next_free - base_next;
     int32_t* remap = NULL;
     if (remap_len > 0) {
@@ -1081,25 +1181,16 @@ static int vm_call_closure_from_native_isolated(VM* main_vm, Value closure,
  * @brief Call @p closure with @p args from a pool worker thread: if the
  *        closure's bytecode passes vm_closure_is_worker_safe(), runs it in
  *        an isolated worker VM (vm_call_closure_from_native_isolated())
- *        for true concurrency; otherwise falls back to calling it directly
- *        on @p main_vm under g_heap_mutex (serialized).
+ *        for true concurrency. Unsafe closures and isolated-call failures
+ *        are reported to the joining caller; a worker never calls @p main_vm.
  */
-static Value vm_worker_call_closure(VmWorkerContext* wctx, VM* main_vm,
-                                    Value closure, Value* args, int nargs) {
+static int vm_worker_call_closure(VmWorkerContext* wctx, VM* main_vm,
+                                  Value closure, Value* args, int nargs,
+                                  Value* out) {
     (void)wctx;
-    if (vm_closure_is_worker_safe(main_vm, closure)) {
-        Value isolated_result = NIL_VAL;
-        if (vm_call_closure_from_native_isolated(main_vm, closure, args, nargs,
-                                                 &isolated_result)) {
-            return isolated_result;
-        }
-    }
-
-    Value result;
-    pthread_mutex_lock(&g_heap_mutex);
-    result = vm_call_closure_from_native(main_vm, closure, args, nargs);
-    pthread_mutex_unlock(&g_heap_mutex);
-    return result;
+    if (!vm_closure_is_worker_safe(main_vm, closure)) return 0;
+    return vm_call_closure_from_native_isolated(main_vm, closure, args, nargs,
+                                                out) ? 1 : 0;
 }
 
 /*******************************************************************************
@@ -1111,6 +1202,7 @@ typedef struct {
     Value   closure;
     Value   input;
     Value   output;
+    int     failed;
 } VmParMapTask;
 
 /** @brief Thread-pool task function for parallel-map: applies the task's
@@ -1118,14 +1210,16 @@ typedef struct {
 static void vm_parmap_task_fn(void* arg, void* result) {
     VmParMapTask* task = (VmParMapTask*)arg;
     (void)result;
-    task->output = vm_worker_call_closure(NULL, task->main_vm,
-                                          task->closure, &task->input, 1);
+    task->failed = !vm_worker_call_closure(NULL, task->main_vm,
+                                           task->closure, &task->input, 1,
+                                           &task->output);
 }
 
 typedef struct {
     VM*     main_vm;
     Value   closure;
     Value   output;
+    int     failed;
 } VmParThunkTask;
 
 /** @brief Thread-pool task function for parallel thunk execution (futures/
@@ -1134,8 +1228,9 @@ typedef struct {
 static void vm_parthunk_task_fn(void* arg, void* result) {
     VmParThunkTask* task = (VmParThunkTask*)arg;
     (void)result;
-    task->output = vm_worker_call_closure(NULL, task->main_vm,
-                                          task->closure, NULL, 0);
+    task->failed = !vm_worker_call_closure(NULL, task->main_vm,
+                                           task->closure, NULL, 0,
+                                           &task->output);
 }
 
 /*******************************************************************************
@@ -1147,6 +1242,7 @@ typedef struct {
     Value           thunk_or_value;
     Value           result;
     int             ready;
+    int             failed;
     pthread_mutex_t mutex;
     pthread_cond_t  done;
 } VmFuture;
@@ -1162,6 +1258,7 @@ static VmFuture* vm_future_create(VM* vm, Value thunk_or_value) {
     fut->thunk_or_value = thunk_or_value;
     fut->result = NIL_VAL;
     fut->ready = 0;
+    fut->failed = 0;
     if (pthread_mutex_init(&fut->mutex, NULL) != 0) return NULL;
     if (pthread_cond_init(&fut->done, NULL) != 0) {
         pthread_mutex_destroy(&fut->mutex);
@@ -1172,10 +1269,11 @@ static VmFuture* vm_future_create(VM* vm, Value thunk_or_value) {
 
 /** @brief Store @p result into @p fut, mark it ready, and wake any
  *         threads blocked in vm_future_force(). */
-static void vm_future_mark_ready(VmFuture* fut, Value result) {
+static void vm_future_mark_ready(VmFuture* fut, Value result, int failed) {
     pthread_mutex_lock(&fut->mutex);
     fut->result = result;
     fut->ready = 1;
+    fut->failed = failed;
     pthread_cond_broadcast(&fut->done);
     pthread_mutex_unlock(&fut->mutex);
 }
@@ -1188,11 +1286,13 @@ static void vm_future_task_fn(void* arg, void* result_slot) {
     VmFuture* fut = (VmFuture*)arg;
     if (!fut) return;
     Value result = fut->thunk_or_value;
+    int failed = 0;
     if (fut->thunk_or_value.type == VAL_CLOSURE) {
-        result = vm_worker_call_closure(NULL, fut->main_vm,
-                                        fut->thunk_or_value, NULL, 0);
+        failed = !vm_worker_call_closure(NULL, fut->main_vm,
+                                         fut->thunk_or_value, NULL, 0,
+                                         &result);
     }
-    vm_future_mark_ready(fut, result);
+    vm_future_mark_ready(fut, result, failed);
 }
 
 /** @brief Non-blocking check of whether @p fut has been resolved (a null

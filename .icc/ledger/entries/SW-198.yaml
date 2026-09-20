@@ -1,0 +1,29 @@
+id: SW-198
+bucket: CRASH
+family: vm/parallel-ad-carrier-ownership
+status: in-progress
+needs_decision: false
+title: "VM parallel AD results retain worker-owned exact carrier storage"
+repro: >-
+  Differentiate and Hessian a fold over parallel-map at exact rational points,
+  including a tiny bignum rational, then let the worker VM be destroyed.
+observed: >-
+  Normal builds can print plausible values, but AddressSanitizer reports a
+  heap-use-after-free in vm_rational_arith_exact -> vm_dual_add when the parent
+  consumes exact halves owned by a destroyed worker. Taylor coefficient arrays
+  and their exact rational sidecars have the same ownership defect.
+correct: >-
+  Publishing a worker result deep-copies every dual/Taylor coefficient channel,
+  bignum limb buffer and exact rational sidecar into parent-owned storage; the
+  region evacuator retains every channel it can later expose.
+evidence: >-
+  .scratch/parallel-ad-transfer-asan.log records the original UAF. The local
+  fix deep-clones scalar halves plus all four coefficient/exact channels and
+  extends region retention. Source VM, emitted ESKB and an ASan/UBSan VM run of
+  parallel_ad_carrier_lifetime pass; leak detection was disabled and native
+  runtime libraries were not sanitizer-instrumented.
+caught_by: [address-sanitizer, release-ad-carrier-audit]
+missed_by: [vm_parity, normal-runtime-smoke]
+notes: >-
+  Source is not yet committed to the release cut. Keep open until integrated
+  sanitizer and release qualification complete.

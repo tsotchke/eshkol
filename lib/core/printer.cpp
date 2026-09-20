@@ -177,15 +177,10 @@ static void print_operation(const eshkol_operations_t *op, int indent) {
             break;
             
         case ESHKOL_IF_OP:
-            if (op->if_op.if_true) {
+            for (uint64_t i = 0; i < op->call_op.num_vars; ++i) {
                 print_indent(indent + 1);
-                printf("If True:\n");
-                print_operation(op->if_op.if_true, indent + 2);
-            }
-            if (op->if_op.if_false) {
-                print_indent(indent + 1);
-                printf("If False:\n");
-                print_operation(op->if_op.if_false, indent + 2);
+                printf("%s:\n", i == 0 ? "Condition" : (i == 1 ? "If True" : "If False"));
+                eshkol_ast_pretty_print(&op->call_op.variables[i], indent + 2);
             }
             break;
             

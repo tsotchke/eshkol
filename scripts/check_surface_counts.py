@@ -180,7 +180,7 @@ REGISTERED_DOCS = [
 # numbers to equal the canonical value.
 SURFACE_TOTAL_PATTERNS = [
     re.compile(r"([0-9]{1,3}(?:,[0-9]{3})*)-construct\b"),
-    re.compile(r"declared language surface is \*{0,2}([0-9,]+)\*{0,2} constructs"),
+    re.compile(r"declared language surface is\s+\*{0,2}([0-9,]+)\*{0,2}\s+constructs"),
     re.compile(r"floor of\s+([0-9,]+) declared constructs"),
     re.compile(r"language coverage \*{0,2}([0-9,]+)/([0-9,]+)\*{0,2}"),
     re.compile(r"surface_total`?\s*[=:]\s*\*{0,2}([0-9,]+)\*{0,2}"),
@@ -816,6 +816,8 @@ def self_test() -> bool:
              "**1,040 built-in functions** in this release.\n", False),
             ("red_construct_suffix_stale",
              "a 1,106-construct canonical language surface.\n", False),
+            ("red_multiline_surface_stale",
+             "the declared language surface is\n**1,106** constructs.\n", False),
             ("green_no_claim_at_all",
              "this doc says nothing about the surface count.\n", True),
         ]
