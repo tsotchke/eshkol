@@ -670,27 +670,6 @@ llvm::Value* AutodiffCodegen::seedForwardAndPushCorePlain(llvm::Value* point_tag
                                                           llvm::Value* level) {
     auto& b = ctx_.builder();
 
-    // SW-191: a complex evaluation point is seeded with the holomorphic unit
-    // tangent dz=1.  Keep the two component carriers inside the complex
-    // representation so ordinary complex arithmetic propagates them, then
-    // extract the complex tangent after the call.
-    llvm::Value* point_base_type = tagged_.getBaseType(tagged_.getType(point_tagged));
-    if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(point_base_type);
-        ci && ci->getZExtValue() == ESHKOL_VALUE_COMPLEX) {
-        ComplexCodegen complex(ctx_, tagged_, mem_);
-        llvm::Value* zr = complex.componentTagged(point_tagged, false);
-        llvm::Value* zi = complex.componentTagged(point_tagged, true);
-        llvm::Value* r = tagged_.unpackDouble(zr);
-        llvm::Value* i = tagged_.unpackDouble(zi);
-        llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
-        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-        llvm::Value* rd = packDualToTagged(makeDual8(ctx_, r, one, zero, zero,
-                                                      zero, zero, zero, zero));
-        llvm::Value* id = packDualToTagged(makeDual8(ctx_, i, zero, zero, zero,
-                                                      zero, zero, zero, zero));
-        return complex.packCarrierComplex(r, i, rd, id);
-    }
-
     // ── Taylor-tower mode (ESH-0186): seed a heap tower {x0,1,0,...} of the
     // requested order under a fresh perturbation epoch instead of a jet. The
     // jet path below is untouched when adTowerMode_ == NONE (order <= 2). ──
