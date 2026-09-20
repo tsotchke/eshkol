@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restore website rendering by implementing the browser runtime's tagged i128
+  predicate. Ordinary heap operands no longer throw during homepage startup;
+  the Pages workflow now exercises this runtime import before deployment.
+
 - **The browser REPL answered nothing.** Every `repl_eval` call in the
   WebAssembly bundle — the site's REPL pane and every runnable code block on
   the docs pages — returned with no output at all; `(+ 1 2)` printed nothing
