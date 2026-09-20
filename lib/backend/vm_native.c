@@ -10133,13 +10133,31 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 "use the native backend");
             break;
         }
-        /* A complex evaluation point needs a complex-valued perturbation;
-         * derivative is defined over the reals (ADR-0025). Refused exactly as
-         * the native engine refuses it, instead of seeding the point's real
-         * reading and answering a derivative of 0. */
+        /* SW-191: seed a complex evaluation point with the holomorphic unit
+         * tangent dz=1, then return the complex tangent of the result. */
         if (x_val.type == VAL_COMPLEX) {
-            vm_raise_error_msg(vm, "derivative: evaluation point is not a real number (a complex point); "
-                                   "derivative differentiates with respect to a real parameter");
+            VmComplex *z = (VmComplex*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+            VmComplex *seed = vm_complex_new_d(&vm->heap.regions,
+                                               z->real, z->imag, 1.0, 0.0);
+            if (!seed) { vm_push(vm, NIL_VAL); break; }
+            int32_t seed_ptr = heap_alloc(&vm->heap);
+            if (seed_ptr < 0) { vm->error = 1; break; }
+            vm->heap.objects[seed_ptr]->type = HEAP_COMPLEX;
+            vm->heap.objects[seed_ptr]->opaque.ptr = seed;
+            Value complex_arg = (Value){.type = VAL_COMPLEX, .as.ptr = seed_ptr};
+            Value result = vm_ad_call_closure(vm, f_val, &complex_arg, 1);
+            if (result.type != VAL_COMPLEX || result.as.ptr < 0) {
+                vm_raise_error_msg(vm, "derivative: complex function did not return a complex value");
+                break;
+            }
+            VmComplex *rz = (VmComplex*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+            if (!rz || !vm_complex_has_tangent(rz)) {
+                vm_raise_error_msg(vm, "derivative: complex result has no holomorphic tangent");
+                break;
+            }
+            VmComplex *out = vm_complex_new(&vm->heap.regions, rz->dreal, rz->dimag);
+            if (!out) { vm_push(vm, NIL_VAL); break; }
+            vm_push_complex_result(vm, out);
             break;
         }
         /* Create dual number: x + 1ε

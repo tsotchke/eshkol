@@ -636,6 +636,60 @@ llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
 llvm::Value* AutodiffCodegen::seedForwardAndPushCore(llvm::Value* point_tagged,
                                                      llvm::Value* level) {
     auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::AllocaInst* out = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "seed_out");
+    llvm::Value* is_complex = b.CreateICmpEQ(
+        tagged_.getBaseType(tagged_.getType(point_tagged)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    llvm::BasicBlock* cbb = llvm::BasicBlock::Create(ctx_.context(), "complex_seed", fn);
+    llvm::BasicBlock* pbb = llvm::BasicBlock::Create(ctx_.context(), "plain_seed", fn);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "seed_done", fn);
+    b.CreateCondBr(is_complex, cbb, pbb);
+    b.SetInsertPoint(cbb);
+    {
+        ComplexCodegen complex(ctx_, tagged_, mem_);
+        llvm::Value* zr = complex.componentTagged(point_tagged, false);
+        llvm::Value* zi = complex.componentTagged(point_tagged, true);
+        llvm::Value* r = tagged_.unpackDouble(zr);
+        llvm::Value* i = tagged_.unpackDouble(zi);
+        llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* rd = packDualToTagged(makeDual8(ctx_, r, one, zero, zero, zero, zero, zero, zero));
+        llvm::Value* id = packDualToTagged(makeDual8(ctx_, i, zero, zero, zero, zero, zero, zero, zero));
+        b.CreateStore(complex.packCarrierComplex(r, i, rd, id), out);
+    }
+    b.CreateBr(done);
+    b.SetInsertPoint(pbb);
+    b.CreateStore(seedForwardAndPushCorePlain(point_tagged, level), out);
+    b.CreateBr(done);
+    b.SetInsertPoint(done);
+    return b.CreateLoad(ctx_.taggedValueType(), out, "seeded_value");
+}
+
+llvm::Value* AutodiffCodegen::seedForwardAndPushCorePlain(llvm::Value* point_tagged,
+                                                          llvm::Value* level) {
+    auto& b = ctx_.builder();
+
+    // SW-191: a complex evaluation point is seeded with the holomorphic unit
+    // tangent dz=1.  Keep the two component carriers inside the complex
+    // representation so ordinary complex arithmetic propagates them, then
+    // extract the complex tangent after the call.
+    llvm::Value* point_base_type = tagged_.getBaseType(tagged_.getType(point_tagged));
+    if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(point_base_type);
+        ci && ci->getZExtValue() == ESHKOL_VALUE_COMPLEX) {
+        ComplexCodegen complex(ctx_, tagged_, mem_);
+        llvm::Value* zr = complex.componentTagged(point_tagged, false);
+        llvm::Value* zi = complex.componentTagged(point_tagged, true);
+        llvm::Value* r = tagged_.unpackDouble(zr);
+        llvm::Value* i = tagged_.unpackDouble(zi);
+        llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
+        llvm::Value* rd = packDualToTagged(makeDual8(ctx_, r, one, zero, zero,
+                                                      zero, zero, zero, zero));
+        llvm::Value* id = packDualToTagged(makeDual8(ctx_, i, zero, zero, zero,
+                                                      zero, zero, zero, zero));
+        return complex.packCarrierComplex(r, i, rd, id);
+    }
 
     // ── Taylor-tower mode (ESH-0186): seed a heap tower {x0,1,0,...} of the
     // requested order under a fresh perturbation epoch instead of a jet. The
@@ -787,6 +841,40 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
  */
 llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagged,
                                                        llvm::Value* level) {
+    if (adTowerMode_ != TowerMode::NONE)
+        return popAndExtractForwardCorePlain(result_tagged, level);
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::AllocaInst* out = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "deriv_out");
+    llvm::Value* is_complex = b.CreateICmpEQ(
+        tagged_.getBaseType(tagged_.getType(result_tagged)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    llvm::BasicBlock* cbb = llvm::BasicBlock::Create(ctx_.context(), "complex_deriv", fn);
+    llvm::BasicBlock* pbb = llvm::BasicBlock::Create(ctx_.context(), "plain_deriv", fn);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "deriv_done", fn);
+    b.CreateCondBr(is_complex, cbb, pbb);
+    b.SetInsertPoint(cbb);
+    adPertLevelStore(level);
+    {
+        ComplexCodegen complex(ctx_, tagged_, mem_);
+        llvm::Value* rr = complex.componentTagged(result_tagged, false);
+        llvm::Value* ri = complex.componentTagged(result_tagged, true);
+        llvm::Value* rd = safeUnpackDualFromTagged(rr);
+        llvm::Value* id = safeUnpackDualFromTagged(ri);
+        llvm::Value* real_deriv = dualField(ctx_, rd, 1);
+        llvm::Value* imag_deriv = dualField(ctx_, id, 1);
+        b.CreateStore(complex.packComplexToTagged(complex.createComplex(real_deriv, imag_deriv)), out);
+    }
+    b.CreateBr(done);
+    b.SetInsertPoint(pbb);
+    b.CreateStore(popAndExtractForwardCorePlain(result_tagged, level), out);
+    b.CreateBr(done);
+    b.SetInsertPoint(done);
+    return b.CreateLoad(ctx_.taggedValueType(), out, "derivative_value");
+}
+
+llvm::Value* AutodiffCodegen::popAndExtractForwardCorePlain(llvm::Value* result_tagged,
+                                                            llvm::Value* level) {
     auto& b = ctx_.builder();
     // Pop: restore the level the outer context expects.
     adPertLevelStore(level);
@@ -984,6 +1072,22 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagge
         b.CreateCall(getTaylorCoeffsFunc(ctx_),
                      {getArenaPtr(), res_slot, adTowerOrder_, coeff_tape, out_slot});
         return b.CreateLoad(ctx_.taggedValueType(), out_slot, "twr_coeffs");
+    }
+
+    // A holomorphic complex result carries one tagged tangent per component.
+    // At the ordinary (non-tower) derivative level, return those two tangent
+    // components as a plain complex value (SW-191).
+    llvm::Value* result_base_type = tagged_.getBaseType(tagged_.getType(result_tagged));
+    if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(result_base_type);
+        ci && ci->getZExtValue() == ESHKOL_VALUE_COMPLEX) {
+        ComplexCodegen complex(ctx_, tagged_, mem_);
+        llvm::Value* rr = complex.componentTagged(result_tagged, false);
+        llvm::Value* ri = complex.componentTagged(result_tagged, true);
+        llvm::Value* rd = safeUnpackDualFromTagged(rr);
+        llvm::Value* id = safeUnpackDualFromTagged(ri);
+        llvm::Value* real_deriv = dualField(ctx_, rd, 1);
+        llvm::Value* imag_deriv = dualField(ctx_, id, 1);
+        return complex.packComplexToTagged(complex.createComplex(real_deriv, imag_deriv));
     }
 
     llvm::Function* fn = b.GetInsertBlock()->getParent();
