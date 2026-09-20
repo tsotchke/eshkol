@@ -13859,7 +13859,10 @@ entries:
       unsupported combination for (2).
     evidence: >-
       Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
-      arm64 macOS, while sweeping SW-181.
+      arm64 macOS, while sweeping SW-181. Fixed at 2c0eb81f5: jacobian resolves
+      dense AD tensor results before shape/element dispatch; the SIGSEGV repro now
+      returns #((1 0) (0 1)), and the dense boundary test passes cached, uncached,
+      and AOT.
     caught_by: [coordinator-sweep]
     missed_by: [run_ad_oracle, run_dense_tensor_ad_gate]
     notes: >-
@@ -13886,7 +13889,9 @@ entries:
       differentiated.
     evidence: >-
       Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
-      arm64 macOS, while sweeping SW-181.
+      arm64 macOS, while sweeping SW-181. Fixed at 2c0eb81f5: tensor?/vector?
+      and hosted display recognize dense AD tensor results; the repro now returns
+      #t #t #(1 2 3), and the dense boundary test passes cached, uncached, and AOT.
     caught_by: [coordinator-sweep]
     missed_by: [run_ad_oracle, run_dense_tensor_ad_gate, doc_audit]
     notes: >-
@@ -14005,13 +14010,39 @@ entries:
     evidence: >-
       Measured on fix/v135-ad-complex-and-dense-identity while closing SW-180,
       Release build, arm64 macOS. The complex carrier (ADR-0025) already
-      propagates a complex tangent on both engines; what is missing is seeding a
-      complex point and returning a complex derivative.
+      propagates a complex tangent on both engines; what was missing was seeding a
+      complex point and returning a complex derivative. Fixed at aaf90512e: native
+      and VM seed dz=1 and return the holomorphic complex tangent; JIT, uncached JIT,
+      AOT, and VM pass z*z, exp, sin, and identity cases (8/8 each).
     caught_by: [coordinator-sweep]
     missed_by: [run_ad_oracle, doc_audit]
     notes: >-
-      A build item, not a defect of the real-parameter path: derivative is
-      defined over the reals and refuses loudly. Needs a ruling on the operator's
-      contract for non-holomorphic functions (refuse, return df/dz, or return the
-      Wirtinger pair) before it is built. The tutorial sentence is left as the
-      statement of intent.
+      The contract is the holomorphic complex derivative (dz=1); non-holomorphic
+      functions do not have a single complex derivative and are outside this
+      operator's contract.
+  - id: SW-193
+    bucket: SILENT-WRONG
+    family: ad/complex-carrier
+    status: open
+    needs_decision: true
+    title: "nested holomorphic complex derivatives discard the enclosing carrier and answer 0+0i instead of the second derivative"
+    repro: >-
+      (display (derivative (lambda (z)
+        (derivative (lambda (w) (* w (* w w))) z))
+        (make-rectangular 1.0 1.0)))
+    observed: >-
+      Native answers 0+0i on the current complex evaluation-point implementation;
+      the analytic result d²(z³)/dz² at z=1+i is 6+6i. The inner complex seed
+      does not preserve the enclosing perturbation carrier.
+    correct: >-
+      6+6i, with the enclosing complex derivative carrier retained through the
+      nested pass.
+    evidence: >-
+      Measured on fix/v135-ad-complex-and-dense-identity after SW-191 first-order
+      support landed. First-order z*z, exp, sin, and identity cases pass JIT,
+      uncached JIT, AOT, and VM; this nested control returns 0+0i.
+    caught_by: [ad-integration-review]
+    missed_by: [run_ad_oracle, run_ad_exactness_gate]
+    notes: >-
+      Open implementation item. Do not close by refusing nested complex
+      differentiation; the owner requires carrier composition to produce 6+6i.

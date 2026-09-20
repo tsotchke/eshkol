@@ -5501,11 +5501,25 @@ static VmTensor* vm_tensor_binary_special_tangent(VM* vm, const VmTensor* a,
         double db = b->dual_data ? b->dual_data[bi].tangent : 0.0;
         double av = a->data[ai], bv = b->data[bi];
         if (fid == 445) {
-            if (av <= 0.0) {
-                vm_raise_error_msg(vm, "tensor-pow: derivative requires a positive base");
+            if (db != 0.0) {
+                if (av <= 0.0) {
+                    vm_raise_error_msg(vm, "tensor-pow: derivative with respect to exponent requires a positive base");
+                    return NULL;
+                }
+                tangent->data[i] = out->data[i] * (db * log(av) + bv * da / av);
+            } else if (av == 0.0) {
+                /* For a constant positive integer exponent, d(0^n)=0. */
+                tangent->data[i] = (bv > 1.0 && floor(bv) == bv) ? 0.0 :
+                    (bv == 1.0 ? da : 0.0);
+            } else if (av < 0.0 && floor(bv) == bv) {
+                /* Integer powers have a real derivative at negative bases. */
+                tangent->data[i] = bv * pow(av, bv - 1.0) * da;
+            } else if (av > 0.0) {
+                tangent->data[i] = bv * pow(av, bv - 1.0) * da;
+            } else {
+                vm_raise_error_msg(vm, "tensor-pow: derivative domain requires a positive base or constant integer exponent");
                 return NULL;
             }
-            tangent->data[i] = out->data[i] * (db * log(av) + bv * da / av);
         } else if (fid == 446) {
             tangent->data[i] = av > bv ? da : db;
         } else {
