@@ -11100,6 +11100,32 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL -|SOME TESTS FAILED|LLVM module verification failed|fatal signal")
 endif()
 
+# Experimental v2 validation is private to these tests; public I/O remains v1.
+if(ESHKOL_BUILD_TESTS)
+    add_library(eskm_v2_preflight_test_parser OBJECT lib/core/eskm_v2_preflight.c)
+    target_compile_features(eskm_v2_preflight_test_parser PRIVATE c_std_17)
+    target_include_directories(eskm_v2_preflight_test_parser PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/core)
+    add_executable(eskm_v2_preflight_test tests/core/eskm_v2_preflight_test.c)
+    target_link_libraries(eskm_v2_preflight_test PRIVATE eskm_v2_preflight_test_parser)
+    add_executable(eskm_v2_preflight_cpp_test tests/core/eskm_v2_preflight_cpp_test.cpp)
+    target_link_libraries(eskm_v2_preflight_cpp_test PRIVATE eskm_v2_preflight_test_parser)
+    add_test(NAME eskm_v2_preflight_test COMMAND eskm_v2_preflight_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/core/fixtures/eskm-v2)
+    add_test(NAME eskm_v2_preflight_cpp_test COMMAND eskm_v2_preflight_cpp_test)
+    set_tests_properties(eskm_v2_preflight_test eskm_v2_preflight_cpp_test
+        PROPERTIES TIMEOUT 30 LABELS "serialization;experimental")
+    if(ESHKOL_PYTHON3_EXECUTABLE)
+        add_test(NAME eskm_v2_fixture_oracle_test
+            COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_eskm_v2_fixtures.py
+                --self-test --fixtures ${CMAKE_CURRENT_SOURCE_DIR}/tests/core/fixtures/eskm-v2
+                --test-executable $<TARGET_FILE:eskm_v2_preflight_test>)
+        set_tests_properties(eskm_v2_fixture_oracle_test
+            PROPERTIES TIMEOUT 30 LABELS "serialization;experimental")
+    endif()
+endif()
+
 # Public ESKM tensor-file parity requires both native and VM test executables.
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE AND
    TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)

@@ -2033,6 +2033,19 @@ jobs:
           set -euxo pipefail
           bash tests/perf/nested_expr_compile_time_test.sh "$BUILD_DIR/eshkol-run"
 
+      - name: Experimental ESKM v2 preflight contract
+        if: matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build "${{ matrix.build_dir }}" --parallel 2 \
+            --target eskm_v2_preflight_test eskm_v2_preflight_cpp_test
+          for test in preflight_test preflight_cpp_test fixture_oracle_test; do
+            ctest --test-dir "${{ matrix.build_dir }}" --output-on-failure --no-tests=error \
+              -R "^eskm_v2_${test}$"
+          done
+
       - name: Atomic checkpoint save contract
         if: matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite'
         shell: bash
