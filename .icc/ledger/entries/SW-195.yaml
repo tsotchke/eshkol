@@ -1,7 +1,7 @@
 id: SW-195
 bucket: SILENT-WRONG
 family: conditions/error-irritants
-status: in-progress
+status: open
 needs_decision: false
 title: "VM error objects drop their irritant list"
 repro: >-

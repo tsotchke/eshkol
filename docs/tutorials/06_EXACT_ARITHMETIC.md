@@ -81,8 +81,9 @@ Rationals are written as `numerator/denominator` and stay exact:
 (display w)              ;; => ~0+2i
 ```
 
-Complex numbers integrate with autodiff — you can differentiate functions
-of complex arguments. A derivative with respect to a real parameter passes
+Complex numbers integrate with autodiff — you can differentiate holomorphic
+functions of complex arguments. A complex evaluation point seeds the
+holomorphic derivative with `dz = 1`; a derivative with respect to a real parameter passes
 through every complex operation: `(derivative (lambda (x) (magnitude (make-rectangular x 4.0))) 3.0)`
 is `0.6`, and the filter-design derivatives in the signal-processing tutorial are
 computed this way.

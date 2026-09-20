@@ -1,7 +1,7 @@
 id: SW-194
 bucket: SILENT-WRONG
 family: ad/scalar-hessian
-status: in-progress
+status: open
 needs_decision: false
 title: "browser VM scalar Hessian drops the second derivative of expt"
 repro: >-

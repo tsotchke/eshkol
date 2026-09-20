@@ -13991,8 +13991,9 @@ entries:
   - id: SW-191
     bucket: LOUD-LIMITATION
     family: ad/complex-carrier
-    status: open
-    needs_decision: true
+    status: fixed
+    closed_at: "aaf90512e"
+    needs_decision: false
     title: "derivative at a complex evaluation point is refused on both engines; docs/tutorials/06_EXACT_ARITHMETIC.md describes differentiating functions of complex arguments"
     repro: >-
       (display (derivative (lambda (z) (* z z)) (make-rectangular 1.0 1.0)))
@@ -14009,20 +14010,20 @@ entries:
     evidence: >-
       Measured on fix/v135-ad-complex-and-dense-identity while closing SW-180,
       Release build, arm64 macOS. The complex carrier (ADR-0025) already
-      propagates a complex tangent on both engines; what is missing is seeding a
-      complex point and returning a complex derivative.
+      propagates a complex tangent on both engines; what was missing was seeding a
+      complex point and returning a complex derivative. Fixed at aaf90512e: native
+      and VM seed dz=1 and return the holomorphic complex tangent; JIT, uncached JIT,
+      AOT, and VM pass z*z, exp, sin, and identity cases (8/8 each).
     caught_by: [coordinator-sweep]
     missed_by: [run_ad_oracle, doc_audit]
     notes: >-
-      A build item, not a defect of the real-parameter path: derivative is
-      defined over the reals and refuses loudly. Needs a ruling on the operator's
-      contract for non-holomorphic functions (refuse, return df/dz, or return the
-      Wirtinger pair) before it is built. The tutorial sentence is left as the
-      statement of intent.
+      The contract is the holomorphic complex derivative (dz=1); non-holomorphic
+      functions do not have a single complex derivative and are outside this
+      operator's contract.
   - id: SW-192
     bucket: SILENT-WRONG
     family: macro/definition-site-scope
-    status: in-progress
+    status: open
     title: "Macro bindings and template references must preserve lexical definition scope"
     repro: >-
       Define a macro named when whose false branch explicitly returns #f; use
@@ -14041,7 +14042,7 @@ entries:
   - id: SW-194
     bucket: SILENT-WRONG
     family: ad/scalar-hessian
-    status: in-progress
+    status: open
     needs_decision: false
     title: "browser VM scalar Hessian drops the second derivative of expt"
     repro: >-
@@ -14064,7 +14065,7 @@ entries:
   - id: SW-195
     bucket: SILENT-WRONG
     family: conditions/error-irritants
-    status: in-progress
+    status: open
     needs_decision: false
     title: "VM error objects drop their irritant list"
     repro: >-
@@ -14090,7 +14091,7 @@ entries:
   - id: SW-196
     bucket: SILENT-WRONG
     family: vm/native-callback-control
-    status: in-progress
+    status: open
     needs_decision: false
     title: "VM worker callbacks can unwind through the caller thread's interpreter context"
     repro: >-
@@ -14121,7 +14122,7 @@ entries:
   - id: SW-197
     bucket: SILENT-WRONG
     family: ad/native-exact-tier
-    status: in-progress
+    status: open
     needs_decision: false
     title: "native derivative loses exactness when a scalar body uses collection intermediates"
     repro: >-
@@ -14149,9 +14150,9 @@ entries:
       Source is not yet committed to the release cut. Keep open until current-head
       parity and final release qualification pass; no inexact fallback is a fix.
   - id: SW-198
-    bucket: CRASH
+    bucket: SILENT-WRONG
     family: vm/parallel-ad-carrier-ownership
-    status: in-progress
+    status: open
     needs_decision: false
     title: "VM parallel AD results retain worker-owned exact carrier storage"
     repro: >-
@@ -14177,3 +14178,31 @@ entries:
     notes: >-
       Source is not yet committed to the release cut. Keep open until integrated
       sanitizer and release qualification complete.
+  - id: SW-193
+    bucket: SILENT-WRONG
+    family: ad/complex-carrier
+    status: open
+    needs_decision: false
+    title: "nested holomorphic complex derivatives discard the enclosing carrier and answer 0+0i instead of the second derivative"
+    repro: >-
+      (display (derivative (lambda (z)
+        (derivative (lambda (w) (* w (* w w))) z))
+        (make-rectangular 1.0 1.0)))
+    observed: >-
+      Native answers 0+0i on the current complex evaluation-point implementation;
+      the analytic result d²(z³)/dz² at z=1+i is 6+6i. The inner complex seed
+      does not preserve the enclosing perturbation carrier.
+    correct: >-
+      6+6i, with the enclosing complex derivative carrier retained through the
+      nested pass.
+    evidence: >-
+      The integrated carrier implementation passes complex evaluation 8/8,
+      nested complex 20/20, complex derivatives 25/25, Taylor 52/52, Taylor
+      numerics 41/41, and nested carrier orderings 6/6 on the VM. JIT and AOT
+      also pass the complex evaluation, nested complex, and complex derivative
+      regressions.
+    caught_by: [ad-integration-review]
+    missed_by: [run_ad_oracle, run_ad_exactness_gate]
+    notes: >-
+      Integrated source is implemented without refusal. Keep open through broad
+      parity, sanitizer, site artifact, and final release qualification.

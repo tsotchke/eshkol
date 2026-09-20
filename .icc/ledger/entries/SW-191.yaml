@@ -1,8 +1,9 @@
 id: SW-191
 bucket: LOUD-LIMITATION
 family: ad/complex-carrier
-status: open
-needs_decision: true
+status: fixed
+closed_at: "aaf90512e"
+needs_decision: false
 title: "derivative at a complex evaluation point is refused on both engines; docs/tutorials/06_EXACT_ARITHMETIC.md describes differentiating functions of complex arguments"
 repro: >-
   (display (derivative (lambda (z) (* z z)) (make-rectangular 1.0 1.0)))
@@ -19,13 +20,13 @@ correct: >-
 evidence: >-
   Measured on fix/v135-ad-complex-and-dense-identity while closing SW-180,
   Release build, arm64 macOS. The complex carrier (ADR-0025) already
-  propagates a complex tangent on both engines; what is missing is seeding a
-  complex point and returning a complex derivative.
+  propagates a complex tangent on both engines; what was missing was seeding a
+  complex point and returning a complex derivative. Fixed at aaf90512e: native
+  and VM seed dz=1 and return the holomorphic complex tangent; JIT, uncached JIT,
+  AOT, and VM pass z*z, exp, sin, and identity cases (8/8 each).
 caught_by: [coordinator-sweep]
 missed_by: [run_ad_oracle, doc_audit]
 notes: >-
-  A build item, not a defect of the real-parameter path: derivative is
-  defined over the reals and refuses loudly. Needs a ruling on the operator's
-  contract for non-holomorphic functions (refuse, return df/dz, or return the
-  Wirtinger pair) before it is built. The tutorial sentence is left as the
-  statement of intent.
+  The contract is the holomorphic complex derivative (dz=1); non-holomorphic
+  functions do not have a single complex derivative and are outside this
+  operator's contract.

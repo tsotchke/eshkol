@@ -1,7 +1,7 @@
 id: SW-196
 bucket: SILENT-WRONG
 family: vm/native-callback-control
-status: in-progress
+status: open
 needs_decision: false
 title: "VM worker callbacks can unwind through the caller thread's interpreter context"
 repro: >-

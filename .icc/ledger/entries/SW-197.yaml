@@ -1,7 +1,7 @@
 id: SW-197
 bucket: SILENT-WRONG
 family: ad/native-exact-tier
-status: in-progress
+status: open
 needs_decision: false
 title: "native derivative loses exactness when a scalar body uses collection intermediates"
 repro: >-

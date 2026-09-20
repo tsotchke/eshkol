@@ -1,7 +1,7 @@
 id: SW-192
 bucket: SILENT-WRONG
 family: macro/definition-site-scope
-status: in-progress
+status: open
 title: "Macro bindings and template references must preserve lexical definition scope"
 repro: >-
   Define a macro named when whose false branch explicitly returns #f; use

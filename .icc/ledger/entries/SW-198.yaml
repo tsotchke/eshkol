@@ -1,7 +1,7 @@
 id: SW-198
-bucket: CRASH
+bucket: SILENT-WRONG
 family: vm/parallel-ad-carrier-ownership
-status: in-progress
+status: open
 needs_decision: false
 title: "VM parallel AD results retain worker-owned exact carrier storage"
 repro: >-

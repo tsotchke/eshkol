@@ -4441,6 +4441,33 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: complex_value_derivative"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME complex_evaluation_point_cached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/complex_evaluation_point_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(complex_evaluation_point_cached PROPERTIES
+        TIMEOUT 300 PASS_REGULAR_EXPRESSION "PASS: complex_evaluation_point"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME complex_evaluation_point_uncached
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/complex_evaluation_point_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(complex_evaluation_point_uncached PROPERTIES
+        TIMEOUT 300 ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: complex_evaluation_point"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME complex_evaluation_point_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/complex_evaluation_point_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/complex_evaluation_point_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/complex_evaluation_point_aot'"
+    )
+    set_tests_properties(complex_evaluation_point_aot_smoke PROPERTIES
+        TIMEOUT 300 PASS_REGULAR_EXPRESSION "PASS: complex_evaluation_point"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # map and reduce call a statically known procedure directly. map re-resolved
     # a named closure's captures by name at the call site (cross-function IR
     # inside a nested lambda); reduce passed none. map now reads the closure's
