@@ -1,8 +1,9 @@
 id: SW-186
 bucket: SILENT-WRONG
 family: ad/vm-tensor-carrier
-status: open
-needs_decision: true
+status: fixed
+closed_at: "eb1862425"
+needs_decision: false
 title: "VM: a gradient through any tensor operator (tensor-dot, tensor-mul, matmul, tensor-sum) is silently #(0 0 ...) although PARITY.tsv marks every one of them vm-supported"
 repro: >-
   (1) (display (gradient (lambda (x) (tensor-dot x x)) #(1.0 2.0 3.0)))

@@ -13804,8 +13804,9 @@ entries:
   - id: SW-186
     bucket: SILENT-WRONG
     family: ad/vm-tensor-carrier
-    status: open
-    needs_decision: true
+    status: fixed
+    closed_at: "eb1862425"
+    needs_decision: false
     title: "VM: a gradient through any tensor operator (tensor-dot, tensor-mul, matmul, tensor-sum) is silently #(0 0 ...) although PARITY.tsv marks every one of them vm-supported"
     repro: >-
       (1) (display (gradient (lambda (x) (tensor-dot x x)) #(1.0 2.0 3.0)))
@@ -13839,8 +13840,9 @@ entries:
     bucket: LOUD-ERROR
     subtag: structural
     family: ad/dense-tensor-operands
-    status: open
-    needs_decision: true
+    status: fixed
+    closed_at: "2c0eb81f5"
+    needs_decision: false
     title: "native: jacobian of a function returning a dense tensor AD node (a matmul result) is a SIGSEGV, and hessian of a function using matmul on a 1-D point raises a dual-tensor rank error"
     repro: >-
       (1) (display (jacobian (lambda (v) (matmul (eye 2) v)) #(1.0 2.0)))
@@ -13867,8 +13869,9 @@ entries:
   - id: SW-188
     bucket: SILENT-WRONG
     family: ad/dense-tensor-operands
-    status: open
-    needs_decision: true
+    status: fixed
+    closed_at: "2c0eb81f5"
+    needs_decision: false
     title: "native: inside a differentiated function a matmul result answers #f to tensor? and vector? and displays as #<ad-node>, because the dense AD node is a CALLABLE rather than a tensor"
     repro: >-
       (gradient (lambda (x) (let ((d (matmul (eye 3) x)))
