@@ -664,7 +664,13 @@ llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Va
      * codegen-time feature choice with a runtime AD-mode guard. */
     llvm::Value* dense_result_slot = nullptr;
     llvm::BasicBlock* dense_join = nullptr;
-    if (autodiff_ && denseTensorADNodesEnabled()) {
+    /* Dense VJP records currently cover the four arithmetic ops below.  Keep
+     * pow/max/min on the established scalarising path until their operand
+     * selection/domain rules have an explicit dense node, rather than tagging
+     * them as ADD and silently returning the wrong gradient. */
+    const bool dense_supported = operation == "add" || operation == "sub" ||
+        operation == "mul" || operation == "div";
+    if (autodiff_ && denseTensorADNodesEnabled() && dense_supported) {
         auto& b = ctx_.builder();
         llvm::Function* fn = b.GetInsertBlock()->getParent();
         /* LE-18: the gate consults BOTH carriers, as the kernel choice
