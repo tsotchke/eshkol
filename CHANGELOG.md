@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve browser VM output without a trailing newline, including UTF-8 text.
+  Learn and Examples no longer lose their last displayed result or carry it
+  into a later evaluation. The Pages gate executes all 41 runnable site examples
+  with output/property checks and no-newline, Unicode, and isolation regressions.
+
 - Restore website rendering by implementing the browser runtime's tagged i128
   predicate. Ordinary heap operands no longer throw during homepage startup;
   the Pages workflow now exercises this runtime import before deployment.
