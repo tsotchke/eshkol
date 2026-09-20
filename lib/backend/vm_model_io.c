@@ -145,6 +145,23 @@ static int vm_model_compute_total(const uint64_t* dims, unsigned int ndims, int6
     return 1;
 }
 
+/** @brief Check row-major strides, including suffixes of empty shapes.
+ *         Optionally store them in @p strides; rank 0 has no entries. */
+static int vm_model_compute_strides(const uint64_t* dims, unsigned int ndims,
+                                    int64_t* strides) {
+    uint64_t stride = 1;
+    for (unsigned int i = ndims; i > 0; i--) {
+        if (strides) strides[i - 1] = (int64_t)stride;
+        if (i > 1) {
+            if (dims[i - 1] > (uint64_t)INT64_MAX ||
+                (dims[i - 1] != 0 &&
+                 stride > (uint64_t)INT64_MAX / dims[i - 1])) return 0;
+            stride *= dims[i - 1];
+        }
+    }
+    return 1;
+}
+
 /** A bounds-checked view of one ESKM record. It owns no checkpoint data. */
 typedef struct {
     const unsigned char* name;
@@ -171,10 +188,8 @@ static int vm_model_parse_record(const unsigned char* data,
     record->name = data + *offset;
     *offset += record->name_len;
 
-    /* Match the current VM constructor: scalar and empty tensors cannot be
-     * materialized. Refuse them before any record consumes persistent heap. */
     if (!vm_model_read_u32(data, size, offset, &record->ndims) ||
-         record->ndims == 0 || record->ndims > VM_TENSOR_MAX_DIMS) {
+         record->ndims > VM_TENSOR_MAX_DIMS) {
         return 0;
     }
     for (unsigned int i = 0; i < record->ndims; i++) {
@@ -185,7 +200,8 @@ static int vm_model_parse_record(const unsigned char* data,
     if (!vm_model_read_u8(data, size, offset, &dtype) || dtype != 0) return 0;
 
     int64_t total = 0;
-    if (!vm_model_compute_total(record->dims, record->ndims, &total) || total == 0 ||
+    if (!vm_model_compute_total(record->dims, record->ndims, &total) ||
+        !vm_model_compute_strides(record->dims, record->ndims, NULL) ||
         *offset > size || (uint64_t)total > (uint64_t)(size - *offset) / 8u) {
         return 0;
     }
@@ -230,6 +246,38 @@ static int vm_model_make_string_value(VM* vm, const char* data, int len, Value* 
     return 1;
 }
 
+/** @brief Materialize preflighted scalar/empty ESKM records locally to I/O.
+ *         General tensor constructors and their shape rules stay unchanged. */
+static VmTensor* vm_model_make_special_tensor(VmRegionStack* rs,
+                                              unsigned int ndims,
+                                              const int64_t* shape,
+                                              const int64_t* strides,
+                                              int64_t total,
+                                              const double* elements) {
+    if (g_eshkol_vm_tensor_limit_active &&
+        (uint64_t)total > g_eshkol_vm_max_tensor_elements) return NULL;
+    VmTensor* tensor = (VmTensor*)vm_alloc_object(rs, VM_SUBTYPE_TENSOR, sizeof(VmTensor));
+    if (!tensor) return NULL;
+    memset(tensor, 0, sizeof(*tensor));
+    if (ndims == 0) {
+        tensor->shape = tensor->inline_shape;
+        tensor->strides = tensor->inline_strides;
+    } else {
+        if (!vm_tensor_bind_dims(rs, tensor, (int)ndims)) return NULL;
+        memcpy(tensor->shape, shape, (size_t)ndims * sizeof(int64_t));
+        memcpy(tensor->strides, strides, (size_t)ndims * sizeof(int64_t));
+    }
+    tensor->data = (double*)vm_alloc(rs, sizeof(double));
+    if (!tensor->data) return NULL;
+    /* Empty storage is owned, initialized, and non-null, but is no element. */
+    memset(tensor->data, 0, sizeof(double));
+    if (total == 1) memcpy(tensor->data, elements, sizeof(double));
+    tensor->total = total;
+    tensor->owns_data = 1;
+    tensor->dtype = VM_TENSOR_DTYPE_F64;
+    return tensor;
+}
+
 /**
  * @brief Deserialize a tensor from the ESKM binary format: reads @p total
  *        (= product of @p dims) little-endian 64-bit doubles starting at
@@ -247,11 +295,13 @@ static int vm_model_make_tensor_value(VM* vm,
     if (!vm || !offset || !out) return 0;
 
     int64_t shape[VM_TENSOR_MAX_DIMS];
+    int64_t strides[VM_TENSOR_MAX_DIMS];
     if (ndims > VM_TENSOR_MAX_DIMS) return 0;
-    for (unsigned int i = 0; i < ndims; i++) shape[i] = (int64_t)dims[i];
 
     int64_t total = 1;
-    if (!vm_model_compute_total(dims, ndims, &total)) return 0;
+    if (!vm_model_compute_total(dims, ndims, &total) ||
+        !vm_model_compute_strides(dims, ndims, strides)) return 0;
+    for (unsigned int i = 0; i < ndims; i++) shape[i] = (int64_t)dims[i];
     if (*offset > size || (uint64_t)total > (uint64_t)(size - *offset) / 8u) return 0;
 
     double* elements = NULL;
@@ -271,7 +321,9 @@ static int vm_model_make_tensor_value(VM* vm,
         if (elements) elements[i] = conv.d;
     }
 
-    VmTensor* tensor = vm_tensor_from_data(&vm->heap.regions, elements, shape, (int)ndims);
+    VmTensor* tensor = ndims == 0 || total == 0
+        ? vm_model_make_special_tensor(&vm->heap.regions, ndims, shape, strides, total, elements)
+        : vm_tensor_from_data(&vm->heap.regions, elements, shape, (int)ndims);
     free(elements);
     if (!tensor) return 0;
 

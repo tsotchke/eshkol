@@ -65,8 +65,9 @@ typedef struct {
  *         the inline arrays when the rank fits, otherwise one arena block.
  *         Sets t->n_dims. Returns 0 when the arena is exhausted.
  *
- * Every VmTensor construction site must call this before writing shape or
- * strides — it is what makes rank unbounded instead of struct-limited. */
+ * Positive-rank construction sites must call this before writing shape or
+ * strides — it is what makes rank unbounded instead of struct-limited.
+ * The ESKM I/O adapter alone binds rank-0 scalars to zeroed inline arrays. */
 static int vm_tensor_bind_dims(VmRegionStack* rs, VmTensor* t, int n_dims) {
     if (!t || n_dims <= 0) return 0;
     if (n_dims <= VM_TENSOR_INLINE_DIMS) {

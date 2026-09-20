@@ -10,6 +10,7 @@
 #include "../../inc/eshkol/logger.h"
 #include <eshkol/core/resource_limits.h>
 #include <eshkol/tensor_validation.h>
+#include "tensor_observation.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -98,7 +99,8 @@ void* eshkol_tensor_from_collection(arena_t* arena,
  *
  * This makes it structurally impossible for a tensor op to segfault on a
  * wrong-typed operand: it either gets a valid tensor or the program sees a
- * catchable condition. `op_name` is used only for the error message.
+ * catchable condition. `op_name` also selects the narrow ESKM scalar
+ * observation exception; arithmetic retains the general metadata rules.
  *
  * Returns the eshkol_tensor_t* (as void*) on success; on the error path it does
  * not return (the type error raises). The trailing `return nullptr` keeps the
@@ -136,10 +138,10 @@ void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
                             op_name, "numeric tensor (this vector holds non-numeric elements)", val);
                         return nullptr;  /* not reached */
                     }
-                    if (!eshkol_tensor_metadata_valid(
+                    if (!eshkol_tensor_operand_metadata_valid(
                             reinterpret_cast<const int64_t*>(t->dimensions),
                             static_cast<int64_t>(t->num_dimensions), t->elements,
-                            static_cast<int64_t>(t->total_elements))) {
+                            static_cast<int64_t>(t->total_elements), op_name)) {
                         eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
                                              "%s: invalid tensor metadata",
                                              op_name ? op_name : "tensor-op");
@@ -209,10 +211,10 @@ void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
         if (val->type == ESHKOL_VALUE_TENSOR_PTR && val->data.ptr_val) {
             const auto* t = reinterpret_cast<const eshkol_tensor_t*>(
                 (uintptr_t)val->data.ptr_val);
-            if (!eshkol_tensor_metadata_valid(
+            if (!eshkol_tensor_operand_metadata_valid(
                     reinterpret_cast<const int64_t*>(t->dimensions),
                     static_cast<int64_t>(t->num_dimensions), t->elements,
-                    static_cast<int64_t>(t->total_elements))) {
+                    static_cast<int64_t>(t->total_elements), op_name)) {
                 eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
                                      "%s: invalid tensor metadata",
                                      op_name ? op_name : "tensor-op");
