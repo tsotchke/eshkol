@@ -13986,8 +13986,9 @@ entries:
   - id: SW-191
     bucket: LOUD-LIMITATION
     family: ad/complex-carrier
-    status: open
-    needs_decision: true
+    status: fixed
+    closed_at: "aaf90512e"
+    needs_decision: false
     title: "derivative at a complex evaluation point is refused on both engines; docs/tutorials/06_EXACT_ARITHMETIC.md describes differentiating functions of complex arguments"
     repro: >-
       (display (derivative (lambda (z) (* z z)) (make-rectangular 1.0 1.0)))
