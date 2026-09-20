@@ -89,8 +89,9 @@ static int vm_require_arithmetic_numbers(VM* vm, Value a, Value b,
  * was 0 on the VM, as was every gradient through `apply +` (SW-183). The
  * switch-dispatch twin had no reverse-tape recording.
  *
- * Operand order is fixed: dual carriers (hyper-dual, then dual) before exact
- * domains (rational), then complex, bignum, fixnum and inexact. Failure sets
+ * Operand order is fixed: complex (which lifts a real carrier, ADR-0025), then
+ * dual carriers (hyper-dual, then dual), exact domains (rational), bignum,
+ * fixnum and inexact. Failure sets
  * vm->error, per this file's convention.
  */
 static void vm_op_arith(VM* vm, char op) {
@@ -115,10 +116,13 @@ static void vm_op_arith(VM* vm, char op) {
     if (a.type == VAL_I128 || b.type == VAL_I128) {
         vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, i128_id); return;
     }
-    if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, hyper_id); }
+    /* A complex operand takes the complex path first: its natives lift a real
+     * carrier to a complex with a tangent (ADR-0025), where the dual path
+     * would read the complex as a real number. */
+    if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, complex_id); }
+    else if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, hyper_id); }
     else if (a.type == VAL_DUAL || b.type == VAL_DUAL)       { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, dual_id); }
     else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, rational_id); }
-    else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, complex_id); }
     else if (op == '/' && a.type == VAL_INT && b.type == VAL_INT) {
         /* exact/exact -> exact result (R7RS): native 334 (rational div) reduces
          * the fraction and collapses denom==1 back to an integer, so (/ 1 3) is

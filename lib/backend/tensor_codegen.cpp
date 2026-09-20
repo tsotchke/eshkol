@@ -300,7 +300,20 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
     // Read-only operands may be satisfied by a coercible numeric collection;
     // an operand written through in place may not (a coerced copy would absorb
     // the update and the caller would see success with nothing changed).
-    const char* symbol = "eshkol_tensor_operand_checked";
+    // The operators that propagate a forward-mode dual tensor or read only its
+    // shape (SW-186). Every other operator reads its operand through the
+    // refusing default, so a tensor of dual numbers is never read as f64
+    // slots and answered as 0. Add an operator here only with its dual rule.
+    static const char* const kDualTensorCarriers[] = {
+        "tensor-sum", "tensor-get", "tensor-length", "tensor-shape", "reshape",
+        "tensor-apply", "layer-norm", "scaled-dot-attention",
+    };
+    bool carrier_aware = false;
+    for (const char* name : kDualTensorCarriers) {
+        if (op_name && std::strcmp(op_name, name) == 0) { carrier_aware = true; break; }
+    }
+    const char* symbol = carrier_aware ? "eshkol_tensor_operand_carrier_checked"
+                                       : "eshkol_tensor_operand_checked";
     if (mode == TensorOperandMode::RequireTensor) {
         symbol = "eshkol_tensor_destination_checked";
     } else if (mode == TensorOperandMode::RequireMatrix) {
@@ -551,9 +564,28 @@ llvm::Value* TensorCodegen::tensorOperation(const eshkol_operations_t* op) {
             llvm::Value* double_val = nullptr;
 
             if (element_val->getType() == ctx_.taggedValueType()) {
-                // Tagged value - need to check type and extract appropriately
-                // For now, use extractAsDouble which handles both int and double tagged values
-                double_val = extractAsDouble(element_val);
+                // A derivative carrier is never flattened to 0.0 here (SW-186).
+                // A reverse-tape AD node is stored as its pointer bits, the
+                // tensor slot ABI every scalarising kernel reads under AD; a
+                // forward jet has no slot representation in a literal and is
+                // refused. Anything else converts to its double.
+                auto& eb = ctx_.builder();
+                llvm::Value* ebase = tagged_.getBaseType(tagged_.getType(element_val));
+                llvm::Function* efn = eb.GetInsertBlock()->getParent();
+                llvm::BasicBlock* jet_bb = llvm::BasicBlock::Create(ctx_.context(), "tlit_elem_jet", efn);
+                llvm::BasicBlock* not_jet_bb = llvm::BasicBlock::Create(ctx_.context(), "tlit_elem_not_jet", efn);
+                eb.CreateCondBr(eb.CreateICmpEQ(ebase,
+                    llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER)), jet_bb, not_jet_bb);
+                eb.SetInsertPoint(jet_bb);
+                ctx_.emitRaise("tensor: a forward-mode derivative cannot be stored in a tensor literal; "
+                               "build it with (vector ...) instead");
+                eb.SetInsertPoint(not_jet_bb);
+                llvm::Value* is_node = eb.CreateICmpEQ(ebase,
+                    llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+                llvm::Value* node_bits = tagged_.unpackInt64(element_val);
+                llvm::Value* value_bits = eb.CreateBitCast(extractAsDouble(element_val), ctx_.int64Type());
+                double_val = eb.CreateBitCast(eb.CreateSelect(is_node, node_bits, value_bits),
+                                              ctx_.doubleType());
             } else if (element_val->getType()->isIntegerTy()) {
                 // Raw integer - convert to double first
                 double_val = ctx_.builder().CreateSIToFP(element_val, ctx_.doubleType());

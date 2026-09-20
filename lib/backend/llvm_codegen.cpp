@@ -20268,6 +20268,18 @@ private:
 
         // Convert to tagged_value for runtime type detection
         Value* arg_tagged = typedValueToTaggedValue(arg_tv);
+        return codegenMathFunctionOnTagged(arg_tagged, func_name);
+    }
+
+    // The value-level core of the procedure above: everything after its
+    // arguments are evaluated. Complex component formulas (ADR-0025) call it
+    // on a component, so a derivative carrier gets the same rule it gets here.
+    // `operand_is_real` is set by the complex component formulas, whose operands
+    // are components and so never complex: the complex-operand branch is not
+    // emitted for them. It must not be, because that branch emits those same
+    // formulas, and the emission would not terminate.
+    Value* codegenMathFunctionOnTagged(Value* arg_tagged, const std::string& func_name,
+                                       bool operand_is_real = false) {
 
         // ESH-0093: while a forward-mode derivative is live, reverse-tape AD
         // nodes are frozen to jets (active gradient seed in e2) instead of
@@ -20327,7 +20339,7 @@ private:
             mf_cpx_slot = builder->CreateAlloca(tagged_value_type, nullptr, (func_name + "_cpx_slot").c_str());
             builder->restoreIP(mf_cpx_ip);
         }
-        {
+        if (!operand_is_real) {
             BasicBlock* cpx_path = BasicBlock::Create(*context, (func_name + "_cpx_path").c_str(), current_func);
             BasicBlock* cpx_cont = BasicBlock::Create(*context, (func_name + "_cpx_cont").c_str(), current_func);
             Value* arg_is_complex = builder->CreateICmpEQ(arg_base_type,
@@ -20335,6 +20347,25 @@ private:
             builder->CreateCondBr(arg_is_complex, cpx_path, cpx_cont);
 
             builder->SetInsertPoint(cpx_path);
+            // ADR-0025: a complex value that carries a derivative is computed
+            // by its component formula. A procedure with no formula raises; the
+            // runtime kernels below read the primal and would answer with a
+            // derivative of 0.
+            {
+                BasicBlock* cpx_carrier = BasicBlock::Create(*context, (func_name + "_cpx_carrier").c_str(), current_func);
+                BasicBlock* cpx_plain = BasicBlock::Create(*context, (func_name + "_cpx_plain").c_str(), current_func);
+                builder->CreateCondBr(complex_->isCarrierComplex(arg_tagged), cpx_carrier, cpx_plain);
+                builder->SetInsertPoint(cpx_carrier);
+                if (Value* carrier_res = complexCarrierMath(arg_tagged, func_name)) {
+                    builder->CreateStore(carrier_res, mf_cpx_slot);
+                    builder->CreateBr(mf_cpx_done);
+                } else {
+                    ctx_->emitRaise((func_name +
+                        ": not differentiable through a complex argument (no derivative rule "
+                        "for this procedure on complex numbers)").c_str());
+                }
+                builder->SetInsertPoint(cpx_plain);
+            }
             if (mf_cpx_suffix) {
                 Value* cpx_in = complex_->unpackComplexFromTagged(arg_tagged);
                 Value* cpx_res = complex_->complexUnaryRuntime(cpx_in, mf_cpx_suffix);
@@ -21442,6 +21473,13 @@ private:
             arg2 = codegenAST(&op->call_op.variables[1]);
         }
         if (!arg1 || !arg2) return nullptr;
+        return codegenBinaryMathFunctionOnTagged(arg1, arg2, func_name);
+    }
+
+    // The value-level core of the procedure above: everything after its
+    // arguments are evaluated. Complex component formulas (ADR-0025) call it
+    // on a component, so a derivative carrier gets the same rule it gets here.
+    Value* codegenBinaryMathFunctionOnTagged(Value* arg1, Value* arg2, const std::string& func_name) {
 
         // DUAL NUMBER FAST PATH (forward-mode AD).
         //
@@ -25276,6 +25314,10 @@ private:
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
         if (!tv.llvm_value) return nullptr;
         Value* arg = typedValueToTaggedValue(tv);
+        // Dense AD tensor results use a callable carrier internally.  Resolve
+        // that carrier before applying the public vector? predicate so type
+        // identity remains stable inside differentiation (SW-188).
+        arg = tagged_->resolveDenseTensorNode(arg);
 
         // Check for both HEAP_SUBTYPE_VECTOR (Scheme vectors) and HEAP_SUBTYPE_TENSOR (numeric tensors)
         // In Eshkol, #(...) syntax creates tensors, but vector? should return #t for them
@@ -39822,6 +39864,140 @@ private:
     }
 
     // (make-rectangular real imag) - Create complex from rectangular coordinates
+    // === Complex values that carry a derivative (ADR-0025) ===
+    //
+    // Every complex builtin reaches its carrier rule here and nowhere else. A
+    // carrier complex is read through its two tagged components and the result
+    // is the textbook component formula evaluated by the generic arithmetic
+    // and the value-level math functions, so a jet, a tape node or a Taylor
+    // tower flows through with the rule it already has. A REAL carrier is a
+    // complex number with no imaginary part, and gets the same treatment
+    // instead of being flattened to its primal.
+    enum ComplexUnaryKind { CPX_REAL_PART, CPX_IMAG_PART, CPX_MAGNITUDE, CPX_ANGLE, CPX_CONJUGATE };
+
+    // Raises unless the complex value is away from the origin, where neither
+    // the magnitude nor the angle has a derivative. Never answers 0 there.
+    void guardComplexAwayFromOrigin(Value* re, Value* im, const char* who) {
+        Function* fn = builder->GetInsertBlock()->getParent();
+        BasicBlock* at_origin = BasicBlock::Create(*context, "cplx_at_origin", fn);
+        BasicBlock* away = BasicBlock::Create(*context, "cplx_away_from_origin", fn);
+        Value* zero = ConstantFP::get(double_type, 0.0);
+        Value* is_origin = builder->CreateAnd(
+            builder->CreateFCmpOEQ(arith_->extractAsDouble(re), zero),
+            builder->CreateFCmpOEQ(arith_->extractAsDouble(im), zero));
+        builder->CreateCondBr(is_origin, at_origin, away);
+        builder->SetInsertPoint(at_origin);
+        ctx_->emitRaise((std::string(who) +
+            ": not differentiable at 0+0i (the magnitude and the angle of a complex "
+            "number have no derivative at the origin)").c_str());
+        builder->SetInsertPoint(away);
+    }
+
+    // 0 - v through the binary operator, which has a rule for every carrier;
+    // the unary negation has one for tape nodes only.
+    Value* carrierNegate(Value* v) {
+        return arith_->sub(packDoubleToTaggedValue(ConstantFP::get(double_type, 0.0)), v);
+    }
+
+    Value* carrierMagnitude(Value* re, Value* im) {
+        guardComplexAwayFromOrigin(re, im, "magnitude");
+        return codegenMathFunctionOnTagged(
+            arith_->add(arith_->mul(re, re), arith_->mul(im, im)), "sqrt", /*operand_is_real=*/true);
+    }
+
+    Value* carrierAngle(Value* re, Value* im) {
+        guardComplexAwayFromOrigin(re, im, "angle");
+        return codegenBinaryMathFunctionOnTagged(im, re, "atan2");
+    }
+
+    Value* complexUnaryWithCarriers(Value* z_tagged, ComplexUnaryKind kind,
+                                    const std::function<Value*()>& plain) {
+        Function* fn = builder->GetInsertBlock()->getParent();
+        BasicBlock* carrier_cplx = BasicBlock::Create(*context, "cplx_unary_carrier", fn);
+        BasicBlock* check_real = BasicBlock::Create(*context, "cplx_unary_check_real", fn);
+        BasicBlock* plain_bb = BasicBlock::Create(*context, "cplx_unary_plain", fn);
+        BasicBlock* join = BasicBlock::Create(*context, "cplx_unary_join", fn);
+        std::vector<std::pair<Value*, BasicBlock*>> results;
+
+        builder->CreateCondBr(complex_->isCarrierComplex(z_tagged), carrier_cplx, check_real);
+
+        builder->SetInsertPoint(carrier_cplx);
+        {
+            Value* re = complex_->componentTagged(z_tagged, false);
+            Value* im = complex_->componentTagged(z_tagged, true);
+            Value* r = nullptr;
+            switch (kind) {
+                case CPX_REAL_PART: r = re; break;
+                case CPX_IMAG_PART: r = im; break;
+                case CPX_MAGNITUDE: r = carrierMagnitude(re, im); break;
+                case CPX_ANGLE:     r = carrierAngle(re, im); break;
+                case CPX_CONJUGATE: r = arith_->makeRectangular(re, carrierNegate(im)); break;
+            }
+            results.push_back({r, builder->GetInsertBlock()});
+            builder->CreateBr(join);
+        }
+
+        // A real carrier: real-part and conjugate are the identity, magnitude is
+        // the absolute value. Its imaginary part and its angle are constants.
+        builder->SetInsertPoint(check_real);
+        if (kind == CPX_REAL_PART || kind == CPX_CONJUGATE || kind == CPX_MAGNITUDE) {
+            BasicBlock* carrier_real = BasicBlock::Create(*context, "cplx_unary_real_carrier", fn);
+            Value* is_cplx = builder->CreateICmpEQ(getBaseType(getTaggedValueType(z_tagged)),
+                ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
+            Value* real_carrier = builder->CreateAnd(builder->CreateNot(is_cplx),
+                                                     arith_->isDerivativeCarrier(z_tagged));
+            builder->CreateCondBr(real_carrier, carrier_real, plain_bb);
+            builder->SetInsertPoint(carrier_real);
+            Value* r = (kind == CPX_MAGNITUDE) ? arith_->abs(z_tagged) : z_tagged;
+            results.push_back({r, builder->GetInsertBlock()});
+            builder->CreateBr(join);
+        } else {
+            builder->CreateBr(plain_bb);
+        }
+
+        builder->SetInsertPoint(plain_bb);
+        Value* plain_result = plain();
+        if (!plain_result) return nullptr;
+        plain_result = ensureTaggedValue(plain_result);
+        results.push_back({plain_result, builder->GetInsertBlock()});
+        builder->CreateBr(join);
+
+        builder->SetInsertPoint(join);
+        PHINode* out = builder->CreatePHI(tagged_value_type, (unsigned)results.size(), "cplx_unary");
+        for (auto& r : results) out->addIncoming(r.first, r.second);
+        return out;
+    }
+
+    // exp, log, sqrt, sin, cos and tan of a carrier complex, by their component
+    // formulas. nullptr for a procedure with no formula here; the caller raises.
+    Value* complexCarrierMath(Value* z_tagged, const std::string& func_name) {
+        Value* re = complex_->componentTagged(z_tagged, false);
+        Value* im = complex_->componentTagged(z_tagged, true);
+        auto fn1 = [&](Value* v, const char* name) { return codegenMathFunctionOnTagged(v, name, /*operand_is_real=*/true); };
+        if (func_name == "exp") {
+            Value* e = fn1(re, "exp");
+            return arith_->makeRectangular(arith_->mul(e, fn1(im, "cos")), arith_->mul(e, fn1(im, "sin")));
+        }
+        if (func_name == "log") {
+            return arith_->makeRectangular(fn1(carrierMagnitude(re, im), "log"), carrierAngle(re, im));
+        }
+        if (func_name == "sqrt") {
+            Value* m = fn1(carrierMagnitude(re, im), "sqrt");
+            Value* half = arith_->mul(carrierAngle(re, im), packDoubleToTaggedValue(ConstantFP::get(double_type, 0.5)));
+            return arith_->makeRectangular(arith_->mul(m, fn1(half, "cos")), arith_->mul(m, fn1(half, "sin")));
+        }
+        if (func_name == "sin" || func_name == "cos" || func_name == "tan") {
+            Value* sin_z = arith_->makeRectangular(arith_->mul(fn1(re, "sin"), fn1(im, "cosh")),
+                                                   arith_->mul(fn1(re, "cos"), fn1(im, "sinh")));
+            if (func_name == "sin") return sin_z;
+            Value* cos_z = arith_->makeRectangular(arith_->mul(fn1(re, "cos"), fn1(im, "cosh")),
+                                                   carrierNegate(arith_->mul(fn1(re, "sin"), fn1(im, "sinh"))));
+            if (func_name == "cos") return cos_z;
+            return arith_->div(sin_z, cos_z);
+        }
+        return nullptr;
+    }
+
     Value* codegenMakeRectangular(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 2) {
             eshkol_arity_error_current("make-rectangular requires exactly 2 arguments");
@@ -39832,13 +40008,10 @@ private:
         Value* imag_tagged = codegenAST(&op->call_op.variables[1]);
         if (!real_tagged || !imag_tagged) return nullptr;
 
-        // Extract as doubles
-        Value* real_val = extractDoubleFromTagged(real_tagged);
-        Value* imag_val = extractDoubleFromTagged(imag_tagged);
-
-        // Create complex struct and pack to tagged
-        Value* complex_struct = createComplexNumber(real_val, imag_val);
-        return packComplexToTagged(complex_struct);
+        // A component that carries a derivative is kept; see ADR-0025. This used
+        // to take the primal of each argument, so a derivative entering a
+        // complex number was dropped here and came back as 0 (SW-180).
+        return arith_->makeRectangular(real_tagged, imag_tagged);
     }
 
     // (make-polar magnitude angle) - Create complex from polar coordinates
@@ -39851,6 +40024,28 @@ private:
         Value* mag_tagged = codegenAST(&op->call_op.variables[0]);
         Value* ang_tagged = codegenAST(&op->call_op.variables[1]);
         if (!mag_tagged || !ang_tagged) return nullptr;
+
+        // r cis(theta) = (r cos theta, r sin theta). With a derivative carrier
+        // in either argument the formula is evaluated on the carriers (ADR-0025).
+        mag_tagged = ensureTaggedValue(mag_tagged);
+        ang_tagged = ensureTaggedValue(ang_tagged);
+        {
+            Function* polar_fn = builder->GetInsertBlock()->getParent();
+            BasicBlock* polar_carrier = BasicBlock::Create(*context, "mkpolar_carrier", polar_fn);
+            BasicBlock* polar_plain = BasicBlock::Create(*context, "mkpolar_plain", polar_fn);
+            BasicBlock* polar_join = BasicBlock::Create(*context, "mkpolar_join", polar_fn);
+            builder->CreateCondBr(builder->CreateOr(arith_->isDerivativeCarrier(mag_tagged),
+                                                    arith_->isDerivativeCarrier(ang_tagged)),
+                                  polar_carrier, polar_plain);
+            builder->SetInsertPoint(polar_carrier);
+            Value* carrier_z = arith_->makeRectangular(
+                arith_->mul(mag_tagged, codegenMathFunctionOnTagged(ang_tagged, "cos", /*operand_is_real=*/true)),
+                arith_->mul(mag_tagged, codegenMathFunctionOnTagged(ang_tagged, "sin", /*operand_is_real=*/true)));
+            BasicBlock* polar_carrier_exit = builder->GetInsertBlock();
+            builder->CreateBr(polar_join);
+
+            builder->SetInsertPoint(polar_plain);
+            Value* plain_z = [&]() -> Value* {
 
         Value* mag = extractDoubleFromTagged(mag_tagged);
         Value* ang = extractDoubleFromTagged(ang_tagged);
@@ -39867,6 +40062,16 @@ private:
 
         Value* complex_struct = createComplexNumber(real_val, imag_val);
         return packComplexToTagged(complex_struct);
+            }();
+            BasicBlock* polar_plain_exit = builder->GetInsertBlock();
+            builder->CreateBr(polar_join);
+
+            builder->SetInsertPoint(polar_join);
+            PHINode* polar_z = builder->CreatePHI(tagged_value_type, 2, "mkpolar");
+            polar_z->addIncoming(carrier_z, polar_carrier_exit);
+            polar_z->addIncoming(plain_z, polar_plain_exit);
+            return polar_z;
+        }
     }
 
     // (real-part z) - Extract real component
@@ -39879,6 +40084,8 @@ private:
         TypedValue z_typed = codegenTypedAST(&op->call_op.variables[0]);
         if (!z_typed.llvm_value) return nullptr;
         Value* z_tagged = typedValueToTaggedValue(z_typed);
+        z_tagged = ensureTaggedValue(z_tagged);
+        return complexUnaryWithCarriers(z_tagged, CPX_REAL_PART, [&]() -> Value* {
 
         // Check if it's a complex number or just a real
         Value* type_tag = builder->CreateExtractValue(z_tagged, {0}, "type");
@@ -39911,6 +40118,7 @@ private:
         real_val->addIncoming(real_from_real, real_exit_bb);
 
         return packDoubleToTaggedValue(real_val);
+        });
     }
 
     // (imag-part z) - Extract imaginary component
@@ -39923,6 +40131,8 @@ private:
         TypedValue z_typed = codegenTypedAST(&op->call_op.variables[0]);
         if (!z_typed.llvm_value) return nullptr;
         Value* z_tagged = typedValueToTaggedValue(z_typed);
+        z_tagged = ensureTaggedValue(z_tagged);
+        return complexUnaryWithCarriers(z_tagged, CPX_IMAG_PART, [&]() -> Value* {
 
         // Check if it's a complex number or just a real
         Value* type_tag = builder->CreateExtractValue(z_tagged, {0}, "type");
@@ -39954,6 +40164,7 @@ private:
         imag_val->addIncoming(zero, real_bb);
 
         return packDoubleToTaggedValue(imag_val);
+        });
     }
 
     // (magnitude z) - |z| = sqrt(real² + imag²)
@@ -39965,6 +40176,8 @@ private:
 
         Value* z_tagged = codegenAST(&op->call_op.variables[0]);
         if (!z_tagged) return nullptr;
+        z_tagged = ensureTaggedValue(z_tagged);
+        return complexUnaryWithCarriers(z_tagged, CPX_MAGNITUDE, [&]() -> Value* {
 
         // Check if complex or real
         Value* type_tag = builder->CreateExtractValue(z_tagged, {0}, "type");
@@ -40018,6 +40231,7 @@ private:
         mag_val->addIncoming(mag_real, mag_real_exit_bb);
 
         return packDoubleToTaggedValue(mag_val);
+        });
     }
 
     // (angle z) - arg(z) = atan2(imag, real)
@@ -40029,6 +40243,8 @@ private:
 
         Value* z_tagged = codegenAST(&op->call_op.variables[0]);
         if (!z_tagged) return nullptr;
+        z_tagged = ensureTaggedValue(z_tagged);
+        return complexUnaryWithCarriers(z_tagged, CPX_ANGLE, [&]() -> Value* {
 
         // Check if complex or real
         Value* type_tag = builder->CreateExtractValue(z_tagged, {0}, "type");
@@ -40071,6 +40287,7 @@ private:
         ang_val->addIncoming(ang_real, ang_real_exit_bb);
 
         return packDoubleToTaggedValue(ang_val);
+        });
     }
 
     // (complex? x) - Type predicate
@@ -40124,6 +40341,8 @@ private:
 
         Value* z_tagged = codegenAST(&op->call_op.variables[0]);
         if (!z_tagged) return nullptr;
+        z_tagged = ensureTaggedValue(z_tagged);
+        return complexUnaryWithCarriers(z_tagged, CPX_CONJUGATE, [&]() -> Value* {
 
         // Check if complex or real
         Value* type_tag = builder->CreateExtractValue(z_tagged, {0}, "type");
@@ -40158,6 +40377,7 @@ private:
         result->addIncoming(z_tagged, real_bb);
 
         return result;
+        });
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

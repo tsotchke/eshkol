@@ -1689,7 +1689,7 @@ llvm::Value* TensorCodegen::tensorPow(const eshkol_operations_t* op) {
     llvm::Value* base_ptr = unpackTensorOperandChecked(a, "tensor-pow");
     llvm::Value* base_slot = builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "tpow_base_tv");
     builder.CreateStore(tagged_.packHeapPtr(base_ptr), base_slot);
-    llvm::Value* exp_d = extractAsDouble(b);
+    llvm::Value* exp_d = scalarParameterAsDouble(b, "tensor-pow");
     llvm::Value* arena = ctx_.currentArena();
     llvm::FunctionType* fn_type = llvm::FunctionType::get(ctx_.ptrType(),
         {ctx_.ptrType(), ctx_.ptrType(), ctx_.doubleType()}, false);
@@ -1737,7 +1737,7 @@ llvm::Value* TensorCodegen::tensorScale(const eshkol_operations_t* op) {
         tensor_val = tagged_.packInt64(tensor_val, true);
 
     // Extract scalar as double (handles both int64 and double tagged values)
-    llvm::Value* scalar_d = extractAsDouble(scalar_val);
+    llvm::Value* scalar_d = scalarParameterAsDouble(scalar_val, "tensor-scale");
 
     llvm::Value* arena_ptr = ctx_.currentArena();
 

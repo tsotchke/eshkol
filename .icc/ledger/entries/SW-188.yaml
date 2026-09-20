@@ -1,8 +1,9 @@
 id: SW-188
 bucket: SILENT-WRONG
 family: ad/dense-tensor-operands
-status: open
-needs_decision: true
+status: fixed
+closed_at: "2c0eb81f5"
+needs_decision: false
 title: "native: inside a differentiated function a matmul result answers #f to tensor? and vector? and displays as #<ad-node>, because the dense AD node is a CALLABLE rather than a tensor"
 repro: >-
   (gradient (lambda (x) (let ((d (matmul (eye 3) x)))
@@ -17,7 +18,9 @@ correct: >-
   differentiated.
 evidence: >-
   Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
-  arm64 macOS, while sweeping SW-181.
+  arm64 macOS, while sweeping SW-181. Fixed at 2c0eb81f5: tensor?/vector?
+  and hosted display recognize dense AD tensor results; the repro now returns
+  #t #t #(1 2 3), and the dense boundary test passes cached, uncached, and AOT.
 caught_by: [coordinator-sweep]
 missed_by: [run_ad_oracle, run_dense_tensor_ad_gate, doc_audit]
 notes: >-

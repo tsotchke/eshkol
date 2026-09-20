@@ -82,7 +82,10 @@ Rationals are written as `numerator/denominator` and stay exact:
 ```
 
 Complex numbers integrate with autodiff — you can differentiate functions
-of complex arguments.
+of complex arguments. A derivative with respect to a real parameter passes
+through every complex operation: `(derivative (lambda (x) (magnitude (make-rectangular x 4.0))) 3.0)`
+is `0.6`, and the filter-design derivatives in the signal-processing tutorial are
+computed this way.
 
 ---
 

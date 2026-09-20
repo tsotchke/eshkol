@@ -1,0 +1,23 @@
+; VM<->native parity: a gradient through tensor operations.
+;
+; The VM's forward tangent rides a tensor in a parallel array that only a few
+; tensor natives read; tensor-dot, tensor-mul, tensor-add and matmul read the
+; primal and the gradient was #(0 0 0) (SW-186). The linear operations now
+; propagate it on their own kernels and element reads keep the element's dual.
+; `gradient`, `tensor-dot`, `matmul` and `tensor-sum` are vm-supported per
+; PARITY.tsv; every point is inexact.
+
+(display (gradient (lambda (x) (tensor-dot x x)) (vector 1.0 2.0 3.0))) (newline)
+; #(2 4 6)
+(display (gradient (lambda (x) (tensor-sum (tensor-mul x x))) (vector 1.0 2.0 3.0))) (newline)
+; #(2 4 6)
+(display (gradient (lambda (x) (tensor-sum (matmul (eye 3) x))) (vector 1.0 2.0 3.0))) (newline)
+; #(1 1 1)
+(display (gradient (lambda (x) (vector-ref (tensor-add x x) 0)) (vector 1.0 2.0 3.0))) (newline)
+; #(2 0 0)
+(display (gradient (lambda (x) (tensor-sum (tensor-sub (tensor-scale x 3.0) x))) (vector 1.0 2.0 3.0))) (newline)
+; #(2 2 2)
+(display (gradient (lambda (x) (tensor-dot x (matmul (eye 3) x))) (vector 1.0 2.0 3.0))) (newline)
+; #(2 4 6)
+(display (derivative (lambda (s) (tensor-dot (vector s s) (vector 1.0 2.0))) 3.0)) (newline)
+; 3

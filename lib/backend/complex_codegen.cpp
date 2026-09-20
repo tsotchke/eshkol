@@ -179,6 +179,83 @@ llvm::Value* ComplexCodegen::unpackComplexFromTagged(llvm::Value* tagged_val) {
  * @param z2 Right operand complex-number struct value.
  * @return Newly built complex-number struct value holding the sum.
  */
+// === Carrier complex (ADR-0025) ===
+
+namespace {
+llvm::StructType* complexCarrierType(CodegenContext& ctx) {
+    return llvm::StructType::get(ctx.context(),
+        {ctx.complexNumberType(), ctx.taggedValueType(), ctx.taggedValueType()});
+}
+} // namespace
+
+llvm::Value* ComplexCodegen::isCarrierComplex(llvm::Value* tagged) {
+    auto& b = ctx_.builder();
+    llvm::Value* is_complex = b.CreateICmpEQ(tagged_.getBaseType(tagged_.getType(tagged)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    llvm::Value* flagged = b.CreateICmpNE(
+        b.CreateAnd(tagged_.getFlags(tagged),
+                    llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_COMPLEX_CARRIER_FLAG)),
+        llvm::ConstantInt::get(ctx_.int8Type(), 0));
+    return b.CreateAnd(is_complex, flagged, "is_carrier_complex");
+}
+
+llvm::Value* ComplexCodegen::packCarrierComplex(llvm::Value* real_primal, llvm::Value* imag_primal,
+                                                llvm::Value* real_tagged, llvm::Value* imag_tagged) {
+    auto& b = ctx_.builder();
+    llvm::FunctionCallee arena_accessor = ctx_.module().getOrInsertFunction(
+        "eshkol_current_arena", llvm::FunctionType::get(ctx_.ptrType(), {}, false));
+    llvm::Value* arena_ptr = b.CreateCall(arena_accessor, {}, "arena");
+    llvm::Value* size = llvm::ConstantInt::get(
+        ctx_.int64Type(), eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_COMPLEX_CARRIER));
+    llvm::Value* ptr = b.CreateCall(mem_.getArenaAllocate(), {arena_ptr, size}, "complex_carrier_ptr");
+
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(ctx_.context(), "complex_carrier_alloc_ok", fn);
+    llvm::BasicBlock* fail_bb = llvm::BasicBlock::Create(ctx_.context(), "complex_carrier_alloc_fail", fn);
+    b.CreateCondBr(b.CreateICmpEQ(ptr, llvm::ConstantPointerNull::get(ctx_.ptrType())), fail_bb, ok_bb);
+    b.SetInsertPoint(fail_bb);
+    ctx_.emitRaise("complex number: arena allocation failed");
+    b.SetInsertPoint(ok_bb);
+
+    llvm::StructType* carrier = complexCarrierType(ctx_);
+    llvm::Value* primal_ptr = b.CreateStructGEP(carrier, ptr, 0);
+    b.CreateStore(real_primal, b.CreateStructGEP(ctx_.complexNumberType(), primal_ptr, TypeSystem::COMPLEX_REAL_IDX));
+    b.CreateStore(imag_primal, b.CreateStructGEP(ctx_.complexNumberType(), primal_ptr, TypeSystem::COMPLEX_IMAG_IDX));
+    b.CreateStore(real_tagged, b.CreateStructGEP(carrier, ptr, 1));
+    b.CreateStore(imag_tagged, b.CreateStructGEP(carrier, ptr, 2));
+    return tagged_.packPtr(ptr, ESHKOL_VALUE_COMPLEX, ESHKOL_COMPLEX_CARRIER_FLAG);
+}
+
+llvm::Value* ComplexCodegen::componentTagged(llvm::Value* tagged, bool imag) {
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* carrier_bb = llvm::BasicBlock::Create(ctx_.context(), "cplx_comp_carrier", fn);
+    llvm::BasicBlock* plain_bb = llvm::BasicBlock::Create(ctx_.context(), "cplx_comp_plain", fn);
+    llvm::BasicBlock* join_bb = llvm::BasicBlock::Create(ctx_.context(), "cplx_comp_join", fn);
+    llvm::Value* ptr = tagged_.unpackPtr(tagged);
+    b.CreateCondBr(isCarrierComplex(tagged), carrier_bb, plain_bb);
+
+    b.SetInsertPoint(carrier_bb);
+    llvm::Value* from_carrier = b.CreateLoad(ctx_.taggedValueType(),
+        b.CreateStructGEP(complexCarrierType(ctx_), ptr, imag ? 2 : 1));
+    llvm::BasicBlock* carrier_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(plain_bb);
+    llvm::Value* plain = b.CreateLoad(ctx_.doubleType(),
+        b.CreateStructGEP(ctx_.complexNumberType(), ptr,
+                          imag ? TypeSystem::COMPLEX_IMAG_IDX : TypeSystem::COMPLEX_REAL_IDX));
+    llvm::Value* from_plain = tagged_.packDouble(plain);
+    llvm::BasicBlock* plain_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(join_bb);
+    llvm::PHINode* out = b.CreatePHI(ctx_.taggedValueType(), 2, imag ? "cplx_imag" : "cplx_real");
+    out->addIncoming(from_carrier, carrier_exit);
+    out->addIncoming(from_plain, plain_exit);
+    return out;
+}
+
 llvm::Value* ComplexCodegen::complexAdd(llvm::Value* z1, llvm::Value* z2) {
     // (a+bi) + (c+di) = (a+c) + (b+d)i
     llvm::Value* a = getComplexReal(z1);

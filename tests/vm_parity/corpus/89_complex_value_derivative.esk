@@ -1,0 +1,38 @@
+; VM<->native parity: a derivative passes through complex values.
+;
+; make-rectangular and make-polar used to take the primal of their arguments,
+; so a derivative through a complex value was 0 on both engines (SW-180). The
+; native complex keeps its components as numeric-tower values and the VM's
+; complex carries its dual's tangent (ADR-0025); both answer the analytic
+; derivative. `derivative` is vm-supported per PARITY.tsv; every point is
+; inexact.
+
+(display (derivative (lambda (x) (real-part (make-rectangular (* x x) 0.0))) 3.0)) (newline)
+; 6
+(display (derivative (lambda (x) (imag-part (make-rectangular 1.0 (* x (* x x))))) 2.0)) (newline)
+; 12
+(display (derivative (lambda (x) (real-part (* (make-rectangular x 1.0) (make-rectangular x 2.0)))) 3.0)) (newline)
+; 6
+(display (derivative (lambda (x) (imag-part (* (make-rectangular x 1.0) (make-rectangular x 2.0)))) 3.0)) (newline)
+; 3
+(display (derivative (lambda (x) (real-part (+ (make-rectangular x 1.0) (make-rectangular (* x x) 2.0)))) 3.0)) (newline)
+; 7
+(display (derivative (lambda (x) (real-part (- (make-rectangular x 1.0) (make-rectangular (* x x) 2.0)))) 3.0)) (newline)
+; -5
+(display (derivative (lambda (x) (angle (make-rectangular 1.0 x))) 1.0)) (newline)
+; 0.5
+(display (derivative (lambda (x) (imag-part (conjugate (make-rectangular 1.0 (* 2.0 x))))) 1.0)) (newline)
+; -2
+(display (derivative (lambda (x) (real-part (* x (make-rectangular 2.0 3.0)))) 5.0)) (newline)
+; 2
+(display (derivative (lambda (x) (real-part (sqrt (make-rectangular x 0.0)))) 4.0)) (newline)
+; 0.25
+(display (gradient (lambda (v) (let ((z (make-rectangular (vector-ref v 0) (vector-ref v 1)))) (real-part (* z z)))) (vector 3.0 4.0))) (newline)
+; #(6 -8)
+; the real functions that read a dual as its primal on the VM
+(display (derivative (lambda (x) (atan x)) 1.0)) (newline)
+; 0.5
+(display (derivative (lambda (x) (sinh x)) 0.0)) (newline)
+; 1
+(display (derivative (lambda (x) (atan x 2.0)) 1.0)) (newline)
+; 0.4

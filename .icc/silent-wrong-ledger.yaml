@@ -13387,8 +13387,8 @@ entries:
   - id: SW-180
     bucket: SILENT-WRONG
     family: ad/complex-carrier
-    status: open
-    needs_decision: true
+    status: fixed
+    closed_at: "bbe5e31e"
     title: "a derivative taken through a complex value is silently 0: the tangent is dropped when a differentiated number enters make-rectangular or complex arithmetic"
     repro: >-
       (1) (display (derivative (lambda (x) (real-part (make-rectangular (* x x) 0.0))) 3.0))
@@ -13396,7 +13396,7 @@ entries:
       (3) (require signal.filters)
           (define (b0 c) (vector-ref (car (butterworth-lowpass 2 c)) 0))
           (display (derivative b0 0.2))
-    observed: >-
+    observed_before: >-
       All three print `0`, exit 0, no diagnostic, under `eshkol-run -r`, from an
       AOT binary and on the bytecode VM ((1) measured on the VM). For (3) the
       central difference (b0(0.2001) - b0(0.1999)) / 0.0002 is 0.5665767907.
@@ -13408,12 +13408,40 @@ entries:
       (1) 6, (2) 0.6, (3) 0.5665767907... Alternatively a diagnostic at the point
       where a differentiated value enters a complex number, until a complex
       carrier exists.
+    root_cause: >-
+      make-rectangular and make-polar took the primal of each argument
+      (extractDoubleFromTagged natively, as_number on the VM), so a derivative
+      entering a complex number was dropped at construction. Every later complex
+      operation then worked on plain doubles. On the VM, vm_op_arith also checked
+      the dual carrier before complex, so a dual meeting a complex value was read
+      as a real, and real-part of a real dual flattened it to its primal.
+    fix: >-
+      The ruling is to build the capability (tutorials 05 and 06 describe it).
+      Native: a complex value whose component carries a derivative keeps the
+      plain pair first and the two components after it as tagged values
+      (eshkol_complex_carrier_t, ESHKOL_COMPLEX_CARRIER_FLAG); every complex
+      operation on it is its component formula evaluated by the generic
+      arithmetic, so jets, tape nodes and Taylor towers flow through with their
+      existing rules (ArithmeticCodegen::makeRectangular and
+      withComplexCarrierDispatch, one helper per builtin kind in llvm_codegen).
+      VM: VmComplex carries the tangent of the VM's first-order dual and every
+      VM complex operation propagates it by its own rule; vm_real_with_tangent is
+      the one boundary. No derivative exists at the origin for magnitude, angle,
+      log and sqrt, and a derivative there raises. The docs that said complex
+      values carry no derivative are corrected. ADR-0025.
     evidence: >-
       Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
       arm64 macOS. docs/tutorials/05_SIGNAL_PROCESSING.md Part 5 differentiates
       filtered signal power with respect to the Butterworth cutoff;
       scripts/doc_audit/check_doc_examples.py reports MISMATCH expected '73.81...'
       got '0' on JIT and AOT (73.815 is the central difference).
+      Fixed on fix/v135-ad-complex-and-dense-identity, Release build, arm64 macOS:
+      tests/ad/complex_value_derivative_test.esk (25 analytic checks, including
+      the Butterworth cutoff derivative 0.566576801842721, whose central
+      difference is 0.5665767907) fails 22 of 25 on the base build and passes
+      25/25 on the fix, JIT cached and uncached, AOT and the bytecode VM. Corpus
+      program 89 gives identical output on both engines. Tutorial 05's example
+      runs with its marker removed.
     caught_by: [doc-example-gate]
     missed_by: [run_ad_oracle, run_ad_exactness_gate, doc_audit]
     notes: >-
@@ -13775,38 +13803,46 @@ entries:
       difference is loud and is checked per engine rather than in the corpus.
   - id: SW-186
     bucket: SILENT-WRONG
-    family: ad/dense-tensor-operands
-    status: open
-    needs_decision: true
-    title: "native: inside a differentiated function a matmul result answers #f to tensor? and vector? and displays as #<ad-node>, because the dense AD node is a CALLABLE rather than a tensor"
+    family: ad/vm-tensor-carrier
+    status: fixed
+    closed_at: "eb1862425"
+    needs_decision: false
+    title: "VM: a gradient through any tensor operator (tensor-dot, tensor-mul, matmul, tensor-sum) is silently #(0 0 ...) although PARITY.tsv marks every one of them vm-supported"
     repro: >-
-      (gradient (lambda (x) (let ((d (matmul (eye 3) x)))
-                              (display (tensor? d)) (display (vector? d)) (display d)
-                              (tensor-sum d)))
-                #(1.0 2.0 3.0))
+      (1) (display (gradient (lambda (x) (tensor-dot x x)) #(1.0 2.0 3.0)))
+      (2) (display (gradient (lambda (x) (tensor-sum (tensor-mul x x))) #(1.0 2.0 3.0)))
+      (3) (display (gradient (lambda (x) (tensor-sum (matmul (eye 3) x))) #(1.0 2.0 3.0)))
     observed: >-
-      Prints #f #f #<ad-node>, exit 0. Outside differentiation the same value
-      prints #t #t #(1 2 3).
+      All three print #(0 0 0) on eshkol-vm-standalone-test, exit 0, no
+      diagnostic. Native prints #(2 4 6), #(2 4 6), #(1 1 1). The VM's scalar
+      gradient path (84_named_closure_derivative_capture.esk, vector-ref over a
+      vector point) is correct, so the loss is specific to the tensor operators:
+      the VM tensor natives do not carry the forward dual through tensor
+      operations, and the reverse tape does not record them.
     correct: >-
-      #t #t #(1 2 3): a value's type does not depend on whether it is being
-      differentiated.
+      #(2 4 6), #(2 4 6), #(1 1 1), or PARITY.tsv rows for the tensor operators
+      under differentiation marked as a gap so the parity manifest is truthful.
     evidence: >-
       Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
-      arm64 macOS, while sweeping SW-181.
+      arm64 macOS, while sweeping SW-181. tensor-dot, matmul, tensor-sum, eye and
+      gradient are all `vm-supported` in tests/vm_parity/PARITY.tsv; the AD
+      carrier manifest names the VM gradient carrier vm-dual-forward.
     caught_by: [coordinator-sweep]
-    missed_by: [run_ad_oracle, run_dense_tensor_ad_gate, doc_audit]
+    missed_by: [run_vm_parity, run_engine_parity_coverage, gate_ad_shared_node_model]
     notes: >-
-      SW-181 resolves a dense node wherever a tensor is READ. Type predicates and
-      the printer ask what the value IS, which is a representation-identity
-      question: the end state ADR-0023 names is a dense AD tensor that is a
-      HEAP_SUBTYPE_TENSOR object carrying its node, so no consumer needs a case.
-      Needs a ruling on that end state before the predicates are changed.
+      Found while closing SW-181 (native). Not a corpus program for SW-181 for
+      this reason: the native fix cannot be held to a VM that answers zero. Needs
+      a ruling: either the VM tensor natives gain the dual carrier (the manifest's
+      own end state), or the parity rows are demoted until they do. Filed
+      SILENT-WRONG because exit 0 with a wrong derivative is that bucket's
+      definition.
   - id: SW-187
     bucket: LOUD-ERROR
     subtag: structural
     family: ad/dense-tensor-operands
-    status: open
-    needs_decision: true
+    status: fixed
+    closed_at: "2c0eb81f5"
+    needs_decision: false
     title: "native: jacobian of a function returning a dense tensor AD node (a matmul result) is a SIGSEGV, and hessian of a function using matmul on a 1-D point raises a dual-tensor rank error"
     repro: >-
       (1) (display (jacobian (lambda (v) (matmul (eye 2) v)) #(1.0 2.0)))
@@ -13833,8 +13869,9 @@ entries:
   - id: SW-188
     bucket: SILENT-WRONG
     family: ad/dense-tensor-operands
-    status: open
-    needs_decision: true
+    status: fixed
+    closed_at: "2c0eb81f5"
+    needs_decision: false
     title: "native: inside a differentiated function a matmul result answers #f to tensor? and vector? and displays as #<ad-node>, because the dense AD node is a CALLABLE rather than a tensor"
     repro: >-
       (gradient (lambda (x) (let ((d (matmul (eye 3) x)))
@@ -13946,3 +13983,34 @@ entries:
       all agree with native.
     caught_by: [engine-differential-review]
     missed_by: [vm_parity corpus as it stood, run_all_tests]
+  - id: SW-191
+    bucket: LOUD-LIMITATION
+    family: ad/complex-carrier
+    status: open
+    needs_decision: true
+    title: "derivative at a complex evaluation point is refused on both engines; docs/tutorials/06_EXACT_ARITHMETIC.md describes differentiating functions of complex arguments"
+    repro: >-
+      (display (derivative (lambda (z) (* z z)) (make-rectangular 1.0 1.0)))
+    observed: >-
+      Native: "derivative: evaluation point is not a number (tagged type 7)".
+      VM: "derivative: evaluation point is not a real number (a complex point)".
+      Before this change the VM answered 0 with exit status 0.
+    correct: >-
+      2+2i: for a holomorphic function the complex derivative, which forward mode
+      computes by seeding the point with a complex tangent of 1 and reading the
+      complex tangent of the result. For a non-holomorphic function the answer
+      is not a single complex number (the Wirtinger pair), so the operator has to
+      state what it returns.
+    evidence: >-
+      Measured on fix/v135-ad-complex-and-dense-identity while closing SW-180,
+      Release build, arm64 macOS. The complex carrier (ADR-0025) already
+      propagates a complex tangent on both engines; what is missing is seeding a
+      complex point and returning a complex derivative.
+    caught_by: [coordinator-sweep]
+    missed_by: [run_ad_oracle, doc_audit]
+    notes: >-
+      A build item, not a defect of the real-parameter path: derivative is
+      defined over the reals and refuses loudly. Needs a ruling on the operator's
+      contract for non-holomorphic functions (refuse, return df/dz, or return the
+      Wirtinger pair) before it is built. The tutorial sentence is left as the
+      statement of intent.

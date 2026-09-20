@@ -1528,6 +1528,22 @@ static eshkol_tagged_value_t evac_value(EvacState& st, eshkol_tagged_value_t v) 
     // whole object. evac_raw forwards, so two tagged values sharing one payload
     // still share it after promotion.
     if (const size_t raw_size = region_headerless_payload_size(type)) {
+        // A carrier complex (ADR-0025) is the plain pair plus two tagged
+        // components, and those components are pointers (jets, tape nodes), so
+        // it is copied at its own size and its components are escaped with it.
+        const bool carrier_complex =
+            (type & (uint8_t)~(ESHKOL_VALUE_EXACT_FLAG | ESHKOL_VALUE_INEXACT_FLAG)) == ESHKOL_VALUE_COMPLEX &&
+            (v.flags & ESHKOL_COMPLEX_CARRIER_FLAG) != 0;
+        if (carrier_complex) {
+            auto* copy = (eshkol_complex_carrier_t*)evac_raw(
+                st, p, eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_COMPLEX_CARRIER));
+            if (copy) {
+                copy->real = evac_value(st, copy->real);
+                copy->imag = evac_value(st, copy->imag);
+            }
+            v.data.ptr_val = (uint64_t)(uintptr_t)copy;
+            return v;
+        }
         v.data.ptr_val = (uint64_t)(uintptr_t)evac_raw(st, p, raw_size);
         return v;
     }

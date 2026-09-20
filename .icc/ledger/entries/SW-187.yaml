@@ -2,8 +2,9 @@ id: SW-187
 bucket: LOUD-ERROR
 subtag: structural
 family: ad/dense-tensor-operands
-status: open
-needs_decision: true
+status: fixed
+closed_at: "2c0eb81f5"
+needs_decision: false
 title: "native: jacobian of a function returning a dense tensor AD node (a matmul result) is a SIGSEGV, and hessian of a function using matmul on a 1-D point raises a dual-tensor rank error"
 repro: >-
   (1) (display (jacobian (lambda (v) (matmul (eye 2) v)) #(1.0 2.0)))
@@ -20,7 +21,10 @@ correct: >-
   unsupported combination for (2).
 evidence: >-
   Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
-  arm64 macOS, while sweeping SW-181.
+  arm64 macOS, while sweeping SW-181. Fixed at 2c0eb81f5: jacobian resolves
+  dense AD tensor results before shape/element dispatch; the SIGSEGV repro now
+  returns #((1 0) (0 1)), and the dense boundary test passes cached, uncached,
+  and AOT.
 caught_by: [coordinator-sweep]
 missed_by: [run_ad_oracle, run_dense_tensor_ad_gate]
 notes: >-

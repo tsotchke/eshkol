@@ -675,7 +675,10 @@ tagged exact coefficients; mixed Taylor/tape nodes store authoritative
 `exact_coeff`/`exact_tangent_coeff` and exact dual halves. Exact-preserving
 arithmetic (`+`, `-`, `*`, `/`, and integer powers) therefore remains exact at
 extraction. Transcendentals demote the affected carrier to the ordinary
-inexact path. Complex values still have no Wirtinger-derivative carrier. See
+inexact path. A derivative with respect to a real parameter passes through complex
+values: each component of a complex value is itself a carrier, and every complex
+operation is its component formula ([ADR-0025](../../design/adr/0025-complex-values-carry-derivatives.md)).
+The evaluation point of `derivative` is real; a complex point is refused. See
 [../../breakdown/AUTODIFF.md](../../breakdown/AUTODIFF.md) ("Numeric Type
 Interactions with AD") for the representation details.
 

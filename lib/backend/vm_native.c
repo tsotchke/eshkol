@@ -5220,7 +5220,7 @@ static void vm_raise_error_msg(VM* vm, const char* msg);   /* defined below */
  * WITHOUT pushing: the raise restored the handler's stack pointer and a
  * fabricated push would corrupt it.
  */
-static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
+static VmTensor* vm_tensor_operand_carrier(VM* vm, Value v, const char* op_name) {
     if (v.type == VAL_TENSOR) {
         if (!is_valid_heap_ptr(vm, v.as.ptr)) return NULL;
         VmTensor* tensor = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
@@ -5343,6 +5343,76 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
     return NULL;
 }
 
+/* ── Forward tangents through tensor operations (SW-186) ──
+ *
+ * A tensor may carry a first-order tangent in dual_data, parallel to data.
+ * vm_tensor_operand_carrier (above) returns it with that carrier; only the
+ * natives that propagate it (or read only shape metadata) call it.
+ * vm_tensor_operand is the default for every other native and REFUSES a
+ * tensor that carries a tangent: a derivative is never read as its primal
+ * and answered as 0. The linear operations get their tangent by running the
+ * existing double kernels on tangent tensors (vm_tensor_tangent_of), so
+ * broadcasting and shape rules are the kernels' own. */
+static int vm_tensor_has_tangent(const VmTensor* t) {
+    if (!t || !t->dual_data) return 0;
+    for (int64_t i = 0; i < t->total; i++) {
+        if (t->dual_data[i].tangent != 0.0 || vm_dual_is_taylor(&t->dual_data[i])) return 1;
+    }
+    return 0;
+}
+
+static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
+    VmTensor* t = vm_tensor_operand_carrier(vm, v, op_name);
+    if (t && vm_tensor_has_tangent(t)) {
+        char msg[240];
+        snprintf(msg, sizeof msg,
+                 "%s: a derivative cannot pass through this tensor operation on the VM "
+                 "(it has no forward-mode rule here); use the native backend",
+                 op_name ? op_name : "tensor operation");
+        vm_raise_error_msg(vm, msg);
+        return NULL;
+    }
+    return t;
+}
+
+/* The tangent of @p t as a plain contiguous tensor of its shape: zeros when
+ * it carries none. NULL (with a raised error) for a higher-order element. */
+static VmTensor* vm_tensor_tangent_of(VM* vm, const VmTensor* t, const char* who) {
+    VmRegionStack* rs = &vm->heap.regions;
+    VmTensor* c = vm_tensor_copy(rs, t);
+    if (!c) return NULL;
+    if (c->dual_data) {
+        for (int64_t i = 0; i < c->total; i++) {
+            if (vm_dual_is_taylor(&c->dual_data[i])) {
+                char msg[200];
+                snprintf(msg, sizeof msg, "%s: a higher-order derivative cannot pass through a tensor operation on the VM; use the native backend", who);
+                vm_raise_error_msg(vm, msg);
+                return NULL;
+            }
+            c->data[i] = c->dual_data[i].tangent;
+        }
+    } else {
+        for (int64_t i = 0; i < c->total; i++) c->data[i] = 0.0;
+    }
+    c->dual_data = NULL;
+    c->dtype = VM_TENSOR_DTYPE_F64;
+    return c;
+}
+
+/* Make @p out (fresh, contiguous) carry @p tangent (same shape) as its tangent. */
+static int vm_tensor_attach_tangent(VM* vm, VmTensor* out, const VmTensor* tangent) {
+    if (!out || !tangent || tangent->total != out->total) return 0;
+    out->dual_data = (VmDual*)vm_alloc(&vm->heap.regions, (size_t)out->total * sizeof(VmDual));
+    if (!out->dual_data) return 0;
+    memset(out->dual_data, 0, (size_t)out->total * sizeof(VmDual));
+    for (int64_t i = 0; i < out->total; i++) {
+        out->dual_data[i].primal = out->data[i];
+        out->dual_data[i].tangent = tangent->data[i];
+    }
+    out->dtype = VM_TENSOR_DTYPE_DUAL;
+    return 1;
+}
+
 /**
  * @brief SW-26: `(vector-ref t idx)` where `t` is a HEAP_TENSOR, not a
  *         HEAP_VECTOR — e.g. the tensor `fg-marginal` returns. Before this
@@ -5366,8 +5436,11 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
  * (the corrupted-heap-pointer sentinel case) is likewise a silent "return 0,
  * push nothing" per its own documented contract above.
  */
+static Value vm_make_taylor_val(VM* vm, VmDual* tower);   /* defined below */
+
 static int vm_vecref_tensor_path(VM* vm, Value tensor_val, Value idx_val) {
-    VmTensor* t = vm_tensor_operand(vm, tensor_val, "vector-ref");
+    /* An element read keeps the element's derivative carrier (SW-186). */
+    VmTensor* t = vm_tensor_operand_carrier(vm, tensor_val, "vector-ref");
     if (!t) return 0;
     int64_t idx = (int64_t)as_number(idx_val);
     if (t->n_dims <= 1) {
@@ -5375,7 +5448,8 @@ static int vm_vecref_tensor_path(VM* vm, Value tensor_val, Value idx_val) {
             vm_raise_error_msg(vm, "vector-ref: index out of bounds");
             return 0;
         }
-        vm_push(vm, FLOAT_VAL(t->data[idx]));
+        vm_push(vm, t->dual_data ? vm_make_taylor_val(vm, &t->dual_data[idx])
+                                 : FLOAT_VAL(t->data[idx]));
         return 1;
     }
     if (idx < 0 || idx >= t->shape[0]) {
@@ -8267,6 +8341,86 @@ static Value vm_force_promise_value(VM* vm, Value initial) {
  * @return 1 when @p a was complex and a result (or a fatal error) has been
  *         pushed/recorded; 0 when the caller must handle @p a itself.
  */
+/* ── The complex/derivative boundary (ADR-0025) ──
+ *
+ * The VM's forward carrier is a first-order dual. A real value entering a
+ * complex operation is lifted here, and only here: a dual becomes a complex
+ * with a tangent in its real part, so the derivative survives. A carrier this
+ * representation cannot hold (a Taylor tower, a hyper-dual) is refused with a
+ * message instead of being read as its primal. */
+static int vm_real_with_tangent(VM* vm, Value v, double* primal, double* tangent, const char* who) {
+    *tangent = 0.0;
+    if (v.type == VAL_HYPER_DUAL) {
+        char msg[200];
+        snprintf(msg, sizeof msg, "%s: a second-order derivative cannot pass through a complex number on the VM; use the native backend", who);
+        vm_raise_error_msg(vm, msg);
+        return 0;
+    }
+    if (v.type == VAL_DUAL) {
+        VmDual d = vm_dual_operand(vm, v);
+        if (vm_dual_is_taylor(&d)) {
+            char msg[200];
+            snprintf(msg, sizeof msg, "%s: a higher-order derivative cannot pass through a complex number on the VM; use the native backend", who);
+            vm_raise_error_msg(vm, msg);
+            return 0;
+        }
+        *primal = d.primal;
+        *tangent = d.tangent;
+        return 1;
+    }
+    *primal = as_number(v);
+    return 1;
+}
+
+static int vm_complex_operand(VM* vm, Value v, VmComplex* out, const char* who) {
+    memset(out, 0, sizeof *out);
+    if (v.type == VAL_COMPLEX) {
+        *out = *(VmComplex*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        return 1;
+    }
+    return vm_real_with_tangent(vm, v, &out->real, &out->dreal, who);
+}
+
+/* A real result with a tangent is a dual; without one, a plain float. */
+static Value vm_real_result(VM* vm, double value, double tangent) {
+    return tangent != 0.0 ? vm_make_dual_val(vm, value, tangent) : FLOAT_VAL(value);
+}
+
+/* A real elementary function f with derivative fp at x, applied to a real
+ * operand that may carry a first-order tangent: pushes f(x), with tangent
+ * fp(x) dx when one is present. The one rule for every real function the VM
+ * has no dual kernel for, so none of them reads a dual as its primal. */
+static void vm_push_real_unary(VM* vm, Value a, double (*f)(double), double (*fp)(double), const char* who) {
+    double x, dx;
+    if (!vm_real_with_tangent(vm, a, &x, &dx, who)) return;
+    vm_push(vm, vm_real_result(vm, f(x), dx != 0.0 ? fp(x) * dx : 0.0));
+}
+
+static double vm_d_atan(double x)  { return 1.0 / (1.0 + x * x); }
+static double vm_d_asin(double x)  { return 1.0 / sqrt(1.0 - x * x); }
+static double vm_d_acos(double x)  { return -1.0 / sqrt(1.0 - x * x); }
+static double vm_d_sinh(double x)  { return cosh(x); }
+static double vm_d_cosh(double x)  { return sinh(x); }
+
+/* Push a complex result, or raise the operation's no-derivative message. */
+static void vm_push_complex_result(VM* vm, VmComplex* result) {
+    if (!result) {
+        if (vm_complex_d_error) {
+            const char* msg = vm_complex_d_error;
+            vm_complex_d_error = NULL;
+            vm_raise_error_msg(vm, msg);
+        } else {
+            vm->error = 1;
+        }
+        return;
+    }
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return; }
+    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
+    vm->heap.objects[ptr]->opaque.ptr = result;
+    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+}
+
 static int vm_math_complex_dispatch(VM* vm, Value a, int fid) {
     VmComplex z;
     VmComplex* result = NULL;
@@ -8288,12 +8442,8 @@ static int vm_math_complex_dispatch(VM* vm, Value a, int fid) {
         case 722: result = vm_complex_tanh(&vm->heap.regions, &z); break;
         default: return 0;
     }
-    if (!result) { vm->error = 1; return 1; }
-    ptr = heap_alloc(&vm->heap);
-    if (ptr < 0) { vm->error = 1; return 1; }
-    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
-    vm->heap.objects[ptr]->opaque.ptr = result;
-    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+    (void)ptr;
+    vm_push_complex_result(vm, result);
     return 1;
 }
 
@@ -8576,9 +8726,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (vm_tag_is_exact_number(a) && a.type != VAL_RATIONAL) { vm_push(vm, a); break; }
         if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 344); break; }
         vm_push(vm, number_val_contagious1(a, trunc(as_number_vm(vm,a)))); break; }
-    case 29: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 29)) break; vm_push(vm, FLOAT_VAL(asin(as_number_vm(vm,a)))); break; }
-    case 30: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 30)) break; vm_push(vm, FLOAT_VAL(acos(as_number_vm(vm,a)))); break; }
-    case 31: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 31)) break; vm_push(vm, FLOAT_VAL(atan(as_number_vm(vm,a)))); break; }
+    case 29: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 29)) break; vm_push_real_unary(vm, a, asin, vm_d_asin, "asin"); break; }
+    case 30: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 30)) break; vm_push_real_unary(vm, a, acos, vm_d_acos, "acos"); break; }
+    case 31: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 31)) break; vm_push_real_unary(vm, a, atan, vm_d_atan, "atan"); break; }
     case 32: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,382); break; }
         /* Task #113: a complex base OR exponent promotes both and takes the
@@ -9181,43 +9331,48 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 314: case 315: case 316: case 317: case 318: case 319: {
         if (fid == 300) { /* make-rectangular */
             Value imag = vm_pop(vm), real = vm_pop(vm);
-            VmComplex* z = vm_complex_new(&vm->heap.regions, as_number(real), as_number(imag));
-            int32_t ptr = heap_alloc(&vm->heap);
-            if (ptr < 0 || !z) { vm->error = 1; break; }
-            vm->heap.objects[ptr]->type = HEAP_COMPLEX;
-            vm->heap.objects[ptr]->opaque.ptr = z;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+            /* ADR-0025: a derivative entering a complex number is kept. */
+            double re, dre, im, dim;
+            if (!vm_real_with_tangent(vm, real, &re, &dre, "make-rectangular") ||
+                !vm_real_with_tangent(vm, imag, &im, &dim, "make-rectangular")) break;
+            vm_push_complex_result(vm, vm_complex_new_d(&vm->heap.regions, re, im, dre, dim));
         } else if (fid == 301) { /* make-polar */
             /* Arguments are pushed left-to-right, so angle is on top.  This
              * must be handled before the unary complex-operation path: that
              * path used to pop angle as the magnitude and then magnitude as
              * the angle, silently constructing the wrong complex number. */
             Value angle = vm_pop(vm), magnitude = vm_pop(vm);
-            VmComplex* z = vm_make_polar(&vm->heap.regions,
-                                          as_number(magnitude),
-                                          as_number(angle));
-            int32_t ptr = heap_alloc(&vm->heap);
-            if (ptr < 0 || !z) { vm->error = 1; break; }
-            vm->heap.objects[ptr]->type = HEAP_COMPLEX;
-            vm->heap.objects[ptr]->opaque.ptr = z;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+            double m, dm, t, dt;
+            if (!vm_real_with_tangent(vm, magnitude, &m, &dm, "make-polar") ||
+                !vm_real_with_tangent(vm, angle, &t, &dt, "make-polar")) break;
+            /* d(m cos t) = dm cos t - m sin t dt;  d(m sin t) = dm sin t + m cos t dt */
+            vm_push_complex_result(vm, vm_complex_new_d(&vm->heap.regions,
+                m * cos(t), m * sin(t),
+                dm * cos(t) - m * sin(t) * dt,
+                dm * sin(t) + m * cos(t) * dt));
         } else if (fid == 302) { /* real-part */
             Value z_val = vm_pop(vm);
             if (z_val.type == VAL_COMPLEX) {
                 VmComplex* z = (VmComplex*)vm->heap.objects[z_val.as.ptr]->opaque.ptr;
-                vm_push(vm, FLOAT_VAL(z->real));
+                vm_push(vm, vm_real_result(vm, z->real, z->dreal));
+            } else if (z_val.type == VAL_DUAL || z_val.type == VAL_HYPER_DUAL) {
+                vm_push(vm, z_val);   /* a real carrier is its own real part */
             } else { vm_push(vm, FLOAT_VAL(as_number(z_val))); }
         } else if (fid == 303) { /* imag-part */
             Value z_val = vm_pop(vm);
             if (z_val.type == VAL_COMPLEX) {
                 VmComplex* z = (VmComplex*)vm->heap.objects[z_val.as.ptr]->opaque.ptr;
-                vm_push(vm, FLOAT_VAL(z->imag));
+                vm_push(vm, vm_real_result(vm, z->imag, z->dimag));
             } else { vm_push(vm, FLOAT_VAL(0.0)); }
         } else if (fid == 304) { /* magnitude */
             Value z_val = vm_pop(vm);
             if (z_val.type == VAL_COMPLEX) {
                 VmComplex* z = (VmComplex*)vm->heap.objects[z_val.as.ptr]->opaque.ptr;
-                vm_push(vm, FLOAT_VAL(vm_complex_magnitude(z)));
+                double dm = vm_complex_magnitude_tangent(z);
+                if (vm_complex_d_error) { const char* msg = vm_complex_d_error; vm_complex_d_error = NULL; vm_raise_error_msg(vm, msg); break; }
+                vm_push(vm, vm_real_result(vm, vm_complex_magnitude(z), dm));
+            } else if (z_val.type == VAL_DUAL) {
+                vm_push(vm, z_val); vm_dispatch_native(vm, 35);   /* abs keeps the tangent */
             } else { vm_push(vm, FLOAT_VAL(fabs(as_number(z_val)))); }
         } else if (fid == 317) { /* complex? */
             Value v = vm_pop(vm);
@@ -9227,9 +9382,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int is_binary = (fid >= 307 && fid <= 310) || fid == 318 || fid == 319;
             if (is_binary) {
                 Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-                VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
-                if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-                if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+                VmComplex a_z, b_z;
+                if (!vm_complex_operand(vm, a_val, &a_z, "complex arithmetic") ||
+                    !vm_complex_operand(vm, b_val, &b_z, "complex arithmetic")) break;
                 VmComplex* result = NULL;
                 switch (fid) {
                     case 307: result = vm_complex_add(&vm->heap.regions, &a_z, &b_z); break;
@@ -9239,21 +9394,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     case 318: result = vm_complex_expt(&vm->heap.regions, &a_z, &b_z); break;
                     case 319: vm_push(vm, BOOL_VAL(a_z.real == b_z.real && a_z.imag == b_z.imag)); break;
                 }
-                if (fid != 319) {
-                    if (!result) { vm->error = 1; break; }
-                    int32_t ptr = heap_alloc(&vm->heap);
-                    if (ptr < 0) { vm->error = 1; break; }
-                    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
-                    vm->heap.objects[ptr]->opaque.ptr = result;
-                    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
-                }
+                if (fid != 319) vm_push_complex_result(vm, result);
             } else {
                 Value a_val = vm_pop(vm);
-                VmComplex a_z = {as_number(a_val), 0};
-                if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
+                if (fid == 306 && (a_val.type == VAL_DUAL || a_val.type == VAL_HYPER_DUAL)) {
+                    vm_push(vm, a_val);   /* the conjugate of a real carrier is itself */
+                    break;
+                }
+                VmComplex a_z;
+                if (!vm_complex_operand(vm, a_val, &a_z, "complex operation")) break;
                 VmComplex* result = NULL;
                 switch (fid) {
-                    case 305: vm_push(vm, FLOAT_VAL(vm_complex_angle(&a_z))); break;
+                    case 305: {
+                        double da = vm_complex_angle_tangent(&a_z);
+                        if (vm_complex_d_error) { const char* msg = vm_complex_d_error; vm_complex_d_error = NULL; vm_raise_error_msg(vm, msg); break; }
+                        vm_push(vm, vm_real_result(vm, vm_complex_angle(&a_z), da));
+                        break;
+                    }
                     case 306: result = vm_complex_conjugate(&vm->heap.regions, &a_z); break;
                     case 311: result = vm_complex_sqrt(&vm->heap.regions, &a_z); break;
                     case 312: result = vm_complex_exp(&vm->heap.regions, &a_z); break;
@@ -9262,14 +9419,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     case 315: result = vm_complex_cos(&vm->heap.regions, &a_z); break;
                     case 316: result = vm_complex_tan(&vm->heap.regions, &a_z); break;
                 }
-                if (fid != 305) {
-                    if (!result) { vm->error = 1; break; }
-                    int32_t ptr = heap_alloc(&vm->heap);
-                    if (ptr < 0) { vm->error = 1; break; }
-                    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
-                    vm->heap.objects[ptr]->opaque.ptr = result;
-                    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
-                }
+                if (fid != 305) vm_push_complex_result(vm, result);
             }
         }
         break;
@@ -9985,6 +10135,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 "use the native backend");
             break;
         }
+        /* A complex evaluation point needs a complex-valued perturbation;
+         * derivative is defined over the reals (ADR-0025). Refused exactly as
+         * the native engine refuses it, instead of seeding the point's real
+         * reading and answering a derivative of 0. */
+        if (x_val.type == VAL_COMPLEX) {
+            vm_raise_error_msg(vm, "derivative: evaluation point is not a real number (a complex point); "
+                                   "derivative differentiates with respect to a real parameter");
+            break;
+        }
         /* Create dual number: x + 1ε
          *
          * ESH-0393: seeded via as_number_vm(), not as_number(). as_number()
@@ -10258,7 +10417,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             callable.type != VAL_CONTINUATION) {
             vm_raise_error_msg(vm, "tensor-apply: expected a callable"); break;
         }
-        VmTensor* source = vm_tensor_operand(vm, input, "tensor-apply");
+        VmTensor* source = vm_tensor_operand_carrier(vm, input, "tensor-apply");
         if (!source) break;
         VmTensor* output = vm_tensor_new(&vm->heap.regions, source->shape, source->n_dims);
         if (!output) { vm_raise_error_msg(vm, "tensor-apply: allocation failed"); break; }
@@ -10287,7 +10446,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 411: { /* tensor-ref(tensor, indices) — flat or multi-dim access */
         Value idx_val = vm_pop(vm), t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-ref");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-ref");
         if (!t) break;   /* raised: push nothing */
         /* Single int/float index: flat access; list: multi-dim */
         if (idx_val.type == VAL_INT || idx_val.type == VAL_FLOAT) {
@@ -10383,7 +10542,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 413: { /* tensor-shape → list */
         Value t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-shape");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-shape");
         if (!t) break;   /* raised: push nothing */
         Value result = NIL_VAL;
         for (int i = t->n_dims - 1; i >= 0; i--) {
@@ -10399,7 +10558,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 414: { /* tensor-data → flat list (for small tensors) */
         Value t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-data");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-data");
         if (!t) break;   /* raised: push nothing */
         /* A VECTOR of the elements, matching native — this used to build a
          * LIST, so (tensor-data t) printed (1 2 3 4) against native's
@@ -10415,7 +10574,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vec->items = (Value*)vm_alloc(&vm->heap.regions,
                                       (size_t)(count > 0 ? count : 1) * sizeof(Value));
         if (!vec->items) { vm->error = 1; break; }
-        for (int64_t i = 0; i < count; i++) vec->items[i] = FLOAT_VAL(t->data[i]);
+        for (int64_t i = 0; i < count; i++)
+            vec->items[i] = t->dual_data ? vm_make_taylor_val(vm, &t->dual_data[i])
+                                         : FLOAT_VAL(t->data[i]);
         vm->heap.objects[vp]->type = HEAP_VECTOR;
         vm->heap.objects[vp]->opaque.ptr = vec;
         vm_push(vm, (Value){.type = VAL_VECTOR, .as.ptr = vp});
@@ -10423,7 +10584,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 415: { /* reshape(tensor, new_shape) */
         Value shape_val = vm_pop(vm), t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "reshape");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "reshape");
         if (!t) break;   /* raised: push nothing */
         int n = 0;
         int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n);
@@ -10534,24 +10695,44 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * ══════════════════════════════════════════════════════════════════════ */
     case 440: { /* matmul — GPU dispatch if tensor is large enough */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        VmTensor* a = vm_tensor_operand(vm, a_val, "matmul");
+        VmTensor* a = vm_tensor_operand_carrier(vm, a_val, "matmul");
         if (!a) break;   /* raised: push nothing */
-        VmTensor* b = vm_tensor_operand(vm, b_val, "matmul");
+        VmTensor* b = vm_tensor_operand_carrier(vm, b_val, "matmul");
         if (!b) break;   /* raised: push nothing */
+        const int mm_tangent = vm_tensor_has_tangent(a) || vm_tensor_has_tangent(b);
         /* Try GPU first, fall through to CPU */
         VmTensor* out = vm_gpu_try_matmul(&vm->heap.regions, a, b);
         if (!out) out = vm_tensor_matmul(&vm->heap.regions, a, b);
         if (!out) { vm_raise_error_msg(vm, "tensor operation: invalid shape or allocation limit"); break; }
         out->dtype = vm_tensor_promote_dtype(a, b);
+        if (mm_tangent) {
+            /* d(AB) = dA B + A dB */
+            VmRegionStack* rs = &vm->heap.regions;
+            VmTensor* ta = vm_tensor_tangent_of(vm, a, "matmul");
+            VmTensor* tb = ta ? vm_tensor_tangent_of(vm, b, "matmul") : NULL;
+            if (!ta || !tb) break;
+            VmTensor* l = vm_tensor_matmul(rs, ta, b);
+            VmTensor* r = vm_tensor_matmul(rs, a, tb);
+            VmTensor* tout = (l && r) ? vm_tensor_add(rs, l, r) : NULL;
+            if (!tout || !vm_tensor_attach_tangent(vm, out, tout)) {
+                vm_raise_error_msg(vm, "matmul: could not propagate the derivative");
+                break;
+            }
+        }
         VM_PUSH_TENSOR(vm, out);
         break;
     }
     case 441: case 442: case 443: case 444: case 445: case 446: case 447: { /* tensor binary: +,-,*,/,pow,max,min */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        VmTensor* a = vm_tensor_operand(vm, a_val, "tensor-binary-op");
+        VmTensor* a = vm_tensor_operand_carrier(vm, a_val, "tensor-binary-op");
         if (!a) break;   /* raised: push nothing */
-        VmTensor* b = vm_tensor_operand(vm, b_val, "tensor-binary-op");
+        VmTensor* b = vm_tensor_operand_carrier(vm, b_val, "tensor-binary-op");
         if (!b) break;   /* raised: push nothing */
+        const int bin_tangent = vm_tensor_has_tangent(a) || vm_tensor_has_tangent(b);
+        if (bin_tangent && fid > 444) {
+            vm_raise_error_msg(vm, "tensor-binary-op: a derivative cannot pass through tensor pow, max or min on the VM; use the native backend");
+            break;
+        }
         int64_t broadcast_shape[16];
         int64_t broadcast_rank = 0;
         int64_t broadcast_total = 0;
@@ -10579,6 +10760,37 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         if (!out) { vm_raise_error_msg(vm, "tensor operation: invalid shape or allocation limit"); break; }
         out->dtype = vm_tensor_promote_dtype(a, b);
+        if (bin_tangent) {
+            /* d(a+b) = da+db, d(a-b) = da-db, d(ab) = da b + a db,
+             * d(a/b) = (da b - a db) / b^2, on the same broadcasting kernels. */
+            VmRegionStack* rs = &vm->heap.regions;
+            VmTensor* ta = vm_tensor_tangent_of(vm, a, "tensor-binary-op");
+            VmTensor* tb = ta ? vm_tensor_tangent_of(vm, b, "tensor-binary-op") : NULL;
+            if (!ta || !tb) break;
+            VmTensor* tout = NULL;
+            switch (fid) {
+                case 441: tout = vm_tensor_add(rs, ta, tb); break;
+                case 442: tout = vm_tensor_sub(rs, ta, tb); break;
+                case 443: {
+                    VmTensor* l = vm_tensor_mul(rs, ta, b);
+                    VmTensor* r = vm_tensor_mul(rs, a, tb);
+                    tout = (l && r) ? vm_tensor_add(rs, l, r) : NULL;
+                    break;
+                }
+                case 444: {
+                    VmTensor* l = vm_tensor_mul(rs, ta, b);
+                    VmTensor* r = vm_tensor_mul(rs, a, tb);
+                    VmTensor* num = (l && r) ? vm_tensor_sub(rs, l, r) : NULL;
+                    VmTensor* den = vm_tensor_mul(rs, b, b);
+                    tout = (num && den) ? vm_tensor_div(rs, num, den) : NULL;
+                    break;
+                }
+            }
+            if (!tout || !vm_tensor_attach_tangent(vm, out, tout)) {
+                vm_raise_error_msg(vm, "tensor-binary-op: could not propagate the derivative");
+                break;
+            }
+        }
         VM_PUSH_TENSOR(vm, out);
         break;
     }
@@ -10595,11 +10807,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 449: { /* dot */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        VmTensor* a = vm_tensor_operand(vm, a_val, "tensor-dot");
+        VmTensor* a = vm_tensor_operand_carrier(vm, a_val, "tensor-dot");
         if (!a) break;   /* raised: push nothing */
-        VmTensor* b = vm_tensor_operand(vm, b_val, "tensor-dot");
+        VmTensor* b = vm_tensor_operand_carrier(vm, b_val, "tensor-dot");
         if (!b) break;   /* raised: push nothing */
-        vm_push(vm, FLOAT_VAL(vm_tensor_dot(a, b)));
+        double dot_value = vm_tensor_dot(a, b);
+        if (vm_tensor_has_tangent(a) || vm_tensor_has_tangent(b)) {
+            /* d(a . b) = da . b + a . db */
+            VmTensor* ta = vm_tensor_tangent_of(vm, a, "tensor-dot");
+            VmTensor* tb = ta ? vm_tensor_tangent_of(vm, b, "tensor-dot") : NULL;
+            if (!ta || !tb) break;
+            vm_push(vm, vm_real_result(vm, dot_value, vm_tensor_dot(ta, b) + vm_tensor_dot(a, tb)));
+        } else {
+            vm_push(vm, FLOAT_VAL(dot_value));
+        }
         break;
     }
     case 450: case 451: case 452: case 453: case 454: case 455: { /* tensor unary: neg,abs,sqrt,exp,log,sin,cos */
@@ -10621,18 +10842,37 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 456: { /* scale(tensor, scalar) */
         Value scalar = vm_pop(vm), t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-scale");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-scale");
         if (!t) break;   /* raised: push nothing */
-        VmTensor* out = vm_tensor_scale(&vm->heap.regions, t, as_number(scalar));
+        double sv, dsv;
+        if (!vm_real_with_tangent(vm, scalar, &sv, &dsv, "tensor-scale")) break;
+        VmTensor* out = vm_tensor_scale(&vm->heap.regions, t, sv);
         if (!out) { vm_push(vm, NIL_VAL); break; }
+        if (dsv != 0.0 || vm_tensor_has_tangent(t)) {
+            /* d(s t) = s dt + ds t */
+            VmRegionStack* rs = &vm->heap.regions;
+            VmTensor* tt = vm_tensor_tangent_of(vm, t, "tensor-scale");
+            if (!tt) break;
+            VmTensor* l = vm_tensor_scale(rs, tt, sv);
+            VmTensor* r = vm_tensor_scale(rs, t, dsv);
+            VmTensor* tout = (l && r) ? vm_tensor_add(rs, l, r) : NULL;
+            if (!tout || !vm_tensor_attach_tangent(vm, out, tout)) {
+                vm_raise_error_msg(vm, "tensor-scale: could not propagate the derivative");
+                break;
+            }
+        }
         VM_PUSH_TENSOR(vm, out);
         break;
     }
     case 457: case 458: case 459: case 460: { /* reduce: sum,mean,max,min (tensor, axis) */
         Value axis_val = vm_pop(vm), t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-reduce");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-reduce");
         if (!t) break;   /* raised: push nothing */
         int axis = (int)as_number(axis_val);
+        if (vm_tensor_has_tangent(t) && !(axis < 0 && (fid == 457 || fid == 458))) {
+            vm_raise_error_msg(vm, "tensor-reduce: a derivative can pass through a full tensor-sum or tensor-mean only on the VM; use the native backend");
+            break;
+        }
         /* Higher-order mapping can produce dual tensor elements even from a
          * plain input (a differentiable closure capture). Full reductions
          * must retain their complete scalar carrier through ordinary AD. */
@@ -10773,8 +11013,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 475: { /* layer-norm(tensor, gamma, beta, epsilon) */
         Value eps_val = vm_pop(vm), beta_val = vm_pop(vm), gamma_val = vm_pop(vm);
         Value input_val = vm_pop(vm);
-        VmTensor* input = vm_tensor_operand(vm, input_val, "layer-norm");
+        VmTensor* input = vm_tensor_operand_carrier(vm, input_val, "layer-norm");
         if (!input) break;
+        /* The kernel carries the input's tangent; a derivative in the scalar
+         * parameters has no rule here and is refused, not read as its primal. */
+        if (gamma_val.type == VAL_DUAL || beta_val.type == VAL_DUAL || eps_val.type == VAL_DUAL ||
+            gamma_val.type == VAL_HYPER_DUAL || beta_val.type == VAL_HYPER_DUAL || eps_val.type == VAL_HYPER_DUAL) {
+            vm_raise_error_msg(vm, "layer-norm: a derivative with respect to gamma, beta or epsilon cannot pass through layer-norm on the VM; use the native backend");
+            break;
+        }
         VmTensor* out = vm_tensor_layer_norm_scalar(&vm->heap.regions, input,
             as_number_vm(vm, gamma_val), as_number_vm(vm, beta_val),
             as_number_vm(vm, eps_val));
@@ -10785,11 +11032,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 477: { /* scaled-dot-attention(Q, K, V) */
         Value v_val = vm_pop(vm), k_val = vm_pop(vm), q_val = vm_pop(vm);
-        VmTensor* q = vm_tensor_operand(vm, q_val, "scaled-dot-attention");
+        VmTensor* q = vm_tensor_operand_carrier(vm, q_val, "scaled-dot-attention");
         if (!q) break;
-        VmTensor* k = vm_tensor_operand(vm, k_val, "scaled-dot-attention");
+        VmTensor* k = vm_tensor_operand_carrier(vm, k_val, "scaled-dot-attention");
         if (!k) break;
-        VmTensor* v = vm_tensor_operand(vm, v_val, "scaled-dot-attention");
+        VmTensor* v = vm_tensor_operand_carrier(vm, v_val, "scaled-dot-attention");
         if (!v) break;
         VmTensor* out = vm_tensor_scaled_dot_attention(&vm->heap.regions,
                                                        q, k, v, NULL);
@@ -16092,7 +16339,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 250: { /* atan2 */
         Value x = vm_pop(vm), y = vm_pop(vm);
-        vm_push(vm, FLOAT_VAL(atan2(as_number(y), as_number(x))));
+        /* d atan2(y, x) = (x dy - y dx) / (x^2 + y^2) */
+        double xv, dx, yv, dy;
+        if (!vm_real_with_tangent(vm, y, &yv, &dy, "atan2") ||
+            !vm_real_with_tangent(vm, x, &xv, &dx, "atan2")) break;
+        double r2 = xv * xv + yv * yv;
+        if ((dx != 0.0 || dy != 0.0) && r2 == 0.0) {
+            vm_raise_error_msg(vm, "atan2: not differentiable at (0, 0)");
+            break;
+        }
+        vm_push(vm, vm_real_result(vm, atan2(yv, xv),
+                                   (dx != 0.0 || dy != 0.0) ? (xv * dy - yv * dx) / r2 : 0.0));
         break;
     }
     /* Directed rounding (certified enclosures, docs/reference/stdlib/
@@ -16346,8 +16603,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Math extensions (720-746)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 720: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 720)) break; vm_push(vm, FLOAT_VAL(cosh(as_number(a)))); break; }
-    case 721: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 721)) break; vm_push(vm, FLOAT_VAL(sinh(as_number(a)))); break; }
+    case 720: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 720)) break; vm_push_real_unary(vm, a, cosh, vm_d_cosh, "cosh"); break; }
+    case 721: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 721)) break; vm_push_real_unary(vm, a, sinh, vm_d_sinh, "sinh"); break; }
     case 722: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 722)) break;
         if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 387); break; }
         vm_push(vm, FLOAT_VAL(tanh(as_number(a)))); break; }
