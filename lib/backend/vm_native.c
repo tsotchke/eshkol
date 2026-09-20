@@ -5411,6 +5411,77 @@ static int vm_tensor_attach_tangent(VM* vm, VmTensor* out, const VmTensor* tange
     return 1;
 }
 
+/* First-order tangent for the elementwise tensor family.  Keeping the chain
+ * rule here means every VM unary builtin uses the same carrier boundary and
+ * never falls back to reading a dual tensor's primal (SW-186). */
+static VmTensor* vm_tensor_unary_with_tangent(VM* vm, const VmTensor* t,
+                                              VmTensor* out, int fid,
+                                              const char* who) {
+    if (!out || !vm_tensor_has_tangent(t)) return out;
+    VmRegionStack* rs = &vm->heap.regions;
+    VmTensor* tangent = vm_tensor_new(rs, t->shape, t->n_dims);
+    if (!tangent) return NULL;
+    for (int64_t i = 0; i < t->total; ++i) {
+        double x = t->data[i];
+        double dx = t->dual_data ? t->dual_data[i].tangent : 0.0;
+        double d = 0.0;
+        switch (fid) {
+            case 450: d = -dx; break;                         /* neg */
+            case 451: d = (x > 0.0 ? dx : (x < 0.0 ? -dx : 0.0)); break;
+            case 452: d = dx / (2.0 * sqrt(x)); break;
+            case 453: d = out->data[i] * dx; break;
+            case 454: d = dx / x; break;
+            case 455: d = cos(x) * dx; break;
+            case 461: d = -sin(x) * dx; break;
+            case 462: d = x > 0.0 ? dx : 0.0; break;          /* relu */
+            case 464: d = out->data[i] * (1.0 - out->data[i]) * dx; break;
+            case 465: d = (1.0 - out->data[i] * out->data[i]) * dx; break; /* tanh */
+            case 466: d = (x > 0.0 ? 1.0 : 0.01) * dx; break;
+            case 467: d = x > 0.0 ? dx : exp(x) * dx; break; /* elu */
+            case 468: {                                      /* gelu */
+                const double k = 0.7978845608028654;
+                double u = k * (x + 0.044715 * x * x * x);
+                double du = k * (1.0 + 3.0 * 0.044715 * x * x);
+                d = (0.5 * (1.0 + tanh(u)) + 0.5 * x * (1.0 - tanh(u) * tanh(u)) * du) * dx;
+                break;
+            }
+            case 469: {                                      /* swish */
+                double s = 1.0 / (1.0 + exp(-x));
+                d = (s + x * s * (1.0 - s)) * dx;
+                break;
+            }
+            default:
+                vm_raise_error_msg(vm, who ? who : "tensor unary operation");
+                return NULL;
+        }
+        tangent->data[i] = d;
+    }
+    if (!vm_tensor_attach_tangent(vm, out, tangent)) return NULL;
+    return out;
+}
+
+static VmTensor* vm_tensor_softmax_with_tangent(VM* vm, const VmTensor* t,
+                                                VmTensor* out) {
+    if (!out || !vm_tensor_has_tangent(t)) return out;
+    VmTensor* tangent = vm_tensor_new(&vm->heap.regions, t->shape, t->n_dims);
+    if (!tangent) return NULL;
+    int64_t width = t->n_dims ? t->shape[t->n_dims - 1] : t->total;
+    if (width <= 0) width = 1;
+    for (int64_t base = 0; base < t->total; base += width) {
+        double dot = 0.0;
+        for (int64_t j = 0; j < width && base + j < t->total; ++j) {
+            double dx = t->dual_data ? t->dual_data[base + j].tangent : 0.0;
+            dot += out->data[base + j] * dx;
+        }
+        for (int64_t j = 0; j < width && base + j < t->total; ++j) {
+            double dx = t->dual_data ? t->dual_data[base + j].tangent : 0.0;
+            tangent->data[base + j] = out->data[base + j] * (dx - dot);
+        }
+    }
+    if (!vm_tensor_attach_tangent(vm, out, tangent)) return NULL;
+    return out;
+}
+
 /**
  * @brief SW-26: `(vector-ref t idx)` where `t` is a HEAP_TENSOR, not a
  *         HEAP_VECTOR — e.g. the tensor `fg-marginal` returns. Before this
@@ -10841,7 +10912,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 450: case 451: case 452: case 453: case 454: case 455: { /* tensor unary: neg,abs,sqrt,exp,log,sin,cos */
         Value t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-unary-op");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-unary-op");
         if (!t) break;   /* raised: push nothing */
         VmTensor* out = NULL;
         switch (fid) {
@@ -10853,6 +10924,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
             case 455: out = vm_tensor_sin_op(&vm->heap.regions, t); break;
         }
         if (!out) { vm_push(vm, NIL_VAL); break; }
+        out = vm_tensor_unary_with_tangent(vm, t, out, fid, "tensor-unary-op: could not propagate the derivative");
+        if (!out) break;
         VM_PUSH_TENSOR(vm, out);
         break;
     }
@@ -10930,10 +11003,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 461: { /* cos tensor */
         Value t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-cos");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-cos");
         if (!t) break;   /* raised: push nothing */
         VmTensor* out = vm_tensor_cos_op(&vm->heap.regions, t);
         if (!out) { vm_push(vm, NIL_VAL); break; }
+        out = vm_tensor_unary_with_tangent(vm, t, out, fid, "tensor-cos: could not propagate the derivative");
+        if (!out) break;
         VM_PUSH_TENSOR(vm, out);
         break;
     }
@@ -10965,7 +11040,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             break;
         }
         if (!is_tensor_or_vector) { vm_push(vm, NIL_VAL); break; }
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-activation");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-activation");
         if (!t) break;   /* raised: push nothing */
         VmTensor* out = NULL;
         /* GPU dispatch for softmax */
@@ -10980,16 +11055,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
             case 468: out = vm_tensor_gelu(&vm->heap.regions, t); break;
         }
         if (!out) { vm_push(vm, NIL_VAL); break; }
+        if (fid == 463)
+            out = vm_tensor_softmax_with_tangent(vm, t, out);
+        else
+            out = vm_tensor_unary_with_tangent(vm, t, out, fid, "tensor-activation: could not propagate the derivative");
+        if (!out) break;
         out->dtype = t->dtype;
         VM_PUSH_TENSOR(vm, out);
         break;
     }
     case 469: { /* swish */
         Value t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "swish");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "swish");
         if (!t) break;   /* raised: push nothing */
         VmTensor* out = vm_tensor_swish(&vm->heap.regions, t);
         if (!out) { vm_push(vm, NIL_VAL); break; }
+        out = vm_tensor_unary_with_tangent(vm, t, out, fid, "swish: could not propagate the derivative");
+        if (!out) break;
         VM_PUSH_TENSOR(vm, out);
         break;
     }
