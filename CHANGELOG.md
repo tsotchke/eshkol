@@ -7,12 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- **Macro shadowing now fails loudly:** `define-syntax`, `let-syntax`, and
-  `letrec-syntax` reject parser-lowered special-form names with an explicit
-  unsupported diagnostic on native and VM frontends (SW-192). Ordinary
-  `syntax-rules` names remain supported; true special-form shadowing is still
-  a separate language-design item.
-
 ## [1.3.5-evolve] - 2026-09-22
 
 Release date: Tuesday, September 22, 2026. The callee-identity, type-precision

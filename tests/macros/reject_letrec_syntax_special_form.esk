@@ -1,3 +1,0 @@
-; SW-192: recursive local parser-lowered special-form macro bindings fail.
-(letrec-syntax ((cond (syntax-rules () ((cond x) x))))
-  (cond 1))

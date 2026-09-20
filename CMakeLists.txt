@@ -11230,29 +11230,3 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
     set_tests_properties(ownership_nested_diagnostics PROPERTIES
         TIMEOUT 90 LABELS "ownership;memory;regression")
 endif()
-
-# SW-192: parser-lowered special-form names must fail loudly when used as
-# syntax-rules bindings on both native and bytecode frontends.
-if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/macros/special_form_macro_shadow_test.sh")
-    add_test(
-        NAME special_form_macro_shadow_rejection
-        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/macros/special_form_macro_shadow_test.sh"
-    )
-    set_tests_properties(special_form_macro_shadow_rejection PROPERTIES
-        TIMEOUT 120
-        ENVIRONMENT
-            "ESHKOL_RUN=$<TARGET_FILE:eshkol-run>;ESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
-        PASS_REGULAR_EXPRESSION "PASS: SW-192"
-        FAIL_REGULAR_EXPRESSION "FAIL:")
-endif()
-
-if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND
-   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/macros/check_special_form_macro_guard.py")
-    add_test(
-        NAME special_form_macro_guard_mapping
-        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/macros/check_special_form_macro_guard.py")
-    set_tests_properties(special_form_macro_guard_mapping PROPERTIES
-        TIMEOUT 30 PASS_REGULAR_EXPRESSION "PASS: special-form macro guard")
-endif()
