@@ -16,6 +16,10 @@ the source changes; the verification record for the tagged commit is the
 
 ### Added
 
+- Private, experimental ESKM v2 preflight validation with exact-byte fixtures,
+  C and C++ consumers, and malformed-input checks. Public checkpoint I/O
+  remains ESKM v1. (#699)
+
 - **Navier-Stokes blowup mechanization trajectory.** Added
   `docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md`, a step-by-step map from
   the 2026 OpenAI finite-time Navier-Stokes blowup construction to Eshkol
@@ -1333,6 +1337,10 @@ the source changes; the verification record for the tagged commit is the
   which is OALR's semantics and is equally true natively.
 
 ### Fixed
+
+- ESKM v1 scalar and empty tensor checkpoints retain their shapes and values
+  across native and VM producers and consumers. Scalar observation is admitted
+  narrowly without relaxing arithmetic tensor metadata checks. (#698)
 
 - **One unspecified value (ADR-0024).** The native value model had no value
   for what R7RS leaves unspecified: `display` and `newline` returned the empty
