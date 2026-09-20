@@ -5482,6 +5482,40 @@ static VmTensor* vm_tensor_softmax_with_tangent(VM* vm, const VmTensor* t,
     return out;
 }
 
+/* Broadcast-aware tangent rules for tensor-pow/max/min.  Ties follow the
+ * existing native rule: maximum/minimum select the second operand when equal. */
+static VmTensor* vm_tensor_binary_special_tangent(VM* vm, const VmTensor* a,
+                                                  const VmTensor* b, VmTensor* out,
+                                                  int fid) {
+    if (!out || (!vm_tensor_has_tangent(a) && !vm_tensor_has_tangent(b))) return out;
+    VmRegionStack* rs = &vm->heap.regions;
+    VmTensor* tangent = vm_tensor_new(rs, out->shape, out->n_dims);
+    int64_t* indices = vm_tensor_dim_scratch(rs, out->n_dims);
+    if (!tangent || !indices) return NULL;
+    for (int64_t i = 0; i < out->total; ++i) {
+        int64_t ai = vm_broadcast_src_index(i, out->shape, out->n_dims,
+                                             a->shape, a->n_dims, a->strides, indices);
+        int64_t bi = vm_broadcast_src_index(i, out->shape, out->n_dims,
+                                             b->shape, b->n_dims, b->strides, indices);
+        double da = a->dual_data ? a->dual_data[ai].tangent : 0.0;
+        double db = b->dual_data ? b->dual_data[bi].tangent : 0.0;
+        double av = a->data[ai], bv = b->data[bi];
+        if (fid == 445) {
+            if (av <= 0.0) {
+                vm_raise_error_msg(vm, "tensor-pow: derivative requires a positive base");
+                return NULL;
+            }
+            tangent->data[i] = out->data[i] * (db * log(av) + bv * da / av);
+        } else if (fid == 446) {
+            tangent->data[i] = av > bv ? da : db;
+        } else {
+            tangent->data[i] = av < bv ? da : db;
+        }
+    }
+    if (!vm_tensor_attach_tangent(vm, out, tangent)) return NULL;
+    return out;
+}
+
 /**
  * @brief SW-26: `(vector-ref t idx)` where `t` is a HEAP_TENSOR, not a
  *         HEAP_VECTOR — e.g. the tensor `fg-marginal` returns. Before this
@@ -10816,10 +10850,6 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* b = vm_tensor_operand_carrier(vm, b_val, "tensor-binary-op");
         if (!b) break;   /* raised: push nothing */
         const int bin_tangent = vm_tensor_has_tangent(a) || vm_tensor_has_tangent(b);
-        if (bin_tangent && fid > 444) {
-            vm_raise_error_msg(vm, "tensor-binary-op: a derivative cannot pass through tensor pow, max or min on the VM; use the native backend");
-            break;
-        }
         int64_t broadcast_shape[16];
         int64_t broadcast_rank = 0;
         int64_t broadcast_total = 0;
@@ -10847,7 +10877,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         if (!out) { vm_raise_error_msg(vm, "tensor operation: invalid shape or allocation limit"); break; }
         out->dtype = vm_tensor_promote_dtype(a, b);
-        if (bin_tangent) {
+        if (bin_tangent && fid <= 444) {
             /* d(a+b) = da+db, d(a-b) = da-db, d(ab) = da b + a db,
              * d(a/b) = (da b - a db) / b^2, on the same broadcasting kernels. */
             VmRegionStack* rs = &vm->heap.regions;
@@ -10877,6 +10907,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm_raise_error_msg(vm, "tensor-binary-op: could not propagate the derivative");
                 break;
             }
+        } else if (bin_tangent && fid >= 445) {
+            out = vm_tensor_binary_special_tangent(vm, a, b, out, fid);
+            if (!out) break;
         }
         VM_PUSH_TENSOR(vm, out);
         break;
