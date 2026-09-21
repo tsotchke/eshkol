@@ -810,6 +810,16 @@ static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
                 vm_evac_scan_range(bs, d->coeff,
                                    (size_t)(d->order + 1) * sizeof(double));
             }
+            if (d->carrier_coeff) {
+                vm_evac_retain_ptr(bs, d->carrier_coeff);
+                vm_evac_scan_range(bs, d->carrier_coeff,
+                                   (size_t)(d->order + 1) * sizeof(VmDual*));
+                for (uint32_t i = 0; i <= d->order; i++) {
+                    if (!d->carrier_coeff[i]) continue;
+                    vm_evac_retain_ptr(bs, d->carrier_coeff[i]);
+                    vm_evac_scan_range(bs, d->carrier_coeff[i], sizeof(VmDual));
+                }
+            }
             if (d->tangent_coeff) {
                 vm_evac_retain_ptr(bs, d->tangent_coeff);
                 vm_evac_scan_range(bs, d->tangent_coeff,

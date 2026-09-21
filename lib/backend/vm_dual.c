@@ -45,6 +45,7 @@ static VmDual* vm_dual_new(VmRegionStack* rs, double primal, double tangent) {
     d->primal_sign = 0;
     d->coeff = NULL;
     d->exact_coeff = NULL;
+    d->carrier_coeff = NULL;
     d->tangent_coeff = NULL;
     d->exact_tangent_coeff = NULL;
     d->tangent2_coeff = NULL;
@@ -97,6 +98,7 @@ static VmDual* vm_dual_new_exact(VmRegionStack* rs,
     d->primal_sign = 0;
     d->coeff = NULL;
     d->exact_coeff = NULL;
+    d->carrier_coeff = NULL;
     d->tangent_coeff = NULL;
     d->exact_tangent_coeff = NULL;
     d->tangent2_coeff = NULL;
@@ -172,6 +174,7 @@ static VmDual* taylor_alloc(VmRegionStack* rs, uint32_t order, int exact,
     d->exact_coeff = exact
         ? (VmRational**)vm_alloc(rs, (size_t)(order + 1) * sizeof(VmRational*))
         : NULL;
+    d->carrier_coeff = NULL;
     d->tangent_coeff = with_tangent
         ? (double*)vm_alloc(rs, (size_t)(order + 1) * sizeof(double)) : NULL;
     d->exact_tangent_coeff = (exact && with_tangent)
@@ -611,11 +614,79 @@ static VmDual* vm_taylor_hyper_binary(VmRegionStack* rs, const VmDual* a,
 }
 
 static VmDual* taylor_binary(VmRegionStack* rs, const VmDual* a,
+                             const VmDual* b, char op);
+VmDual* vm_dual_exp(VmRegionStack*, const VmDual*);
+VmDual* vm_dual_sin(VmRegionStack*, const VmDual*);
+VmDual* vm_dual_cos(VmRegionStack*, const VmDual*);
+VmDual* vm_dual_log(VmRegionStack*, const VmDual*);
+VmDual* vm_dual_sqrt(VmRegionStack*, const VmDual*);
+VmDual* vm_dual_neg(VmRegionStack*, const VmDual*);
+VmDual* vm_dual_abs(VmRegionStack*, const VmDual*);
+VmDual* vm_dual_relu(VmRegionStack*, const VmDual*);
+VmDual* vm_dual_scale(VmRegionStack*, double, const VmDual*);
+
+/* Preserve an enclosing Taylor carrier at each coefficient. */
+static VmDual* taylor_carrier_at(VmRegionStack* rs, const VmDual* d,
+                                 uint32_t k) {
+    if (!d) return vm_dual_new(rs, 0.0, 0.0);
+    if (d->kind == VM_DUAL_KIND_TAYLOR && d->carrier_coeff) {
+        if (k <= d->order && d->carrier_coeff[k]) return d->carrier_coeff[k];
+        return vm_dual_new(rs, 0.0, 0.0);
+    }
+    if (d->kind == VM_DUAL_KIND_TAYLOR)
+        return vm_dual_new(rs, k <= d->order ? d->coeff[k] : 0.0, 0.0);
+    return vm_dual_new(rs, k == 0 ? d->primal : 0.0, 0.0);
+}
+
+static VmDual* taylor_carrier_binary(VmRegionStack* rs, const VmDual* a,
+                                     const VmDual* b, char op, uint32_t order,
+                                     uint32_t epoch) {
+    VmDual* out = taylor_alloc(rs, order, 0, 0);
+    if (!out) return NULL;
+    out->epoch = epoch;
+    out->carrier_coeff = (VmDual**)vm_alloc(rs,
+        (size_t)(order + 1) * sizeof(VmDual*));
+    if (!out->carrier_coeff) return NULL;
+    memset(out->carrier_coeff, 0, (size_t)(order + 1) * sizeof(VmDual*));
+    for (uint32_t k = 0; k <= order; k++) {
+        VmDual* value = NULL;
+        if (op == '+' || op == '-') {
+            value = taylor_binary(rs, taylor_carrier_at(rs, a, k),
+                                  taylor_carrier_at(rs, b, k), op);
+        } else if (op == '*') {
+            value = vm_dual_new(rs, 0.0, 0.0);
+            for (uint32_t i = 0; value && i <= k; i++) {
+                VmDual* term = taylor_binary(rs, taylor_carrier_at(rs, a, i),
+                                              taylor_carrier_at(rs, b, k - i), '*');
+                value = term ? taylor_binary(rs, value, term, '+') : NULL;
+            }
+        } else if (op == '/') {
+            value = taylor_carrier_at(rs, a, k);
+            for (uint32_t i = 1; value && i <= k; i++) {
+                VmDual* term = taylor_binary(rs, taylor_carrier_at(rs, b, i),
+                                              out->carrier_coeff[k - i], '*');
+                value = term ? taylor_binary(rs, value, term, '-') : NULL;
+            }
+            value = value ? taylor_binary(rs, value,
+                                          taylor_carrier_at(rs, b, 0), '/') : NULL;
+        }
+        if (!value) return NULL;
+        out->carrier_coeff[k] = value;
+        out->coeff[k] = value->primal;
+    }
+    out->primal = out->coeff[0];
+    out->tangent = order ? out->coeff[1] : 0.0;
+    return out;
+}
+
+static VmDual* taylor_binary(VmRegionStack* rs, const VmDual* a,
                              const VmDual* b, char op) {
     uint32_t n = a->kind == VM_DUAL_KIND_TAYLOR ? a->order : 1;
     if (b->kind == VM_DUAL_KIND_TAYLOR && b->order > n) n = b->order;
     uint32_t active_epoch = taylor_epoch(a);
     if (taylor_epoch(b) > active_epoch) active_epoch = taylor_epoch(b);
+    if ((a && a->carrier_coeff) || (b && b->carrier_coeff))
+        return taylor_carrier_binary(rs, a, b, op, n, active_epoch);
     uint32_t foreign_epochs[2] = {0u, 0u};
     int foreign_count = 0;
     vm_collect_epochs(a, active_epoch, foreign_epochs, &foreign_count);
@@ -773,7 +844,96 @@ static VmDual* taylor_binary(VmRegionStack* rs, const VmDual* a,
     return r;
 }
 
+/* Apply a unary Taylor recurrence over coefficients that are themselves
+ * carriers.  This is the ring-level analogue of taylor_unary's double
+ * recurrence and is what keeps sin/exp/log from flattening nested levels. */
+static VmDual* taylor_carrier_unary(VmRegionStack* rs, const VmDual* a, int op) {
+    uint32_t n = a->order;
+    VmDual* r = taylor_alloc(rs, n, 0, 0);
+    if (!r) return NULL;
+    r->epoch = a->epoch;
+    r->carrier_coeff = (VmDual**)vm_alloc(rs, (size_t)(n + 1) * sizeof(VmDual*));
+    if (!r->carrier_coeff) return NULL;
+    memset(r->carrier_coeff, 0, (size_t)(n + 1) * sizeof(VmDual*));
+    VmDual* zero = vm_dual_new(rs, 0.0, 0.0);
+    VmDual* one = vm_dual_new(rs, 1.0, 0.0);
+    if (!zero || !one) return NULL;
+    #define C(k) taylor_carrier_at(rs, a, (k))
+    #define BIN(x,y,o) taylor_binary(rs, (x), (y), (o))
+    if (op == 0 || op == 1 || op == 2) {
+        for (uint32_t k = 0; k <= n; ++k) {
+            VmDual* v = C(k); if (!v) return NULL;
+            r->carrier_coeff[k] = op == 0 ? vm_dual_neg(rs, v) :
+                (op == 1 ? vm_dual_abs(rs, v) : vm_dual_relu(rs, v));
+            if (!r->carrier_coeff[k]) return NULL;
+        }
+    } else if (op == 3) {
+        r->carrier_coeff[0] = vm_dual_exp(rs, C(0));
+        if (!r->carrier_coeff[0]) return NULL;
+        for (uint32_t k = 1; k <= n; ++k) {
+            VmDual* sum = zero;
+            for (uint32_t i = 1; i <= k; ++i) {
+                VmDual* term = BIN(C(i), r->carrier_coeff[k-i], '*');
+                VmDual* scaled = term ? vm_dual_scale(rs, (double)i, term) : NULL;
+                sum = scaled ? BIN(sum, scaled, '+') : NULL;
+                if (!sum) return NULL;
+            }
+            r->carrier_coeff[k] = vm_dual_scale(rs, 1.0/(double)k, sum);
+            if (!r->carrier_coeff[k]) return NULL;
+        }
+    } else if (op == 4 || op == 5) {
+        VmDual** other = (VmDual**)vm_alloc(rs, (size_t)(n + 1) * sizeof(VmDual*));
+        if (!other) return NULL;
+        r->carrier_coeff[0] = op == 4 ? vm_dual_sin(rs, C(0)) : vm_dual_cos(rs, C(0));
+        other[0] = op == 4 ? vm_dual_cos(rs, C(0)) : vm_dual_sin(rs, C(0));
+        if (!r->carrier_coeff[0] || !other[0]) return NULL;
+        for (uint32_t k = 1; k <= n; ++k) {
+            VmDual *sum = zero, *osum = zero;
+            for (uint32_t i = 1; i <= k; ++i) {
+                VmDual* t = BIN(C(i), other[k-i], '*');
+                VmDual* u = BIN(C(i), r->carrier_coeff[k-i], '*');
+                sum = t ? BIN(sum, vm_dual_scale(rs, (double)i, t), '+') : NULL;
+                osum = u ? BIN(osum, vm_dual_scale(rs, (double)i, u), '+') : NULL;
+                if (!sum || !osum) return NULL;
+            }
+            r->carrier_coeff[k] = vm_dual_scale(rs, 1.0/(double)k, op == 4 ? sum : vm_dual_neg(rs, sum));
+            other[k] = vm_dual_scale(rs, 1.0/(double)k, op == 4 ? vm_dual_neg(rs, osum) : osum);
+            if (!r->carrier_coeff[k] || !other[k]) return NULL;
+        }
+    } else if (op == 6) {
+        VmDual** q = (VmDual**)vm_alloc(rs, (size_t)(n + 1) * sizeof(VmDual*));
+        if (!q) return NULL; q[0] = zero;
+        r->carrier_coeff[0] = vm_dual_log(rs, C(0));
+        if (!r->carrier_coeff[0]) return NULL;
+        for (uint32_t k = 1; k <= n; ++k) {
+            VmDual* num = vm_dual_scale(rs, (double)k, C(k));
+            for (uint32_t i = 1; num && i < k; ++i)
+                num = BIN(num, BIN(C(i), q[k-i], '*'), '-');
+            q[k] = num ? BIN(num, C(0), '/') : NULL;
+            r->carrier_coeff[k] = q[k] ? vm_dual_scale(rs, 1.0/(double)k, q[k]) : NULL;
+            if (!r->carrier_coeff[k]) return NULL;
+        }
+    } else { /* sqrt */
+        r->carrier_coeff[0] = vm_dual_sqrt(rs, C(0));
+        if (!r->carrier_coeff[0]) return NULL;
+        for (uint32_t k = 1; k <= n; ++k) {
+            VmDual* sum = C(k);
+            for (uint32_t i = 1; i < k; ++i)
+                sum = sum ? BIN(sum, BIN(r->carrier_coeff[i], r->carrier_coeff[k-i], '*'), '-') : NULL;
+            r->carrier_coeff[k] = sum ? BIN(sum, vm_dual_scale(rs, 2.0, r->carrier_coeff[0]), '/') : NULL;
+            if (!r->carrier_coeff[k]) return NULL;
+        }
+    }
+    #undef C
+    #undef BIN
+    for (uint32_t k = 0; k <= n; ++k) r->coeff[k] = r->carrier_coeff[k]->primal;
+    r->primal = r->coeff[0]; r->tangent = n ? r->coeff[1] : 0.0;
+    return r;
+}
+
 static VmDual* taylor_unary(VmRegionStack* rs, const VmDual* a, int op) {
+    if (a && a->kind == VM_DUAL_KIND_TAYLOR && a->carrier_coeff)
+        return taylor_carrier_unary(rs, a, op);
     uint32_t n = a->kind == VM_DUAL_KIND_TAYLOR ? a->order : 1;
     int exact = dual_exact_operand(a) && (op == 0 || op == 1 || op == 2);
     VmDual* r = taylor_alloc(rs, n, exact, a->tangent_coeff != NULL);
@@ -963,28 +1123,20 @@ VmDual* vm_dual_make_taylor_ride_seed(VmRegionStack* rs,
 VmDual* vm_dual_make_taylor_carry_seed(VmRegionStack* rs,
                                        const VmDual* outer,
                                        uint32_t order) {
-    if (!rs || !outer || !vm_dual_is_taylor(outer) || outer->order != 1)
+    if (!rs || !outer || !vm_dual_is_taylor(outer))
         return NULL;
-    int exact = outer->exact_coeff != NULL;
-    VmDual* d = taylor_alloc(rs, order, exact, 1);
+    VmDual* d = taylor_alloc(rs, order, 0, 0);
     if (!d) return NULL;
     d->epoch = vm_dual_next_taylor_epoch();
-    d->tangent_epoch = outer->epoch;
-    d->coeff[0] = taylor_coeff_as_double(outer, 0);
+    d->carrier_coeff = (VmDual**)vm_alloc(rs,
+        (size_t)(order + 1) * sizeof(VmDual*));
+    if (!d->carrier_coeff) return NULL;
+    memset(d->carrier_coeff, 0, (size_t)(order + 1) * sizeof(VmDual*));
+    d->carrier_coeff[0] = (VmDual*)outer;
+    d->coeff[0] = outer->primal;
     if (order >= 1) d->coeff[1] = 1.0;
-    d->tangent_coeff[0] = taylor_coeff_as_double(outer, 1);
-    if (exact) {
-        VmRational* zero = vm_rational_from_int(vm_active_arena(rs), 0);
-        VmRational* one = vm_rational_from_int(vm_active_arena(rs), 1);
-        if (!zero || !one) return NULL;
-        for (uint32_t k = 0; k <= order; ++k) {
-            d->exact_coeff[k] = zero;
-            d->exact_tangent_coeff[k] = zero;
-        }
-        d->exact_coeff[0] = outer->exact_coeff[0];
-        if (order >= 1) d->exact_coeff[1] = one;
-        d->exact_tangent_coeff[0] = outer->exact_coeff[1];
-    }
+    if (order >= 1) d->carrier_coeff[1] = vm_dual_new(rs, 1.0, 0.0);
+    if (order >= 1 && !d->carrier_coeff[1]) return NULL;
     return d;
 }
 
@@ -995,6 +1147,15 @@ static VmDual* vm_dual_taylor_project_epoch_core(VmRegionStack* rs,
                                                  int coefficient) {
     if (!rs || !result || !vm_dual_is_taylor(result) || order > result->order)
         return NULL;
+
+    if (result->carrier_coeff && result->carrier_coeff[order]) {
+        VmDual* value = result->carrier_coeff[order];
+        if (coefficient || order < 2) return value;
+        VmDual* factor = vm_dual_new(rs, 1.0, 0.0);
+        if (!factor) return NULL;
+        for (uint32_t i = 2; i <= order; ++i) factor->primal *= (double)i;
+        return taylor_binary(rs, value, factor, '*');
+    }
 
     if (result->tangent_coeff && selected_epoch == result->tangent_epoch &&
         selected_epoch != result->epoch) {

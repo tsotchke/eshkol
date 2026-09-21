@@ -6410,14 +6410,9 @@ static Value vm_taylor_apply(VM* vm, Value f, Value point, uint32_t order,
         if (order == 1) {
             seed = vm_dual_make_taylor_ride_seed(&vm->heap.regions, outer);
             nested_kind = 1;
-        } else if (outer->order == 1) {
+        } else {
             seed = vm_dual_make_taylor_carry_seed(&vm->heap.regions, outer, order);
             nested_kind = 2;
-        } else {
-            vm_raise_error_msg(vm,
-                "unsupported nested Taylor differentiation: both passes "
-                "have order >= 2");
-            return NIL_VAL;
         }
     } else {
         VmRational* exact_point = vm_exact_rational_of(vm, point);
@@ -6460,6 +6455,12 @@ static Value vm_taylor_result_value(VM* vm, Value result, uint32_t n,
         result.as.ptr < vm->heap.capacity && vm->heap.objects[result.as.ptr]) {
         VmDual* d = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
         if (d && vm_dual_is_taylor(d)) {
+            if (d->carrier_coeff && n <= d->order && d->carrier_coeff[n]) {
+                VmDual* selected = d->carrier_coeff[n];
+                if (vm_taylor_active_depth > 0)
+                    return vm_make_taylor_val(vm, selected);
+                return FLOAT_VAL(selected->primal);
+            }
             if (!derivative && d->tangent_coeff && n <= d->order) {
                 if (d->tangent_epoch != 0 && d->tangent_epoch != d->epoch) {
                     VmDual* projected = vm_dual_taylor_project_coefficient(

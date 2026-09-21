@@ -153,7 +153,7 @@ typedef struct {
 #define VM_DUAL_KIND_SCALAR  0u
 #define VM_DUAL_KIND_TAYLOR  1u
 
-typedef struct {
+typedef struct VmDual {
     double primal;
     double tangent;
     VmRational* eprimal;   /* NULL = primal is inexact  */
@@ -168,6 +168,9 @@ typedef struct {
     int32_t primal_sign;   /* exact sign hint when the double primal underflows */
     double* coeff;         /* c[0..order], present for VM_DUAL_KIND_TAYLOR */
     VmRational** exact_coeff; /* optional exact c[0..order] parallel array */
+    /* Recursive carrier coefficients. Entry k preserves the complete
+     * enclosing carrier for c[k] rather than flattening it to a double. */
+    struct VmDual** carrier_coeff;
     double* tangent_coeff; /* optional d(c[k])/d(seed), for nested Taylor */
     VmRational** exact_tangent_coeff; /* exact orthogonal tangent, when available */
     double* tangent2_coeff;
