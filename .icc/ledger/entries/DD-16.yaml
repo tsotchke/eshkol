@@ -1,0 +1,73 @@
+id: DD-16
+bucket: DOC-DEBT
+status: open
+title: "Every AOT-compiled test program re-links the whole stdlib object, so CI test-lane wall time scales with stdlib.o size rather than with test content"
+evidence: >-
+  scripts/run_all_tests.ps1 compiles each .esk test into its own executable via
+  Invoke-EshkolCompile, which runs `eshkol-run -L <build dir> -o <out> <test>`.
+  exe/eshkol-run.cpp auto-links the pre-built stdlib object into that executable
+  (find_stdlib_object / the "Auto-linking pre-compiled stdlib" path) and then
+  re-walks the stdlib .esk source tree with collect_all_submodules to rebuild the
+  precompiled-module name set. Both costs are paid once per test, and nothing in
+  the harness or the driver caches either across a suite, so a suite of N tests
+  pays N stdlib links. The harness has no per-suite link step to amortise this
+  into, and the driver has no mode that would let it. The same shape holds for
+  scripts/run_vm_parity.sh on Linux, which likewise compiles one native program
+  per corpus file; the Windows lanes are simply where the per-program constant
+  is largest and hit a guard first.
+measured: >-
+  Measured on the hosted windows-11-arm runner label, comparing the master CI run
+  at 66d37878 against the v1.3.5 candidate at 0f33675a -- same lane, same runner
+  label, same harness, differing only in stdlib size (5.4 MB -> 8.4 MB).
+  windows-arm64-lite, per test, compile plus run: bitwise_ops 65 s -> 124 s,
+  type_predicates 63 s -> 125 s, minimal 63 s -> 125 s, strings_closure 63 s ->
+  128 s, logging 78 s -> 131 s. The two heaviest, whose ARM64 COFF exception
+  tables dominate the link, went from 271 s (exception_test) and 244 s
+  (atomic_file_test) to over the 300 s per-test guard and reported COMPILE
+  TIMEOUT. The whole lane went from ~58 minutes to over its 90-minute job budget
+  (last test reported at 89m38s, job cancelled at 90m). windows-arm64-xla, whose
+  13 tests each took 63-68 s at the smaller size, had every test exceed the
+  120 s guard at the larger one. windows-x64-cuda, on the OTHER Windows runner
+  family, went from 49-56 s per typical test (115-117 s for the two ozaki
+  tests) to 104-135 s, and 11 of its 19 tests reported COMPILE TIMEOUT (120 s)
+  -- so this is a Windows-wide per-suite budget problem, not an ARM64 one. The
+  same shape shows up on Linux in scripts/run_vm_parity.sh, which likewise
+  compiles one native program per corpus file: 5.0 s/file -> 9.5 s/file, which
+  with a corpus grown from 107 to 148 files took pillars-fast past its
+  30-minute job budget mid-corpus. The growth factor across every lane that
+  reported on both sizes is ~1.9x. The same driver invocation on an arm64 macOS
+  host takes 0.70 s wall and produces an 8.2 MB executable, so the cost is not
+  intrinsic compile work -- it is the per-test object link and executable write,
+  and it scales with the linked object.
+resolution: >-
+  Not yet resolved, and not resolvable in the test harness: each test here is a
+  separate executable, so there is no per-suite link step for the stdlib link to
+  be amortised into, and the harness already uses the prebuilt stdlib object --
+  the cost IS linking that prebuilt object, once per program. Removing it needs
+  a driver/build change (a shared stdlib the produced programs link against
+  rather than absorb), not a harness change.
+  The v1.3.5 CI change therefore sizes the budgets to the measured cost: the
+  Windows harness's default per-test compile guard from 120 s to 300 s (which
+  covers the xla and gpu suites on both runner families), the windows-lite
+  suite's override from 300 s to 900 s, the Windows job budget from 90 to 150
+  minutes, and the pillars-fast job budget from 30 to 60 minutes so that job's
+  own 30-minute run_vm_parity.sh step budget is reachable. The measurements are
+  recorded in the comments at each site. That makes the lanes report on their
+  real content instead of on a stale constant; it does not make them cheap, and
+  it leaves them one more stdlib growth away from the same failure. Closes when
+  the per-test stdlib link is amortised and these budgets are measured back down
+  at a named SHA.
+caught_by: [direct-measurement, ci-lane-repair-20260911]
+notes: >-
+  Filed as DOC-DEBT rather than SILENT-WRONG because nothing here computes a
+  wrong answer: the lanes fail loudly, with a named timeout. It is ledgered
+  rather than left in the workflow comments because the fix is a build/driver
+  change, not a CI change, and because the raised numbers are otherwise
+  indistinguishable from a considered budget -- the next person to read
+  `timeout-minutes: 150` should be able to find out that it is a symptom with an
+  owner. Separately noted during the same measurement, and NOT covered by this
+  entry: tests/typesystem/no_false_positive_test.esk asserts EXPECT-NO-STDERR
+  "[WARN]" and passes on master but fails on the candidate, because the
+  candidate's stdlib emits five HoTT type warnings on every compile. That is a
+  candidate-content regression, not a capacity one, and needs its own entry or
+  fix.

@@ -1,0 +1,19 @@
+; Two vectors whose shapes cannot be broadcast are fatal on both substrates and
+; must fail closed: nonzero exit, a diagnostic on stderr, nothing past the form.
+;
+; Native used to answer this one SILENTLY AND WRONGLY. The Scheme-vector
+; element-wise kernel loops to operand 1's length over BOTH operands' element
+; arrays, so the two-element operand was read past its end:
+;
+;   (* (vector 1 2 3) (vector 4 5))   before  #(4 10 4.4e-323), exit 0
+;                                             — the last element is whatever
+;                                             followed the vector in the arena
+;                                     after   Shape mismatch in tensor-mul:
+;                                             shapes (3) and (2) are not
+;                                             broadcast-compatible, exit 1
+;
+; The VM has no vector arithmetic under `*` at all and has always refused the
+; whole family loudly, so it was never wrong here — only native was, which is
+; why this belongs in the fail-closed ratchet rather than the corpus.
+(display (* (vector 1 2 3) (vector 4 5)))
+(display "MUST-NOT-PRINT")

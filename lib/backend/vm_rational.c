@@ -333,6 +333,16 @@ double vm_rational_to_double(const VmRational *r) {
     return (double)r->num / (double)r->denom;
 }
 
+int vm_rational_is_zero(const VmRational *r) {
+    if (!r) return 0;
+    return r->is_big ? bignum_is_zero(r->big_num) : r->num == 0;
+}
+
+int vm_rational_sign(const VmRational *r) {
+    if (!r || vm_rational_is_zero(r)) return 0;
+    return r->is_big ? bignum_sign(r->big_num) : (r->num < 0 ? -1 : 1);
+}
+
 /* ============================================================================
  * Arithmetic: __int128_t intermediates, NULL on overflow
  * ============================================================================ */
@@ -525,6 +535,75 @@ static VmRational* vm_rational_inv_exact(VmRegionStack *rs, const VmRational *a)
     return vm_rational_alloc_bn(rs, vm_rat_den_bn(rs, a), vm_rat_num_bn(rs, a));
 }
 
+/* ── Public exact-arithmetic surface (SW-85) ───────────────────────────────
+ * The four `*_exact` helpers above are the never-degrading, bignum-capable
+ * arithmetic the VM's numeric tower already runs on, but they are file-static
+ * and were reachable only through the native-call dispatcher's own switch.
+ * The forward-mode dual carrier needs exactly this arithmetic, from
+ * lib/backend/vm_dual.c, so that an exact seed stays exact through + - * /.
+ * These wrappers are the whole public surface that needs; deliberately thin,
+ * so vm_dual.c never reimplements rational arithmetic and can never disagree
+ * with the tower about what an exact result is. */
+
+/** @brief Exact a `op` b for op in '+', '-', '*', '/'. NULL on exact division
+ *         by exact zero or on allocation failure. */
+VmRational* vm_rational_op_exact(VmRegionStack *rs, const VmRational *a,
+                                 const VmRational *b, char op) {
+    return vm_rational_arith_exact(rs, a, b, op);
+}
+
+/** @brief Exact -a. */
+VmRational* vm_rational_negate_exact(VmRegionStack *rs, const VmRational *a) {
+    return vm_rational_neg_exact(rs, a);
+}
+
+/** @brief Exact |a|. */
+VmRational* vm_rational_absolute_exact(VmRegionStack *rs, const VmRational *a) {
+    return vm_rational_abs_exact(rs, a);
+}
+
+/** @brief The exact rational n/1 for a bignum @p n. Needed so that an AD seed
+ *         at a BIGNUM point is exact too, not just at a fixnum or a ratnum —
+ *         native's exact tier accepts all three, and a VM that accepted only
+ *         two would just move the divergence rather than close it. */
+VmRational* vm_rational_from_bignum(VmRegionStack *rs, VmBignum *n) {
+    if (!rs || !n) return NULL;
+    VmBignum *one = bignum_from_int64(rs, 1);
+    if (!one) return NULL;
+    return vm_rational_alloc_bn(rs, n, one);
+}
+
+/** @brief Convert a finite IEEE-754 double to its exact binary rational. */
+VmRational* vm_rational_from_double_exact(VmRegionStack *rs, double d) {
+    if (!rs || !isfinite(d)) return NULL;
+    if (d == 0.0) return vm_rational_from_int(vm_active_arena(rs), 0);
+
+    int exponent = 0;
+    double fraction = frexp(fabs(d), &exponent);
+    uint64_t mantissa = (uint64_t)ldexp(fraction, 53);
+    int binary_exponent = exponent - 53;
+    while (mantissa && (mantissa & 1u) == 0u) {
+        mantissa >>= 1;
+        binary_exponent++;
+    }
+
+    int64_t signed_mantissa = (int64_t)mantissa;
+    if (d < 0.0) signed_mantissa = -signed_mantissa;
+    if (binary_exponent == 0)
+        return vm_rational_from_int(vm_active_arena(rs), signed_mantissa);
+
+    VmBignum* numerator = bignum_from_int64(rs, signed_mantissa);
+    VmBignum* denominator = bignum_from_int64(rs, 1);
+    if (!numerator || !denominator) return NULL;
+    if (binary_exponent > 0) {
+        numerator = bignum_shift_left(rs, numerator, binary_exponent);
+    } else {
+        denominator = bignum_shift_left(rs, denominator, -binary_exponent);
+    }
+    if (!numerator || !denominator) return NULL;
+    return vm_rational_alloc_bn(rs, numerator, denominator);
+}
+
 /** @brief Exact three-way compare, bignum-capable (cross-multiplication;
  *         both denominators are positive by the normalization invariant). */
 static int vm_rational_compare_exact(VmRegionStack *rs,
@@ -536,6 +615,12 @@ static int vm_rational_compare_exact(VmRegionStack *rs,
     VmBignum *r = bignum_mul(rs, vm_rat_num_bn(rs, b), vm_rat_den_bn(rs, a));
     if (!l || !r) return 0;
     return bignum_compare(l, r);
+}
+
+int vm_rational_compare_exact_values(VmRegionStack *rs,
+                                     const VmRational *a,
+                                     const VmRational *b) {
+    return vm_rational_compare_exact(rs, a, b);
 }
 
 /** @brief Exact equality, bignum-capable.  The representation is canonical

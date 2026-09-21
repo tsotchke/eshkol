@@ -3,9 +3,16 @@
 ;;;
 ;;; Provides convenience wrappers for tensor operations
 ;;;
-;;; Usage: (require tensor-utils)
+;;; Usage: (require tensor.utils)
 
-(provide hstack vstack reshape-as squeeze-all unsqueeze-first unsqueeze-last)
+;; Everything this module defines is part of its public surface. The query,
+;; reshaping and slicing helpers below were defined but not provided, so
+;; `(require tensor.utils)` loaded them and then reported them as unknown
+;; functions at every call site.
+(provide hstack vstack reshape-as squeeze-all unsqueeze-first unsqueeze-last
+         tensor-ndim tensor-size is-scalar? is-vector? is-matrix?
+         expand-dims broadcast-to
+         tensor-take tensor-drop tensor-head tensor-tail)
 
 ;;; ============================================================
 ;;; Shape Utilities
@@ -22,9 +29,14 @@
   (apply concatenate 0 tensors))
 
 ;; reshape-as: Reshape tensor to match another tensor's shape
+;; `reshape` takes the target shape either spelled out as separate dimension
+;; arguments or as a single shape LIST, and `tensor-shape` already answers a
+;; list, so the shape is handed over directly. The earlier
+;; `(apply reshape tensor target-shape)` went through apply's tensor-creation
+;; path, which reads every argument as a dimension: the tensor operand became
+;; the first dimension of a fresh, empty rank-3 tensor.
 (define (reshape-as tensor template)
-  (let ((target-shape (tensor-shape template)))
-    (apply reshape tensor target-shape)))
+  (reshape tensor (tensor-shape template)))
 
 ;; squeeze-all: Remove all dimensions of size 1
 (define (squeeze-all tensor)
@@ -68,7 +80,11 @@
 ;;; ============================================================
 
 ;; expand-dims: Alias for unsqueeze
-(define expand-dims unsqueeze)
+;; Spelled as a procedure rather than `(define expand-dims unsqueeze)`: the
+;; value form made the module report "Unbound variable: unsqueeze" on every
+;; load, because `unsqueeze` is a builtin lowered in call position.
+(define (expand-dims tensor axis)
+  (unsqueeze tensor axis))
 
 ;; broadcast-to: Broadcast tensor to target shape
 ;; Note: This is a convenience wrapper; actual broadcasting
@@ -79,7 +95,7 @@
   (let ((src-size (tensor-size tensor))
         (dst-size (apply * target-shape)))
     (if (= src-size dst-size)
-        (apply reshape tensor target-shape)
+        (reshape tensor target-shape)
         (error "Cannot broadcast: size mismatch"))))
 
 ;;; ============================================================

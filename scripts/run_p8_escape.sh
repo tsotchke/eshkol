@@ -35,6 +35,8 @@ export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+# shellcheck source=lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 MODE="quick"; AXES="1,2,3,4,5,6,7,8"
 while [ $# -gt 0 ]; do
@@ -54,6 +56,7 @@ VM_BIN="$BUILD_DIR/eshkol-vm-standalone-test"
 
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"; mkdir -p "$TRACE_DIR"
 TRACE_FILE="$TRACE_DIR/escape_matrix.jsonl"
+eshkol_require_output_file_path "$TRACE_FILE"
 : > "$TRACE_FILE"     # fresh evidence set each run
 
 # Per-run isolation, and pin the binary under test. This suite shells out to
@@ -91,7 +94,7 @@ trap cleanup EXIT
 export ESHKOL_JIT_CACHE_DIR="$WORK/jit"; mkdir -p "$ESHKOL_JIT_CACHE_DIR"
 DISK_CAP_KB=$(( 512 * 1024 ))   # 512 MB corpus ceiling
 
-emit() { python3 -c 'import json,sys;print(json.dumps({"kind":"escape_matrix","name":sys.argv[1],"value":sys.argv[2],"snippet":sys.argv[3][:200],"confidence":0.95}))' "$1" "$2" "$3" >> "$TRACE_FILE"; }
+emit() { eshkol_require_output_file_path "$TRACE_FILE"; python3 -c 'import json,sys;print(json.dumps({"kind":"escape_matrix","name":sys.argv[1],"value":sys.argv[2],"snippet":sys.argv[3][:200],"confidence":0.95}))' "$1" "$2" "$3" >> "$TRACE_FILE"; }
 want() { case ",$AXES," in *",$1,"*) return 0;; *) return 1;; esac; }
 
 FAILS=0
@@ -204,7 +207,8 @@ fi
 if want 3 && [ -x "$VM_BIN" ]; then
   if [ "$MODE" = full ]; then A3="--full"; else A3="--sample 30 --seed 8803"; fi
   if python3 scripts/p8/p8_arity_sweep.py --native "$ESHKOL_RUN" --vm "$VM_BIN" \
-       $A3 --trace "$TRACE_FILE" --workdir "$WORK/arity" --timeout 8 >/dev/null 2>&1; then
+       $A3 $( [ "$MODE" = full ] && echo --aot ) \
+       --trace "$TRACE_FILE" --workdir "$WORK/arity" --timeout 8 >/dev/null 2>&1; then
     echo "  axis-3 arity-sweep     PASS (native-vs-VM parity ratchet, no NEW divergence)"
   else
     echo "  axis-3 arity-sweep     FAIL (NEW native-vs-VM divergence — see trace)"; note_fail
@@ -215,7 +219,14 @@ fi
 
 # ---------- axis 6: five-way surface agreement -----------------------------
 if want 6; then
-  if python3 scripts/p8/five_way_surface.py --repo-root "$REPO_ROOT" --trace "$TRACE_FILE" >/dev/null 2>&1; then
+  # The gate resolves a VM-only row against every vehicle the native engine
+  # can reach a name by (syntax, prelude, module definition, `mirrors:`
+  # annotation). Those rules decide what the axis reports, so check them on
+  # synthetic surfaces first: a weakened rule would otherwise turn the axis
+  # green by excusing everything instead of by agreeing.
+  if ! python3 scripts/p8/five_way_surface.py --self-test >/dev/null 2>&1; then
+    echo "  axis-6 five-way        FAIL (resolution-rule self-test)"; note_fail
+  elif python3 scripts/p8/five_way_surface.py --repo-root "$REPO_ROOT" --trace "$TRACE_FILE" >/dev/null 2>&1; then
     echo "  axis-6 five-way        PASS (doc/manifest/native/VM/provide agreement, no NEW gap)"
   else
     echo "  axis-6 five-way        FAIL (NEW surface disagreement — see trace)"; note_fail

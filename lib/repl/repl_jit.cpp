@@ -7,6 +7,8 @@
 #include "repl_jit.h"
 #include <eshkol/eshkol.h>
 #include <eshkol/abi_fingerprint.h>
+#include <eshkol/frontend/ast_strings.h>
+#include <eshkol/frontend/source_paths.h>
 #include <eshkol/llvm_backend.h>
 #include <eshkol/module_visibility.h>
 #include <eshkol/platform_runtime.h>
@@ -27,6 +29,7 @@
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h>
 #include <llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h>  // JITLink-based layer (for Branch26 plugin)
+#include <llvm/ExecutionEngine/JITLink/JITLinkMemoryManager.h>  // ObjectLinkingLayerCreator arg (LLVM 24)
 #include <llvm/ExecutionEngine/SectionMemoryManager.h>
 #include "jit_coff_memory_manager.h"  // Co-located Windows ARM64 RuntimeDyld arena
 #include "jitlink_branch26_range_extension.h"  // AArch64 Branch26 range-extension plugin
@@ -64,6 +67,8 @@
 #include <cstdint>
 #ifdef _WIN32
 #include <malloc.h>           // _aligned_malloc / _aligned_free
+#elif defined(__unix__) || defined(__APPLE__)
+#include <dlfcn.h>            // dladdr / dlopen for module-scoped JIT symbols
 #endif
 #include <filesystem>
 #include <set>
@@ -141,58 +146,6 @@ static void configure_jit_target_machine_builder(
 }
 
 /**
- * @brief Heap-allocates a NUL-terminated copy of @p value for embedding into a synthesized eshkol_ast_t.
- *
- * The caller (and ultimately the AST it is attached to) owns the returned buffer.
- */
-static char* repl_copy_ast_cstr(const std::string& value) {
-    char* out = new char[value.size() + 1];
-    if (out) {
-        memcpy(out, value.c_str(), value.size() + 1);
-    }
-    return out;
-}
-
-/**
- * @brief Synthesizes an ESHKOL_VAR AST node referencing variable @p name, for use in generated aliasing code.
- * @param line Source line to attribute to the synthesized node (for diagnostics).
- * @param column Source column to attribute to the synthesized node (for diagnostics).
- */
-static eshkol_ast_t repl_make_var_ast(const std::string& name,
-                                      uint32_t line,
-                                      uint32_t column) {
-    eshkol_ast_t ast = {};
-    ast.type = ESHKOL_VAR;
-    ast.line = line;
-    ast.column = column;
-    ast.variable.id = repl_copy_ast_cstr(name);
-    ast.variable.data = nullptr;
-    return ast;
-}
-
-/**
- * @brief Synthesizes a `(define alias source)` AST node used to materialize an R7RS import prefix alias.
- *
- * Builds an ESHKOL_OP/ESHKOL_DEFINE_OP node whose value is an ESHKOL_VAR
- * referencing @p source, so evaluating it binds @p alias to the same value
- * as the already-imported @p source name.
- */
-static eshkol_ast_t repl_make_define_alias_ast(const std::string& alias,
-                                               const std::string& source,
-                                               uint32_t line,
-                                               uint32_t column) {
-    eshkol_ast_t ast = {};
-    ast.type = ESHKOL_OP;
-    ast.line = line;
-    ast.column = column;
-    ast.operation.op = ESHKOL_DEFINE_OP;
-    ast.operation.define_op.name = repl_copy_ast_cstr(alias);
-    ast.operation.define_op.value = new eshkol_ast_t;
-    *ast.operation.define_op.value = repl_make_var_ast(source, line, column);
-    return ast;
-}
-
-/**
  * @brief Appends synthesized `(define prefixed-name original-name)` AST nodes for an R7RS `(prefix ...)` import clause.
  *
  * For the module at @p module_index within @p require_ast, if an import
@@ -201,17 +154,12 @@ static eshkol_ast_t repl_make_define_alias_ast(const std::string& alias,
  * pushes them onto @p out in sorted order. No-op if @p require_ast has no
  * prefix configured for @p module_index.
  */
-static void append_repl_r7rs_prefix_aliases(const eshkol_ast_t& require_ast,
-                                            uint64_t module_index,
-                                            const std::unordered_set<std::string>& exports,
-                                            std::vector<eshkol_ast_t>& out) {
+static void register_repl_r7rs_import_bindings(
+    const eshkol_ast_t& require_ast, uint64_t module_index,
+    const std::unordered_set<std::string>& exports,
+    std::unordered_map<std::string, std::string>& bindings) {
     const auto& require_op = require_ast.operation.require_op;
-    if (!require_op.import_prefixes ||
-        module_index >= require_op.num_modules ||
-        !require_op.import_prefixes[module_index] ||
-        require_op.import_prefixes[module_index][0] == '\0') {
-        return;
-    }
+    if (module_index >= require_op.num_modules) return;
 
     std::unordered_set<std::string> excepts;
     if (require_op.import_except_names &&
@@ -225,15 +173,78 @@ static void append_repl_r7rs_prefix_aliases(const eshkol_ast_t& require_ast,
         }
     }
 
-    std::vector<std::string> sorted_exports(exports.begin(), exports.end());
+    std::unordered_set<std::string> selected = exports;
+    if (require_op.import_only_names && require_op.num_import_only_names &&
+        require_op.import_only_names[module_index]) {
+        selected.clear();
+        for (uint64_t i = 0; i < require_op.num_import_only_names[module_index]; ++i) {
+            const char* name = require_op.import_only_names[module_index][i];
+            if (name && exports.count(name)) selected.insert(name);
+        }
+    }
+    std::vector<std::string> sorted_exports(selected.begin(), selected.end());
     std::sort(sorted_exports.begin(), sorted_exports.end());
-    const std::string prefix = require_op.import_prefixes[module_index];
+    const std::string prefix = require_op.import_prefixes && require_op.import_prefixes[module_index]
+        ? require_op.import_prefixes[module_index] : std::string();
     for (const auto& exported : sorted_exports) {
         if (excepts.count(exported) > 0) continue;
-        out.push_back(repl_make_define_alias_ast(prefix + exported,
-                                                 exported,
-                                                 require_ast.line,
-                                                 require_ast.column));
+        std::string imported = exported;
+        if (require_op.import_rename_from && require_op.import_rename_to &&
+            require_op.num_import_renames && require_op.import_rename_from[module_index]) {
+            for (uint64_t i = 0; i < require_op.num_import_renames[module_index]; ++i) {
+                if (std::string(require_op.import_rename_from[module_index][i]) == exported) {
+                    imported = require_op.import_rename_to[module_index][i];
+                    break;
+                }
+            }
+        }
+        const std::string alias = prefix + imported;
+        if (alias != exported) bindings[alias] = exported;
+    }
+}
+
+static void rewrite_repl_import_bindings(
+    eshkol_ast_t* ast,
+    const std::unordered_map<std::string, std::string>& bindings) {
+    if (!ast) return;
+    if (ast->type == ESHKOL_VAR && ast->variable.id) {
+        auto it = bindings.find(ast->variable.id);
+        if (it != bindings.end()) {
+            ast->variable.id = eshkol_ast_string_copy(it->second);
+        }
+        return;
+    }
+    if (ast->type != ESHKOL_OP) return;
+    switch (ast->operation.op) {
+    case ESHKOL_DEFINE_OP:
+        rewrite_repl_import_bindings(ast->operation.define_op.value, bindings);
+        break;
+    case ESHKOL_LAMBDA_OP:
+        rewrite_repl_import_bindings(ast->operation.lambda_op.body, bindings);
+        break;
+    case ESHKOL_SEQUENCE_OP:
+        for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; ++i)
+            rewrite_repl_import_bindings(&ast->operation.sequence_op.expressions[i], bindings);
+        break;
+    case ESHKOL_SET_OP:
+        if (ast->operation.set_op.name) {
+            auto it = bindings.find(ast->operation.set_op.name);
+            if (it != bindings.end()) {
+                ast->operation.set_op.name = eshkol_ast_string_copy(it->second);
+            }
+        }
+        rewrite_repl_import_bindings(ast->operation.set_op.value, bindings);
+        break;
+    case ESHKOL_CALL_OP:
+    case ESHKOL_IF_OP:
+    case ESHKOL_WHEN_OP:
+    case ESHKOL_UNLESS_OP:
+        rewrite_repl_import_bindings(ast->operation.call_op.func, bindings);
+        for (uint64_t i = 0; i < ast->operation.call_op.num_vars; ++i)
+            rewrite_repl_import_bindings(&ast->operation.call_op.variables[i], bindings);
+        break;
+    default:
+        break;
     }
 }
 
@@ -244,6 +255,9 @@ extern "C" {
     void eshkol_type_error_with_value(const char* proc_name, const char* expected_type,
                                        const char* actual_type);
     void eshkol_set_error_location(const char* file, uint32_t line, uint32_t column);
+    void eshkol_shape_error(const char* proc_name,
+                            const int64_t* a_dims, int64_t a_ndim,
+                            const int64_t* b_dims, int64_t b_ndim);
     void eshkol_ffi_pointer_arg_type_error(const char* extern_name,
                                            const char* real_symbol,
                                            int32_t arg_position,
@@ -254,10 +268,10 @@ extern "C" {
     void eshkol_batch_matmul_f64(const double* a, const double* b, double* c,
                                   int64_t batch, int64_t M, int64_t K, int64_t N);
     int64_t eshkol_broadcast_elementwise_f64(
-        const double* a_data, const int64_t* a_shape, int64_t a_rank,
+        int64_t op, const double* a_data, const int64_t* a_shape, int64_t a_rank,
         const double* b_data, const int64_t* b_shape, int64_t b_rank,
-        double* out_data, const int64_t* out_shape, int64_t out_rank,
-        int64_t op);
+        double* out_data, int64_t* out_dims,
+        int64_t* out_ndim, int64_t* out_total);
     int64_t eshkol_check_recursion_depth(void);
     void eshkol_decrement_recursion_depth(void);
     int64_t eshkol_utf8_strlen(const char* s);
@@ -701,6 +715,58 @@ using namespace llvm::orc;
 
 namespace eshkol {
 
+#if defined(__unix__) || defined(__APPLE__)
+// This translation-unit-local object identifies the exact image containing
+// the JIT resolver, even when an embedding host exports an identically named
+// runtime global that could interpose `__repl_shared_arena`.
+static const unsigned char repl_runtime_image_anchor = 0xE5;
+
+/**
+ * Return a handle to the image that owns the REPL runtime anchor, if that
+ * image is already loaded as a dynamic library. In Python, the extension is
+ * commonly loaded RTLD_LOCAL, so ORC's current-process search cannot see its
+ * exported runtime symbols. Keep this lookup scoped to the owning image.
+ *
+ * The permanent handle is initialized once per image, rather than once per
+ * ReplJITContext, so repeated contexts do not accumulate dlopen references.
+ * Executables are not necessarily dlopen-able; failure is expected there and
+ * leaves the existing current-process resolver as the fallback.
+ */
+static sys::DynamicLibrary get_repl_runtime_image_library() {
+    static sys::DynamicLibrary library = [] {
+        Dl_info image{};
+        if (dladdr(static_cast<const void*>(&repl_runtime_image_anchor), &image) == 0 ||
+            !image.dli_fname || !*image.dli_fname) {
+            return sys::DynamicLibrary();
+        }
+
+        int flags = RTLD_LAZY | RTLD_LOCAL;
+#ifdef RTLD_NOLOAD
+        // The extension is already executing this code. Avoid loading a
+        // second image if its loader path cannot be matched exactly.
+        flags |= RTLD_NOLOAD;
+#endif
+        // Do not let a previous loader error affect diagnostics, and consume
+        // the expected failure for non-dlopen-able executable images.
+        (void)dlerror();
+        void* handle = dlopen(image.dli_fname, flags);
+        if (!handle) {
+            (void)dlerror();
+            return sys::DynamicLibrary();
+        }
+
+        std::string error;
+        auto loaded = sys::DynamicLibrary::addPermanentLibrary(handle, &error);
+        if (!loaded.isValid()) {
+            dlclose(handle);
+            return sys::DynamicLibrary();
+        }
+        return loaded;
+    }();
+    return library;
+}
+#endif
+
 // Forward declarations for static helper functions
 static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& content);
 // base_dir defaults to the directory of the file currently being compiled —
@@ -724,6 +790,12 @@ static std::string resolveModulePath(const std::string& module_name,
  * attributes source text therefore also roots the search path, and no site
  * can do one without the other.
  */
+/** True when the ambient source context is not @p expected (a display path). */
+static bool source_path_context_differs(const char* expected) {
+    const char* actual = eshkol_get_source_context_path();
+    return !actual || std::strcmp(actual, expected) != 0;
+}
+
 class ScopedSourceContext {
 public:
     ScopedSourceContext(const std::string& path, const std::string& text)
@@ -898,7 +970,7 @@ void ReplJITContext::initializeJIT() {
         // owned code and data can truncate when ASLR places those pools more
         // than 4 GiB apart. Reserve all sections for each object in one bounded
         // arena while retaining LLJIT's normal COFF symbol-claiming behavior.
-        jit_builder.setObjectLinkingLayerCreator(
+        auto make_colocated_rtdyld_layer =
             [](orc::ExecutionSession& execution_session)
                 -> Expected<std::unique_ptr<orc::ObjectLayer>> {
                 auto layer =
@@ -914,7 +986,30 @@ void ReplJITContext::initializeJIT() {
                 std::unique_ptr<orc::ObjectLayer> object_layer =
                     std::move(layer);
                 return std::move(object_layer);
+            };
+#if LLVM_VERSION_MAJOR >= 24
+        // LLVM 24 widened LLJITBuilderState::ObjectLinkingLayerCreator to
+        //   Expected<std::unique_ptr<ObjectLayer>>(ExecutionSession &,
+        //                                          jitlink::JITLinkMemoryManager &)
+        // so that a creator building a JITLink-backed ObjectLinkingLayer can
+        // share the memory manager LLJIT already owns instead of making its
+        // own.  This layer is RTDyld-backed, not JITLink-backed: it takes a
+        // RuntimeDyld::MemoryManager factory, a different and incompatible
+        // manager interface, and deliberately supplies
+        // CoLocatedSectionMemoryManager for the Windows-ARM64 arena above.
+        // The JITLink manager therefore has nothing to bind to here and is
+        // intentionally unused; it stays owned by LLJIT, so nothing leaks and
+        // no second manager of the same kind is constructed.
+        jit_builder.setObjectLinkingLayerCreator(
+            [make_colocated_rtdyld_layer](
+                orc::ExecutionSession& execution_session,
+                jitlink::JITLinkMemoryManager& /*unused: RTDyld layer*/)
+                -> Expected<std::unique_ptr<orc::ObjectLayer>> {
+                return make_colocated_rtdyld_layer(execution_session);
             });
+#else
+        jit_builder.setObjectLinkingLayerCreator(make_colocated_rtdyld_layer);
+#endif
     }
 
     auto jit_or_err = jit_builder.create();
@@ -955,9 +1050,23 @@ void ReplJITContext::initializeJIT() {
     // Enable REPL mode in the compiler for cross-evaluation symbol persistence
     eshkol_repl_enable();
 
-    // Add symbol resolver for current process
-    // This allows JIT code to call runtime functions from eshkol-static
+    // Add symbol resolvers. A Python extension is commonly dlopen'ed
+    // RTLD_LOCAL, so its exported eshkol-static runtime symbols are not in
+    // RTLD_DEFAULT even though they are present in the extension's dynsym.
+    // Search the image containing the runtime first, by its own loader handle,
+    // without promoting it into process-global scope. Ordinary executables
+    // cannot always be dlopen'ed; in that case the existing process resolver
+    // below continues to serve their exported host symbols.
     auto& main_dylib = jit_->getMainJITDylib();
+#if defined(__unix__) || defined(__APPLE__)
+    auto runtime_image = get_repl_runtime_image_library();
+    if (runtime_image.isValid()) {
+        main_dylib.addGenerator(
+            std::make_unique<orc::DynamicLibrarySearchGenerator>(
+                runtime_image, jit_->getDataLayout().getGlobalPrefix()));
+    }
+#endif
+
     auto generator = orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
         jit_->getDataLayout().getGlobalPrefix());
 
@@ -1122,6 +1231,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_runtime_set_current_error_fp);
     ADD_SYMBOL(eshkol_language_coverage_exec_op);
     ADD_SYMBOL(eshkol_language_coverage_exec_call);
+    ADD_SYMBOL(eshkol_language_coverage_flush);
     ADD_SYMBOL(eshkol_check_forward_ref);
     ADD_SYMBOL(eshkol_repl_forward_ref_stub_addr);
     ADD_SYMBOL(eshkol_repl_variadic_fixed_params);
@@ -1130,10 +1240,15 @@ void ReplJITContext::registerRuntimeSymbols() {
 
     // ===== EXCEPTION HANDLING =====
     ADD_SYMBOL(eshkol_raise);
+    ADD_SYMBOL(eshkol_raise_secondary_exception);
     ADD_SYMBOL(eshkol_make_exception);
     ADD_SYMBOL(eshkol_make_exception_with_header);
     ADD_SYMBOL(eshkol_push_exception_handler);
     ADD_SYMBOL(eshkol_pop_exception_handler);
+    ADD_SYMBOL(eshkol_exception_handler_depth);          // SW-58
+    ADD_SYMBOL(eshkol_exception_handlers_unwind_to);     // SW-58
+    ADD_SYMBOL(eshkol_guard_replay_snapshot);            // SW-58
+    ADD_SYMBOL(eshkol_guard_replay_restore);             // SW-58
     ADD_SYMBOL(eshkol_exception_type_matches);
     ADD_SYMBOL(eshkol_unwind_dynamic_wind);
     ADD_SYMBOL(eshkol_reroot_dynamic_wind);
@@ -1143,6 +1258,9 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(get_global_arena_shared);
     ADD_SYMBOL(eshkol_check_recursion_depth);
     ADD_SYMBOL(eshkol_decrement_recursion_depth);
+    // ESH-0101: emitted at the entry of every user function body, so `-r`
+    // fails to link any program at all if the JIT cannot resolve it.
+    ADD_SYMBOL(eshkol_stack_guard_check);
     // SW-10: emitted on every tail-call loop back-edge, so the JIT must be able
     // to resolve it or `-r` fails to link any program containing a TCO loop.
     ADD_SYMBOL(eshkol_limit_poll_interrupt);
@@ -1487,6 +1605,13 @@ void ReplJITContext::registerRuntimeSymbols() {
         orc::ExecutorAddr::fromPtr((void*)&::eshkol_set_error_location),
         JITSymbolFlags::Callable | JITSymbolFlags::Exported
     };
+    // Element-wise shape refusal: the JIT must resolve this or an `-r` run of
+    // any program whose arithmetic can reach the broadcast path fails to link
+    // that path's error branch.
+    symbols[ES.intern("eshkol_shape_error")] = {
+        orc::ExecutorAddr::fromPtr((void*)&::eshkol_shape_error),
+        JITSymbolFlags::Callable | JITSymbolFlags::Exported
+    };
     // FFI pointer-argument guard (ESH-0363): the JIT must resolve this or an
     // `-r` run of any program that calls an extern with a `ptr` parameter fails
     // to link the guard branch.
@@ -1504,6 +1629,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(arena_allocate_tape);
     ADD_SYMBOL(arena_tape_add_node);
     ADD_SYMBOL(arena_tape_reset);
+    ADD_SYMBOL(arena_tape_release);
     ADD_SYMBOL(arena_tape_get_node);
     ADD_SYMBOL(arena_tape_get_node_count);
     // ESH-0093: mixed-mode AD (reverse tape over inner forward derivative)
@@ -1549,6 +1675,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_i128_from_int_tagged);
     ADD_SYMBOL(eshkol_i128_from_string_tagged);
     ADD_SYMBOL(eshkol_i128_predicate_tagged);
+    ADD_SYMBOL(eshkol_is_i128_tagged);
     ADD_SYMBOL(eshkol_i128_binary_tagged);
     ADD_SYMBOL(eshkol_i128_neg_tagged);
     ADD_SYMBOL(eshkol_i128_shift_tagged);
@@ -3385,7 +3512,11 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
     if (!source_path.empty()) {
         explicit_source_context = std::make_unique<ScopedSourceContext>(
             source_path, source_text);
-        if (source_path != eshkol_get_source_context_path()) {
+        // The ambient context holds the DISPLAY spelling of the path
+        // (ADR-0021), so compare like with like rather than against the host
+        // path this caller happens to hold.
+        const char* expected = eshkol_source_path_display(source_path.c_str());
+        if (!expected || source_path_context_differs(expected)) {
             throw std::runtime_error(
                 "failed to establish explicit JIT batch source context");
         }
@@ -3867,7 +3998,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                         eshkol::library_registry::exports(module_name)) {
                     auto& known = module_exports_[module_name];
                     known.insert(unit_exports->begin(), unit_exports->end());
-                    append_repl_r7rs_prefix_aliases(*ast, i, known, alias_asts);
+                    register_repl_r7rs_import_bindings(*ast, i, known, import_bindings_);
                     continue;
                 }
 
@@ -3885,12 +4016,8 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                 }
                 auto exports_it = module_exports_.find(module_name);
                 if (exports_it != module_exports_.end()) {
-                    append_repl_r7rs_prefix_aliases(*ast, i, exports_it->second, alias_asts);
+                    register_repl_r7rs_import_bindings(*ast, i, exports_it->second, import_bindings_);
                 }
-            }
-            if (!alias_asts.empty()) {
-                // Caller-owned heap result; the alias batch has no value.
-                delete static_cast<int64_t*>(executeBatch(alias_asts, true));
             }
             return nullptr;
         }
@@ -3904,6 +4031,10 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
             return nullptr;
         }
     }
+
+    // Resolve imported spellings to their provider bindings before codegen.
+    // This preserves the one-binding identity across repeated REPL modules.
+    rewrite_repl_import_bindings(ast, import_bindings_);
 
     // Pre-register function/lambda variables so they're tracked for REPL cross-evaluation
     // This mirrors what executeBatch does for batch compilations

@@ -32,6 +32,9 @@ if eshkol_durable_enabled; then
 else
   TRACE_DIR="${TRACE_DIR:-scripts/icc_traces}"
 fi
+# Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 TRACE_FILE="$TRACE_DIR/mono_equiv.jsonl"
 cleanup() {
   if ! eshkol_durable_enabled; then rm -rf -- "$tmp_dir"; fi

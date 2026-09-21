@@ -13,25 +13,47 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from extract_examples import FENCE_RE, LANGS, closing_fence, iter_files  # noqa: E402
+from extract_examples import FENCE_RE, LANGS, closing_fence, iter_files, marker_for  # noqa: E402
 
 TIMEOUT = 90
 
 
-def collect(root):
+def collect(root, scope=None):
+    """Pair every scheme block under `scope` (default: the audit SCOPE) with
+    the bare/`text`/`output` fence that directly follows it."""
     pairs = []
-    for rel in iter_files(root):
+    for rel in iter_files(root, scope):
         path = os.path.join(root, rel)
         lines = open(path, encoding="utf-8").read().splitlines()
         i, n = 0, len(lines)
+        last_example = None
+        paired = set()
         while i < n:
             m = FENCE_RE.match(lines[i])
-            if not m or m.group(3).lower() not in LANGS:
+            if not m:
                 i += 1
+                continue
+            if m.group(3).lower() not in LANGS:
+                # An output fence that is not directly under its example says
+                # so with `<!-- doc-example: output stdout: ... -->`.
+                j = closing_fence(lines, i, m)
+                if j is None:
+                    i += 1
+                    continue
+                marker = marker_for(lines, i)
+                if (marker and marker["kind"] == "output" and last_example is not None
+                        and m.group(3).lower() in ("", "text", "output") and last_example[0] not in paired):
+                    paired.add(last_example[0])
+                    pairs.append({
+                        "file": rel, "code_line": last_example[0] + 1, "out_line": i + 1,
+                        "code": last_example[1], "expected": "\n".join(lines[i + 1 : j]),
+                    })
+                i = j + 1
                 continue
             j = closing_fence(lines, i, m)
             if j is None:
                 break
+            last_example = (i, "\n".join(lines[i + 1 : j]))
             code = "\n".join(lines[i + 1 : j])
             # look ahead: optional blank lines, then a bare or ```text fence
             k = j + 1
@@ -42,6 +64,7 @@ def collect(root):
                 e = closing_fence(lines, k, m2)
                 if e is not None:
                     expected = "\n".join(lines[k + 1 : e])
+                    paired.add(i)
                     pairs.append({
                         "file": rel, "code_line": i + 1, "out_line": k + 1,
                         "code": code, "expected": expected,

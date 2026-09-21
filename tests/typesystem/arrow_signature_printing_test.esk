@@ -1,0 +1,30 @@
+;; Type System Test: a function signature prints as its arrow in every
+;; diagnostic. A signature has no node in the supertype graph, so it used to
+;; print as "unknown": "argument 1 of 'label': expected String, got unknown".
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN]
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got (-> Number Int64)
+;; EXPECT-STDERR: argument 1 of 'area': expected Number, got (-> String ... Value)
+;; EXPECT-STDERR: ascription (the String ...) contradicts the inferred type (-> Int64)
+;; EXPECT-STDERR: argument 1 of 'apply-num': expected (-> Number Number), got (-> String String)
+;; EXPECT-STDERR: argument 2 of 'area': expected Number, got Function
+;; EXPECT-NO-STDERR: unknown
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+(define (to-int (x : number)) : integer 42)
+(define (variadic (s : string) . rest) rest)
+(define (thunk) : integer 7)
+(define (shout (s : string)) : string s)
+(define (apply-num (f : (-> number number)) (x : number)) (f x))
+(define (pass-procedure (p : procedure)) (area 1 p))
+
+(define (never-called)
+  (label to-int)
+  (area variadic 2)
+  (the string thunk)
+  (apply-num shout 1))
+
+(display (area 2 3))
+(newline)

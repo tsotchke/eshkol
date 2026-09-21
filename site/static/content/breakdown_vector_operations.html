@@ -1,0 +1,571 @@
+<h1 id="vectors-and-tensors-in-eshkol">Vectors and Tensors in Eshkol</h1>
+<p><strong>Status</strong>: v1.2.1-scale - Production-ready <strong>Last Updated</strong>: March 2026</p>
+<blockquote>
+<p>This document describes the <strong>actual implemented</strong> vector and tensor systems based on source code verification.</p>
+</blockquote>
+<hr />
+<h2 id="table-of-contents">Table of Contents</h2>
+<ul>
+<li><a href="/docs#page=breakdown_vector_operations&amp;vectors-and-tensors-in-eshkol" data-url="/content/breakdown_vector_operations.html">Vectors and Tensors in Eshkol</a>
+<ul>
+<li><a href="/docs#page=breakdown_vector_operations&amp;table-of-contents" data-url="/content/breakdown_vector_operations.html">Table of Contents</a></li>
+<li><a href="/docs#page=breakdown_vector_operations&amp;overview-two-types-of-arrays" data-url="/content/breakdown_vector_operations.html">Overview: Two Types of Arrays</a></li>
+<li><a href="/docs#page=breakdown_vector_operations&amp;scheme-vectors-heterogeneous" data-url="/content/breakdown_vector_operations.html">Scheme Vectors (Heterogeneous)</a>
+<ul>
+<li><a href="/docs#page=breakdown_vector_operations&amp;creation" data-url="/content/breakdown_vector_operations.html">Creation</a></li>
+<li><a href="/docs#page=breakdown_vector_operations&amp;access" data-url="/content/breakdown_vector_operations.html">Access</a></li>
+<li><a href="/docs#page=breakdown_vector_operations&amp;storage-layout" data-url="/content/breakdown_vector_operations.html">Storage Layout</a></li>
+<li><a href="/docs#page=breakdown_vector_operations&amp;operations" data-url="/content/breakdown_vector_operations.html">Operations</a></li>
+</ul></li>
+<li><a href="/docs#page=breakdown_vector_operations&amp;tensors-homogeneous-numeric" data-url="/content/breakdown_vector_operations.html">Tensors (Homogeneous Numeric)</a>
+<ul>
+<li><a href="/docs#page=breakdown_vector_operations&amp;creation-1" data-url="/content/breakdown_vector_operations.html">Creation</a></li>
+<li><a href="/docs#page=breakdown_vector_operations&amp;access-1" data-url="/content/breakdown_vector_operations.html">Access</a></li>
+<li><a href="/docs#page=breakdown_vector_operations&amp;storage-layout-1" data-url="/content/breakdown_vector_operations.html">Storage Layout</a></li>
+<li><a href="/docs#page=breakdown_vector_operations&amp;linear-algebra-operations" data-url="/content/breakdown_vector_operations.html">Linear Algebra Operations</a></li>
+<li><a href="/docs#page=breakdown_vector_operations&amp;automatic-differentiation-with-tensors" data-url="/content/breakdown_vector_operations.html">Automatic Differentiation with Tensors</a></li>
+<li><a href="/docs#page=breakdown_vector_operations&amp;working-example-neural-network-layer" data-url="/content/breakdown_vector_operations.html">Working Example: Neural Network Layer</a></li>
+</ul></li>
+<li><a href="/docs#page=breakdown_vector_operations&amp;performance-considerations" data-url="/content/breakdown_vector_operations.html">Performance Considerations</a>
+<ul>
+<li><a href="/docs#page=breakdown_vector_operations&amp;memory-layout" data-url="/content/breakdown_vector_operations.html">Memory Layout</a></li>
+<li><a href="/docs#page=breakdown_vector_operations&amp;when-to-use-each" data-url="/content/breakdown_vector_operations.html">When to Use Each</a></li>
+</ul></li>
+<li><a href="/docs#page=breakdown_vector_operations&amp;see-also" data-url="/content/breakdown_vector_operations.html">See Also</a></li>
+</ul></li>
+</ul>
+<hr />
+<h2 id="overview-two-types-of-arrays">Overview: Two Types of Arrays</h2>
+<p>Eshkol supports <strong>two distinct array types</strong>, each optimized for different use cases:</p>
+<table>
+<colgroup>
+<col style="width: 21%" />
+<col style="width: 46%" />
+<col style="width: 31%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th><strong>Scheme Vectors</strong></th>
+<th><strong>Tensors</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Element types</strong></td>
+<td>Heterogeneous (any type)</td>
+<td>Homogeneous (numeric only)</td>
+</tr>
+<tr>
+<td><strong>Storage</strong></td>
+<td>Array of 16-byte tagged values</td>
+<td>Flat array of double bit patterns</td>
+</tr>
+<tr>
+<td><strong>Creation</strong></td>
+<td><code>(vector ...)</code>, <code>make-vector</code></td>
+<td><code>zeros</code>, <code>ones</code>, <code>eye</code>, <code>arange</code></td>
+</tr>
+<tr>
+<td><strong>Access</strong></td>
+<td><code>vector-ref</code>, <code>vector-set!</code></td>
+<td><code>vref</code>, <code>tensor-get</code></td>
+</tr>
+<tr>
+<td><strong>Use case</strong></td>
+<td>Mixed data, collections</td>
+<td>Numeric computation, ML</td>
+</tr>
+<tr>
+<td><strong>Autodiff</strong></td>
+<td>No</td>
+<td><strong>Yes</strong> (AD-aware)</td>
+</tr>
+<tr>
+<td><strong>Linear algebra</strong></td>
+<td>No</td>
+<td><strong>Yes</strong> (<code>tensor-dot</code>, etc.)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Key Distinction</strong>: - <strong>Scheme vectors</strong> = Scheme’s built-in heterogeneous arrays (like Python lists) - <strong>Tensors</strong> = NumPy-style numeric arrays for scientific computing</p>
+<hr />
+<h2 id="scheme-vectors-heterogeneous">Scheme Vectors (Heterogeneous)</h2>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/collection_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/collection_codegen.cpp</code></a></p>
+<p>Scheme vectors can hold <strong>any type</strong> of element:</p>
+<h3 id="creation">Creation</h3>
+<pre class="scheme"><code>;; Vector literal
+(define v (vector 1 &quot;hello&quot; 3.14 #t))
+
+;; make-vector: create with fill value
+(define v2 (make-vector 10 0))     ; 10 elements, all 0
+
+;; vector-copy: duplicate
+(define v3 (vector-copy v))</code></pre>
+<h3 id="access">Access</h3>
+<pre class="scheme"><code>;; vector-ref: get element at index
+(vector-ref v 0)        ; → 1
+(vector-ref v 1)        ; → &quot;hello&quot;
+(vector-ref v 2)        ; → 3.14
+
+;; vector-set!: mutate element
+(vector-set! v 0 42)
+(vector-ref v 0)        ; → 42
+
+;; vector-length: get size
+(vector-length v)       ; → 4</code></pre>
+<h3 id="storage-layout">Storage Layout</h3>
+<pre><code>Scheme Vector Memory Layout:
+┌─────────────┬──────────────┬──────────────┬──────────────┐
+│ length (8)  │ elem0 (16)   │ elem1 (16)   │ elem2 (16)   │
+└─────────────┴──────────────┴──────────────┴──────────────┘
+              ↑                ↑                ↑
+              Each element is a full eshkol_tagged_value_t
+              Can hold ANY type (int, string, closure, etc.)</code></pre>
+<p><strong>Size</strong>: 8 + (16 × num_elements) bytes</p>
+<h3 id="operations">Operations</h3>
+<p><strong>Scheme vectors are first-class Scheme values</strong>:</p>
+<pre class="scheme"><code>;; Can be elements in lists
+(define mixed (list v 42 &quot;test&quot;))
+
+;; Can be passed to functions
+(define (process-vector v)
+  (vector-ref v 0))
+
+;; car/cdr work on vectors (returns first element)
+(car v)  ; → same as (vector-ref v 0)</code></pre>
+<p><strong>Not carried out on Scheme vectors as vector operations</strong>: - Linear algebra operations (<code>matmul</code>, <code>solve</code>, <code>det</code>, <code>inv</code>) - Element-wise arithmetic. A scalar against a Scheme vector in either operand position raises a catchable type error naming the source line of the form that raised it, rather than reading past the shorter operand.</p>
+<p>A Scheme vector <em>is</em> accepted as a differentiation <strong>point</strong>: <code>(gradient f (vector 2.0))</code> and the <code>hessian</code>/<code>jacobian</code> family classify the point by its runtime value, so a vector point is routed exactly like the identical literal. What the list above rules out is treating the vector itself as a numeric array.</p>
+<p>For numeric computation over the array, use <strong>tensors</strong> instead.</p>
+<hr />
+<h2 id="tensors-homogeneous-numeric">Tensors (Homogeneous Numeric)</h2>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/tensor_codegen.cpp</code></a> (2,012-line dispatcher; thirteen <code>tensor_*_codegen.cpp</code> siblings after the v1.2 split)</p>
+<p>Tensors are <strong>N-dimensional numeric arrays</strong> optimized for scientific computing:</p>
+<h3 id="creation-1">Creation</h3>
+<pre class="scheme"><code>;; zeros: create tensor filled with 0.0
+(zeros 10)              ; 1D: shape [10]
+(zeros (list 3 3))      ; 2D: shape [3, 3]
+(zeros (list 2 3 4))    ; 3D: shape [2, 3, 4]
+
+;; ones: create tensor filled with 1.0
+(ones 5)
+(ones (list 4 4))
+
+;; eye: identity matrix
+(eye 3)                 ; 3x3 identity
+
+;; arange: range with step
+(arange 0 10 0.5)       ; [0.0, 0.5, 1.0, ..., 9.5]
+
+;; linspace: evenly spaced values
+(linspace 0 1 100)      ; 100 points from 0 to 1
+
+;; reshape: change dimensions (zero-copy)
+(reshape (arange 9) 3 3)  ; 1D [9] → 2D [3, 3]</code></pre>
+<h3 id="access-1">Access</h3>
+<pre class="scheme"><code>;; vref: 1D access (AD-aware!)
+(define v (vector 1.0 2.0 3.0))
+(vref v 0)              ; → 1.0
+(vref v 1)              ; → 2.0
+
+;; tensor-get: N-D access
+(define M (reshape (arange 9) 3 3))
+(tensor-get M 0 0)      ; → 0.0 (element [0,0])
+(tensor-get M 1 2)      ; → 5.0 (element [1,2])
+
+;; Partial indexing returns slice (view, not copy)
+(tensor-get M 1)        ; → 1D tensor [3.0, 4.0, 5.0] (row 1)</code></pre>
+<h3 id="storage-layout-1">Storage Layout</h3>
+<pre><code>Tensor Memory Layout:
+┌───────────────────────────────────────────────────────────┐
+│ eshkol_tensor_t structure (32 bytes, cache-aligned)      │
+├───────────────────────────────────────────────────────────┤
+│ dimensions*    (8 bytes) → [dim0, dim1, ..., dimN]       │
+│ num_dimensions (8 bytes)   Rank (1-4 typical)            │
+│ elements*      (8 bytes) → flat array of int64 bit patterns │
+│ total_elements (8 bytes)   Total element count           │
+└───────────────────────────────────────────────────────────┘
+
+Elements stored as int64 bit patterns of doubles (reinterpret_cast)
+Row-major (C-style) ordering for cache efficiency</code></pre>
+<p><strong>Note:</strong> Elements are stored as <code>int64_t</code> values that are bit patterns of <code>double</code> values. This enables storage in cons cells which use int64/double union.</p>
+<h3 id="linear-algebra-operations">Linear Algebra Operations</h3>
+<pre class="scheme"><code>;; Element-wise operations
+(tensor-add t1 t2)          ; t1 + t2 (element-wise)
+(tensor-sub t1 t2)          ; t1 - t2 (element-wise)
+(tensor-mul t1 t2)          ; t1 * t2 (element-wise, NOT matrix multiplication)
+(tensor-div t1 t2)          ; t1 / t2 (element-wise)
+
+;; Matrix operations
+(tensor-dot A B)            ; Matrix multiplication / dot product
+(tensor-transpose M)        ; Transpose matrix
+(tensor-reshape t shape)    ; Change dimensions (zero-copy)
+
+;; Reduction operations
+(tensor-sum t)              ; Sum all elements
+(tensor-mean t)             ; Average of all elements
+(tensor-max t)              ; Maximum element
+(tensor-min t)              ; Minimum element
+
+;; Shape operations
+(tensor-shape t)            ; Returns dimensions as vector
+(tensor-rank t)             ; Returns number of dimensions
+(tensor-size t)             ; Returns total number of elements</code></pre>
+<h3 id="automatic-differentiation-with-tensors">Automatic Differentiation with Tensors</h3>
+<p>The <code>vref</code> operator is <strong>AD-aware</strong>: when used during gradient computation, it creates computational graph nodes:</p>
+<pre class="scheme"><code>;; Define function using tensor access
+(define (norm-squared v)
+  (let ((x (vref v 0))
+        (y (vref v 1)))
+    (+ (* x x) (* y y))))
+
+;; Compute gradient
+(gradient norm-squared (vector 3.0 4.0))
+;; Returns: #(6.0 8.0)
+;; Because ∂/∂x(x²+y²) = 2x = 6.0
+;; And     ∂/∂y(x²+y²) = 2y = 8.0
+
+;; vref creates AD nodes when in gradient context
+;; But is a simple memory access in normal execution</code></pre>
+<h3 id="working-example-neural-network-layer">Working Example: Neural Network Layer</h3>
+<pre class="scheme"><code>;; Forward pass through dense layer
+(define (dense-layer inputs weights biases)
+  (let ((z (tensor-dot inputs weights)))  ; Linear transformation
+    (tensor-add z biases)))                 ; Add bias
+
+;; Activation function (applied element-wise)
+(define (relu x)
+  (if (&gt; x 0.0) x 0.0))
+
+;; Compute loss gradient
+(define (layer-gradient inputs targets weights biases)
+  (gradient (lambda (w)
+              (let* ((z (dense-layer inputs w biases))
+                     (activated (tensor-map relu z))
+                     (loss (mse-loss activated targets)))
+                loss))
+            weights))</code></pre>
+<hr />
+<h2 id="performance-considerations">Performance Considerations</h2>
+<h3 id="memory-layout">Memory Layout</h3>
+<p><strong>Scheme vectors:</strong> - Cache-unfriendly for numeric computation (16-byte tagged values) - Type-flexible (can mix types) - Suitable for: data structures, mixed collections</p>
+<p><strong>Tensors:</strong> - Cache-friendly (contiguous doubles) - SIMD-vectorizable - Suitable for: linear algebra, numerical algorithms, ML</p>
+<h3 id="when-to-use-each">When to Use Each</h3>
+<p>Use <strong>Scheme vectors</strong> when: - Elements have different types - Implementing data structures (stacks, queues) - Building collections of mixed values</p>
+<p>Use <strong>tensors</strong> when: - All elements are numeric - Performing linear algebra - Computing gradients - Optimizing for cache/SIMD</p>
+<hr />
+<h2 id="tensor-acceleration">Tensor Acceleration</h2>
+<h3 id="1-cost-model-dispatch">1. Cost Model Dispatch</h3>
+<p>Tensor matmul uses a three-tier dispatch hierarchy: <strong>SIMD -&gt; cBLAS -&gt; GPU</strong>. The dispatch logic lives in <code>eshkol_matmul_f64()</code> (<code>lib/backend/blas_backend.cpp</code>) and is backed by an adaptive cost model defined in the <code>CostModelParams</code> struct at line 44.</p>
+<p><strong>Cost model parameters</strong> (from <code>lib/backend/blas_backend.cpp</code>):</p>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 27%" />
+<col style="width: 39%" />
+</colgroup>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>blas_peak_gflops</code></td>
+<td>1100</td>
+<td>Measured Apple Accelerate AMX throughput on M-series chips</td>
+</tr>
+<tr>
+<td><code>blas_overhead_ns</code></td>
+<td>5000</td>
+<td>Fixed cBLAS dispatch overhead (5 microseconds)</td>
+</tr>
+<tr>
+<td><code>blas_efficiency_scale</code></td>
+<td>10000</td>
+<td>Elements needed for cBLAS to reach full efficiency</td>
+</tr>
+<tr>
+<td><code>gpu_peak_gflops</code></td>
+<td>200</td>
+<td>Measured sf64 (softfloat double) throughput on Metal compute shaders</td>
+</tr>
+<tr>
+<td><code>gpu_overhead_ns</code></td>
+<td>200000</td>
+<td>Metal command buffer creation + data transfer overhead (200 microseconds)</td>
+</tr>
+<tr>
+<td><code>gpu_efficiency_scale</code></td>
+<td>100000000</td>
+<td>GPU needs 100M+ elements to saturate</td>
+</tr>
+<tr>
+<td><code>simd_peak_gflops</code></td>
+<td>25</td>
+<td>Peak SIMD throughput (NEON/AVX/SSE2)</td>
+</tr>
+<tr>
+<td><code>simd_overhead_ns</code></td>
+<td>100</td>
+<td>Minimal SIMD dispatch overhead</td>
+</tr>
+<tr>
+<td><code>simd_efficiency_scale</code></td>
+<td>1000</td>
+<td>SIMD saturates quickly at ~1000 elements</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Cost estimation formula</strong> (from <code>estimate_matmul_cost()</code> at line 99):</p>
+<p>For a matrix multiply of dimensions M x K x N:</p>
+<pre><code>flops = 2.0 * M * K * N
+elements = M * N
+
+efficiency = min(1.0, elements / efficiency_scale)
+compute_ns = flops / (peak_gflops * efficiency * 1e9) * 1e9
+total_ns   = overhead_ns + compute_ns</code></pre>
+<p>The <code>select_best_backend()</code> function (line 134) evaluates this formula for all available backends and selects the one with the lowest estimated time.</p>
+<p><strong>Fast-path dispatch</strong> (line 752-777) bypasses the cost model entirely for common cases:</p>
+<ul>
+<li><strong>Tiny matrices</strong> (output elements &lt;= 16, up to 4x4): scalar multiplication. SIMD and BLAS overhead exceeds compute time at this scale.</li>
+<li><strong>Small to large matrices</strong> (17 to 1B output elements): cBLAS via Apple Accelerate AMX. Even at 225M elements (15000x15000), cBLAS achieves 1100+ GFLOPS.</li>
+<li><strong>Super-massive matrices</strong> (&gt;= 1B output elements, ~31600x31600): the cost model is invoked and GPU dispatch is considered. The GPU matmul threshold defaults to <code>g_gpu_matmul_threshold = 1000000000</code> (line 71).</li>
+</ul>
+<p>The critical insight is that GPU is almost never faster for double-precision: sf64 (softfloat f64 emulation on Metal compute shaders) peaks at ~200 GFLOPS, while Apple Accelerate AMX achieves ~1100 GFLOPS natively. GPU dispatch only wins when the matrix is so large that the 200 microsecond overhead is amortized over enough elements to exploit GPU parallelism.</p>
+<p><strong>Environment variables for tuning:</strong></p>
+<ul>
+<li><code>ESHKOL_BLAS_PEAK_GFLOPS</code> – override measured BLAS peak throughput (line 163)</li>
+<li><code>ESHKOL_GPU_PEAK_GFLOPS</code> – override measured GPU peak throughput (line 166)</li>
+<li><code>ESHKOL_GPU_MATMUL_THRESHOLD</code> – override element count for GPU consideration (line 79)</li>
+<li><code>ESHKOL_GPU_PRECISION</code> – select GPU precision tier: <code>exact</code> (sf64, default), <code>high</code> (df64), <code>fast</code> (f32) (line 83)</li>
+<li><code>ESHKOL_BLAS_THRESHOLD</code> – minimum elements for cBLAS path (default 64, line 183)</li>
+</ul>
+<h3 id="2-gpu-tensor-transfer">2. GPU Tensor Transfer</h3>
+<p>Eshkol tensors store elements as <code>int64_t</code> bit-patterns representing <code>double</code> values. When transferring to GPU, the <code>double*</code> data pointer is obtained by <code>reinterpret_cast&lt;double*&gt;(result-&gt;elements)</code> (see <code>xla_runtime.cpp</code>), which is safe because <code>sizeof(double) == sizeof(int64_t) == 8</code>.</p>
+<p><strong>Metal buffer wrapping</strong> (<code>metal_wrap_host()</code> in <code>gpu_memory.mm:2626</code>):</p>
+<p>On Apple Silicon, the GPU and CPU share a unified memory architecture. The primary wrapping strategy uses <code>newBufferWithBytesNoCopy:</code> with <code>MTLResourceStorageModeShared</code>, which creates a Metal buffer backed by the existing host pointer with zero-copy semantics:</p>
+<pre class="objc"><code>id&lt;MTLBuffer&gt; buffer = [g_metal_device newBufferWithBytesNoCopy:host_ptr
+                                                         length:size_bytes
+                                                        options:MTLResourceStorageModeShared
+                                                    deallocator:nil];</code></pre>
+<p>If <code>newBufferWithBytesNoCopy</code> fails (typically because the pointer is not page-aligned), the fallback path allocates a new <code>MTLResourceStorageModeShared</code> buffer and copies the data with <code>memcpy</code> (<code>gpu_memory.mm:2633-2636</code>).</p>
+<p>The unified memory flag is detected at initialization: <code>g_metal_unified_memory = [g_metal_device supportsFamily:MTLGPUFamilyApple1]</code> (line 749). On Apple Silicon, this is always true, meaning Metal buffers with <code>StorageModeShared</code> share the same physical memory as CPU allocations – no DMA transfer occurs.</p>
+<p><strong>Result marshaling:</strong></p>
+<p>After GPU kernel execution, results are available in the output buffer immediately (unified memory). If the output buffer was allocated via fallback (host_ptr diverged from original pointer), an explicit <code>memcpy</code> copies results back (<code>blas_backend.cpp</code>):</p>
+<pre class="cpp"><code>if (buf_c.host_ptr != (void*)C) {
+    memcpy((void*)C, buf_c.host_ptr, M * N * sizeof(double));
+}</code></pre>
+<p><strong>Buffer lifecycle:</strong></p>
+<p>GPU buffers are freed immediately after each operation via <code>eshkol_gpu_free()</code> (line 3299), which releases the <code>MTLBuffer</code> reference through ARC (<code>metal_free()</code> at line 1339 uses <code>__bridge_transfer</code> to release ownership). A <strong>buffer pool</strong> (<code>gpu_memory.mm:617-653</code>) recycles <code>MTLBuffer</code> objects using power-of-2 size buckets to reduce allocation overhead in tight loops (e.g., ML training). Each bucket retains up to <code>POOL_MAX_PER_BUCKET = 8</code> buffers.</p>
+<h3 id="3-xla-integration">3. XLA Integration</h3>
+<p>The XLA layer provides a high-level runtime for tensor operations that internally dispatches to GPU, BLAS, or SIMD depending on tensor size. XLA dispatch is governed by a threshold of <strong>100,000 elements</strong> (~316x316 matrix), configurable via <code>ESHKOL_XLA_THRESHOLD</code> (defined in <code>lib/backend/xla/xla_codegen.cpp</code>).</p>
+<p><strong>Dispatch hierarchy at codegen time</strong> (from <code>tensor_codegen.cpp</code>):</p>
+<p>The LLVM codegen emits a size check: if <code>total_elements &gt;= xla_get_threshold()</code>, it calls the XLA C runtime function; otherwise, it uses inline SIMD code. Each XLA runtime function then internally checks <code>eshkol_gpu_should_use(num_elements)</code> (which tests <code>num_elements &gt;= g_gpu_threshold</code>, default 100K from <code>gpu_memory.mm:46</code>) before attempting GPU dispatch.</p>
+<p><strong>Operations with XLA runtime paths</strong> (from <code>xla_runtime.cpp</code>):</p>
+<table>
+<colgroup>
+<col style="width: 41%" />
+<col style="width: 24%" />
+<col style="width: 34%" />
+</colgroup>
+<thead>
+<tr>
+<th>Runtime Function</th>
+<th>Op Codes</th>
+<th>GPU Dispatch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>eshkol_xla_matmul</code></td>
+<td>2D matrix multiply</td>
+<td>Yes, via <code>eshkol_gpu_matmul_f64</code></td>
+</tr>
+<tr>
+<td><code>eshkol_xla_elementwise</code></td>
+<td>ADD(0), SUB(1), MUL(2), DIV(3), EXP(4), LOG(5), SIN(6), COS(7), TANH(8), RELU(9), SIGMOID(10)</td>
+<td>Yes, with op code translation to GPU enum</td>
+</tr>
+<tr>
+<td><code>eshkol_xla_reduce</code></td>
+<td>SUM(0), MEAN(1), MAX(2), MIN(3), PROD(4)</td>
+<td>Yes, both global and axis-specific</td>
+</tr>
+<tr>
+<td><code>eshkol_xla_softmax</code></td>
+<td>Numerically stable softmax</td>
+<td>Yes, for contiguous last-axis</td>
+</tr>
+<tr>
+<td><code>eshkol_xla_normalize</code></td>
+<td>Layer/batch normalization</td>
+<td>Yes, for contiguous last-axis</td>
+</tr>
+<tr>
+<td><code>eshkol_xla_transpose</code></td>
+<td>N-dimensional permutation</td>
+<td>Yes, for 2D case</td>
+</tr>
+<tr>
+<td><code>eshkol_xla_broadcast</code></td>
+<td>Shape broadcasting</td>
+<td>CPU only</td>
+</tr>
+<tr>
+<td><code>eshkol_xla_slice</code></td>
+<td>Strided slicing</td>
+<td>CPU only</td>
+</tr>
+<tr>
+<td><code>eshkol_xla_argreduce</code></td>
+<td>Argmax/argmin</td>
+<td>CPU only</td>
+</tr>
+<tr>
+<td><code>eshkol_xla_scale_inplace</code></td>
+<td>Scalar multiply (for MEAN gradient)</td>
+<td>CPU only</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Op code translation:</strong> XLA and GPU enums differ because the GPU enum inserts NEG(4) and ABS(5). The translation table at <code>xla_runtime.cpp</code> maps XLA unary ops 4-10 to GPU ops 6-12.</p>
+<p><strong>Broadcasting semantics</strong> (<code>eshkol_xla_broadcast</code> at line 883): Source shape is right-aligned with target shape. For each target dimension, if the corresponding source dimension is 1 (or absent because source rank is lower), the value is replicated. This follows NumPy/XLA broadcasting conventions. Implemented via stride-based index mapping on CPU.</p>
+<p><strong>Fusion:</strong> Currently, XLA operations are dispatched as individual C runtime calls (LLVM-only mode, <code>xla_codegen.cpp</code>). The MLIR/StableHLO path (guarded by <code>ESHKOL_XLA_FULL_MLIR</code>) would enable operation fusion for compound patterns like matmul + bias + activation, but this path is not yet active. Each runtime function independently checks for GPU dispatch, so a fused <code>matmul -&gt; relu</code> currently incurs two GPU dispatch round-trips.</p>
+<h3 id="4-ad-with-tensors">4. AD with Tensors</h3>
+<p>Eshkol implements reverse-mode automatic differentiation for all major tensor operations. Forward passes record AD nodes with saved tensor data onto a tape. During backpropagation, <code>eshkol_tensor_backward_dispatch()</code> (<code>tensor_backward.cpp</code>) reads each node’s type and dispatches to the appropriate backward function.</p>
+<p><strong>Operations with backward passes</strong> (from <code>tensor_backward.cpp</code> and <code>tensor_backward.h</code>):</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 7%" />
+<col style="width: 38%" />
+<col style="width: 28%" />
+</colgroup>
+<thead>
+<tr>
+<th>AD Node Type</th>
+<th>ID</th>
+<th>Backward Function</th>
+<th>Gradient Rule</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AD_NODE_CONV2D</code></td>
+<td>19</td>
+<td><code>eshkol_backward_conv2d</code></td>
+<td><code>dInput = full_conv(grad, flipped_kernel)</code>, <code>dKernel = xcorr(input, grad)</code></td>
+</tr>
+<tr>
+<td><code>AD_NODE_MAXPOOL2D</code></td>
+<td>20</td>
+<td><code>eshkol_backward_maxpool2d</code></td>
+<td>Scatter gradient to max element positions</td>
+</tr>
+<tr>
+<td><code>AD_NODE_AVGPOOL2D</code></td>
+<td>21</td>
+<td><code>eshkol_backward_avgpool2d</code></td>
+<td>Distribute gradient uniformly across pooling window</td>
+</tr>
+<tr>
+<td><code>AD_NODE_BATCHNORM</code></td>
+<td>22</td>
+<td><code>eshkol_backward_batchnorm</code></td>
+<td>Standard batchnorm backward formula</td>
+</tr>
+<tr>
+<td><code>AD_NODE_LAYERNORM</code></td>
+<td>23</td>
+<td><code>eshkol_backward_layernorm</code></td>
+<td>Per-sample normalization gradient</td>
+</tr>
+<tr>
+<td><code>AD_NODE_MATMUL</code></td>
+<td>24</td>
+<td><code>eshkol_backward_matmul</code></td>
+<td><code>dA = grad @ B^T</code>, <code>dB = A^T @ grad</code></td>
+</tr>
+<tr>
+<td><code>AD_NODE_TRANSPOSE</code></td>
+<td>25</td>
+<td><code>eshkol_backward_transpose</code></td>
+<td>Transpose of the upstream gradient</td>
+</tr>
+<tr>
+<td><code>AD_NODE_RESHAPE</code></td>
+<td>26</td>
+<td><code>eshkol_backward_reshape</code></td>
+<td><code>memcpy</code> (reshape is shape-only, gradient is identical data)</td>
+</tr>
+<tr>
+<td><code>AD_NODE_SUM</code></td>
+<td>27</td>
+<td><code>eshkol_backward_sum</code></td>
+<td>Broadcast scalar gradient to all elements</td>
+</tr>
+<tr>
+<td><code>AD_NODE_MEAN</code></td>
+<td>28</td>
+<td><code>eshkol_backward_mean</code></td>
+<td>Broadcast scalar gradient / N</td>
+</tr>
+<tr>
+<td><code>AD_NODE_ATTENTION</code></td>
+<td>29</td>
+<td><code>eshkol_backward_attention</code></td>
+<td><code>dV = attn^T @ grad</code>, <code>dQ = softmax_bwd(grad @ V^T) @ K</code>, <code>dK = softmax_bwd(...)^T @ Q</code></td>
+</tr>
+<tr>
+<td><code>AD_NODE_MULTIHEAD_ATTENTION</code></td>
+<td>30</td>
+<td><code>eshkol_backward_multihead_attention</code></td>
+<td>Per-head attention backward + weight projection gradients</td>
+</tr>
+<tr>
+<td><code>AD_NODE_POSITIONAL_ENCODING</code></td>
+<td>31</td>
+<td><code>eshkol_backward_positional_encoding</code></td>
+<td>Pass-through (additive constant)</td>
+</tr>
+<tr>
+<td><code>AD_NODE_EMBEDDING</code></td>
+<td>32</td>
+<td><code>eshkol_backward_embedding</code></td>
+<td>Scatter-add gradients to weight rows</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Matmul gradient</strong> (lines 324-356): For <code>C = A @ B</code> where A is (M,K) and B is (K,N):</p>
+<ul>
+<li><code>dA = grad_C @ B^T</code> – shape (M,N) @ (N,K) = (M,K)</li>
+<li><code>dB = A^T @ grad_C</code> – shape (K,M) @ (M,N) = (K,N)</li>
+</ul>
+<p>The BLAS backend also provides <code>matmul_backward()</code> (<code>blas_backend.cpp</code>) which uses <code>cblas_dgemm</code> with <code>CblasTrans</code> for efficient transposed multiplication with <code>beta=1.0</code> for gradient accumulation.</p>
+<p><strong>Reshape/transpose gradients:</strong> Reshape backward is a <code>memcpy</code> because reshape only changes the dimension metadata, not the underlying data. Transpose backward is simply the transpose of the upstream gradient: <code>grad_in[j*rows + i] = grad_out[i*cols + j]</code>.</p>
+<p><strong>Gradient accumulation:</strong> <code>eshkol_accumulate_tensor_grad()</code> (line 1059) implements element-wise <code>tensor_gradient[i] += grad[i]</code>. If the node’s <code>tensor_gradient</code> is NULL, it allocates and zero-fills before accumulating. This supports multiple upstream consumers contributing gradients to the same tensor.</p>
+<p><strong>Gradient seeding:</strong> <code>eshkol_seed_tensor_gradient()</code> (line 678) fills the output node’s gradient with all-ones (<code>dL/dL = 1.0</code>) to initiate backpropagation.</p>
+<h3 id="5-reshape-semantics">5. Reshape Semantics</h3>
+<p>Reshape in Eshkol is a <strong>zero-copy</strong> operation. The implementation (<code>tensor_codegen.cpp</code>) allocates only a new tensor struct header and dimension array via the arena allocator; the <code>elements</code> pointer is reused from the source tensor without copying element data.</p>
+<p>The key line is at <code>tensor_codegen.cpp</code>:</p>
+<pre class="cpp"><code>// Field 2: elements pointer (reused from source - no copy for reshape)
+ctx_.builder().CreateStore(src_elements_ptr, elements_field_ptr);</code></pre>
+<p>This means reshape creates a new tensor struct <code>{dims_ptr, ndim, elements, total}</code> where <code>elements</code> points directly into the original tensor’s data buffer. The new dimensions array is allocated separately via <code>arena_alloc</code> and populated with the requested shape.</p>
+<p><strong>Stride computation:</strong> Eshkol tensors use row-major (C-contiguous) layout. Strides are computed implicitly at access time rather than stored explicitly. For a tensor with shape <code>[d0, d1, ..., d(n-1)]</code>, the stride for dimension <code>i</code> is <code>total_elements / product(d0..di)</code>, computed via division during <code>tensor-get</code> (line 364):</p>
+<pre class="cpp"><code>llvm::Value* stride_i = ctx_.builder().CreateUDiv(total_elements, prod_dims_next);</code></pre>
+<p><strong>Contiguity requirement:</strong> Because reshape reuses the element pointer without copying, it relies on the source tensor being contiguous in memory. All Eshkol tensors are contiguous at creation – there is no explicit stride array in the tensor struct, so non-contiguous views (as might result from slicing with strides) are not possible. A <code>tensor-get</code> with fewer indices than dimensions returns a contiguous sub-tensor (a view) whose <code>elements</code> pointer is offset into the original (line 458):</p>
+<pre class="cpp"><code>llvm::Value* slice_start = ctx_.builder().CreateGEP(
+    ctx_.int64Type(), elements_ptr, linear_offset);</code></pre>
+<p><strong>Input validation:</strong> Reshape supports three argument forms: 1. Individual dimension arguments: <code>(reshape tensor 3 3)</code> 2. List argument: <code>(reshape tensor (list 3 3 2))</code> 3. Tensor-of-dimensions: <code>(reshape tensor #(3 3 2))</code></p>
+<p>All paths merge into a single code path that stores the new dimensions and reuses the source elements. OOM from the arena allocation triggers an exception via <code>eshkol_raise</code>.</p>
+<hr />
+<h2 id="see-also">See Also</h2>
+<ul>
+<li><a href="/docs#page=breakdown_autodiff" data-url="/content/breakdown_autodiff.html">Automatic Differentiation</a> - How <code>vref</code> creates AD nodes</li>
+<li><a href="/docs#page=breakdown_type_system" data-url="/content/breakdown_type_system.html">Type System</a> - HEAP_SUBTYPE_VECTOR vs. HEAP_SUBTYPE_TENSOR</li>
+<li><a href="/docs#page=breakdown_memory_management" data-url="/content/breakdown_memory_management.html">Memory Management</a> - Object headers on vectors/tensors</li>
+<li><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a> - Complete tensor operation reference</li>
+</ul>

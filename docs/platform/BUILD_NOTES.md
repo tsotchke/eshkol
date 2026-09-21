@@ -1,7 +1,20 @@
+---
+kind: reference
+status: current
+owner-area: build
+since: v1.3.0-evolve
+sources:
+  - CMakeLists.txt
+  - cmake/LLVMToolchain.cmake
+  - lib/core/runtime_math_compat.c
+  - lib/repl/repl_jit.cpp
+  - bindings/python/eshkol_module.cpp
+  - tests/bindings/python_capsule_lifetime_test.py
+---
 # Per-Platform Build Notes
 
-Eshkol builds with CMake (3.14+), a C17 / C++20 toolchain (GCC 11+ or Clang 14+),
-and **LLVM 21**. LLVM discovery is handled by `cmake/LLVMToolchain.cmake`
+Eshkol builds with CMake (3.14+), a C17 / C++20 toolchain (GCC 11+ or Clang 14+;
+see [Supported host compilers](#supported-host-compilers)), and **LLVM 21**. LLVM discovery is handled by `cmake/LLVMToolchain.cmake`
 (`eshkol_find_lite_llvm`), which probes Homebrew `llvm@21` prefixes and Windows
 SDK paths and validates the major version (`eshkol_validate_llvm_major` errors on
 mismatch).
@@ -12,6 +25,50 @@ Baseline build:
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
+
+## Supported host compilers
+
+Eshkol v1.3.5-evolve is built and verified with **GCC 13** and with
+**Clang/LLVM 21**. **GCC 15 is not a supported host compiler** for building the
+compiler itself (since v1.3.5). Where the system default is GCC 15, pin a supported compiler
+for the whole build tree, C and C++ together:
+
+```sh
+CC=gcc-13 CXX=g++-13 cmake -B build -DCMAKE_BUILD_TYPE=Release
+# or
+CC=clang-21 CXX=clang++-21 cmake -B build -DCMAKE_BUILD_TYPE=Release
+```
+
+The host compiler builds Eshkol; it does not generate code for Eshkol programs,
+which are emitted through LLVM.
+
+## Platform C library differences
+
+Scheme's `round` is ties-to-even, which the back end emits as the LLVM
+`roundeven` intrinsic. On AArch64 that is a single instruction. On x86-64 it is
+an instruction only when SSE4.1 is in the target baseline; otherwise it becomes
+a call to the C library's `roundeven`, a C23 function that the Windows
+Universal CRT and Apple's libm do not provide.
+
+Configuration decides from the platform itself, not from its name:
+`check_symbol_exists(roundeven "math.h" ESHKOL_HAVE_ROUNDEVEN)`. Where the
+symbol exists the build defines `ESHKOL_HAVE_ROUNDEVEN` and uses the platform's
+function; where it does not, the runtime archive supplies `roundeven` and
+`roundevenf` from `lib/core/runtime_math_compat.c`. The shim rounds ties to even
+regardless of the current floating-point rounding mode, passes NaN and the
+infinities through, and preserves the sign of a zero result. The configure log
+names the case:
+
+```
+-- roundeven: provided by the platform C library
+-- roundeven: supplied by lib/core/runtime_math_compat.c
+```
+
+The x86-64 baseline stays where it is: raising it to SSE4.1 would change which
+CPUs a shipped binary runs on.
+
+Windows has no `sincos`; see the portable shim under
+[Windows arm64](#windows-arm64-vs2022--clangcl).
 
 ## Reliable FetchContent builds on the mesh
 
@@ -46,10 +103,11 @@ substitute for that release evidence.
 Useful targets: `eshkol-run` (compiler/JIT driver), `eshkol-repl`,
 `eshkol-vm-standalone`, and `stdlib` (precompiled standard library object).
 
-> **Discrepancy (report only):** the top-level `README.md` Prerequisites section
-> still lists "LLVM 17" in one place while the rest of the repo (CI, other README
-> sections, `cmake/LLVMToolchain.cmake`) requires **LLVM 21**. The authoritative
-> requirement is LLVM 21.
+The build pins **one** LLVM major version and aborts on any other
+(`cmake/LLVMToolchain.cmake`). The default pin is **LLVM 21**, which is what
+the release packages and every CI lane are built with; the source itself
+compiles against LLVM 18 through 24, and the pin is overridable with
+`-DESHKOL_REQUIRED_LLVM_MAJOR=<major>` for a build outside that default.
 
 ## macOS (Apple Silicon + x86_64)
 
@@ -126,6 +184,80 @@ runtime gotchas: force the gcc14 libdir to the front of `libstdc++` search; put
 / error 34 from the stub `libcuda.so.1`); use L4T-native cuBLAS 11.6. Verified
 GEMM ~21 GFLOPS on GPU vs ~1.7 on CPU (~12×) via
 `nix/jetson/jetson_gemm_bench.esk`.
+
+## Python bindings
+
+The Python bindings are a pybind11 extension, `bindings/python/eshkol_module.cpp`,
+built as the CMake target `eshkol_py` with output name `eshkol`, so
+`import eshkol` works against the directory that holds it. The API is in
+[reference/bindings/python.md](../reference/bindings/python.md).
+
+| CMake input | Meaning |
+|-------------|---------|
+| `ESHKOL_PYTHON_BINDINGS` | Option, default `OFF`. Builds the extension. |
+| `pybind11_DIR` | pybind11's CMake package directory (`python3 -m pybind11 --cmakedir`). Without pybind11 the target is skipped with the status line `Python bindings: pybind11 not found, skipping`. |
+| `Python3_EXECUTABLE` | The interpreter whose headers and library the extension builds against. |
+| `ESHKOL_PYTHON3_EXECUTABLE` | The interpreter CTest uses to run the binding test; name the same one. |
+
+```sh
+python3 -m venv .venv && .venv/bin/python -m pip install pybind11 numpy
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DESHKOL_PYTHON_BINDINGS=ON \
+  -DESHKOL_PYTHON3_EXECUTABLE="$PWD/.venv/bin/python" \
+  -DPython3_EXECUTABLE="$PWD/.venv/bin/python" \
+  -Dpybind11_DIR="$(.venv/bin/python -m pybind11 --cmakedir)"
+cmake --build build --target eshkol_py
+ctest --test-dir build -R python_bindings_capsule_lifetime --output-on-failure
+```
+
+**Python development components.** The bindings block calls
+`find_package(Python3 REQUIRED COMPONENTS Interpreter Development)`. Test
+registration elsewhere in the build discovers only the interpreter, and
+pybind11 reuses that discovery, so the development component (headers and
+`Python3_add_library`) is requested explicitly. An interpreter installed without
+its development files fails configuration here.
+
+**Position-independent code.** On ELF platforms the extension force-loads the
+static compiler, the REPL, the runtime and the agent dependency closure into
+one shared object, so every object in that closure is position-independent.
+With `ESHKOL_PYTHON_BINDINGS=ON` on a Unix platform other than macOS, the build
+sets `CMAKE_POSITION_INDEPENDENT_CODE ON` immediately after `project()`, before
+any target or FetchContent dependency is created, so every CMake-built static
+archive inherits it. Ordinary builds keep the narrower PIC scope on the runtime
+and agent-FFI targets that generated `-shared` outputs consume. Switch the
+option on in a fresh build directory.
+
+**Linking.** The extension force-loads `eshkol-static` and `eshkol-repl-lib`:
+`-Wl,-force_load,<archive>` once per archive on macOS, and
+`-Wl,--whole-archive ... -Wl,--no-whole-archive` around both elsewhere. The REPL
+library registers the JIT bridge from a static constructor, and nothing else
+references that translation unit by symbol, so without the force-load the
+linker drops it and every `Context()` fails with
+`FFI JIT runtime is not linked; link eshkol-repl-lib`. The agent FFI archive is
+linked when it is built.
+
+**JIT symbol resolution when embedded.** Python loads an extension with local
+symbol visibility, so the runtime symbols the extension exports are not visible
+to a process-wide lookup. On Unix platforms the REPL JIT finds the image that
+contains its own runtime (through `dladdr` on an anchor object in that image),
+opens a handle to that already-loaded image without loading a second copy, and
+adds it as the first symbol generator; the process-wide generator follows it.
+The handle is created once per image, so repeated contexts do not accumulate
+references. In an ordinary executable the image may not be openable this way,
+and the process-wide generator serves its exported symbols as before.
+
+**Tests.** `python_bindings_capsule_lifetime`
+(`tests/bindings/python_capsule_lifetime_test.py`) is registered when
+`ESHKOL_BUILD_TESTS` is on and an interpreter is found. It proves that a NumPy
+array returned from a tensor keeps its `Context` alive: a shutdown hook
+overwrites the array's backing bytes, and the array must still read its original
+values after the `Context` is deleted. CTest sets `ESHKOL_PYTHON_MODULE_DIR` to
+the target's output directory. The test passes only on `RESULT: ALL PASS` and
+fails on any `SKIP:` or `FAIL:` line, so a missing module or a missing NumPy is
+a failure, not a skip. `tests/v1_2_edge_cases/python_ffi_test.py` and
+`tests/stdlib/v12_python_test.py` are manual scripts outside CTest. The release
+readiness build enables the bindings in an isolated virtual environment and runs
+the capsule test among its required CTests.
 
 ## GPU / backend selection at runtime
 

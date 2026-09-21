@@ -82,7 +82,7 @@ build/eshkol-run hello.esk
 - **[Exact Arithmetic](EXACT_ARITHMETIC.md)** — Bignum/rational numeric tower, overflow detection, R7RS exactness
 - **[Continuations](CONTINUATIONS.md)** — call/cc, dynamic-wind, guard/raise, exception handling
 - **[XLA Backend](XLA_BACKEND.md)** — Tensor runtime operations, GPU dispatch, broadcasting, AD gradient support
-- **[Bytecode VM](BYTECODE_VM.md)** — 64-opcode core bytecode interpreter, ESKB binary format, WebAssembly execution
+- **[Bytecode VM](BYTECODE_VM.md)** — 72-opcode core bytecode interpreter, ESKB binary format, WebAssembly execution
 - **[Computable Transformer](COMPUTABLE_TRANSFORMER.md)** — Programs as neural network weight matrices, 6-layer transformer VM encoding
 
 ### Platform and Tools
@@ -110,7 +110,7 @@ build/eshkol-run hello.esk
 
 - **[API Reference](../API_REFERENCE.md)** - All functions with signatures, examples from test suite
 - **[Quickstart Tutorial](../QUICKSTART.md)** - 15-minute hands-on tutorial (lists → closures → tensors → gradients)
-- **[Feature Matrix](../FEATURE_MATRIX.md)** - Implementation status table (✅ Implemented | ⚠️ Partial | ❌ Planned)
+- **[Feature Matrix](../FEATURE_MATRIX.md)** - Implementation status table (`Yes` = implemented, `Partial`, `Planned`, `No` = not planned)
 
 ### Master Architecture Document
 
@@ -129,11 +129,11 @@ build/eshkol-run hello.esk
 
 ### Implementation Statistics
 
-- **Frontend**: S-expression parser (11,116 lines), macro expander (1,658 lines)
+- **Frontend**: S-expression parser (11,115 lines), macro expander (1,658 lines)
 - **Type Checker**: HoTT-inspired gradual typing (3,910 lines)
 - **LLVM Backend**: Main codegen (44,003 lines) + 35 further specialised codegen modules, including the post-v1.2 tensor split
 - **Runtime**: Arena memory (4,259 lines across `lib/core/runtime_arena_*.cpp`, `runtime_regions.cpp` and the `runtime_*_alloc.cpp` modules), closure system, AD tape infrastructure
-- **JIT**: REPL with LLVM OrcJIT (4,354 lines)
+- **JIT**: REPL with LLVM OrcJIT (4,679 lines)
 
 ## How to Navigate
 

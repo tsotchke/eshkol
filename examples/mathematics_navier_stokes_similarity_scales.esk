@@ -38,12 +38,15 @@
 ;; or to match the heat exterior.  Consequently the residual in (e) is
 ;; unbounded everywhere in the core, not only in the annulus.
 ;;
-;; DEFECT NOTE.  Nested differentiation works only with `derivative` as the
-;; outer pass; `derivative-n` as an outer pass over a differentiating body
-;; silently returns 0.  Every derivative in this file therefore uses
-;; `derivative`, and second derivatives are nested `derivative` calls.  Minimal
-;; repro: (derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1)
-;; returns 0 where 1 is expected.
+;; AD surface note.  Every derivative below is taken by calling the operator
+;; directly -- `derivative` at an exact rational seed, with exact rationals
+;; inside the differentiand, and nested where the assembly needs it.  Three
+;; defects that once made that impossible (an exact operand stealing the
+;; scalar dispatch from a live jet, a vanishing tangent returning an INEXACT
+;; zero, and a captured outer variable lost by an inner pass) were repaired
+;; together and are pinned by tests/ad/exact_rational_derivative_test.esk and
+;; tests/ad/nested_operator_matrix_test.esk; they are ledger entries SW-148,
+;; SW-149 and SW-150.
 
 (define pass-count 0)
 (define fail-count 0)

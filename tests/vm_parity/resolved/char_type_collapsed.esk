@@ -1,0 +1,9 @@
+; RESOLVED: VM character values and string-port read-char now match native.
+(display (char->integer #\A))
+(display (integer->char 66))
+(newline)
+(display #\a)
+(newline)
+(define p (open-input-string "hi"))
+(display (read-char p))
+(newline)

@@ -1,0 +1,15 @@
+; A zero-argument loop still has one distinct guard activation per tail
+; iteration. The inner handler re-raises once, and the enclosing activation
+; answers; an outer guard must not answer instead.
+(define stage 0)
+(define (zero-loop)
+  (guard (e ((eq? e 'again)
+             (if (= stage 2)
+                 (begin (set! stage 3) (raise e))
+                 0))
+            (#t 0))
+    (if (= stage 2)
+        (raise 'again)
+        (begin (set! stage (+ stage 1)) (zero-loop)))))
+(display (guard (outer (#t 99)) (zero-loop)))
+(newline)

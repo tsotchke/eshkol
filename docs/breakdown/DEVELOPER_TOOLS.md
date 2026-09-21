@@ -19,7 +19,7 @@ This document covers the full architecture, feature set, configuration options, 
 
 | Property | Value |
 |----------|-------|
-| Source file | `tools/lsp/eshkol_lsp.cpp` (1019 lines) |
+| Source file | `tools/lsp/eshkol_lsp.cpp` (954 lines) |
 | Binary name | `eshkol-lsp` |
 | Version | `1.1.0` |
 | License | MIT |
@@ -383,9 +383,9 @@ The `eshkol-run` binary (source: `exe/eshkol-run.cpp`) exposes several flags for
 | `--shared-lib` | `-s` | flag | Build a shared library (no `main`; uses `LinkOnceODRLinkage`) |
 | `-fPIC` | — | flag | Accepted for build-system compatibility when emitting objects |
 | `-I <dir>` | — | option | Add a source/module search path for `load` and `require` resolution |
-| `-D NAME[=VALUE]` | — | option | Accepted for build-system compatibility; not source-level preprocessing |
+| `-D NAME[=VALUE]` | — | option | Define a compile-time feature visible to `cond-expand`; the optional value is accepted for build-tool compatibility |
 | `--no-stdlib` | `-n` | flag | Do not auto-load the standard library (`build/stdlib.o`) |
-| `--eval` | `-e` | string | JIT-evaluate a single expression and print result |
+| `--eval` | `-e` | string | JIT-evaluate a single expression; output is shown via `(display ...)` |
 | `--run` | `-r` | flag | JIT-run a file without compiling to disk |
 | `--version` | — | flag | Print `Eshkol Compiler v...` and exit 0 |
 

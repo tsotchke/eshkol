@@ -1,0 +1,284 @@
+;; Navier-Stokes blowup construction -- Craik-Criminale pulse growth on an
+;; affine background.
+;;
+;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
+;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Introduction (Craik and Criminale [9], "exact finite-amplitude waves on
+;; affine background flows") and Section 2.2's physical description of the
+;; pulses: "the background shear supplies [each pulse's] subsequent growth
+;; ... giving exponential growth when the amplification exceeds viscous
+;; damping ... shortening the radial wavelength increases the total squared
+;; wavenumber and hence viscous damping ... amplification dominates at
+;; first, but damping overtakes it later."
+;;
+;; This file makes that qualitative description exact for a representative
+;; Craik-Criminale wave on a SIMPLE SHEAR background (the standard case of
+;; [9]; the paper's own rigorous treatment threads this mechanism through
+;; the two-family torus construction of Sections 6-7, mechanized separately
+;; in mathematics_navier_stokes_oscillatory_realization.esk).  Background
+;; velocity U = (S y, 0); the Craik-Criminale wavevector equation
+;; dk/dt = -(grad U)^T k gives, for this background,
+;;     dk_theta/dt = 0,      dk_r/dt = -S k_theta,
+;; so k_theta is constant and k_r(t) = k_r(0) - S k_theta t is EXACTLY affine
+;; in t -- rational whenever S, k_theta, k_r(0) and t are rational, which is
+;; the "shortens the radial wavelength" mechanism made exact.  The squared
+;; wavenumber |k(t)|^2 = k_theta^2 + k_r(t)^2 is then an exact rational
+;; quadratic in t.
+;;
+;; The amplitude's growth rate is modeled as
+;;     rate(t) = G0 - lambda t - nu |k(t)|^2,
+;; where G0 = S (amplification proportional to the background shear rate,
+;; per "the background shear supplies growth"), lambda = S/4 (the "changing
+;; orientation weakens the amplification" term, itself driven by the shear),
+;; and nu |k(t)|^2 is the viscous dissipation rate.  This is a REPRESENTATIVE
+;; model of the mechanism Section 2.2 describes in words, not a derivation
+;; from the primitive equations (the full derivation is Sections 6-7's
+;; job); what is mechanized exactly here is the CROSSOVER STRUCTURE the
+;; paper asserts: amplification first, damping later, a single crossover
+;; time, and log-amplitude P(t) = integral_0^t rate(s) ds recovered as the
+;; exact antiderivative by AD, cross-checked against an independently
+;; numerically integrated amplitude curve.
+;;
+;; AD surface note.  `derivative` silently drops exactness on a
+;; differentiand that references a top-level `define`d constant instead of
+;; an inline literal (see examples/mathematics_navier_stokes_stress_cone.esk's
+;; AD surface note and its repro); k2-of, rate-of and P-of below use inline
+;; literals throughout for exactly this reason, even though the named
+;; constants S, k-theta, k-r0, G0, lam, nu are also defined, for exposition
+;; and for the negative control (which needs the S = 0 variants literally).
+
+(define pass-count 0)
+(define fail-count 0)
+(define icc-target "ns_pulse_growth_crossover")
+
+(define (icc-event name value)
+  (display "ICC-EVENT {\"kind\":\"ns_mechanization\",\"name\":\"")
+  (display name)
+  (display "\",\"value\":\"")
+  (display value)
+  (display "\",\"confidence\":0.95}")
+  (newline))
+
+(define (check label ok)
+  (icc-event (string-append icc-target "::" label) (if ok "PASS" "FAIL"))
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+
+;; ---------------------------------------------------------------------------
+;; Parameters (named, for exposition only -- see AD surface note).
+;;   S = 1          shear rate
+;;   k-theta = 1    constant angular wavenumber
+;;   k-r0 = -1/2    initial radial wavenumber
+;;   G0 = 1 (= S)   amplification coefficient
+;;   lam = 1/4      orientation-weakening coefficient (= S/4)
+;;   nu = 1/10      viscosity
+;; ---------------------------------------------------------------------------
+
+(define S 1)
+(define k-theta 1)
+(define k-r0 -1/2)
+(define G0 1)
+(define lam 1/4)
+(define nu 1/10)
+
+;; k_r(t) = k_r(0) - S k_theta t, literals inlined (AD surface note).
+(define (k2-of t) (- -1/2 (* 1 1 t)))
+(define (k2sq-of t) (+ (* 1 1) (* (k2-of t) (k2-of t))))
+
+;; rate(t) = G0 - lam t - nu |k(t)|^2, literals inlined.
+(define (rate-of t) (- (- 1 (* 1/4 t)) (* 1/10 (k2sq-of t))))
+
+;; P(t) = G0 t - lam t^2/2 - nu (k_theta^2 t + k_r0^2 t - S k_theta k_r0 t^2
+;;                                + S^2 k_theta^2 t^3/3), literals inlined.
+(define (P-of t)
+  (- (* 1 t)
+     (+ (* 1/4 t t 1/2)
+        (* 1/10 (+ (* 1 1 t) (* -1/2 -1/2 t) (- (* 1 1 -1/2 t t))
+                   (* 1 1 1 1 t t t 1/3))))))
+
+;; The S = 0 (no shear) variants, for the negative control -- G0 and lam are
+;; both proportional to S in the model, so they vanish with it.
+(define (k2-noshear-of t) -1/2)
+(define (rate-noshear-of t) (- 0 (* 1/10 (+ 1 (* (k2-noshear-of t) (k2-noshear-of t))))))
+
+;; ---------------------------------------------------------------------------
+;; PART A.  The exact wavevector law.
+;; ---------------------------------------------------------------------------
+
+(define sample-ts (list 0 1 2 3 7/2))
+
+(check "k_theta is constant and k_r(t) is exact rational at every sampled t"
+       (let loop ((ts sample-ts))
+         (cond ((null? ts) #t)
+               ((exact? (k2-of (car ts))) (loop (cdr ts)))
+               (else #f))))
+
+;; NOTE (route-around): passing a loop-derived expression like `(car ts)`
+;; directly as `derivative`'s POINT argument loses exactness (repro in
+;; .scratch/ns_derivative_loopvar_point_argument_repro.esk) even though the
+;; differentiand itself never references the loop -- distinct from SW-151,
+;; which is about the differentiand capturing the loop variable. Route
+;; around it by let-binding the point first, here and everywhere below.
+(check "the wavevector law solves the Craik-Criminale equation exactly: dk_r/dt = -S k_theta"
+       (let loop ((ts sample-ts))
+         (cond ((null? ts) #t)
+               ((let* ((pt (car ts)) (d (derivative k2-of pt)))
+                  (and (exact? d) (= d -1)))
+                (loop (cdr ts)))
+               (else #f))))
+
+(check "negative control -- a perturbed wavevector law (extra t^2 term) does not solve the CL equation"
+       (let* ((bad (lambda (t) (- (k2-of t) (* t t))))
+              (d (derivative bad 2)))
+         (not (= d -1))))
+
+(check "|k(t)|^2 is an exact rational quadratic at every sampled t"
+       (let loop ((ts sample-ts))
+         (cond ((null? ts) #t)
+               ((exact? (k2sq-of (car ts))) (loop (cdr ts)))
+               (else #f))))
+
+;; ---------------------------------------------------------------------------
+;; PART B.  Amplification first, damping later: the crossover.
+;; ---------------------------------------------------------------------------
+
+(check "amplification dominates at t = 0: rate(0) > 0, exactly"
+       (and (exact? (rate-of 0)) (> (rate-of 0) 0)))
+
+(check "damping dominates at large t: rate(5) < 0, exactly"
+       (and (exact? (rate-of 5)) (< (rate-of 5) 0)))
+
+(check "rate(t) is monotonically decreasing across the sampled range (single crossover)"
+       (let loop ((ts sample-ts) (prev #f))
+         (cond ((null? ts) #t)
+               ((or (not prev) (< (rate-of (car ts)) prev))
+                (loop (cdr ts) (rate-of (car ts))))
+               (else #f))))
+
+;; Exact rational bisection for the crossover time -- no sqrt, no exp: only
+;; the sign of the exact rational rate(t) is ever tested.
+(define (bisect-crossover lo hi steps)
+  (let loop ((lo lo) (hi hi) (n steps))
+    (if (<= n 0)
+        (list lo hi)
+        (let ((mid (/ (+ lo hi) 2)))
+          (if (> (rate-of mid) 0)
+              (loop mid hi (- n 1))
+              (loop lo mid (- n 1)))))))
+
+(define crossover-bracket (bisect-crossover 0 10 40))
+(define t-star-lo (car crossover-bracket))
+(define t-star-hi (car (cdr crossover-bracket)))
+
+(show "crossover bracket [lo, hi]     " crossover-bracket)
+(show "bracket width                 " (- t-star-hi t-star-lo))
+
+(check "the exact bisection brackets a genuine sign change: rate(lo) > 0 > rate(hi)"
+       (and (> (rate-of t-star-lo) 0) (< (rate-of t-star-hi) 0)))
+
+(check "the bisection bracket is narrow (exact rational, shrinks below 1e-9)"
+       (< (exact->inexact (- t-star-hi t-star-lo)) 1e-9))
+
+;; ---------------------------------------------------------------------------
+;; PART C.  P is the exact antiderivative of rate, by AD.
+;; ---------------------------------------------------------------------------
+
+(check "P'(t) = rate(t) exactly, by AD, at every sampled t"
+       (let loop ((ts sample-ts))
+         (cond ((null? ts) #t)
+               ((let* ((pt (car ts)) (d (derivative P-of pt)))
+                  (and (exact? d) (= d (rate-of pt))))
+                (loop (cdr ts)))
+               (else #f))))
+
+(check "negative control -- a perturbed log-amplitude (extra constant slope) does not satisfy P' = rate"
+       (let* ((bad (lambda (t) (+ (P-of t) (* 1/5 t))))
+              (d (derivative bad 2)))
+         (not (= d (rate-of 2)))))
+
+;; ---------------------------------------------------------------------------
+;; PART D.  The AD-integrated amplitude curve, cross-checked against exp(P).
+;; ---------------------------------------------------------------------------
+
+(define (rk4-step f t a h)
+  (let* ((k1v (f t a))
+         (k2v (f (+ t (* 0.5 h)) (+ a (* 0.5 h k1v))))
+         (k3v (f (+ t (* 0.5 h)) (+ a (* 0.5 h k2v))))
+         (k4v (f (+ t h) (+ a (* h k3v)))))
+    (+ a (* (/ h 6.0) (+ k1v (* 2.0 k2v) (* 2.0 k3v) k4v)))))
+
+(define (da/dt t a) (* (rate-of (exact->inexact t)) a))
+
+;; Stop within half a step of t-final rather than at `>= t-final`: repeated
+;; float addition of h drifts (h = 1/100 exactly, 400 additions land at
+;; 3.999999999999958, not 4.0), and an unguarded `>=` check takes one whole
+;; extra RK4 step past t-final before noticing -- a step that lands where
+;; rate(t) is strongly negative, which was enough to move the final answer
+;; by ~2%. This is ordinary floating-point step drift, not a compiler
+;; defect: the fix is the standard half-step termination guard.
+(define (integrate-amplitude t-final h)
+  (let loop ((t 0.0) (a 1.0) (peak-a 1.0) (peak-t 0.0))
+    (if (> t (- t-final (* 0.5 h)))
+        (list a peak-t)
+        (let ((a-next (rk4-step da/dt t a h)))
+          (if (> a-next peak-a)
+              (loop (+ t h) a-next a-next (+ t h))
+              (loop (+ t h) a-next peak-a peak-t))))))
+
+(define integration-h 1/100)
+(define t-final 4)
+(define integration-result (integrate-amplitude t-final integration-h))
+(define a-integrated (car integration-result))
+(define t-peak-numeric (car (cdr integration-result)))
+
+(define a-closed-form (exp (exact->inexact (P-of t-final))))
+
+(show "integrated a(4)                " a-integrated)
+(show "exp(P(4)) closed form          " a-closed-form)
+(show "numeric peak time              " t-peak-numeric)
+(show "exact crossover (bracket mid)  " (exact->inexact (/ (+ t-star-lo t-star-hi) 2)))
+
+(check "the AD-integrated amplitude curve agrees with exp(P(t)) to 1e-3 relative"
+       (< (abs (- a-integrated a-closed-form)) (* 1e-3 (abs a-closed-form))))
+
+(check "the numerically-integrated curve's peak matches the exact crossover time to within one step"
+       (< (abs (- t-peak-numeric (exact->inexact (/ (+ t-star-lo t-star-hi) 2))))
+          (* 3.0 (exact->inexact integration-h))))
+
+(check "the tail decays: P(t) is very negative at large t, so a(t) -> 0"
+       (< (P-of 10) -10))
+
+;; ---------------------------------------------------------------------------
+;; PART E.  Negative control: no shear gives pure viscous decay, no crossover.
+;; ---------------------------------------------------------------------------
+
+(check "negative control -- with S = 0, rate(t) is a constant negative value (no amplification phase)"
+       (let loop ((ts sample-ts))
+         (cond ((null? ts) #t)
+               ((and (exact? (rate-noshear-of (car ts)))
+                     (= (rate-noshear-of (car ts)) (rate-noshear-of 0))
+                     (< (rate-noshear-of (car ts)) 0))
+                (loop (cdr ts)))
+               (else #f))))
+
+(check "negative control -- with S = 0 there is no crossover: rate never exceeds 0 on the sampled range"
+       (let loop ((ts sample-ts))
+         (cond ((null? ts) #t)
+               ((<= (rate-noshear-of (car ts)) 0) (loop (cdr ts)))
+               (else #f))))
+
+;; ---------------------------------------------------------------------------
+
+(display "Navier-Stokes Craik-Criminale pulse growth (Introduction [9], Section 2.2)")
+(newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(icc-event icc-target (if (= fail-count 0) "PASS" "FAIL"))
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

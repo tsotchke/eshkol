@@ -1,0 +1,8 @@
+;; Regression for VM module linking of non-exported definitions.
+
+(require test.modules.internal_forward_helper)
+
+(if (= (public-value 1) 42)
+    (begin (display "PASS: VM module-internal helper resolution") (newline))
+    (begin (display "FAIL: VM module-internal helper resolution") (newline)
+           (error "module-internal helper resolution failed")))

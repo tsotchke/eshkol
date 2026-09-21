@@ -1,0 +1,45 @@
+;;; logic.kb_query_substitutions -- the kb-query result contract.
+;;;
+;;; docs/API_REFERENCE.md and docs/COMPLETE_LANGUAGE_SPECIFICATION.md define
+;;; (kb-query kb pattern) as a list of substitutions, one per fact that unifies
+;;; with the pattern, in insertion order. docs/ESHKOL_QUICK_REFERENCE.md said it
+;;; returned the matching facts; the page is corrected and this test pins the
+;;; contract on every engine, including the quick reference's own example.
+
+(define pass 0)
+(define fail 0)
+(define (check nm ok)
+  (if ok
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display nm) (newline))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display nm) (newline))))
+
+(define kb (make-kb))
+(kb-assert! kb (make-fact 'parent 'alice 'bob))
+(kb-assert! kb (make-fact 'parent 'alice 'diana))
+(kb-assert! kb (make-fact 'parent 'bob 'charlie))
+
+(define r (kb-query kb (make-fact 'parent 'alice ?child)))
+(check "one result per matching fact" (= (length r) 2))
+(check "every result is a substitution" (and (substitution? (car r)) (substitution? (cadr r))))
+(check "no result is a fact" (not (fact? (car r))))
+(check "insertion order: first binds ?child to bob" (eq? (walk ?child (car r)) 'bob))
+(check "insertion order: second binds ?child to diana" (eq? (walk ?child (cadr r)) 'diana))
+
+(define q (kb-query kb '(parent alice ?child)))
+(check "quoted datum pattern gives the same bindings"
+       (equal? (map (lambda (s) (walk ?child s)) q) '(bob diana)))
+(define who (kb-query kb (make-fact 'parent ?who 'charlie)))
+(check "a variable in the first argument" (and (= (length who) 1) (eq? (walk ?who (car who)) 'bob)))
+(check "no match is the empty list" (null? (kb-query kb (make-fact 'sibling ?a ?b))))
+
+;; the quick reference's example, verbatim
+(define kb2 (make-kb))
+(kb-assert! kb2 (make-fact 'parent 'alice 'bob))
+(check "quick reference: (kb-query kb (make-fact 'parent 'alice ?child)) binds bob"
+       (eq? (walk ?child (car (kb-query kb2 (make-fact 'parent 'alice ?child)))) 'bob))
+(check "quick reference: walk over a quoted pattern is bob"
+       (eq? (walk ?child (car (kb-query kb2 '(parent alice ?child)))) 'bob))
+
+(newline)
+(display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)

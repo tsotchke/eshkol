@@ -254,6 +254,17 @@ def mutate_case(seed: int, ordinal: int) -> Case:
     return Case(ordinal, category, with_crc(payload), None)
 
 
+def address_space_limit_supported() -> bool:
+    """Whether RLIMIT_AS can actually bound a child's address space here.
+
+    getrlimit(RLIMIT_AS) reports an ordinary (soft, hard) pair on Darwin, but
+    its setrlimit() rejects any finite value with "current limit exceeds
+    maximum limit" (resource(3) on macOS: RLIMIT_AS is not enforced). POSIX
+    alone is not a reliable signal — this must be excluded explicitly, or a
+    macOS release run would silently claim a memory bound it never applied.
+    """
+    return os.name == "posix" and sys.platform != "darwin"
+
 def child_limits(memory_mb: int) -> Callable[[], None] | None:
     if os.name != "posix":
         return None
@@ -262,7 +273,7 @@ def child_limits(memory_mb: int) -> Callable[[], None] | None:
         import resource
 
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        if memory_mb > 0:
+        if memory_mb > 0 and address_space_limit_supported():
             limit = memory_mb * 1024 * 1024
             resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
 
@@ -536,7 +547,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         count=count,
         timeout=args.timeout,
         memory_mb=args.memory_mb,
-        supports_limits=os.name == "posix",
+        supports_limits=address_space_limit_supported(),
     )
     if release_run:
         args.trace_file.parent.mkdir(parents=True, exist_ok=True)

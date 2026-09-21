@@ -9,7 +9,7 @@ measured: >-
   Every file under tests/vm_parity/found/ was re-run on both engines at c459f292.
   18 active/control files remain under found/; 21 now agree after normalization and
   were reclassified under tests/vm_parity/resolved/ with their original headers.
-evidence: "BUILD_DIR=build scripts/run_vm_parity.sh on old-donkey; found-recheck: 39 checked, 23 stale/agreed, 0 infra; 21 non-control files moved to tests/vm_parity/resolved/"
+evidence: "BUILD_DIR=build scripts/run_vm_parity.sh on a Linux CI worker; found-recheck: 39 checked, 23 stale/agreed, 0 infra; 21 non-control files moved to tests/vm_parity/resolved/"
 caught_by: [direct-measurement]
 missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, parity-baselines]
 observed_after: "The parity gate has a dedicated found-recheck stage: normalized agreement fails the gate while the file remains under found/, except for CONTROL fixtures and the documented display-newline case."

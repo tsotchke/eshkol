@@ -1,0 +1,102 @@
+;;; builtins_first_class_test_13.esk — AUTO-GENERATED, do not hand-edit.
+;;;
+;;; Chunk 13 of 17 of the LE-16 first-class-builtins audit. Regenerate
+;;; ALL chunks (this file is one of several — see the module docstring in
+;;; the generator for why) with:
+;;;     python3 scripts/gen_builtins_first_class_test.py
+;;; Source of truth: tests/coverage/language_surface.json +
+;;; tests/coverage/builtins_first_class_known_args.json. See LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml for the root cause and the fix.
+;;;
+;;; Every builtin that can be called in operator position must also be a
+;;; first-class value: it must evaluate to a procedure, survive being
+;;; stored (let), passed to a user higher-order procedure, mapped, and
+;;; applied — and, wherever this audit could verify a real call safely
+;;; (i.e. without executing an FFI/GPU/atomics/pointer side effect), a
+;;; value-position call must compute the identical answer to the same
+;;; call in operator position. This chunk carries 50 such checks.
+
+;; hN calls its first argument with N further arguments. Each is a bare
+;; PARAMETER, so its value must be a real callable — there is no name here
+;; for codegenCall to special-case; this is what forces the value-position
+;; route (codegenVariable / resolveLambdaFunction) rather than the call-site
+;; lowering, which was never broken.
+(define (h0 f) (f))
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+(define (h5 f a b c d e) (f a b c d e))
+(define (__id x) x)
+;; Shared hash-table fixture for the hash-category call-correctness checks
+;; below (mirrors scripts/run_value_position_sweep.py's own __ht convention).
+(define __ht (make-hash-table))
+(hash-table-set! __ht 1 10)
+
+(define failures 0)
+(define checked 0)
+(define (check name ok)
+  (set! checked (+ checked 1))
+  (if ok
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name) (newline))))
+
+(check "substring::value" (and (procedure? substring) (let ((f substring)) (procedure? f)) (procedure? (__id substring)) (procedure? (car (map __id (list substring)))) (procedure? (apply __id (list substring)))))
+(check "symbol->string::value" (and (procedure? symbol->string) (let ((f symbol->string)) (procedure? f)) (procedure? (__id symbol->string)) (procedure? (car (map __id (list symbol->string)))) (procedure? (apply __id (list symbol->string)))))
+(check "symbol=?::value" (and (procedure? symbol=?) (let ((f symbol=?)) (procedure? f)) (procedure? (__id symbol=?)) (procedure? (car (map __id (list symbol=?)))) (procedure? (apply __id (list symbol=?)))))
+(check "symbol?::value" (and (procedure? symbol?) (let ((f symbol?)) (procedure? f)) (procedure? (__id symbol?)) (procedure? (car (map __id (list symbol?)))) (procedure? (apply __id (list symbol?)))))
+(check "symlink-create::value" (and (procedure? symlink-create) (let ((f symlink-create)) (procedure? f)) (procedure? (__id symlink-create)) (procedure? (car (map __id (list symlink-create)))) (procedure? (apply __id (list symlink-create)))))
+(check "symlink-read::value" (and (procedure? symlink-read) (let ((f symlink-read)) (procedure? f)) (procedure? (__id symlink-read)) (procedure? (car (map __id (list symlink-read)))) (procedure? (apply __id (list symlink-read)))))
+(check "tan::value" (and (procedure? tan) (let ((f tan)) (procedure? f)) (procedure? (__id tan)) (procedure? (car (map __id (list tan)))) (procedure? (apply __id (list tan)))))
+(check "tanh::value" (and (procedure? tanh) (let ((f tanh)) (procedure? f)) (procedure? (__id tanh)) (procedure? (car (map __id (list tanh)))) (procedure? (apply __id (list tanh)))))
+(check "temp-directory::value" (and (procedure? temp-directory) (let ((f temp-directory)) (procedure? f)) (procedure? (__id temp-directory)) (procedure? (car (map __id (list temp-directory)))) (procedure? (apply __id (list temp-directory)))))
+(check "tensor->vector::value" (and (procedure? tensor->vector) (let ((f tensor->vector)) (procedure? f)) (procedure? (__id tensor->vector)) (procedure? (car (map __id (list tensor->vector)))) (procedure? (apply __id (list tensor->vector)))))
+(check "tensor-abs::value" (and (procedure? tensor-abs) (let ((f tensor-abs)) (procedure? f)) (procedure? (__id tensor-abs)) (procedure? (car (map __id (list tensor-abs)))) (procedure? (apply __id (list tensor-abs)))))
+(check "tensor-add::value" (and (procedure? tensor-add) (let ((f tensor-add)) (procedure? f)) (procedure? (__id tensor-add)) (procedure? (car (map __id (list tensor-add)))) (procedure? (apply __id (list tensor-add)))))
+(check "tensor-argmax::value" (and (procedure? tensor-argmax) (let ((f tensor-argmax)) (procedure? f)) (procedure? (__id tensor-argmax)) (procedure? (car (map __id (list tensor-argmax)))) (procedure? (apply __id (list tensor-argmax)))))
+(check "tensor-argmin::value" (and (procedure? tensor-argmin) (let ((f tensor-argmin)) (procedure? f)) (procedure? (__id tensor-argmin)) (procedure? (car (map __id (list tensor-argmin)))) (procedure? (apply __id (list tensor-argmin)))))
+(check "tensor-cholesky::value" (and (procedure? tensor-cholesky) (let ((f tensor-cholesky)) (procedure? f)) (procedure? (__id tensor-cholesky)) (procedure? (car (map __id (list tensor-cholesky)))) (procedure? (apply __id (list tensor-cholesky)))))
+(check "tensor-corrcoef::value" (and (procedure? tensor-corrcoef) (let ((f tensor-corrcoef)) (procedure? f)) (procedure? (__id tensor-corrcoef)) (procedure? (car (map __id (list tensor-corrcoef)))) (procedure? (apply __id (list tensor-corrcoef)))))
+(check "tensor-cos::value" (and (procedure? tensor-cos) (let ((f tensor-cos)) (procedure? f)) (procedure? (__id tensor-cos)) (procedure? (car (map __id (list tensor-cos)))) (procedure? (apply __id (list tensor-cos)))))
+(check "tensor-cov::value" (and (procedure? tensor-cov) (let ((f tensor-cov)) (procedure? f)) (procedure? (__id tensor-cov)) (procedure? (car (map __id (list tensor-cov)))) (procedure? (apply __id (list tensor-cov)))))
+(check "tensor-data::value" (and (procedure? tensor-data) (let ((f tensor-data)) (procedure? f)) (procedure? (__id tensor-data)) (procedure? (car (map __id (list tensor-data)))) (procedure? (apply __id (list tensor-data)))))
+(check "tensor-det::value" (and (procedure? tensor-det) (let ((f tensor-det)) (procedure? f)) (procedure? (__id tensor-det)) (procedure? (car (map __id (list tensor-det)))) (procedure? (apply __id (list tensor-det)))))
+(check "tensor-disk-fill!::value" (and (procedure? tensor-disk-fill!) (let ((f tensor-disk-fill!)) (procedure? f)) (procedure? (__id tensor-disk-fill!)) (procedure? (car (map __id (list tensor-disk-fill!)))) (procedure? (apply __id (list tensor-disk-fill!)))))
+(check "tensor-div::value" (and (procedure? tensor-div) (let ((f tensor-div)) (procedure? f)) (procedure? (__id tensor-div)) (procedure? (car (map __id (list tensor-div)))) (procedure? (apply __id (list tensor-div)))))
+(check "tensor-dot::value" (and (procedure? tensor-dot) (let ((f tensor-dot)) (procedure? f)) (procedure? (__id tensor-dot)) (procedure? (car (map __id (list tensor-dot)))) (procedure? (apply __id (list tensor-dot)))))
+(check "tensor-dtype::value" (and (procedure? tensor-dtype) (let ((f tensor-dtype)) (procedure? f)) (procedure? (__id tensor-dtype)) (procedure? (car (map __id (list tensor-dtype)))) (procedure? (apply __id (list tensor-dtype)))))
+(check "tensor-exp::value" (and (procedure? tensor-exp) (let ((f tensor-exp)) (procedure? f)) (procedure? (__id tensor-exp)) (procedure? (car (map __id (list tensor-exp)))) (procedure? (apply __id (list tensor-exp)))))
+(check "tensor-get::value" (and (procedure? tensor-get) (let ((f tensor-get)) (procedure? f)) (procedure? (__id tensor-get)) (procedure? (car (map __id (list tensor-get)))) (procedure? (apply __id (list tensor-get)))))
+(check "tensor-inverse::value" (and (procedure? tensor-inverse) (let ((f tensor-inverse)) (procedure? f)) (procedure? (__id tensor-inverse)) (procedure? (car (map __id (list tensor-inverse)))) (procedure? (apply __id (list tensor-inverse)))))
+(check "tensor-length::value" (and (procedure? tensor-length) (let ((f tensor-length)) (procedure? f)) (procedure? (__id tensor-length)) (procedure? (car (map __id (list tensor-length)))) (procedure? (apply __id (list tensor-length)))))
+(check "tensor-load::value" (and (procedure? tensor-load) (let ((f tensor-load)) (procedure? f)) (procedure? (__id tensor-load)) (procedure? (car (map __id (list tensor-load)))) (procedure? (apply __id (list tensor-load)))))
+(check "tensor-log::value" (and (procedure? tensor-log) (let ((f tensor-log)) (procedure? f)) (procedure? (__id tensor-log)) (procedure? (car (map __id (list tensor-log)))) (procedure? (apply __id (list tensor-log)))))
+(check "tensor-lu::value" (and (procedure? tensor-lu) (let ((f tensor-lu)) (procedure? f)) (procedure? (__id tensor-lu)) (procedure? (car (map __id (list tensor-lu)))) (procedure? (apply __id (list tensor-lu)))))
+(check "tensor-matmul::value" (and (procedure? tensor-matmul) (let ((f tensor-matmul)) (procedure? f)) (procedure? (__id tensor-matmul)) (procedure? (car (map __id (list tensor-matmul)))) (procedure? (apply __id (list tensor-matmul)))))
+(check "tensor-max::value" (and (procedure? tensor-max) (let ((f tensor-max)) (procedure? f)) (procedure? (__id tensor-max)) (procedure? (car (map __id (list tensor-max)))) (procedure? (apply __id (list tensor-max)))))
+(check "tensor-maximum::value" (and (procedure? tensor-maximum) (let ((f tensor-maximum)) (procedure? f)) (procedure? (__id tensor-maximum)) (procedure? (car (map __id (list tensor-maximum)))) (procedure? (apply __id (list tensor-maximum)))))
+(check "tensor-mean::value" (and (procedure? tensor-mean) (let ((f tensor-mean)) (procedure? f)) (procedure? (__id tensor-mean)) (procedure? (car (map __id (list tensor-mean)))) (procedure? (apply __id (list tensor-mean)))))
+(check "tensor-min::value" (and (procedure? tensor-min) (let ((f tensor-min)) (procedure? f)) (procedure? (__id tensor-min)) (procedure? (car (map __id (list tensor-min)))) (procedure? (apply __id (list tensor-min)))))
+(check "tensor-minimum::value" (and (procedure? tensor-minimum) (let ((f tensor-minimum)) (procedure? f)) (procedure? (__id tensor-minimum)) (procedure? (car (map __id (list tensor-minimum)))) (procedure? (apply __id (list tensor-minimum)))))
+(check "tensor-mul::value" (and (procedure? tensor-mul) (let ((f tensor-mul)) (procedure? f)) (procedure? (__id tensor-mul)) (procedure? (car (map __id (list tensor-mul)))) (procedure? (apply __id (list tensor-mul)))))
+(check "tensor-neg::value" (and (procedure? tensor-neg) (let ((f tensor-neg)) (procedure? f)) (procedure? (__id tensor-neg)) (procedure? (car (map __id (list tensor-neg)))) (procedure? (apply __id (list tensor-neg)))))
+(check "tensor-pow::value" (and (procedure? tensor-pow) (let ((f tensor-pow)) (procedure? f)) (procedure? (__id tensor-pow)) (procedure? (car (map __id (list tensor-pow)))) (procedure? (apply __id (list tensor-pow)))))
+(check "tensor-qr::value" (and (procedure? tensor-qr) (let ((f tensor-qr)) (procedure? f)) (procedure? (__id tensor-qr)) (procedure? (car (map __id (list tensor-qr)))) (procedure? (apply __id (list tensor-qr)))))
+(check "tensor-ref::value" (and (procedure? tensor-ref) (let ((f tensor-ref)) (procedure? f)) (procedure? (__id tensor-ref)) (procedure? (car (map __id (list tensor-ref)))) (procedure? (apply __id (list tensor-ref)))))
+(check "tensor-reshape::value" (and (procedure? tensor-reshape) (let ((f tensor-reshape)) (procedure? f)) (procedure? (__id tensor-reshape)) (procedure? (car (map __id (list tensor-reshape)))) (procedure? (apply __id (list tensor-reshape)))))
+(check "tensor-save::value" (and (procedure? tensor-save) (let ((f tensor-save)) (procedure? f)) (procedure? (__id tensor-save)) (procedure? (car (map __id (list tensor-save)))) (procedure? (apply __id (list tensor-save)))))
+(check "tensor-scale::value" (and (procedure? tensor-scale) (let ((f tensor-scale)) (procedure? f)) (procedure? (__id tensor-scale)) (procedure? (car (map __id (list tensor-scale)))) (procedure? (apply __id (list tensor-scale)))))
+(check "tensor-set::value" (and (procedure? tensor-set) (let ((f tensor-set)) (procedure? f)) (procedure? (__id tensor-set)) (procedure? (car (map __id (list tensor-set)))) (procedure? (apply __id (list tensor-set)))))
+(check "tensor-set!::value" (and (procedure? tensor-set!) (let ((f tensor-set!)) (procedure? f)) (procedure? (__id tensor-set!)) (procedure? (car (map __id (list tensor-set!)))) (procedure? (apply __id (list tensor-set!)))))
+(check "tensor-shape::value" (and (procedure? tensor-shape) (let ((f tensor-shape)) (procedure? f)) (procedure? (__id tensor-shape)) (procedure? (car (map __id (list tensor-shape)))) (procedure? (apply __id (list tensor-shape)))))
+(check "tensor-sin::value" (and (procedure? tensor-sin) (let ((f tensor-sin)) (procedure? f)) (procedure? (__id tensor-sin)) (procedure? (car (map __id (list tensor-sin)))) (procedure? (apply __id (list tensor-sin)))))
+(check "tensor-solve::value" (and (procedure? tensor-solve) (let ((f tensor-solve)) (procedure? f)) (procedure? (__id tensor-solve)) (procedure? (car (map __id (list tensor-solve)))) (procedure? (apply __id (list tensor-solve)))))
+
+(display "checked=") (display checked) (newline)
+(display "failures=") (display failures) (newline)
+(if (= failures 0)
+    (begin (display "PASS: builtins first-class -- 0 failures") (newline))
+    (begin (display "FAIL: builtins first-class -- ")
+           (display failures) (display " failure(s)") (newline)))
+(if (> failures 0) (exit 1) (exit 0))

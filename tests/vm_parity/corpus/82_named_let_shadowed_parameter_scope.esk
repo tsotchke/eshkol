@@ -1,0 +1,130 @@
+; LE-20: cross-engine parity for a named-let parameter referenced inside a
+; NESTED named let whose binding form contains a further named let that
+; rebinds the same name.
+;
+; The native capture analysis walked the inner binding form and then deleted
+; every name that form bound from the whole free-variable vector, dropping the
+; capture a sibling init had already recorded. `acc` fell out of the
+; intermediate loop's capture list and native compilation stopped with
+; "Undefined variable: acc" at the legal reference `(* acc 2)`; the bytecode
+; VM, whose scope handling is per-form, ran the same program correctly. This
+; program puts both engines on the differential gate for that shape.
+
+(define (all? pred xs)
+  (cond ((null? xs) #t)
+        ((pred (car xs)) (all? pred (cdr xs)))
+        (else #f)))
+
+; nested named let + a lambda in the test + let* whose later init rebinds acc
+(define (shape-lambda-test n)
+  (let ((total (vector 0)))
+    (let dfs ((e 0) (acc 1))
+      (if (= e n)
+          (vector-set! total 0 (+ (vector-ref total 0) acc))
+          (let try ((a 0))
+            (if (< a 2)
+                (begin
+                  (if (all? (lambda (x) (< x 10)) (list a e))
+                      (let* ((acc1 (* acc 2))
+                             (acc2 (let loop ((k 0) (acc acc1))
+                                     (if (= k 2) acc (loop (+ k 1) (+ acc 1))))))
+                        (dfs (+ e 1) acc2)))
+                  (try (+ a 1)))))))
+    (vector-ref total 0)))
+
+; same with no lambda anywhere
+(define (shape-no-lambda n)
+  (let ((total (vector 0)))
+    (let dfs ((e 0) (acc 1))
+      (if (= e n)
+          (vector-set! total 0 (+ (vector-ref total 0) acc))
+          (let try ((a 0))
+            (if (< a 2)
+                (begin
+                  (if (< (+ a e) 10)
+                      (let* ((acc1 (* acc 2))
+                             (acc2 (let loop ((k 0) (acc acc1))
+                                     (if (= k 2) acc (loop (+ k 1) (+ acc 1))))))
+                        (dfs (+ e 1) acc2)))
+                  (try (+ a 1)))))))
+    (vector-ref total 0)))
+
+; the outer acc read from inside the INIT of the inner named let that rebinds
+; it -- R7RS 4.2.4 evaluates that init in the enclosing scope
+(define (shape-init-self-shadow n)
+  (let ((total (vector 0)))
+    (let dfs ((e 0) (acc 1))
+      (if (= e n)
+          (vector-set! total 0 (+ (vector-ref total 0) acc))
+          (let try ((a 0))
+            (if (< a 2)
+                (begin
+                  (if (< (+ a e) 10)
+                      (let ((acc2 (let loop ((k 0) (acc (* acc 2)))
+                                    (if (= k 2) acc (loop (+ k 1) (+ acc 1))))))
+                        (dfs (+ e 1) acc2)))
+                  (try (+ a 1)))))))
+    (vector-ref total 0)))
+
+; control: inner loop variable renamed (always compiled)
+(define (control-renamed-inner n)
+  (let ((total (vector 0)))
+    (let dfs ((e 0) (acc 1))
+      (if (= e n)
+          (vector-set! total 0 (+ (vector-ref total 0) acc))
+          (let try ((a 0))
+            (if (< a 2)
+                (begin
+                  (if (< (+ a e) 10)
+                      (let* ((acc1 (* acc 2))
+                             (acc2 (let loop ((k 0) (s acc1))
+                                     (if (= k 2) s (loop (+ k 1) (+ s 1))))))
+                        (dfs (+ e 1) acc2)))
+                  (try (+ a 1)))))))
+    (vector-ref total 0)))
+
+; control: single level, no capture involved
+(define (control-single-level n)
+  (let outer ((i 0) (acc 1))
+    (if (= i n)
+        acc
+        (let* ((a1 (* acc 2))
+               (a2 (let loop ((k 0) (acc a1))
+                     (if (= k 2) acc (loop (+ k 1) (+ acc 1))))))
+          (outer (+ i 1) a2)))))
+
+; let* init sequencing, and a letrec group, across a closure boundary
+(define (rule-let-star-inits-are-sequential)
+  (let ((v 10))
+    (let ((f (lambda ()
+               (let* ((v (+ v 1))
+                      (w (* v 2)))
+                 (+ v w)))))
+      (f))))
+
+(define (rule-letrec-group-is-visible)
+  (let ((v 10))
+    (let ((f (lambda ()
+               (letrec ((v (lambda () 7))
+                        (w (lambda () (+ (v) 1))))
+                 (+ (v) (w))))))
+      (f))))
+
+(display (shape-lambda-test 3)) (newline)
+(display (shape-no-lambda 3)) (newline)
+(display (shape-init-self-shadow 3)) (newline)
+(display (control-renamed-inner 3)) (newline)
+(display (control-single-level 3)) (newline)
+(display (rule-let-star-inits-are-sequential)) (newline)
+(display (rule-letrec-group-is-visible)) (newline)
+
+(if (and (= (shape-lambda-test 3) 176)
+         (= (shape-no-lambda 3) 176)
+         (= (shape-init-self-shadow 3) 176)
+         (= (control-renamed-inner 3) 176)
+         (= (control-single-level 3) 22)
+         (= (rule-let-star-inits-are-sequential) 33)
+         (= (rule-letrec-group-is-visible) 15))
+    (begin (display "PASS: named let shadowed parameter scope") (newline))
+    (begin (display "FAIL: named let shadowed parameter scope") (newline)
+           (exit 1)))

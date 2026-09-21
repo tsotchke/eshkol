@@ -1,0 +1,132 @@
+;;; core.vector_literal_exactness — SW-153: `#(...)` literals with an exact
+;;; non-integer, bignum, or non-numeric element stay a real Scheme vector
+;;; with elements preserved exactly, instead of being silently promoted to
+;;; an f64-backed tensor.
+;;;
+;;; Root cause (native parser, lib/frontend/parser.cpp, parse_vector_body):
+;;; EVERY flat `#(...)` literal built an ESHKOL_TENSOR_OP node regardless of
+;;; element type. A rational literal `1/2` parses to a `(make-rational 1 2)`
+;;; call, which is a HEAP_PTR at codegen time — TensorCodegen's element-store
+;;; loop (lib/backend/tensor_codegen.cpp) force-converts every element to a
+;;; double via TensorCodegen::extractAsDouble (lib/backend/
+;;; tensor_conv_codegen.cpp), which only distinguishes ESHKOL_VALUE_DOUBLE
+;;; from "everything else" and reinterprets any other tagged payload
+;;; (a rational/bignum heap pointer, a packed bool/char) as a raw int64 and
+;;; numerically converts THAT to double — memory-unsafe, meaningless bits.
+;;; The VM's own reader (lib/backend/vm_parser.c) never promotes `#(...)` to
+;;; a tensor at all, so it was never affected.
+;;;
+;;; docs/COMPLETE_LANGUAGE_SPECIFICATION.md:461 documents `#(1 "two" #t)` as
+;;; valid vector syntax ("Mixed types"); a numeric #(...) is ALSO documented
+;;; tensor-literal syntax (docs/COMPLETE_LANGUAGE_SPECIFICATION.md:1631,
+;;; "#(elem...) - Vector literal syntax" under "4.10 Tensor Operations"), and
+;;; a rectangular nest of PLAIN numeric literals (`#(#(1 2) #(3 4))`) has its
+;;; own pinned, load-bearing contract as Eshkol's rank-2 tensor-literal
+;;; spelling (tests/parser/sexpr_test.esk, tests/features/
+;;; tensor_nested_literal_spellings_test.esk, matmul examples, the VM-parity
+;;; corpus) — that flattening is UNCHANGED by this fix and is deliberately
+;;; NOT retested here beyond one regression pin. The fix is narrower and
+;;; additive: an element the parser can prove unsafe for f64 storage (an
+;;; exact-rational literal, a bignum-magnitude integer literal, or a
+;;; non-numeric literal) routes the WHOLE #(...) literal to the same
+;;; `(vector ...)` construction path the ragged-nested-literal case already
+;;; used, which preserves every element exactly and reports the literal's
+;;; own length. Nesting composes: an unsafe element inside a NESTED #(...)
+;;; already demotes that sub-literal, so the outer literal's existing
+;;; mixed-shape check demotes the whole thing too — see corpus/77.
+;;;
+;;; Fixed by: lib/frontend/parser.cpp (is_tensor_unsafe_literal_element(),
+;;; parse_vector_body()). No VM change was needed (see above); no native
+;;; codegen change was needed either — a literal the parser demotes to
+;;; `(vector ...)` already reaches CollectionCodegen::vector(), the same
+;;; proven-correct path `(vector 1/2 1/3)` (the *procedure*) already used.
+
+(define pass 0)
+(define fail 0)
+(define (check nm ok)
+  (if ok
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display nm) (newline))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display nm) (newline))))
+
+;; ---- the reported defect, verbatim ----
+
+(check "#(1/2 1/3) is a vector, not a tensor" (vector? #(1/2 1/3)))
+(check "#(1/2 1/3) is NOT a tensor" (not (tensor? #(1/2 1/3))))
+(check "(vector-length #(1/2 1/3)) = 2" (= (vector-length #(1/2 1/3)) 2))
+(check "(vector-ref #(1/2 1/3) 0) is exact" (exact? (vector-ref #(1/2 1/3) 0)))
+(check "(vector-ref #(1/2 1/3) 0) = 1/2" (= (vector-ref #(1/2 1/3) 0) 1/2))
+(check "(vector-ref #(1/2 1/3) 1) = 1/3" (= (vector-ref #(1/2 1/3) 1) 1/3))
+;; Cross-check against the already-correct `vector` PROCEDURE spelling of
+;; the identical value, per the task repro.
+(check "literal and procedure spellings agree"
+       (equal? (vector-ref #(1/2 1/3) 0) (vector-ref (vector 1/2 1/3) 0)))
+
+;; ---- mixed-type literal (documented, COMPLETE_LANGUAGE_SPECIFICATION.md:461) ----
+
+(check "#(1 \"two\" #t) is a vector" (vector? #(1 "two" #t)))
+(check "(vector-length #(1 \"two\" #t)) = 3" (= (vector-length #(1 "two" #t)) 3))
+(check "elt 0 is exact 1" (and (exact? (vector-ref #(1 "two" #t) 0)) (= (vector-ref #(1 "two" #t) 0) 1)))
+(check "elt 1 is the string \"two\"" (equal? (vector-ref #(1 "two" #t) 1) "two"))
+(check "elt 2 is #t" (eq? (vector-ref #(1 "two" #t) 2) #t))
+
+;; A char element, and a boolean-only literal — same non-numeric family.
+(check "#(1 #\\a) length 2" (= (vector-length #(1 #\a)) 2))
+(check "#(1 #\\a) elt 1 is #\\a" (eqv? (vector-ref #(1 #\a) 1) #\a))
+(check "#(#t #f) is a vector of exactly those booleans"
+       (and (vector? #(#t #f)) (eq? (vector-ref #(#t #f) 0) #t) (eq? (vector-ref #(#t #f) 1) #f)))
+
+;; ---- bignum-magnitude literal element ----
+;;
+;; Native-only in CTest (see below): the VM's OWN bignum-magnitude integer
+;; literal reader has a separate, pre-existing, unrelated defect — even a
+;; bare top-level `100000000000000000000000000000` (no vector involved)
+;; reads as the inexact double 1e+29 on the VM instead of an exact bignum.
+;; Filed for a follow-up, not fixed here: it is a token-reading defect in
+;; lib/backend/vm_parser.c, nothing this change's parser.cpp/tensor-literal
+;; path touches.
+(define big-vec #(100000000000000000000000000000 2))
+(check "bignum-element literal is a vector" (vector? big-vec))
+(check "bignum-element literal length 2" (= (vector-length big-vec) 2))
+(check "bignum element is exact" (exact? (vector-ref big-vec 0)))
+(check "bignum element value" (= (vector-ref big-vec 0) (expt 10 29)))
+
+;; ---- nested literal where the INNER vector holds an unsafe element:
+;; the whole nest must stay vector-of-vectors, not flatten or crash ----
+
+(define nested-unsafe #(#(1/2 2) #(3 4)))
+(check "nested-with-rational outer is a vector" (vector? nested-unsafe))
+(check "nested-with-rational outer length 2" (= (vector-length nested-unsafe) 2))
+(check "nested-with-rational row 0 is a vector" (vector? (vector-ref nested-unsafe 0)))
+(check "nested-with-rational row 0 length 2" (= (vector-length (vector-ref nested-unsafe 0)) 2))
+(check "nested-with-rational [0][0] exact 1/2"
+       (and (exact? (vector-ref (vector-ref nested-unsafe 0) 0))
+            (= (vector-ref (vector-ref nested-unsafe 0) 0) 1/2)))
+(check "nested-with-rational [1][1] = 4" (= (vector-ref (vector-ref nested-unsafe 1) 1) 4))
+
+;; ---- negative control / regression pin: a rectangular nest of PLAIN
+;; numeric literals is UNCHANGED — it is still Eshkol's documented rank-2
+;; tensor-literal spelling (tests/parser/sexpr_test.esk pins the same
+;; contract). This fix must not touch that path.
+;;
+;; Native-only in CTest (see below): the `tensor?` checks here do not hold
+;; on the VM, but not because of a defect — the VM's reader (lib/backend/
+;; vm_parser.c) never promotes ANY #(...) literal to a tensor value at the
+;; literal level in the first place (every #(...) reads as `(vector ...)`,
+;; flat or nested alike), so `tensor?` on a VM-read #(...) is architecturally
+;; always #f. tests/vm_parity/corpus/78_vector_literal_exactness.esk covers
+;; the VM/native contract this file's exactness fix actually changed
+;; (vector-length, vector-ref, exactness) without asserting `tensor?`. ----
+
+(define plain-nested #(#(1 2) #(3 4)))
+(check "plain numeric nest is still a tensor" (tensor? plain-nested))
+(check "plain numeric nest tensor-shape is (2 2)" (equal? (tensor-shape plain-nested) (list 2 2)))
+(check "plain numeric nest row read via tensor-ref"
+       (and (= (tensor-ref plain-nested 0 0) 1) (= (tensor-ref plain-nested 1 1) 4)))
+
+;; A flat literal of only plain numbers is likewise still a tensor.
+(check "#(1 2 3) is still a tensor" (tensor? #(1 2 3)))
+(check "#(1.0 2.0 3.0) is still a tensor" (tensor? #(1.0 2.0 3.0)))
+
+(newline) (display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)
+(if (> fail 0) (exit 1))

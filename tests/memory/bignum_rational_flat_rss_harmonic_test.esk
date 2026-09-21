@@ -1,0 +1,43 @@
+;; SW-164: exact-rational accumulation must stay flat in resident size.
+;;
+;; The exact harmonic number H_n = sum_{i=1..n} 1/i is the smallest honest
+;; statement of the shape every exact accumulation takes: a loop-carried
+;; rational that is freshly built on every iteration, with numerator and
+;; denominator that grow without bound. Two things used to make it grow memory
+;; in proportion to the WORK done rather than the VALUES kept — reducing each
+;; result ran a Euclidean GCD over the full-width numerator and denominator and
+;; allocated an intermediate bignum per step, and the loop's per-iteration
+;; scope could not reclaim an iteration whose accumulator was allocated inside
+;; it, so it retained every one of them.
+;;
+;; This fixture asserts the ANSWER as well as the shape: a reclamation bug that
+;; frees something live corrupts the sum, and a gate that only measured memory
+;; would call that a pass.
+(define (harmonic n)
+  (let lp ((i 1) (acc 0))
+    (if (> i n) acc (lp (+ i 1) (+ acc (/ 1 i))))))
+
+;; Small closed-form checks first: these are exact rationals with known values,
+;; so they fail loudly if the reduction is wrong in either direction (an
+;; unreduced result, or one over-reduced by a bad GCD).
+(define h5 (harmonic 5))       ; 137/60
+(define h10 (harmonic 10))     ; 7381/2520
+
+(define big (harmonic 40000))
+(define digits (string-length (number->string (denominator big))))
+
+;; The accumulated value must still be exact and still be in lowest terms:
+;; multiplying by the denominator must give back exactly the numerator.
+(define round-trip (* big (denominator big)))
+
+(if (and (= (numerator h5) 137)
+         (= (denominator h5) 60)
+         (= (numerator h10) 7381)
+         (= (denominator h10) 2520)
+         (= digits 17376)
+         (= round-trip (numerator big)))
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL h5=") (display h5)
+           (display " h10=") (display h10)
+           (display " digits=") (display digits)
+           (newline)))

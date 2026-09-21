@@ -1,0 +1,67 @@
+;;; The second half of the same defect: a user program's own definition must
+;;; not become the libm function a lowering calls.
+;;;
+;;; Measured on the v1.3.5 candidate (a670a919):
+;;;
+;;;   (define (exp x) (+ x 1))
+;;;   (define t (tensor (list -2.0 1.0)))
+;;;   (display (tensor-ref (elu t 2) 0))
+;;;
+;;;   ERROR: LLVM module verification failed: Call parameter type does not
+;;;   match function signature!
+;;;     %451 = call %eshkol_tagged_value @exp(double %449)
+;;;
+;;; The elu lowering asked the module for a function named `exp` and got the
+;;; USER's, whose ABI is tagged-value in and tagged-value out, then called it
+;;; with a raw double. Nothing about the found function's type was checked.
+;;; `exp` is only the name that reached this first: every activation, loss,
+;;; scheduler and tensor lowering obtained its libm symbol the same way.
+;;;
+;;; Since the fix, a lowering asks for `llvm.exp.f64` -- a namespaced intrinsic
+;;; no module symbol can shadow -- so the user's `exp` is the user's alone.
+
+(require stdlib)
+
+(define failures 0)
+
+(define (check-close name got want tol)
+  (if (< (abs (- got want)) tol)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name)
+             (display " got ") (display got)
+             (display " want ") (display want) (newline))))
+
+(display "=== MATH SYMBOL USER SHADOW TESTS ===") (newline)
+
+;; User definitions that take the names of libm functions the ML lowerings use.
+(define (exp x) (+ x 1))
+(define (log x) (* x 10))
+(define (cos x) (- x))
+
+(define t (tensor (list -2.0 1.0)))
+
+;; The user's definitions answer the user's arithmetic.
+(check-close "user exp is the user's"  (exp 5.0)  6.0   1e-12)
+(check-close "user log is the user's"  (log 5.0)  50.0  1e-12)
+(check-close "user cos is the user's"  (cos 5.0)  -5.0  1e-12)
+
+;; The lowerings still compute with real libm, not with the user's functions.
+(check-close "elu still uses libm exp"      (tensor-ref (elu t 2) 0)  -1.7293294335267746 1e-12)
+(check-close "selu still uses libm exp"     (tensor-ref (selu t) 0)   -1.520166468595695  1e-12)
+(check-close "celu still uses libm exp"     (tensor-ref (celu t 1.0) 0) -0.8646647167633873 1e-12)
+(check-close "silu still uses libm exp"     (tensor-ref (silu t) 0)   -0.2384058440442351 1e-12)
+(check-close "softplus still uses libm exp" (tensor-ref (softplus t) 0) 0.1269280110429726 1e-12)
+(check-close "mish still uses libm exp/log/tanh" (tensor-ref (mish t) 0) -0.2525014826957091 1e-12)
+(check-close "sigmoid still uses libm exp"  (tensor-ref (sigmoid t) 0)  0.11920292202211755 1e-12)
+(check-close "softmax still uses libm exp"  (tensor-ref (softmax t) 0)  0.04742587317756679 1e-12)
+(check-close "cross-entropy still uses libm log"
+             (cross-entropy-loss (tensor (list 0.2 0.8)) (tensor (list 0.0 1.0)))
+             0.43748795048588573 1e-12)
+(check-close "cosine-annealing still uses libm cos"
+             (cosine-annealing-lr 0.1 0.001 500 1000) 0.0505 1e-12)
+
+(display "=== ")
+(display (if (= failures 0) "ALL TESTS PASSED" "TESTS FAILED"))
+(display " ===")
+(newline)

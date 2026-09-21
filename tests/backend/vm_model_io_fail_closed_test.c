@@ -21,8 +21,9 @@ static int write_record(VmModelWriter* writer, const char* name, double value) {
 }
 
 static int write_fixture(const char* path, enum FixtureKind kind) {
-    VmModelWriter writer = {fopen(path, "wb"), 0u, 1};
-    if (!writer.file) return 0;
+    VmModelWriter writer = {0};
+    writer.ok = eshkol_atomic_checkpoint_begin(&writer.file, path);
+    if (!writer.ok) return 0;
 
     const unsigned int count = kind == FIXTURE_TRAILING_BYTE ? 1u : 2u;
     int ok = vm_model_write_bytes(&writer, VM_MODEL_MAGIC, sizeof(VM_MODEL_MAGIC), 1) &&
@@ -51,8 +52,9 @@ static int write_fixture(const char* path, enum FixtureKind kind) {
         }
     }
     ok = ok && vm_model_write_u32(&writer, writer.crc, 0);
-    fclose(writer.file);
-    return ok && writer.ok;
+    if (ok && writer.ok) return eshkol_atomic_checkpoint_commit(&writer.file);
+    eshkol_atomic_checkpoint_abort(&writer.file);
+    return 0;
 }
 
 static int reject_without_heap_growth(VM* vm, const char* path, int model_load) {

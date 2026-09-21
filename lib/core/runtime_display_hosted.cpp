@@ -312,6 +312,11 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
             fprintf(get_output(opts), "()");
             break;
 
+        case ESHKOL_VALUE_UNSPECIFIED:
+            // ADR-0024: the unspecified value produces no output, as the
+            // bytecode VM's VAL_VOID does.
+            break;
+
         case ESHKOL_VALUE_HEAP_PTR: {
             // Consolidated heap pointer - read subtype from object header
             void* data_ptr = (void*)value->data.ptr_val;
@@ -471,7 +476,24 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                     eshkol_display_lambda(value->data.ptr_val, opts);
                     break;
                 case CALLABLE_SUBTYPE_AD_NODE:
-                    fprintf(get_output(opts), "#<ad-node>");
+                    /* A dense AD result is a callable wrapper around its
+                     * tensor payload.  Render its visible 1-D value like the
+                     * tensor it represents (SW-188), while scalar AD nodes
+                     * retain the diagnostic representation. */
+                    {
+                        const ad_node* node = (const ad_node*)data_ptr;
+                        if (node->tensor_value && node->shape && node->ndim == 1) {
+                            const double* values = (const double*)node->tensor_value;
+                            fprintf(get_output(opts), "#(");
+                            for (int64_t i = 0; i < node->shape[0]; ++i) {
+                                if (i) fputc(' ', get_output(opts));
+                                eshkol_fprint_double(get_output(opts), values[i]);
+                            }
+                            fprintf(get_output(opts), ")");
+                        } else {
+                            fprintf(get_output(opts), "#<ad-node>");
+                        }
+                    }
                     break;
                 case CALLABLE_SUBTYPE_PRIMITIVE:
                     fprintf(get_output(opts), "#<primitive>");
@@ -824,7 +846,8 @@ static void display_char(uint32_t codepoint, eshkol_display_opts_t* opts) {
 
 // Recursive helper for displaying N-dimensional tensors
 static void display_tensor_recursive(FILE* out, const eshkol_tensor_t* tensor,
-                                      uint64_t current_dim, uint64_t offset) {
+                                      uint64_t current_dim, uint64_t offset,
+                                      eshkol_display_opts_t* opts_for_elements) {
     if (tensor->num_dimensions == 0) {
         fprintf(out, "#()");
         return;
@@ -835,8 +858,17 @@ static void display_tensor_recursive(FILE* out, const eshkol_tensor_t* tensor,
     // Base case: innermost dimension - print actual elements
     if (current_dim == tensor->num_dimensions - 1) {
         fprintf(out, "(");
+        const bool tagged = eshkol_tensor_dtype_is_tagged(tensor->dtype) != 0;
         for (uint64_t i = 0; i < dim_size; i++) {
             if (i > 0) fprintf(out, " ");
+            if (tagged) {
+                // A promoted carrier (ADR-0020) or a dual tensor holds tagged
+                // values; each prints as the value it is, like a vector slot.
+                const eshkol_tagged_value_t* slots =
+                    (const eshkol_tagged_value_t*)tensor->elements;
+                eshkol_display_value_opts(&slots[offset + i], opts_for_elements);
+                continue;
+            }
             // Elements stored as int64 bit pattern of double
             int64_t bits = tensor->elements[offset + i];
             double value;
@@ -856,7 +888,8 @@ static void display_tensor_recursive(FILE* out, const eshkol_tensor_t* tensor,
     fprintf(out, "(");
     for (uint64_t i = 0; i < dim_size; i++) {
         if (i > 0) fprintf(out, " ");
-        display_tensor_recursive(out, tensor, current_dim + 1, offset + i * stride);
+        display_tensor_recursive(out, tensor, current_dim + 1, offset + i * stride,
+                                 opts_for_elements);
     }
     fprintf(out, ")");
 }
@@ -885,7 +918,7 @@ static void display_tensor(uint64_t tensor_ptr, eshkol_display_opts_t* opts) {
 
     // Print tensor prefix then contents
     fprintf(out, "#");
-    display_tensor_recursive(out, tensor, 0, 0);
+    display_tensor_recursive(out, tensor, 0, 0, opts);
 }
 
 // Scheme vector structure:

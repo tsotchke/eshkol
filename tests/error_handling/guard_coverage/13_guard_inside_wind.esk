@@ -1,0 +1,22 @@
+;; ESH-0101 guard coverage — `dynamic-wind` NORMAL exit around/inside a `guard`.
+;; Split across three files on purpose: each block below compiles and runs
+;; correctly on every axis ALONE, but all three in ONE module fail native LLVM
+;; module verification ("Instruction does not dominate all uses"). That
+;; interaction is filed as found/guard_wind_multi_module_dominance.esk; keeping
+;; the blocks separate here preserves the per-construct coverage on the native
+;; axes instead of losing all of it to one module-level defect.
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+;; a guard INSIDE the wind body catches, so the wind still exits NORMALLY:
+;; the after thunk must run once, not once per handler activation
+(define a2 0)
+(define r2
+  (dynamic-wind (lambda () #t)
+                (lambda () (guard (e (#t (list 'inner e))) (raise 'q)))
+                (lambda () (set! a2 (+ a2 1)))))
+(chk "guard-inside-wind-value" (equal? r2 (list 'inner 'q)))
+(chk "guard-inside-wind-after-once" (equal? a2 1))

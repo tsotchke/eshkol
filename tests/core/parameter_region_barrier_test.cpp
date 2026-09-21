@@ -58,9 +58,64 @@ const char* tagged_cstr(const eshkol_tagged_value_t& v) {
     return reinterpret_cast<const char*>(static_cast<uintptr_t>(v.data.ptr_val));
 }
 
+// This is the stable C-layout consumed by the runtime-owned visitor. The
+// fixture deliberately writes the tagged slots directly, bypassing every
+// public write-barrier entry point; otherwise a shallow EVAC_PARAMETER copy
+// would be incorrectly certified by the barrier itself.
+struct ParameterLayoutFixture {
+    eshkol_tagged_value_t* stack;
+    int top;
+    int capacity;
+    eshkol_tagged_value_t converter;
+};
+
 }  // namespace
 
 int main() {
+    // ─── Case 0: direct control-block installation ─────────────────────────
+    // Put the parameter object and all three interior tagged fields in one
+    // active region, then invoke the actual escape walker on the parameter
+    // object. This fails with a leaf/shallow parameter case even though the
+    // public constructor/push APIs have their own write barriers.
+    {
+        eshkol_region_t* r = region_create("param_direct_region", 4096);
+        if (!r) return fail("case0: region_create failed");
+        region_push(r);
+
+        eshkol_tagged_value_t zero{};
+        zero.type = ESHKOL_VALUE_INT64;
+        zero.data.int_val = 0;
+        void* param = eshkol_make_parameter(r->arena, zero);
+        if (!param) return fail("case0: eshkol_make_parameter failed");
+
+        auto* layout = static_cast<ParameterLayoutFixture*>(param);
+        layout->stack[0] = make_region_string(r->arena, "direct-default");
+        layout->top = 1;
+        layout->stack[1] = make_region_string(r->arena, "direct-dynamic");
+        layout->converter = make_region_string(r->arena, "direct-converter");
+
+        eshkol_tagged_value_t root{};
+        root.type = ESHKOL_VALUE_HEAP_PTR;
+        root.data.ptr_val = reinterpret_cast<uint64_t>(param);
+        eshkol_tagged_value_t escaped = region_escape_tagged_value(root);
+        region_pop();
+
+        if (escaped.type != ESHKOL_VALUE_HEAP_PTR || !escaped.data.ptr_val)
+            return fail("case0: parameter root was not escaped");
+        void* escaped_param =
+            reinterpret_cast<void*>(static_cast<uintptr_t>(escaped.data.ptr_val));
+        auto* escaped_layout = static_cast<ParameterLayoutFixture*>(escaped_param);
+        eshkol_tagged_value_t current = eshkol_parameter_ref(escaped_param);
+        eshkol_tagged_value_t converter =
+            eshkol_parameter_converter_ref(escaped_param);
+        if (std::strcmp(tagged_cstr(current), "direct-dynamic") != 0)
+            return fail("case0: direct dynamic value did not survive evacuation");
+        if (std::strcmp(tagged_cstr(escaped_layout->stack[0]), "direct-default") != 0)
+            return fail("case0: direct default value did not survive evacuation");
+        if (std::strcmp(tagged_cstr(converter), "direct-converter") != 0)
+            return fail("case0: direct converter did not survive evacuation");
+    }
+
     // ─── Case 1: eshkol_make_parameter's default value ─────────────────────
     // Construct the parameter's control block from the global arena (as
     // codegen would), but seed its default value with a string allocated

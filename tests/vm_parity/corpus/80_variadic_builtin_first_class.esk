@@ -1,0 +1,24 @@
+;; SW-173: a VARIADIC builtin referenced as a first-class value must behave
+;; like its call-position form on both engines. Native wrapped `list` with a
+;; hand-written per-arity factory whose cons chain ended in a tagged INTEGER
+;; 0 instead of nil -- `(map list (list 1 2 3))` answered
+;; `((1 . 0) (2 . 0) (3 . 0))` -- and wrapped every other variadic builtin at
+;; a FIXED arity, dropping the surplus arguments
+;; (`(apply vector (list 1 2 3))` -> `#(1)`). The VM had the mirror-image
+;; gap: `list` and `vector` are compiled by head symbol in call position, so
+;; the bare names had no value at all and `(map list xs)` died with
+;; "undefined variable 'list'".
+(display (map list (list 1 2 3))) (newline)
+(display (map list (list 1 2) (list 3 4))) (newline)
+(display (length (car (map list (list 1 2))))) (newline)
+(display (apply list (list 1 2 3))) (newline)
+(define alias-list list)
+(display (alias-list 1 2 3)) (newline)
+(display (map vector (list 1 2) (list 3 4))) (newline)
+(display (apply vector (list 1 2 3))) (newline)
+(display (apply max (list 1 3 9))) (newline)
+(define alias-max max)
+(display (alias-max 1 3 9)) (newline)
+(display (apply + (list 1 2 3))) (newline)
+(display (apply append (list (list 1) (list 2) (list 3)))) (newline)
+(display (equal? (map list (list 1 2)) (list (list 1) (list 2)))) (newline)

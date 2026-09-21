@@ -11,6 +11,7 @@
  */
 
 #include <eshkol/core/introspection.h>
+#include <eshkol/frontend/ast_strings.h>
 #include <eshkol/core/sexp_to_ast.h>
 #include <eshkol/core/eval_bridge.h>
 #include <eshkol/llvm_backend.h>
@@ -868,7 +869,7 @@ eshkol_tagged_value_t eshkol_eval(eshkol_tagged_value_t sexp, void* arena) {
     }
     wrapper->type = ESHKOL_OP;
     wrapper->operation.op = ESHKOL_DEFINE_OP;
-    wrapper->operation.define_op.name = strdup(name_buf);
+    wrapper->operation.define_op.name = eshkol_ast_strdup(name_buf);
     wrapper->operation.define_op.value = inner;
     wrapper->operation.define_op.is_function = 0;
     wrapper->operation.define_op.parameters = nullptr;
@@ -893,8 +894,8 @@ eshkol_tagged_value_t eshkol_eval(eshkol_tagged_value_t sexp, void* arena) {
     }
 
 
-    // wrapper owns `inner` via define_op.value — freeing wrapper frees the tree.
-    // define_op.name was strdup'd; free_sexp_ast should handle it, but play safe.
+    // wrapper owns `inner` via define_op.value. define_op.name belongs to the
+    // AST string owner (ast_strings.h) and is never freed here.
     eshkol_free_sexp_ast(wrapper);
 
     return result;
@@ -959,8 +960,7 @@ eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
 
         if (num_bindings > 0) {
             // Create let bindings array - each binding is a (var, value) pair
-            eshkol_ast_t* bindings = static_cast<eshkol_ast_t*>(
-                arena_allocate(get_global_arena(),num_bindings * 2 * sizeof(eshkol_ast_t)));
+            eshkol_ast_t* bindings = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (num_bindings * 2) * sizeof(eshkol_ast_t)), (num_bindings * 2));
 
             current = env;
             size_t i = 0;
@@ -975,7 +975,7 @@ eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
 
                         // Variable name
                         bindings[i * 2].type = ESHKOL_VAR;
-                        bindings[i * 2].variable.id = strdup(sym_name);
+                        bindings[i * 2].variable.id = eshkol_ast_strdup(sym_name);
                         bindings[i * 2].variable.data = nullptr;
 
                         // Value - convert the S-expression value to AST
@@ -1137,24 +1137,22 @@ eshkol_tagged_value_t eshkol_compile_with_env(
     // If there are environment bindings, wrap in a let-expression
     if (env && env->count > 0) {
         // Create let bindings array - each binding is a (var, value) pair
-        eshkol_ast_t* bindings = static_cast<eshkol_ast_t*>(
-            arena_allocate(get_global_arena(),env->count * 2 * sizeof(eshkol_ast_t)));
+        eshkol_ast_t* bindings = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (env->count * 2) * sizeof(eshkol_ast_t)), (env->count * 2));
 
         for (size_t i = 0; i < env->count; i++) {
             // Variable name
             bindings[i * 2].type = ESHKOL_VAR;
-            bindings[i * 2].variable.id = strdup(env->names[i]);
+            bindings[i * 2].variable.id = eshkol_ast_strdup(env->names[i]);
             bindings[i * 2].variable.data = nullptr;
 
             // Value - convert the tagged value to an AST representation
             eshkol_tagged_value_t val = env->values[i];
-            eshkol_ast_t val_ast;
-            memset(&val_ast, 0, sizeof(val_ast));
+            eshkol_ast_t val_ast{};
 
             // Handle strings first since they use multiple type representations
             if (is_string(val)) {
                 const char* str = static_cast<const char*>(get_ptr(val));
-                eshkol_ast_make_string(&val_ast, strdup(str ? str : ""), str ? strlen(str) : 0);
+                eshkol_ast_make_string(&val_ast, eshkol_ast_strdup(str ? str : ""), str ? strlen(str) : 0);
             } else {
                 switch (val.type) {
                     case ESHKOL_VALUE_INT64:
@@ -1281,6 +1279,9 @@ eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value) {
     switch (value.type) {
         case ESHKOL_VALUE_NULL:
             type_name = "null";
+            break;
+        case ESHKOL_VALUE_UNSPECIFIED:
+            type_name = "unspecified";
             break;
         case ESHKOL_VALUE_INT64:
             type_name = "integer";

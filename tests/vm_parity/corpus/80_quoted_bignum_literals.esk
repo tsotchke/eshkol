@@ -1,0 +1,27 @@
+; SW-163: a QUOTED bignum-magnitude integer literal must read/print
+; identically between native and the VM. Native's own quote lowering
+; (lib/backend/llvm_codegen.cpp codegenQuotedAST) had no case for
+; ESHKOL_BIGNUM_LITERAL and fell into `default`, silently returning null —
+; `(car '(123456789012345678901234567890 1))` was `()`, `(exact?
+; '123...)` was #f, `(number->string '123...)` printed "0". The VM's own
+; quote lowering (lib/backend/vm_parser.c compile_quote()) already got this
+; case right as part of SW-155.
+;
+; Deliberately NOT covered here (both still open, VM-side, unrelated to this
+; fix): a quoted bignum-RATIONAL literal (VM's compile_quote() has no case
+; for its own `(exact-rational n d)` rational-literal desugar, so `'1/3`
+; still quotes to a 3-element list on the VM) and a bignum literal inside a
+; quasiquote template (VM's compile_quasiquote() "Atom: number" arm ignores
+; the is_bignum flag). Both are exercised, on native only, by
+; tests/core/quoted_bignum_literals_test.esk.
+(display (number->string '123456789012345678901234567890)) (newline)
+(display (exact? '123456789012345678901234567890)) (newline)
+(display (car '(123456789012345678901234567890 1))) (newline)
+(display (cdr '(123456789012345678901234567890 1))) (newline)
+(display (number->string '-123456789012345678901234567890)) (newline)
+(display (exact? '-123456789012345678901234567890)) (newline)
+(display (+ '123456789012345678901234567890 1)) (newline)
+(display (vector? '#(1 123456789012345678901234567890 3))) (newline)
+(display (vector-ref '#(1 123456789012345678901234567890 3) 1)) (newline)
+(display (cdr '(1 . 123456789012345678901234567890))) (newline)
+(display (equal? '123456789012345678901234567890 123456789012345678901234567890)) (newline)

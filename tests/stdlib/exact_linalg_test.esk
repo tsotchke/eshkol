@@ -1,0 +1,147 @@
+;;; core.exact_linalg — exact rational linear algebra + torus averaging.
+;;; Verifies exact-matrix?/-ref/-mul/-transpose, exact-det (Bareiss),
+;;; exact-solve, exact-inverse, exact-rank, exact-nullspace and
+;;; torus-average(-2d), including negative controls: a singular system is
+;;; refused rather than answered, and one inexact participant demotes an
+;;; otherwise-exact result (R7RS contagion).
+(require stdlib)
+
+(define pass 0)
+(define fail 0)
+(define (check nm ok)
+  (if ok
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display nm) (newline))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display nm) (newline))))
+
+;; ---- fixtures ----
+;;
+;; NOTE: every matrix and vector below is built with the `vector`
+;; *procedure*, never with a `#(...)` *literal*. A numeric `#(...)` vector
+;; literal -- flat or nested -- is auto-promoted by the reader into an
+;; f64-backed tensor value (its entries become inexact, and for a nested
+;; literal the outer `vector-length` reports the flattened element count,
+;; not the row count) -- exactly the "tensors are f64" trap this module
+;; exists to avoid. `(vector ...)` / `(vector (vector ...) ...)` build
+;; genuine exact-entry vectors and nested vectors.
+
+;; 3x3 integer matrix with known determinant -2.
+(define M3 (vector (vector 1 2 3) (vector 2 5 4) (vector 1 0 5)))
+
+;; Same matrix with one entry made inexact (1.0 in place of 1).
+(define M3-inexact (vector (vector 1.0 2 3) (vector 2 5 4) (vector 1 0 5)))
+
+;; 2x2 symmetric (covariance-like) rational matrix with determinant 19/80:
+;; det = 1*(3/10) - (1/4)*(1/4) = 24/80 - 5/80 = 19/80.
+(define M2-cov (vector (vector 1 1/4) (vector 1/4 3/10)))
+
+;; 2x2 singular matrix (rows proportional).
+(define M-singular (vector (vector 1 2) (vector 2 4)))
+
+;; ---- exact-matrix? / exact-matrix-ref ----
+
+(check "exact-matrix? true on integer matrix" (exact-matrix? M3))
+(check "exact-matrix? true on rational matrix" (exact-matrix? M2-cov))
+(check "exact-matrix? false when one entry is inexact" (not (exact-matrix? M3-inexact)))
+(check "exact-matrix-ref reads the right cell" (= (exact-matrix-ref M3 1 2) 4))
+
+;; ---- exact-matrix-mul / exact-matrix-transpose ----
+
+(define A2 (vector (vector 1 2) (vector 3 4)))
+(define B2 (vector (vector 5 6) (vector 7 8)))
+;; A2 * B2 = [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]] = [[19,22],[43,50]]
+(define AB2 (exact-matrix-mul A2 B2))
+(check "exact-matrix-mul values" (and (= (exact-matrix-ref AB2 0 0) 19)
+                                       (= (exact-matrix-ref AB2 0 1) 22)
+                                       (= (exact-matrix-ref AB2 1 0) 43)
+                                       (= (exact-matrix-ref AB2 1 1) 50)))
+(check "exact-matrix-mul exact when inputs exact" (exact-matrix? AB2))
+
+(define R23 (vector (vector 1 2 3) (vector 4 5 6)))
+(define R23T (exact-matrix-transpose R23))
+(check "exact-matrix-transpose shape" (and (= (vector-length R23T) 3)
+                                            (= (vector-length (vector-ref R23T 0)) 2)))
+(check "exact-matrix-transpose values" (and (= (exact-matrix-ref R23T 0 1) 4)
+                                             (= (exact-matrix-ref R23T 2 1) 6)))
+
+;; ---- exact-det ----
+
+(check "exact-det 3x3 = -2" (= (exact-det M3) -2))
+(check "exact-det 3x3 stays exact" (exact? (exact-det M3)))
+(check "exact-det 2x2 covariance = 19/80" (= (exact-det M2-cov) 19/80))
+(check "exact-det 2x2 covariance stays exact" (exact? (exact-det M2-cov)))
+
+;; Negative control: one inexact entry demotes the determinant (still
+;; numerically -2, but no longer exact).
+(define d3-inexact (exact-det M3-inexact))
+(check "exact-det demotes to inexact with one inexact entry" (not (exact? d3-inexact)))
+(check "exact-det inexact value still = -2.0" (= d3-inexact -2.0))
+
+;; ---- exact-rank / exact-nullspace ----
+
+(check "exact-rank full-rank 2x2 = 2" (= (exact-rank A2) 2))
+(check "exact-rank singular 2x2 = 1" (= (exact-rank M-singular) 1))
+
+(define ns (exact-nullspace M-singular))
+(check "exact-nullspace of singular 2x2 has one basis vector" (= (length ns) 1))
+(check "exact-nullspace basis vector is (-2 1)"
+       (and (= (vector-ref (car ns) 0) -2) (= (vector-ref (car ns) 1) 1)))
+(check "exact-nullspace basis vector is exact"
+       (and (exact? (vector-ref (car ns) 0)) (exact? (vector-ref (car ns) 1))))
+(check "exact-nullspace of full-rank matrix is empty" (null? (exact-nullspace A2)))
+
+;; ---- exact-solve ----
+
+;; A2 x = (1 1) -> A2 is [[1,2],[3,4]], solve exactly.
+(define x (exact-solve A2 (vector 1 1)))
+(check "exact-solve solves A2 x = (1 1)"
+       (and (= (+ (* 1 (vector-ref x 0)) (* 2 (vector-ref x 1))) 1)
+            (= (+ (* 3 (vector-ref x 0)) (* 4 (vector-ref x 1))) 1)))
+(check "exact-solve result is exact" (and (exact? (vector-ref x 0)) (exact? (vector-ref x 1))))
+
+;; Negative control: a singular coefficient matrix is refused, not answered.
+(check "exact-solve refuses a singular matrix"
+       (equal? 'singular
+               (guard (exn (else 'singular))
+                 (exact-solve M-singular (vector 1 2))
+                 'unexpectedly-succeeded)))
+
+;; ---- exact-inverse ----
+
+(define A2inv (exact-inverse A2))
+(define A2id (exact-matrix-mul A2 A2inv))
+(check "exact-inverse: A * A^-1 = I"
+       (and (= (exact-matrix-ref A2id 0 0) 1) (= (exact-matrix-ref A2id 0 1) 0)
+            (= (exact-matrix-ref A2id 1 0) 0) (= (exact-matrix-ref A2id 1 1) 1)))
+(check "exact-inverse result is exact" (exact-matrix? A2inv))
+
+;; Negative control: exact-inverse refuses a singular matrix.
+(check "exact-inverse refuses a singular matrix"
+       (equal? 'singular
+               (guard (exn (else 'singular))
+                 (exact-inverse M-singular)
+                 'unexpectedly-succeeded)))
+
+;; ---- torus-average / torus-average-2d ----
+
+;; f(k) = k over 4 points: (0+1+2+3)/4 = 6/4 = 3/2, exact.
+(check "torus-average of the identity over 4 points = 3/2"
+       (= (torus-average (lambda (k) k) 4) 3/2))
+(check "torus-average stays exact when f is exact" (exact? (torus-average (lambda (k) k) 4)))
+
+;; Negative control: an f that samples something inexact demotes the average
+;; (transcendental sampling stays inexact by design).
+(define avg-inexact (torus-average (lambda (k) (+ k 0.0)) 4))
+(check "torus-average demotes to inexact when f is inexact" (not (exact? avg-inexact)))
+(check "torus-average inexact value still = 1.5" (= avg-inexact 1.5))
+
+;; f(i,j) = i+j over a 2x3 grid: sum = 0+1+2+1+2+3 = 9, average = 9/6 = 3/2.
+(check "torus-average-2d of (i+j) over a 2x3 grid = 3/2"
+       (= (torus-average-2d (lambda (i j) (+ i j)) 2 3) 3/2))
+(check "torus-average-2d stays exact when f is exact"
+       (exact? (torus-average-2d (lambda (i j) (+ i j)) 2 3)))
+
+;; ---- summary ----
+
+(newline) (display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)
+(if (> fail 0) (exit 1))

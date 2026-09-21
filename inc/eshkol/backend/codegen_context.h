@@ -195,6 +195,46 @@ public:
     /** Get the lambda name a function returns (or empty string) */
     std::string getFunctionReturnsLambda(const std::string& funcName) const;
 
+    // === Container Slot Store Boundary (ADR-0020) ===
+    //
+    // Invariant: a value stored into a container slot is a value of the slot's
+    // declared representation. These three emitters are the only way compiled
+    // code stores into a tensor slot, and the way every sequence mutator
+    // reaches an operand whose representation it has not proven. The runtime
+    // side is lib/core/runtime_vector_mutation.cpp.
+
+    /**
+     * Store @p tagged_value at linear @p index of the vector-or-tensor operand
+     * @p sequence_tagged, raising a catchable error named after @p who when the
+     * operand is not a sequence, the index is out of range, or the value has
+     * no representation in the slot. Leaves the insert point on the success
+     * path.
+     */
+    void emitSequenceSlotStore(llvm::Value* sequence_tagged, llvm::Value* index,
+                               llvm::Value* tagged_value, const char* who);
+
+    /**
+     * Store @p tagged_value at linear @p index of the tensor @p tensor_ptr
+     * (payload pointer; the index is NOT bounds-checked inline because tensor
+     * callers have already checked it per dimension). A DOUBLE into an f64
+     * tensor is stored inline; every other combination goes through the
+     * runtime encoder.
+     */
+    void emitTensorSlotStore(llvm::Value* tensor_ptr, llvm::Value* index,
+                             llvm::Value* tagged_value, const char* who,
+                             bool promote_on_non_numeric = false);
+
+    /**
+     * Branch on an eshkol_slot_store_status_t returned by a runtime half of
+     * the boundary: continue on OK, otherwise raise the one diagnostic for that
+     * status, named after @p who. Leaves the insert point on the success path.
+     */
+    void emitSlotStoreStatusCheck(llvm::Value* status, const char* who);
+
+    /** Store @p tagged_value into every slot of @p sequence_tagged. */
+    void emitSequenceFill(llvm::Value* sequence_tagged, llvm::Value* tagged_value,
+                          const char* who);
+
     // === Region Write Barrier (ESH-0214c) ===
 
     /**
@@ -274,6 +314,16 @@ public:
     /** Get/set the global arena variable */
     llvm::GlobalVariable* globalArena() { return global_arena_; }
     void setGlobalArena(llvm::GlobalVariable* arena) { global_arena_ = arena; }
+
+    // Allocation sites must query the calling thread. Returning the old
+    // process-global slot here would make a nested region on one worker
+    // visible to another worker.
+    llvm::Value* currentArena() {
+        llvm::FunctionType* type = llvm::FunctionType::get(ptrType(), {}, false);
+        llvm::FunctionCallee accessor = module_.getOrInsertFunction(
+            "eshkol_current_arena", type);
+        return builder_.CreateCall(accessor, {}, "arena");
+    }
 
     /**
      * Single accessor for "the arena that allocations should currently target".
@@ -370,6 +420,44 @@ public:
                                                current_source_column_);
     }
 
+    // === Runtime-valued source-location override (LE-19) ===
+    // The location above is a COMPILE-TIME constant, which is correct only
+    // while the code being emitted belongs to exactly one source position.
+    // It is wrong inside a helper that is emitted ONCE per module and called
+    // from every site of an operator -- the out-lined numeric-tower dispatch
+    // `__eshkol_arith_{add,sub,mul,div}` (ESH-0103) is exactly that. Baking a
+    // constant location into its error branches makes every arithmetic type
+    // error in the program report whichever site happened to emit the helper
+    // first, so a failure at one call site was reported at another (typically
+    // the body of the first function that used the operator).
+    //
+    // While such a helper's body is being emitted, the helper's own
+    // file/line/column PARAMETERS are installed here, and the error-location
+    // emitters use them instead of constants. `owner` is the function those
+    // Values belong to: an emitter must never reference an Argument of another
+    // function, so the override is consulted only while emitting into `owner`.
+    struct SourceLocationOverride {
+        llvm::Value* file = nullptr;
+        llvm::Value* line = nullptr;
+        llvm::Value* column = nullptr;
+        llvm::Function* owner = nullptr;
+    };
+    void setSourceLocationOverride(llvm::Value* file, llvm::Value* line,
+                                   llvm::Value* column, llvm::Function* owner) {
+        source_location_override_ = {file, line, column, owner};
+    }
+    void clearSourceLocationOverride() { source_location_override_ = {}; }
+    const SourceLocationOverride& sourceLocationOverride() const {
+        return source_location_override_;
+    }
+    /** True when an override is installed AND the builder is currently
+     *  emitting into the function that owns its Values. */
+    bool sourceLocationOverrideUsable() const {
+        if (!source_location_override_.owner) return false;
+        llvm::BasicBlock* bb = builder_.GetInsertBlock();
+        return bb && bb->getParent() == source_location_override_.owner;
+    }
+
     // A sub-codegen can discover a fatal source error while lowering an
     // operation.  Keep that state in the shared context so the owning
     // compiler rejects the module even when the operation was synthesized
@@ -450,6 +538,9 @@ private:
      */
     void emitRaiseWithMessagePtr(llvm::Value* message_ptr);
 
+    /** Spill a tagged value to an entry-block slot and return its address. */
+    llvm::Value* spillTaggedToEntrySlot(llvm::Value* tagged_value, const char* name);
+
     // LLVM infrastructure (references, not owned)
     llvm::LLVMContext& context_;
     llvm::Module& module_;
@@ -505,6 +596,7 @@ private:
     std::string current_source_file_;
     uint32_t current_source_line_ = 0;
     uint32_t current_source_column_ = 0;
+    SourceLocationOverride source_location_override_;
     bool fatal_codegen_error_ = false;
 
     // Mode flags

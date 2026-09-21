@@ -48,15 +48,15 @@ working memory this cycle).
 
 | Component         | Header                                | Implementation                          | Lines |
 |-------------------|---------------------------------------|------------------------------------------|-------|
-| Logic engine      | `inc/eshkol/core/logic.h`             | `lib/core/logic.cpp`                     | 246 / 961 |
-| Active inference  | `inc/eshkol/core/inference.h`         | `lib/core/inference.cpp`                 | 183 / 1029 |
-| Global workspace  | `inc/eshkol/core/workspace.h`         | `lib/core/workspace.cpp`                 | 146 / 308 |
-| Auxiliary builtins| —                                     | `lib/core/logic_builtins.cpp`            | 164  |
-| LLVM codegen      | `inc/eshkol/backend/logic_workspace_codegen.h` | `lib/backend/logic_workspace_codegen.cpp` | 665  |
+| Logic engine      | `inc/eshkol/core/logic.h`             | `lib/core/logic.cpp`                     | 413 / 1,505 |
+| Active inference  | `inc/eshkol/core/inference.h`         | `lib/core/inference.cpp`                 | 289 / 1,258 |
+| Global workspace  | `inc/eshkol/core/workspace.h`         | `lib/core/workspace.cpp`                 | 188 / 354 |
+| Auxiliary builtins| —                                     | `lib/core/logic_builtins.cpp`            | 209  |
+| LLVM codegen      | `inc/eshkol/backend/logic_workspace_codegen.h` | `lib/backend/logic_workspace_codegen.cpp` | 725  |
 | Op dispatch       | `lib/backend/llvm_codegen.cpp` §`codegenOperation` | (lines 8648–8697)                  | —    |
 | Type predicates   | `lib/backend/llvm_codegen.cpp` (lines 32223–32430) | —                                  | —    |
 | Parser keywords   | `lib/frontend/parser.cpp` (lines 985–1011) and §`TOKEN_SYMBOL` (line 888) | —          | —    |
-| Tagged-value type | `inc/eshkol/eshkol.h` (lines 87, 351–356) and `lib/backend/type_system.cpp` §`createStructTypes` | — | — |
+| Tagged-value type | `inc/eshkol/eshkol.h` (lines 137, 824–829) and `lib/backend/type_system.cpp` §`createStructTypes` | — | — |
 
 ### 1.2 Vocabulary of cited identifiers
 
@@ -111,16 +111,16 @@ the variable itself; the name lives in a static intern pool managed by
 ### 2.3 New heap subtypes
 
 All six subtypes are members of the `heap_subtype_t` enum in
-`inc/eshkol/eshkol.h` (lines 337–360):
+`inc/eshkol/eshkol.h` (lines 810–839):
 
 | Subtype                          | Value | Source line | Backing struct                   |
 |----------------------------------|-------|-------------|----------------------------------|
-| `HEAP_SUBTYPE_SUBSTITUTION`      | 12    | line 351    | `eshkol_substitution_t`          |
-| `HEAP_SUBTYPE_FACT`              | 13    | line 352    | `eshkol_fact_t`                  |
-| *(reserved for RULE)*            | 14    | line 353    | —                                |
-| `HEAP_SUBTYPE_KNOWLEDGE_BASE`    | 15    | line 354    | `eshkol_knowledge_base_t`        |
-| `HEAP_SUBTYPE_FACTOR_GRAPH`      | 16    | line 355    | `eshkol_factor_graph_t`          |
-| `HEAP_SUBTYPE_WORKSPACE`         | 17    | line 356    | `eshkol_workspace_t`             |
+| `HEAP_SUBTYPE_SUBSTITUTION`      | 12    | line 824    | `eshkol_substitution_t`          |
+| `HEAP_SUBTYPE_FACT`              | 13    | line 825    | `eshkol_fact_t`                  |
+| *(reserved for RULE)*            | 14    | line 826    | —                                |
+| `HEAP_SUBTYPE_KNOWLEDGE_BASE`    | 15    | line 827    | `eshkol_knowledge_base_t`        |
+| `HEAP_SUBTYPE_FACTOR_GRAPH`      | 16    | line 828    | `eshkol_factor_graph_t`          |
+| `HEAP_SUBTYPE_WORKSPACE`         | 17    | line 829    | `eshkol_workspace_t`             |
 
 Value `14` is reserved for the rule heap subtype slated for v1.2
 backward chaining. The non-monotonic gap is intentional and load-bearing
@@ -129,7 +129,7 @@ for forward source compatibility.
 ### 2.4 Object header
 
 Every heap object carries an 8-byte `eshkol_object_header_t` prefix
-(`inc/eshkol/eshkol.h` lines 322–327):
+(`inc/eshkol/eshkol.h` lines 757–762):
 
 ```c
 struct eshkol_object_header {

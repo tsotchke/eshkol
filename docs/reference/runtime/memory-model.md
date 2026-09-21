@@ -155,6 +155,33 @@ The arena API lives in `lib/core/arena_memory.h` (impl in `lib/core/`).
   allocated) via `arena_create_thread_local` — zero cross-thread contention.
   `arena_merge_to_parent` publishes results back.
 
+## Native stack overflow protection
+
+Hosted native execution (JIT and AOT) applies `ESHKOL_STACK_SIZE` as a target
+for the process stack and as the ceiling named by the native stack guard. The
+default target is 512 MiB; values use the shared size grammar documented in
+[Environment variables](environment-variables.md). Every generated user
+function begins with a cheap stack-headroom check that reserves space for its
+own diagnostic. The check is stateless, so it does not add a push/pop pair and
+does not interfere with proper tail calls.
+
+If recursion reaches the reserved margin, execution ends with status 121 and
+the diagnostic `eshkol: stack overflow: recursion depth exceeded the N MiB
+stack (ESHKOL_STACK_SIZE); ...`. A large native frame can skip the cheap check
+and fault in the guard region instead. On POSIX hosts, SIGSEGV and SIGBUS are
+handled on an alternate signal stack and the fault is identified as stack
+exhaustion before termination. This is a diagnostic boundary, not recoverable
+continuation: unwinding arbitrary user frames after native stack exhaustion is
+not sound.
+
+The initial thread's Linux stack extent is determined at process launch by the
+inherited `ulimit -s`; a later `setrlimit` call cannot enlarge an already-small
+mapping. The deep-recursion hard gate therefore uses `ulimit -s 1048576` before
+testing `ESHKOL_STACK_SIZE=1G`. Parallel-map workers use
+`ESHKOL_WORKER_STACK_BYTES` instead of the process target, and each
+runtime-created worker installs its own alternate signal stack because the
+POSIX altstack is per thread.
+
 ## Regions and `with-region`
 
 Regions are lexically-scoped arenas layered on top of the allocator
@@ -602,10 +629,141 @@ throughput" fallback: the reclamation is what's traded away, never correctness.
 > only committing) is deferred — it requires making the shared arena slot
 > thread-local, a broader ABI change. Correctness does not depend on it.
 
+## Per-iteration loop reclamation
+
+A self-tail loop gets a per-iteration arena scope (ESH-0214b): the loop header
+pushes a scope and every path out of the iteration ends it, so an iteration's
+transient garbage is reclaimed at the back edge and a long loop's resident size
+stays flat.
+
+The scope originally reclaimed an iteration only when NOTHING flowing into the
+next one pointed into it, and **committed** — retained the whole iteration,
+exactly as if the feature were switched off — otherwise. That fallback is the
+common case rather than the rare one: a loop that ACCUMULATES builds its
+accumulator inside the iteration, so the accumulator always points into the
+span, so such a loop retained every iteration it had ever run. It was invisible
+for a machine-word accumulator and very visible for an exact-rational one.
+
+**SW-164:** the scope now PROMOTES instead of giving up. A loop opens a LOOP
+scope once at entry (`eshkol_arena_loop_scope_begin`), outside the per-iteration
+scope. An escaping back edge deep-evacuates the loop-carried values out of
+everything above the LOOP mark — this iteration's garbage and the previous
+iteration's now-dead accumulator alike — into a scratch arena, rewinds both
+scopes, reopens the loop scope and copies the survivors back. The arena and the
+scratch arena are the two halves of a semispace, so resident size is bounded by
+the live set rather than by the iteration count. The no-escape path is
+unchanged: a plain pop, no copy.
+
+Two things bound the cost and keep it honest:
+
+- **Promotion is gated the way a copying collector gates a minor collection** —
+  only once the span has grown to a multiple of the last measured live set. A
+  loop that grows its accumulator BY ACCRETION (consing onto a list) has a span
+  that IS its live set; promoting there every iteration would copy the whole
+  structure every time and turn a linear loop quadratic, which is a worse
+  failure than the retention it would cure. Such a loop measures span ≈ live
+  once and then falls back to retention.
+- **Only values that no invisible root can be holding are moved.** Copying is
+  half of moving; the other half is rewriting every OTHER reference to the
+  original, and the evacuator can rewrite only what it reaches from the roots it
+  was given. `loopBodyIterScopeSafe` rules out references created by the loop
+  body storing into pre-existing Eshkol structure, but says nothing about the C
+  runtime's own roots — the AD tape's `nodes[]` array being the clearest, since
+  moving a node there yields a plausible wrong gradient rather than an error.
+  Rather than enumerate runtime-side roots, a list that would go stale the first
+  time one was added, promotion admits only values that cannot be held that way:
+  immediates, and the exact numeric tower's heap payloads (bignum, rational).
+  Those are pure values — immutable, carrying no observable identity, with no
+  interior pointers beyond a rational's own two bignums, which travel with it.
+  Anything else, and any loop running while a tape is recording, retains the
+  span instead of rewinding it. That is exactly the case this reclamation exists
+  for, and the trade is deliberate: a conservative answer costs memory, an
+  optimistic one costs a wrong result.
+
+  Arena-span evacuation otherwise shares one Cheney copier, one forwarding map
+  and one per-subtype interior walk with the region evacuator
+  (`EvacState::owns` selects the ownership question), so the two callers cannot
+  drift.
+
+Soundness rests on the codegen-side precondition the whole feature rests on
+(`loopBodyIterScopeSafe`): a loop body admitted here cannot leak a value into
+pre-existing structure, so the loop-carried out-values are the only roots into
+the span.
+
+That admission test is also where a loop most easily loses reclamation without
+anyone noticing, because an unrecognized callee rejects the WHOLE loop rather
+than the one expression. Two cases of that were closed with SW-164: the exact
+tower's accessors and constructor were absent from the pure-builtin list, and —
+more broadly — a `cond` CLAUSE is stored in a call node whose function slot
+holds the clause's TEST, so walking clauses as ordinary expressions asked
+whether that test was an analyzable callee, found a computed one, and rejected
+the loop. Nearly every `cond` was affected; the same loop written with nested
+`if` was not.
+
+### Giving a primitive a reclamation boundary
+
+`arena_scope_end_retaining()` ends the innermost scope RETAINING a named set of
+header-prefixed objects: they are staged out of the dying span and re-allocated
+at the rewound mark. It exists because the arena reclaims only at a scope or
+region boundary and an operation whose intermediate work dwarfs its result had
+no boundary inside it — exact-rational normalization being the case that
+forced it (see [exact arithmetic](../../breakdown/EXACT_ARITHMETIC.md)).
+
+### Where a cached constant lives
+
+`eshkol_literal_arena()` is a private arena for values cached across
+iterations, such as a hoisted compile-time constant. Nothing else allocates
+from it, no scope is ever pushed on it and it is never reset. Neither
+`get_global_arena()` nor `get_global_arena_shared()` is a substitute: those
+name the current-arena SLOT, which `with-region` hijacks — and, more subtly, a
+constant materialized lazily on a loop's first iteration is allocated above
+that loop's scope mark, so the first rewind reclaims it and the cache is left
+pointing at memory the next allocation hands out.
+
+## The heap ceiling is a fail-closed contract (SW-165)
+
+Heap accounting only accounts; enforcement belongs to the single site that can
+carry it out.
+
+- With **no** `ESHKOL_MAX_HEAP` set, the default is an accounting reference and
+  says nothing: no diagnostic, no run stopped.
+- With one set, crossing it is reported **once**, in bytes, and the process
+  exits nonzero without completing (a one-shot warning at 80% may precede it,
+  and only for a ceiling that was asked for). Under
+  `ESHKOL_ENFORCE_LIMITS=false` the breach is recorded and warned about
+  instead, and the run continues.
+- A malformed `ESHKOL_MAX_HEAP`, `ESHKOL_MAX_STACK`, `ESHKOL_MAX_TENSOR_ELEMS`
+  or `ESHKOL_MAX_STRING_LEN` now names itself, the offending value and the
+  accepted grammar before falling back to its default, rather than falling back
+  in silence.
+
+None of this is on the allocation fast path: the ceiling is checked once per
+arena **block** (a megabyte at a time), so staying under a limit costs nothing
+measurable and enabling limits cannot change a computed result. Gated by
+`tests/memory/heap_limit_fail_closed_test.sh`.
+
+A program that allocates past a requested 64 MiB ceiling, on stderr:
+
+```
+   WARNING: Heap usage at 80% of the ESHKOL_MAX_HEAP ceiling (53690356 of 67108864 bytes)
+eshkol: fatal: Heap hard limit exceeded (limit 67108864 bytes, set by ESHKOL_MAX_HEAP): arena block
+```
+
+— and the process exits **120** (`ESHKOL_EXIT_LIMIT_HEAP`), with nothing on
+stdout. The earlier behaviour was the opposite of a contract: the diagnostic
+repeated once per arena block for the rest of the run, it fired on the default
+ceiling nobody had asked for, a sub-megabyte ceiling printed as "0MB > 0MB",
+and the run finished with exit 0 regardless.
+
 ## Stack and depth limits
 
 - Region stack depth is bounded (`MAX_REGION_DEPTH`); overflow raises an error.
 - The AD tape stack (`MAX_TAPE_DEPTH = 32`) is thread-local.
+- Exhausting the **native** stack prints
+  `eshkol: stack overflow: recursion depth exceeded the N MiB stack (ESHKOL_STACK_SIZE); …`
+  and exits 121 — on JIT, on AOT and inside `parallel-map` workers, each of
+  which installs its own `sigaltstack`. See
+  [environment variables](environment-variables.md#native-stack-guard).
 - See [environment variables](environment-variables.md) for `ESHKOL_MAX_HEAP`,
   `ESHKOL_MAX_STACK`, `ESHKOL_STACK_SIZE`, and `ESHKOL_WORKER_STACK_BYTES`.
 
@@ -629,15 +787,15 @@ to be true before that meant anything, and both were fixed in the leak audit:
 
 ### The audited state
 
-Every real workload — an AOT compile, the compiled program, `-r` JIT, `--vm`,
+Every real workload — an AOT compile, the compiled program, `-r` JIT, the bytecode VM,
 the REPL, and the agent-FFI test binaries — was run under ASan+LSan over
 `hello.esk`, `examples/h2_vibrational.esk`, `examples/autodiff.esk` and
 `examples/tensors.esk`. The reports resolve to 17 distinct allocation sites:
 
 | category | sites | disposition |
 |---|---|---|
-| **Runtime, VM, arena, compiled programs** | 0 | Nothing. These paths are leak-clean: every report from a compiled binary or a `--vm` run came from platform framework init, not from Eshkol code. |
-| **Compiler front-end AST** | 8 | Retained for process lifetime by design (`eshkol_ast_t` has no destructor), the convention clang/rustc/gcc use. Named individually with a reason in `.icc/lsan-suppressions.txt`. Retires with epic #182. |
+| **Runtime, VM, arena, compiled programs** | 0 | Nothing. These paths are leak-clean: every report from a compiled binary or a bytecode-VM run came from platform framework init, not from Eshkol code. |
+| **Compiler front-end AST** | 8 | Node storage is retained for process lifetime by design (`eshkol_ast_t` has no destructor), the convention clang/rustc/gcc use. Named individually with a reason in `.icc/lsan-suppressions.txt`. Retires with epic #182. Two of the eight covered only string payloads. They were retired when those payloads got one rooted owner ([ADR-0021](../../design/adr/0021-ast-string-owner.md)), so six rules remain. |
 | **In-process JIT and driver** | 3 | **Fixed — see below.** All three grew with the work done, none was process-init. |
 | **LLVM ORC JIT** | 1 | Third-party: `DynamicLibrarySearchGenerator` holds a `dlopen` handle for the life of the JITDylib. Suppressed, scoped to that class. |
 | **Platform frameworks** | 7 | macOS `libobjc` / CoreFoundation / CFNetwork / libxpc process init. Not in the shipped suppression file — that file describes the Linux lane, where these frames do not exist. |
@@ -667,7 +825,13 @@ The front-end suppressions are scoped to one function each, but within a
 function they are total, so a new leak inside `parse_list()` would be swallowed
 by them. `tests/memory/leak_audit_gate.sh` closes that: it measures front-end
 retention per REPL input line at two horizons **with suppressions off** and
-gates on the slope.
+gates on the slope. The measured retention is LeakSanitizer's leaked bytes
+(node storage) plus the AST string owner's own report
+(`ESHKOL_AST_STRINGS_STATS`). Since ADR-0021, identifiers are rooted rather
+than leaked, and a slope that counted only leaks would have lost them. The
+figure stayed at 1628 bytes per line when that change landed: 1608 bytes of
+node storage and 20 bytes of rooted identifier text, measured on Linux with
+gcc-13 ASan at 10 and 40 lines.
 
 Measured at 10 / 20 / 40 input lines: 21 171 / 37 451 / 70 009 bytes, i.e.
 **1628 bytes per input line, linear across a 4× span**. A batch compile reaps
@@ -682,6 +846,23 @@ a regression. Both numbers are recorded in the gate so the increase is
 accounted for rather than silently absorbed by its tolerance. This is growth, not a wrong answer, so it is a defect rather
 than a silent-wrong, and the honest statement of it is: **`eshkol-run` is
 bounded by its input, `eshkol-repl` is not**. The number is pinned in the gate
-so it can go down freely and cannot go up. Giving `eshkol_ast_t` a real owner
-(epic #182) is what makes it zero; that is a 353-site ownership change across
-the parser and macro expander, tracked separately.
+so it can go down freely and cannot go up. Giving `eshkol_ast_t` nodes a real
+owner (epic #182) is what removes the node share. The string share already has
+an owner that releases it at teardown, but a REPL session still holds it until
+it exits.
+
+### Leak detection during builds
+
+A sanitizer build runs the instrumented compiler on the standard library
+while building `stdlib.o`. That is a real compiler workload, so it runs under
+the same policy as every other LeakSanitizer workload: `detect_leaks=1` with
+`.icc/lsan-suppressions.txt`. `scripts/build-sanitizer.sh` applies this
+policy by default on Linux, the CI sanitizer lane's Build step exports it,
+and the release producer (`scripts/run_v1_3_release_producers.sh`) passes
+it. macOS keeps detection off, because its system toolchain has no working
+LeakSanitizer. A leak in the compiler therefore fails the build that
+exercises it, in CI and in the release producer alike, instead of being
+found only when the two disagree. The first defect this policy caught was
+module-private renaming dropping renamed identifiers. The fix gave AST
+strings an owner ([ADR-0021](../../design/adr/0021-ast-string-owner.md)); it
+did not add a suppression.

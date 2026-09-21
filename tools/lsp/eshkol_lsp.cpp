@@ -29,6 +29,7 @@
 #include <regex>
 
 #include "eshkol/eshkol.h"
+#include <eshkol/frontend/workspace.h>
 
 // ============================================================================
 // Minimal JSON Implementation (no external dependencies)
@@ -415,6 +416,7 @@ private:
     DocumentStore documents_;
     bool initialized_ = false;
     bool shutdown_requested_ = false;
+    eshkol::frontend::WorkspaceResolver workspace_;
 
     // Eshkol keywords and special forms
     static const std::vector<std::string>& keywords() {
@@ -624,92 +626,25 @@ private:
         if (!doc) return;
 
         JsonValue diagnostics = JsonValue::array();
-
-        // Parse the document for errors using Eshkol's parser
-        {
-            std::istringstream stream(doc->content);
-            try {
-                while (stream.good() && !stream.eof()) {
-                    // Skip whitespace and comments
-                    int c;
-                    while ((c = stream.peek()) != EOF) {
-                        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
-                            stream.get();
-                        } else if (c == ';') {
-                            // Skip comment line
-                            std::string comment_line;
-                            std::getline(stream, comment_line);
-                        } else {
-                            break;
-                        }
-                    }
-                    if (stream.eof() || stream.peek() == EOF) break;
-                    eshkol_ast_t ast = eshkol_parse_next_ast_from_stream(stream);
-                    if (ast.type == ESHKOL_INVALID) break;
-                }
-            } catch (...) {
-                // Parser threw an exception — ignore, rely on paren matching below
-            }
-
-            // Check for unbalanced parentheses
-            bool in_string = false;
-            bool in_comment = false;
-            int paren_depth = 0;
-            int line = 0, col = 0;
-            for (size_t i = 0; i < doc->content.size(); i++) {
-                char ch = doc->content[i];
-                if (in_comment) {
-                    if (ch == '\n') in_comment = false;
-                } else if (in_string) {
-                    if (ch == '\\' && i + 1 < doc->content.size()) { i++; col++; }
-                    else if (ch == '"') in_string = false;
-                } else {
-                    if (ch == ';') in_comment = true;
-                    else if (ch == '"') in_string = true;
-                    else if (ch == '(') paren_depth++;
-                    else if (ch == ')') {
-                        paren_depth--;
-                        if (paren_depth < 0) {
-                            JsonValue diag = JsonValue::object();
-                            JsonValue range = JsonValue::object();
-                            JsonValue start = JsonValue::object();
-                            start["line"] = JsonValue(int64_t(line));
-                            start["character"] = JsonValue(int64_t(col));
-                            JsonValue end = JsonValue::object();
-                            end["line"] = JsonValue(int64_t(line));
-                            end["character"] = JsonValue(int64_t(col + 1));
-                            range["start"] = start;
-                            range["end"] = end;
-                            diag["range"] = range;
-                            diag["severity"] = JsonValue(int64_t(1)); // Error
-                            diag["source"] = JsonValue("eshkol");
-                            diag["message"] = JsonValue("Unmatched closing parenthesis");
-                            diagnostics.push(diag);
-                            paren_depth = 0;
-                        }
-                    }
-                }
-                if (ch == '\n') { line++; col = 0; }
-                else col++;
-            }
-
-            if (paren_depth > 0) {
-                JsonValue diag = JsonValue::object();
-                JsonValue range = JsonValue::object();
-                JsonValue start = JsonValue::object();
-                start["line"] = JsonValue(int64_t(line));
-                start["character"] = JsonValue(int64_t(0));
-                JsonValue end_pos = JsonValue::object();
-                end_pos["line"] = JsonValue(int64_t(line));
-                end_pos["character"] = JsonValue(int64_t(col));
-                range["start"] = start;
-                range["end"] = end_pos;
-                diag["range"] = range;
-                diag["severity"] = JsonValue(int64_t(1)); // Error
-                diag["source"] = JsonValue("eshkol");
-                diag["message"] = JsonValue(std::to_string(paren_depth) + " unclosed parenthesis(es)");
-                diagnostics.push(diag);
-            }
+        std::string path = uri;
+        if (path.rfind("file://", 0) == 0) path = path.substr(7);
+        const auto checked = workspace_.check_source(path, doc->content);
+        for (const auto& message : checked.diagnostics) {
+            JsonValue diag = JsonValue::object();
+            JsonValue range = JsonValue::object();
+            JsonValue start = JsonValue::object();
+            start["line"] = JsonValue(int64_t(0));
+            start["character"] = JsonValue(int64_t(0));
+            JsonValue end = JsonValue::object();
+            end["line"] = JsonValue(int64_t(0));
+            end["character"] = JsonValue(int64_t(1));
+            range["start"] = start;
+            range["end"] = end;
+            diag["range"] = range;
+            diag["severity"] = JsonValue(int64_t(1));
+            diag["source"] = JsonValue("eshkol check");
+            diag["message"] = JsonValue(message);
+            diagnostics.push(diag);
         }
 
         JsonValue diag_params = JsonValue::object();

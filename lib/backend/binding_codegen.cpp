@@ -7,6 +7,8 @@
  */
 
 #include <eshkol/backend/binding_codegen.h>
+#include <eshkol/backend/static_callee_binding.h>
+#include <eshkol/backend/llvm_compat.h>
 #include <eshkol/llvm_backend.h>      // for eshkol_repl_mark_user_variable
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -52,6 +54,62 @@ static Function* getCurrentFunction(Function** ptr) {
  */
 static bool isReplMode(bool* ptr) {
     return ptr ? *ptr : false;
+}
+
+/**
+ * @brief Return whether @p name is assigned in @p ast.
+ *
+ * The main LLVM code generator owns the complete AST walk because it also
+ * uses the result for closure and loop capture decisions. BindingCodegen
+ * asks that same analysis before choosing stack or arena storage, keeping
+ * assignment conversion at the binding root instead of duplicating a
+ * partial syntax walk here.
+ */
+static bool astSetsVar(bool (*callback)(const void*, const char*, void*),
+                       const void* ast, const std::string& name, void* context) {
+    return callback && callback(ast, name.c_str(), context);
+}
+
+static bool astNeedsDurableCell(bool (*callback)(const void*, void*),
+                                const void* ast, void* context) {
+    return callback && callback(ast, context);
+}
+
+static bool astMayBeObserved(bool (*callback)(const void*, const char*, void*),
+                             const void* ast, const std::string& name,
+                             void* context) {
+    return callback && callback(ast, name.c_str(), context);
+}
+
+static bool astMayBeObservedInScopes(
+    bool (*callback)(const void*, const char*, void*),
+    const std::vector<const eshkol_ast_t*>& scopes,
+    const std::string& name, void* context) {
+    if (!callback) return false;
+    for (const eshkol_ast_t* scope : scopes) {
+        if (scope && callback(scope, name.c_str(), context)) return true;
+    }
+    return false;
+}
+
+static bool astNeedsDurableCellInScopes(
+    bool (*callback)(const void*, void*),
+    const std::vector<const eshkol_ast_t*>& scopes, void* context) {
+    if (!callback) return false;
+    for (const eshkol_ast_t* scope : scopes) {
+        if (scope && callback(scope, context)) return true;
+    }
+    return false;
+}
+
+/** Allocate one tagged-value cell in the live arena. */
+static Value* allocateMutableCell(CodegenContext& ctx, const std::string& name) {
+    Value* arena = ctx.builder().CreateLoad(ctx.ptrType(), ctx.globalArena(),
+                                             name + ".assignment_arena");
+    return ctx.builder().CreateCall(
+        ctx.memory().getArenaAllocate(),
+        {arena, ConstantInt::get(ctx.sizeType(), 16)},
+        name + ".assignment_cell");
 }
 
 /**
@@ -320,59 +378,44 @@ Value* BindingCodegen::storeBinding(
 }
 
 /**
- * @brief Register a `<var>_func` alias so direct calls can resolve a bound lambda by name.
+ * @brief Record, or refuse, the `<var>_func` alias of a lambda binding.
  *
- * Looks up @p lambda_name in the function table and, if found, records it
- * under the key `<var_name>_func`. When generating inside a function (a
- * nested define), the entry is stored under a function-scoped key
- * (`<current_func>.` + `<var_name>_func`) in both the local and global
- * symbol tables — the unscoped key is deliberately NOT added to the global
- * table so same-named nested helpers in different enclosing functions don't
- * clobber each other. At top level, both the local and global symbol tables
- * get the unscoped key.
+ * Looks up @p lambda_name in the function table and hands it to
+ * bindStaticCallee() (static_callee_binding.h) together with the binding's
+ * current storage. Inside a function the alias is stored under both the
+ * unscoped key and a function-scoped key (`<current_func>.<var_name>_func`);
+ * only the scoped key goes to the global table, so same-named nested helpers
+ * in different enclosing functions don't clobber each other. At top level,
+ * both tables get the unscoped key.
+ *
+ * A reassigned binding (the target of a set! in its scope, or a redefined
+ * top-level name) gets no alias: the lambda it was created with is not what
+ * the name denotes after the assignment, so every static fast path must
+ * dispatch on the runtime value instead.
  *
  * @param var_name Scheme variable name the lambda is bound to.
  * @param lambda_name LLVM function name of the already-generated lambda.
+ * @param reassigned Whether the binding is reassigned in its scope.
  */
-void BindingCodegen::registerLambdaBinding(const std::string& var_name, const std::string& lambda_name) {
+void BindingCodegen::registerLambdaBinding(const std::string& var_name, const std::string& lambda_name,
+                                           bool reassigned) {
     if (!function_table_) return;
 
     auto it = function_table_->find(lambda_name);
-    if (it == function_table_->end()) return;
-
-    Function* lambda_func = it->second;
-    std::string func_key = var_name + "_func";
+    Function* lambda_func = it == function_table_->end() ? nullptr : it->second;
     Function* current = getCurrentFunction(current_function_);
 
-    // NESTED DEFINE SCOPING FIX: For nested defines (inside a function), only store
-    // in local symbol_table with scoped key. Do NOT add unscoped key to global_symbol_table
-    // because it would be overwritten by other functions with same-named nested helpers.
-    if (current) {
-        // Inside a function - this is a nested define
-        std::string scoped_key = current->getName().str() + "." + func_key;
-
-        // Add to local symbol table with both scoped and unscoped keys
-        // The unscoped key is for direct calls within the same function
-        if (symbol_table_) {
-            (*symbol_table_)[func_key] = lambda_func;
-            (*symbol_table_)[scoped_key] = lambda_func;
-        }
-
-        // Only add SCOPED key to global - the unscoped would conflict with other functions
-        if (global_symbol_table_) {
-            (*global_symbol_table_)[scoped_key] = lambda_func;
-        }
-
-        eshkol_debug("BindingCodegen: registered nested lambda %s (scoped: %s) -> %s",
-                     func_key.c_str(), scoped_key.c_str(), lambda_name.c_str());
-    } else {
-        // Top-level define - add to both tables
-        if (symbol_table_) (*symbol_table_)[func_key] = lambda_func;
-        if (global_symbol_table_) (*global_symbol_table_)[func_key] = lambda_func;
-
-        eshkol_debug("BindingCodegen: registered top-level lambda %s -> %s",
-                     func_key.c_str(), lambda_name.c_str());
+    Value* storage = nullptr;
+    if (symbol_table_) {
+        auto storage_it = symbol_table_->find(var_name);
+        if (storage_it != symbol_table_->end()) storage = storage_it->second;
     }
+
+    if (!lambda_func && !reassigned) return;
+    const bool recorded = eshkol::bindStaticCallee(symbol_table_, global_symbol_table_, current,
+                                                   var_name, lambda_func, storage, reassigned);
+    eshkol_debug("BindingCodegen: %s static alias for %s -> %s", recorded ? "recorded" : "refused",
+                 var_name.c_str(), lambda_name.c_str());
 }
 
 /**
@@ -448,6 +491,12 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     // Top-level defines in main should always be global, not local
     bool use_global = !current || is_global_init || is_lib_init || is_repl ||
                       is_main || is_outlined_top_level_init;
+    // A top-level binding's scope is the whole compilation unit, which the
+    // codegen has already scanned for set! targets and redefinitions. A
+    // define nested elsewhere has no scope this function can inspect, so its
+    // lambda is never given a static alias (static_callee_binding.h).
+    const bool binding_reassigned =
+        use_global ? isReassignedTopLevelName(var_name) : true;
 
     if (is_lambda) {
         if (use_global) {
@@ -545,7 +594,7 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     // 1. The value is a runtime closure, not a compile-time function pointer
     // 2. The actual function to call depends on the closure's captured environment
     // 3. Calls to such variables must go through codegenClosureCall at runtime
-    if (is_lambda && is_func_value && register_func_binding_callback_) {
+    if (is_lambda && is_func_value && !binding_reassigned && register_func_binding_callback_) {
         register_func_binding_callback_(var_name, typed_ptr, callback_context_);
     }
 
@@ -630,7 +679,7 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
 
     // Register lambda if applicable
     if (is_lambda && last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
-        registerLambdaBinding(var_name, *last_generated_lambda_name_);
+        registerLambdaBinding(var_name, *last_generated_lambda_name_, binding_reassigned);
     }
 
     return tagged_val;
@@ -708,7 +757,7 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
 
         // NORETURN SAFETY: If the value expression terminated the block (e.g., raise),
         // we cannot emit any more instructions. Stop processing bindings.
-        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) {
             break;
         }
 
@@ -718,43 +767,60 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
             continue;
         }
 
-        // Create alloca and store
+        // Assignment conversion: a local whose location is mutated must not
+        // live in the stack image captured by call/cc. Keep the location in
+        // the arena instead; codegenSet already treats any pointer-backed
+        // binding as mutable storage. This applies even when no closure
+        // captures the name: re-entry itself is the store/continuation
+        // boundary that requires a durable cell (SW-62).
+        const bool assignment_converted = astSetsVar(
+            is_var_set_callback_, op->let_op.body, var_name, callback_context_);
+        const bool durable_cell = astNeedsDurableCell(
+            is_continuation_escape_callback_, op->let_op.body, callback_context_);
+        const bool observed_after_mutation = astMayBeObserved(
+            is_var_observed_callback_, op->let_op.body, var_name, callback_context_);
+
+        // Create storage and store
         // TCO FIX: When TCO is enabled, allocas MUST be in entry block to avoid
         // stack growth on each loop iteration. This is safe because:
         // 1. The alloca is just stack space - it doesn't capture any value
         // 2. The store happens at the current position with the correct value
         // 3. Closure captures work because we fixed codegenVariable to load from pointers
-        AllocaInst* alloca = nullptr;
-        if (tco_context_.enabled) {
+        Value* storage = nullptr;
+        if (assignment_converted &&
+            eshkol_mutation_may_be_observed_after_mutation(
+                true, observed_after_mutation, durable_cell)) {
+            storage = allocateMutableCell(ctx_, var_name);
+        } else if (tco_context_.enabled) {
             // TCO path: Insert alloca in entry block
             Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
             BasicBlock& entry_block = current_func->getEntryBlock();
             IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
             ctx_.builder().SetInsertPoint(&entry_block, entry_block.begin());
-            alloca = ctx_.builder().CreateAlloca(
+            storage = ctx_.builder().CreateAlloca(
                 ctx_.taggedValueType(),
                 nullptr,
                 var_name
             );
-            alloca->setAlignment(Align(16));
+            cast<AllocaInst>(storage)->setAlignment(Align(16));
             ctx_.builder().restoreIP(saved_ip);
         } else {
             // Non-TCO path: Create alloca at current position (original behavior)
-            alloca = ctx_.builder().CreateAlloca(
+            storage = ctx_.builder().CreateAlloca(
                 ctx_.taggedValueType(),
                 nullptr,
                 var_name
             );
-            alloca->setAlignment(Align(16));
+            cast<AllocaInst>(storage)->setAlignment(Align(16));
         }
         // Store happens at current position regardless of where alloca is
-        ctx_.builder().CreateStore(tagged_val, alloca);
+        ctx_.builder().CreateStore(tagged_val, storage);
 
-        (*symbol_table_)[var_name] = alloca;
+        (*symbol_table_)[var_name] = storage;
 
         // Register lambda if applicable
         if (is_lambda && last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
-            registerLambdaBinding(var_name, *last_generated_lambda_name_);
+            registerLambdaBinding(var_name, *last_generated_lambda_name_, assignment_converted);
         }
 
         eshkol_debug("let: bound %s", var_name.c_str());
@@ -885,6 +951,7 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
     std::vector<std::string> var_names;
     std::vector<const eshkol_ast_t*> val_asts;
     std::vector<bool> is_lambda;
+    std::vector<bool> assignment_converted;
 
     for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
         const eshkol_ast_t* binding = &op->let_op.bindings[i];
@@ -901,6 +968,27 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         var_names.push_back(var_name);
         val_asts.push_back(val_ast);
         is_lambda.push_back(binding_is_lambda);
+        bool mutated = astSetsVar(
+            is_var_set_callback_, op->let_op.body, var_name, callback_context_);
+        for (const eshkol_ast_t* other : val_asts) {
+            if (other && astSetsVar(is_var_set_callback_, other,
+                                    var_name, callback_context_)) {
+                mutated = true;
+            }
+        }
+        assignment_converted.push_back(mutated);
+    }
+    // All letrec bindings are visible during every initializer, so include
+    // the complete initializer set even when the mutation appears later than
+    // the binding currently being classified.
+    for (size_t i = 0; i < assignment_converted.size(); ++i) {
+        for (const eshkol_ast_t* value : val_asts) {
+            if (value && astSetsVar(is_var_set_callback_, value,
+                                    var_names[i], callback_context_)) {
+                assignment_converted[i] = true;
+                break;
+            }
+        }
     }
 
     Function* current_func = getCurrentFunction(current_function_);
@@ -931,17 +1019,24 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         const std::string& var_name = var_names[i];
 
         Value* storage = nullptr;
-        if (use_local_storage) {
+        std::vector<const eshkol_ast_t*> visible_scopes = val_asts;
+        visible_scopes.push_back(op->let_op.body);
+        const bool durable_cell = astNeedsDurableCellInScopes(
+            is_continuation_escape_callback_, visible_scopes, callback_context_);
+        const bool observed_after_mutation = astMayBeObservedInScopes(
+            is_var_observed_callback_, visible_scopes, var_name, callback_context_);
+        if (use_local_storage && assignment_converted[i] &&
+            eshkol_mutation_may_be_observed_after_mutation(
+                true, observed_after_mutation, durable_cell)) {
+            storage = allocateMutableCell(ctx_, var_name + "_letrec");
+            ctx_.builder().CreateStore(
+                ConstantAggregateZero::get(ctx_.taggedValueType()), storage);
+        } else if (use_local_storage) {
             AllocaInst* local = ctx_.builder().CreateAlloca(
-                ctx_.taggedValueType(),
-                nullptr,
-                var_name + "_letrec"
-            );
+                ctx_.taggedValueType(), nullptr, var_name + "_letrec");
             local->setAlignment(Align(16));
             ctx_.builder().CreateStore(
-                ConstantAggregateZero::get(ctx_.taggedValueType()),
-                local
-            );
+                ConstantAggregateZero::get(ctx_.taggedValueType()), local);
             storage = local;
             eshkol_debug("letrec: created local storage for %s", var_name.c_str());
         } else {
@@ -996,6 +1091,9 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
                 // Set up TCO context - the main codegen will use this during lambda generation
                 tco_context_.func_name = var_names[i];
                 tco_context_.enabled = true;
+                // LE-23: the binding's lambda does not exist yet; it claims
+                // ownership when codegen creates it.
+                tco_context_.owner_function = nullptr;
                 tco_context_.param_allocas.clear();
                 tco_context_.param_names.clear();
                 tco_context_.loop_header = nullptr;  // Will be set during lambda body generation
@@ -1005,6 +1103,7 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         if (use_local_recursive_context) {
             tco_context_.func_name = var_names[i];
             tco_context_.enabled = false;
+            tco_context_.owner_function = nullptr;  // LE-23: claimed by the binding's lambda
             tco_context_.param_allocas.clear();
             tco_context_.param_names.clear();
             tco_context_.loop_header = nullptr;
@@ -1017,6 +1116,7 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
         if (use_tco) {
             tco_context_.enabled = false;
             tco_context_.func_name = "";
+            tco_context_.owner_function = nullptr;  // LE-23
         } else if (use_local_recursive_context) {
             tco_context_ = saved_tco;
         }
@@ -1028,7 +1128,7 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
 
         // NORETURN SAFETY: If the lambda expression terminated the block (e.g., raise),
         // we cannot emit any more instructions. Stop processing bindings.
-        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) {
             break;
         }
 
@@ -1062,7 +1162,7 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
     for (size_t j = 0; j < lambda_indices.size(); j++) {
         size_t i = lambda_indices[j];
         if (!use_local_storage && !lambda_names[j].empty()) {
-            registerLambdaBinding(var_names[i], lambda_names[j]);
+            registerLambdaBinding(var_names[i], lambda_names[j], assignment_converted[i]);
             eshkol_debug("letrec: registered lambda binding %s -> %s", var_names[i].c_str(), lambda_names[j].c_str());
         }
     }
@@ -1084,7 +1184,7 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
 
         // NORETURN SAFETY: If the value expression terminated the block (e.g., raise),
         // we cannot emit any more instructions. Stop processing bindings.
-        if (ctx_.builder().GetInsertBlock()->getTerminator()) {
+        if (eshkol::llvm_compat::terminatorOrNull(ctx_.builder().GetInsertBlock())) {
             break;
         }
 
@@ -1239,21 +1339,55 @@ Value* BindingCodegen::letStar(const eshkol_operations_t* op) {
             continue;
         }
 
-        // Create alloca and store
-        AllocaInst* alloca = ctx_.builder().CreateAlloca(
-            ctx_.taggedValueType(),
-            nullptr,
-            var_name
-        );
-        alloca->setAlignment(Align(16));
-        ctx_.builder().CreateStore(tagged_val, alloca);
+        // In let*, this binding is visible to every later initializer and the
+        // body. Assignment conversion must therefore inspect both portions of
+        // that scope, not just the body.
+        bool assignment_converted = astSetsVar(
+            is_var_set_callback_, op->let_op.body, var_name, callback_context_);
+        for (uint64_t later = i + 1;
+             !assignment_converted && later < op->let_op.num_bindings; ++later) {
+            const eshkol_ast_t* later_binding = &op->let_op.bindings[later];
+            if (later_binding->type == ESHKOL_CONS && later_binding->cons_cell.cdr) {
+                assignment_converted = astSetsVar(
+                    is_var_set_callback_, later_binding->cons_cell.cdr,
+                    var_name, callback_context_);
+            }
+        }
+
+        Value* storage = nullptr;
+        std::vector<const eshkol_ast_t*> visible_scopes;
+        for (uint64_t later = i + 1;
+             later < op->let_op.num_bindings; ++later) {
+            const eshkol_ast_t* later_binding = &op->let_op.bindings[later];
+            if (later_binding->type == ESHKOL_CONS && later_binding->cons_cell.cdr)
+                visible_scopes.push_back(later_binding->cons_cell.cdr);
+        }
+        visible_scopes.push_back(op->let_op.body);
+        const bool durable_cell = astNeedsDurableCellInScopes(
+            is_continuation_escape_callback_, visible_scopes, callback_context_);
+        const bool observed_after_mutation = astMayBeObservedInScopes(
+            is_var_observed_callback_, visible_scopes, var_name, callback_context_);
+        if (assignment_converted &&
+            eshkol_mutation_may_be_observed_after_mutation(
+                true, observed_after_mutation, durable_cell)) {
+            storage = allocateMutableCell(ctx_, var_name);
+        } else {
+            AllocaInst* alloca = ctx_.builder().CreateAlloca(
+                ctx_.taggedValueType(),
+                nullptr,
+                var_name
+            );
+            alloca->setAlignment(Align(16));
+            storage = alloca;
+        }
+        ctx_.builder().CreateStore(tagged_val, storage);
 
         // Add to symbol table immediately (visible to subsequent bindings)
-        (*symbol_table_)[var_name] = alloca;
+        (*symbol_table_)[var_name] = storage;
 
         // Register lambda if applicable
         if (is_lambda && last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
-            registerLambdaBinding(var_name, *last_generated_lambda_name_);
+            registerLambdaBinding(var_name, *last_generated_lambda_name_, assignment_converted);
         }
 
         eshkol_debug("let*: bound %s", var_name.c_str());
@@ -1347,11 +1481,28 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
 
     // Collect all variable names for exclusion set
     std::vector<std::string> var_names;
+    std::vector<const eshkol_ast_t*> val_asts;
     for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
         const eshkol_ast_t* binding = &op->let_op.bindings[i];
         if (binding->type == ESHKOL_CONS && binding->cons_cell.car &&
             binding->cons_cell.car->type == ESHKOL_VAR && binding->cons_cell.car->variable.id) {
             var_names.push_back(binding->cons_cell.car->variable.id);
+            val_asts.push_back(binding->cons_cell.cdr);
+        }
+    }
+
+    std::vector<bool> assignment_converted(var_names.size(), false);
+    for (size_t i = 0; i < var_names.size(); ++i) {
+        assignment_converted[i] = astSetsVar(
+            is_var_set_callback_, op->let_op.body, var_names[i], callback_context_);
+        for (uint64_t j = 0; !assignment_converted[i] &&
+             j < op->let_op.num_bindings; ++j) {
+            const eshkol_ast_t* binding = &op->let_op.bindings[j];
+            if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
+                assignment_converted[i] = astSetsVar(
+                    is_var_set_callback_, binding->cons_cell.cdr,
+                    var_names[i], callback_context_);
+            }
         }
     }
 
@@ -1378,17 +1529,24 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         const std::string& var_name = var_names[i];
 
         Value* storage = nullptr;
-        if (use_local_storage) {
+        std::vector<const eshkol_ast_t*> visible_scopes = val_asts;
+        visible_scopes.push_back(op->let_op.body);
+        const bool durable_cell = astNeedsDurableCellInScopes(
+            is_continuation_escape_callback_, visible_scopes, callback_context_);
+        const bool observed_after_mutation = astMayBeObservedInScopes(
+            is_var_observed_callback_, visible_scopes, var_names[i], callback_context_);
+        if (use_local_storage && assignment_converted[i] &&
+            eshkol_mutation_may_be_observed_after_mutation(
+                true, observed_after_mutation, durable_cell)) {
+            storage = allocateMutableCell(ctx_, var_name + "_letrecstar");
+            ctx_.builder().CreateStore(
+                ConstantAggregateZero::get(ctx_.taggedValueType()), storage);
+        } else if (use_local_storage) {
             AllocaInst* local = ctx_.builder().CreateAlloca(
-                ctx_.taggedValueType(),
-                nullptr,
-                var_name + "_letrecstar"
-            );
+                ctx_.taggedValueType(), nullptr, var_name + "_letrecstar");
             local->setAlignment(Align(16));
             ctx_.builder().CreateStore(
-                ConstantAggregateZero::get(ctx_.taggedValueType()),
-                local
-            );
+                ConstantAggregateZero::get(ctx_.taggedValueType()), local);
             storage = local;
             eshkol_debug("letrec*: created local storage for %s", var_name.c_str());
         } else {
@@ -1433,6 +1591,7 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
                 eshkol_debug("TCO: Enabling tail call optimization for letrec* lambda %s", var_name.c_str());
                 tco_context_.func_name = var_name;
                 tco_context_.enabled = true;
+                tco_context_.owner_function = nullptr;  // LE-23: claimed by the binding's lambda
                 tco_context_.param_allocas.clear();
                 tco_context_.param_names.clear();
             }
@@ -1441,6 +1600,7 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         if (use_local_recursive_context) {
             tco_context_.func_name = var_name;
             tco_context_.enabled = false;
+            tco_context_.owner_function = nullptr;  // LE-23: claimed by the binding's lambda
             tco_context_.param_allocas.clear();
             tco_context_.param_names.clear();
             tco_context_.loop_header = nullptr;
@@ -1453,6 +1613,7 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         if (use_tco) {
             tco_context_.enabled = false;
             tco_context_.func_name = "";
+            tco_context_.owner_function = nullptr;  // LE-23
         } else if (use_local_recursive_context) {
             tco_context_ = saved_tco;
         }
@@ -1478,7 +1639,7 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         // bindings can use them. Local letrec* closures must stay indirect
         // through their activation-local storage cell.
         if (!use_local_storage && is_lambda && last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
-            registerLambdaBinding(var_name, *last_generated_lambda_name_);
+            registerLambdaBinding(var_name, *last_generated_lambda_name_, assignment_converted[i]);
             eshkol_debug("letrec*: registered lambda binding %s -> %s", var_name.c_str(), last_generated_lambda_name_->c_str());
         }
     }

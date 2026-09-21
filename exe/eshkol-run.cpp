@@ -17,6 +17,7 @@
 
 #include <eshkol/llvm_backend.h>
 #include <eshkol/module_visibility.h>
+#include <eshkol/frontend/ast_strings.h>
 #include "../lib/repl/repl_jit.h"
 #include "../lib/frontend/library_registry.h"
 
@@ -31,6 +32,7 @@
 #endif
 #include <errno.h>
 #include <filesystem>
+#include <eshkol/backend/link_probe.h>
 
 #include <fstream>
 #include <iterator>
@@ -1513,6 +1515,35 @@ private:
     std::vector<std::string> errors_;
     bool has_errors_;
 
+    struct WorkItem {
+        enum class Kind { AST, LET_BINDING, EXIT_SCOPE, UNBORROW };
+        Kind kind = Kind::AST;
+        const eshkol_ast_t* ast = nullptr;
+        const eshkol_operations_t* op = nullptr;
+        uint64_t index = 0;
+        std::string name;
+
+        static WorkItem astNode(const eshkol_ast_t* node) {
+            WorkItem item;
+            item.ast = node;
+            return item;
+        }
+        static WorkItem continuation(Kind kind, const eshkol_operations_t* op,
+                                     uint64_t index = 0) {
+            WorkItem item;
+            item.kind = kind;
+            item.op = op;
+            item.index = index;
+            return item;
+        }
+        static WorkItem unborrow(std::string name) {
+            WorkItem item;
+            item.kind = Kind::UNBORROW;
+            item.name = std::move(name);
+            return item;
+        }
+    };
+
     void pushScope(const std::string& name = "") {
         scope_stack_.push_back(Scope{{}, name, {}});
     }
@@ -1581,237 +1612,209 @@ private:
     void analyzeAST(const eshkol_ast_t* ast) {
         if (!ast) return;
 
-        switch (ast->type) {
-            case ESHKOL_VAR: {
-                // Variable use - check if it's been moved
-                std::string name = getVarName(ast);
-                if (!name.empty()) {
-                    VariableInfo* info = lookupVariable(name);
-                    if (info && info->state == State::MOVED) {
-                        reportError("Use of moved value '" + name + "'");
+        // Heap-backed records preserve post-child actions without recursive calls.
+        std::vector<WorkItem> work;
+        work.push_back(WorkItem::astNode(ast));
+
+        while (!work.empty()) {
+            WorkItem item = std::move(work.back());
+            work.pop_back();
+
+            if (item.kind == WorkItem::Kind::EXIT_SCOPE) {
+                checkScopeExit();
+                popScope();
+                continue;
+            }
+            if (item.kind == WorkItem::Kind::UNBORROW) {
+                currentScope().borrowed_vars.erase(item.name);
+                continue;
+            }
+            if (item.kind == WorkItem::Kind::LET_BINDING) {
+                if (item.index == item.op->let_op.num_bindings) {
+                    work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, item.op));
+                    work.push_back(WorkItem::astNode(item.op->let_op.body));
+                    continue;
+                }
+                const eshkol_ast_t* binding = &item.op->let_op.bindings[item.index];
+                work.push_back(WorkItem::continuation(
+                    WorkItem::Kind::LET_BINDING, item.op, item.index + 1));
+                if (binding->type == ESHKOL_CONS) {
+                    std::string var_name = getVarName(binding->cons_cell.car);
+                    bool is_owned = transfersOwnership(binding->cons_cell.cdr);
+                    if (!var_name.empty()) {
+                        currentScope().variables[var_name] = {
+                            is_owned ? State::OWNED : State::UNOWNED, "", is_owned
+                        };
                     }
+                    work.push_back(WorkItem::astNode(binding->cons_cell.cdr));
                 }
-                break;
+                continue;
             }
 
-            case ESHKOL_OP:
-                analyzeOperation(&ast->operation);
-                break;
-
-            case ESHKOL_CONS:
-                analyzeAST(ast->cons_cell.car);
-                analyzeAST(ast->cons_cell.cdr);
-                break;
-
-            default:
-                // Literals etc - nothing to analyze
-                break;
-        }
-    }
-
-    void analyzeOperation(const eshkol_operations_t* op) {
-        if (!op) return;
-
-        switch (op->op) {
-            case ESHKOL_DEFINE_OP: {
-                // Track defined variable
-                std::string name = op->define_op.name ? op->define_op.name : "";
-                if (!name.empty()) {
-                    // Check if the value transfers ownership (owned or move)
-                    bool is_owned = transfersOwnership(op->define_op.value);
-                    currentScope().variables[name] = {
-                        is_owned ? State::OWNED : State::UNOWNED,
-                        name,  // Use variable name as location identifier
-                        is_owned
-                    };
-                    // Analyze the value (this handles the move marking)
-                    analyzeAST(op->define_op.value);
-                }
-                break;
-            }
-
-            case ESHKOL_OWNED_OP: {
-                // (owned expr) - the result should be tracked as owned
-                // The actual tracking happens when bound to a variable
-                analyzeAST(op->owned_op.value);
-                break;
-            }
-
-            case ESHKOL_MOVE_OP: {
-                // (move var) - transfers ownership, marks var as moved
-                std::string var_name = getVarName(op->move_op.value);
-                if (!var_name.empty()) {
-                    VariableInfo* info = lookupVariable(var_name);
-                    if (info) {
-                        if (info->state == State::MOVED) {
-                            reportError("Double move of '" + var_name + "' - value already moved");
-                        } else if (isBorrowed(var_name)) {
-                            reportError("Cannot move '" + var_name + "' while it is borrowed");
-                        } else {
-                            info->state = State::MOVED;
+            if (!item.ast) continue;
+            const eshkol_ast_t* node = item.ast;
+            switch (node->type) {
+                case ESHKOL_VAR: {
+                    std::string name = getVarName(node);
+                    if (!name.empty()) {
+                        VariableInfo* info = lookupVariable(name);
+                        if (info && info->state == State::MOVED) {
+                            reportError("Use of moved value '" + name + "'");
                         }
                     }
-                } else {
-                    // Moving a non-variable expression - just analyze it
-                    analyzeAST(op->move_op.value);
+                    break;
                 }
-                break;
-            }
 
-            case ESHKOL_BORROW_OP: {
-                // (borrow var body...) - marks var as borrowed during body
-                std::string var_name = getVarName(op->borrow_op.value);
-                if (!var_name.empty()) {
-                    VariableInfo* info = lookupVariable(var_name);
-                    if (info && info->state == State::MOVED) {
-                        reportError("Cannot borrow moved value '" + var_name + "'");
-                    } else {
-                        // Mark as borrowed for this scope
-                        currentScope().borrowed_vars.insert(var_name);
-                    }
-                }
-                // Analyze body
-                for (uint64_t i = 0; i < op->borrow_op.num_body_exprs; i++) {
-                    analyzeAST(&op->borrow_op.body[i]);
-                }
-                // Unborrow at end
-                if (!var_name.empty()) {
-                    currentScope().borrowed_vars.erase(var_name);
-                }
-                break;
-            }
+                case ESHKOL_CONS:
+                    work.push_back(WorkItem::astNode(node->cons_cell.cdr));
+                    work.push_back(WorkItem::astNode(node->cons_cell.car));
+                    break;
 
-            case ESHKOL_LET_OP:
-            case ESHKOL_LET_STAR_OP: {
-                pushScope("let");
-                // Analyze bindings
-                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
-                    if (binding->type == ESHKOL_CONS) {
-                        std::string var_name = getVarName(binding->cons_cell.car);
-                        bool is_owned = transfersOwnership(binding->cons_cell.cdr);
-                        if (!var_name.empty()) {
-                            currentScope().variables[var_name] = {
-                                is_owned ? State::OWNED : State::UNOWNED,
-                                "",
-                                is_owned
-                            };
+                case ESHKOL_OP: {
+                    const eshkol_operations_t* op = &node->operation;
+                    switch (op->op) {
+                        case ESHKOL_DEFINE_OP: {
+                            std::string name = op->define_op.name ? op->define_op.name : "";
+                            if (!name.empty()) {
+                                bool is_owned = transfersOwnership(op->define_op.value);
+                                currentScope().variables[name] = {
+                                    is_owned ? State::OWNED : State::UNOWNED, name, is_owned
+                                };
+                                work.push_back(WorkItem::astNode(op->define_op.value));
+                            }
+                            break;
                         }
-                        analyzeAST(binding->cons_cell.cdr);
-                    }
-                }
-                // Analyze body
-                analyzeAST(op->let_op.body);
-                // Check scope exit
-                checkScopeExit();
-                popScope();
-                break;
-            }
 
-            case ESHKOL_LETREC_OP: {
-                pushScope("letrec");
-                // First pass: register all bindings
-                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
-                    if (binding->type == ESHKOL_CONS) {
-                        std::string var_name = getVarName(binding->cons_cell.car);
-                        bool is_owned = transfersOwnership(binding->cons_cell.cdr);
-                        if (!var_name.empty()) {
-                            currentScope().variables[var_name] = {
-                                is_owned ? State::OWNED : State::UNOWNED,
-                                "",
-                                is_owned
-                            };
+                        case ESHKOL_OWNED_OP:
+                            work.push_back(WorkItem::astNode(op->owned_op.value));
+                            break;
+
+                        case ESHKOL_MOVE_OP: {
+                            std::string var_name = getVarName(op->move_op.value);
+                            if (!var_name.empty()) {
+                                VariableInfo* info = lookupVariable(var_name);
+                                if (info) {
+                                    if (info->state == State::MOVED) {
+                                        reportError("Double move of '" + var_name + "' - value already moved");
+                                    } else if (isBorrowed(var_name)) {
+                                        reportError("Cannot move '" + var_name + "' while it is borrowed");
+                                    } else {
+                                        info->state = State::MOVED;
+                                    }
+                                }
+                            } else {
+                                work.push_back(WorkItem::astNode(op->move_op.value));
+                            }
+                            break;
                         }
+
+                        case ESHKOL_BORROW_OP: {
+                            std::string var_name = getVarName(op->borrow_op.value);
+                            if (!var_name.empty()) {
+                                VariableInfo* info = lookupVariable(var_name);
+                                if (info && info->state == State::MOVED) {
+                                    reportError("Cannot borrow moved value '" + var_name + "'");
+                                } else {
+                                    currentScope().borrowed_vars.insert(var_name);
+                                }
+                            }
+                            if (!var_name.empty()) work.push_back(WorkItem::unborrow(var_name));
+                            for (uint64_t i = op->borrow_op.num_body_exprs; i > 0; --i) {
+                                work.push_back(WorkItem::astNode(&op->borrow_op.body[i - 1]));
+                            }
+                            break;
+                        }
+
+                        case ESHKOL_LET_OP:
+                        case ESHKOL_LET_STAR_OP:
+                            pushScope("let");
+                            work.push_back(WorkItem::continuation(WorkItem::Kind::LET_BINDING, op));
+                            break;
+
+                        case ESHKOL_LETREC_OP: {
+                            pushScope("letrec");
+                            for (uint64_t i = 0; i < op->let_op.num_bindings; ++i) {
+                                const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                                if (binding->type == ESHKOL_CONS) {
+                                    std::string var_name = getVarName(binding->cons_cell.car);
+                                    bool is_owned = transfersOwnership(binding->cons_cell.cdr);
+                                    if (!var_name.empty()) {
+                                        currentScope().variables[var_name] = {
+                                            is_owned ? State::OWNED : State::UNOWNED, "", is_owned
+                                        };
+                                    }
+                                }
+                            }
+                            work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op));
+                            work.push_back(WorkItem::astNode(op->let_op.body));
+                            for (uint64_t i = op->let_op.num_bindings; i > 0; --i) {
+                                const eshkol_ast_t* binding = &op->let_op.bindings[i - 1];
+                                if (binding->type == ESHKOL_CONS) {
+                                    work.push_back(WorkItem::astNode(binding->cons_cell.cdr));
+                                }
+                            }
+                            break;
+                        }
+
+                        case ESHKOL_LAMBDA_OP:
+                            pushScope("lambda");
+                            for (uint64_t i = 0; i < op->lambda_op.num_params; ++i) {
+                                std::string param_name = getVarName(&op->lambda_op.parameters[i]);
+                                if (!param_name.empty()) {
+                                    currentScope().variables[param_name] = {State::UNOWNED, "", false};
+                                }
+                            }
+                            work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op));
+                            work.push_back(WorkItem::astNode(op->lambda_op.body));
+                            break;
+
+                        case ESHKOL_CALL_OP:
+                        case ESHKOL_IF_OP:
+                        case ESHKOL_COND_OP:
+                        case ESHKOL_AND_OP:
+                        case ESHKOL_OR_OP:
+                            for (uint64_t i = op->call_op.num_vars; i > 0; --i) {
+                                work.push_back(WorkItem::astNode(&op->call_op.variables[i - 1]));
+                            }
+                            work.push_back(WorkItem::astNode(op->call_op.func));
+                            break;
+
+                        case ESHKOL_SEQUENCE_OP:
+                            for (uint64_t i = op->sequence_op.num_expressions; i > 0; --i) {
+                                work.push_back(WorkItem::astNode(&op->sequence_op.expressions[i - 1]));
+                            }
+                            break;
+
+                        case ESHKOL_WITH_REGION_OP:
+                            pushScope("region");
+                            work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op));
+                            for (uint64_t i = op->with_region_op.num_body_exprs; i > 0; --i) {
+                                work.push_back(WorkItem::astNode(&op->with_region_op.body[i - 1]));
+                            }
+                            break;
+
+                        case ESHKOL_SHARED_OP:
+                            work.push_back(WorkItem::astNode(op->shared_op.value));
+                            break;
+
+                        case ESHKOL_WEAK_REF_OP:
+                            work.push_back(WorkItem::astNode(op->weak_ref_op.value));
+                            break;
+
+                        case ESHKOL_SET_OP:
+                            work.push_back(WorkItem::astNode(op->set_op.value));
+                            break;
+
+                        case ESHKOL_QUOTE_OP:
+                        default:
+                            break;
                     }
+                    break;
                 }
-                // Second pass: analyze values
-                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
-                    if (binding->type == ESHKOL_CONS) {
-                        analyzeAST(binding->cons_cell.cdr);
-                    }
-                }
-                // Analyze body
-                analyzeAST(op->let_op.body);
-                checkScopeExit();
-                popScope();
-                break;
+
+                default:
+                    break;
             }
-
-            case ESHKOL_LAMBDA_OP: {
-                pushScope("lambda");
-                // Add parameters to scope
-                for (uint64_t i = 0; i < op->lambda_op.num_params; i++) {
-                    std::string param_name = getVarName(&op->lambda_op.parameters[i]);
-                    if (!param_name.empty()) {
-                        currentScope().variables[param_name] = {State::UNOWNED, "", false};
-                    }
-                }
-                // Analyze body
-                analyzeAST(op->lambda_op.body);
-                checkScopeExit();
-                popScope();
-                break;
-            }
-
-            case ESHKOL_CALL_OP: {
-                // Analyze function and arguments
-                analyzeAST(op->call_op.func);
-                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    analyzeAST(&op->call_op.variables[i]);
-                }
-                break;
-            }
-
-            case ESHKOL_IF_OP:
-            case ESHKOL_COND_OP:
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP: {
-                // These use call_op structure
-                analyzeAST(op->call_op.func);
-                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    analyzeAST(&op->call_op.variables[i]);
-                }
-                break;
-            }
-
-            case ESHKOL_SEQUENCE_OP: {
-                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-                    analyzeAST(&op->sequence_op.expressions[i]);
-                }
-                break;
-            }
-
-            case ESHKOL_WITH_REGION_OP: {
-                pushScope("region");
-                for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
-                    analyzeAST(&op->with_region_op.body[i]);
-                }
-                checkScopeExit();
-                popScope();
-                break;
-            }
-
-            case ESHKOL_SHARED_OP:
-                analyzeAST(op->shared_op.value);
-                break;
-
-            case ESHKOL_WEAK_REF_OP:
-                analyzeAST(op->weak_ref_op.value);
-                break;
-
-            case ESHKOL_SET_OP:
-                analyzeAST(op->set_op.value);
-                break;
-
-            case ESHKOL_QUOTE_OP:
-                // Quoted data - no ownership analysis needed
-                break;
-
-            default:
-                // Other ops - nothing special to do
-                break;
         }
     }
 
@@ -2018,261 +2021,269 @@ private:
     // Generate unique name for anonymous values
     int anon_counter_ = 0;
 
+    struct WorkItem {
+        enum class Kind { AST, LET_BINDING, EXIT_SCOPE, LET_EXIT, LAMBDA_EXIT };
+        Kind kind = Kind::AST;
+        const eshkol_ast_t* ast = nullptr;
+        const eshkol_operations_t* op = nullptr;
+        uint64_t index = 0;
+        bool previous_in_lambda = false;
+        std::set<std::string> previous_captured;
+
+        static WorkItem astNode(const eshkol_ast_t* node) {
+            WorkItem item;
+            item.ast = node;
+            return item;
+        }
+        static WorkItem continuation(Kind kind, const eshkol_operations_t* op,
+                                     uint64_t index = 0) {
+            WorkItem item;
+            item.kind = kind;
+            item.op = op;
+            item.index = index;
+            return item;
+        }
+        static WorkItem lambdaExit(const eshkol_operations_t* op, bool was_in_lambda,
+                                   std::set<std::string> previous_captured) {
+            WorkItem item;
+            item.kind = Kind::LAMBDA_EXIT;
+            item.op = op;
+            item.previous_in_lambda = was_in_lambda;
+            item.previous_captured = std::move(previous_captured);
+            return item;
+        }
+    };
+
     void analyzeAST(const eshkol_ast_t* ast) {
         if (!ast) return;
 
-        switch (ast->type) {
-            case ESHKOL_VAR: {
-                std::string name = getVarName(ast);
-                // Check if this variable is from an outer scope (closure capture)
-                if (in_lambda_ && !name.empty()) {
-                    // Check if it's defined in an outer scope
-                    for (int i = scope_stack_.size() - 2; i >= 0; i--) {
-                        if (scope_stack_[i].local_values.count(name) > 0) {
-                            // This is a capture!
-                            markClosureCaptured(name);
-                            captured_by_current_lambda_.insert(name);
-                            break;
+        // Heap-backed records preserve scope and lambda cleanup without recursion.
+        std::vector<WorkItem> work;
+        work.push_back(WorkItem::astNode(ast));
+
+        while (!work.empty()) {
+            WorkItem item = std::move(work.back());
+            work.pop_back();
+
+            if (item.kind == WorkItem::Kind::EXIT_SCOPE) {
+                popScope();
+                continue;
+            }
+            if (item.kind == WorkItem::Kind::LET_EXIT) {
+                std::string body_name = getVarName(item.ast);
+                if (!body_name.empty() && currentScope().local_values.count(body_name) > 0) {
+                    markAsReturn(body_name);
+                }
+                popScope();
+                continue;
+            }
+            if (item.kind == WorkItem::Kind::LAMBDA_EXIT) {
+                std::string body_name = getVarName(item.op->lambda_op.body);
+                if (!body_name.empty() && currentScope().local_values.count(body_name) > 0) {
+                    markAsReturn(body_name);
+                }
+                popScope();
+                captured_by_current_lambda_ = std::move(item.previous_captured);
+                in_lambda_ = item.previous_in_lambda;
+                continue;
+            }
+            if (item.kind == WorkItem::Kind::LET_BINDING) {
+                if (item.index == item.op->let_op.num_bindings) {
+                    work.push_back(WorkItem::continuation(WorkItem::Kind::LET_EXIT, item.op));
+                    work.back().ast = item.op->let_op.body;
+                    work.push_back(WorkItem::astNode(item.op->let_op.body));
+                    continue;
+                }
+                const eshkol_ast_t* binding = &item.op->let_op.bindings[item.index];
+                work.push_back(WorkItem::continuation(
+                    WorkItem::Kind::LET_BINDING, item.op, item.index + 1));
+                if (binding->type == ESHKOL_CONS) {
+                    std::string var_name = getVarName(binding->cons_cell.car);
+                    if (!var_name.empty()) {
+                        registerValue(var_name);
+                        std::string value_name = getVarName(binding->cons_cell.cdr);
+                        if (!value_name.empty()) {
+                            recordFlow(value_name, var_name);
                         }
                     }
+                    work.push_back(WorkItem::astNode(binding->cons_cell.cdr));
                 }
-                break;
+                continue;
             }
 
-            case ESHKOL_OP:
-                analyzeOperation(&ast->operation);
-                break;
-
-            case ESHKOL_CONS:
-                analyzeAST(ast->cons_cell.car);
-                analyzeAST(ast->cons_cell.cdr);
-                break;
-
-            default:
-                break;
-        }
-    }
-
-    void analyzeOperation(const eshkol_operations_t* op) {
-        if (!op) return;
-
-        switch (op->op) {
-            case ESHKOL_DEFINE_OP: {
-                std::string name = op->define_op.name ? op->define_op.name : "";
-                if (!name.empty()) {
-                    registerValue(name);
-
-                    // If at global scope, mark as globally stored
-                    if (current_depth_ == 1) {  // depth 1 is global scope
-                        markGloballyStored(name);
-                    }
-
-                    // Track flow from value to variable
-                    std::string value_name = getVarName(op->define_op.value);
-                    if (!value_name.empty()) {
-                        recordFlow(value_name, name);
-                    }
-
-                    analyzeAST(op->define_op.value);
-                }
-                break;
-            }
-
-            case ESHKOL_LET_OP:
-            case ESHKOL_LET_STAR_OP: {
-                pushScope("let");
-
-                // Analyze bindings
-                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
-                    if (binding->type == ESHKOL_CONS) {
-                        std::string var_name = getVarName(binding->cons_cell.car);
-                        if (!var_name.empty()) {
-                            registerValue(var_name);
-
-                            std::string value_name = getVarName(binding->cons_cell.cdr);
-                            if (!value_name.empty()) {
-                                recordFlow(value_name, var_name);
+            if (!item.ast) continue;
+            const eshkol_ast_t* node = item.ast;
+            switch (node->type) {
+                case ESHKOL_VAR: {
+                    std::string name = getVarName(node);
+                    if (in_lambda_ && !name.empty()) {
+                        for (int i = static_cast<int>(scope_stack_.size()) - 2; i >= 0; --i) {
+                            if (scope_stack_[i].local_values.count(name) > 0) {
+                                markClosureCaptured(name);
+                                captured_by_current_lambda_.insert(name);
+                                break;
                             }
                         }
-                        analyzeAST(binding->cons_cell.cdr);
                     }
+                    break;
                 }
 
-                // Analyze body - the result escapes if this is the return value
-                analyzeAST(op->let_op.body);
+                case ESHKOL_CONS:
+                    work.push_back(WorkItem::astNode(node->cons_cell.cdr));
+                    work.push_back(WorkItem::astNode(node->cons_cell.car));
+                    break;
 
-                // Check if body returns a local value (return escape)
-                std::string body_name = getVarName(op->let_op.body);
-                if (!body_name.empty() && currentScope().local_values.count(body_name) > 0) {
-                    // This local value is returned from the let
-                    markAsReturn(body_name);
-                }
-
-                popScope();
-                break;
-            }
-
-            case ESHKOL_LETREC_OP: {
-                pushScope("letrec");
-
-                // First pass: register all bindings
-                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
-                    if (binding->type == ESHKOL_CONS) {
-                        std::string var_name = getVarName(binding->cons_cell.car);
-                        if (!var_name.empty()) {
-                            registerValue(var_name);
-                        }
-                    }
-                }
-
-                // Second pass: analyze values
-                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
-                    if (binding->type == ESHKOL_CONS) {
-                        analyzeAST(binding->cons_cell.cdr);
-                    }
-                }
-
-                analyzeAST(op->let_op.body);
-                popScope();
-                break;
-            }
-
-            case ESHKOL_LAMBDA_OP: {
-                bool was_in_lambda = in_lambda_;
-                in_lambda_ = true;
-                std::set<std::string> prev_captured = captured_by_current_lambda_;
-                captured_by_current_lambda_.clear();
-
-                pushScope("lambda");
-
-                // Register parameters
-                for (uint64_t i = 0; i < op->lambda_op.num_params; i++) {
-                    std::string param_name = getVarName(&op->lambda_op.parameters[i]);
-                    if (!param_name.empty()) {
-                        registerValue(param_name);
-                    }
-                }
-
-                // Analyze body
-                analyzeAST(op->lambda_op.body);
-
-                // Check if body returns a local value
-                std::string body_name = getVarName(op->lambda_op.body);
-                if (!body_name.empty() && currentScope().local_values.count(body_name) > 0) {
-                    markAsReturn(body_name);
-                }
-
-                popScope();
-
-                captured_by_current_lambda_ = prev_captured;
-                in_lambda_ = was_in_lambda;
-                break;
-            }
-
-            case ESHKOL_CALL_OP: {
-                analyzeAST(op->call_op.func);
-                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    analyzeAST(&op->call_op.variables[i]);
-                }
-                break;
-            }
-
-            case ESHKOL_SET_OP: {
-                // set! to a variable - if the target is in an outer scope,
-                // the value escapes
-                std::string target = op->set_op.name ? op->set_op.name : "";
-
-                if (!target.empty()) {
-                    // Check if target is in a parent scope
-                    bool in_outer_scope = false;
-                    for (int i = scope_stack_.size() - 2; i >= 0; i--) {
-                        if (scope_stack_[i].local_values.count(target) > 0) {
-                            in_outer_scope = true;
+                case ESHKOL_OP: {
+                    const eshkol_operations_t* op = &node->operation;
+                    switch (op->op) {
+                        case ESHKOL_DEFINE_OP: {
+                            std::string name = op->define_op.name ? op->define_op.name : "";
+                            if (!name.empty()) {
+                                registerValue(name);
+                                if (current_depth_ == 1) {
+                                    markGloballyStored(name);
+                                }
+                                std::string value_name = getVarName(op->define_op.value);
+                                if (!value_name.empty()) {
+                                    recordFlow(value_name, name);
+                                }
+                                work.push_back(WorkItem::astNode(op->define_op.value));
+                            }
                             break;
                         }
-                    }
 
-                    if (in_outer_scope || current_depth_ == 1) {
-                        // Value escapes via mutation
-                        std::string value_name = getVarName(op->set_op.value);
-                        if (!value_name.empty()) {
-                            markGloballyStored(value_name);
+                        case ESHKOL_LET_OP:
+                        case ESHKOL_LET_STAR_OP:
+                            pushScope("let");
+                            work.push_back(WorkItem::continuation(WorkItem::Kind::LET_BINDING, op));
+                            break;
+
+                        case ESHKOL_LETREC_OP: {
+                            pushScope("letrec");
+                            for (uint64_t i = 0; i < op->let_op.num_bindings; ++i) {
+                                const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                                if (binding->type == ESHKOL_CONS) {
+                                    std::string var_name = getVarName(binding->cons_cell.car);
+                                    if (!var_name.empty()) registerValue(var_name);
+                                }
+                            }
+                            work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op));
+                            work.push_back(WorkItem::astNode(op->let_op.body));
+                            for (uint64_t i = op->let_op.num_bindings; i > 0; --i) {
+                                const eshkol_ast_t* binding = &op->let_op.bindings[i - 1];
+                                if (binding->type == ESHKOL_CONS) {
+                                    work.push_back(WorkItem::astNode(binding->cons_cell.cdr));
+                                }
+                            }
+                            break;
                         }
+
+                        case ESHKOL_LAMBDA_OP: {
+                            bool was_in_lambda = in_lambda_;
+                            std::set<std::string> previous_captured =
+                                std::move(captured_by_current_lambda_);
+                            captured_by_current_lambda_.clear();
+                            in_lambda_ = true;
+
+                            pushScope("lambda");
+                            for (uint64_t i = 0; i < op->lambda_op.num_params; ++i) {
+                                std::string param_name = getVarName(&op->lambda_op.parameters[i]);
+                                if (!param_name.empty()) registerValue(param_name);
+                            }
+
+                            work.push_back(WorkItem::lambdaExit(
+                                op, was_in_lambda, std::move(previous_captured)));
+                            work.push_back(WorkItem::astNode(op->lambda_op.body));
+                            break;
+                        }
+
+                        case ESHKOL_CALL_OP:
+                            for (uint64_t i = op->call_op.num_vars; i > 0; --i) {
+                                work.push_back(WorkItem::astNode(&op->call_op.variables[i - 1]));
+                            }
+                            work.push_back(WorkItem::astNode(op->call_op.func));
+                            break;
+
+                        case ESHKOL_SET_OP: {
+                            std::string target = op->set_op.name ? op->set_op.name : "";
+                            if (!target.empty()) {
+                                bool in_outer_scope = false;
+                                for (int i = static_cast<int>(scope_stack_.size()) - 2; i >= 0; --i) {
+                                    if (scope_stack_[i].local_values.count(target) > 0) {
+                                        in_outer_scope = true;
+                                        break;
+                                    }
+                                }
+                                if (in_outer_scope || current_depth_ == 1) {
+                                    std::string value_name = getVarName(op->set_op.value);
+                                    if (!value_name.empty()) markGloballyStored(value_name);
+                                }
+                                std::string value_name = getVarName(op->set_op.value);
+                                if (!value_name.empty()) recordFlow(value_name, target);
+                            }
+                            work.push_back(WorkItem::astNode(op->set_op.value));
+                            break;
+                        }
+
+                        case ESHKOL_SEQUENCE_OP:
+                            for (uint64_t i = op->sequence_op.num_expressions; i > 0; --i) {
+                                work.push_back(WorkItem::astNode(&op->sequence_op.expressions[i - 1]));
+                            }
+                            break;
+
+                        case ESHKOL_IF_OP:
+                        case ESHKOL_COND_OP:
+                        case ESHKOL_AND_OP:
+                        case ESHKOL_OR_OP:
+                            for (uint64_t i = op->call_op.num_vars; i > 0; --i) {
+                                work.push_back(WorkItem::astNode(&op->call_op.variables[i - 1]));
+                            }
+                            work.push_back(WorkItem::astNode(op->call_op.func));
+                            break;
+
+                        case ESHKOL_WITH_REGION_OP:
+                            pushScope("region");
+                            work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op));
+                            for (uint64_t i = op->with_region_op.num_body_exprs; i > 0; --i) {
+                                work.push_back(WorkItem::astNode(&op->with_region_op.body[i - 1]));
+                            }
+                            break;
+
+                        case ESHKOL_OWNED_OP:
+                            work.push_back(WorkItem::astNode(op->owned_op.value));
+                            break;
+
+                        case ESHKOL_MOVE_OP:
+                            work.push_back(WorkItem::astNode(op->move_op.value));
+                            break;
+
+                        case ESHKOL_BORROW_OP:
+                            for (uint64_t i = op->borrow_op.num_body_exprs; i > 0; --i) {
+                                work.push_back(WorkItem::astNode(&op->borrow_op.body[i - 1]));
+                            }
+                            work.push_back(WorkItem::astNode(op->borrow_op.value));
+                            break;
+
+                        case ESHKOL_SHARED_OP: {
+                            std::string value_name = getVarName(op->shared_op.value);
+                            if (!value_name.empty()) markGloballyStored(value_name);
+                            work.push_back(WorkItem::astNode(op->shared_op.value));
+                            break;
+                        }
+
+                        case ESHKOL_WEAK_REF_OP:
+                            work.push_back(WorkItem::astNode(op->weak_ref_op.value));
+                            break;
+
+                        default:
+                            break;
                     }
-
-                    std::string value_name = getVarName(op->set_op.value);
-                    if (!value_name.empty()) {
-                        recordFlow(value_name, target);
-                    }
+                    break;
                 }
 
-                analyzeAST(op->set_op.value);
-                break;
+                default:
+                    break;
             }
-
-            case ESHKOL_SEQUENCE_OP: {
-                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-                    analyzeAST(&op->sequence_op.expressions[i]);
-                }
-                break;
-            }
-
-            case ESHKOL_IF_OP:
-            case ESHKOL_COND_OP:
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP: {
-                analyzeAST(op->call_op.func);
-                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    analyzeAST(&op->call_op.variables[i]);
-                }
-                break;
-            }
-
-            case ESHKOL_WITH_REGION_OP: {
-                pushScope("region");
-                for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
-                    analyzeAST(&op->with_region_op.body[i]);
-                }
-                popScope();
-                break;
-            }
-
-            case ESHKOL_OWNED_OP:
-                analyzeAST(op->owned_op.value);
-                break;
-
-            case ESHKOL_MOVE_OP:
-                analyzeAST(op->move_op.value);
-                break;
-
-            case ESHKOL_BORROW_OP: {
-                analyzeAST(op->borrow_op.value);
-                for (uint64_t i = 0; i < op->borrow_op.num_body_exprs; i++) {
-                    analyzeAST(&op->borrow_op.body[i]);
-                }
-                break;
-            }
-
-            case ESHKOL_SHARED_OP: {
-                // (shared expr) - explicitly requests shared allocation
-                std::string value_name = getVarName(op->shared_op.value);
-                if (!value_name.empty()) {
-                    // Mark as globally stored to force shared allocation
-                    markGloballyStored(value_name);
-                }
-                analyzeAST(op->shared_op.value);
-                break;
-            }
-
-            case ESHKOL_WEAK_REF_OP:
-                analyzeAST(op->weak_ref_op.value);
-                break;
-
-            default:
-                break;
         }
     }
 
@@ -2356,6 +2367,8 @@ static bool g_source_parse_failed = false;
 // codegen so a genuinely missing require is fatal and nothing is written. Found
 // by the P8 escape-closure fault-injection matrix.
 static bool g_module_load_failed = false;
+/* Import aliases are semantic bindings, not generated Scheme definitions. */
+static std::map<std::string, std::string> g_import_bindings;
 
 static void print_help(int x = 0)
 {
@@ -3222,53 +3235,11 @@ static std::set<std::string> collect_defined_symbols(const std::vector<eshkol_as
     return defined;
 }
 
-static char* copy_ast_cstr(const std::string& value) {
-    char* out = new char[value.size() + 1];
-    if (out) {
-        memcpy(out, value.c_str(), value.size() + 1);
-    }
-    return out;
-}
-
-static eshkol_ast_t make_runtime_var_ast(const std::string& name,
-                                         uint32_t line,
-                                         uint32_t column) {
-    eshkol_ast_t ast = {};
-    ast.type = ESHKOL_VAR;
-    ast.line = line;
-    ast.column = column;
-    ast.variable.id = copy_ast_cstr(name);
-    ast.variable.data = nullptr;
-    return ast;
-}
-
-static eshkol_ast_t make_runtime_define_alias_ast(const std::string& alias,
-                                                  const std::string& source,
-                                                  uint32_t line,
-                                                  uint32_t column) {
-    eshkol_ast_t ast = {};
-    ast.type = ESHKOL_OP;
-    ast.line = line;
-    ast.column = column;
-    ast.operation.op = ESHKOL_DEFINE_OP;
-    ast.operation.define_op.name = copy_ast_cstr(alias);
-    ast.operation.define_op.value = new eshkol_ast_t;
-    *ast.operation.define_op.value = make_runtime_var_ast(source, line, column);
-    return ast;
-}
-
-static void append_r7rs_prefix_aliases_for_module(const eshkol_ast_t& require_ast,
-                                                  uint64_t module_index,
-                                                  const std::set<std::string>& exports,
-                                                  std::vector<eshkol_ast_t>& out) {
+static void register_r7rs_import_bindings(const eshkol_ast_t& require_ast,
+                                          uint64_t module_index,
+                                          const std::set<std::string>& exports) {
     const auto& require_op = require_ast.operation.require_op;
-    if (!require_op.import_prefixes ||
-        module_index >= require_op.num_modules ||
-        !require_op.import_prefixes[module_index] ||
-        require_op.import_prefixes[module_index][0] == '\0') {
-        return;
-    }
-
+    if (module_index >= require_op.num_modules) return;
     std::set<std::string> excepts;
     if (require_op.import_except_names &&
         require_op.num_import_except_names &&
@@ -3281,13 +3252,34 @@ static void append_r7rs_prefix_aliases_for_module(const eshkol_ast_t& require_as
         }
     }
 
-    const std::string prefix = require_op.import_prefixes[module_index];
-    for (const auto& exported : exports) {
+    std::set<std::string> selected;
+    if (require_op.import_only_names && require_op.num_import_only_names &&
+        require_op.import_only_names[module_index]) {
+        for (uint64_t i = 0; i < require_op.num_import_only_names[module_index]; ++i) {
+            const char* name = require_op.import_only_names[module_index][i];
+            if (name && exports.count(name)) selected.insert(name);
+        }
+    } else {
+        selected = exports;
+    }
+    const std::string prefix = require_op.import_prefixes &&
+        require_op.import_prefixes[module_index]
+        ? require_op.import_prefixes[module_index] : std::string();
+    for (const auto& exported : selected) {
         if (excepts.count(exported) > 0) continue;
-        out.push_back(make_runtime_define_alias_ast(prefix + exported,
-                                                    exported,
-                                                    require_ast.line,
-                                                    require_ast.column));
+        std::string imported = exported;
+        if (require_op.import_rename_from && require_op.import_rename_to &&
+            require_op.num_import_renames && require_op.import_rename_from[module_index]) {
+            for (uint64_t i = 0; i < require_op.num_import_renames[module_index]; ++i) {
+                if (require_op.import_rename_from[module_index][i] &&
+                    std::string(require_op.import_rename_from[module_index][i]) == exported) {
+                    imported = require_op.import_rename_to[module_index][i];
+                    break;
+                }
+            }
+        }
+        const std::string alias = prefix + imported;
+        if (alias != exported) g_import_bindings[alias] = exported;
     }
 }
 
@@ -3315,8 +3307,7 @@ static void append_r7rs_prefix_aliases_for_module(const eshkol_ast_t& require_as
  *   prefix import of a same-unit library.
  * @return The number of module entries left for the filesystem/precompiled path.
  */
-static uint64_t resolve_unit_libraries_in_require(eshkol_ast_t& require_ast,
-                                                  std::vector<eshkol_ast_t>& aliases)
+static uint64_t resolve_unit_libraries_in_require(eshkol_ast_t& require_ast)
 {
     auto& require_op = require_ast.operation.require_op;
     uint64_t kept = 0;
@@ -3330,7 +3321,7 @@ static uint64_t resolve_unit_libraries_in_require(eshkol_ast_t& require_ast,
             // Record the surface so a later duplicate import of the same
             // library sees the same exports a file-backed module would.
             g_symbol_table.registerModuleExports(raw_name, *unit_exports);
-            append_r7rs_prefix_aliases_for_module(require_ast, i, *unit_exports, aliases);
+            register_r7rs_import_bindings(require_ast, i, *unit_exports);
             continue;
         }
 
@@ -3363,15 +3354,13 @@ static uint64_t resolve_unit_libraries_in_require(eshkol_ast_t& require_ast,
  * happen in the order the forms were written, which is what makes a library
  * usable below its definition and unusable above it.
  */
-static void resolve_unit_libraries_in_form(eshkol_ast_t& form,
-                                           std::vector<eshkol_ast_t>& aliases)
+static void resolve_unit_libraries_in_form(eshkol_ast_t& form)
 {
     if (form.type != ESHKOL_OP) return;
 
     if (form.operation.op == ESHKOL_SEQUENCE_OP) {
         for (uint64_t i = 0; i < form.operation.sequence_op.num_expressions; i++) {
-            resolve_unit_libraries_in_form(form.operation.sequence_op.expressions[i],
-                                           aliases);
+            resolve_unit_libraries_in_form(form.operation.sequence_op.expressions[i]);
         }
         return;
     }
@@ -3380,7 +3369,7 @@ static void resolve_unit_libraries_in_form(eshkol_ast_t& form,
         return;
     }
     if (form.operation.op == ESHKOL_REQUIRE_OP) {
-        resolve_unit_libraries_in_require(form, aliases);
+        resolve_unit_libraries_in_require(form);
     }
 }
 
@@ -3398,8 +3387,7 @@ static void update_ast_references(eshkol_ast_t* ast,
             if (ast->variable.id) {
                 auto it = rename_map.find(ast->variable.id);
                 if (it != rename_map.end()) {
-                    delete[] ast->variable.id;
-                    ast->variable.id = strdup(it->second.c_str());
+                    ast->variable.id = eshkol_ast_string_copy(it->second);
                 }
             }
             break;
@@ -3467,8 +3455,7 @@ static void update_ast_references(eshkol_ast_t* ast,
                     if (ast->operation.set_op.name) {
                         auto it = rename_map.find(ast->operation.set_op.name);
                         if (it != rename_map.end()) {
-                            delete[] ast->operation.set_op.name;
-                            ast->operation.set_op.name = strdup(it->second.c_str());
+                            ast->operation.set_op.name = eshkol_ast_string_copy(it->second);
                         }
                     }
                     update_ast_references(ast->operation.set_op.value, rename_map);
@@ -3789,8 +3776,7 @@ static void rename_private_symbols(std::vector<eshkol_ast_t>& asts,
             if (ast.operation.define_op.name) {
                 auto it = rename_map.find(ast.operation.define_op.name);
                 if (it != rename_map.end()) {
-                    delete[] ast.operation.define_op.name;
-                    ast.operation.define_op.name = strdup(it->second.c_str());
+                    ast.operation.define_op.name = eshkol_ast_string_copy(it->second);
                 }
             }
         }
@@ -3826,7 +3812,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
             // have to come from the precompiled set or the search path. Their
             // prefix aliases land in `new_asts`, i.e. at the import's own
             // position, which is below the library body they name.
-            resolve_unit_libraries_in_require(ast, new_asts);
+            resolve_unit_libraries_in_require(ast);
 
             // Process each required module
             for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
@@ -3928,7 +3914,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                             }
                         }
                     }
-                    append_r7rs_prefix_aliases_for_module(ast, i, r7rs_alias_sources, required_asts);
+                    register_r7rs_import_bindings(ast, i, r7rs_alias_sources);
                     continue;
                 }
 
@@ -3992,8 +3978,8 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
 
                 // Skip if module was already loaded (detected by load_file_asts)
                 if (module_asts.empty()) {
-                    append_r7rs_prefix_aliases_for_module(
-                        ast, i, g_symbol_table.exportsFor(module_name), required_asts);
+                    register_r7rs_import_bindings(
+                        ast, i, g_symbol_table.exportsFor(module_name));
                     g_loading_modules.erase(norm_path);
                     continue;
                 }
@@ -4037,7 +4023,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                 for (auto& module_ast : module_asts) {
                     required_asts.push_back(module_ast);
                 }
-                append_r7rs_prefix_aliases_for_module(ast, i, r7rs_alias_sources, required_asts);
+                register_r7rs_import_bindings(ast, i, r7rs_alias_sources);
 
                 // Remove from loading stack (module fully processed)
                 g_loading_modules.erase(norm_path);
@@ -4062,6 +4048,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
             }
             // Don't add provide to final ASTs
         } else {
+            update_ast_references(&ast, g_import_bindings);
             new_asts.push_back(ast);
         }
     }
@@ -4092,12 +4079,13 @@ extern "C" {
 /* LeakSanitizer policy for eshkol-run.
  *
  * eshkol-run is a one-shot batch compiler: parse → typecheck → codegen
- * → emit object → exit. AST nodes (every `new eshkol_ast_t[N]` and
- * `new char[N]` in lib/frontend/parser.cpp) are owned by the AST tree
- * and intentionally never freed — process exit reaps them. This is
- * the same convention clang, rustc, and gcc use for their internal
- * IRs, since walking and freeing a multi-hundred-thousand-node AST at
- * exit is pure busywork on the way to _exit().
+ * → emit object → exit. AST node arrays (every `new eshkol_ast_t[N]` in
+ * lib/frontend/parser.cpp) are owned by the AST tree and intentionally
+ * never freed — process exit reaps them, the convention clang, rustc and
+ * gcc use for their internal IRs. AST *string payloads* are different:
+ * they have one owner, the rooted arena in inc/eshkol/frontend/ast_strings.h
+ * (ADR-0021), which main() tears down on return, so none of them is a leak
+ * or needs a suppression.
  *
  * This hook USED TO return "exitcode=0", which made LeakSanitizer print
  * exit-time leaks without failing on them. The intent was to keep the
@@ -4184,12 +4172,20 @@ static const char* intern_driver_string(const std::string& s) {
  * `(require stdlib)` AST node needs a stable array-of-one module name. */
 static char** intern_driver_module_name_array(const std::string& name) {
     static std::deque<std::vector<char*>> storage;
-    storage.push_back({const_cast<char*>(intern_driver_string(name))});
+    // The element is an AST string payload, so its text comes from the AST
+    // string owner like every other name on a node; only the array is here.
+    storage.push_back({eshkol_ast_string_copy(name)});
     return storage.back().data();
 }
 
+
+
 int main(int argc, char **argv)
 {
+    // First local, so it is destroyed last: every AST consumer in main() has
+    // finished before the AST string owner is released (ADR-0021).
+    eshkol::frontend::AstStringsTeardownOnReturn ast_strings_teardown;
+
     __eshkol_argc = (int32_t)argc;
     __eshkol_argv = argv;
 
@@ -4882,20 +4878,17 @@ int main(int argc, char **argv)
             eshkol::library_registry::planUnit(file_asts);
 
             for (auto& ast : file_asts) {
-                std::vector<eshkol_ast_t> unit_aliases;
-                resolve_unit_libraries_in_form(ast, unit_aliases);
+                resolve_unit_libraries_in_form(ast);
 
                 bool is_load = (ast.type == ESHKOL_OP &&
                     (ast.operation.op == ESHKOL_REQUIRE_OP ||
                      ast.operation.op == ESHKOL_IMPORT_OP));
 
                 // Fully satisfied by this compilation unit: the library's
-                // bindings are already among the batched forms above, so there
-                // is nothing left to load. Its prefix aliases still go into the
-                // batch, below the definitions they name.
+                // bindings are already among the batched forms above. Import
+                // modifiers are binding metadata, not generated definitions.
                 if (is_load && ast.operation.op == ESHKOL_REQUIRE_OP &&
                     ast.operation.require_op.num_modules == 0) {
-                    for (auto& alias : unit_aliases) batch.push_back(alias);
                     continue;
                 }
 
@@ -4910,12 +4903,9 @@ int main(int argc, char **argv)
                         return 1;
                     }
                 } else {
+                    update_ast_references(&ast, g_import_bindings);
                     batch.push_back(ast);
                 }
-
-                // Aliases for a same-unit library imported with a prefix, kept
-                // after the form that defined it.
-                for (auto& alias : unit_aliases) batch.push_back(alias);
             }
 
             if (!batch.empty()) {
@@ -4994,8 +4984,10 @@ int main(int argc, char **argv)
         std::string eskb_source((std::istreambuf_iterator<char>(eskb_src)),
                                 std::istreambuf_iterator<char>());
         int eskb_result = embedded_vm_profile
-                              ? eshkol_emit_eskb_embedded(eskb_source.c_str(), eskb_output_path)
-                              : eshkol_emit_eskb(eskb_source.c_str(), eskb_output_path);
+                              ? eshkol_emit_eskb_embedded_with_source_path(
+                                  eskb_source.c_str(), eskb_output_path, source_files[0])
+                              : eshkol_emit_eskb_with_source_path(
+                                  eskb_source.c_str(), eskb_output_path, source_files[0]);
         if (eskb_result != 0) {
             eshkol_error("ESKB emission failed for profile %s",
                          profile_name ? profile_name : "hosted-vm");
@@ -5164,6 +5156,11 @@ int main(int argc, char **argv)
         req_ast.operation.require_op.import_prefixes = nullptr;
         req_ast.operation.require_op.import_except_names = nullptr;
         req_ast.operation.require_op.num_import_except_names = nullptr;
+        req_ast.operation.require_op.import_only_names = nullptr;
+        req_ast.operation.require_op.num_import_only_names = nullptr;
+        req_ast.operation.require_op.import_rename_from = nullptr;
+        req_ast.operation.require_op.import_rename_to = nullptr;
+        req_ast.operation.require_op.num_import_renames = nullptr;
         req_ast.line = 0;
         req_ast.column = 0;
         asts.insert(asts.begin(), req_ast);
@@ -5506,7 +5503,8 @@ int main(int argc, char **argv)
                     size_t eskb_nread = fread(eskb_source, 1, (size_t)eskb_len, eskb_src_f);
                     eskb_source[eskb_nread] = 0;
                     fclose(eskb_src_f);
-                    int eskb_result = eshkol_emit_eskb(eskb_source, eskb_output_path);
+                    int eskb_result = eshkol_emit_eskb_with_source_path(
+                        eskb_source, eskb_output_path, source_files[0]);
                     if (eskb_result == 0) {
                         printf("[ESKB] Emitted bytecode to %s\n", eskb_output_path);
                     } else {
@@ -5948,7 +5946,7 @@ int main(int argc, char **argv)
         // LLVM's lld which has no such limits. Keep in sync with the
         // JIT link path.
 #  if defined(__aarch64__) || defined(__arm64__)
-        link_args.emplace_back("-fuse-ld=lld");
+        if (eshkol_lld_on_path()) link_args.emplace_back("-fuse-ld=lld");
 #  endif
 #endif
         } else {
@@ -5966,7 +5964,7 @@ int main(int argc, char **argv)
                 "-Wl,-soname," +
                 std::filesystem::path(shared_library_path).filename().string());
 #  if defined(__aarch64__) || defined(__arm64__)
-            link_args.emplace_back("-fuse-ld=lld");
+            if (eshkol_lld_on_path()) link_args.emplace_back("-fuse-ld=lld");
 #  endif
 #endif
         }

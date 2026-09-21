@@ -8,7 +8,8 @@
 set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 
-cd "$(dirname "$0")/../.."
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)
+cd "$SCRIPT_DIR/../.."
 REPO_ROOT="$(pwd)"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 case "$BUILD_DIR" in
@@ -26,6 +27,11 @@ DURABILITY_SRC="$REPO_ROOT/tests/memory/fixtures/memory_store_durability_test.es
 MEMORY_SRC="$REPO_ROOT/tests/memory/memory_test.esk"
 VM_MEMORY_SRC="$REPO_ROOT/tests/memory/memory_vm_parity_test.esk"
 TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
+# Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
+# shellcheck source=../../scripts/lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 TRACE_FILE="$TRACE_DIR/memory_store_durability.jsonl"
 
 for required in "$ESHKOL_RUN" "$VM_BIN" "$DURABILITY_SRC" "$MEMORY_SRC" "$VM_MEMORY_SRC"; do
@@ -41,6 +47,7 @@ fi
 
 mkdir -p "$REPO_ROOT/.scratch"
 mkdir -p "$TRACE_DIR"
+eshkol_require_output_file_path "$TRACE_FILE"
 : >"$TRACE_FILE"
 WORK="$(mktemp -d "$REPO_ROOT/.scratch/memory-store-durability-gate.XXXXXX")" || exit 2
 trap 'rm -rf -- "$WORK"' EXIT INT TERM
@@ -55,15 +62,18 @@ run_and_check() {
     else
         rc=$?
     fi
-    if [ "$rc" -ne 0 ] || ! grep -q "$expected" "$output" || grep -q '^FAIL:' "$output"; then
+    if [ "$rc" -ne 0 ] || ! LC_ALL=C grep -qF -- "$expected" "$output" || \
+       LC_ALL=C grep -q '^FAIL:' "$output"; then
+        eshkol_require_output_file_path "$TRACE_FILE"
         printf '{"kind":"test_result","name":"memory_store.%s","value":{"passed":false,"summary":"exit=%s"},"timestamp":%s}\n' "$label" "$rc" "$(date +%s)" >>"$TRACE_FILE"
         echo "FAIL: $label (exit=$rc)"
         sed -n '1,240p' "$output"
         return 1
     fi
+    eshkol_require_output_file_path "$TRACE_FILE"
     printf '{"kind":"test_result","name":"memory_store.%s","value":{"passed":true,"summary":"%s"},"timestamp":%s}\n' "$label" "$expected" "$(date +%s)" >>"$TRACE_FILE"
     echo "PASS: $label"
-    grep -E '^(Passed:|Failed:|  \[PASS\]|  \[FAIL\])' "$output" | tail -8
+    LC_ALL=C grep -E '^(Passed:|Failed:|  \[PASS\]|  \[FAIL\])' "$output" | tail -8 || true
     return 0
 }
 
@@ -80,6 +90,7 @@ run_and_check native_jit_durability 'Failed: 0' \
 
 AOT_BIN="$WORK/memory-store-durability-aot"
 AOT_LOG="$WORK/aot-compile.out"
+eshkol_require_output_file_path "$AOT_LOG"
 if "$ESHKOL_RUN" --strict-types "$DURABILITY_SRC" -o "$AOT_BIN" >"$AOT_LOG" 2>&1; then
     chmod +x "$AOT_BIN"
     run_and_check native_aot_durability 'Failed: 0' "$AOT_BIN" || failed=1

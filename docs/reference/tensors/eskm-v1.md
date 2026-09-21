@@ -1,11 +1,12 @@
 # ESKM v1 checkpoint wire format
 
 This page specifies the byte-level ESKM version 1 format used by Eshkol's
-model-I/O implementation and by the bytecode VM's tensor persistence path. It
-is a compatibility contract for checkpoint readers and writers, not a
-description of a particular in-memory tensor implementation. The native
-compiler's `tensor-save` and `tensor-load` dispatch uses the separate ESKT
-single-tensor format; that format is not specified here.
+model-I/O implementation and the public `tensor-save` / `tensor-load` paths
+on both native and VM engines. It is a compatibility contract for checkpoint
+readers and writers, not a
+description of a particular in-memory tensor implementation. Since #555, the
+public tensor APIs use a single-record ESKM container, not the legacy ESKT
+format. This document does not specify or promise legacy ESKT compatibility.
 
 The normative terms **MUST**, **MUST NOT**, **SHOULD**, and **MAY** have their
 usual RFC 2119 meanings.
@@ -63,13 +64,13 @@ Eshkol tensors use row-major indexing. Readers **MUST NOT** numerically convert
 or canonicalize these bits while decoding v1.
 
 Names are uninterpreted bytes on the wire. An empty name is valid and is what
-the ESKM single-tensor writer used by the bytecode VM writes for its record.
+the ESKM single-tensor writers on native and VM engines write for their record.
 Eshkol model writers conventionally use UTF-8 names, but v1 neither requires
 UTF-8 nor requires names to be unique. Record order is significant and
 **MUST** be preserved.
 
 A zero record count is a valid empty model container. The ESKM single-tensor
-loader used by the bytecode VM requires exactly one record but does not require
+loader on either engine requires exactly one record but does not require
 its name to be empty; the model loader accepts any record count. These are
 entry-point constraints, not different wire formats.
 

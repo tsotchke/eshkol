@@ -9,6 +9,7 @@
  */
 
 #include <eshkol/backend/system_codegen.h>
+#include <eshkol/backend/llvm_compat.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -40,7 +41,7 @@ static llvm::Value* runtimeCapabilityAllowed(CodegenContext& ctx, const char* ca
         ctx.int32Type(), {ctx.ptrType()}, false);
     llvm::FunctionCallee callee = ctx.module().getOrInsertFunction(
         "eshkol_capability_runtime_allows", fn_type);
-    llvm::Value* capability_name = ctx.builder().CreateGlobalStringPtr(capability);
+    llvm::Value* capability_name = eshkol::llvm_compat::createGlobalString(ctx.builder(), capability);
     llvm::Value* allowed = ctx.builder().CreateCall(callee, {capability_name});
     return ctx.builder().CreateICmpNE(
         allowed, llvm::ConstantInt::get(ctx.int32Type(), 0));
@@ -56,7 +57,7 @@ static void runtimeCapabilityDeny(CodegenContext& ctx, const char* capability) {
         ctx.voidType(), {ctx.ptrType()}, false);
     llvm::FunctionCallee callee = ctx.module().getOrInsertFunction(
         "eshkol_capability_runtime_deny", fn_type);
-    llvm::Value* capability_name = ctx.builder().CreateGlobalStringPtr(capability);
+    llvm::Value* capability_name = eshkol::llvm_compat::createGlobalString(ctx.builder(), capability);
     ctx.builder().CreateCall(callee, {capability_name});
 }
 
@@ -162,8 +163,7 @@ llvm::Value* SystemCodegen::getenv(const eshkol_operations_t* op) {
     llvm::Value* string_val;
     if (getenv_strlen_func) {
         llvm::Value* env_len = ctx_.builder().CreateCall(getenv_strlen_func, {result});
-        llvm::Value* arena_ptr = ctx_.builder().CreateLoad(
-            ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* arena_ptr = ctx_.currentArena();
         llvm::Value* env_buf = ctx_.builder().CreateCall(
             mem_.getArenaAllocateStringWithHeader(), {arena_ptr, env_len});
         ctx_.builder().CreateCall(strcpy_callee, {env_buf, result});
@@ -578,9 +578,133 @@ llvm::Value* SystemCodegen::currentTimeNs(const eshkol_operations_t* op) {
 }
 
 /**
- * @brief Codegen for `(exit code)`: coerces the exit code to a clamped i32
- *        in [0, 255] (from a double, if that's the argument's type) and
- *        calls libc `exit`.
+ * @brief Clamp a raw (unboxed) double to the valid exit-code range [0, 255]
+ *        and convert to i32.
+ */
+llvm::Value* SystemCodegen::doubleToExitCodeI32(llvm::Value* dbl) {
+    llvm::Value* clamped_code = ctx_.builder().CreateCall(
+        SYS_GET_INTRINSIC(&ctx_.module(),
+            llvm::Intrinsic::minnum, {ctx_.doubleType()}),
+        {dbl, llvm::ConstantFP::get(ctx_.doubleType(), 255.0)});
+    clamped_code = ctx_.builder().CreateCall(
+        SYS_GET_INTRINSIC(&ctx_.module(),
+            llvm::Intrinsic::maxnum, {ctx_.doubleType()}),
+        {clamped_code, llvm::ConstantFP::get(ctx_.doubleType(), 0.0)});
+    return ctx_.builder().CreateFPToSI(clamped_code, ctx_.int32Type());
+}
+
+/**
+ * @brief R7RS 6.11 `exit`: #t denotes successful termination (0), #f
+ *        denotes unsuccessful termination (1).
+ */
+llvm::Value* SystemCodegen::boolToExitCodeI32(llvm::Value* b) {
+    return ctx_.builder().CreateSelect(b,
+        llvm::ConstantInt::get(ctx_.int32Type(), 0),
+        llvm::ConstantInt::get(ctx_.int32Type(), 1),
+        "exit_code_from_bool");
+}
+
+/**
+ * @brief Coerce a codegen'd `exit` argument to a plain i32 process status.
+ *
+ * codegenTypedAST() (the typed-AST fast path `exitProgram` reads its
+ * argument through) only produces a raw, unboxed LLVM value for operands it
+ * can type statically at compile time: a `double` for a flonum literal, a
+ * plain `i64` for an integer literal, a plain `i1` for a boolean literal.
+ * Anything computed at runtime falls through that fast path's generic call
+ * arm, whose native representation is the full boxed `eshkol_tagged_value_t`
+ * struct (e.g. CollectionCodegen::vectorLength always returns
+ * `tagged_.packInt64(...)`). The struct was previously passed straight
+ * through to libc `exit`'s `i32` parameter regardless of its actual LLVM
+ * type, producing an ill-typed `call` instruction that failed LLVM module
+ * verification for any non-constant exit code (LE-21) — `(exit 3)` worked
+ * only because a literal already arrives unboxed.
+ *
+ * This dispatches on the tagged value's runtime type tag exactly like every
+ * other polymorphic numeric builtin (see ArithmeticCodegen::abs): a double
+ * is clamped to [0, 255] and truncated, an int64 is truncated, and a
+ * boolean follows R7RS 6.11. Any other runtime type (a pointer, a
+ * character, ...) raises a catchable runtime error instead of feeding an
+ * arbitrary bit pattern to the process exit status.
+ */
+llvm::Value* SystemCodegen::unpackExitCode(llvm::Value* code) {
+    // Fast paths: codegenTypedAST already produced a raw, unboxed value.
+    if (code->getType()->isDoubleTy()) {
+        return doubleToExitCodeI32(code);
+    }
+    if (code->getType()->isIntegerTy(64)) {
+        return ctx_.builder().CreateTrunc(code, ctx_.int32Type());
+    }
+    if (code->getType()->isIntegerTy(1)) {
+        return boolToExitCodeI32(code);
+    }
+    if (code->getType()->isIntegerTy(32)) {
+        return code;
+    }
+
+    if (code->getType() != ctx_.taggedValueType()) {
+        eshkol_warn("exit: unexpected LLVM representation for the exit code argument");
+        return nullptr;
+    }
+
+    // Computed argument: still boxed. Dispatch on the runtime type tag.
+    llvm::Value* type_tag = tagged_.getType(code);
+    llvm::Value* base_type = tagged_.getBaseType(type_tag);
+
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* double_bb      = llvm::BasicBlock::Create(ctx_.context(), "exit_double", func);
+    llvm::BasicBlock* check_int_bb   = llvm::BasicBlock::Create(ctx_.context(), "exit_check_int", func);
+    llvm::BasicBlock* int_bb         = llvm::BasicBlock::Create(ctx_.context(), "exit_int", func);
+    llvm::BasicBlock* check_bool_bb  = llvm::BasicBlock::Create(ctx_.context(), "exit_check_bool", func);
+    llvm::BasicBlock* bool_bb        = llvm::BasicBlock::Create(ctx_.context(), "exit_bool", func);
+    llvm::BasicBlock* bad_type_bb    = llvm::BasicBlock::Create(ctx_.context(), "exit_bad_type", func);
+    llvm::BasicBlock* merge_bb       = llvm::BasicBlock::Create(ctx_.context(), "exit_code_merge", func);
+
+    llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+    ctx_.builder().CreateCondBr(is_double, double_bb, check_int_bb);
+
+    ctx_.builder().SetInsertPoint(double_bb);
+    llvm::Value* dbl_result = doubleToExitCodeI32(tagged_.unpackDouble(code));
+    ctx_.builder().CreateBr(merge_bb);
+    llvm::BasicBlock* double_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(check_int_bb);
+    llvm::Value* is_int = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+    ctx_.builder().CreateCondBr(is_int, int_bb, check_bool_bb);
+
+    ctx_.builder().SetInsertPoint(int_bb);
+    llvm::Value* int_result = ctx_.builder().CreateTrunc(tagged_.unpackInt64(code), ctx_.int32Type());
+    ctx_.builder().CreateBr(merge_bb);
+    llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(check_bool_bb);
+    llvm::Value* is_bool = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_BOOL));
+    ctx_.builder().CreateCondBr(is_bool, bool_bb, bad_type_bb);
+
+    ctx_.builder().SetInsertPoint(bool_bb);
+    llvm::Value* bool_result = boolToExitCodeI32(tagged_.unpackBool(code));
+    ctx_.builder().CreateBr(merge_bb);
+    llvm::BasicBlock* bool_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(bad_type_bb);
+    ctx_.emitRaise("exit: exit code must be an integer, flonum, or boolean");
+    // emitRaise() terminates bad_type_bb (unreachable); it never reaches merge_bb.
+
+    ctx_.builder().SetInsertPoint(merge_bb);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.int32Type(), 3, "exit_code");
+    phi->addIncoming(dbl_result, double_exit);
+    phi->addIncoming(int_result, int_exit);
+    phi->addIncoming(bool_result, bool_exit);
+    return phi;
+}
+
+/**
+ * @brief Codegen for `(exit code)`: coerces the exit code — literal or
+ *        computed, integer, flonum, or boolean — to an i32 process status
+ *        (see unpackExitCode()) and calls libc `exit`.
  */
 llvm::Value* SystemCodegen::exitProgram(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
@@ -604,24 +728,8 @@ llvm::Value* SystemCodegen::exitProgram(const eshkol_operations_t* op) {
     llvm::Value* code = *reinterpret_cast<llvm::Value**>(code_tv_ptr);
     if (!code) return nullptr;
 
-    // Convert to i32 if needed
-    llvm::Value* code_i32;
-    if (code->getType()->isDoubleTy()) {
-        // Clamp to valid exit code range [0, 255]
-        llvm::Value* clamped_code = ctx_.builder().CreateCall(
-            SYS_GET_INTRINSIC(&ctx_.module(),
-                llvm::Intrinsic::minnum, {ctx_.doubleType()}),
-            {code, llvm::ConstantFP::get(ctx_.doubleType(), 255.0)});
-        clamped_code = ctx_.builder().CreateCall(
-            SYS_GET_INTRINSIC(&ctx_.module(),
-                llvm::Intrinsic::maxnum, {ctx_.doubleType()}),
-            {clamped_code, llvm::ConstantFP::get(ctx_.doubleType(), 0.0)});
-        code_i32 = ctx_.builder().CreateFPToSI(clamped_code, ctx_.int32Type());
-    } else if (code->getType()->isIntegerTy(64)) {
-        code_i32 = ctx_.builder().CreateTrunc(code, ctx_.int32Type());
-    } else {
-        code_i32 = code;
-    }
+    llvm::Value* code_i32 = unpackExitCode(code);
+    if (!code_i32) return nullptr;
 
     // Call exit(code)
     ctx_.builder().CreateCall(exit_func, {code_i32});
@@ -727,7 +835,7 @@ llvm::Value* SystemCodegen::commandLine(const eshkol_operations_t* op) {
     // (`#<unknown>`) when displaying argv. The allocator reserves the
     // +1 NUL byte itself, so we pass the bare strlen.
     llvm::Value* arg_len = ctx_.builder().CreateCall(strlen_func, {arg_ptr});
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* new_str = ctx_.builder().CreateCall(
         mem_.getArenaAllocateStringWithHeader(), {arena_ptr, arg_len});
     ctx_.builder().CreateCall(strcpy_func, {new_str, arg_ptr});
@@ -1031,7 +1139,7 @@ llvm::Value* SystemCodegen::readFile(const eshkol_operations_t* op) {
     // worked around it via `(run-argv-capture (cat path))`.
     // arena_allocate_string_with_header(arena, size) reserves size+1
     // bytes for the trailing NUL and stamps header.size = size+1.
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* buf = ctx_.builder().CreateCall(
         mem_.getArenaAllocateStringWithHeader(), {arena_ptr, size});
 
@@ -1381,7 +1489,7 @@ llvm::Value* SystemCodegen::directoryList(const eshkol_operations_t* op) {
     llvm::Value* name_len = ctx_.builder().CreateCall(strlen_func, {name_ptr});
     llvm::Value* alloc_len = ctx_.builder().CreateAdd(name_len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
 
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* new_str = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, alloc_len});
 
     llvm::Function* strcpy_func = ctx_.funcs().getStrcpy();
@@ -1423,7 +1531,7 @@ llvm::Value* SystemCodegen::currentDirectory(const eshkol_operations_t* op) {
     if (!getcwd_func) return tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context()));
 
     // Allocate buffer for path (PATH_MAX is typically 4096)
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* buf = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {
         arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), 4096)
     });
@@ -1592,6 +1700,8 @@ ZERO_ARG_BUILTIN(adResetCounters, "eshkol_builtin_ad_reset_counters")
 ZERO_ARG_BUILTIN(adPrimalCalls, "eshkol_builtin_ad_primal_calls")
 ZERO_ARG_BUILTIN(adReversePasses, "eshkol_builtin_ad_reverse_passes")
 ZERO_ARG_BUILTIN(adTapeAllocations, "eshkol_builtin_ad_tape_allocations")
+ZERO_ARG_BUILTIN(adScalarAdNodes, "eshkol_builtin_ad_scalar_ad_nodes")
+ZERO_ARG_BUILTIN(adTensorAdNodes, "eshkol_builtin_ad_tensor_ad_nodes")
 ZERO_ARG_BUILTIN(adFiniteDifferenceEvals, "eshkol_builtin_ad_finite_difference_evals")
 ZERO_ARG_BUILTIN(adNoteFiniteDifference, "eshkol_builtin_ad_note_finite_difference")
 ZERO_ARG_BUILTIN(adCounters, "eshkol_builtin_ad_counters")
@@ -1759,7 +1869,7 @@ static llvm::Value* callArenaTaggedFunc(CodegenContext& ctx, TaggedValueCodegen&
 
     llvm::IRBuilder<>& builder = ctx.builder();
     llvm::Value* result_ptr = builder.CreateAlloca(ctx.taggedValueType(), nullptr, "ce_result");
-    llvm::Value* arena = builder.CreateLoad(ctx.ptrType(), ctx.globalArena());
+    llvm::Value* arena = ctx.currentArena();
 
     std::vector<llvm::Value*> call_args;
     call_args.push_back(arena);

@@ -1,0 +1,189 @@
+;; Arithmetic on a vector/tensor decides on BOTH operands, never on the left one.
+;;
+;; `+ - * /` are polymorphic over the numeric tower and, per
+;; docs/COMPLETE_LANGUAGE_SPECIFICATION.md 4.1, element-wise for vectors and
+;; tensors. The documented element-wise contract is a BINARY one:
+;; docs/reference/tensors/operations.md — "All binary elementwise ops require
+;; two tensors of matching shape" — and scalar broadcast is a separate,
+;; explicitly named operator (`tensor-scale`), not an overload of `*`. The
+;; documented example is the same shape as this test:
+;;
+;;   (tensor-pow (tensor 2.0 3.0) 2.0)   ;; ERROR: expected tensor, got integer
+;;
+;; So a vector/tensor against a SCALAR is a type error, and the only question is
+;; whether both operand orders agree. They did not.
+;;
+;; TensorCodegen::tensorArithmeticInternal chose its kernel from the LEFT
+;; operand alone (`isVector(arg1)`). A Scheme vector on the left sent the pair
+;; to schemeVectorArithmetic, which reads operand 2 as `[len:i64][tagged
+;; elems...]` without ever asking what it is:
+;;
+;;   (* (vector 1 2) 2)     before  SIGSEGV at 0xa   (the integer 2, plus the
+;;                                  8-byte length header, dereferenced)
+;;                          after   Type error in tensor-mul: expected tensor,
+;;                                  got integer
+;;   (+ (vector 1 2) 1)     before  SIGSEGV at 0x9
+;;   (* (vector 1.0 2.0) 2) before  SIGSEGV at 0xa
+;;   (* 2 (vector 1 2))     before  Type error (already correct)
+;;
+;; The same one-sided test also produced a SILENT WRONG ANSWER for a mixed pair,
+;; because a tensor read as a Scheme vector is not a diagnostic, it is garbage:
+;;
+;;   (* (vector 1.0 2.0) (tensor 3.0 4.0))   before  #(4967213448 0)
+;;                                           after   #(3 8)
+;;
+;; Both operand positions are now classified before anything is dereferenced:
+;; the Scheme-vector kernel runs only when BOTH operands are Scheme vectors, and
+;; every other combination goes to the tensor path, where the shared operand
+;; check (ESH-0069) validates each side independently — coercing a numeric
+;; vector to a 1-D tensor and raising the same catchable type error for a scalar
+;; in EITHER position.
+;;
+;; The rows both engines agree on are gated across all four axes in
+;; tests/vm_parity/corpus/78_vector_scalar_arith_dispatch.esk, and the
+;; unguarded form's fail-closed exit in tests/vm_parity/fatal/. This file is the
+;; native-only depth those cannot carry: the working element-wise results (the
+;; VM has no vector arithmetic at all), the mixed vector/tensor row, and the
+;; through-a-function shape from the original report.
+
+(define fail-count 0)
+
+(define (check name got expected)
+  (if (equal? got expected)
+      (begin (display "ok   ") (display name) (display " => ") (display got) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "error: ") (display name)
+             (display " expected ") (display expected)
+             (display " got ") (display got) (newline))))
+
+(define (caught thunk) (guard (e (#t "caught")) (thunk)))
+
+;; ── the crash class: a vector on the LEFT, a scalar on the right ──
+;; Every one of these was a fatal SIGSEGV, exit 139, with no diagnostic.
+
+(check "(* (vector 1 2) 2) raises"
+       (caught (lambda () (* (vector 1 2) 2))) "caught")
+(check "(+ (vector 1 2) 1) raises"
+       (caught (lambda () (+ (vector 1 2) 1))) "caught")
+(check "(- (vector 1 2) 1) raises"
+       (caught (lambda () (- (vector 1 2) 1))) "caught")
+(check "(/ (vector 2 4) 2) raises"
+       (caught (lambda () (/ (vector 2 4) 2))) "caught")
+(check "(* (vector 1.0 2.0) 2) raises"
+       (caught (lambda () (* (vector 1.0 2.0) 2))) "caught")
+(check "(* (vector 1.0 2.0) 2.0) raises"
+       (caught (lambda () (* (vector 1.0 2.0) 2.0))) "caught")
+
+;; ── the other operand order must agree, and always did ──
+
+(check "(* 2 (vector 1 2)) raises"
+       (caught (lambda () (* 2 (vector 1 2)))) "caught")
+(check "(+ 1 (vector 1 2)) raises"
+       (caught (lambda () (+ 1 (vector 1 2)))) "caught")
+(check "(- 1 (vector 1 2)) raises"
+       (caught (lambda () (- 1 (vector 1 2)))) "caught")
+(check "(/ 2 (vector 2 4)) raises"
+       (caught (lambda () (/ 2 (vector 2 4)))) "caught")
+
+;; ── a tensor against a scalar is the same error, in either order ──
+
+(check "(* (tensor 1.0 2.0) 2) raises"
+       (caught (lambda () (* (tensor 1.0 2.0) 2))) "caught")
+(check "(* 2 (tensor 1.0 2.0)) raises"
+       (caught (lambda () (* 2 (tensor 1.0 2.0)))) "caught")
+(check "(tensor-mul (vector 1.0 2.0) 2.0) raises"
+       (caught (lambda () (tensor-mul (vector 1.0 2.0) 2.0))) "caught")
+
+;; ── through a function, the shape the defect was reported in ──
+;; `scale` is called with integers first, so the operator is exercised on the
+;; numeric path before the vector call site reaches it.
+
+(define (scale x m) (* x m))
+
+(check "scale on integers is unaffected" (scale 3 4) 12)
+(check "scale with a vector argument raises"
+       (caught (lambda () (scale (vector 1 2) 2))) "caught")
+(check "scale on integers still works after the raise" (scale 5 6) 30)
+
+;; ── a list is not a vector, and still raises as it always did ──
+
+(check "(* (list 1 2) 2) raises"
+       (caught (lambda () (* (list 1 2) 2))) "caught")
+
+;; ── shapes: the second half of the same one-sided read ──
+;; schemeVectorArithmetic loops to operand 1's length over BOTH operands'
+;; element arrays, so a shorter second operand was read past its end and a
+;; shorter first operand silently truncated the result:
+;;
+;;   (* (vector 1 2 3) (vector 4 5))   before  #(4 10 4.4e-323)   (OOB read,
+;;                                             a silent wrong answer, exit 0)
+;;   (* (vector 1 2) (vector 3 4 5))   before  #(3 8)             (truncated)
+;;
+;; The Scheme-vector kernel now runs only for EQUAL lengths; anything else goes
+;; to the tensor path, where the broadcast computation decides. A pair it
+;; refuses raises `Shape mismatch in tensor-mul: shapes (3) and (2) are not
+;; broadcast-compatible`. The tensor spelling of the same pair used to be worse
+;; still — the runtime's -1 "not broadcastable" verdict was discarded and the
+;; uninitialised result rank was read back, a fatal SIGSEGV.
+
+(check "(* (vector 1 2 3) (vector 4 5)) raises"
+       (caught (lambda () (* (vector 1 2 3) (vector 4 5)))) "caught")
+(check "(* (vector 1 2) (vector 3 4 5)) raises"
+       (caught (lambda () (* (vector 1 2) (vector 3 4 5)))) "caught")
+(check "(+ (vector 1 2 3) (vector 4 5)) raises"
+       (caught (lambda () (+ (vector 1 2 3) (vector 4 5)))) "caught")
+(check "(+ (vector 1 2) (vector 3 4 5)) raises"
+       (caught (lambda () (+ (vector 1 2) (vector 3 4 5)))) "caught")
+(check "(- (vector 1 2 3) (vector 4 5)) raises"
+       (caught (lambda () (- (vector 1 2 3) (vector 4 5)))) "caught")
+(check "(/ (vector 2 4 6) (vector 2 2)) raises"
+       (caught (lambda () (/ (vector 2 4 6) (vector 2 2)))) "caught")
+(check "inexact shape mismatch raises too"
+       (caught (lambda () (* (vector 1.0 2.0 3.0) (vector 4.0 5.0)))) "caught")
+(check "(tensor-mul (tensor 1.0 2.0 3.0) (tensor 4.0 5.0)) raises"
+       (caught (lambda () (tensor-mul (tensor 1.0 2.0 3.0) (tensor 4.0 5.0)))) "caught")
+
+;; A length-1 operand IS broadcast-compatible, so it must NOT raise — and the
+;; vector spelling has to answer what the tensor spelling answers, which is the
+;; whole reason the unequal case is decided by the broadcast computation rather
+;; than by a strict equality test here.
+(check "a length-1 vector broadcasts across a longer one"
+       (* (vector 2.0) (vector 1.0 2.0 3.0)) (vector 2.0 4.0 6.0))
+(check "the tensor spelling of the same pair agrees"
+       (tensor-ref (* (tensor 2.0) (tensor 1.0 2.0 3.0)) 2) 6.0)
+(check "broadcast the other way round"
+       (* (vector 1.0 2.0 3.0) (vector 2.0)) (vector 2.0 4.0 6.0))
+
+;; ── the CONTROLS: what must keep working ──
+;; Element-wise arithmetic on two operands of the same shape is the documented
+;; contract and must be untouched by the guard.
+
+(check "vector * vector is element-wise" (* (vector 1 2) (vector 3 4)) (vector 3 8))
+(check "vector + vector is element-wise" (+ (vector 1 2) (vector 3 4)) (vector 4 6))
+(check "vector - vector is element-wise" (- (vector 5 5) (vector 1 2)) (vector 4 3))
+(check "vector / vector is element-wise" (/ (vector 8 6) (vector 2 2)) (vector 4 3))
+(check "inexact vector * vector is element-wise"
+       (* (vector 1.0 2.0) (vector 3.0 4.0)) (vector 3.0 8.0))
+(check "tensor-mul on two tensors still answers"
+       (tensor-ref (tensor-mul (tensor 2.0 3.0) (tensor 4.0 5.0)) 1) 15.0)
+
+;; ── the mixed carrier: a silent wrong answer before, a real product now ──
+;; A vector and a tensor are two spellings of the same rank-1 value, so the
+;; product is the element-wise one; it used to read the tensor struct as a
+;; Scheme vector and answer garbage with exit 0.
+
+(check "vector * tensor is the element-wise product"
+       (tensor-ref (* (vector 1.0 2.0) (tensor 3.0 4.0)) 1) 8.0)
+(check "tensor * vector is the element-wise product"
+       (tensor-ref (* (tensor 3.0 4.0) (vector 1.0 2.0)) 0) 3.0)
+
+;; ── plain scalar arithmetic is untouched ──
+
+(check "integer product" (* 6 7) 42)
+(check "integer sum" (+ 6 7) 13)
+(check "mixed exactness product" (* 2 3.5) 7.0)
+
+(display "----") (newline)
+(if (= fail-count 0)
+    (begin (display "vector/scalar arithmetic dispatch: all checks passed") (newline))
+    (begin (display "error: ") (display fail-count) (display " checks failed") (newline)))

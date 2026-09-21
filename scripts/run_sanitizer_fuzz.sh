@@ -17,6 +17,8 @@ export LC_CTYPE=C
 ulimit -c 0 2>/dev/null || true
 
 REPO_ROOT="$(pwd)"
+# shellcheck source=lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 BUILD_DIR="build-asan-ubsan"
 REPORT="docs/reports/SANITIZER_FUZZ_REPORT.md"
 WORK_ROOT="artifacts/sanitizer-fuzz"
@@ -425,7 +427,7 @@ int main(void) {
 }
 C
 
-    if ! command -v "$cc_bin" >/dev/null 2>&1; then
+    if ! eshkol_command_available "$cc_bin"; then
         {
             printf 'status\tSKIP\n'
             printf 'summary\tC compiler not found: %s\n' "$cc_bin"
@@ -1002,9 +1004,12 @@ if [ "$SELF_TEST_ONLY" -eq 1 ]; then
 fi
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
-    BUILD_DIR="$BUILD_DIR_ABS" \
+    if ! BUILD_DIR="$BUILD_DIR_ABS" \
         CMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-RelWithDebInfo}" \
-        scripts/build-sanitizer.sh asan+ubsan
+        scripts/build-sanitizer.sh asan+ubsan; then
+        echo "run_sanitizer_fuzz.sh: sanitizer build failed; refusing to run a stale binary." >&2
+        exit 1
+    fi
 fi
 
 if [ ! -x "$ESHKOL_RUN" ]; then

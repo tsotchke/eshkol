@@ -1,0 +1,102 @@
+;;; builtins_first_class_test_03.esk — AUTO-GENERATED, do not hand-edit.
+;;;
+;;; Chunk 3 of 17 of the LE-16 first-class-builtins audit. Regenerate
+;;; ALL chunks (this file is one of several — see the module docstring in
+;;; the generator for why) with:
+;;;     python3 scripts/gen_builtins_first_class_test.py
+;;; Source of truth: tests/coverage/language_surface.json +
+;;; tests/coverage/builtins_first_class_known_args.json. See LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml for the root cause and the fix.
+;;;
+;;; Every builtin that can be called in operator position must also be a
+;;; first-class value: it must evaluate to a procedure, survive being
+;;; stored (let), passed to a user higher-order procedure, mapped, and
+;;; applied — and, wherever this audit could verify a real call safely
+;;; (i.e. without executing an FFI/GPU/atomics/pointer side effect), a
+;;; value-position call must compute the identical answer to the same
+;;; call in operator position. This chunk carries 50 such checks.
+
+;; hN calls its first argument with N further arguments. Each is a bare
+;; PARAMETER, so its value must be a real callable — there is no name here
+;; for codegenCall to special-case; this is what forces the value-position
+;; route (codegenVariable / resolveLambdaFunction) rather than the call-site
+;; lowering, which was never broken.
+(define (h0 f) (f))
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+(define (h5 f a b c d e) (f a b c d e))
+(define (__id x) x)
+;; Shared hash-table fixture for the hash-category call-correctness checks
+;; below (mirrors scripts/run_value_position_sweep.py's own __ht convention).
+(define __ht (make-hash-table))
+(hash-table-set! __ht 1 10)
+
+(define failures 0)
+(define checked 0)
+(define (check name ok)
+  (set! checked (+ checked 1))
+  (if ok
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name) (newline))))
+
+(check "call-with-input-file::value" (and (procedure? call-with-input-file) (let ((f call-with-input-file)) (procedure? f)) (procedure? (__id call-with-input-file)) (procedure? (car (map __id (list call-with-input-file)))) (procedure? (apply __id (list call-with-input-file)))))
+(check "call-with-output-file::value" (and (procedure? call-with-output-file) (let ((f call-with-output-file)) (procedure? f)) (procedure? (__id call-with-output-file)) (procedure? (car (map __id (list call-with-output-file)))) (procedure? (apply __id (list call-with-output-file)))))
+(check "call-with-port::value" (and (procedure? call-with-port) (let ((f call-with-port)) (procedure? f)) (procedure? (__id call-with-port)) (procedure? (car (map __id (list call-with-port)))) (procedure? (apply __id (list call-with-port)))))
+(check "car::value" (and (procedure? car) (let ((f car)) (procedure? f)) (procedure? (__id car)) (procedure? (car (map __id (list car)))) (procedure? (apply __id (list car)))))
+(check "causal-mask::value" (and (procedure? causal-mask) (let ((f causal-mask)) (procedure? f)) (procedure? (__id causal-mask)) (procedure? (car (map __id (list causal-mask)))) (procedure? (apply __id (list causal-mask)))))
+(check "cbrt::value" (and (procedure? cbrt) (let ((f cbrt)) (procedure? f)) (procedure? (__id cbrt)) (procedure? (car (map __id (list cbrt)))) (procedure? (apply __id (list cbrt)))))
+(check "cdaar::value" (and (procedure? cdaar) (let ((f cdaar)) (procedure? f)) (procedure? (__id cdaar)) (procedure? (car (map __id (list cdaar)))) (procedure? (apply __id (list cdaar)))))
+(check "cdadr::value" (and (procedure? cdadr) (let ((f cdadr)) (procedure? f)) (procedure? (__id cdadr)) (procedure? (car (map __id (list cdadr)))) (procedure? (apply __id (list cdadr)))))
+(check "cdar::value" (and (procedure? cdar) (let ((f cdar)) (procedure? f)) (procedure? (__id cdar)) (procedure? (car (map __id (list cdar)))) (procedure? (apply __id (list cdar)))))
+(check "cddar::value" (and (procedure? cddar) (let ((f cddar)) (procedure? f)) (procedure? (__id cddar)) (procedure? (car (map __id (list cddar)))) (procedure? (apply __id (list cddar)))))
+(check "cdddr::value" (and (procedure? cdddr) (let ((f cdddr)) (procedure? f)) (procedure? (__id cdddr)) (procedure? (car (map __id (list cdddr)))) (procedure? (apply __id (list cdddr)))))
+(check "cddr::value" (and (procedure? cddr) (let ((f cddr)) (procedure? f)) (procedure? (__id cddr)) (procedure? (car (map __id (list cddr)))) (procedure? (apply __id (list cddr)))))
+(check "cdr::value" (and (procedure? cdr) (let ((f cdr)) (procedure? f)) (procedure? (__id cdr)) (procedure? (car (map __id (list cdr)))) (procedure? (apply __id (list cdr)))))
+(check "ceil::value" (and (procedure? ceil) (let ((f ceil)) (procedure? f)) (procedure? (__id ceil)) (procedure? (car (map __id (list ceil)))) (procedure? (apply __id (list ceil)))))
+(check "ceiling::value" (and (procedure? ceiling) (let ((f ceiling)) (procedure? f)) (procedure? (__id ceiling)) (procedure? (car (map __id (list ceiling)))) (procedure? (apply __id (list ceiling)))))
+(check "celu::value" (and (procedure? celu) (let ((f celu)) (procedure? f)) (procedure? (__id celu)) (procedure? (car (map __id (list celu)))) (procedure? (apply __id (list celu)))))
+(check "char->integer::value" (and (procedure? char->integer) (let ((f char->integer)) (procedure? f)) (procedure? (__id char->integer)) (procedure? (car (map __id (list char->integer)))) (procedure? (apply __id (list char->integer)))))
+(check "char-alphabetic?::value" (and (procedure? char-alphabetic?) (let ((f char-alphabetic?)) (procedure? f)) (procedure? (__id char-alphabetic?)) (procedure? (car (map __id (list char-alphabetic?)))) (procedure? (apply __id (list char-alphabetic?)))))
+(check "char-ci<=?::value" (and (procedure? char-ci<=?) (let ((f char-ci<=?)) (procedure? f)) (procedure? (__id char-ci<=?)) (procedure? (car (map __id (list char-ci<=?)))) (procedure? (apply __id (list char-ci<=?)))))
+(check "char-ci<?::value" (and (procedure? char-ci<?) (let ((f char-ci<?)) (procedure? f)) (procedure? (__id char-ci<?)) (procedure? (car (map __id (list char-ci<?)))) (procedure? (apply __id (list char-ci<?)))))
+(check "char-ci=?::value" (and (procedure? char-ci=?) (let ((f char-ci=?)) (procedure? f)) (procedure? (__id char-ci=?)) (procedure? (car (map __id (list char-ci=?)))) (procedure? (apply __id (list char-ci=?)))))
+(check "char-ci>=?::value" (and (procedure? char-ci>=?) (let ((f char-ci>=?)) (procedure? f)) (procedure? (__id char-ci>=?)) (procedure? (car (map __id (list char-ci>=?)))) (procedure? (apply __id (list char-ci>=?)))))
+(check "char-ci>?::value" (and (procedure? char-ci>?) (let ((f char-ci>?)) (procedure? f)) (procedure? (__id char-ci>?)) (procedure? (car (map __id (list char-ci>?)))) (procedure? (apply __id (list char-ci>?)))))
+(check "char-downcase::value" (and (procedure? char-downcase) (let ((f char-downcase)) (procedure? f)) (procedure? (__id char-downcase)) (procedure? (car (map __id (list char-downcase)))) (procedure? (apply __id (list char-downcase)))))
+(check "char-foldcase::value" (and (procedure? char-foldcase) (let ((f char-foldcase)) (procedure? f)) (procedure? (__id char-foldcase)) (procedure? (car (map __id (list char-foldcase)))) (procedure? (apply __id (list char-foldcase)))))
+(check "char-lower-case?::value" (and (procedure? char-lower-case?) (let ((f char-lower-case?)) (procedure? f)) (procedure? (__id char-lower-case?)) (procedure? (car (map __id (list char-lower-case?)))) (procedure? (apply __id (list char-lower-case?)))))
+(check "char-numeric?::value" (and (procedure? char-numeric?) (let ((f char-numeric?)) (procedure? f)) (procedure? (__id char-numeric?)) (procedure? (car (map __id (list char-numeric?)))) (procedure? (apply __id (list char-numeric?)))))
+(check "char-ready?::value" (and (procedure? char-ready?) (let ((f char-ready?)) (procedure? f)) (procedure? (__id char-ready?)) (procedure? (car (map __id (list char-ready?)))) (procedure? (apply __id (list char-ready?)))))
+(check "char-upcase::value" (and (procedure? char-upcase) (let ((f char-upcase)) (procedure? f)) (procedure? (__id char-upcase)) (procedure? (car (map __id (list char-upcase)))) (procedure? (apply __id (list char-upcase)))))
+(check "char-upper-case?::value" (and (procedure? char-upper-case?) (let ((f char-upper-case?)) (procedure? f)) (procedure? (__id char-upper-case?)) (procedure? (car (map __id (list char-upper-case?)))) (procedure? (apply __id (list char-upper-case?)))))
+(check "char-whitespace?::value" (and (procedure? char-whitespace?) (let ((f char-whitespace?)) (procedure? f)) (procedure? (__id char-whitespace?)) (procedure? (car (map __id (list char-whitespace?)))) (procedure? (apply __id (list char-whitespace?)))))
+(check "char<=?::value" (and (procedure? char<=?) (let ((f char<=?)) (procedure? f)) (procedure? (__id char<=?)) (procedure? (car (map __id (list char<=?)))) (procedure? (apply __id (list char<=?)))))
+(check "char<?::value" (and (procedure? char<?) (let ((f char<?)) (procedure? f)) (procedure? (__id char<?)) (procedure? (car (map __id (list char<?)))) (procedure? (apply __id (list char<?)))))
+(check "char=?::value" (and (procedure? char=?) (let ((f char=?)) (procedure? f)) (procedure? (__id char=?)) (procedure? (car (map __id (list char=?)))) (procedure? (apply __id (list char=?)))))
+(check "char>=?::value" (and (procedure? char>=?) (let ((f char>=?)) (procedure? f)) (procedure? (__id char>=?)) (procedure? (car (map __id (list char>=?)))) (procedure? (apply __id (list char>=?)))))
+(check "char>?::value" (and (procedure? char>?) (let ((f char>?)) (procedure? f)) (procedure? (__id char>?)) (procedure? (car (map __id (list char>?)))) (procedure? (apply __id (list char>?)))))
+(check "char?::value" (and (procedure? char?) (let ((f char?)) (procedure? f)) (procedure? (__id char?)) (procedure? (car (map __id (list char?)))) (procedure? (apply __id (list char?)))))
+(check "check-grad-health::value" (and (procedure? check-grad-health) (let ((f check-grad-health)) (procedure? f)) (procedure? (__id check-grad-health)) (procedure? (car (map __id (list check-grad-health)))) (procedure? (apply __id (list check-grad-health)))))
+(check "clip-grad-norm!::value" (and (procedure? clip-grad-norm!) (let ((f clip-grad-norm!)) (procedure? f)) (procedure? (__id clip-grad-norm!)) (procedure? (car (map __id (list clip-grad-norm!)))) (procedure? (apply __id (list clip-grad-norm!)))))
+(check "close-input-port::value" (and (procedure? close-input-port) (let ((f close-input-port)) (procedure? f)) (procedure? (__id close-input-port)) (procedure? (car (map __id (list close-input-port)))) (procedure? (apply __id (list close-input-port)))))
+(check "close-output-port::value" (and (procedure? close-output-port) (let ((f close-output-port)) (procedure? f)) (procedure? (__id close-output-port)) (procedure? (car (map __id (list close-output-port)))) (procedure? (apply __id (list close-output-port)))))
+(check "close-port::value" (and (procedure? close-port) (let ((f close-port)) (procedure? f)) (procedure? (__id close-port)) (procedure? (car (map __id (list close-port)))) (procedure? (apply __id (list close-port)))))
+(check "command-line::value" (and (procedure? command-line) (let ((f command-line)) (procedure? f)) (procedure? (__id command-line)) (procedure? (car (map __id (list command-line)))) (procedure? (apply __id (list command-line)))))
+(check "complex?::value" (and (procedure? complex?) (let ((f complex?)) (procedure? f)) (procedure? (__id complex?)) (procedure? (car (map __id (list complex?)))) (procedure? (apply __id (list complex?)))))
+(check "compression-available::value" (and (procedure? compression-available) (let ((f compression-available)) (procedure? f)) (procedure? (__id compression-available)) (procedure? (car (map __id (list compression-available)))) (procedure? (apply __id (list compression-available)))))
+(check "concatenate::value" (and (procedure? concatenate) (let ((f concatenate)) (procedure? f)) (procedure? (__id concatenate)) (procedure? (car (map __id (list concatenate)))) (procedure? (apply __id (list concatenate)))))
+(check "cons::value" (and (procedure? cons) (let ((f cons)) (procedure? f)) (procedure? (__id cons)) (procedure? (car (map __id (list cons)))) (procedure? (apply __id (list cons)))))
+(check "constant-time-equal?::value" (and (procedure? constant-time-equal?) (let ((f constant-time-equal?)) (procedure? f)) (procedure? (__id constant-time-equal?)) (procedure? (car (map __id (list constant-time-equal?)))) (procedure? (apply __id (list constant-time-equal?)))))
+(check "contrastive-loss::value" (and (procedure? contrastive-loss) (let ((f contrastive-loss)) (procedure? f)) (procedure? (__id contrastive-loss)) (procedure? (car (map __id (list contrastive-loss)))) (procedure? (apply __id (list contrastive-loss)))))
+(check "conv1d::value" (and (procedure? conv1d) (let ((f conv1d)) (procedure? f)) (procedure? (__id conv1d)) (procedure? (car (map __id (list conv1d)))) (procedure? (apply __id (list conv1d)))))
+
+(display "checked=") (display checked) (newline)
+(display "failures=") (display failures) (newline)
+(if (= failures 0)
+    (begin (display "PASS: builtins first-class -- 0 failures") (newline))
+    (begin (display "FAIL: builtins first-class -- ")
+           (display failures) (display " failure(s)") (newline)))
+(if (> failures 0) (exit 1) (exit 0))

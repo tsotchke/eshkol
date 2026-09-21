@@ -76,3 +76,28 @@
   (write (read p))
   (newline))
 ; Expected: (quote hello)
+
+; Quasiquote form (SW-80 — see tests/v1_3_edge_cases/runtime_reader_quasiquote_test.esk
+; for the full regression battery)
+(let ((p (open-input-string "`hello")))
+  (write (read p))
+  (newline))
+; Expected: (quasiquote hello)
+
+; Unquote form
+(let ((p (open-input-string ",hello")))
+  (write (read p))
+  (newline))
+; Expected: (unquote hello)
+
+; Unquote-splicing form
+(let ((p (open-input-string ",@hello")))
+  (write (read p))
+  (newline))
+; Expected: (unquote-splicing hello)
+
+; Quasiquote with unquote and unquote-splicing together
+(let ((p (open-input-string "`(a ,b ,@c)")))
+  (write (read p))
+  (newline))
+; Expected: (quasiquote (a (unquote b) (unquote-splicing c)))

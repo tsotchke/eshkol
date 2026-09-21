@@ -1,0 +1,72 @@
+id: SW-162
+bucket: LOUD-ERROR
+subtag: autodiff
+family: runtime-taylor/function-resolution
+status: closed
+closed_at: "fix/ad-exactness-is-a-runtime-property"
+closed_by: "branch fix/ad-exactness-is-a-runtime-property"
+title: "`taylor`/`derivative-n` failed to compile (\"Failed to resolve function for derivative\") when a function-call expression was passed directly as the differentiand"
+repro: >-
+  .scratch/ns_taylor_inline_call_argument_repro.esk.
+  `./build/eshkol-run -r .scratch/ns_taylor_inline_call_argument_repro.esk -L build`:
+    (define (mk a) (lambda (tau) (* a tau tau)))
+    (display (taylor (mk 3) 0 2)) (newline)
+    (let ((g (mk 4))) (display (derivative-n g 0 1)) (newline))
+  Found mechanizing examples/mathematics_navier_stokes_residual_order_n.esk
+  section 5.1: a `(display (taylor (make-residual X) 0 N)) …` diagnostic line
+  placed before a loop that also called `(derivative-n RR 0 n)` on a `let`-bound
+  RR made the whole file fail to compile, with no diagnostic pointing at either
+  call site.
+observed: >-
+  `ERROR: Failed to resolve function for derivative` at compile time; `eshkol-run
+  -r` refuses to produce an artifact at all. Each half compiles ALONE (an inline-
+  call `taylor` argument with no other tower-API call site in the file; a
+  let-bound `derivative-n` argument on its own) — it is specifically the
+  COMBINATION, in the same file, that fails.
+correct: >-
+  Compiles and answers exactly like the let-bound spelling of the same
+  function: `(taylor (mk 3) 0 2)` => `(0 0 3)`, `(derivative-n (mk 4) 0 1)` => `0`.
+  Passing a function-call expression directly as a differentiand is exactly as
+  meaningful as binding it to a variable first — both denote the same
+  closure value.
+root_cause: >-
+  lib/backend/autodiff_codegen.cpp `codegenDerivativeMonolith` resolves its
+  `function` argument via `resolve_lambda_callback_` (llvm_codegen.cpp
+  `resolveLambdaFunction`), which has cases only for ESHKOL_LAMBDA_OP, the
+  arithmetic-operator specials, and ESHKOL_VAR (by name, through the symbol
+  tables / builtin wrappers) — nothing for ESHKOL_CALL_OP. When that returns
+  null, the fallback ("RUNTIME FUNCTION PARAMETER FIX") ALSO gated on
+  `func_ast->type == ESHKOL_VAR`, so a CALL expression like `(mk 3)` fell
+  through both paths straight to the hard error. The file-combination
+  dependence (not the "isolation" claim in the original route-around comment,
+  which does not hold on this build) is consistent with this: the failure
+  fires the first time codegen reaches an unresolvable CALL_OP differentiand
+  in the compilation unit, so whichever tower-API call site is emitted first
+  determines which shows the error, not whether one exists in isolation.
+fix: >-
+  Added a GENERAL-EXPRESSION fallback to `codegenDerivativeMonolith`, tried
+  after the existing name-based lookups: when `func_ast` is not resolvable by
+  name at all, evaluate it as an ordinary expression via
+  `codegen_ast_callback_` and, if the result is a tagged closure value,
+  dispatch it through the SAME uniformly-typed closure-call ABI
+  (`closure_call_callback_`) the pre-existing local/captured-closure fallback
+  already used. This makes every expression position that names a
+  differentiand accept "any expression that evaluates to a procedure",
+  matching every other higher-order position in the language (funcall, map,
+  apply, ...) instead of requiring a bare lambda or a pre-bound variable.
+evidence: >-
+  tests/ad/exactness_runtime_property_test.esk section 4 (differentiand given
+  as a lambda / a top-level variable / a call expression / a let-bound closure
+  / `(compose …)`, each checked for both `exact?` and value; plus the exact
+  `taylor`+`derivative-n` combination from the original repro); JIT and AOT
+  (exactness_runtime_property_runtime_smoke, exactness_runtime_property_aot_smoke).
+caught_by: [examples/mathematics_navier_stokes_residual_order_n.esk authoring, 2026-09-09]
+missed_by: [ctest, icc-smoke, icc-readiness]
+notes: >-
+  LOUD-ERROR, not SILENT-WRONG: the compiler refused to emit an artifact
+  rather than answering something wrong. Sibling of SW-159/SW-160/SW-161 (the
+  exact tier's own eligibility gate, `adExactTowerEligible`, ALSO now accepts
+  a call-expression differentiand for `derivative`/`gradient`/`hessian` and
+  keeps it EXACT at an exact point, via the same general-expression fallback).
+  Landed together on fix/ad-exactness-is-a-runtime-property, which sits on top
+  of fix/ad-exact-rational-and-nesting (PR #630).

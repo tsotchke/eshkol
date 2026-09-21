@@ -1,0 +1,104 @@
+id: LE-18
+bucket: LOUD-ERROR
+subtag: crash
+status: closed
+title: "Native `(* (vector 1 2) 2)` SIGSEGVs: element-wise arithmetic dispatched on the LEFT operand only"
+repro: >-
+  Any binary arithmetic operator with a Scheme vector on the LEFT and a scalar
+  on the right, at top level or inside a function, on native codegen (`-r` JIT
+  and AOT alike):
+  `(display (* (vector 1 2) 2))`,
+  `(display (+ (vector 1 2) 1))`,
+  `(display (* (vector 1.0 2.0) 2))`,
+  `(define (scale x m) (* x m))` then `(display (scale (vector 1 2) 2))`, and
+  `(display (tensor-mul (vector 1.0 2.0) 2.0))`.
+  The CONTROL is the other operand order, `(display (* 2 (vector 1 2)))`, which
+  was already correct. Committed as
+  tests/features/vector_scalar_arithmetic_dispatch_test.esk,
+  tests/vm_parity/corpus/78_vector_scalar_arith_dispatch.esk and
+  tests/vm_parity/fatal/vector_scalar_arith.esk.
+observed: >-
+  A fatal SIGSEGV with NO diagnostic and exit 139 —
+  `[Eshkol] fatal signal: SIGSEGV (segmentation fault) at address
+  0x000000000000000a` for `*` with the scalar 2, `0x…09` for `+` with 1,
+  `0x…0a` for the inexact vector, and `0x4000000000000008` for
+  `(tensor-mul (vector 1.0 2.0) 2.0)`. The addresses are the SCALAR ITSELF plus
+  the 8-byte vector length header, which is what identifies the defect. The
+  runtime's signal handler then mis-attributed it: "this is most likely a stack
+  overflow (recursion too deep)". The reverse order raised
+  `Type error in tensor-mul: expected tensor, got integer` and exited 1.
+  A mixed carrier pair was worse than a crash — it was SILENT AND WRONG:
+  `(* (vector 1.0 2.0) (tensor 3.0 4.0))` printed `#(4967213448 0)` and exited 0.
+correct: >-
+  The same catchable type error in BOTH operand orders —
+  `Type error in tensor-mul: expected tensor, got integer` — and exit 1.
+  docs/reference/tensors/operations.md states the contract: "All binary
+  elementwise ops require two tensors of matching shape", with scalar broadcast
+  spelled as its own operator (`tensor-scale`), and documents this exact shape
+  as an error: `(tensor-pow (tensor 2.0 3.0) 2.0)  ;; ERROR: expected tensor,
+  got integer`. docs/COMPLETE_LANGUAGE_SPECIFICATION.md 4.1 gives `+`/`*` the
+  same element-wise-for-vectors/tensors contract, so a vector against a scalar
+  is a type error, not a broadcast. The mixed vector/tensor pair is the
+  element-wise product `#(3 8)`: a vector and a rank-1 tensor are two spellings
+  of one value.
+root_cause: >-
+  TensorCodegen::tensorArithmeticInternal (lib/backend/tensor_reduce_codegen.cpp)
+  chose its kernel from the LEFT operand alone — `isVector(arg1)` — and the
+  Scheme-vector kernel it selects, schemeVectorArithmetic
+  (lib/backend/tensor_arith_codegen.cpp), reads operand 2 as
+  `[len:i64][tagged_value elems...]` with no check at all: it int-to-ptrs the
+  raw payload and GEPs +8 to the element array. The scalar 2 therefore became a
+  load at 0xa. Only the RIGHT operand was ever type-checked, because the
+  not-a-vector branch routes both operands through
+  unpackTensorOperandChecked (ESH-0069), which does validate. So one operator
+  had two dispositions selected by which operand happened to be written first:
+  a catchable diagnostic, or a fatal signal. `guardHeapOperandsNumeric` in
+  ArithmeticCodegen did not catch it either — it rejects a heap operand of the
+  WRONG SUBTYPE (string, cons, …) but says nothing about a vector paired with a
+  non-heap scalar.
+impact: >-
+  Every `+ - * /` and every `tensor-add/sub/mul/div` in the language, on both
+  native paths (JIT and AOT), for the operand order a reader is most likely to
+  write. A SIGSEGV is not a failure a program can respond to: no `guard`
+  intercepts it, the process dies at 139 with no source location, and the
+  runtime's own handler blamed stack depth. The bytecode VM was never affected
+  — it raises `error: *: expected numeric operands` catchably — so this was
+  also a substrate divergence in which the FAST path was the unsafe one.
+fix_requires: >-
+  Carrier-first dispatch: classify BOTH operand positions before dereferencing
+  either. The Scheme-vector kernel now runs only when both operands are Scheme
+  vectors; every other combination goes to the tensor path, where
+  unpackTensorOperandChecked validates each side INDEPENDENTLY — coercing a
+  numeric vector or list to a 1-D tensor and raising the identical catchable
+  type error for a scalar in either position. That also fixes the mixed
+  vector/tensor silent-wrong: the vector is coerced and the product is computed
+  element-wise instead of the tensor struct being read as a vector.
+  Two supporting defects were found and fixed on the way, both of which the
+  one-sided dispatch had been hiding:
+  (1) TaggedValueCodegen::buildTaggedValue inserted a raw double into the i64
+  payload slot — IRBuilder does not type-check `insertvalue` in a release build
+  — producing a structurally malformed tagged value whose later readers emitted
+  invalid IR ("Load operand must be a pointer"); it now coerces the payload
+  bit-identically. (2) A raw double operand was tagged INT64, so the diagnostic
+  called a float an integer; it now keeps its DOUBLE tag ("got double").
+evidence: >-
+  tests/features/vector_scalar_arithmetic_dispatch_test.esk (30 checks: all six
+  reported forms, both operand orders for all four operators, the
+  through-a-function shape, the mixed vector/tensor product, and the
+  element-wise CONTROLS that must keep working);
+  tests/vm_parity/corpus/78_vector_scalar_arith_dispatch.esk (the rows native
+  and the VM agree on, across all four parity axes);
+  tests/vm_parity/fatal/vector_scalar_arith.esk (the unguarded form must fail
+  closed on both substrates: nonzero exit, a diagnostic, nothing printed past
+  the failing form).
+caught_by: [direct-measurement, user-report]
+missed_by: [icc-correctness-chain, icc-smoke, icc-readiness, ctest, vm-parity, features-suite]
+closed_at: "2132b1e5 (fix branch fix/vector-scalar-arithmetic-dispatch)"
+notes: >-
+  Bucket LOUD-ERROR, subtag crash: a SIGSEGV is loud, but it is the least
+  actionable kind of loud — no location, no catch, and a signal handler that
+  named the wrong cause. The mixed vector/tensor row inside the same defect WAS
+  silent-wrong (`#(4967213448 0)`, exit 0) and is closed by the same change; it
+  is recorded here rather than as a separate SILENT-WRONG entry because it has
+  one root cause and one fix with the crash.
+  Filed alongside LE-19, the diagnostic defect the same report surfaced.

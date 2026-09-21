@@ -1,0 +1,102 @@
+;;; builtins_first_class_test_10.esk — AUTO-GENERATED, do not hand-edit.
+;;;
+;;; Chunk 10 of 17 of the LE-16 first-class-builtins audit. Regenerate
+;;; ALL chunks (this file is one of several — see the module docstring in
+;;; the generator for why) with:
+;;;     python3 scripts/gen_builtins_first_class_test.py
+;;; Source of truth: tests/coverage/language_surface.json +
+;;; tests/coverage/builtins_first_class_known_args.json. See LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml for the root cause and the fix.
+;;;
+;;; Every builtin that can be called in operator position must also be a
+;;; first-class value: it must evaluate to a procedure, survive being
+;;; stored (let), passed to a user higher-order procedure, mapped, and
+;;; applied — and, wherever this audit could verify a real call safely
+;;; (i.e. without executing an FFI/GPU/atomics/pointer side effect), a
+;;; value-position call must compute the identical answer to the same
+;;; call in operator position. This chunk carries 50 such checks.
+
+;; hN calls its first argument with N further arguments. Each is a bare
+;; PARAMETER, so its value must be a real callable — there is no name here
+;; for codegenCall to special-case; this is what forces the value-position
+;; route (codegenVariable / resolveLambdaFunction) rather than the call-site
+;; lowering, which was never broken.
+(define (h0 f) (f))
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+(define (h5 f a b c d e) (f a b c d e))
+(define (__id x) x)
+;; Shared hash-table fixture for the hash-category call-correctness checks
+;; below (mirrors scripts/run_value_position_sweep.py's own __ht convention).
+(define __ht (make-hash-table))
+(hash-table-set! __ht 1 10)
+
+(define failures 0)
+(define checked 0)
+(define (check name ok)
+  (set! checked (+ checked 1))
+  (if ok
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name) (newline))))
+
+(check "parallel-fold::value" (and (procedure? parallel-fold) (let ((f parallel-fold)) (procedure? f)) (procedure? (__id parallel-fold)) (procedure? (car (map __id (list parallel-fold)))) (procedure? (apply __id (list parallel-fold)))))
+(check "parallel-for-each::value" (and (procedure? parallel-for-each) (let ((f parallel-for-each)) (procedure? f)) (procedure? (__id parallel-for-each)) (procedure? (car (map __id (list parallel-for-each)))) (procedure? (apply __id (list parallel-for-each)))))
+(check "parallel-map::value" (and (procedure? parallel-map) (let ((f parallel-map)) (procedure? f)) (procedure? (__id parallel-map)) (procedure? (car (map __id (list parallel-map)))) (procedure? (apply __id (list parallel-map)))))
+(check "parameter?::value" (and (procedure? parameter?) (let ((f parameter?)) (procedure? f)) (procedure? (__id parameter?)) (procedure? (car (map __id (list parameter?)))) (procedure? (apply __id (list parameter?)))))
+(check "parse-iso8601::value" (and (procedure? parse-iso8601) (let ((f parse-iso8601)) (procedure? f)) (procedure? (__id parse-iso8601)) (procedure? (car (map __id (list parse-iso8601)))) (procedure? (apply __id (list parse-iso8601)))))
+(check "path-basename::value" (and (procedure? path-basename) (let ((f path-basename)) (procedure? f)) (procedure? (__id path-basename)) (procedure? (car (map __id (list path-basename)))) (procedure? (apply __id (list path-basename)))))
+(check "path-dirname::value" (and (procedure? path-dirname) (let ((f path-dirname)) (procedure? f)) (procedure? (__id path-dirname)) (procedure? (car (map __id (list path-dirname)))) (procedure? (apply __id (list path-dirname)))))
+(check "path-extname::value" (and (procedure? path-extname) (let ((f path-extname)) (procedure? f)) (procedure? (__id path-extname)) (procedure? (car (map __id (list path-extname)))) (procedure? (apply __id (list path-extname)))))
+(check "path-is-absolute?::value" (and (procedure? path-is-absolute?) (let ((f path-is-absolute?)) (procedure? f)) (procedure? (__id path-is-absolute?)) (procedure? (car (map __id (list path-is-absolute?)))) (procedure? (apply __id (list path-is-absolute?)))))
+(check "path-join::value" (and (procedure? path-join) (let ((f path-join)) (procedure? f)) (procedure? (__id path-join)) (procedure? (car (map __id (list path-join)))) (procedure? (apply __id (list path-join)))))
+(check "path-normalize::value" (and (procedure? path-normalize) (let ((f path-normalize)) (procedure? f)) (procedure? (__id path-normalize)) (procedure? (car (map __id (list path-normalize)))) (procedure? (apply __id (list path-normalize)))))
+(check "path-relative::value" (and (procedure? path-relative) (let ((f path-relative)) (procedure? f)) (procedure? (__id path-relative)) (procedure? (car (map __id (list path-relative)))) (procedure? (apply __id (list path-relative)))))
+(check "path-resolve::value" (and (procedure? path-resolve) (let ((f path-resolve)) (procedure? f)) (procedure? (__id path-resolve)) (procedure? (car (map __id (list path-resolve)))) (procedure? (apply __id (list path-resolve)))))
+(check "peek-char::value" (and (procedure? peek-char) (let ((f peek-char)) (procedure? f)) (procedure? (__id peek-char)) (procedure? (car (map __id (list peek-char)))) (procedure? (apply __id (list peek-char)))))
+(check "peek-u8::value" (and (procedure? peek-u8) (let ((f peek-u8)) (procedure? f)) (procedure? (__id peek-u8)) (procedure? (car (map __id (list peek-u8)))) (procedure? (apply __id (list peek-u8)))))
+(check "poll-fd::value" (and (procedure? poll-fd) (let ((f poll-fd)) (procedure? f)) (procedure? (__id poll-fd)) (procedure? (car (map __id (list poll-fd)))) (procedure? (apply __id (list poll-fd)))))
+(check "popcount::value" (and (procedure? popcount) (let ((f popcount)) (procedure? f)) (procedure? (__id popcount)) (procedure? (car (map __id (list popcount)))) (procedure? (apply __id (list popcount)))))
+(check "port?::value" (and (procedure? port?) (let ((f port?)) (procedure? f)) (procedure? (__id port?)) (procedure? (car (map __id (list port?)))) (procedure? (apply __id (list port?)))))
+(check "positional-encoding::value" (and (procedure? positional-encoding) (let ((f positional-encoding)) (procedure? f)) (procedure? (__id positional-encoding)) (procedure? (car (map __id (list positional-encoding)))) (procedure? (apply __id (list positional-encoding)))))
+(check "positive?::value" (and (procedure? positive?) (let ((f positive?)) (procedure? f)) (procedure? (__id positive?)) (procedure? (car (map __id (list positive?)))) (procedure? (apply __id (list positive?)))))
+(check "pow::value" (and (procedure? pow) (let ((f pow)) (procedure? f)) (procedure? (__id pow)) (procedure? (car (map __id (list pow)))) (procedure? (apply __id (list pow)))))
+(check "prevent-sleep::value" (and (procedure? prevent-sleep) (let ((f prevent-sleep)) (procedure? f)) (procedure? (__id prevent-sleep)) (procedure? (car (map __id (list prevent-sleep)))) (procedure? (apply __id (list prevent-sleep)))))
+(check "prng-random::value" (and (procedure? prng-random) (let ((f prng-random)) (procedure? f)) (procedure? (__id prng-random)) (procedure? (car (map __id (list prng-random)))) (procedure? (apply __id (list prng-random)))))
+(check "prng-random-integer::value" (and (procedure? prng-random-integer) (let ((f prng-random-integer)) (procedure? f)) (procedure? (__id prng-random-integer)) (procedure? (car (map __id (list prng-random-integer)))) (procedure? (apply __id (list prng-random-integer)))))
+(check "prng?::value" (and (procedure? prng?) (let ((f prng?)) (procedure? f)) (procedure? (__id prng?)) (procedure? (car (map __id (list prng?)))) (procedure? (apply __id (list prng?)))))
+(check "procedure-arity::value" (and (procedure? procedure-arity) (let ((f procedure-arity)) (procedure? f)) (procedure? (__id procedure-arity)) (procedure? (car (map __id (list procedure-arity)))) (procedure? (apply __id (list procedure-arity)))))
+(check "procedure?::value" (and (procedure? procedure?) (let ((f procedure?)) (procedure? f)) (procedure? (__id procedure?)) (procedure? (car (map __id (list procedure?)))) (procedure? (apply __id (list procedure?)))))
+(check "process-kill::value" (and (procedure? process-kill) (let ((f process-kill)) (procedure? f)) (procedure? (__id process-kill)) (procedure? (car (map __id (list process-kill)))) (procedure? (apply __id (list process-kill)))))
+(check "process-kill-tree::value" (and (procedure? process-kill-tree) (let ((f process-kill-tree)) (procedure? f)) (procedure? (__id process-kill-tree)) (procedure? (car (map __id (list process-kill-tree)))) (procedure? (apply __id (list process-kill-tree)))))
+(check "process-pid::value" (and (procedure? process-pid) (let ((f process-pid)) (procedure? f)) (procedure? (__id process-pid)) (procedure? (car (map __id (list process-pid)))) (procedure? (apply __id (list process-pid)))))
+(check "process-read-nonblocking::value" (and (procedure? process-read-nonblocking) (let ((f process-read-nonblocking)) (procedure? f)) (procedure? (__id process-read-nonblocking)) (procedure? (car (map __id (list process-read-nonblocking)))) (procedure? (apply __id (list process-read-nonblocking)))))
+(check "process-setpgid::value" (and (procedure? process-setpgid) (let ((f process-setpgid)) (procedure? f)) (procedure? (__id process-setpgid)) (procedure? (car (map __id (list process-setpgid)))) (procedure? (apply __id (list process-setpgid)))))
+(check "process-spawn::value" (and (procedure? process-spawn) (let ((f process-spawn)) (procedure? f)) (procedure? (__id process-spawn)) (procedure? (car (map __id (list process-spawn)))) (procedure? (apply __id (list process-spawn)))))
+(check "process-spawn-pty::value" (and (procedure? process-spawn-pty) (let ((f process-spawn-pty)) (procedure? f)) (procedure? (__id process-spawn-pty)) (procedure? (car (map __id (list process-spawn-pty)))) (procedure? (apply __id (list process-spawn-pty)))))
+(check "process-wait::value" (and (procedure? process-wait) (let ((f process-wait)) (procedure? f)) (procedure? (__id process-wait)) (procedure? (car (map __id (list process-wait)))) (procedure? (apply __id (list process-wait)))))
+(check "promise?::value" (and (procedure? promise?) (let ((f promise?)) (procedure? f)) (procedure? (__id promise?)) (procedure? (car (map __id (list promise?)))) (procedure? (apply __id (list promise?)))))
+(check "ptr->string::value" (and (procedure? ptr->string) (let ((f ptr->string)) (procedure? f)) (procedure? (__id ptr->string)) (procedure? (car (map __id (list ptr->string)))) (procedure? (apply __id (list ptr->string)))))
+(check "ptr->string-n::value" (and (procedure? ptr->string-n) (let ((f ptr->string-n)) (procedure? f)) (procedure? (__id ptr->string-n)) (procedure? (car (map __id (list ptr->string-n)))) (procedure? (apply __id (list ptr->string-n)))))
+(check "quantum-random::value" (and (procedure? quantum-random) (let ((f quantum-random)) (procedure? f)) (procedure? (__id quantum-random)) (procedure? (car (map __id (list quantum-random)))) (procedure? (apply __id (list quantum-random)))))
+(check "quantum-random-int::value" (and (procedure? quantum-random-int) (let ((f quantum-random-int)) (procedure? f)) (procedure? (__id quantum-random-int)) (procedure? (car (map __id (list quantum-random-int)))) (procedure? (apply __id (list quantum-random-int)))))
+(check "quantum-random-range::value" (and (procedure? quantum-random-range) (let ((f quantum-random-range)) (procedure? f)) (procedure? (__id quantum-random-range)) (procedure? (car (map __id (list quantum-random-range)))) (procedure? (apply __id (list quantum-random-range)))))
+(check "quotient::value" (and (procedure? quotient) (let ((f quotient)) (procedure? f)) (procedure? (__id quotient)) (procedure? (car (map __id (list quotient)))) (procedure? (apply __id (list quotient)))))
+(check "rand::value" (and (procedure? rand) (let ((f rand)) (procedure? f)) (procedure? (__id rand)) (procedure? (car (map __id (list rand)))) (procedure? (apply __id (list rand)))))
+(check "randint::value" (and (procedure? randint) (let ((f randint)) (procedure? f)) (procedure? (__id randint)) (procedure? (car (map __id (list randint)))) (procedure? (apply __id (list randint)))))
+(check "randn::value" (and (procedure? randn) (let ((f randn)) (procedure? f)) (procedure? (__id randn)) (procedure? (car (map __id (list randn)))) (procedure? (apply __id (list randn)))))
+(check "random::value" (and (procedure? random) (let ((f random)) (procedure? f)) (procedure? (__id random)) (procedure? (car (map __id (list random)))) (procedure? (apply __id (list random)))))
+(check "rational?::value" (and (procedure? rational?) (let ((f rational?)) (procedure? f)) (procedure? (__id rational?)) (procedure? (car (map __id (list rational?)))) (procedure? (apply __id (list rational?)))))
+(check "rationalize::value" (and (procedure? rationalize) (let ((f rationalize)) (procedure? f)) (procedure? (__id rationalize)) (procedure? (car (map __id (list rationalize)))) (procedure? (apply __id (list rationalize)))))
+(check "read::value" (and (procedure? read) (let ((f read)) (procedure? f)) (procedure? (__id read)) (procedure? (car (map __id (list read)))) (procedure? (apply __id (list read)))))
+(check "read-bytevector::value" (and (procedure? read-bytevector) (let ((f read-bytevector)) (procedure? f)) (procedure? (__id read-bytevector)) (procedure? (car (map __id (list read-bytevector)))) (procedure? (apply __id (list read-bytevector)))))
+
+(display "checked=") (display checked) (newline)
+(display "failures=") (display failures) (newline)
+(if (= failures 0)
+    (begin (display "PASS: builtins first-class -- 0 failures") (newline))
+    (begin (display "FAIL: builtins first-class -- ")
+           (display failures) (display " failure(s)") (newline)))
+(if (> failures 0) (exit 1) (exit 0))

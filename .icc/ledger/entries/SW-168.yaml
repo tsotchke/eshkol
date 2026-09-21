@@ -1,0 +1,72 @@
+id: SW-168
+bucket: SILENT-WRONG
+status: closed
+closed_at: "fix/vm-quote-exact-literals"
+title: "VM quote/quasiquote lowering silently mishandled its own rational-literal desugar and a quasiquoted bignum atom"
+repro: >-
+  `(display (exact? '1/3))`, `(display '1/3)`, and
+  `` (display `123456789012345678901234567890) `` run on the bytecode VM
+  standalone (`./build/eshkol-vm-standalone-test`), both from source and via
+  ESKB round-trip. Native (`./build/eshkol-run -r` / AOT) was already correct
+  here since SW-163 (#645).
+observed: >-
+  `(exact? '1/3)` was `#f` and `'1/3` displayed as `(exact-rational 1 3)`.
+  `lib/backend/vm_parser.c`'s `compile_quote()` had no case for the VM
+  reader's OWN rational-literal desugar: `1/3` syntax reads to the list node
+  `(exact-rational num denom)` (a different desugar name than native's
+  `make-rational` — see the `/` handling in the VM's number reader), and the
+  EVALUATED path already recognized this exact shape
+  (`lib/backend/vm_compiler.c`'s `exact-rational` special form, native call
+  330) and built the real rational value — but `compile_quote()` fell
+  through to its generic `N_LIST` case and quoted the shape as ordinary list
+  data. `(car '1/3)` was the SYMBOL `exact-rational`, not a number, and
+  `(number? '1/3)` was `#f`.
+
+  A related, separate gap in `compile_quasiquote()` (`lib/backend/
+  vm_compiler.c`): its "Atom: number" arm tested only `is_int` and a raw
+  `numval` compare, ignoring the reader's `is_bignum` flag entirely (the
+  same three-way discrimination `compile_quote()` already applied per
+  SW-155/SW-156). A quasiquoted bignum atom
+  (`` `123456789012345678901234567890 ``) silently collapsed to a lossy
+  inexact double instead of staying the exact bignum, and the same
+  generic-list gap applied to a quasiquoted `(exact-rational n d)` shape.
+correct: >-
+  A quoted or quasiquoted numeric literal is the same runtime value an
+  evaluated one is. `(exact? '1/3)` is `#t`; `(number->string '1/3)` is
+  `"1/3"`; `(car '(1/3 123456789012345678901234567890 . 2/7))` is the exact
+  rational `1/3`, and the list's final cdr is the exact rational `2/7`, not
+  dropped or mistyped. `` (number->string `123456789012345678901234567890) ``
+  is `"123456789012345678901234567890"`, staying exact through quasiquote.
+fixed_by: >-
+  `lib/backend/vm_parser.c`: `compile_quote()` gained a dedicated
+  `exact-rational` case — guarded to both operand children being `N_NUMBER`
+  nodes (the only shape the reader's own desugar can produce; a hand-written
+  `'(exact-rational x 3)` with a non-literal/symbol operand is unaffected
+  and still quotes as list data, the identical narrow-whitelist discipline
+  SW-163's native `isQuotedRationalLiteralDesugar()` applies for the same
+  reason) — that compiles each operand through `compile_quote()` (so a
+  bignum-magnitude half still reads exactly) and dispatches to the same
+  native call 330 the evaluated `exact-rational` special form uses.
+  `lib/backend/vm_compiler.c`: `compile_quasiquote()` gained the identical
+  `exact-rational` case, and its numeric-atom arm now delegates to
+  `compile_quote()` instead of duplicating a stale subset of its
+  discrimination — both files are concatenated into one translation unit via
+  `eshkol_vm.c`'s `#include` chain (vm_parser.c before vm_compiler.c), so
+  `compile_quote()` is already defined and callable from `compile_quasiquote()`
+  with no forward declaration.
+evidence: >-
+  `tests/vm/quote_exact_literals_test.esk` (ctest
+  `quote_exact_literals_vm_smoke`, run via `eshkol-vm-standalone-test`) —
+  35/35, covering the task's exact repro (`'1/3`, a quoted bignum, a dotted
+  pair mixing rational/bignum elements, a quasiquote template mixing
+  `unquote` with rational and bignum literal atoms, nested quoted vectors
+  built with `vector`, `equal?` between quoted and evaluated forms), and
+  negative controls (an inexact literal stays inexact quoted and
+  quasiquoted, a verbatim `|1/3|` symbol stays a symbol, and a genuine
+  `(exact-rational x 3)` list with a variable operand still quotes as list
+  data). `tests/vm_parity/corpus/81_vm_quote_exact_literals.esk` matches
+  byte-for-byte across native `-r`, VM source and VM ESKB via
+  `scripts/run_vm_parity.sh` (243 passed, 0 failed). `./scripts/
+  run_all_tests.sh` green (46/46 suites, 848/848 individual tests).
+caught_by: [task-assigned-repro]
+missed_by: [icc-readiness, ctest, vm-parity-corpus-pre-81, sw-163]

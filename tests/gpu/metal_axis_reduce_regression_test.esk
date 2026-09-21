@@ -1,0 +1,101 @@
+;; Metal axis-reduce regression test (tensor-sum / tensor-mean along an axis).
+;;
+;; Regression for two soft-float bugs in lib/backend/gpu/metal_softfloat.h
+;; that together corrupted the Metal GPU axis-reduce kernel's MEAN result
+;; while leaving SUM (no division) exact:
+;;   1. sf64_div accumulated each restoring-division quotient bit at bit
+;;      position `i` instead of the low bit, doubling its effective shift
+;;      on every subsequent iteration.
+;;   2. sf64_from_int shifted the integer's leading bit to bit 20 of the
+;;      high word instead of bit 52 of the (hi:lo) mantissa pair, scrambling
+;;      the mantissa of the divisor built for MEAN's divide-by-count.
+;;
+;; Exercises non-square shapes so an axis-dependent stride/indexing bug
+;; would also be caught, with the GPU dispatch threshold forced down so
+;; both shapes (including the one below the default threshold) always
+;; reach the Metal kernel instead of the CPU fallback.
+
+(extern i32 gpu-init :real eshkol_gpu_init)
+(extern i32 gpu-get-backend :real eshkol_gpu_get_backend)
+(extern void gpu-set-threshold i64 :real eshkol_gpu_set_threshold)
+(extern i32 gpu-should-use i64 :real eshkol_gpu_should_use)
+
+(define gate-failures 0)
+
+(define (check-exact label actual expected)
+  (if (= actual expected)
+      (begin (display "PASS: ") (display label) (display " = ") (display actual))
+      (begin (set! gate-failures (+ gate-failures 1))
+             (display "FAIL: ") (display label) (display " got ") (display actual)
+             (display " expected exactly ") (display expected)))
+  (newline))
+
+(define (check-tol label actual expected tol)
+  (if (< (abs (- actual expected)) tol)
+      (begin (display "PASS: ") (display label) (display " = ") (display actual))
+      (begin (set! gate-failures (+ gate-failures 1))
+             (display "FAIL: ") (display label) (display " got ") (display actual)
+             (display " expected ") (display expected) (display " +/- ") (display tol)))
+  (newline))
+
+(define gpu-ready (gpu-init))
+(if (= gpu-ready 0)
+    (begin
+      (display "SKIP: no active GPU backend on this host") (newline)
+      (display "PASS: metal_axis_reduce_regression_test (skipped, no GPU backend)") (newline)
+      (exit 0))
+    0)
+
+(define backend (gpu-get-backend))
+;; ESHKOL_GPU_METAL = 1 (inc/eshkol/backend/gpu/gpu_memory.h)
+(if (not (= backend 1))
+    (begin
+      (display "SKIP: active GPU backend is not Metal (backend code=")
+      (display backend) (display ")") (newline)
+      (display "PASS: metal_axis_reduce_regression_test (skipped, non-Metal backend)") (newline)
+      (exit 0))
+    0)
+
+;; Force the dispatch threshold down so both shapes below (120000 and 7168
+;; elements) always cross it and exercise the Metal kernel rather than the
+;; CPU fallback -- the smaller shape is below the default 100000 threshold.
+(gpu-set-threshold 1)
+
+(if (or (= (gpu-should-use 120000) 0) (= (gpu-should-use 7168) 0))
+    (begin
+      (display "SKIP: GPU threshold does not admit these element counts even after lowering it")
+      (newline)
+      (display "PASS: metal_axis_reduce_regression_test (skipped, threshold)") (newline)
+      (exit 0))
+    0)
+
+;; --- Shape A: 400 x 300 (120000 elements), values 1..120000 ---
+(define A (reshape (arange 1 120001) 400 300))
+
+;; axis=1 reduces the 300-wide row: row 0 = [1..300]
+;; sum = 300*301/2 = 45150 (exact integer-valued double); mean = 150.5
+(check-exact "400x300 tensor-sum axis=1 row0" (tensor-get (tensor-sum A 1) 0) 45150.0)
+(check-tol "400x300 tensor-mean axis=1 row0" (tensor-get (tensor-mean A 1) 0) 150.5 1e-9)
+
+;; axis=0 reduces the 400-tall column: col 0 = 1, 301, 601, ..., step 300, 400 terms
+;; sum = 400 + 300*(399*400/2) = 400 + 23940000 = 23940400; mean = 59851.0
+(check-exact "400x300 tensor-sum axis=0 col0" (tensor-get (tensor-sum A 0) 0) 23940400.0)
+(check-tol "400x300 tensor-mean axis=0 col0" (tensor-get (tensor-mean A 0) 0) 59851.0 1e-6)
+
+;; --- Shape B: 7 x 1024 (7168 elements), values 1..7168 ---
+(define B (reshape (arange 1 7169) 7 1024))
+
+;; axis=1 reduces the 1024-wide row: row 0 = [1..1024]
+;; sum = 1024*1025/2 = 524800; mean = 512.5
+(check-exact "7x1024 tensor-sum axis=1 row0" (tensor-get (tensor-sum B 1) 0) 524800.0)
+(check-tol "7x1024 tensor-mean axis=1 row0" (tensor-get (tensor-mean B 1) 0) 512.5 1e-9)
+
+;; axis=0 reduces the 7-tall column: col 0 = 1, 1025, 2049, ..., step 1024, 7 terms
+;; sum = 7 + 1024*(0+1+...+6) = 7 + 1024*21 = 21511; mean = 21511/7 = 3073.0
+(check-exact "7x1024 tensor-sum axis=0 col0" (tensor-get (tensor-sum B 0) 0) 21511.0)
+(check-tol "7x1024 tensor-mean axis=0 col0" (tensor-get (tensor-mean B 0) 0) 3073.0 1e-6)
+
+(if (= gate-failures 0)
+    (begin (display "PASS: metal_axis_reduce_regression_test") (newline) (exit 0))
+    (begin (display "FAIL: metal_axis_reduce_regression_test (") (display gate-failures)
+           (display " check(s) failed)") (newline) (exit 1)))

@@ -1,0 +1,36 @@
+# Browser-REPL transcript expectations for the WASM `repl_eval` surface.
+#
+# Consumed by scripts/run_wasm_differential.sh (drives scripts/lib/
+# wasm_repl_runner.js).  This gates the entry point the website's REPL and
+# every runnable docs code block call — `repl_eval` — which the batch
+# execute-and-diff sweep never touches, because that sweep drives
+# `run_program`.
+#
+# WHAT IS BEING ASSERTED
+# ----------------------
+# Emscripten hands stdout to the embedder's `print` callback one COMPLETE
+# LINE at a time (site/static/index.html accumulates `text + '\n'` per call).
+# So a REPL answer only reaches the page if it is newline-TERMINATED, and the
+# expected column below is the list of finished lines the page receives — not
+# "the characters the VM wrote".  An answer that loses its terminator shows up
+# here as an empty transcript, which is exactly what the browser shows.
+#
+# The cases run IN ORDER against ONE persistent session: definitions made by
+# an earlier row must still be in scope in a later one, so the session's
+# persistence is under test too.
+#
+# Columns (TAB-separated):
+#   1  expression   Eshkol source handed to repl_eval() verbatim
+#   2  transcript   expected complete lines, joined by the two characters
+#                   \ and n; EMPTY means the page receives nothing
+#   3  note         why this row is here
+#
+(+ 1 2)	3	auto-print of a value answer is one terminated line
+(define (sq x) (* x x))		a definition is not an answer — no transcript line
+(sq 12)	144	the definition from the previous eval is still in scope
+(string-append "eshkol" "-" "repl")	eshkol-repl	string answers print in display syntax, unquoted
+(apply vector (list 1 2 3))	#(1 2 3)	apply + vector answer round-trips through the echo
+(map (lambda (x) (* 2 x)) (list 1 2 3))	(2 4 6)	stdlib higher-order call through the persistent session
+(display "hi")		display writes a FRAGMENT — no terminator, so no line yet
+(newline)	hi	the pending "hi" fragment completes into a line here
+(begin (display "a") (newline) 7)	a\n7	explicit output line, then the auto-printed answer line

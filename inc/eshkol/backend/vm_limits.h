@@ -7,6 +7,18 @@
 #define ESHKOL_BACKEND_VM_LIMITS_H
 
 #include <limits.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+/* Shared by the bytecode VM and standalone tensor consumers. */
+extern uint64_t g_eshkol_vm_max_tensor_elements;
+extern int g_eshkol_vm_tensor_limit_active;
+void eshkol_vm_install_tensor_limit(uint64_t max_elements, int active);
+#ifdef __cplusplus
+}
+#endif
 
 /* Desktop defaults. Embedded/product profiles should override these through
  * CMake target definitions instead of editing VM sources. */

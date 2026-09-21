@@ -19,6 +19,8 @@
  * uses; arena_get_used_memory is linked from lib/core/arena_memory.c. */
 extern size_t arena_get_used_memory(const void* a);
 #include <errno.h>
+#include "model_io_atomic.h"
+#include "eshkol/eshkol.h"
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -117,6 +119,7 @@ extern void* arena_allocate_cons_with_header(void* arena);
 extern int64_t eshkol_string_byte_length(const char* s);
 extern int eshkol_capability_runtime_allows(const char* capability);
 extern void eshkol_capability_runtime_deny(const char* capability);
+extern int eshkol_capability_require(const char* capability);
 /* ESH-0228: raise a proper R7RS type error (formats "Type error in <proc>:
  * expected <type>" and terminates via ESHKOL_EXCEPTION_TYPE_ERROR). Declared
  * here rather than via runtime.h, which pulls in the C++/C23 tagged-value
@@ -140,6 +143,7 @@ typedef struct {
 #define SYS_TYPE_BOOL    3
 #define SYS_TYPE_CHAR    4
 #define SYS_TYPE_HEAP_PTR 8
+#define SYS_TYPE_CALLABLE 9
 
 /** Construct a tagged null (empty-list / unspecified) value. */
 static eshkol_sysbuiltin_value_t sys_make_null(void) {
@@ -242,9 +246,7 @@ static const char* sys_extract_string(eshkol_sysbuiltin_value_t v) {
  *  as a guard at the top of security-sensitive builtins (process spawn,
  *  filesystem mutation, network access, etc). */
 static int sys_require_capability(const char* capability) {
-    if (eshkol_capability_runtime_allows(capability)) return 1;
-    eshkol_capability_runtime_deny(capability);
-    return 0;
+    return eshkol_capability_require(capability);
 }
 
 /** Extract an int64 from a tagged value, truncating a double via cast if
@@ -670,6 +672,8 @@ extern uint64_t eshkol_ad_counter_primal_calls(void);
 extern uint64_t eshkol_ad_counter_reverse_passes(void);
 extern uint64_t eshkol_ad_counter_tape_allocations(void);
 extern uint64_t eshkol_ad_counter_tape_nodes(void);
+extern uint64_t eshkol_ad_counter_scalar_ad_nodes(void);
+extern uint64_t eshkol_ad_counter_tensor_ad_nodes(void);
 extern uint64_t eshkol_ad_counter_finite_difference_evals(void);
 extern void eshkol_ad_count_fd(void);
 
@@ -689,6 +693,14 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_ad_reverse_passes_v(void) {
 /** Implements `(ad-tape-allocations)`: reverse-mode tapes allocated since reset. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_ad_tape_allocations_v(void) {
     return sys_make_int64((int64_t)eshkol_ad_counter_tape_allocations());
+}
+/** Implements `(ad-scalar-ad-nodes)`: scalar reverse nodes since reset. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_ad_scalar_ad_nodes_v(void) {
+    return sys_make_int64((int64_t)eshkol_ad_counter_scalar_ad_nodes());
+}
+/** Implements `(ad-tensor-ad-nodes)`: tensor reverse nodes since reset. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_ad_tensor_ad_nodes_v(void) {
+    return sys_make_int64((int64_t)eshkol_ad_counter_tensor_ad_nodes());
 }
 /** Implements `(ad-finite-difference-evals)`: finite-difference evaluations since reset. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_ad_finite_difference_evals_v(void) {
@@ -712,14 +724,19 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_ad_note_finite_difference_v(void
 }
 /** Implements `(ad-counters)`: an assoc list of every AD counter, e.g.
  *  ((primal-calls . 1) (reverse-passes . 1) (tape-allocations . 1)
- *   (tape-nodes . N) (finite-difference-evals . 0)). Built by prepending, so
- *  entries are listed in this order. */
+ *   (tape-nodes . N) (scalar-ad-nodes . S) (tensor-ad-nodes . T)
+ *   (finite-difference-evals . 0)). Built by prepending, so entries are listed
+ *  in this order. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_ad_counters_v(void) {
     eshkol_sysbuiltin_value_t result = sys_make_null();
     result = sys_make_pair(sys_alist_entry("finite-difference-evals",
         sys_make_int64((int64_t)eshkol_ad_counter_finite_difference_evals())), result);
     result = sys_make_pair(sys_alist_entry("tape-nodes",
         sys_make_int64((int64_t)eshkol_ad_counter_tape_nodes())), result);
+    result = sys_make_pair(sys_alist_entry("tensor-ad-nodes",
+        sys_make_int64((int64_t)eshkol_ad_counter_tensor_ad_nodes())), result);
+    result = sys_make_pair(sys_alist_entry("scalar-ad-nodes",
+        sys_make_int64((int64_t)eshkol_ad_counter_scalar_ad_nodes())), result);
     result = sys_make_pair(sys_alist_entry("tape-allocations",
         sys_make_int64((int64_t)eshkol_ad_counter_tape_allocations())), result);
     result = sys_make_pair(sys_alist_entry("reverse-passes",
@@ -5194,6 +5211,8 @@ void eshkol_builtin_ad_reset_counters(sv_t* out) { *out = eshkol_builtin_ad_rese
 void eshkol_builtin_ad_primal_calls(sv_t* out) { *out = eshkol_builtin_ad_primal_calls_v(); }
 void eshkol_builtin_ad_reverse_passes(sv_t* out) { *out = eshkol_builtin_ad_reverse_passes_v(); }
 void eshkol_builtin_ad_tape_allocations(sv_t* out) { *out = eshkol_builtin_ad_tape_allocations_v(); }
+void eshkol_builtin_ad_scalar_ad_nodes(sv_t* out) { *out = eshkol_builtin_ad_scalar_ad_nodes_v(); }
+void eshkol_builtin_ad_tensor_ad_nodes(sv_t* out) { *out = eshkol_builtin_ad_tensor_ad_nodes_v(); }
 void eshkol_builtin_ad_finite_difference_evals(sv_t* out) { *out = eshkol_builtin_ad_finite_difference_evals_v(); }
 void eshkol_builtin_ad_note_finite_difference(sv_t* out) { *out = eshkol_builtin_ad_note_finite_difference_v(); }
 void eshkol_builtin_ad_counters(sv_t* out) { *out = eshkol_builtin_ad_counters_v(); }
@@ -5380,7 +5399,27 @@ void eshkol_builtin_workspace_p(sv_t* out, const sv_t* a) {
     *out = check_heap_subtype(*a, HST_WORKSPACE);
 }
 void eshkol_builtin_tensor_p(sv_t* out, const sv_t* a) {
+    /* Dense reverse-mode tensor results are callable AD nodes while the tape
+     * is active.  Their representation must not change the observable tensor
+     * predicate (SW-188). */
+    if (a->type == SYS_TYPE_CALLABLE && a->data) {
+        const struct ad_node* node = (const struct ad_node*)(uintptr_t)a->data;
+        const eshkol_object_header_t* header = ESHKOL_GET_HEADER((void*)(uintptr_t)a->data);
+        if (eshkol_callable_subtype_is_declared(header->subtype) &&
+            header->subtype == CALLABLE_SUBTYPE_AD_NODE && node->tensor_value) {
+            *out = sys_make_bool(1);
+            return;
+        }
+    }
     *out = check_heap_subtype(*a, HST_TENSOR);
+    /* ADR-0020: a carrier promoted by a non-numeric store is no longer a
+     * numeric tensor -- it is the heterogeneous vector it became, which is
+     * what the bytecode VM answers for the same program. Its dtype (field 4 of
+     * the descriptor, 8 bytes each) records the promotion. */
+    if (out->data) {
+        const uint64_t* descriptor = (const uint64_t*)(uintptr_t)a->data;
+        if (descriptor[4] == 65u /* ESHKOL_TENSOR_DTYPE_BOXED */) out->data = 0;
+    }
 }
 void eshkol_builtin_dual_p(sv_t* out, const sv_t* a) {
     /* Dual numbers have type 6 (ESHKOL_VALUE_DUAL_NUMBER) — they do not

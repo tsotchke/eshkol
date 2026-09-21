@@ -1,0 +1,21 @@
+;; Type System Test: components of cons/list patterns and names bound by an or
+;; pattern are not tracked through destructuring, so they are Value and any use
+;; of them stays silent.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (parts v)
+  (match v
+    ((cons a b) (+ (label a) (area b 1)))
+    ((list x y z) (area x (label z)))
+    ((or (? number? q) (? string? q)) (label q))
+    (_ 0)))
+(display (parts (cons "ab" 2)))
+(newline)
+
+(display (area 2 3))
+(newline)

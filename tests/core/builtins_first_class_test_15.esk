@@ -1,0 +1,102 @@
+;;; builtins_first_class_test_15.esk — AUTO-GENERATED, do not hand-edit.
+;;;
+;;; Chunk 15 of 17 of the LE-16 first-class-builtins audit. Regenerate
+;;; ALL chunks (this file is one of several — see the module docstring in
+;;; the generator for why) with:
+;;;     python3 scripts/gen_builtins_first_class_test.py
+;;; Source of truth: tests/coverage/language_surface.json +
+;;; tests/coverage/builtins_first_class_known_args.json. See LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml for the root cause and the fix.
+;;;
+;;; Every builtin that can be called in operator position must also be a
+;;; first-class value: it must evaluate to a procedure, survive being
+;;; stored (let), passed to a user higher-order procedure, mapped, and
+;;; applied — and, wherever this audit could verify a real call safely
+;;; (i.e. without executing an FFI/GPU/atomics/pointer side effect), a
+;;; value-position call must compute the identical answer to the same
+;;; call in operator position. This chunk carries 50 such checks.
+
+;; hN calls its first argument with N further arguments. Each is a bare
+;; PARAMETER, so its value must be a real callable — there is no name here
+;; for codegenCall to special-case; this is what forces the value-position
+;; route (codegenVariable / resolveLambdaFunction) rather than the call-site
+;; lowering, which was never broken.
+(define (h0 f) (f))
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+(define (h5 f a b c d e) (f a b c d e))
+(define (__id x) x)
+;; Shared hash-table fixture for the hash-category call-correctness checks
+;; below (mirrors scripts/run_value_position_sweep.py's own __ht convention).
+(define __ht (make-hash-table))
+(hash-table-set! __ht 1 10)
+
+(define failures 0)
+(define checked 0)
+(define (check name ok)
+  (set! checked (+ checked 1))
+  (if ok
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name) (newline))))
+
+(check "unsqueeze::value" (and (procedure? unsqueeze) (let ((f unsqueeze)) (procedure? f)) (procedure? (__id unsqueeze)) (procedure? (car (map __id (list unsqueeze)))) (procedure? (apply __id (list unsqueeze)))))
+(check "url-decode::value" (and (procedure? url-decode) (let ((f url-decode)) (procedure? f)) (procedure? (__id url-decode)) (procedure? (car (map __id (list url-decode)))) (procedure? (apply __id (list url-decode)))))
+(check "url-encode::value" (and (procedure? url-encode) (let ((f url-encode)) (procedure? f)) (procedure? (__id url-encode)) (procedure? (car (map __id (list url-encode)))) (procedure? (apply __id (list url-encode)))))
+(check "url-parse::value" (and (procedure? url-parse) (let ((f url-parse)) (procedure? f)) (procedure? (__id url-parse)) (procedure? (car (map __id (list url-parse)))) (procedure? (apply __id (list url-parse)))))
+(check "username::value" (and (procedure? username) (let ((f username)) (procedure? f)) (procedure? (__id username)) (procedure? (car (map __id (list username)))) (procedure? (apply __id (list username)))))
+(check "usize->ptr::value" (and (procedure? usize->ptr) (let ((f usize->ptr)) (procedure? f)) (procedure? (__id usize->ptr)) (procedure? (car (map __id (list usize->ptr)))) (procedure? (apply __id (list usize->ptr)))))
+(check "utf8->string::value" (and (procedure? utf8->string) (let ((f utf8->string)) (procedure? f)) (procedure? (__id utf8->string)) (procedure? (car (map __id (list utf8->string)))) (procedure? (apply __id (list utf8->string)))))
+(check "uuid-v4::value" (and (procedure? uuid-v4) (let ((f uuid-v4)) (procedure? f)) (procedure? (__id uuid-v4)) (procedure? (car (map __id (list uuid-v4)))) (procedure? (apply __id (list uuid-v4)))))
+(check "vector::value" (and (procedure? vector) (let ((f vector)) (procedure? f)) (procedure? (__id vector)) (procedure? (car (map __id (list vector)))) (procedure? (apply __id (list vector)))))
+(check "vector->list::value" (and (procedure? vector->list) (let ((f vector->list)) (procedure? f)) (procedure? (__id vector->list)) (procedure? (car (map __id (list vector->list)))) (procedure? (apply __id (list vector->list)))))
+(check "vector->tensor::value" (and (procedure? vector->tensor) (let ((f vector->tensor)) (procedure? f)) (procedure? (__id vector->tensor)) (procedure? (car (map __id (list vector->tensor)))) (procedure? (apply __id (list vector->tensor)))))
+(check "vector-append::value" (and (procedure? vector-append) (let ((f vector-append)) (procedure? f)) (procedure? (__id vector-append)) (procedure? (car (map __id (list vector-append)))) (procedure? (apply __id (list vector-append)))))
+(check "vector-copy::value" (and (procedure? vector-copy) (let ((f vector-copy)) (procedure? f)) (procedure? (__id vector-copy)) (procedure? (car (map __id (list vector-copy)))) (procedure? (apply __id (list vector-copy)))))
+(check "vector-copy!::value" (and (procedure? vector-copy!) (let ((f vector-copy!)) (procedure? f)) (procedure? (__id vector-copy!)) (procedure? (car (map __id (list vector-copy!)))) (procedure? (apply __id (list vector-copy!)))))
+(check "vector-fill!::value" (and (procedure? vector-fill!) (let ((f vector-fill!)) (procedure? f)) (procedure? (__id vector-fill!)) (procedure? (car (map __id (list vector-fill!)))) (procedure? (apply __id (list vector-fill!)))))
+(check "vector-for-each::value" (and (procedure? vector-for-each) (let ((f vector-for-each)) (procedure? f)) (procedure? (__id vector-for-each)) (procedure? (car (map __id (list vector-for-each)))) (procedure? (apply __id (list vector-for-each)))))
+(check "vector-length::value" (and (procedure? vector-length) (let ((f vector-length)) (procedure? f)) (procedure? (__id vector-length)) (procedure? (car (map __id (list vector-length)))) (procedure? (apply __id (list vector-length)))))
+(check "vector-map::value" (and (procedure? vector-map) (let ((f vector-map)) (procedure? f)) (procedure? (__id vector-map)) (procedure? (car (map __id (list vector-map)))) (procedure? (apply __id (list vector-map)))))
+(check "vector-ref::value" (and (procedure? vector-ref) (let ((f vector-ref)) (procedure? f)) (procedure? (__id vector-ref)) (procedure? (car (map __id (list vector-ref)))) (procedure? (apply __id (list vector-ref)))))
+(check "vector-set!::value" (and (procedure? vector-set!) (let ((f vector-set!)) (procedure? f)) (procedure? (__id vector-set!)) (procedure? (car (map __id (list vector-set!)))) (procedure? (apply __id (list vector-set!)))))
+(check "vector-to-string::value" (and (procedure? vector-to-string) (let ((f vector-to-string)) (procedure? f)) (procedure? (__id vector-to-string)) (procedure? (car (map __id (list vector-to-string)))) (procedure? (apply __id (list vector-to-string)))))
+(check "vector?::value" (and (procedure? vector?) (let ((f vector?)) (procedure? f)) (procedure? (__id vector?)) (procedure? (car (map __id (list vector?)))) (procedure? (apply __id (list vector?)))))
+(check "void::value" (and (procedure? void) (let ((f void)) (procedure? f)) (procedure? (__id void)) (procedure? (car (map __id (list void)))) (procedure? (apply __id (list void)))))
+(check "vqe-energy-primitive::value" (and (procedure? vqe-energy-primitive) (let ((f vqe-energy-primitive)) (procedure? f)) (procedure? (__id vqe-energy-primitive)) (procedure? (car (map __id (list vqe-energy-primitive)))) (procedure? (apply __id (list vqe-energy-primitive)))))
+(check "vref::value" (and (procedure? vref) (let ((f vref)) (procedure? f)) (procedure? (__id vref)) (procedure? (car (map __id (list vref)))) (procedure? (apply __id (list vref)))))
+(check "websocket-close::value" (and (procedure? websocket-close) (let ((f websocket-close)) (procedure? f)) (procedure? (__id websocket-close)) (procedure? (car (map __id (list websocket-close)))) (procedure? (apply __id (list websocket-close)))))
+(check "websocket-connect::value" (and (procedure? websocket-connect) (let ((f websocket-connect)) (procedure? f)) (procedure? (__id websocket-connect)) (procedure? (car (map __id (list websocket-connect)))) (procedure? (apply __id (list websocket-connect)))))
+(check "websocket-receive::value" (and (procedure? websocket-receive) (let ((f websocket-receive)) (procedure? f)) (procedure? (__id websocket-receive)) (procedure? (car (map __id (list websocket-receive)))) (procedure? (apply __id (list websocket-receive)))))
+(check "websocket-send::value" (and (procedure? websocket-send) (let ((f websocket-send)) (procedure? f)) (procedure? (__id websocket-send)) (procedure? (car (map __id (list websocket-send)))) (procedure? (apply __id (list websocket-send)))))
+(check "websocket-send-binary::value" (and (procedure? websocket-send-binary) (let ((f websocket-send-binary)) (procedure? f)) (procedure? (__id websocket-send-binary)) (procedure? (car (map __id (list websocket-send-binary)))) (procedure? (apply __id (list websocket-send-binary)))))
+(check "with-exception-handler::value" (and (procedure? with-exception-handler) (let ((f with-exception-handler)) (procedure? f)) (procedure? (__id with-exception-handler)) (procedure? (car (map __id (list with-exception-handler)))) (procedure? (apply __id (list with-exception-handler)))))
+(check "with-input-from-file::value" (and (procedure? with-input-from-file) (let ((f with-input-from-file)) (procedure? f)) (procedure? (__id with-input-from-file)) (procedure? (car (map __id (list with-input-from-file)))) (procedure? (apply __id (list with-input-from-file)))))
+(check "with-output-to-file::value" (and (procedure? with-output-to-file) (let ((f with-output-to-file)) (procedure? f)) (procedure? (__id with-output-to-file)) (procedure? (car (map __id (list with-output-to-file)))) (procedure? (apply __id (list with-output-to-file)))))
+(check "write::value" (and (procedure? write) (let ((f write)) (procedure? f)) (procedure? (__id write)) (procedure? (car (map __id (list write)))) (procedure? (apply __id (list write)))))
+(check "write-bytevector::value" (and (procedure? write-bytevector) (let ((f write-bytevector)) (procedure? f)) (procedure? (__id write-bytevector)) (procedure? (car (map __id (list write-bytevector)))) (procedure? (apply __id (list write-bytevector)))))
+(check "write-char::value" (and (procedure? write-char) (let ((f write-char)) (procedure? f)) (procedure? (__id write-char)) (procedure? (car (map __id (list write-char)))) (procedure? (apply __id (list write-char)))))
+(check "write-file::value" (and (procedure? write-file) (let ((f write-file)) (procedure? f)) (procedure? (__id write-file)) (procedure? (car (map __id (list write-file)))) (procedure? (apply __id (list write-file)))))
+(check "write-line::value" (and (procedure? write-line) (let ((f write-line)) (procedure? f)) (procedure? (__id write-line)) (procedure? (car (map __id (list write-line)))) (procedure? (apply __id (list write-line)))))
+(check "write-shared::value" (and (procedure? write-shared) (let ((f write-shared)) (procedure? f)) (procedure? (__id write-shared)) (procedure? (car (map __id (list write-shared)))) (procedure? (apply __id (list write-shared)))))
+(check "write-simple::value" (and (procedure? write-simple) (let ((f write-simple)) (procedure? f)) (procedure? (__id write-simple)) (procedure? (car (map __id (list write-simple)))) (procedure? (apply __id (list write-simple)))))
+(check "write-string::value" (and (procedure? write-string) (let ((f write-string)) (procedure? f)) (procedure? (__id write-string)) (procedure? (car (map __id (list write-string)))) (procedure? (apply __id (list write-string)))))
+(check "write-u8::value" (and (procedure? write-u8) (let ((f write-u8)) (procedure? f)) (procedure? (__id write-u8)) (procedure? (car (map __id (list write-u8)))) (procedure? (apply __id (list write-u8)))))
+(check "xavier-normal!::value" (and (procedure? xavier-normal!) (let ((f xavier-normal!)) (procedure? f)) (procedure? (__id xavier-normal!)) (procedure? (car (map __id (list xavier-normal!)))) (procedure? (apply __id (list xavier-normal!)))))
+(check "xavier-uniform!::value" (and (procedure? xavier-uniform!) (let ((f xavier-uniform!)) (procedure? f)) (procedure? (__id xavier-uniform!)) (procedure? (car (map __id (list xavier-uniform!)))) (procedure? (apply __id (list xavier-uniform!)))))
+(check "yoga-node-add-child!::value" (and (procedure? yoga-node-add-child!) (let ((f yoga-node-add-child!)) (procedure? f)) (procedure? (__id yoga-node-add-child!)) (procedure? (car (map __id (list yoga-node-add-child!)))) (procedure? (apply __id (list yoga-node-add-child!)))))
+(check "yoga-node-calculate!::value" (and (procedure? yoga-node-calculate!) (let ((f yoga-node-calculate!)) (procedure? f)) (procedure? (__id yoga-node-calculate!)) (procedure? (car (map __id (list yoga-node-calculate!)))) (procedure? (apply __id (list yoga-node-calculate!)))))
+(check "yoga-node-create::value" (and (procedure? yoga-node-create) (let ((f yoga-node-create)) (procedure? f)) (procedure? (__id yoga-node-create)) (procedure? (car (map __id (list yoga-node-create)))) (procedure? (apply __id (list yoga-node-create)))))
+(check "yoga-node-free!::value" (and (procedure? yoga-node-free!) (let ((f yoga-node-free!)) (procedure? f)) (procedure? (__id yoga-node-free!)) (procedure? (car (map __id (list yoga-node-free!)))) (procedure? (apply __id (list yoga-node-free!)))))
+(check "yoga-node-get-computed::value" (and (procedure? yoga-node-get-computed) (let ((f yoga-node-get-computed)) (procedure? f)) (procedure? (__id yoga-node-get-computed)) (procedure? (car (map __id (list yoga-node-get-computed)))) (procedure? (apply __id (list yoga-node-get-computed)))))
+(check "yoga-node-set!::value" (and (procedure? yoga-node-set!) (let ((f yoga-node-set!)) (procedure? f)) (procedure? (__id yoga-node-set!)) (procedure? (car (map __id (list yoga-node-set!)))) (procedure? (apply __id (list yoga-node-set!)))))
+
+(display "checked=") (display checked) (newline)
+(display "failures=") (display failures) (newline)
+(if (= failures 0)
+    (begin (display "PASS: builtins first-class -- 0 failures") (newline))
+    (begin (display "FAIL: builtins first-class -- ")
+           (display failures) (display " failure(s)") (newline)))
+(if (> failures 0) (exit 1) (exit 0))

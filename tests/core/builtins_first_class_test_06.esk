@@ -1,0 +1,102 @@
+;;; builtins_first_class_test_06.esk — AUTO-GENERATED, do not hand-edit.
+;;;
+;;; Chunk 6 of 17 of the LE-16 first-class-builtins audit. Regenerate
+;;; ALL chunks (this file is one of several — see the module docstring in
+;;; the generator for why) with:
+;;;     python3 scripts/gen_builtins_first_class_test.py
+;;; Source of truth: tests/coverage/language_surface.json +
+;;; tests/coverage/builtins_first_class_known_args.json. See LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml for the root cause and the fix.
+;;;
+;;; Every builtin that can be called in operator position must also be a
+;;; first-class value: it must evaluate to a procedure, survive being
+;;; stored (let), passed to a user higher-order procedure, mapped, and
+;;; applied — and, wherever this audit could verify a real call safely
+;;; (i.e. without executing an FFI/GPU/atomics/pointer side effect), a
+;;; value-position call must compute the identical answer to the same
+;;; call in operator position. This chunk carries 50 such checks.
+
+;; hN calls its first argument with N further arguments. Each is a bare
+;; PARAMETER, so its value must be a real callable — there is no name here
+;; for codegenCall to special-case; this is what forces the value-position
+;; route (codegenVariable / resolveLambdaFunction) rather than the call-site
+;; lowering, which was never broken.
+(define (h0 f) (f))
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+(define (h5 f a b c d e) (f a b c d e))
+(define (__id x) x)
+;; Shared hash-table fixture for the hash-category call-correctness checks
+;; below (mirrors scripts/run_value_position_sweep.py's own __ht convention).
+(define __ht (make-hash-table))
+(hash-table-set! __ht 1 10)
+
+(define failures 0)
+(define checked 0)
+(define (check name ok)
+  (set! checked (+ checked 1))
+  (if ok
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name) (newline))))
+
+(check "flush-output-port::value" (and (procedure? flush-output-port) (let ((f flush-output-port)) (procedure? f)) (procedure? (__id flush-output-port)) (procedure? (car (map __id (list flush-output-port)))) (procedure? (apply __id (list flush-output-port)))))
+(check "focal-loss::value" (and (procedure? focal-loss) (let ((f focal-loss)) (procedure? f)) (procedure? (__id focal-loss)) (procedure? (car (map __id (list focal-loss)))) (procedure? (apply __id (list focal-loss)))))
+(check "fork::value" (and (procedure? fork) (let ((f fork)) (procedure? f)) (procedure? (__id fork)) (procedure? (car (map __id (list fork)))) (procedure? (apply __id (list fork)))))
+(check "format::value" (and (procedure? format) (let ((f format)) (procedure? f)) (procedure? (__id format)) (procedure? (car (map __id (list format)))) (procedure? (apply __id (list format)))))
+(check "format-iso8601::value" (and (procedure? format-iso8601) (let ((f format-iso8601)) (procedure? f)) (procedure? (__id format-iso8601)) (procedure? (car (map __id (list format-iso8601)))) (procedure? (apply __id (list format-iso8601)))))
+(check "format-relative::value" (and (procedure? format-relative) (let ((f format-relative)) (procedure? f)) (procedure? (__id format-relative)) (procedure? (car (map __id (list format-relative)))) (procedure? (apply __id (list format-relative)))))
+(check "fs-unwatch::value" (and (procedure? fs-unwatch) (let ((f fs-unwatch)) (procedure? f)) (procedure? (__id fs-unwatch)) (procedure? (car (map __id (list fs-unwatch)))) (procedure? (apply __id (list fs-unwatch)))))
+(check "fs-watch-native::value" (and (procedure? fs-watch-native) (let ((f fs-watch-native)) (procedure? f)) (procedure? (__id fs-watch-native)) (procedure? (car (map __id (list fs-watch-native)))) (procedure? (apply __id (list fs-watch-native)))))
+(check "fs-watch-poll::value" (and (procedure? fs-watch-poll) (let ((f fs-watch-poll)) (procedure? f)) (procedure? (__id fs-watch-poll)) (procedure? (car (map __id (list fs-watch-poll)))) (procedure? (apply __id (list fs-watch-poll)))))
+(check "fs-watch-recursive::value" (and (procedure? fs-watch-recursive) (let ((f fs-watch-recursive)) (procedure? f)) (procedure? (__id fs-watch-recursive)) (procedure? (car (map __id (list fs-watch-recursive)))) (procedure? (apply __id (list fs-watch-recursive)))))
+(check "future::value" (and (procedure? future) (let ((f future)) (procedure? f)) (procedure? (__id future)) (procedure? (car (map __id (list future)))) (procedure? (apply __id (list future)))))
+(check "future-ready?::value" (and (procedure? future-ready?) (let ((f future-ready?)) (procedure? f)) (procedure? (__id future-ready?)) (procedure? (car (map __id (list future-ready?)))) (procedure? (apply __id (list future-ready?)))))
+(check "fuzzy-match::value" (and (procedure? fuzzy-match) (let ((f fuzzy-match)) (procedure? f)) (procedure? (__id fuzzy-match)) (procedure? (car (map __id (list fuzzy-match)))) (procedure? (apply __id (list fuzzy-match)))))
+(check "gcd::value" (and (procedure? gcd) (let ((f gcd)) (procedure? f)) (procedure? (__id gcd)) (procedure? (car (map __id (list gcd)))) (procedure? (apply __id (list gcd)))))
+(check "gelu::value" (and (procedure? gelu) (let ((f gelu)) (procedure? f)) (procedure? (__id gelu)) (procedure? (car (map __id (list gelu)))) (procedure? (apply __id (list gelu)))))
+(check "gensym::value" (and (procedure? gensym) (let ((f gensym)) (procedure? f)) (procedure? (__id gensym)) (procedure? (car (map __id (list gensym)))) (procedure? (apply __id (list gensym)))))
+(check "get-environment-variable::value" (and (procedure? get-environment-variable) (let ((f get-environment-variable)) (procedure? f)) (procedure? (__id get-environment-variable)) (procedure? (car (map __id (list get-environment-variable)))) (procedure? (apply __id (list get-environment-variable)))))
+(check "get-output-string::value" (and (procedure? get-output-string) (let ((f get-output-string)) (procedure? f)) (procedure? (__id get-output-string)) (procedure? (car (map __id (list get-output-string)))) (procedure? (apply __id (list get-output-string)))))
+(check "getpid::value" (and (procedure? getpid) (let ((f getpid)) (procedure? f)) (procedure? (__id getpid)) (procedure? (car (map __id (list getpid)))) (procedure? (apply __id (list getpid)))))
+(check "glob-expand::value" (and (procedure? glob-expand) (let ((f glob-expand)) (procedure? f)) (procedure? (__id glob-expand)) (procedure? (car (map __id (list glob-expand)))) (procedure? (apply __id (list glob-expand)))))
+(check "glob-match::value" (and (procedure? glob-match) (let ((f glob-match)) (procedure? f)) (procedure? (__id glob-match)) (procedure? (car (map __id (list glob-match)))) (procedure? (apply __id (list glob-match)))))
+(check "gpu-matmul::value" (and (procedure? gpu-matmul) (let ((f gpu-matmul)) (procedure? f)) (procedure? (__id gpu-matmul)) (procedure? (car (map __id (list gpu-matmul)))) (procedure? (apply __id (list gpu-matmul)))))
+(check "gpu-softmax::value" (and (procedure? gpu-softmax) (let ((f gpu-softmax)) (procedure? f)) (procedure? (__id gpu-softmax)) (procedure? (car (map __id (list gpu-softmax)))) (procedure? (apply __id (list gpu-softmax)))))
+(check "gpu-transpose::value" (and (procedure? gpu-transpose) (let ((f gpu-transpose)) (procedure? f)) (procedure? (__id gpu-transpose)) (procedure? (car (map __id (list gpu-transpose)))) (procedure? (apply __id (list gpu-transpose)))))
+(check "gunzip::value" (and (procedure? gunzip) (let ((f gunzip)) (procedure? f)) (procedure? (__id gunzip)) (procedure? (car (map __id (list gunzip)))) (procedure? (apply __id (list gunzip)))))
+(check "gzip::value" (and (procedure? gzip) (let ((f gzip)) (procedure? f)) (procedure? (__id gzip)) (procedure? (car (map __id (list gzip)))) (procedure? (apply __id (list gzip)))))
+(check "hard-sigmoid::value" (and (procedure? hard-sigmoid) (let ((f hard-sigmoid)) (procedure? f)) (procedure? (__id hard-sigmoid)) (procedure? (car (map __id (list hard-sigmoid)))) (procedure? (apply __id (list hard-sigmoid)))))
+(check "hard-swish::value" (and (procedure? hard-swish) (let ((f hard-swish)) (procedure? f)) (procedure? (__id hard-swish)) (procedure? (car (map __id (list hard-swish)))) (procedure? (apply __id (list hard-swish)))))
+(check "hash-clear!::value" (and (procedure? hash-clear!) (let ((f hash-clear!)) (procedure? f)) (procedure? (__id hash-clear!)) (procedure? (car (map __id (list hash-clear!)))) (procedure? (apply __id (list hash-clear!)))))
+(check "hash-count::value" (and (procedure? hash-count) (let ((f hash-count)) (procedure? f)) (procedure? (__id hash-count)) (procedure? (car (map __id (list hash-count)))) (procedure? (apply __id (list hash-count)))))
+(check "hash-delete!::value" (and (procedure? hash-delete!) (let ((f hash-delete!)) (procedure? f)) (procedure? (__id hash-delete!)) (procedure? (car (map __id (list hash-delete!)))) (procedure? (apply __id (list hash-delete!)))))
+(check "hash-has-key?::value" (and (procedure? hash-has-key?) (let ((f hash-has-key?)) (procedure? f)) (procedure? (__id hash-has-key?)) (procedure? (car (map __id (list hash-has-key?)))) (procedure? (apply __id (list hash-has-key?)))))
+(check "hash-keys::value" (and (procedure? hash-keys) (let ((f hash-keys)) (procedure? f)) (procedure? (__id hash-keys)) (procedure? (car (map __id (list hash-keys)))) (procedure? (apply __id (list hash-keys)))))
+(check "hash-ref::value" (and (procedure? hash-ref) (let ((f hash-ref)) (procedure? f)) (procedure? (__id hash-ref)) (procedure? (car (map __id (list hash-ref)))) (procedure? (apply __id (list hash-ref)))))
+(check "hash-remove!::value" (and (procedure? hash-remove!) (let ((f hash-remove!)) (procedure? f)) (procedure? (__id hash-remove!)) (procedure? (car (map __id (list hash-remove!)))) (procedure? (apply __id (list hash-remove!)))))
+(check "hash-set!::value" (and (procedure? hash-set!) (let ((f hash-set!)) (procedure? f)) (procedure? (__id hash-set!)) (procedure? (car (map __id (list hash-set!)))) (procedure? (apply __id (list hash-set!)))))
+(check "hash-table-clear!::value" (and (procedure? hash-table-clear!) (let ((f hash-table-clear!)) (procedure? f)) (procedure? (__id hash-table-clear!)) (procedure? (car (map __id (list hash-table-clear!)))) (procedure? (apply __id (list hash-table-clear!)))))
+(check "hash-table-contains?::value" (and (procedure? hash-table-contains?) (let ((f hash-table-contains?)) (procedure? f)) (procedure? (__id hash-table-contains?)) (procedure? (car (map __id (list hash-table-contains?)))) (procedure? (apply __id (list hash-table-contains?)))))
+(check "hash-table-delete!::value" (and (procedure? hash-table-delete!) (let ((f hash-table-delete!)) (procedure? f)) (procedure? (__id hash-table-delete!)) (procedure? (car (map __id (list hash-table-delete!)))) (procedure? (apply __id (list hash-table-delete!)))))
+(check "hash-table-exists?::value" (and (procedure? hash-table-exists?) (let ((f hash-table-exists?)) (procedure? f)) (procedure? (__id hash-table-exists?)) (procedure? (car (map __id (list hash-table-exists?)))) (procedure? (apply __id (list hash-table-exists?)))))
+(check "hash-table-keys::value" (and (procedure? hash-table-keys) (let ((f hash-table-keys)) (procedure? f)) (procedure? (__id hash-table-keys)) (procedure? (car (map __id (list hash-table-keys)))) (procedure? (apply __id (list hash-table-keys)))))
+(check "hash-table-ref::value" (and (procedure? hash-table-ref) (let ((f hash-table-ref)) (procedure? f)) (procedure? (__id hash-table-ref)) (procedure? (car (map __id (list hash-table-ref)))) (procedure? (apply __id (list hash-table-ref)))))
+(check "hash-table-ref/default::value" (and (procedure? hash-table-ref/default) (let ((f hash-table-ref/default)) (procedure? f)) (procedure? (__id hash-table-ref/default)) (procedure? (car (map __id (list hash-table-ref/default)))) (procedure? (apply __id (list hash-table-ref/default)))))
+(check "hash-table-set!::value" (and (procedure? hash-table-set!) (let ((f hash-table-set!)) (procedure? f)) (procedure? (__id hash-table-set!)) (procedure? (car (map __id (list hash-table-set!)))) (procedure? (apply __id (list hash-table-set!)))))
+(check "hash-table-size::value" (and (procedure? hash-table-size) (let ((f hash-table-size)) (procedure? f)) (procedure? (__id hash-table-size)) (procedure? (car (map __id (list hash-table-size)))) (procedure? (apply __id (list hash-table-size)))))
+(check "hash-table-values::value" (and (procedure? hash-table-values) (let ((f hash-table-values)) (procedure? f)) (procedure? (__id hash-table-values)) (procedure? (car (map __id (list hash-table-values)))) (procedure? (apply __id (list hash-table-values)))))
+(check "hash-table/count::value" (and (procedure? hash-table/count) (let ((f hash-table/count)) (procedure? f)) (procedure? (__id hash-table/count)) (procedure? (car (map __id (list hash-table/count)))) (procedure? (apply __id (list hash-table/count)))))
+(check "hash-table?::value" (and (procedure? hash-table?) (let ((f hash-table?)) (procedure? f)) (procedure? (__id hash-table?)) (procedure? (car (map __id (list hash-table?)))) (procedure? (apply __id (list hash-table?)))))
+(check "hash-values::value" (and (procedure? hash-values) (let ((f hash-values)) (procedure? f)) (procedure? (__id hash-values)) (procedure? (car (map __id (list hash-values)))) (procedure? (apply __id (list hash-values)))))
+(check "hinge-loss::value" (and (procedure? hinge-loss) (let ((f hinge-loss)) (procedure? f)) (procedure? (__id hinge-loss)) (procedure? (car (map __id (list hinge-loss)))) (procedure? (apply __id (list hinge-loss)))))
+
+(display "checked=") (display checked) (newline)
+(display "failures=") (display failures) (newline)
+(if (= failures 0)
+    (begin (display "PASS: builtins first-class -- 0 failures") (newline))
+    (begin (display "FAIL: builtins first-class -- ")
+           (display failures) (display " failure(s)") (newline)))
+(if (> failures 0) (exit 1) (exit 0))

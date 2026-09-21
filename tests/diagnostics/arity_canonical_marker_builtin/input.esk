@@ -1,0 +1,11 @@
+;; Diagnostic corpus case: the canonical wrong-arity class marker.
+;; A wrong-arity call to a BUILTIN must be refused with the same class
+;; marker on every engine — the bytecode VM already said
+;; "Arity mismatch: ceiling expects 1 argument but got 0" while native
+;; lowering said "ceil requires exactly 1 argument", naming the LLVM
+;; intrinsic and announcing no contract at all, so the P8 axis-3 parity
+;; ratchet read two agreeing refusals as a native-vs-VM divergence.
+;; See inc/eshkol/core/arity_contract.h.
+
+(display (ceiling))
+(newline)

@@ -179,11 +179,13 @@ by those readers. Emitting v2 requires a separately reviewed opt-in API or an
 explicitly approved default-version change.
 
 Here, public save/load means the ESKM model path and ESKM single-tensor entry
-points. Native language `tensor-save`/`tensor-load` currently dispatch to the
-separate ESKT format; this decision neither changes ESKT nor redirects those
-calls. The native tagged ESKM single-tensor C entry points and the VM's ESKM
-tensor path must be tested explicitly. Any change to language dispatch requires
-a separate API decision.
+points. Update after #555 merged on 2026-09-08: native and VM language
+`tensor-save`/`tensor-load` now both dispatch to ESKM v1. The ESKT boundary
+references in the original review gates below describe the pre-#555 baseline;
+they do not require restoring legacy ESKT dispatch. This proposal makes no
+further dispatch change and remains Proposed. Test both public tensor paths
+explicitly, preserving their current ESKM v1 output unless a separate API
+decision approves a change.
 
 Public load boundaries must report unsupported versions, unknown mandatory
 features, and malformed extension lengths through a deterministic, nonempty

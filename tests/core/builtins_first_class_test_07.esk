@@ -1,0 +1,102 @@
+;;; builtins_first_class_test_07.esk — AUTO-GENERATED, do not hand-edit.
+;;;
+;;; Chunk 7 of 17 of the LE-16 first-class-builtins audit. Regenerate
+;;; ALL chunks (this file is one of several — see the module docstring in
+;;; the generator for why) with:
+;;;     python3 scripts/gen_builtins_first_class_test.py
+;;; Source of truth: tests/coverage/language_surface.json +
+;;; tests/coverage/builtins_first_class_known_args.json. See LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml for the root cause and the fix.
+;;;
+;;; Every builtin that can be called in operator position must also be a
+;;; first-class value: it must evaluate to a procedure, survive being
+;;; stored (let), passed to a user higher-order procedure, mapped, and
+;;; applied — and, wherever this audit could verify a real call safely
+;;; (i.e. without executing an FFI/GPU/atomics/pointer side effect), a
+;;; value-position call must compute the identical answer to the same
+;;; call in operator position. This chunk carries 50 such checks.
+
+;; hN calls its first argument with N further arguments. Each is a bare
+;; PARAMETER, so its value must be a real callable — there is no name here
+;; for codegenCall to special-case; this is what forces the value-position
+;; route (codegenVariable / resolveLambdaFunction) rather than the call-site
+;; lowering, which was never broken.
+(define (h0 f) (f))
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+(define (h5 f a b c d e) (f a b c d e))
+(define (__id x) x)
+;; Shared hash-table fixture for the hash-category call-correctness checks
+;; below (mirrors scripts/run_value_position_sweep.py's own __ht convention).
+(define __ht (make-hash-table))
+(hash-table-set! __ht 1 10)
+
+(define failures 0)
+(define checked 0)
+(define (check name ok)
+  (set! checked (+ checked 1))
+  (if ok
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name) (newline))))
+
+(check "home-directory::value" (and (procedure? home-directory) (let ((f home-directory)) (procedure? f)) (procedure? (__id home-directory)) (procedure? (car (map __id (list home-directory)))) (procedure? (apply __id (list home-directory)))))
+(check "hostname::value" (and (procedure? hostname) (let ((f hostname)) (procedure? f)) (procedure? (__id hostname)) (procedure? (car (map __id (list hostname)))) (procedure? (apply __id (list hostname)))))
+(check "http-request::value" (and (procedure? http-request) (let ((f http-request)) (procedure? f)) (procedure? (__id http-request)) (procedure? (car (map __id (list http-request)))) (procedure? (apply __id (list http-request)))))
+(check "http-server-accept::value" (and (procedure? http-server-accept) (let ((f http-server-accept)) (procedure? f)) (procedure? (__id http-server-accept)) (procedure? (car (map __id (list http-server-accept)))) (procedure? (apply __id (list http-server-accept)))))
+(check "http-server-close::value" (and (procedure? http-server-close) (let ((f http-server-close)) (procedure? f)) (procedure? (__id http-server-close)) (procedure? (car (map __id (list http-server-close)))) (procedure? (apply __id (list http-server-close)))))
+(check "http-server-create::value" (and (procedure? http-server-create) (let ((f http-server-create)) (procedure? f)) (procedure? (__id http-server-create)) (procedure? (car (map __id (list http-server-create)))) (procedure? (apply __id (list http-server-create)))))
+(check "http-server-port::value" (and (procedure? http-server-port) (let ((f http-server-port)) (procedure? f)) (procedure? (__id http-server-port)) (procedure? (car (map __id (list http-server-port)))) (procedure? (apply __id (list http-server-port)))))
+(check "http-server-respond::value" (and (procedure? http-server-respond) (let ((f http-server-respond)) (procedure? f)) (procedure? (__id http-server-respond)) (procedure? (car (map __id (list http-server-respond)))) (procedure? (apply __id (list http-server-respond)))))
+(check "http-set-proxy::value" (and (procedure? http-set-proxy) (let ((f http-set-proxy)) (procedure? f)) (procedure? (__id http-set-proxy)) (procedure? (car (map __id (list http-set-proxy)))) (procedure? (apply __id (list http-set-proxy)))))
+(check "http-set-tls-client-cert::value" (and (procedure? http-set-tls-client-cert) (let ((f http-set-tls-client-cert)) (procedure? f)) (procedure? (__id http-set-tls-client-cert)) (procedure? (car (map __id (list http-set-tls-client-cert)))) (procedure? (apply __id (list http-set-tls-client-cert)))))
+(check "huber-loss::value" (and (procedure? huber-loss) (let ((f huber-loss)) (procedure? f)) (procedure? (__id huber-loss)) (procedure? (car (map __id (list huber-loss)))) (procedure? (apply __id (list huber-loss)))))
+(check "i128::value" (and (procedure? i128) (let ((f i128)) (procedure? f)) (procedure? (__id i128)) (procedure? (car (map __id (list i128)))) (procedure? (apply __id (list i128)))))
+(check "i128->int::value" (and (procedure? i128->int) (let ((f i128->int)) (procedure? f)) (procedure? (__id i128->int)) (procedure? (car (map __id (list i128->int)))) (procedure? (apply __id (list i128->int)))))
+(check "i128->string::value" (and (procedure? i128->string) (let ((f i128->string)) (procedure? f)) (procedure? (__id i128->string)) (procedure? (car (map __id (list i128->string)))) (procedure? (apply __id (list i128->string)))))
+(check "i128-add::value" (and (procedure? i128-add) (let ((f i128-add)) (procedure? f)) (procedure? (__id i128-add)) (procedure? (car (map __id (list i128-add)))) (procedure? (apply __id (list i128-add)))))
+(check "i128-ashr::value" (and (procedure? i128-ashr) (let ((f i128-ashr)) (procedure? f)) (procedure? (__id i128-ashr)) (procedure? (car (map __id (list i128-ashr)))) (procedure? (apply __id (list i128-ashr)))))
+(check "i128-lshr::value" (and (procedure? i128-lshr) (let ((f i128-lshr)) (procedure? f)) (procedure? (__id i128-lshr)) (procedure? (car (map __id (list i128-lshr)))) (procedure? (apply __id (list i128-lshr)))))
+(check "i128-mul::value" (and (procedure? i128-mul) (let ((f i128-mul)) (procedure? f)) (procedure? (__id i128-mul)) (procedure? (car (map __id (list i128-mul)))) (procedure? (apply __id (list i128-mul)))))
+(check "i128-neg::value" (and (procedure? i128-neg) (let ((f i128-neg)) (procedure? f)) (procedure? (__id i128-neg)) (procedure? (car (map __id (list i128-neg)))) (procedure? (apply __id (list i128-neg)))))
+(check "i128-quotient::value" (and (procedure? i128-quotient) (let ((f i128-quotient)) (procedure? f)) (procedure? (__id i128-quotient)) (procedure? (car (map __id (list i128-quotient)))) (procedure? (apply __id (list i128-quotient)))))
+(check "i128-remainder::value" (and (procedure? i128-remainder) (let ((f i128-remainder)) (procedure? f)) (procedure? (__id i128-remainder)) (procedure? (car (map __id (list i128-remainder)))) (procedure? (apply __id (list i128-remainder)))))
+(check "i128-shl::value" (and (procedure? i128-shl) (let ((f i128-shl)) (procedure? f)) (procedure? (__id i128-shl)) (procedure? (car (map __id (list i128-shl)))) (procedure? (apply __id (list i128-shl)))))
+(check "i128-sub::value" (and (procedure? i128-sub) (let ((f i128-sub)) (procedure? f)) (procedure? (__id i128-sub)) (procedure? (car (map __id (list i128-sub)))) (procedure? (apply __id (list i128-sub)))))
+(check "i128<=?::value" (and (procedure? i128<=?) (let ((f i128<=?)) (procedure? f)) (procedure? (__id i128<=?)) (procedure? (car (map __id (list i128<=?)))) (procedure? (apply __id (list i128<=?)))))
+(check "i128<?::value" (and (procedure? i128<?) (let ((f i128<?)) (procedure? f)) (procedure? (__id i128<?)) (procedure? (car (map __id (list i128<?)))) (procedure? (apply __id (list i128<?)))))
+(check "i128=?::value" (and (procedure? i128=?) (let ((f i128=?)) (procedure? f)) (procedure? (__id i128=?)) (procedure? (car (map __id (list i128=?)))) (procedure? (apply __id (list i128=?)))))
+(check "i128>=?::value" (and (procedure? i128>=?) (let ((f i128>=?)) (procedure? f)) (procedure? (__id i128>=?)) (procedure? (car (map __id (list i128>=?)))) (procedure? (apply __id (list i128>=?)))))
+(check "i128>?::value" (and (procedure? i128>?) (let ((f i128>?)) (procedure? f)) (procedure? (__id i128>?)) (procedure? (car (map __id (list i128>?)))) (procedure? (apply __id (list i128>?)))))
+(check "i128?::value" (and (procedure? i128?) (let ((f i128?)) (procedure? f)) (procedure? (__id i128?)) (procedure? (car (map __id (list i128?)))) (procedure? (apply __id (list i128?)))))
+(check "ifft::value" (and (procedure? ifft) (let ((f ifft)) (procedure? f)) (procedure? (__id ifft)) (procedure? (car (map __id (list ifft)))) (procedure? (apply __id (list ifft)))))
+(check "imag-part::value" (and (procedure? imag-part) (let ((f imag-part)) (procedure? f)) (procedure? (__id imag-part)) (procedure? (car (map __id (list imag-part)))) (procedure? (apply __id (list imag-part)))))
+(check "image-read::value" (and (procedure? image-read) (let ((f image-read)) (procedure? f)) (procedure? (__id image-read)) (procedure? (car (map __id (list image-read)))) (procedure? (apply __id (list image-read)))))
+(check "image-to-grayscale::value" (and (procedure? image-to-grayscale) (let ((f image-to-grayscale)) (procedure? f)) (procedure? (__id image-to-grayscale)) (procedure? (car (map __id (list image-to-grayscale)))) (procedure? (apply __id (list image-to-grayscale)))))
+(check "image-write::value" (and (procedure? image-write) (let ((f image-write)) (procedure? f)) (procedure? (__id image-write)) (procedure? (car (map __id (list image-write)))) (procedure? (apply __id (list image-write)))))
+(check "inexact::value" (and (procedure? inexact) (let ((f inexact)) (procedure? f)) (procedure? (__id inexact)) (procedure? (car (map __id (list inexact)))) (procedure? (apply __id (list inexact)))))
+(check "inexact->exact::value" (and (procedure? inexact->exact) (let ((f inexact->exact)) (procedure? f)) (procedure? (__id inexact->exact)) (procedure? (car (map __id (list inexact->exact)))) (procedure? (apply __id (list inexact->exact)))))
+(check "inexact?::value" (and (procedure? inexact?) (let ((f inexact?)) (procedure? f)) (procedure? (__id inexact?)) (procedure? (car (map __id (list inexact?)))) (procedure? (apply __id (list inexact?)))))
+(check "infinite?::value" (and (procedure? infinite?) (let ((f infinite?)) (procedure? f)) (procedure? (__id infinite?)) (procedure? (car (map __id (list infinite?)))) (procedure? (apply __id (list infinite?)))))
+(check "inflate::value" (and (procedure? inflate) (let ((f inflate)) (procedure? f)) (procedure? (__id inflate)) (procedure? (car (map __id (list inflate)))) (procedure? (apply __id (list inflate)))))
+(check "inject-left::value" (and (procedure? inject-left) (let ((f inject-left)) (procedure? f)) (procedure? (__id inject-left)) (procedure? (car (map __id (list inject-left)))) (procedure? (apply __id (list inject-left)))))
+(check "inject-right::value" (and (procedure? inject-right) (let ((f inject-right)) (procedure? f)) (procedure? (__id inject-right)) (procedure? (car (map __id (list inject-right)))) (procedure? (apply __id (list inject-right)))))
+(check "input-port-open?::value" (and (procedure? input-port-open?) (let ((f input-port-open?)) (procedure? f)) (procedure? (__id input-port-open?)) (procedure? (car (map __id (list input-port-open?)))) (procedure? (apply __id (list input-port-open?)))))
+(check "input-port?::value" (and (procedure? input-port?) (let ((f input-port?)) (procedure? f)) (procedure? (__id input-port?)) (procedure? (car (map __id (list input-port?)))) (procedure? (apply __id (list input-port?)))))
+(check "int->i128::value" (and (procedure? int->i128) (let ((f int->i128)) (procedure? f)) (procedure? (__id int->i128)) (procedure? (car (map __id (list int->i128)))) (procedure? (apply __id (list int->i128)))))
+(check "integer->char::value" (and (procedure? integer->char) (let ((f integer->char)) (procedure? f)) (procedure? (__id integer->char)) (procedure? (car (map __id (list integer->char)))) (procedure? (apply __id (list integer->char)))))
+(check "integer?::value" (and (procedure? integer?) (let ((f integer?)) (procedure? f)) (procedure? (__id integer?)) (procedure? (car (map __id (list integer?)))) (procedure? (apply __id (list integer?)))))
+(check "interaction-environment::value" (and (procedure? interaction-environment) (let ((f interaction-environment)) (procedure? f)) (procedure? (__id interaction-environment)) (procedure? (car (map __id (list interaction-environment)))) (procedure? (apply __id (list interaction-environment)))))
+(check "jiffies-per-second::value" (and (procedure? jiffies-per-second) (let ((f jiffies-per-second)) (procedure? f)) (procedure? (__id jiffies-per-second)) (procedure? (car (map __id (list jiffies-per-second)))) (procedure? (apply __id (list jiffies-per-second)))))
+(check "kaiming-normal!::value" (and (procedure? kaiming-normal!) (let ((f kaiming-normal!)) (procedure? f)) (procedure? (__id kaiming-normal!)) (procedure? (car (map __id (list kaiming-normal!)))) (procedure? (apply __id (list kaiming-normal!)))))
+(check "kaiming-uniform!::value" (and (procedure? kaiming-uniform!) (let ((f kaiming-uniform!)) (procedure? f)) (procedure? (__id kaiming-uniform!)) (procedure? (car (map __id (list kaiming-uniform!)))) (procedure? (apply __id (list kaiming-uniform!)))))
+
+(display "checked=") (display checked) (newline)
+(display "failures=") (display failures) (newline)
+(if (= failures 0)
+    (begin (display "PASS: builtins first-class -- 0 failures") (newline))
+    (begin (display "FAIL: builtins first-class -- ")
+           (display failures) (display " failure(s)") (newline)))
+(if (> failures 0) (exit 1) (exit 0))

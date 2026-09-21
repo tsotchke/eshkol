@@ -11,6 +11,7 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/backend/codegen_context.h>
+#include <eshkol/backend/libm_codegen.h>
 #include <eshkol/backend/tagged_value_codegen.h>
 #include <eshkol/backend/memory_codegen.h>
 #include <eshkol/backend/type_system.h>
@@ -102,7 +103,8 @@ llvm::Value* ComplexCodegen::getComplexImag(llvm::Value* complex) {
  * @brief Heap-allocate a complex number and pack it into a tagged value.
  *
  * Loads the global arena pointer (declaring it as an external global if not
- * already present in the module), allocates 16 bytes from it, and emits a
+ * already present in the module), allocates the user-number payload size from
+ * the shared layout descriptor, and emits a
  * null-check on the allocation: on failure it raises a catchable runtime error;
  * on success it stores the complex struct to the new heap slot
  * and packs the resulting pointer as a tagged value with the
@@ -114,22 +116,14 @@ llvm::Value* ComplexCodegen::getComplexImag(llvm::Value* complex) {
  *         as ESHKOL_VALUE_COMPLEX.
  */
 llvm::Value* ComplexCodegen::packComplexToTagged(llvm::Value* complex) {
-    // Get global arena for heap allocation
-    llvm::GlobalVariable* arena_global = ctx_.module().getNamedGlobal("__global_arena");
-    if (!arena_global) {
-        // Create external declaration if not present
-        arena_global = new llvm::GlobalVariable(
-            ctx_.module(),
-            ctx_.ptrType(),
-            false,
-            llvm::GlobalValue::ExternalLinkage,
-            nullptr,
-            "__global_arena");
-    }
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global, "arena");
+    // Get the calling thread's allocation arena.
+    llvm::FunctionType* arena_type = llvm::FunctionType::get(ctx_.ptrType(), {}, false);
+    llvm::FunctionCallee arena_accessor = ctx_.module().getOrInsertFunction(
+        "eshkol_current_arena", arena_type);
+    llvm::Value* arena_ptr = ctx_.builder().CreateCall(arena_accessor, {}, "arena");
 
-    // Allocate 16 bytes for complex number on heap
-    llvm::Value* size = llvm::ConstantInt::get(ctx_.int64Type(), 16);
+    llvm::Value* size = llvm::ConstantInt::get(
+        ctx_.int64Type(), eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_USER_NUMBER));
     llvm::Function* alloc_func = mem_.getArenaAllocate();
     llvm::Value* complex_heap_ptr = ctx_.builder().CreateCall(alloc_func, {arena_ptr, size}, "complex_ptr");
 
@@ -146,7 +140,7 @@ llvm::Value* ComplexCodegen::packComplexToTagged(llvm::Value* complex) {
     // complex struct straight into this pointer, so a dropped check is a store
     // through null.
     ctx_.builder().SetInsertPoint(alloc_fail_bb);
-    ctx_.emitRaise("complex number: arena allocation failed (16 bytes)");
+    ctx_.emitRaise("complex number: arena allocation failed");
 
     // Success path: continue
     ctx_.builder().SetInsertPoint(alloc_ok_bb);
@@ -185,6 +179,83 @@ llvm::Value* ComplexCodegen::unpackComplexFromTagged(llvm::Value* tagged_val) {
  * @param z2 Right operand complex-number struct value.
  * @return Newly built complex-number struct value holding the sum.
  */
+// === Carrier complex (ADR-0025) ===
+
+namespace {
+llvm::StructType* complexCarrierType(CodegenContext& ctx) {
+    return llvm::StructType::get(ctx.context(),
+        {ctx.complexNumberType(), ctx.taggedValueType(), ctx.taggedValueType()});
+}
+} // namespace
+
+llvm::Value* ComplexCodegen::isCarrierComplex(llvm::Value* tagged) {
+    auto& b = ctx_.builder();
+    llvm::Value* is_complex = b.CreateICmpEQ(tagged_.getBaseType(tagged_.getType(tagged)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    llvm::Value* flagged = b.CreateICmpNE(
+        b.CreateAnd(tagged_.getFlags(tagged),
+                    llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_COMPLEX_CARRIER_FLAG)),
+        llvm::ConstantInt::get(ctx_.int8Type(), 0));
+    return b.CreateAnd(is_complex, flagged, "is_carrier_complex");
+}
+
+llvm::Value* ComplexCodegen::packCarrierComplex(llvm::Value* real_primal, llvm::Value* imag_primal,
+                                                llvm::Value* real_tagged, llvm::Value* imag_tagged) {
+    auto& b = ctx_.builder();
+    llvm::FunctionCallee arena_accessor = ctx_.module().getOrInsertFunction(
+        "eshkol_current_arena", llvm::FunctionType::get(ctx_.ptrType(), {}, false));
+    llvm::Value* arena_ptr = b.CreateCall(arena_accessor, {}, "arena");
+    llvm::Value* size = llvm::ConstantInt::get(
+        ctx_.int64Type(), eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_COMPLEX_CARRIER));
+    llvm::Value* ptr = b.CreateCall(mem_.getArenaAllocate(), {arena_ptr, size}, "complex_carrier_ptr");
+
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(ctx_.context(), "complex_carrier_alloc_ok", fn);
+    llvm::BasicBlock* fail_bb = llvm::BasicBlock::Create(ctx_.context(), "complex_carrier_alloc_fail", fn);
+    b.CreateCondBr(b.CreateICmpEQ(ptr, llvm::ConstantPointerNull::get(ctx_.ptrType())), fail_bb, ok_bb);
+    b.SetInsertPoint(fail_bb);
+    ctx_.emitRaise("complex number: arena allocation failed");
+    b.SetInsertPoint(ok_bb);
+
+    llvm::StructType* carrier = complexCarrierType(ctx_);
+    llvm::Value* primal_ptr = b.CreateStructGEP(carrier, ptr, 0);
+    b.CreateStore(real_primal, b.CreateStructGEP(ctx_.complexNumberType(), primal_ptr, TypeSystem::COMPLEX_REAL_IDX));
+    b.CreateStore(imag_primal, b.CreateStructGEP(ctx_.complexNumberType(), primal_ptr, TypeSystem::COMPLEX_IMAG_IDX));
+    b.CreateStore(real_tagged, b.CreateStructGEP(carrier, ptr, 1));
+    b.CreateStore(imag_tagged, b.CreateStructGEP(carrier, ptr, 2));
+    return tagged_.packPtr(ptr, ESHKOL_VALUE_COMPLEX, ESHKOL_COMPLEX_CARRIER_FLAG);
+}
+
+llvm::Value* ComplexCodegen::componentTagged(llvm::Value* tagged, bool imag) {
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* carrier_bb = llvm::BasicBlock::Create(ctx_.context(), "cplx_comp_carrier", fn);
+    llvm::BasicBlock* plain_bb = llvm::BasicBlock::Create(ctx_.context(), "cplx_comp_plain", fn);
+    llvm::BasicBlock* join_bb = llvm::BasicBlock::Create(ctx_.context(), "cplx_comp_join", fn);
+    llvm::Value* ptr = tagged_.unpackPtr(tagged);
+    b.CreateCondBr(isCarrierComplex(tagged), carrier_bb, plain_bb);
+
+    b.SetInsertPoint(carrier_bb);
+    llvm::Value* from_carrier = b.CreateLoad(ctx_.taggedValueType(),
+        b.CreateStructGEP(complexCarrierType(ctx_), ptr, imag ? 2 : 1));
+    llvm::BasicBlock* carrier_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(plain_bb);
+    llvm::Value* plain = b.CreateLoad(ctx_.doubleType(),
+        b.CreateStructGEP(ctx_.complexNumberType(), ptr,
+                          imag ? TypeSystem::COMPLEX_IMAG_IDX : TypeSystem::COMPLEX_REAL_IDX));
+    llvm::Value* from_plain = tagged_.packDouble(plain);
+    llvm::BasicBlock* plain_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(join_bb);
+    llvm::PHINode* out = b.CreatePHI(ctx_.taggedValueType(), 2, imag ? "cplx_imag" : "cplx_real");
+    out->addIncoming(from_carrier, carrier_exit);
+    out->addIncoming(from_plain, plain_exit);
+    return out;
+}
+
 llvm::Value* ComplexCodegen::complexAdd(llvm::Value* z1, llvm::Value* z2) {
     // (a+bi) + (c+di) = (a+c) + (b+d)i
     llvm::Value* a = getComplexReal(z1);
@@ -615,24 +686,14 @@ llvm::Function* ComplexCodegen::getCosIntrinsic() {
 /**
  * @brief Get (or declare) the C library `atan2(double, double)` function.
  *
- * atan2 has no direct LLVM intrinsic, so this declares (or reuses) an
- * external function reference to the libc `atan2` symbol.
+ * `llvm.atan2.f64` exists from LLVM 20 onward; on older majors this falls back
+ * to a type-verified reference to the libm `atan2` symbol. Either way it can
+ * never bind to an unrelated module symbol spelled `atan2`.
  *
  * @return LLVM function value for `double atan2(double, double)`.
  */
 llvm::Function* ComplexCodegen::getAtan2Intrinsic() {
-    // atan2 is not an LLVM intrinsic, we need to call the C library function
-    llvm::FunctionType* atan2_type = llvm::FunctionType::get(
-        ctx_.doubleType(),
-        {ctx_.doubleType(), ctx_.doubleType()},
-        false);
-
-    llvm::Function* atan2_fn = ctx_.module().getFunction("atan2");
-    if (!atan2_fn) {
-        atan2_fn = llvm::Function::Create(atan2_type,
-            llvm::Function::ExternalLinkage, "atan2", &ctx_.module());
-    }
-    return atan2_fn;
+    return eshkol::libm_codegen::binary(ctx_.module(), "atan2", ctx_.doubleType());
 }
 
 } // namespace eshkol

@@ -1,0 +1,10 @@
+{
+  "description": "A wrong-arity call to a BUILTIN is refused with the canonical class marker and the PUBLIC procedure name, byte-identical to the bytecode VM's refusal. Native lowering used to say 'ceil requires exactly 1 argument' — naming the LLVM intrinsic, announcing no contract — so the P8 axis-3 ratchet read two agreeing refusals as a native-vs-VM divergence (ceiling, char->integer, exact->inexact, numerator, tanh). The marker now comes from one place (inc/eshkol/core/arity_contract.h) on every engine.",
+  "compile": "fail",
+  "diagnostics": [
+    {
+      "contains": "Arity mismatch: ceiling expects 1 argument but got 0",
+      "span": {"file": "input.esk", "line": 10, "col": 11}
+    }
+  ]
+}

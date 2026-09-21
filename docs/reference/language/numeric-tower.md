@@ -159,6 +159,146 @@ kept in lowest terms.
 (3 4)
 ```
 
+### Rationals carry bignum components
+
+A rational whose numerator or denominator is past the machine-integer range is
+still an exact rational — on **both** engines. Nothing degrades to a `double`
+at the bignum boundary, and nothing is clamped.
+
+```scheme
+(display (* 1/3 99999999999999999999)) (newline)
+(display (+ 1/3 (expt 10 30))) (newline)
+(display (/ 1 (expt 10 19))) (newline)
+(display (+ 1/3 (expt 2 70))) (newline)
+(display (exact? (+ 1/3 (expt 2 70)))) (newline)
+(display (number->string (/ (expt 7 30) (expt 11 25)))) (newline)
+```
+```
+33333333333333333333
+3000000000000000000000000000001/3
+1/10000000000000000000
+3541774862152233910273/3
+#t
+22539340290692258087863249/108347059433883722041830251
+```
+
+Every line above is byte-identical under `eshkol-run -r`, under AOT and under
+the bytecode VM; see [Engine agreement](#engine-agreement) for what changed
+there in v1.3.5.
+
+### Exact-rational temporaries are reclaimed
+
+Exact-rational temporaries in a loop or a recursion are reclaimed on the same
+terms as bignum-integer temporaries: resident memory tracks the values a
+computation *keeps*, not the work it *does*. A long-running exact-rational
+loop therefore holds a flat resident set, the way the identical loop over
+bignum integers already did. See
+[memory model](../runtime/memory-model.md).
+
+## Exact roots and exact `expt`
+
+Exactness is decided by the **value**, not by which operator was called. When
+an exact result exists over the rationals, it is the answer; the inexact path
+is used only when it does not.
+
+```scheme
+(display (list (sqrt 4/9) (sqrt 16) (expt 8 1/3) (expt 2/3 -3))) (newline)
+(display (list (exact? (sqrt 4/9)) (exact? (expt 8 1/3)) (exact? (expt 2/3 -3)))) (newline)
+(display (expt 1/3 50)) (newline)
+(display (expt 2 -10)) (newline)
+(display (sqrt 2)) (newline)
+```
+```
+(2/3 4 2 27/8)
+(#t #t #t)
+1/717897987691852588770249
+1/1024
+1.4142135623730951
+```
+
+- `sqrt` of a perfect square — integer or rational — is exact.
+- `expt` with an **exact rational exponent** is exact when the root exists
+  (`(expt 8 1/3)` ⇒ `2`); otherwise it falls back to the correctly-rounded
+  inexact result.
+- `expt` with a **negative exponent** takes the reciprocal exactly rather than
+  reconstructing it from a float, for a fixnum, bignum or rational base.
+- Repeated exact powers stay exact at any magnitude: `(expt 1/3 50)` is the
+  exact rational above, not `0` and not a double.
+
+`sqrt 2` has no exact rational value, so it is the correctly-rounded double.
+When you need a *proof-backed* bracket around an inexact elementary function
+rather than a nearest neighbour, see
+[certified enclosures](../stdlib/certified-enclosures.md), which builds
+outward-rounded intervals and rigorous Taylor models on top of the
+`fl-next-up` / `fl-next-down` directed-rounding builtins.
+
+## Exactness in literals, vectors and tensors
+
+An exact value survives every literal position it can appear in, quoted or
+evaluated, on both engines.
+
+```scheme
+(define v #(1/2 3 1.5 123456789012345678901234567890))
+(display v) (newline)
+(display (list (exact? (vector-ref v 0)) (exact? (vector-ref v 3)))) (newline)
+(display (tensor 1/2 2/3 1.5)) (newline)
+(display '123456789012345678901234567890) (newline)
+(display (quote 1/123456789012345678901234567890)) (newline)
+(display `(x ,(/ 1 3) 123456789012345678901234567890)) (newline)
+```
+```
+#(1/2 3 1.5 123456789012345678901234567890)
+(#t #t)
+#(0.5 0.6666666666666666 1.5)
+123456789012345678901234567890
+1/123456789012345678901234567890
+(x 1/3 123456789012345678901234567890)
+```
+
+- A flat `#(…)` numeric literal keeps an exact rational or bignum element as
+  the value it is.
+- A **tensor** is a dense `f64` carrier by construction, so an exact element is
+  converted once, explicitly, at construction — `1/2` becomes `0.5` there. That
+  is a property of the tensor element type, not a loss of exactness in the
+  tower: the same element in a `#(…)` vector stays `1/2`.
+- A quoted or quasiquoted bignum / bignum-rational literal is the same value
+  its evaluated form is, and prints identically.
+
+## Exactness under differentiation
+
+Exactness is a property of the runtime value the differentiation carrier holds,
+not of the shape of the source. `derivative`, `gradient` and `hessian` return
+an exact integer or rational whenever the arithmetic they perform is exact —
+including when the constant comes from a top-level `define`, when the body is a
+several-deep composed call, and when the point argument is an expression whose
+runtime value happens to be exact.
+
+```scheme
+(define c 1/5)
+(display (derivative (lambda (x) (* x x)) 1/3)) (newline)
+(display (exact? (derivative (lambda (x) (* x x)) 1/3))) (newline)
+(display (derivative (lambda (x) (* c x x)) 1/3)) (newline)
+```
+```
+2/3
+#t
+2/15
+```
+
+See [the AD reference](../ad/INDEX.md) for the exactness tier in full, and for
+the one nesting shape that is **not** supported in v1.3.5.
+
+## Heap accounting is a fail-closed contract
+
+The numeric tower allocates: a bignum, an exact rational and a complex are heap
+values. Crossing a heap ceiling you asked for reports the breach **once**, in
+bytes, and exits nonzero without completing — it never prints per arena block
+and finishes with exit 0. With no ceiling requested the default is an
+accounting reference and says nothing. A malformed `ESHKOL_MAX_HEAP` names
+itself, the offending value and the accepted grammar before falling back to its
+default. See
+[environment variables](../runtime/environment-variables.md#resource-limits).
+
 ## Inexact reals
 
 ```scheme
@@ -198,32 +338,29 @@ contagion): exact + inexact → inexact.
 1
 ```
 
-## Known issue — rationals degrade near the bignum boundary on the VM (ESH-0105)
+## Engine agreement
 
-The native back end carries exact rationals with bignum components and produces
-the exact result:
+The native back end and the bytecode VM answer identically across the whole
+tower: fixnum, bignum, exact rational (bignum components included), inexact
+real and complex — in literals, in arithmetic, and in `number->string` /
+`display` / `write`. Mixed exact/inexact arithmetic agrees too:
+`(* 0.5 1/3)` is `0.16666666666666666` on both.
 
-```scheme
-(display (* 1/3 99999999999999999999)) (newline)   ; 33333333333333333333
-(display (+ 1/3 (expt 10 30))) (newline)            ; 3000…0001/3
-(display (/ 1 (expt 10 19))) (newline)              ; 1/10000000000000000000
-```
+Earlier releases carried a documented VM gap here (ESH-0105): the VM's rational
+was an `int64` numerator over an `int64` denominator, its digit-token reader
+fell through to `atof()` past `INT64_MAX`, and `number->string` coerced every
+non-fixnum through a double, so `(* 1/3 99999999999999999999)` answered
+`33333333333333330000` and `(/ 1 (expt 10 19))` answered `1e-19`. All three are
+closed for v1.3.5: the VM shares one bignum/rational runtime between its
+reader, its arithmetic and its printer, and the exact values shown under
+[Rationals carry bignum components](#rationals-carry-bignum-components) are
+what both engines print.
 
-The **bytecode VM** cannot: its rational is an `int64` numerator over an `int64`
-denominator, so a bignum combined with a rational has no exact representation
-there and falls back to the correctly-rounded inexact double.
-
-```
-33333333333333330000
-1e+30
-1e-19
-```
-
-Within the fixnum range the VM is exact and agrees with native, including mixed
-exact/inexact arithmetic (`(* 0.5 1/3)` is `0.16666666666666666` on both). Keep
-rational computations inside the fixnum range if you need the VM to stay exact,
-or convert deliberately with `exact->inexact` when you want doubles.
-
-Closing the gap needs bignum components in the VM's rational representation;
-tracked with `tests/vm_parity/found/bignum_rational_mixed.esk` and
-`tests/vm_parity/found/bignum_exact_rational.esk`.
+The differential is pinned by
+`tests/vm_parity/corpus/79_bignum_rational_literals.esk` (native versus VM, on
+both the source and the ESKB axis) and by
+`tests/vm/bignum_rational_literals_test.esk`, which is compiled to `.eskb` and
+run from there so the bytecode round trip is covered as well. A bignum or
+bignum-rational literal compiles to ordinary `OP_CONST`/`OP_NATIVE_CALL`
+bytecode, so it needed no ESKB format change and an existing module keeps
+loading.

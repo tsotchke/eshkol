@@ -1,0 +1,113 @@
+id: SW-77
+bucket: SILENT-WRONG
+status: closed
+closed_at: feat/vm-geometry-complete
+closed_by: branch feat/vm-geometry-complete
+title: 'the Poincare ball''s arithmetic returned plausible wrong numbers wherever the chart is tight:
+  parallel transport of a tangent vector larger than the ball collapsed it, a near-boundary Mobius sum
+  came back two orders of magnitude wrong, exp and Mobius scalar multiplication returned the EXCLUDED
+  boundary, and a 2e-9 geodesic distance came back as exactly zero'
+mechanism: 'Four defects with one shape: the ball chart''s formulas were transcribed in the algebraically-correct-but-numerically-wrong
+  grouping, and a floor was added to hide the symptom rather than the cause. All four are in inc/eshkol/backend/riemannian_core.h
+  as SW-73 wrote it.
+
+  (1) PARALLEL TRANSPORT (812/843), and the moment transport inside Riemannian Adam. gyr[a,b]w was expanded
+  as -(a (+) b) (+) (a (+) (b (+) w)), which feeds the TANGENT VECTOR w into Mobius POINT addition. A
+  tangent vector is not constrained to the ball, so an intermediate denominator can vanish -- even though
+  the gyration is a globally defined linear isometry with no singularity there at all.
+
+  (2) THE MOBIUS DENOMINATOR FLOOR. eshkol_rm_mobius_add clamped |den| up to 1e-15 WITHOUT scaling the
+  numerator. For two validated interior points the denominator is bounded below by (1 - sqrt(B)|x| sqrt(B)|y|)^2
+  > 0 and never needs a floor; what it needs is to be EVALUATED accurately, because the direct sum 1 +
+  2B<x,y> + B^2|x|^2|y|^2 computes a value of 9e-18 as a difference of terms of size 1 and loses every
+  digit.
+
+  (3) tanh SATURATION. exp''s coefficient is tanh(...)/... and Mobius scalar multiplication''s is tanh(r
+  artanh(...)); tanh rounds to exactly 1.0 for arguments beyond about 19, so both could return a point
+  ON the ball boundary. That is not a point of the open ball -- it is a value outside the op''s own codomain,
+  at which lambda is infinite and every subsequent log degenerates to zero.
+
+  (4) arccosh(1 + eps) CANCELLATION. The distance was arccosh(1 + 2B|x-y|^2/P)/sqrt(B). For a small separation
+  the argument rounds to exactly 1 and the distance comes back as exactly 0.
+
+  Related and NOT a silent wrong, so recorded here rather than as its own entry: log_x(y) REFUSED whenever
+  sqrt(B)|(-x) (+) y| rounded to 1, on the stated grounds that no finite log existed. Every pair of strictly
+  interior ball points has a unique finite log; the rounding was a numerical failure of the artanh route.
+  A false refusal is loud, so it never had this defect''s character -- but it had the same cause, and
+  it is fixed with them.'
+repro: "tests/vm/geometric_riemannian_surface_regression.esk, run by scripts/run_vm_surface_tests.sh:\n\
+  \n  (parallel-transport (vec2 0.5 0.0) (vec2 0.5 0.0) (vec2 2.0 0.0) -1.0)\n  (mobius-add (vec2 0.999999999\
+  \ 0.0) (vec2 -0.999999998 0.0) -1.0)\n  (hyperbolic-exp-map (vec2 0.0 0.0) (vec2 20.0 0.0) -1.0)\n \
+  \ (mobius-scalar-mul 100.0 (vec2 0.5 0.0) -1.0)\n  (geodesic-distance (vec2 0.0 0.0) (vec2 0.000000001\
+  \ 0.0) -1.0)\n  (hyperbolic-log-map (vec2 0.999999999 0.0) (vec2 -0.999999999 0.0) -1.0)"
+observed: "transport x -> x of (2, 0)      -> (0.5, 0). Every gyration in that\n                     \
+  \              direction is the identity, so transport\n                                   from a point\
+  \ to itself MUST return the\n                                   vector; the intermediate 0/0 was floored\n\
+  \                                   to zero and the result was the base\n                          \
+  \         point's coordinate.\nmobius-add near the boundary    -> 0.003, for a sum whose value is about\n\
+  \                                   1/3.\nexp_0((20, 0)) at K = -1        -> exactly (1.0, 0), a boundary\
+  \ point. mobius-scalar-mul(100, 0.5)     -> exactly 1.0, likewise. d((0,0), (1e-9,0)) at K = -1    ->\
+  \ exactly 0.0, for a distance of 2e-9. log of the far interior pair    -> a raise, for a log whose value\
+  \ is finite."
+correct: "transport x -> x of (2, 0)      -> (2, 0). mobius-add near the boundary    -> 0.33333335822717813\
+  \ (the exact quotient\n                                   for those two doubles).\nexp_0((20, 0))  \
+  \                -> a refusal: no strictly interior f64\n                                   point exists\
+  \ at that magnitude.\nmobius-scalar-mul(100, 0.5)     -> the same refusal. d((0,0), (1e-9,0))      \
+  \        -> 2e-9. log of the far interior pair    -> a finite vector of Riemannian length\n        \
+  \                           4 artanh(0.999999999) = 42.832826."
+observed_after: Every line above, measured by the committed regression. The near-boundary Mobius sum lands
+  within 5e-9 RELATIVE of the exact quotient; the residual is the conditioning of the ball chart itself
+  at 1e-9 from the boundary, and it is a hundred million times better than the floored answer.
+fixed_by: 'branch feat/vm-geometry-complete, in inc/eshkol/backend/riemannian_core.h.
+
+  eshkol_rm_gyration computes gyr[a,b]w in its LINEAR closed form w + 2(Aa + Cb)/D, whose only denominator
+  is the Mobius denominator of the two validated POINTS. Transport is (lambda_x/lambda_y) gyr[y,-x]v through
+  it, and nothing feeds a tangent vector into point addition any more.
+
+  eshkol_rm_mobius_den evaluates the denominator as (1 + B<x,y>)^2 + B^2(|x|^2|y|^2 - <x,y>^2): the first
+  term is a subtraction of two nearby numbers and so is exact in f64, and the second is a sum of squares
+  by LAGRANGE''S IDENTITY and so has no cancellation. Lagrange is O(n^2), so it is unconditional up to
+  dimension 32 and above that is reached only when the denominator is small enough to need it. The floor
+  is deleted.
+
+  eshkol_rm_dot_dd accumulates dot products in double-double and closes with a fused multiply-add, giving
+  1 - B|x|^2 and 1 + B<x,y> to full RELATIVE precision -- the two quantities the ball chart destroys near
+  the boundary, and the two everything else is built from. The Mobius numerator then comes from the exact
+  identity num_x = den + B|y|^2 (1 - B|x|^2) and is summed with exact products, so it does not lose the
+  cancellation either.
+
+  eshkol_rm_require_interior is checked on the way out of exp, mobius-add and mobius-scalar-mul, and names
+  the representability limit instead of returning the boundary.
+
+  The distance is 2 sqrt(R) psi(B R) with psi(w) = asinh(sqrt w)/sqrt w, evaluated by series below w =
+  1e-2 and in closed form above. This is the same number as the arccosh form -- arccosh(1 + 2z^2) = 2
+  asinh(z) -- and is stable where that is not. The spherical branch moves from acos(<x,y>/R^2) to atan2
+  for the same reason.
+
+  log_x(y) takes its DIRECTION from the Mobius numerator alone, never divided by the near-zero denominator,
+  and its MAGNITUDE from the stable distance as d/lambda_x. It no longer refuses any interior pair.'
+evidence: 'tests/vm/geometric_riemannian_surface_regression.esk -- new sections "Near-coincident and near-boundary",
+  "The excluded boundary", "Parallel transport on a tangent vector OUTSIDE the ball" and "Spherical tangency",
+  each asserting the correct value above AND `far?` from the observed one where the old body produced
+  a specific number. The near-coincident distance is checked with a RELATIVE comparator, because an absolute
+  1e-9 tolerance accepts zero for a distance of 2e-9 -- which is precisely the defect.
+
+  The two core headers are additionally exercised as C, outside the VM, against hand-derived values and
+  against central differences.'
+caught_by:
+- adversarial-model-audit-gpt-5.6-sol
+- direct-measurement
+missed_by:
+- run_vm_surface_tests.sh (pre-fix)
+- run_vm_parity.sh
+- icc-readiness
+- sw-73
+notes: 'Found by an adversarial audit of PR #516 (the branch that introduced these formulas), not by a
+  gate. That is the honest attribution and it is the reason the regression grew the sections it did: SW-73''s
+  own suite asserted transport only for a tangent vector INSIDE the ball, distances only for well-separated
+  points, and every curved case at |K| = 1, where every sqrt(c) factor is 1. Those three blind spots are
+  each closed by name.
+
+  No builtin names, ids or arities change. What changes is the numbers four ops return in their extreme
+  ranges, and two new refusals (a boundary result from exp/mobius-scalar, a non-tangent vector on the
+  sphere).'

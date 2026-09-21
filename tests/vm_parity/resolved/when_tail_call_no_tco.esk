@@ -1,0 +1,3 @@
+; VERIFIED RESOLVED: a tail call through a when body remains bounded.
+(let lp ((i 0)) (when (< i 300) (lp (+ i 1))))
+(display "ok")

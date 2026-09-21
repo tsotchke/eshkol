@@ -1,0 +1,26 @@
+id: SW-145
+bucket: SILENT-WRONG
+subtag: autodiff
+family: dense-tensor-scalar-projection
+status: fixed
+title: a ONE-ELEMENT dense tensor AD node had no scalar projection, so scalar arithmetic read it as 0.0
+repro: 'Two one-element dense tensor results subtracted by ordinary `-` (the shape every central-difference
+  comparator has: `(/ (- (f x+) (f x-)) (* 2 eps))` over a 1x1 tensor loss) produced a node whose scalar value
+  was 0.0, so the quotient was 0.0 regardless of the primals.'
+observed: 'a difference of 0.0 between two distinct one-element dense results'
+correct: 'their actual difference; a 1x1 tensor and the scalar it holds are the same number'
+root_cause: >-
+  recordADNodeTensor stores `value` (field 1) as 0.0 for every tensor node, on the assumption that a tensor node
+  carries its result in tensor_value and is never consumed as a scalar. That assumption is false for a
+  one-element result, and the reverse direction of the same bridge already existed:
+  eshkol_tensor_backward_dispatch turns a one-element node''s scalar GRADIENT into its tensor gradient. The
+  forward half was missing, so the primal contribution was dropped in silence.
+fixed_by: >-
+  lib/backend/tensor_reduce_codegen.cpp - emitDenseTensorArithmetic publishes element 0 of the dense f64 result
+  into the node''s scalar `value` when the result has exactly one element, completing the scalar-consumer
+  bridge in the forward direction.
+evidence: >-
+  ctest dense_tensor_ad_gradcheck (dense lowering, JIT and AOT) green; the dense/scalarizing differential
+  still agrees on all 22 gradients and the scalarizing oracle stays at 155 checks.
+caught_by: [dense_tensor_ad_gradcheck, direct-measurement]
+missed_by: [icc-correctness-chain, icc-smoke]

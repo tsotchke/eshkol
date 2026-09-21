@@ -5,6 +5,7 @@
  *
  */
 #include <eshkol/eshkol.h>
+#include <eshkol/frontend/ast_strings.h>
 #include <eshkol/logger.h>
 #include "arena_memory.h"
 #include <cstring>
@@ -12,6 +13,11 @@
 #include <cmath>
 
 /** @brief Arena-aware strdup: allocate a string copy in the global arena.
+ *
+ * Used only for the rendered diagnostic text hott_type_to_string() returns.
+ * Strings stored IN frontend structures (AST names, literal text, HoTT
+ * type-variable names) come from the AST string owner instead
+ * (inc/eshkol/frontend/ast_strings.h, ADR-0021).
  *  @return Newly allocated copy of @p s (including terminator), or null if
  *          @p s is null. */
 static char* arena_strdup(const char* s) {
@@ -24,10 +30,13 @@ static char* arena_strdup(const char* s) {
 
 /** @brief Release heap-owned payloads inside an AST node and mark it invalid.
  *
- * Frees the string buffer for ESHKOL_STRING/ESHKOL_BIGNUM_LITERAL nodes,
- * or recursively cleans and frees the element/dimension arrays of an
- * ESHKOL_TENSOR node. No-op if @p ast is null. Does not free @p ast
- * itself, and sets ast->type to ESHKOL_INVALID when done.
+ * Recursively cleans and frees the element/dimension arrays of an
+ * ESHKOL_TENSOR node. String payloads (ESHKOL_STRING/ESHKOL_BIGNUM_LITERAL
+ * text, identifiers) are NOT freed: they belong to the AST string owner
+ * (inc/eshkol/frontend/ast_strings.h, ADR-0021) and are released at the
+ * compilation's teardown, so the pointer is only detached here. No-op if
+ * @p ast is null. Does not free @p ast itself, and sets ast->type to
+ * ESHKOL_INVALID when done.
  * @param ast Node whose owned payloads should be released. */
 void eshkol_ast_clean(eshkol_ast_t *ast)
 {
@@ -36,8 +45,7 @@ void eshkol_ast_clean(eshkol_ast_t *ast)
     switch (ast->type) {
     case ESHKOL_STRING:
     case ESHKOL_BIGNUM_LITERAL:
-        if (ast->str_val.ptr != nullptr) delete [] ast->str_val.ptr;
-        ast->str_val.ptr = nullptr;
+        ast->str_val.ptr = nullptr;  /* owned by the AST string owner */
         break;
     case ESHKOL_TENSOR:
         if (ast->tensor_val.elements != nullptr) {
@@ -62,11 +70,12 @@ void eshkol_ast_clean(eshkol_ast_t *ast)
 // ===== SYMBOLIC DIFFERENTIATION AST HELPERS =====
 // Memory management for symbolic AST nodes created during differentiation
 
-/** Allocate a zero-initialized @ref eshkol_ast_t node from the global arena. */
+/** Allocate a value-initialised @ref eshkol_ast_t node from the global arena
+ *  (zeroed payload; location from the current AST birth location). */
 eshkol_ast_t* eshkol_alloc_symbolic_ast() {
-    eshkol_ast_t* node = (eshkol_ast_t*)arena_allocate(get_global_arena(),sizeof(eshkol_ast_t));
-    memset(node, 0, sizeof(eshkol_ast_t));
-    return node;
+    // Value-initialised construction: zeroed payload, birth location.
+    return eshkol_ast_construct_array(
+        arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
 }
 
 // Helper: Create variable AST node
@@ -74,7 +83,7 @@ eshkol_ast_t* eshkol_alloc_symbolic_ast() {
 eshkol_ast_t* eshkol_make_var_ast(const char* name) {
     eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
     ast->type = ESHKOL_VAR;
-    ast->variable.id = arena_strdup(name);
+    ast->variable.id = eshkol_ast_strdup(name);
     ast->variable.data = nullptr;
     return ast;
 }
@@ -118,7 +127,7 @@ eshkol_ast_t* eshkol_make_binary_op_ast(const char* op,
     
     // Create arguments array
     ast->operation.call_op.variables =
-        (eshkol_ast_t*)arena_allocate(get_global_arena(),2 * sizeof(eshkol_ast_t));
+        eshkol_ast_construct_array(arena_allocate(get_global_arena(), (2) * sizeof(eshkol_ast_t)), (2));
     ast->operation.call_op.variables[0] = *left;
     ast->operation.call_op.variables[1] = *right;
     ast->operation.call_op.num_vars = 2;
@@ -141,7 +150,7 @@ eshkol_ast_t* eshkol_make_unary_call_ast(const char* func, eshkol_ast_t* arg) {
     
     ast->operation.call_op.func = eshkol_make_var_ast(func);
     ast->operation.call_op.variables =
-        (eshkol_ast_t*)arena_allocate(get_global_arena(),sizeof(eshkol_ast_t));
+        eshkol_ast_construct_array(arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
     ast->operation.call_op.variables[0] = *arg;
     ast->operation.call_op.num_vars = 1;
     
@@ -152,7 +161,8 @@ eshkol_ast_t* eshkol_make_unary_call_ast(const char* func, eshkol_ast_t* arg) {
 /** @brief Deep-copy an AST node, including its string payload and, for
  *  call-op nodes, the callee and argument subtrees.
  *
- * All copies are allocated in the global arena. Returns null if @p ast
+ * Nodes are allocated in the global arena and string payloads in the AST
+ * string owner (ast_strings.h). Returns null if @p ast
  * is null.
  * @param ast Node to copy (not modified).
  * @return Newly allocated deep copy of @p ast. */
@@ -164,11 +174,10 @@ eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast) {
     
     // Deep copy string fields if needed
     if (ast->type == ESHKOL_VAR && ast->variable.id) {
-        copy->variable.id = arena_strdup(ast->variable.id);
+        copy->variable.id = eshkol_ast_strdup(ast->variable.id);
     }
     if ((ast->type == ESHKOL_STRING || ast->type == ESHKOL_BIGNUM_LITERAL) && ast->str_val.ptr) {
-        copy->str_val.ptr = new char[ast->str_val.size];
-        memcpy(copy->str_val.ptr, ast->str_val.ptr, ast->str_val.size);
+        copy->str_val.ptr = eshkol_ast_strndup(ast->str_val.ptr, ast->str_val.size);
     }
     
     // Deep copy nested structures
@@ -178,7 +187,7 @@ eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast) {
         }
         if (ast->operation.call_op.variables && ast->operation.call_op.num_vars > 0) {
             copy->operation.call_op.variables =
-                (eshkol_ast_t*)arena_allocate(get_global_arena(),ast->operation.call_op.num_vars * sizeof(eshkol_ast_t));
+                eshkol_ast_construct_array(arena_allocate(get_global_arena(), (ast->operation.call_op.num_vars) * sizeof(eshkol_ast_t)), (ast->operation.call_op.num_vars));
             for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
                 copy->operation.call_op.variables[i] = *eshkol_copy_ast(&ast->operation.call_op.variables[i]);
             }
@@ -256,7 +265,7 @@ hott_type_expr_t* hott_make_nothing_type(void) {
 /** Create a HOTT_TYPE_VAR type expression referencing type variable @p name. */
 hott_type_expr_t* hott_make_type_var(const char* name) {
     hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_VAR);
-    type->var_name = arena_strdup(name);
+    type->var_name = eshkol_ast_strdup(name);
     return type;
 }
 
@@ -369,7 +378,7 @@ hott_type_expr_t* hott_make_forall_type(char** type_vars,
     if (num_vars > 0 && type_vars) {
         type->forall.type_vars = (char**)arena_allocate(get_global_arena(),num_vars * sizeof(char*));
         for (uint64_t i = 0; i < num_vars; i++) {
-            type->forall.type_vars[i] = arena_strdup(type_vars[i]);
+            type->forall.type_vars[i] = eshkol_ast_strdup(type_vars[i]);
         }
     } else {
         type->forall.type_vars = nullptr;
@@ -393,7 +402,7 @@ hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type) {
 
     switch (type->kind) {
         case HOTT_TYPE_VAR:
-            copy->var_name = type->var_name ? arena_strdup(type->var_name) : nullptr;
+            copy->var_name = type->var_name ? eshkol_ast_strdup(type->var_name) : nullptr;
             break;
 
         case HOTT_TYPE_ARROW:
@@ -412,7 +421,7 @@ hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type) {
             if (type->forall.num_vars > 0 && type->forall.type_vars) {
                 copy->forall.type_vars = (char**)arena_allocate(get_global_arena(),type->forall.num_vars * sizeof(char*));
                 for (uint64_t i = 0; i < type->forall.num_vars; i++) {
-                    copy->forall.type_vars[i] = arena_strdup(type->forall.type_vars[i]);
+                    copy->forall.type_vars[i] = eshkol_ast_strdup(type->forall.type_vars[i]);
                 }
             }
             copy->forall.num_vars = type->forall.num_vars;
@@ -626,7 +635,7 @@ eshkol_ast_t* eshkol_wrap_with_display(eshkol_ast_t* expr) {
     wrapper->operation.call_op.func = eshkol_make_var_ast("begin");
     wrapper->operation.call_op.num_vars = 2;
     wrapper->operation.call_op.variables =
-        (eshkol_ast_t*)arena_allocate(get_global_arena(),2 * sizeof(eshkol_ast_t));
+        eshkol_ast_construct_array(arena_allocate(get_global_arena(), (2) * sizeof(eshkol_ast_t)), (2));
 
     // Element 1: (display expr)
     eshkol_ast_t* display_call = eshkol_alloc_symbolic_ast();
@@ -635,7 +644,7 @@ eshkol_ast_t* eshkol_wrap_with_display(eshkol_ast_t* expr) {
     display_call->operation.call_op.func = eshkol_make_var_ast("display");
     display_call->operation.call_op.num_vars = 1;
     display_call->operation.call_op.variables =
-        (eshkol_ast_t*)arena_allocate(get_global_arena(),sizeof(eshkol_ast_t));
+        eshkol_ast_construct_array(arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
     display_call->operation.call_op.variables[0] = *expr;
 
     // Element 2: (newline)

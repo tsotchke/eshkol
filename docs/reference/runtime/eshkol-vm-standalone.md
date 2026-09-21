@@ -29,7 +29,7 @@ line. Set `ESHKOL_VM_NO_DISASM=1` to suppress the disassembly dump.
 ### Verified example
 
 ```sh
-# Emit bytecode from source (VM profile required):
+# Emit bytecode from source (a VM profile writes only the ESKB):
 $ eshkol-run --profile hosted-vm -B out.eskb prog.esk
 [ESKB] Wrote 17130 bytes to out.eskb (3 functions, 4198 instructions, 735 constants)
 [ESKB] Emitted bytecode to out.eskb
@@ -50,7 +50,8 @@ Bytecode emission is done by `eshkol-run` under a VM profile:
 eshkol-run --profile <hosted-vm|freestanding-vm|embedded-vm> --emit-eskb OUT.eskb INPUT.esk
 ```
 
-`--emit-eskb` (short form `-B`) requires a VM profile. VM profiles set the
+A VM profile requires `--emit-eskb` (short form `-B`); without a VM profile,
+`-B` writes the ESKB alongside the native artifact. VM profiles set the
 backend to the VM and **forbid** JIT eval/run, `--shared-lib`, `--wasm`, and
 `--lib`. `embedded-vm` additionally forbids `--target` and hardens admission:
 host-only native policy, and it rejects string constants and desktop native

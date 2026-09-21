@@ -12,6 +12,8 @@
  * pre-loss-extract baseline.
  */
 #include <eshkol/backend/tensor_codegen.h>
+#include <eshkol/backend/libm_codegen.h>
+#include <eshkol/tensor_cross_entropy.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -129,10 +131,10 @@ llvm::Value* TensorCodegen::mseLoss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::crossEntropyLoss(const eshkol_operations_t* op) {
-    // cross-entropy-loss: (cross-entropy-loss logits targets)
-    // CE = -sum(target * log(softmax(logits)))
-    // Numerically stable: CE = -sum(target * (logits - logsumexp(logits)))
-    if (op->call_op.num_vars < 2) {
+    // Targets are either probability rows with logits' exact shape, or class
+    // indices with logits' final class dimension removed. The shared runtime
+    // helper validates both forms before reading any target element.
+    if (op->call_op.num_vars != 2) {
         eshkol_error("cross-entropy-loss requires 2 arguments: logits, targets");
         return nullptr;
     }
@@ -147,150 +149,42 @@ llvm::Value* TensorCodegen::crossEntropyLoss(const eshkol_operations_t* op) {
     llvm::Value* targets_ptr = unpackTensorOperandChecked(targets_tagged, "cross-entropy-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* num_dims_ptr = builder.CreateStructGEP(tensor_type, logits_ptr, 1);
-    llvm::Value* num_dims = builder.CreateLoad(ctx_.int64Type(), num_dims_ptr);
-    llvm::Value* dims_ptr = builder.CreateStructGEP(tensor_type, logits_ptr, 0);
-    llvm::Value* dims = builder.CreateLoad(ctx_.ptrType(), dims_ptr);
+    llvm::Value* logits_dims = builder.CreateLoad(ctx_.ptrType(),
+        builder.CreateStructGEP(tensor_type, logits_ptr, 0));
+    llvm::Value* logits_ndim = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateStructGEP(tensor_type, logits_ptr, 1));
+    llvm::Value* logits_elems = builder.CreateLoad(ctx_.ptrType(),
+        builder.CreateStructGEP(tensor_type, logits_ptr, 2));
+    llvm::Value* targets_dims = builder.CreateLoad(ctx_.ptrType(),
+        builder.CreateStructGEP(tensor_type, targets_ptr, 0));
+    llvm::Value* targets_ndim = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateStructGEP(tensor_type, targets_ptr, 1));
+    llvm::Value* targets_elems = builder.CreateLoad(ctx_.ptrType(),
+        builder.CreateStructGEP(tensor_type, targets_ptr, 2));
 
-    llvm::Value* logits_elems_ptr = builder.CreateStructGEP(tensor_type, logits_ptr, 2);
-    llvm::Value* logits_elems = builder.CreateLoad(ctx_.ptrType(), logits_elems_ptr);
-    llvm::Value* targets_elems_ptr = builder.CreateStructGEP(tensor_type, targets_ptr, 2);
-    llvm::Value* targets_elems = builder.CreateLoad(ctx_.ptrType(), targets_elems_ptr);
+    llvm::Function* ce_fn = ctx_.module().getFunction("eshkol_cross_entropy_forward");
+    if (!ce_fn) {
+        llvm::Type* ptr = ctx_.ptrType();
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.int32Type(),
+            {ptr, ptr, ctx_.int64Type(), ptr, ptr, ctx_.int64Type(),
+             ctx_.int32Type(), ptr}, false);
+        ce_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                       "eshkol_cross_entropy_forward", ctx_.module());
+    }
+    llvm::Value* result_slot = builder.CreateAlloca(ctx_.doubleType());
+    llvm::Value* status = builder.CreateCall(ce_fn,
+        {logits_elems, logits_dims, logits_ndim, targets_elems, targets_dims,
+         targets_ndim, llvm::ConstantInt::get(ctx_.int32Type(), 1), result_slot});
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
-    llvm::Function* exp_func = ctx_.module().getFunction("exp");
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!exp_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        exp_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "exp", ctx_.module());
-    }
-    if (!log_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", ctx_.module());
-    }
-
-    // Compute total elements
-    llvm::BasicBlock* size_loop = llvm::BasicBlock::Create(ctx_.context(), "ce_size_loop", current_func);
-    llvm::BasicBlock* size_body = llvm::BasicBlock::Create(ctx_.context(), "ce_size_body", current_func);
-    llvm::BasicBlock* size_done = llvm::BasicBlock::Create(ctx_.context(), "ce_size_done", current_func);
-
-    llvm::Value* size_idx = builder.CreateAlloca(ctx_.int64Type());
-    llvm::Value* total_size = builder.CreateAlloca(ctx_.int64Type());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), size_idx);
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), total_size);
-    builder.CreateBr(size_loop);
-
-    builder.SetInsertPoint(size_loop);
-    llvm::Value* si = builder.CreateLoad(ctx_.int64Type(), size_idx);
-    builder.CreateCondBr(builder.CreateICmpULT(si, num_dims), size_body, size_done);
-
-    builder.SetInsertPoint(size_body);
-    llvm::Value* dim_ptr = builder.CreateGEP(ctx_.int64Type(), dims, si);
-    llvm::Value* dim_val = builder.CreateLoad(ctx_.int64Type(), dim_ptr);
-    llvm::Value* cur_size = builder.CreateLoad(ctx_.int64Type(), total_size);
-    builder.CreateStore(builder.CreateMul(cur_size, dim_val), total_size);
-    builder.CreateStore(builder.CreateAdd(si, llvm::ConstantInt::get(ctx_.int64Type(), 1)), size_idx);
-    builder.CreateBr(size_loop);
-
-    builder.SetInsertPoint(size_done);
-    llvm::Value* num_elements = builder.CreateLoad(ctx_.int64Type(), total_size);
-
-    // Find max for numerical stability
-    llvm::BasicBlock* max_loop = llvm::BasicBlock::Create(ctx_.context(), "ce_max_loop", current_func);
-    llvm::BasicBlock* max_body = llvm::BasicBlock::Create(ctx_.context(), "ce_max_body", current_func);
-    llvm::BasicBlock* max_done = llvm::BasicBlock::Create(ctx_.context(), "ce_max_done", current_func);
-
-    llvm::Value* max_idx = builder.CreateAlloca(ctx_.int64Type());
-    llvm::Value* max_val = builder.CreateAlloca(ctx_.doubleType());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), max_idx);
-    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), -1e308), max_val);
-    builder.CreateBr(max_loop);
-
-    builder.SetInsertPoint(max_loop);
-    llvm::Value* mi = builder.CreateLoad(ctx_.int64Type(), max_idx);
-    builder.CreateCondBr(builder.CreateICmpULT(mi, num_elements), max_body, max_done);
-
-    builder.SetInsertPoint(max_body);
-    llvm::Value* logit_ptr = builder.CreateGEP(ctx_.int64Type(), logits_elems, mi);
-    llvm::Value* logit_bits = builder.CreateLoad(ctx_.int64Type(), logit_ptr);
-    llvm::Value* logit = builder.CreateBitCast(logit_bits, ctx_.doubleType());
-    llvm::Value* cur_max = builder.CreateLoad(ctx_.doubleType(), max_val);
-    llvm::Value* is_greater = builder.CreateFCmpOGT(logit, cur_max);
-    llvm::Value* new_max = builder.CreateSelect(is_greater, logit, cur_max);
-    builder.CreateStore(new_max, max_val);
-    builder.CreateStore(builder.CreateAdd(mi, llvm::ConstantInt::get(ctx_.int64Type(), 1)), max_idx);
-    builder.CreateBr(max_loop);
-
-    builder.SetInsertPoint(max_done);
-    llvm::Value* max_logit = builder.CreateLoad(ctx_.doubleType(), max_val);
-
-    // Compute logsumexp = max + log(sum(exp(x - max)))
-    llvm::BasicBlock* lse_loop = llvm::BasicBlock::Create(ctx_.context(), "ce_lse_loop", current_func);
-    llvm::BasicBlock* lse_body = llvm::BasicBlock::Create(ctx_.context(), "ce_lse_body", current_func);
-    llvm::BasicBlock* lse_done = llvm::BasicBlock::Create(ctx_.context(), "ce_lse_done", current_func);
-
-    llvm::Value* lse_idx = builder.CreateAlloca(ctx_.int64Type());
-    llvm::Value* exp_sum = builder.CreateAlloca(ctx_.doubleType());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), lse_idx);
-    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), exp_sum);
-    builder.CreateBr(lse_loop);
-
-    builder.SetInsertPoint(lse_loop);
-    llvm::Value* li = builder.CreateLoad(ctx_.int64Type(), lse_idx);
-    builder.CreateCondBr(builder.CreateICmpULT(li, num_elements), lse_body, lse_done);
-
-    builder.SetInsertPoint(lse_body);
-    llvm::Value* l_ptr = builder.CreateGEP(ctx_.int64Type(), logits_elems, li);
-    llvm::Value* l_bits = builder.CreateLoad(ctx_.int64Type(), l_ptr);
-    llvm::Value* l_val = builder.CreateBitCast(l_bits, ctx_.doubleType());
-    llvm::Value* shifted = builder.CreateFSub(l_val, max_logit);
-    llvm::Value* exp_val = builder.CreateCall(exp_func, {shifted});
-    llvm::Value* cur_exp_sum = builder.CreateLoad(ctx_.doubleType(), exp_sum);
-    builder.CreateStore(builder.CreateFAdd(cur_exp_sum, exp_val), exp_sum);
-    builder.CreateStore(builder.CreateAdd(li, llvm::ConstantInt::get(ctx_.int64Type(), 1)), lse_idx);
-    builder.CreateBr(lse_loop);
-
-    builder.SetInsertPoint(lse_done);
-    llvm::Value* total_exp_sum = builder.CreateLoad(ctx_.doubleType(), exp_sum);
-    llvm::Value* log_sum = builder.CreateCall(log_func, {total_exp_sum});
-    llvm::Value* logsumexp = builder.CreateFAdd(max_logit, log_sum);
-
-    // Compute cross entropy: -sum(target * (logit - logsumexp))
-    llvm::BasicBlock* ce_loop = llvm::BasicBlock::Create(ctx_.context(), "ce_sum_loop", current_func);
-    llvm::BasicBlock* ce_body = llvm::BasicBlock::Create(ctx_.context(), "ce_sum_body", current_func);
-    llvm::BasicBlock* ce_done = llvm::BasicBlock::Create(ctx_.context(), "ce_sum_done", current_func);
-
-    llvm::Value* ce_idx = builder.CreateAlloca(ctx_.int64Type());
-    llvm::Value* ce_sum = builder.CreateAlloca(ctx_.doubleType());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), ce_idx);
-    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), ce_sum);
-    builder.CreateBr(ce_loop);
-
-    builder.SetInsertPoint(ce_loop);
-    llvm::Value* ci = builder.CreateLoad(ctx_.int64Type(), ce_idx);
-    builder.CreateCondBr(builder.CreateICmpULT(ci, num_elements), ce_body, ce_done);
-
-    builder.SetInsertPoint(ce_body);
-    llvm::Value* logit_p = builder.CreateGEP(ctx_.int64Type(), logits_elems, ci);
-    llvm::Value* logit_b = builder.CreateLoad(ctx_.int64Type(), logit_p);
-    llvm::Value* logit_v = builder.CreateBitCast(logit_b, ctx_.doubleType());
-
-    llvm::Value* target_p = builder.CreateGEP(ctx_.int64Type(), targets_elems, ci);
-    llvm::Value* target_b = builder.CreateLoad(ctx_.int64Type(), target_p);
-    llvm::Value* target_v = builder.CreateBitCast(target_b, ctx_.doubleType());
-
-    llvm::Value* log_prob = builder.CreateFSub(logit_v, logsumexp);
-    llvm::Value* term = builder.CreateFMul(target_v, log_prob);
-    llvm::Value* cur_ce = builder.CreateLoad(ctx_.doubleType(), ce_sum);
-    builder.CreateStore(builder.CreateFAdd(cur_ce, term), ce_sum);
-    builder.CreateStore(builder.CreateAdd(ci, llvm::ConstantInt::get(ctx_.int64Type(), 1)), ce_idx);
-    builder.CreateBr(ce_loop);
-
-    builder.SetInsertPoint(ce_done);
-    llvm::Value* total_ce = builder.CreateLoad(ctx_.doubleType(), ce_sum);
-    llvm::Value* neg_ce = builder.CreateFNeg(total_ce);
-
-    return tagged_.packDouble(neg_ce);
+    llvm::BasicBlock* ok = llvm::BasicBlock::Create(ctx_.context(), "ce_ok", current_func);
+    llvm::BasicBlock* bad = llvm::BasicBlock::Create(ctx_.context(), "ce_bad", current_func);
+    builder.CreateCondBr(builder.CreateICmpEQ(status,
+        llvm::ConstantInt::get(ctx_.int32Type(), ESHKOL_CROSS_ENTROPY_OK)), ok, bad);
+    builder.SetInsertPoint(bad);
+    emitCatchableError("cross-entropy-loss: invalid logits or targets (expected finite logits and either normalized probability rows or integral in-range class indices)");
+    builder.SetInsertPoint(ok);
+    return tagged_.packDouble(builder.CreateLoad(ctx_.doubleType(), result_slot));
 }
 
 llvm::Value* TensorCodegen::bceLoss(const eshkol_operations_t* op) {
@@ -321,11 +215,8 @@ llvm::Value* TensorCodegen::bceLoss(const eshkol_operations_t* op) {
     llvm::Value* target_elems_ptr = builder.CreateStructGEP(tensor_type, target_ptr, 2);
     llvm::Value* target_elems = builder.CreateLoad(ctx_.ptrType(), target_elems_ptr);
 
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!log_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", ctx_.module());
-    }
+    llvm::Function* log_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "log", ctx_.doubleType());
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
 
@@ -429,7 +320,7 @@ llvm::Value* TensorCodegen::huberLoss(const eshkol_operations_t* op) {
     llvm::Value* delta = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
     if (op->call_op.num_vars >= 3) {
         llvm::Value* delta_tagged = codegenAST(&op->call_op.variables[2]);
-        if (delta_tagged) delta = tagged_.unpackDouble(delta_tagged);
+        if (delta_tagged) delta = taggedNumericToDouble(ctx_, tagged_, delta_tagged);
     }
 
     llvm::StructType* tensor_type = ctx_.tensorType();
@@ -800,11 +691,8 @@ llvm::Value* TensorCodegen::klDivLoss(const eshkol_operations_t* op) {
     builder.SetInsertPoint(size_done);
     llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), num_elements);
 
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!log_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
-    }
+    llvm::Function* log_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "log", ctx_.doubleType());
 
     // Sum P * log(P / Q) with epsilon guard
     llvm::Value* kl_sum = builder.CreateAlloca(ctx_.doubleType());
@@ -970,7 +858,7 @@ llvm::Value* TensorCodegen::smoothL1Loss(const eshkol_operations_t* op) {
     if (op->call_op.num_vars == 3) {
         llvm::Value* beta_tagged = codegenAST(&op->call_op.variables[2]);
         if (!beta_tagged) return nullptr;
-        beta = tagged_.unpackDouble(beta_tagged);
+        beta = taggedNumericToDouble(ctx_, tagged_, beta_tagged);
     } else {
         beta = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
     }
@@ -1077,135 +965,78 @@ llvm::Value* TensorCodegen::smoothL1Loss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::focalLoss(const eshkol_operations_t* op) {
-    // Focal Loss: -(1 - p_t)^gamma * log(p_t)
-    // where p_t = p if target=1, (1-p) if target=0
-    // Default gamma = 2.0 (RetinaNet default)
-    // Args: predictions (probabilities), targets (0 or 1) [, gamma]
+    // Focal Loss (Lin et al., 2017): L = -(1 - p_t)^gamma * log(p_t), where
+    // p_t is the predicted probability of the TRUE class. Default gamma = 2.0.
+    //
+    // The base term is the same cross-entropy this file's `cross-entropy-loss`
+    // computes -- same logits contract, same internal softmax, same accepted
+    // target forms (probability rows or class indices), same validation -- so
+    // the two share one implementation and focal loss reduces to
+    // cross-entropy exactly at gamma = 0. The earlier lowering read the
+    // predictions as per-element BINARY probabilities and skipped the softmax
+    // entirely, which is why `(focal-loss pred target 0.0)` disagreed with
+    // `(cross-entropy-loss pred target)`.
     if (op->call_op.num_vars < 2 || op->call_op.num_vars > 3) {
         eshkol_error("focal-loss requires 2 or 3 arguments: predictions, targets [, gamma]");
         return nullptr;
     }
 
     llvm::IRBuilder<>& builder = ctx_.builder();
-    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
 
-    llvm::Value* pred_tagged = codegenAST(&op->call_op.variables[0]);
-    llvm::Value* target_tagged = codegenAST(&op->call_op.variables[1]);
-    if (!pred_tagged || !target_tagged) return nullptr;
+    llvm::Value* logits_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* targets_tagged = codegenAST(&op->call_op.variables[1]);
+    if (!logits_tagged || !targets_tagged) return nullptr;
 
     llvm::Value* gamma;
     if (op->call_op.num_vars == 3) {
         llvm::Value* gamma_tagged = codegenAST(&op->call_op.variables[2]);
         if (!gamma_tagged) return nullptr;
-        gamma = tagged_.unpackDouble(gamma_tagged);
+        gamma = taggedNumericToDouble(ctx_, tagged_, gamma_tagged);
     } else {
         gamma = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
     }
 
-    llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "focal-loss");
-    llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "focal-loss");
+    llvm::Value* logits_ptr = unpackTensorOperandChecked(logits_tagged, "focal-loss");
+    llvm::Value* targets_ptr = unpackTensorOperandChecked(targets_tagged, "focal-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* pred_dims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 0);
-    llvm::Value* pred_dims = builder.CreateLoad(ctx_.ptrType(), pred_dims_ptr);
-    llvm::Value* pred_ndims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 1);
-    llvm::Value* pred_ndims = builder.CreateLoad(ctx_.int64Type(), pred_ndims_ptr);
-    llvm::Value* pred_elems_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 2);
-    llvm::Value* pred_elems = builder.CreateLoad(ctx_.ptrType(), pred_elems_ptr);
-    llvm::Value* target_elems_ptr = builder.CreateStructGEP(tensor_type, target_ptr, 2);
-    llvm::Value* target_elems = builder.CreateLoad(ctx_.ptrType(), target_elems_ptr);
+    llvm::Value* logits_dims = builder.CreateLoad(ctx_.ptrType(),
+        builder.CreateStructGEP(tensor_type, logits_ptr, 0));
+    llvm::Value* logits_ndim = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateStructGEP(tensor_type, logits_ptr, 1));
+    llvm::Value* logits_elems = builder.CreateLoad(ctx_.ptrType(),
+        builder.CreateStructGEP(tensor_type, logits_ptr, 2));
+    llvm::Value* targets_dims = builder.CreateLoad(ctx_.ptrType(),
+        builder.CreateStructGEP(tensor_type, targets_ptr, 0));
+    llvm::Value* targets_ndim = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateStructGEP(tensor_type, targets_ptr, 1));
+    llvm::Value* targets_elems = builder.CreateLoad(ctx_.ptrType(),
+        builder.CreateStructGEP(tensor_type, targets_ptr, 2));
 
-    // Compute total elements
-    llvm::BasicBlock* size_loop = llvm::BasicBlock::Create(ctx_.context(), "focal_size_loop", current_func);
-    llvm::BasicBlock* size_body = llvm::BasicBlock::Create(ctx_.context(), "focal_size_body", current_func);
-    llvm::BasicBlock* size_done = llvm::BasicBlock::Create(ctx_.context(), "focal_size_done", current_func);
-    llvm::BasicBlock* sum_loop = llvm::BasicBlock::Create(ctx_.context(), "focal_sum_loop", current_func);
-    llvm::BasicBlock* sum_body = llvm::BasicBlock::Create(ctx_.context(), "focal_sum_body", current_func);
-    llvm::BasicBlock* sum_done = llvm::BasicBlock::Create(ctx_.context(), "focal_sum_done", current_func);
-
-    llvm::Value* num_elements = builder.CreateAlloca(ctx_.int64Type());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), num_elements);
-    llvm::Value* size_idx = builder.CreateAlloca(ctx_.int64Type());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), size_idx);
-    builder.CreateBr(size_loop);
-
-    builder.SetInsertPoint(size_loop);
-    llvm::Value* si = builder.CreateLoad(ctx_.int64Type(), size_idx);
-    builder.CreateCondBr(builder.CreateICmpSLT(si, pred_ndims), size_body, size_done);
-
-    builder.SetInsertPoint(size_body);
-    llvm::Value* dim_ptr = builder.CreateGEP(ctx_.int64Type(), pred_dims, si);
-    llvm::Value* dim_val = builder.CreateLoad(ctx_.int64Type(), dim_ptr);
-    llvm::Value* cur_size = builder.CreateLoad(ctx_.int64Type(), num_elements);
-    builder.CreateStore(builder.CreateMul(cur_size, dim_val), num_elements);
-    builder.CreateStore(builder.CreateAdd(si, llvm::ConstantInt::get(ctx_.int64Type(), 1)), size_idx);
-    builder.CreateBr(size_loop);
-
-    builder.SetInsertPoint(size_done);
-    llvm::Value* total_elements = builder.CreateLoad(ctx_.int64Type(), num_elements);
-
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!log_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
+    llvm::Function* focal_fn = ctx_.module().getFunction("eshkol_focal_loss_forward");
+    if (!focal_fn) {
+        llvm::Type* ptr = ctx_.ptrType();
+        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.int32Type(),
+            {ptr, ptr, ctx_.int64Type(), ptr, ptr, ctx_.int64Type(),
+             ctx_.int32Type(), ctx_.doubleType(), ptr}, false);
+        focal_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                          "eshkol_focal_loss_forward", ctx_.module());
     }
-    llvm::Function* pow_func = ctx_.module().getFunction("pow");
-    if (!pow_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType(), ctx_.doubleType()}, false);
-        pow_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "pow", &ctx_.module());
-    }
+    llvm::Value* result_slot = builder.CreateAlloca(ctx_.doubleType());
+    llvm::Value* status = builder.CreateCall(focal_fn,
+        {logits_elems, logits_dims, logits_ndim, targets_elems, targets_dims,
+         targets_ndim, llvm::ConstantInt::get(ctx_.int32Type(), 1), gamma,
+         result_slot});
 
-    llvm::Value* focal_sum = builder.CreateAlloca(ctx_.doubleType());
-    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), focal_sum);
-    llvm::Value* sum_idx = builder.CreateAlloca(ctx_.int64Type());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), sum_idx);
-    builder.CreateBr(sum_loop);
-
-    builder.SetInsertPoint(sum_loop);
-    llvm::Value* sui = builder.CreateLoad(ctx_.int64Type(), sum_idx);
-    builder.CreateCondBr(builder.CreateICmpSLT(sui, total_elements), sum_body, sum_done);
-
-    builder.SetInsertPoint(sum_body);
-    llvm::Value* pred_elem_ptr = builder.CreateGEP(ctx_.int64Type(), pred_elems, sui);
-    llvm::Value* pred_bits = builder.CreateLoad(ctx_.int64Type(), pred_elem_ptr);
-    llvm::Value* pred_val = builder.CreateBitCast(pred_bits, ctx_.doubleType());
-    llvm::Value* target_elem_ptr = builder.CreateGEP(ctx_.int64Type(), target_elems, sui);
-    llvm::Value* target_bits = builder.CreateLoad(ctx_.int64Type(), target_elem_ptr);
-    llvm::Value* target_val = builder.CreateBitCast(target_bits, ctx_.doubleType());
-
-    // Clamp prediction to [epsilon, 1-epsilon]
-    llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-7);
-    llvm::Value* one_minus_eps = llvm::ConstantFP::get(ctx_.doubleType(), 1.0 - 1e-7);
-    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* cmp_low = builder.CreateFCmpOGT(pred_val, eps);
-    llvm::Value* p_clamped = builder.CreateSelect(cmp_low, pred_val, eps);
-    llvm::Value* cmp_high = builder.CreateFCmpOLT(p_clamped, one_minus_eps);
-    llvm::Value* p_safe = builder.CreateSelect(cmp_high, p_clamped, one_minus_eps);
-
-    // p_t = target * p + (1 - target) * (1 - p)
-    llvm::Value* one_minus_t = builder.CreateFSub(one, target_val);
-    llvm::Value* one_minus_p = builder.CreateFSub(one, p_safe);
-    llvm::Value* pt_pos = builder.CreateFMul(target_val, p_safe);
-    llvm::Value* pt_neg = builder.CreateFMul(one_minus_t, one_minus_p);
-    llvm::Value* pt = builder.CreateFAdd(pt_pos, pt_neg);
-
-    // -(1 - p_t)^gamma * log(p_t)
-    llvm::Value* one_minus_pt = builder.CreateFSub(one, pt);
-    llvm::Value* modulating = builder.CreateCall(pow_func, {one_minus_pt, gamma});
-    llvm::Value* log_pt = builder.CreateCall(log_func, {pt});
-    llvm::Value* focal_term = builder.CreateFMul(modulating, log_pt);
-    llvm::Value* neg_focal = builder.CreateFNeg(focal_term);
-
-    llvm::Value* cur_sum = builder.CreateLoad(ctx_.doubleType(), focal_sum);
-    builder.CreateStore(builder.CreateFAdd(cur_sum, neg_focal), focal_sum);
-    builder.CreateStore(builder.CreateAdd(sui, llvm::ConstantInt::get(ctx_.int64Type(), 1)), sum_idx);
-    builder.CreateBr(sum_loop);
-
-    builder.SetInsertPoint(sum_done);
-    llvm::Value* total_sum = builder.CreateLoad(ctx_.doubleType(), focal_sum);
-    llvm::Value* n_double = builder.CreateSIToFP(total_elements, ctx_.doubleType());
-    llvm::Value* result = builder.CreateFDiv(total_sum, n_double);
-    return tagged_.packDouble(result);
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* ok = llvm::BasicBlock::Create(ctx_.context(), "focal_ok", current_func);
+    llvm::BasicBlock* bad = llvm::BasicBlock::Create(ctx_.context(), "focal_bad", current_func);
+    builder.CreateCondBr(builder.CreateICmpEQ(status,
+        llvm::ConstantInt::get(ctx_.int32Type(), ESHKOL_CROSS_ENTROPY_OK)), ok, bad);
+    builder.SetInsertPoint(bad);
+    emitCatchableError("focal-loss: invalid logits, targets or gamma (expected finite logits, either normalized probability rows or integral in-range class indices, and a finite non-negative gamma)");
+    builder.SetInsertPoint(ok);
+    return tagged_.packDouble(builder.CreateLoad(ctx_.doubleType(), result_slot));
 }
 
 llvm::Value* TensorCodegen::tripletLoss(const eshkol_operations_t* op) {
@@ -1230,7 +1061,7 @@ llvm::Value* TensorCodegen::tripletLoss(const eshkol_operations_t* op) {
     if (op->call_op.num_vars == 4) {
         llvm::Value* margin_tagged = codegenAST(&op->call_op.variables[3]);
         if (!margin_tagged) return nullptr;
-        margin = tagged_.unpackDouble(margin_tagged);
+        margin = taggedNumericToDouble(ctx_, tagged_, margin_tagged);
     } else {
         margin = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
     }
@@ -1335,12 +1166,12 @@ llvm::Value* TensorCodegen::contrastiveLoss(const eshkol_operations_t* op) {
     if (op->call_op.num_vars == 4) {
         llvm::Value* margin_tagged = codegenAST(&op->call_op.variables[3]);
         if (!margin_tagged) return nullptr;
-        margin = tagged_.unpackDouble(margin_tagged);
+        margin = taggedNumericToDouble(ctx_, tagged_, margin_tagged);
     } else {
         margin = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
     }
 
-    llvm::Value* y = tagged_.unpackDouble(label_tagged);
+    llvm::Value* y = taggedNumericToDouble(ctx_, tagged_, label_tagged);
 
     llvm::Value* t1_ptr = unpackTensorOperandChecked(t1_tagged, "contrastive-loss");
     llvm::Value* t2_ptr = unpackTensorOperandChecked(t2_tagged, "contrastive-loss");
@@ -1430,12 +1261,12 @@ llvm::Value* TensorCodegen::labelSmoothingLoss(const eshkol_operations_t* op) {
     if (op->call_op.num_vars == 4) {
         llvm::Value* eps_tagged = codegenAST(&op->call_op.variables[3]);
         if (!eps_tagged) return nullptr;
-        epsilon = tagged_.unpackDouble(eps_tagged);
+        epsilon = taggedNumericToDouble(ctx_, tagged_, eps_tagged);
     } else {
         epsilon = llvm::ConstantFP::get(ctx_.doubleType(), 0.1);
     }
 
-    llvm::Value* num_classes_double = tagged_.unpackDouble(nclasses_tagged);
+    llvm::Value* num_classes_double = taggedNumericToDouble(ctx_, tagged_, nclasses_tagged);
 
     llvm::Value* logits_ptr = unpackTensorOperandChecked(logits_tagged, "label-smoothing-loss");
     llvm::Value* targets_ptr = unpackTensorOperandChecked(targets_tagged, "label-smoothing-loss");
@@ -1448,16 +1279,10 @@ llvm::Value* TensorCodegen::labelSmoothingLoss(const eshkol_operations_t* op) {
     llvm::Value* targets_elems_ptr = builder.CreateStructGEP(tensor_type, targets_ptr, 2);
     llvm::Value* targets_elems = builder.CreateLoad(ctx_.ptrType(), targets_elems_ptr);
 
-    llvm::Function* log_func = ctx_.module().getFunction("log");
-    if (!log_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        log_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "log", &ctx_.module());
-    }
-    llvm::Function* exp_func = ctx_.module().getFunction("exp");
-    if (!exp_func) {
-        llvm::FunctionType* ft = llvm::FunctionType::get(ctx_.doubleType(), {ctx_.doubleType()}, false);
-        exp_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "exp", &ctx_.module());
-    }
+    llvm::Function* log_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "log", ctx_.doubleType());
+    llvm::Function* exp_func = eshkol::libm_codegen::unary(
+        ctx_.module(), "exp", ctx_.doubleType());
 
     // Compute logsumexp for log-softmax stability
     // First pass: find max for numerical stability
@@ -1588,12 +1413,12 @@ llvm::Value* TensorCodegen::cosineEmbeddingLoss(const eshkol_operations_t* op) {
     if (op->call_op.num_vars == 4) {
         llvm::Value* margin_tagged = codegenAST(&op->call_op.variables[3]);
         if (!margin_tagged) return nullptr;
-        margin = tagged_.unpackDouble(margin_tagged);
+        margin = taggedNumericToDouble(ctx_, tagged_, margin_tagged);
     } else {
         margin = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
     }
 
-    llvm::Value* y = tagged_.unpackDouble(label_tagged);
+    llvm::Value* y = taggedNumericToDouble(ctx_, tagged_, label_tagged);
 
     llvm::Value* t1_ptr = unpackTensorOperandChecked(t1_tagged, "cosine-embedding-loss");
     llvm::Value* t2_ptr = unpackTensorOperandChecked(t2_tagged, "cosine-embedding-loss");

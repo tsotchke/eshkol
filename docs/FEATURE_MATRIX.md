@@ -1,12 +1,13 @@
-# Eshkol v1.3.4-evolve Feature Matrix
+# Eshkol v1.3.5-evolve Feature Matrix
 
 **Status Key** (table cells): `Yes` = Production | `WIP` = In Progress | `Planned` = Planned | `No` = Not Planned | `Partial` = Partially supported
 
-This matrix lists every implemented and planned feature in the Eshkol ecosystem. Every **Production** feature is code-verified, with extensive test coverage (45 suites, 770 individual tests).
+This matrix lists every implemented and planned feature in the Eshkol ecosystem. Feature implementation status is recorded here; release verification is recorded separately, in the "Final verification" section of [RELEASE_NOTES.md](../RELEASE_NOTES.md), and is bound to the tagged commit.
 
-**Language surface count (canonical, reconciled 2026-08-26 against commit
-`afbaaf5b` — doc-truth audit finding N4):** the declared language surface is
-**1,107** constructs. Older cited figures — 1,091 and 1,106 here and in
+**Language surface count (canonical):** the declared language surface is
+**1,115** constructs — 1,053 builtins, 116 special forms, 113 AST ops and 16
+prelude entries, deduplicated by name with internal-only helpers excluded.
+Older cited figures — 1,107, 1,091 and 1,106 here and in
 `docs/COMPILER_ROADMAP.md`, 1,078 in `.icc/architecture-model.yaml`,
 "550+ built-in functions"/"39 special forms" in `README.md` — were each
 correct on the day they were written but drifted as the surface grew; the
@@ -14,17 +15,17 @@ gate has ratcheted upward since. The "1,058 in ADR-0011 §2.1" citation from
 the previous reconciliation pass was itself wrong: ADR-0011 is the
 guest-collector adapter design and contains no surface-count section — there
 is no §2.1 that states 1,058. The only correct citation for this number is
-the coverage manifest itself: `tests/coverage/language_surface.json` (1,044
+the coverage manifest itself: `tests/coverage/language_surface.json` (1,053
 builtins + 116 special forms + 113 AST ops + 16 prelude), deduplicated by
 name and with internal-only helpers excluded exactly the way
 `scripts/language_coverage.py` already deduplicates it to compute the
 number the coverage gate enforces: `tests/coverage/coverage_policy.json`
 `baseline_surface_total` = `tests/coverage/execution_deficit.json`
-`surface_total` = **1,110**, confirmed by a fresh run of
-`scripts/run_language_coverage.sh` at `afbaaf5b` on 2026-08-26. This is the
-figure this doc, README.md, and `.icc/architecture-model.yaml` now use
-uniformly; `scripts/check_surface_counts.py` fails CI if any of them drift
-from the manifest again.
+`surface_total` = **1,115**, confirmed by regenerating
+`tests/coverage/language_surface.json` at the release commit. This
+is the figure this doc, README.md, and `.icc/architecture-model.yaml` use;
+`scripts/check_surface_counts.py` fails CI if any of them drift from the
+manifest again.
 
 ---
 
@@ -273,10 +274,10 @@ from the manifest again.
 | Feature | Status | Backend | Performance |
 |---------|--------|---------|-------------|
 | **Compiler** |
-| S-expression parser | Yes | Recursive descent | Fast |
+| S-expression parser | Yes | Explicit continuation stack | Stack use independent of nesting depth; gated at 16,000 levels on an 8 MiB stack |
 | Macro system | Yes | Hygenic macros | `define-syntax` |
 | HoTT type checker | Yes | Bidirectional | Gradual typing |
-| LLVM IR generation | Yes | LLVM 21 | 34,928 lines |
+| LLVM IR generation | Yes | LLVM 18-24 (one major pinned per build, 21 by default) | 39 codegen modules; `lib/backend/llvm_codegen.cpp` is 47,107 lines |
 | Native code emission | Yes | x86-64, ARM64 | Object files |
 | Executable linking | Yes | System linker | Standalone binaries |
 | **Optimizations** |
@@ -490,7 +491,7 @@ from the manifest again.
 | Debugger | Planned | Interactive debugging | Planned |
 | Profiler | Planned | Performance analysis | Planned |
 | **Documentation** |
-| API Reference | Yes | Complete | 1,044 builtins across a 1,110-construct declared surface (canonical count, see below) |
+| API Reference | Yes | Complete | 1,053 builtins across a 1,115-construct declared surface (canonical count, see below) |
 | Quickstart Guide | Yes | Tutorial | 15-minute intro |
 | Architecture Guide | Yes | Internals | System design |
 | Type System Guide | Yes | HoTT types | Dependent types |
@@ -528,7 +529,7 @@ from the manifest again.
 | Early stopping | Yes | Production | Via user code |
 | **Model Operations** |
 | Save/load weights | Yes | v1.2 | Via file I/O; `model_io_test` PASS (`ctest -R model_io_test`) — corrected 2026-08-25 from `WIP`, conformity audit item d4 |
-| Model serialization | Yes | v1.2 | Native `.eshkol-model` serialiser (`lib/core/model_io.cpp`, 795 lines) |
+| Model serialization | Yes | v1.2 | Native `.eshkol-model` serialiser (`lib/core/model_io.cpp`, 880 lines) |
 | ONNX export | Yes | v1.2 | `lib/core/onnx_export.c` (239 lines); `tests/v1_2_edge_cases/onnx_export_test.esk` |
 | **Datasets** |
 | In-memory datasets | Yes | Production | Lists/tensors |
@@ -846,7 +847,7 @@ are not yet scheduled to a specific release.
 
 ### Production-Ready (v1.1)
 
-- Core language (116 special forms, 1,044 builtins — 1,110-construct canonical surface, see "Language surface count" below)
+- Core language (116 special forms, 1,053 builtins — 1,115-construct canonical surface, see "Language surface count" below)
 - Automatic differentiation (3 modes)
 - Tensor operations (30+ functions)
 - List processing (50+ operations)
@@ -903,8 +904,8 @@ not-yet-production, and is listed above accordingly.)
 | Feature | Status | Notes |
 |---------|--------|-------|
 | **Bytecode VM** |
-| 66-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch; `OP_COUNT = 66` in `lib/backend/vm_core.c`, the enum `vm_run.c`'s dispatch table indexes — corrected 2026-08-25 from "64" (conformity audit item d7; three other `OpCode` definitions elsewhere in `lib/backend/` disagree at 63, a separate ODR-cleanup code issue tracked independently of this doc) |
-| 722 VM-reachable native call IDs | Yes | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter; `tests/coverage/language_surface.json` `counts.builtins_in_vm_table` — corrected 2026-08-25 from "694" (conformity audit item d7) |
+| 72-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch; `OP_COUNT = 72` in `lib/backend/vm_core.c`, the enum `vm_run.c`'s dispatch table indexes — corrected 2026-08-25 from "64" (conformity audit item d7) and remeasured here after the long-closure, secondary-raise, popped-tail-call and per-form-coverage opcodes (67-71) landed. `lib/backend/eshkol_compiler.c` mirrors the enum exactly; `lib/backend/eshkol_benchmark.c` still declares its own `OpCode` stopping at 63, a separate ODR-cleanup code issue tracked independently of this doc |
+| 741 VM-reachable builtins | Yes | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter; `tests/coverage/language_surface.json` `counts.builtins_in_vm_table` — 741 on the v1.3.5-evolve cut, dispatched through 743 distinct native-call IDs spanning 0–2230 in `lib/backend/vm_native.c`; corrected 2026-08-25 from "694" (conformity audit item d7) and remeasured since |
 | ESKB binary format | Yes | Section-based layout, LEB128 encoding, CRC32 checksums |
 | `-B` flag (bytecode emission) | Yes | `eshkol-run input.esk -B output.eskb` |
 | VM compiler integration | Yes | eshkol_vm.c linked into compiler build |
@@ -930,7 +931,7 @@ not-yet-production, and is listed above accordingly.)
 | Eshkol↔qLLM tensors | Yes | Type conversion (double↔float32) with AD integration |
 | Web Platform | Complete | WebAssembly compilation, 59 DOM bindings, browser REPL, eshkol.ai |
 | VM Dual Number AD | Complete | Forward-mode AD via dual numbers in bytecode VM |
-| VM Production | Partial (documented subset) | Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the 188/188 differential gate (`scripts/run_vm_parity.sh`, remeasured 2026-08-25). But `tests/vm_parity/PARITY.tsv` carries 331 `gap` rows out of 956, plus 328 further names in `tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger entirely (see [VM_PARITY.md](VM_PARITY.md)) — corrected from "Complete" 2026-08-25, conformity audit item d9 |
+| VM Production | Partial (documented subset) | Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the release differential (`scripts/run_vm_parity.sh`): <!-- release-record:vm-parity -->VM parity differential **340/340**<!-- /release-record -->. `tests/vm_parity/PARITY.tsv` carries 311 `gap` rows out of 961, plus 328 further names in `tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger entirely (see [VM_PARITY.md](VM_PARITY.md)) — corrected from "Complete" 2026-08-25, conformity audit item d9 |
 | KB Pattern Matching | Complete | Knowledge base queries with ?-wildcard pattern matching |
 
 ## Tensor Linear Algebra (v1.1)
@@ -1045,7 +1046,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
 
 ---
 
-**Last Updated**: 2026-07-31
-**Document Version**: 1.3.4-evolve
+**Last Updated**: 2026-09-22
+**Document Version**: 1.3.5-evolve
 
 For detailed API documentation, see [API_REFERENCE.md](API_REFERENCE.md)

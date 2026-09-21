@@ -21,6 +21,8 @@ if [ ! -r "$ESHKOL_TEST_LIB" ]; then
     exit 2
 fi
 source "$ESHKOL_TEST_LIB"
+# shellcheck source=lib/checked_write.sh
+. "$(dirname "$ESHKOL_TEST_LIB")/checked_write.sh"
 eshkol_test_isolation_init "signal"
 
 # Colors for output
@@ -83,8 +85,10 @@ for test_file in "$SIGNAL_TEST_DIR"/*.esk; do
     # Clean up stale artifacts
     eshkol_test_reset_bin
     # Try to compile
+    eshkol_require_output_file_path "$ESHKOL_TEST_COMPILE_LOG"
     if ./$BUILD_DIR/eshkol-run "$test_file" -L./$BUILD_DIR -o "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_COMPILE_LOG" 2>&1; then
         # Compilation succeeded, try to run
+        eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
         if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
             # Check for FAIL markers in output
             # A failure marker anywhere in the output fails the test — the old
@@ -134,7 +138,7 @@ if [ $FAIL -gt 0 ]; then
 fi
 
 # Clean up
-rm -f "$ESHKOL_TEST_BIN" "$ESHKOL_TEST_COMPILE_LOG" "$ESHKOL_TEST_OUT"
+eshkol_checked_rm "$ESHKOL_TEST_BIN" "$ESHKOL_TEST_COMPILE_LOG" "$ESHKOL_TEST_OUT"
 
 # Exit with appropriate code
 if [ $FAIL -eq 0 ]; then

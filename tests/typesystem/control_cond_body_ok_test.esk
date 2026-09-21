@@ -1,0 +1,20 @@
+;; Type System Test: well-typed code inside a `cond` clause test and body stays silent now that
+;; the checker synthesizes it (no false positive from descending into it).
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+; A clause body is checked under its test's predicate refinement, and arithmetic
+; narrowing inside one clause stays in that clause: calling with a string is fine.
+(define (measure x)
+  (cond ((string? x) (label x))
+        ((number? x) (area x 2))
+        (else (+ x 1))))
+(display (measure "abc"))
+(newline)
+
+(display (area 2 3))
+(newline)

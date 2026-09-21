@@ -8,6 +8,9 @@ BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build}"
 ESHKOL_RUN="$BUILD_DIR/eshkol-run"
 WORK_DIR="${1:?usage: $0 <work-dir>}"
 TRACE_DIR="${TRACE_DIR:-$ROOT_DIR/scripts/icc_traces}"
+# Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+. "$ROOT_DIR/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$ROOT_DIR" || exit $?
 TRACE_FILE="$TRACE_DIR/parallel_closure_capture_boundaries.jsonl"
 
 mkdir -p "$WORK_DIR" "$TRACE_DIR"

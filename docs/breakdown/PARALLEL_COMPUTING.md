@@ -454,7 +454,7 @@ This means that Scheme-level errors within parallel-mapped closures that call `e
 
 ### 12.1 Per-Thread Tape Stack
 
-The AD (automatic differentiation) tape state uses `thread_local` storage in `arena_memory.cpp` (lines 88--104):
+The AD (automatic differentiation) tape state uses `thread_local` storage in `lib/core/runtime_autodiff.cpp` (lines 102--103):
 
 ```c
 #define MAX_TAPE_DEPTH 32
@@ -481,7 +481,7 @@ When a closure passed to `parallel-map` contains a `gradient` call, each worker 
 
 ### 12.3 The `__ad_mode_active` Global Flag Issue
 
-The tape stack is thread-local, but two critical AD state variables are **not** thread-local -- they are plain global variables in `arena_memory.cpp` (lines 37, 41):
+The tape stack is thread-local, but two critical AD state variables are **not** thread-local -- they are plain global variables in `lib/core/runtime_autodiff.cpp` (lines 26, 30):
 
 ```c
 ad_tape_t* __current_ad_tape = nullptr;   // line 37
@@ -508,11 +508,11 @@ For production use, parallel autodiff is safe when gradient computations are con
 
 | File | Lines | Role |
 |------|-------|------|
-| `lib/backend/parallel_codegen.cpp` | 945 | C runtime: task dispatch, list conversion, parallel-map/-fold/-filter/-execute |
-| `lib/backend/parallel_llvm_codegen.cpp` | 2,601 | LLVM codegen: closure dispatchers, workers, inline loops, futures |
-| `lib/backend/thread_pool.cpp` | 1,350 | Thread pool: work-stealing scheduler, futures, metrics, lazy future helpers |
-| `inc/eshkol/backend/thread_pool.h` | 371 | Thread pool API: C and C++ interfaces, configuration, metrics struct |
-| `inc/eshkol/backend/work_stealing_deque.h` | 667 | Chase-Lev deque, epoch-based reclamation, work-stealing scheduler |
+| `lib/backend/parallel_codegen.cpp` | 1,008 | C runtime: task dispatch, list conversion, parallel-map/-fold/-filter/-execute |
+| `lib/backend/parallel_llvm_codegen.cpp` | 2,626 | LLVM codegen: closure dispatchers, workers, inline loops, futures |
+| `lib/backend/thread_pool.cpp` | 1,524 | Thread pool: work-stealing scheduler, futures, metrics, lazy future helpers |
+| `inc/eshkol/backend/thread_pool.h` | 475 | Thread pool API: C and C++ interfaces, configuration, metrics struct |
+| `inc/eshkol/backend/work_stealing_deque.h` | 752 | Chase-Lev deque, epoch-based reclamation, work-stealing scheduler |
 
 ---
 
@@ -543,7 +543,7 @@ project memory and confirmed against current source, was:
    compile contention, but actually a symptom of the next layer.
 
 The root cause was at the C/LLVM task-boundary in `parallel_codegen.cpp`
-§`llvm_parallel_map_task` and the matching reconstruction in
+§`eshkol_parallel_map_task` and the matching reconstruction in
 `parallel_llvm_codegen.cpp` §`generateMapWorker`. The C-side struct decomposes
 each tagged value into i64 fields, so no aggregate crosses the C/LLVM
 boundary. The old code packed only the `type` byte (low 8 bits of `item_type
@@ -587,7 +587,7 @@ item = ctx_.builder().CreateInsertValue(item, item_data, {4});      // data
 
 The same `{type, flags}` packing is now used for `parallel_fold_task`
 (`arg1_type`, `arg2_type` — see `parallel_llvm_codegen.cpp` §`generateFoldWorker`
-lines 978–1000) and `parallel_filter_task` (lines 1097–1107).
+lines 621–738) and the filter worker, which reuses the map-task layout (§`generateFilterWorker`, lines 745–841).
 
 With the flags-byte issue fixed, the default at the codegen gate was flipped
 from opt-in to default-on. The current gate in

@@ -111,6 +111,36 @@ Either way, **the flat-outside-guard pattern at the top of this document
 remains the recommended default** regardless of which bug is or isn't
 fixed on a given build — it never depended on either.
 
+## Q1b: Which handler answers, and what does keeping that answer cost? (SW-58)
+
+ESH-0222 made the loop flat by draining the runtime handler chain on the back
+edge. That is sound only while the collapsed activations' guards cannot be
+observed — and they can be: R7RS keeps one LIVE guard per activation, so a
+handler that **re-raises**, or a clause body that itself **raises**, must find
+the *enclosing* activation's guard and get that activation's variables back.
+Draining sent it to whatever stood outside the loop instead, and the wrong
+handler answered, silently. That was SW-58, and it is fixed: the back edge now
+leaves the handler frames standing and attaches the departing activation's loop
+parameters to each, so the chain a program observes is exactly the reference's.
+
+For a resident loop the operational consequence is a single rule, and it is the
+one this document already recommends:
+
+- **A catch-all boundary** — `(guard (e (#t …)) …)` whose clauses cannot
+  themselves raise — is *provably* unobservable, so the compiler keeps ESH-0222's
+  single reused handler frame. Flat stack **and** flat RSS, forever. This is the
+  daemon shape, and it is what `tests/memory/resident_longrun_flat_gate.sh`
+  measures byte-for-byte across two horizons.
+- **A boundary whose handler can re-raise** gets exact semantics at the cost of
+  one small heap handler frame per *live* guard — which is the space R7RS's own
+  semantics require to exist, but in an unbounded tick loop it is unbounded
+  growth. A resident loop should not re-raise out of its own error boundary; it
+  should absorb the condition and continue. If yours needs to escalate, do it by
+  *returning* a value the caller inspects, not by raising past the boundary.
+
+Neither case costs stack: see `docs/reference/language/tail-calls.md`,
+"Self tail recursion in a `guard` body", for the mechanism and the gates.
+
 ## Q2: What per-iteration-error-handling loop structure is provably tail-optimized?
 
 In order of preference:
@@ -192,6 +222,34 @@ go — e.g. 64MB is a common macOS default hard limit, well under Eshkol's
 512MB *request*, so `setrlimit` silently clamps to whatever the hard limit
 allows. Don't rely on this for a process that's supposed to run
 indefinitely; use the canonical pattern above instead.
+
+**As of v1.3.5 the overflow is reported rather than silent** (ESH-0101 /
+ESH-0112, ledger SW-81). A loop that does run the native stack out now prints
+
+```
+eshkol: stack overflow: recursion depth exceeded the 512 MiB stack (ESHKOL_STACK_SIZE); use tail recursion, or raise ESHKOL_STACK_SIZE and the OS stack limit to allow deeper recursion
+```
+
+and exits 121 — on JIT, on AOT and inside `parallel-map` workers, each of which
+installs its own `sigaltstack`. The former failure was the guard-page trap with
+no handler installed, which surfaced as a bare SIGILL with no message at all.
+That makes an unbounded-growth loop diagnosable instead of merely fatal; it
+does not make it flat, and the canonical pattern is still the fix.
+
+## Memory, not just stack
+
+A resident loop has two unbounded resources, and the stack is only one. On the
+**native** engine the per-iteration nursery reclaims a tick's garbage
+automatically, so a loop that threads state through a value keeps a flat
+resident set with no `with-region` annotation (a body containing a `gradient`
+op, a `set!` or a `tensor-set!` is excluded by design — scope those with
+`with-region`). On the **bytecode VM** there is no nursery: `with-region`
+reclaims there as of the Stage-1 region evacuator, but **outside** a region the
+VM heap has no reclamation at all, so a resident VM loop needs an explicit
+`with-region` where a native one does not. Exact-rational and bignum
+temporaries are reclaimed on the same terms as each other, so an exact-arithmetic
+tick loop is flat where the machine-integer version is. See
+[reference/runtime/memory-model.md](reference/runtime/memory-model.md).
 
 ## See also
 

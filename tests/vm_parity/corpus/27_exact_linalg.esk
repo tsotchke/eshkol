@@ -1,0 +1,29 @@
+; core.exact_linalg: exact rational linear algebra + torus averaging must
+; agree between the native and VM engines (auto-loaded by (require stdlib);
+; matrices/vectors built with the `vector` procedure -- never a `#(...)`
+; literal, which the reader auto-promotes to an f64 tensor).
+(require stdlib)
+
+(define m3 (vector (vector 1 2 3) (vector 2 5 4) (vector 1 0 5)))
+(define a2 (vector (vector 1 2) (vector 3 4)))
+(define m-singular (vector (vector 1 2) (vector 2 4)))
+
+(define ok
+  (and
+    (= (exact-det m3) -2)
+    (exact? (exact-det m3))
+    (exact-matrix? m3)
+    (not (exact-matrix? (vector (vector 1.0 2 3) (vector 2 5 4) (vector 1 0 5))))
+    (= (exact-rank m-singular) 1)
+    (equal? 'singular
+            (guard (exn (else 'singular))
+              (exact-solve m-singular (vector 1 2))
+              'unexpectedly-succeeded))
+    (let ((x (exact-solve a2 (vector 1 1))))
+      (and (= (vector-ref x 0) -1) (= (vector-ref x 1) 1) (exact? (vector-ref x 0))))
+    (= (torus-average (lambda (k) k) 4) 3/2)
+    (= (torus-average-2d (lambda (i j) (+ i j)) 2 3) 3/2)))
+
+(if ok
+    (begin (display "PASS: exact_linalg native/VM parity") (newline))
+    (begin (display "FAIL: exact_linalg native/VM parity") (newline)))

@@ -30,3 +30,4 @@ The reclassified set is:
 - `tensor_set_oob_silent_native.esk`
 - `write_does_not_quote.esk`
 - `sqrt_exact_negative.esk`
+- `weh_handler_return_swallows_condition.esk`

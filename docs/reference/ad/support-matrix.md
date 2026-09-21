@@ -1,7 +1,8 @@
 # Automatic Differentiation — Support Matrix
 
 This is the authoritative, machine-verified statement of what Eshkol's AD
-system does and does not do in v1.3.4. It mirrors the **AD composition oracle**
+system does and does not do in v1.3.5-evolve. It mirrors the **AD composition
+oracle**
 ([`tests/ad_oracle/`](../../../tests/ad_oracle/)), which enumerates the whole AD
 surface as a matrix and checks **every cell against in-language central finite
 differences** — ground truth with no hand computation.
@@ -60,6 +61,124 @@ Tolerance: `|ad - fd| ≤ atol + rtol·|fd|`, `rtol = 1e-4`. First-order stencil
 - **Exact-element vectors**: integer/rational elements are tag-coerced by value
   before vector gradients; they do not become heap-address doubles. The Keller
   map regression checks the exact and inexact representations.
+
+---
+
+## Execution model — how a tensor gradient is recorded
+
+The matrix above is about *answers*. This is about what the tape costs to get
+them, which ADR-0002 treats as a separate axis because a correct gradient
+computed through 2·M·N·K scalar tape nodes and the same gradient computed
+through one dense node are indistinguishable to the oracle and very different
+to a training loop.
+
+| Operation | Under AD, records | Status |
+|-----------|-------------------|--------|
+| `matmul` / `tensor-matmul` | ONE `AD_NODE_MATMUL`, backward by `eshkol_backward_matmul` | COMPLETE |
+| `tensor-sum` (whole tensor, dense operand) | ONE `AD_NODE_SUM` | COMPLETE |
+| `tensor-mean` (whole tensor, dense operand) | ONE `AD_NODE_MEAN` | COMPLETE |
+| `tensor-max` (whole tensor, dense operand) | ONE `AD_NODE_TENSOR_MAX_DENSE`; last-winner subgradient at ties | COMPLETE |
+| dense/scalar boundary | ONE `AD_NODE_TENSOR_PACK` per operand that arrives scalarized; identity scatter backward | COMPLETE |
+| elementwise `tensor-add/sub/mul/div` | ONE dense node (`AD_NODE_TENSOR_*_DENSE`) | COMPLETE |
+| broadcast elementwise variants | ONE dense node (`AD_NODE_TENSOR_BROADCAST_*_DENSE`), summed VJP over broadcast axes | COMPLETE |
+| `batch-matmul` with rank-3 `[batch,M,K]` and `[batch,K,N]` operands | ONE `AD_NODE_BATCH_MATMUL`, independent batched VJP | COMPLETE |
+| `transpose` of a dense rank-2 producer | ONE `AD_NODE_TRANSPOSE` | COMPLETE |
+| `conv2d` | one scalar node per scalar operation | Scalarizing — dense kernels exist in `lib/backend/tensor_backward.cpp`, producer not yet routed |
+| `attention`, `layer-norm` | one scalar node per scalar operation for reverse mode; dtype-DUAL tensor for first-order `derivative` inputs | Reverse mode remains scalarizing; first-order dual-vector support is complete for native (rank-2/rank-3 attention) and VM (rank-2 attention) (`tests/ad/issue_551_tensor_transformer_dual_test.esk`, `tests/vm_parity/corpus/551_tensor_transformer_dual.esk`) |
+| `embedding` | nothing (plain gather) | Build item, see [architecture.md](architecture.md) |
+| VM (`eshkol-vm-standalone-test`) | scalar `AdNode` for explicit tape primitives; `VmDual` plus parallel dual tensor carrier for first-order transformer derivatives | First-order `layer-norm`/`scaled-dot-attention` dual support; no VM reverse tensor-node tape |
+
+Both lowerings are kept and are differentially gated against each other:
+
+```
+scripts/run_dense_tensor_ad_gate.sh      # both lowerings, numeric gradients must agree
+ESHKOL_DENSE_TENSOR_AD_NODES=0           # select the scalarizing lowering
+```
+
+The variable is read at **codegen** time, so it selects which program is
+emitted rather than which branch a program takes. The gate compiles
+`tests/ad/dense_tensor_ad_gradcheck_test.esk` both ways and requires the parsed
+numeric gradients to agree within tolerance, across square and non-square
+shapes, either operand, the PEP-465 1-D contraction, `tensor-sum` and
+`tensor-mean`, nested elementwise and dense→dense chains, transposes, batched
+matmul, and max subgradients — while the 6×6 tape has exactly four nodes.
+
+---
+
+## Nesting ceiling (SW-154)
+
+Differentiation passes nest, and the shapes below the ceiling are exact. The
+ceiling itself is a property of the v1.3.5 forward **carrier**, not of the
+mathematics: a pass rides on one value series plus one first-order companion
+series, which is exactly enough for one enclosing level at first order.
+
+| Shape | v1.3.5 |
+|---|---|
+| Any depth of **first-order** passes (`derivative` inside `derivative` inside `derivative`, …) | Supported, exact |
+| One pass of order ≥ 2 with **one** enclosing first-order pass, in either position | Supported, exact |
+| Two passes both of order ≥ 2 | **Raises** `unsupported nested differentiation (both passes order >= 2)` |
+| **Two enclosing levels** over a pass of order ≥ 2 | **Not supported (SW-154).** On the exact tier it raises; on the inexact tier it currently answers `0` |
+
+Verified on this build:
+
+```scheme
+;; depth-3, all first order: d/dx d/dy d/dz (x*y*z) = 1
+(display (derivative (lambda (x) (derivative (lambda (y) (derivative (lambda (z) (* x y z)) 1.0)) 1.0)) 1.0)) (newline)
+;; depth-3, all first order: d/dx d/dy d/dz (x^2 y^2 z^2) at (2,3,4) = 2x*2y*2z
+(display (derivative (lambda (x) (derivative (lambda (y) (derivative (lambda (z) (* x x y y z z)) 4.0)) 3.0)) 2.0)) (newline)
+;; one order-2 pass under one first-order pass: d/da [d2/db2 (a^2 b^3)] at b=1/2, a=1/3
+(display (derivative (lambda (a) (derivative-n (lambda (b) (* a a b b b)) 1/2 2)) 1/3)) (newline)
+;; and the mirror position: d2/dx2 [d/dy (x^3 y)] at 1.0
+(display (derivative-n (lambda (x) (derivative (lambda (y) (* x x x y)) 1.0)) 1.0 2)) (newline)
+```
+```
+1
+192
+2
+6
+```
+
+The refusal, and the shape that is **not** supported:
+
+```scheme
+(define (h r) (* r r r r))
+(display (taylor (lambda (t) (* t (derivative-n h (+ 1 t) 2))) 0 2)) (newline)
+```
+```
+     ERROR: unsupported nested differentiation: an order-2 `derivative-n`/`taylor` pass inside another differentiation of order 2 or higher. Eshkol's forward carriers compose when at least one of the two passes is first order; rewrite the inner or outer pass as a first-order `derivative`, or compute the higher-order term with a single `(derivative-n f x k)`.
+Unhandled exception: unsupported nested differentiation (both passes order >= 2)
+```
+
+```scheme
+;; TWO enclosing levels over an order-2 pass. The analytic answer is 2.
+(display (derivative (lambda (a)
+           (derivative (lambda (b)
+             (derivative-n (lambda (c) (* a b c c)) 1.0 2)) 1.0)) 1.0)) (newline)
+```
+```
+0
+```
+
+Do not rely on that shape. It is pinned, unregistered, in
+[`tests/ad/nested_towers_matrix_test.esk`](../../../tests/ad/nested_towers_matrix_test.esk),
+which cannot pass until the carrier rewrite (ESH-0413) lands; that rewrite
+replaces the carrier the v1.3.5 exact-coefficient tier is built on, so the two
+cannot both be in force, and it is **v1.4 work**. The same program written with
+an exact seed raises instead of answering `0`:
+
+```scheme
+(display (derivative (lambda (a)
+           (derivative (lambda (b)
+             (derivative-n (lambda (c) (* a b c c)) 1/2 2)) 1/3)) 1/5)) (newline)
+```
+```
+     ERROR: Taylor hyperdual propagation requires exact +, -, *, or / operands
+Unhandled exception: unsupported inexact/non-rational Taylor hyperdual operation
+```
+
+The nesting shapes that **do** hold are gated by
+`nested_operator_matrix_*` (the captured-variable matrix, JIT + AOT) and
+`ad_carrier_nesting_*` (the point matrix).
 
 ---
 
@@ -125,8 +244,27 @@ is deterministic; regenerating reproduces the corpus byte-for-byte.
 
 ---
 
+## Native AD bridge status
+
+The Scheme composition oracle covers the Scheme operators above. The native
+bridge has one additional registered AD primitive:
+
+| Node / entry point | Status | Coverage | VM status |
+|---|---|---|---|
+| `AD_NODE_SQUARED_DISTANCE` / `ad_squared_distance` and `ad_product_squared_distance` | **COMPLETE** | `squared_distance_gradcheck`: 48 exact, identity, audit-counterexample, boundary, golden-vector, and finite-difference checks through the real producer and reverse sweep | Native-only, justified in `tests/vm_parity/PARITY.tsv`: the VM has no tensor-valued `ad_node_t` carrier or matching opcode |
+
+The node is not a Scheme builtin, so it does not add a row to the Scheme
+operator axes. Its registered row in `inc/eshkol/ad_node_registry.def` is the
+source of truth for its tensor payload and bridge backward function.
+
 ## See also
 
 - [operators.md](operators.md) — per-operator API, capture rules, nesting
-- [architecture.md](architecture.md) — forward jet, reverse tape, mixed mode
+- [architecture.md](architecture.md) — forward jet, reverse tape, mixed mode, and the
+  [83-row AD node registry](architecture.md#the-ad-node-registry): what `UNREGISTERED`
+  means, why the dispatcher has no `default:`, and the
+  [exact geometric backwards](architecture.md#exact-geometric-backwards) for node
+  types 33-40, which this oracle's scalar corpus does not reach
+- [tape.md](tape.md) — the explicit `ad-*` tape builtins and the instrumentation
+  counters, including `(ad-finite-difference-evals)` and its negative control
 - [`tests/ad_oracle/README.md`](../../../tests/ad_oracle/README.md) — oracle design

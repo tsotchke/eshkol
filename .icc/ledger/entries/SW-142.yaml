@@ -1,0 +1,30 @@
+id: SW-142
+bucket: SILENT-WRONG
+subtag: autodiff
+family: exact-coefficient-sidecar
+status: fixed
+title: the exact-gradient sidecar shadowed the complete double gradient with a PARTIAL exact sum
+repro: '`(gradient (lambda (p) (let ((x (vector-ref p 0))) (+ x (* x x)))) #(3.0))` returned `#(1)` on native
+  JIT and AOT; `tests/autodiff/varbound_point_matrix_test.esk` failed 7 of its 38 assertions this way.'
+observed: '`#(1)`, exit 0'
+correct: '`#(7)`, because d/dx (x + x^2) at 3 is 1 + 2x = 7'
+root_cause: >-
+  eshkol_ad_exact_backward is a SECOND, sparse reverse sweep that runs after the ordinary double sweep, and
+  eshkol_ad_node_gradient_tagged PREFERS whatever exact_gradient it leaves behind. Superseding the double sweep
+  is only sound when the exact sweep reproduced the WHOLE gradient of that node. Its ADD/SUB arms propagated
+  unconditionally, its MUL/DIV arms only when the operand carried an exact value, and its `default:` arm
+  propagated nothing at all - so a node reached by both kinds of edge kept the subset the sidecar could follow
+  and that subset then shadowed the complete answer. The reset pass also cleared only TAPE nodes, so a leaf
+  (the very variable node `gradient` reads back) carried a stale exact gradient from one component's pass into
+  the next.
+fixed_by: >-
+  lib/core/runtime_autodiff.cpp - any edge the sidecar cannot traverse exactly now POISONS its target, so that
+  node keeps no exact gradient and the readback falls back to the double sweep, which is complete by
+  construction. Poison propagates to a poisoned node's inputs, covers the `default:` arm and multi-input
+  tensor/bridge nodes, and is cleared before return so it is never observable. The reset pass clears the leaves
+  (input1..input4) as well as the tape.
+evidence: >-
+  tests/autodiff/varbound_point_matrix_test.esk 31/38 -> 38/38; scripts/run_autodiff_tests.sh 59/61 -> 61/61;
+  the exact-coefficient suites and the taylor/exactness ctest labels stay green.
+caught_by: [direct-measurement, master-differential]
+missed_by: [icc-correctness-chain, icc-smoke, ctest]

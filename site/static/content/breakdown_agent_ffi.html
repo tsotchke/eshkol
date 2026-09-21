@@ -1,0 +1,1482 @@
+<h1 id="eshkol-agent-ffi-subsystem">Eshkol Agent FFI Subsystem</h1>
+<p><strong>Status</strong>: Stable — v1.2.1-scale <strong>Modules</strong>: <code>agent.http</code>, <code>agent.http_server</code>, <code>agent.sqlite</code>, <code>agent.subprocess</code>, <code>agent.regex</code>, <code>agent.crypto</code>, <code>agent.fs-watch</code>, <code>agent.glob</code>, <code>agent.keychain</code>, <code>agent.git-ffi</code> <strong>C runtime root</strong>: <code>lib/agent/c/</code> <strong>Eshkol bindings</strong>: <code>lib/agent/*.esk</code> <strong>Cross-reference</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/WEB_PLATFORM.md" target="_blank" rel="noopener noreferrer"><code>WEB_PLATFORM.md</code></a> (browser-side counterpart for <code>--wasm</code> builds)</p>
+<hr />
+<h2 id="1-overview-and-design-philosophy">1. Overview and design philosophy</h2>
+<p>The Eshkol <em>agent FFI</em> is the set of native side-doors that an agentic Eshkol program reaches for when re-implementing the service in Eshkol itself would be wasteful, slow, or insecure. It covers the surfaces a long-running autonomous program needs in practice — HTTPS calls to model APIs, a structured local store, subprocesses to drive external tools, a way to receive events from the filesystem, regular-expression parsing, and cryptographic primitives. Each surface is a thin Scheme wrapper over a small C translation unit under <code>lib/agent/c/</code>. The split is deliberate:</p>
+<ul>
+<li><strong>C runtime</strong> owns the system call, the locking, the error envelope, and the resource lifetime. Most modules expose work through an opaque <code>int64_t</code> handle indexing a fixed-size table in the runtime (see <code>lib/agent/c/agent_sqlite.c §alloc_db</code>, <code>agent_http_server.c §HttpServer</code>, <code>agent_watch.c §Watcher</code>). Subprocess returns a <code>void*</code> because the per-process struct is too large to pack into a single integer (<code>agent_subprocess.c §eshkol_subprocess_t</code>).</li>
+<li><strong>Eshkol wrapper</strong> does input validation, builds the higher- level shape (alists, lists, pairs), and binds tagged result values back into the language. Validation lives in the wrapper, not the runtime, so the rejection happens <em>before</em> the call crosses the FFI boundary.</li>
+</ul>
+<p>The security posture is <strong>validated by default</strong>. The argv-based subprocess wrappers refuse tab and NUL in any argument (<code>lib/agent/subprocess.esk §process-argv-check-args</code>); the HTTP client refuses CR/LF/NUL/TAB/VT/FF/DEL in URLs and headers (<code>lib/agent/http.esk §http-safe-string?</code>); the regex engine refuses to backtrack past 10 million steps (<code>lib/agent/c/agent_regex.c §get_match_context</code>); the SQLite <code>-safe</code> wrapper refuses statement-batching characters (<code>lib/agent/sqlite.esk §sqlite-exec-safe</code>).</p>
+<p>The agent FFI is <strong>optional</strong>: the CMake option <code>ESHKOL_BUILD_AGENT_FFI</code> defaults to <code>ON</code> on POSIX and <code>OFF</code> on Windows (<code>CMakeLists.txt:1705</code>), and individual modules degrade gracefully when their system library is absent. A build without <code>libcurl</code> still links the agent stub set but <code>http-get</code> returns <code>#f</code> at runtime because <code>qllm_http_get</code> is the weak unavailable form. A build without <code>pcre2-8</code> simply omits <code>agent_regex.c</code> from the agent archive entirely.</p>
+<hr />
+<h2 id="2-build-time-wiring">2. Build-time wiring</h2>
+<h3 id="21-static-archive--libeshkol-agent-ffia">2.1 Static archive — <code>libeshkol-agent-ffi.a</code></h3>
+<p><code>CMakeLists.txt §ESHKOL_BUILD_AGENT_FFI</code> (line 1711) collects every file under <code>lib/agent/c/</code> into a single static library named <code>eshkol-agent-ffi</code>. Optional dependencies are probed via <code>pkg_check_modules</code>:</p>
+<pre class="cmake"><code>pkg_check_modules(PCRE2_AGENT libpcre2-8)   # fallback: pcre2-8
+pkg_check_modules(SQLITE3_AGENT sqlite3)
+pkg_check_modules(LIBCURL_AGENT libcurl)</code></pre>
+<p>Each <code>*_FOUND</code> flag gates inclusion of the corresponding C source into <code>AGENT_FFI_SOURCES</code>; when libcurl is found, the build also defines <code>ESHKOL_HAVE_LIBCURL=1</code> on the agent target so the body of <code>agent_http_client.c</code> is compiled in (otherwise the entire file is <code>#ifdef</code>’d out and the qllm_http_* symbols remain satisfied by the existing weak unavailable stubs).</p>
+<p><strong>Update (2026-07):</strong> HMAC-SHA256/SHA256/secure-random moved out of this module entirely — they now live in <code>lib/core/crypto_primitives.c</code>, compiled into the core <code>eshkol-runtime</code> archive and linked into <em>every</em> <code>eshkol-run</code> AOT/<code>-r</code> binary unconditionally, independent of <code>ESHKOL_BUILD_AGENT_FFI</code> and of whether the program’s source happens to <code>(require agent.…)</code>. Previously they were part of this optional, separately-rebuilt archive and only spliced into an AOT link when <code>requires_agent_ffi()</code> detected <code>(require agent.crypto)</code> (directly or transitively) — which meant a link racing a concurrent rebuild of the (much larger, more frequently rebuilt) agent-FFI archive could see a partial <code>.a</code> and fail with spurious undefined-symbol errors for <code>eshkol_sha256</code>/<code>eshkol_hmac_sha256</code>/etc even though the runtime was otherwise fine (Noesis bug report #2, 2026-07-04). macOS picks up CommonCrypto + Security/SecRandom; Windows uses BCrypt; Linux/other uses OpenSSL via <code>find_package(OpenSSL)</code> — all three probed/linked unconditionally now (<code>lib/core/crypto_primitives.c §HAVE_COMMONCRYPTO</code>/<code>HAVE_BCRYPT</code>/<code>HAVE_OPENSSL</code>). See §9.1 below.</p>
+<h3 id="22-force-load-into-eshkol-run-for-jit-discovery">2.2 Force-load into eshkol-run for JIT discovery</h3>
+<p><code>eshkol-run</code> itself links the agent archive PRIVATE with <code>-force_load</code> on macOS (or <code>-Wl,--whole-archive</code> on Linux) so the JIT in REPL mode can dlsym every symbol — none of these symbols are referenced from eshkol-run’s C++, only from <code>(extern … :real …)</code> declarations inside <code>lib/agent/*.esk</code> (<code>CMakeLists.txt:1970-1988</code>, see also v2 BUG 3 in docs/HARDENING.md). The same force-load wiring is applied to <code>eshkol-repl</code> (<code>CMakeLists.txt:1990-2007</code>) so long-lived control sessions and warm <code>--machine</code>-mode workers can resolve the agent symbols identically to one-shot JIT runs.</p>
+<h3 id="23-aot-link-arguments--eshkol_host_agent_ffi_link_args">2.3 AOT link arguments — <code>ESHKOL_HOST_AGENT_FFI_LINK_ARGS</code></h3>
+<p>User binaries built via <code>eshkol-run file.esk -o out</code> need their own link line. <code>CMakeLists.txt</code> assembles the right ordered list of flags during configure and bakes it into <code>build_config.h</code> via the substitution in <code>cmake/build_config.h.in:15</code>:</p>
+<pre class="c"><code>#define ESHKOL_HOST_AGENT_FFI_LINK_ARGS &quot;@ESHKOL_HOST_AGENT_FFI_LINK_ARGS@&quot;</code></pre>
+<p>The order is:</p>
+<ol type="1">
+<li>The force-load fragment that prevents dead-stripping of the agent archive: <code>-Wl,-force_load,&lt;path&gt;</code> on macOS, or <code>-Wl,--whole-archive &lt;path&gt; -Wl,--no-whole-archive</code> on Linux (<code>CMakeLists.txt:1885-1891</code>).</li>
+<li>Each found pkg-config dependency’s link libraries (libcurl, sqlite3, pcre2-8) — full absolute paths when CMake populated <code>*_LINK_LIBRARIES</code>, otherwise short <code>-l&lt;name&gt;</code> plus a <code>-L&lt;dir&gt;</code> fallback (<code>CMakeLists.txt:1893-1930</code>).</li>
+<li>ncurses (for <code>agent_terminal.c</code>), and the crypto vendor libraries: <code>-framework Security -framework CoreFoundation</code> on macOS, <code>-lssl -lcrypto</code> on Linux when OpenSSL is found (<code>CMakeLists.txt:1931-1942</code>).</li>
+</ol>
+<p>The list is whitespace-joined into a single C string (<code>CMakeLists.txt:1952</code>). Splitting on whitespace inside eshkol-run is safe because the inputs are all system paths from pkg-config; user paths with embedded spaces would be a problem in principle but pkg-config does not produce them in practice.</p>
+<h3 id="24-ast-scan-before-process_requires">2.4 AST scan before <code>process_requires</code></h3>
+<p>The critical sequencing in <code>exe/eshkol-run.cpp</code> is that the agent-FFI usage flag must be captured <em>before</em> <code>process_requires</code> inlines the user’s <code>(require agent.…)</code> form into the AST tree. After inlining, the top-level <code>ESHKOL_REQUIRE_OP</code> no longer exists and the scanner would miss it (<code>eshkol-run.cpp</code>):</p>
+<pre class="cpp"><code>// #248: capture agent-FFI usage BEFORE process_requires expands
+// (require agent.…) into the inlined module ASTs, after which the
+// top-level require op is gone and the AST scanner can no longer
+// tell agent-using programs from plain ones.
+bool needs_agent_ffi = requires_agent_ffi(asts);
+
+for (const auto &amp;source_file : source_files) {
+    std::filesystem::path source_path(source_file);
+    std::string base_dir = source_path.parent_path().string();
+    if (base_dir.empty()) base_dir = &quot;.&quot;;
+    process_requires(asts, base_dir, debug_mode);
+    process_imports(asts, base_dir, debug_mode);
+}</code></pre>
+<p><code>requires_agent_ffi</code> (<code>eshkol-run.cpp</code>) walks the top- level AST and returns true whenever any module name on a <code>(require …)</code> form begins with <code>agent.</code>. The downstream effect is that the link block at <code>eshkol-run.cpp</code> splices <code>ESHKOL_HOST_AGENT_FFI_LINK_ARGS</code> into the link command only when <code>needs_agent_ffi</code> is true — programs that never touch agent.* are linked without libcurl, sqlite3, or pcre2, paying no cost.</p>
+<h3 id="25-jit-path--dynamiclibrarysearchgenerator--explicit-registration">2.5 JIT path — DynamicLibrarySearchGenerator + explicit registration</h3>
+<p>For REPL JIT runs, the LLJIT instance attaches a <code>DynamicLibrarySearchGenerator::GetForCurrentProcess</code> generator to the main JITDylib (<code>lib/repl/repl_jit.cpp</code>). Because eshkol-run was linked with <code>-force_load</code>/<code>--whole-archive</code> against <code>libeshkol-agent-ffi.a</code>, every agent symbol — <code>qllm_http_*</code>, <code>eshkol_sqlite_*</code>, <code>qllm_process_*</code>, <code>eshkol_http_server_*</code>, <code>eshkol_ws_*</code>, <code>eshkol_regex_*</code>, <code>eshkol_watch_*</code>, the agent crypto family, etc. — is live in the process’s symbol table. <code>dlsym(RTLD_DEFAULT, "qllm_http_get")</code> therefore returns the real function pointer at the first <code>(extern :real qllm_http_get)</code> lookup the JIT performs.</p>
+<p>The macros <code>ESHKOL_AGENT_FFI_SYMBOL(name)</code> and <code>ADD_OPTIONAL_AGENT_FFI_SYMBOL(name)</code> (<code>lib/repl/repl_jit.cpp</code> and <code>:578</code>) additionally make every optional agent symbol’s <em>address</em> visible to the linker so the static archive isn’t dropped under LTO; they declare each <code>name</code> with weak linkage so the JIT can fall back to a null-check if a build omitted the underlying library. The full list of agent symbols registered by hand (rather than discovered via dlsym) spans <code>repl_jit.cpp</code> — that is the authoritative inventory of which native symbols every JIT and AOT run has visible.</p>
+<hr />
+<h2 id="3-http-client-agenthttp">3. HTTP client (<code>agent.http</code>)</h2>
+<h3 id="31-c-runtime--libagentcagent_http_clientc">3.1 C runtime — <code>lib/agent/c/agent_http_client.c</code></h3>
+<p>The HTTP client wraps libcurl’s <em>easy</em> interface. The whole translation unit is gated by <code>#ifdef ESHKOL_HAVE_LIBCURL</code> (<code>agent_http_client.c</code>) so the build degrades cleanly when libcurl is absent. Each call creates and destroys its own <code>CURL*</code> handle — libcurl easy handles are documented as per- thread, which lets multiple Eshkol threads call the FFI concurrently without synchronisation (<code>agent_http_client.c §threading</code> comment).</p>
+<p>Common-options application is centralised in <code>apply_common_opts</code> (<code>agent_http_client.c</code>) so TLS verification and redirect policy stay identical across <code>get</code>/<code>post</code>/<code>post_json</code>:</p>
+<pre class="c"><code>curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
+curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,        timeout_ms);
+curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 10000L);
+curl_easy_setopt(curl, CURLOPT_USERAGENT, &quot;eshkol-agent/1.2&quot;);
+curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);</code></pre>
+<p><code>CURLOPT_NOSIGNAL=1L</code> is the salient detail: libcurl normally installs SIGPIPE / SIGALRM handlers on the calling thread which collide with Eshkol’s own subprocess timeout handler. Setting NOSIGNAL keeps the thread signal mask untouched.</p>
+<p>TLS verification is <strong>on by default and not toggleable through the API surface</strong>. A caller that needs to talk to a self-signed dev origin has to do so via <code>subprocess</code> + <code>curl --insecure</code> until an explicit insecure-mode flag is wired (<code>agent_http_client.c</code>).</p>
+<p>The body buffer grows geometrically in <code>write_cb</code> (<code>agent_http_client.c</code>) — initial capacity 4096, doubled each time it runs short — keeping amortised cost O(n). A NUL terminator is always written one byte past the live region so the caller can use the body as a C string, but the binary-safe length is reported via <code>qllm_http_response_body_len</code>.</p>
+<p>Global libcurl init is reference-counted under a mutex (<code>agent_http_client.c §g_init_refs</code>, lines 145-168): the first <code>qllm_http_init</code> calls <code>curl_global_init(CURL_GLOBAL_DEFAULT)</code> and subsequent ones increment the refcount; only the last <code>qllm_http_shutdown</code> actually tears libcurl down. <code>qllm_http_get</code>, <code>qllm_http_post</code>, and <code>qllm_http_post_json</code> all lazy-init when <code>g_init_refs == 0</code> so callers that forget the explicit init don’t crash (lines 182, 209, 247).</p>
+<h4 id="public-abi">Public ABI</h4>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Signature</th>
+<th>File:line</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>qllm_http_init</code></td>
+<td><code>int32_t (void)</code></td>
+<td><code>agent_http_client.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_http_shutdown</code></td>
+<td><code>void (void)</code></td>
+<td><code>agent_http_client.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_http_has_ssl</code></td>
+<td><code>int32_t (void)</code></td>
+<td><code>agent_http_client.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_http_get</code></td>
+<td><code>qllm_http_response_t* (const char* url, int32_t timeout_ms)</code></td>
+<td><code>agent_http_client.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_http_post</code></td>
+<td><code>qllm_http_response_t* (url, headers[], hdr_count, body, body_len, timeout_ms)</code></td>
+<td><code>agent_http_client.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_http_post_json</code></td>
+<td><code>qllm_http_response_t* (url, body, auth_header, timeout_ms)</code></td>
+<td><code>agent_http_client.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_http_response_status</code></td>
+<td><code>int32_t (qllm_http_response_t*)</code></td>
+<td><code>agent_http_client.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_http_response_body</code></td>
+<td><code>const char* (qllm_http_response_t*)</code></td>
+<td><code>agent_http_client.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_http_response_body_len</code></td>
+<td><code>int64_t (qllm_http_response_t*)</code></td>
+<td><code>agent_http_client.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_http_response_free</code></td>
+<td><code>void (qllm_http_response_t*)</code></td>
+<td><code>agent_http_client.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_http_error_string</code></td>
+<td><code>const char* (int32_t code)</code></td>
+<td><code>agent_http_client.c</code></td>
+</tr>
+</tbody>
+</table>
+<p>Resource ownership: every successful call returns a heap-allocated <code>qllm_http_response_t</code>. The caller must invoke <code>qllm_http_response_free</code> or the malloc’d body buffer leaks (<code>agent_http_client.c</code>, <code>:295</code>). The Scheme wrapper handles this automatically.</p>
+<h3 id="32-eshkol-surface--libagenthttpesk">3.2 Eshkol surface — <code>lib/agent/http.esk</code></h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Function</th>
+<th>Arity</th>
+<th>Return</th>
+<th>Wraps</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(http-init)</code></td>
+<td>0</td>
+<td><code>#t</code>/<code>#f</code></td>
+<td><code>qllm_http_init</code></td>
+</tr>
+<tr>
+<td><code>(http-shutdown)</code></td>
+<td>0</td>
+<td>unspecified</td>
+<td><code>qllm_http_shutdown</code></td>
+</tr>
+<tr>
+<td><code>(http-has-ssl?)</code></td>
+<td>0</td>
+<td><code>#t</code>/<code>#f</code></td>
+<td><code>qllm_http_has_ssl</code></td>
+</tr>
+<tr>
+<td><code>(http-get url [timeout-ms])</code></td>
+<td>1 + optional</td>
+<td><code>(status . body)</code> or <code>#f</code></td>
+<td><code>qllm_http_get</code></td>
+</tr>
+<tr>
+<td><code>(http-post url headers body [timeout-ms])</code></td>
+<td>3 + optional</td>
+<td><code>(status . body)</code> or <code>#f</code></td>
+<td><code>qllm_http_post_json</code> (currently — see below)</td>
+</tr>
+<tr>
+<td><code>(http-request method url headers body [timeout-ms])</code></td>
+<td>4 + optional</td>
+<td><code>(status . body)</code> or <code>#f</code></td>
+<td>dispatch on method</td>
+</tr>
+</tbody>
+</table>
+<p>The wrapper’s contract is <code>(cons status-code body-string)</code> for success, <code>#f</code> for a libcurl transport-level error (<code>http.esk</code>). HTTP error statuses (4xx / 5xx) still produce a <code>cons</code>; only complete failures to receive a response return <code>#f</code>.</p>
+<h4 id="security-guard--http-safe-string">Security guard — <code>http-safe-string?</code></h4>
+<p>Before any URL or header reaches libcurl, the Scheme layer runs <code>http-safe-string?</code> (<code>http.esk</code>):</p>
+<pre class="scheme"><code>(define (http-safe-string? s)
+  (and (string? s)
+       (not (string-contains s &quot;\r&quot;))
+       (not (string-contains s &quot;\n&quot;))
+       (not (string-contains s &quot;\t&quot;))
+       (not (string-contains s &quot;\x00;&quot;))
+       (not (string-contains s &quot;\x0b;&quot;))   ;; VT
+       (not (string-contains s &quot;\x0c;&quot;))   ;; FF
+       (not (string-contains s &quot;\x7f;&quot;))   ;; DEL
+       ))</code></pre>
+<p><code>http-check-url</code> (<code>http.esk</code>) and <code>http-check-headers</code> (<code>http.esk</code>) call this for the URL and every header name/value, raising <code>error</code> on rejection. The threat model is documented in the surrounding comment: CRLF injection lets an attacker append a second request to the same TCP stream that many older proxies happily forward, and a literal NUL truncates the URL at the C boundary and can route the request to the wrong origin. Tab and the rest of the C0 controls are blocked under the <em>Audit M8</em> tightening because some HTTP parsers re-split header values on horizontal tab.</p>
+<h4 id="sse-streaming--deliberately-unimplemented">SSE streaming — deliberately unimplemented</h4>
+<p>The <code>qllm_http_stream_*</code> family at <code>agent_http_client.c</code> returns <code>NULL</code> / <code>-1</code> / closes immediately. The Eshkol wrapper (<code>http.esk</code>) honours the stub return values and surfaces them as <code>#f</code> to the caller. Streaming SSE for chat APIs is therefore <strong>not yet a first-class agent FFI</strong>; callers that need it today use <code>subprocess</code> to drive <code>curl -N</code> and parse <code>data:</code> lines themselves. See <code>MEMORY.md</code> <em>native HTTP client (#234)</em> — SSE is a follow-up explicitly deferred from the v1.2 cut.</p>
+<h4 id="examples">Examples</h4>
+<pre class="scheme"><code>(require agent.http)
+
+(http-init)
+
+;; Simple GET.
+(define resp (http-get &quot;https://api.example.com/v1/health&quot; 5000))
+(display &quot;status: &quot;) (display (car resp)) (newline)
+(display &quot;body:   &quot;) (display (cdr resp)) (newline)
+
+;; JSON POST with Authorization.
+(define body &quot;{\&quot;prompt\&quot;:\&quot;hello\&quot;,\&quot;max_tokens\&quot;:32}&quot;)
+(define result
+  (http-post &quot;https://api.anthropic.com/v1/messages&quot;
+             &#39;((&quot;Authorization&quot; . &quot;Bearer sk-…&quot;)
+               (&quot;anthropic-version&quot; . &quot;2023-06-01&quot;))
+             body
+             60000))
+
+(http-shutdown)</code></pre>
+<p>A header value containing <code>"foo\r\nHost: evil.com"</code> would be rejected at <code>http-check-headers</code> before any byte hits the wire.</p>
+<hr />
+<h2 id="4-http-server-websocket-unix-domain-sockets-agenthttp_server">4. HTTP server, WebSocket, Unix domain sockets (<code>agent.http_server</code>)</h2>
+<h3 id="41-c-runtime--libagentcagent_http_serverc">4.1 C runtime — <code>lib/agent/c/agent_http_server.c</code></h3>
+<p>The HTTP server is intentionally minimal: single-connection, blocking, loopback-only. It exists for OAuth PKCE callbacks, MCP authentication handshakes, and <code>/health</code> endpoints — <em>not</em> production web serving (<code>agent_http_server.c</code>, <code>http_server.esk</code>). The bind socket address is hard-coded to <code>INADDR_LOOPBACK</code>:</p>
+<pre class="c"><code>addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  /* Bind to localhost only */
+addr.sin_port = htons((uint16_t)port);</code></pre>
+<p>(<code>agent_http_server.c</code>). Programs that need to expose themselves on a public interface must do so behind a real reverse proxy — this surface is deliberately not pluggable.</p>
+<p>Server slots are a fixed <code>MAX_HTTP_SERVERS = 4</code> table (<code>agent_http_server.c</code>); each entry holds the listening fd plus the currently-accepted client fd. <code>eshkol_http_server_create(0)</code> asks the kernel to allocate a free port and reads it back via <code>getsockname</code> so callers can advertise the bound port to a peer (<code>agent_http_server.c</code>). Accept is poll-driven with a caller-supplied timeout and a fixed 5-second per-client <code>SO_RCVTIMEO</code> so a slow client can’t pin the server forever (<code>agent_http_server.c</code>).</p>
+<p>Response framing is one shot — <code>eshkol_http_server_respond</code> writes the status line, headers (<code>Content-Type</code>, <code>Content-Length</code>, <code>Connection: close</code>), the body, and closes the socket (<code>agent_http_server.c</code>). Recognised reason phrases: 200 OK / 301 Moved / 400 Bad Request / 404 Not Found / 500 Internal Server Error. Any other status emits “OK” — callers that need a richer reason set should send the raw bytes via the lower-level Unix-socket entry point.</p>
+<h4 id="websocket-client--rfc-6455">WebSocket client — RFC 6455</h4>
+<p><code>agent_http_server.c</code> also exposes a WebSocket client that wraps an existing TCP fd after the HTTP/1.1 upgrade has completed. The implementation supports text (opcode <code>0x1</code>) and binary (<code>0x2</code>) frames, close (<code>0x8</code>), ping (<code>0x9</code>), pong (<code>0xA</code>), and auto-replies to ping with pong (<code>agent_http_server.c</code>). It does <em>not</em> support:</p>
+<ul>
+<li>Permessage-deflate (no extension negotiation).</li>
+<li>Fragmented frames (every frame must arrive in one piece).</li>
+<li>Masking with non-zero keys on outbound frames (the all- zero mask is per-RFC valid but unusual; see comment at <code>agent_http_server.c</code>).</li>
+</ul>
+<p>The handle table is fixed at <code>MAX_WS_HANDLES = 8</code> (<code>agent_http_server.c</code>). The wrapper module <code>http_server.esk</code> documents this as suitable for MCP-over-WS and voice streaming; for production WS work, link libcurl 7.86+ or libwebsockets.</p>
+<h4 id="unix-domain-socket--ide-ipc">Unix domain socket — IDE IPC</h4>
+<p><code>eshkol_unix_socket_connect(path)</code> (<code>agent_http_server.c</code>) connects to a <code>SOCK_STREAM</code> AF_UNIX socket at <code>path</code> and returns the raw fd. The only intended consumer today is the VS Code <code>VSCODE_IPC_HOOK</code> IPC channel that the Eshkol extension speaks to. Combine with <code>eshkol_ws_wrap_fd</code> for an IPC channel that exchanges WebSocket-framed messages.</p>
+<h4 id="public-abi-1">Public ABI</h4>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Signature</th>
+<th>File:line</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>eshkol_http_server_create</code></td>
+<td><code>int64_t (int32_t port)</code></td>
+<td><code>agent_http_server.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_http_server_port</code></td>
+<td><code>int32_t (int64_t handle)</code></td>
+<td><code>agent_http_server.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_http_server_accept</code></td>
+<td><code>int32_t (handle, buf, buf_size, timeout_ms)</code></td>
+<td><code>agent_http_server.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_http_server_respond</code></td>
+<td><code>void (handle, status, ct, body)</code></td>
+<td><code>agent_http_server.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_http_server_close</code></td>
+<td><code>void (int64_t handle)</code></td>
+<td><code>agent_http_server.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_unix_socket_connect</code></td>
+<td><code>int64_t (const char* path)</code></td>
+<td><code>agent_http_server.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_ws_wrap_fd</code></td>
+<td><code>int64_t (int32_t fd)</code></td>
+<td><code>agent_http_server.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_ws_send_text</code></td>
+<td><code>int32_t (handle, data, len)</code></td>
+<td><code>agent_http_server.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_ws_send_binary</code></td>
+<td><code>int32_t (handle, data, len)</code></td>
+<td><code>agent_http_server.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_ws_receive</code></td>
+<td><code>int32_t (handle, buf, buf_size, frame_type*, timeout_ms)</code></td>
+<td><code>agent_http_server.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_ws_close</code></td>
+<td><code>void (int64_t handle)</code></td>
+<td><code>agent_http_server.c</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="42-eshkol-surface--libagenthttp_serveresk">4.2 Eshkol surface — <code>lib/agent/http_server.esk</code></h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Function</th>
+<th>Wraps</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(http-server-create port)</code></td>
+<td><code>eshkol_http_server_create</code></td>
+</tr>
+<tr>
+<td><code>(http-server-port handle)</code></td>
+<td><code>eshkol_http_server_port</code></td>
+</tr>
+<tr>
+<td><code>(http-server-accept handle buffer-size timeout-ms)</code></td>
+<td><code>eshkol_http_server_accept</code></td>
+</tr>
+<tr>
+<td><code>(http-server-respond handle status content-type body)</code></td>
+<td><code>eshkol_http_server_respond</code></td>
+</tr>
+<tr>
+<td><code>(http-server-close handle)</code></td>
+<td><code>eshkol_http_server_close</code></td>
+</tr>
+<tr>
+<td><code>(unix-socket-connect path)</code></td>
+<td><code>eshkol_unix_socket_connect</code></td>
+</tr>
+<tr>
+<td><code>(ws-wrap-fd fd)</code></td>
+<td><code>eshkol_ws_wrap_fd</code></td>
+</tr>
+<tr>
+<td><code>(ws-send-text handle data)</code></td>
+<td><code>eshkol_ws_send_text</code></td>
+</tr>
+<tr>
+<td><code>(ws-send-binary handle data)</code></td>
+<td><code>eshkol_ws_send_binary</code></td>
+</tr>
+<tr>
+<td><code>(ws-receive handle buffer-size timeout-ms)</code></td>
+<td><code>eshkol_ws_receive</code></td>
+</tr>
+<tr>
+<td><code>(ws-close handle)</code></td>
+<td><code>eshkol_ws_close</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>(http-server-accept …)</code> returns the raw request bytes as a string with <code>"METHOD PATH\r\n…headers…\r\n\r\n…body"</code> shape (<code>http_server.esk</code>). The Eshkol code is expected to parse this — the runtime deliberately does not.</p>
+<p><code>(ws-receive …)</code> returns <code>(cons frame-type payload)</code> where frame-type is one of the <code>WS-FRAME-*</code> constants. Ping frames have already been answered by the C side before the call returns; the caller may still observe and log them.</p>
+<h4 id="example-oauth-pkce-callback">Example: OAuth PKCE callback</h4>
+<pre class="scheme"><code>(require agent.http_server)
+
+(define server (http-server-create 0))     ;; ephemeral port
+(define port   (http-server-port server))
+
+;; Tell the browser where to hit us back.
+(display (string-append &quot;Open: http://127.0.0.1:&quot;
+                        (number-&gt;string port) &quot;/callback&quot;))
+(newline)
+
+;; Block up to 5 minutes waiting for one callback hit.
+(let ((req (http-server-accept server 4096 300000)))
+  (cond
+    ((not req)       (display &quot;accept error&quot;))
+    ((string=? req &quot;&quot;) (display &quot;timed out&quot;))
+    (else
+      (http-server-respond server 200 &quot;text/html&quot;
+        &quot;&lt;h1&gt;You may close this window.&lt;/h1&gt;&quot;)
+      (display req))))
+
+(http-server-close server)</code></pre>
+<hr />
+<h2 id="5-sqlite-agentsqlite">5. SQLite (<code>agent.sqlite</code>)</h2>
+<h3 id="51-c-runtime--libagentcagent_sqlitec">5.1 C runtime — <code>lib/agent/c/agent_sqlite.c</code></h3>
+<p><code>agent_sqlite.c</code> is a thin handle-table over the <code>sqlite3</code> public C API. Database handles are kept in a 64-slot table, prepared statements in a 512-slot table (<code>agent_sqlite.c</code>). The slot allocator scans forward from <code>g_next_db</code>/<code>g_next_stmt</code>, wrapping around when the first half is full, so handle IDs are stable for the lifetime of the open object but reuse after close (<code>agent_sqlite.c</code>).</p>
+<p>Every database is opened with WAL journaling and a 5-second busy timeout (<code>agent_sqlite.c</code>):</p>
+<pre class="c"><code>sqlite3_open_v2(path, &amp;db,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
+                SQLITE_OPEN_FULLMUTEX, NULL);
+sqlite3_exec(db, &quot;PRAGMA journal_mode=WAL&quot;, NULL, NULL, NULL);
+sqlite3_busy_timeout(db, 5000);</code></pre>
+<p><code>SQLITE_OPEN_FULLMUTEX</code> lets concurrent Eshkol threads share the same <code>sqlite3*</code> without external synchronisation; WAL mode is essential for the pattern where one writer and many readers operate against an agent’s local store. There is no connection pool: the agent is expected to keep a single database handle alive for the duration of work.</p>
+<h4 id="the-v12-dynamic-column-text-fix">The v1.2 dynamic column-text fix</h4>
+<p>The historical bug was that <code>eshkol_sqlite_column_text</code> had no way to communicate the true payload size to the caller — the old wrapper passed a fixed 8 KiB buffer and silently truncated larger values, after which JSON parsing of the partial result threw “invalid JSON” deep in the agent (<code>MEMORY.md §session persistence unblockers (#236/#246/#247)</code>). The fix added a companion function that returns the exact byte length without copying:</p>
+<pre class="c"><code>/* lib/agent/c/agent_sqlite.c */
+int64_t eshkol_sqlite_column_bytes(int64_t stmt_handle, int index) {
+    sqlite3_stmt* stmt = get_stmt(stmt_handle);
+    if (!stmt) return -1;
+    /* Note: SQLite docs require column_text() to be called before
+     * column_bytes() if the underlying value isn&#39;t already TEXT,
+     * because SQLite may need to convert the type. Calling text
+     * first is harmless when the column is already TEXT. */
+    sqlite3_column_text(stmt, index);
+    return (int64_t)sqlite3_column_bytes(stmt, index);
+}</code></pre>
+<p>The Scheme wrapper <code>(sqlite-column-text stmt idx)</code> then queries <code>sqlite-column-bytes-raw</code> first, allocates a buffer of exactly that size, and copies the payload in one shot — 2 MB session JSON round-trips losslessly (<code>sqlite.esk</code>).</p>
+<p><code>eshkol_sqlite_column_text</code> itself also encodes an overflow signal: if the caller’s buffer was too small, the return is <code>-(len + 1)</code> rather than the truncated count, so a wrapper that hasn’t migrated to the new sizing path can still detect truncation and retry rather than silently drop bytes (<code>agent_sqlite.c</code>).</p>
+<h4 id="public-abi-2">Public ABI</h4>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Signature</th>
+<th>File:line</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>eshkol_sqlite_open</code></td>
+<td><code>int64_t (const char* path)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_close</code></td>
+<td><code>void (int64_t handle)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_exec</code></td>
+<td><code>int (int64_t handle, const char* sql)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_prepare</code></td>
+<td><code>int64_t (int64_t db, const char* sql)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_step</code></td>
+<td><code>int (int64_t stmt)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_reset</code></td>
+<td><code>int (int64_t stmt)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_finalize</code></td>
+<td><code>void (int64_t stmt)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_bind_text</code></td>
+<td><code>int (stmt, idx, text)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_bind_int</code></td>
+<td><code>int (stmt, idx, int64_t value)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_bind_double</code></td>
+<td><code>int (stmt, idx, double value)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_bind_null</code></td>
+<td><code>int (stmt, idx)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_column_bytes</code></td>
+<td><code>int64_t (stmt, idx)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_column_text</code></td>
+<td><code>int (stmt, idx, buf, buf_size)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_column_int</code></td>
+<td><code>int64_t (stmt, idx)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_column_double</code></td>
+<td><code>double (stmt, idx)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_column_count</code></td>
+<td><code>int (stmt)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_column_name</code></td>
+<td><code>int (stmt, idx, buf, buf_size)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_column_type</code></td>
+<td><code>int (stmt, idx)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_last_error</code></td>
+<td><code>int (db, buf, buf_size)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_last_insert_rowid</code></td>
+<td><code>int64_t (db)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sqlite_changes</code></td>
+<td><code>int (db)</code></td>
+<td><code>agent_sqlite.c</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>sqlite3_bind_text</code> uses <code>SQLITE_TRANSIENT</code> so SQLite copies the text immediately; the Eshkol-side string can be freed or rebound before <code>sqlite_step</code> runs (<code>agent_sqlite.c</code>).</p>
+<h3 id="52-eshkol-surface--libagentsqliteesk">5.2 Eshkol surface — <code>lib/agent/sqlite.esk</code></h3>
+<p>The wrapper exports both the low-level prepared-statement API and two convenience macros for resource management:</p>
+<pre class="scheme"><code>(with-db path
+  (lambda (db)  …))         ;; close on exit, even on exception
+
+(with-statement db sql
+  (lambda (stmt) …))         ;; finalize on exit</code></pre>
+<p>Both use <code>dynamic-wind</code> (<code>sqlite.esk</code>) so the close / finalize fires on normal return AND on every escape from the body — including <code>error</code>, continuation jumps, and exceptions.</p>
+<h4 id="sqlite-exec-safe--the-blocks-the-dumbest-injection-filter"><code>sqlite-exec-safe</code> — the “blocks the dumbest injection” filter</h4>
+<p><code>sqlite-exec</code> takes raw SQL with the explicit documented expectation that the caller is providing trusted literal text (<code>sqlite.esk</code>):</p>
+<pre><code>SECURITY (#195): sqlite-exec takes raw SQL — any caller that
+builds the statement by concatenating user input is vulnerable
+to SQL injection. Prefer sqlite-prepare + sqlite-bind-* +
+sqlite-step for anything with user-controlled values.</code></pre>
+<p><code>sqlite-exec-safe</code> (<code>sqlite.esk</code>) refuses statements containing any of <code>;</code> (multi-statement), <code>--</code> (line comment), or <code>/*</code> (block comment). The documented contract is that this is <strong>not a substitute for prepared statements</strong> — it merely blocks textbook payloads on legacy call sites that cannot migrate to bind-* immediately. Future versions may further restrict it to a whitelist of statement kinds.</p>
+<h4 id="error-model">Error model</h4>
+<p>Functions that take a handle return <code>-1</code> on bad-handle. Status results from sqlite3_step are reported verbatim: <code>SQLITE_ROW</code> (100) when a row was produced, <code>SQLITE_DONE</code> (101) at the end of a query, anything else is an error (call <code>sqlite-last-error</code> for the message string). The Eshkol wrappers do not raise on SQLite-level errors — they return the integer code so the caller can decide whether to abort or retry.</p>
+<h4 id="example-insert--query">Example: insert + query</h4>
+<pre class="scheme"><code>(require agent.sqlite)
+
+(with-db &quot;/tmp/agent.db&quot;
+  (lambda (db)
+    (sqlite-exec db
+      &quot;CREATE TABLE IF NOT EXISTS notes
+       (id INTEGER PRIMARY KEY, text TEXT NOT NULL)&quot;)
+    ;; Bound parameters keep this injection-safe.
+    (with-statement db &quot;INSERT INTO notes(text) VALUES (?)&quot;
+      (lambda (stmt)
+        (sqlite-bind-text stmt 1 &quot;first note&quot;)
+        (sqlite-step stmt)))
+    (with-statement db &quot;SELECT id, text FROM notes ORDER BY id&quot;
+      (lambda (stmt)
+        (let loop ()
+          (when (= (sqlite-step stmt) SQLITE_ROW)
+            (display (list (sqlite-column-int  stmt 0)
+                           (sqlite-column-text stmt 1)))
+            (newline)
+            (loop)))))))</code></pre>
+<hr />
+<h2 id="6-subprocess-agentsubprocess">6. Subprocess (<code>agent.subprocess</code>)</h2>
+<h3 id="61-c-runtime--libagentcagent_subprocessc">6.1 C runtime — <code>lib/agent/c/agent_subprocess.c</code></h3>
+<p>Subprocess is the largest single agent FFI module (1524 lines). It exists because driving external tools — <code>git</code>, <code>lean</code>, <code>cmake</code>, <code>rustc</code>, model CLIs — is the single most common agentic side-effect, and the canonical <code>system(3)</code> / <code>popen(3)</code> interface is unsafe (shell injection) and slow (<code>/bin/sh -c</code> startup is 3-5 ms per call on macOS).</p>
+<h4 id="the-three-spawn-entrypoints">The three spawn entrypoints</h4>
+<pre class="c"><code>qllm_process_spawn_shell  /* always /bin/sh -c (or cmd /c on Windows) */
+qllm_process_spawn_argv   /* always execvp on a tab-packed argv list, no shell */
+qllm_process_spawn        /* legacy compatibility — bypasses sh for safe inputs */</code></pre>
+<p>The boundary contract is documented at <code>agent_subprocess.c</code>. Callers that interpolate user-controlled values are required to use <code>argv</code>; callers that need shell grammar (pipes, redirections, globs) use <code>shell</code> and quote interpolated values themselves.</p>
+<p><code>qllm_process_spawn</code> is the historical command-string entry that mediates between the two: if the command string contains no shell metacharacters and no C0 control bytes other than space/tab, it splits on whitespace and runs <code>execvp</code> directly (<code>agent_subprocess.c §command_is_shell_safe</code>, lines 106-131). The metacharacter list is <code>| &amp; ; &lt; &gt; * ? $</code>  ’ ” ~ ( ) { } [ ] ! #<code>, plus a refusal of any C0 byte except space/tab (audit M5, which closed VT/FF/ESC/DEL holes) and any 8th-bit byte. Skipping</code>/bin/sh` saves 3-5 ms per call.</p>
+<h4 id="posix_spawn-vs-forkexec">posix_spawn vs fork+exec</h4>
+<p>Inside <code>eshkol-run</code>, the host address space is ~200 MB plus a worker thread pool. A naive <code>fork()</code> would copy-on-write the page tables and snapshot every libsystem thread, costing 10-15 ms per spawn (<code>agent_subprocess.c</code>). The hot path uses <code>posix_spawn</code> instead:</p>
+<pre class="c"><code>spawn_errno = posix_spawnp(&amp;pid, argv[0], &amp;fa, attr_ptr,
+                           argv, env_to_pass);</code></pre>
+<p>Darwin’s <code>posix_spawn</code> is vfork-like and doesn’t touch page tables. The chdir branch (when cwd is non-empty and not <code>.</code>) falls back to <code>fork+exec</code> because <code>posix_spawn_file_actions_addchdir_np</code> is macOS 14.0+ only and the agent still ships on 13.x (<code>agent_subprocess.c §no_chdir</code>, lines 427, 781-783). Treating <code>cwd="."</code> as “no chdir needed” gives the fast path automatically.</p>
+<p>On macOS the spawn additionally uses <code>POSIX_SPAWN_CLOEXEC_DEFAULT</code>, which makes every fd not explicitly preserved in the file actions close-on-exec — saving six <code>addclose</code> entries per spawn and an implicit fd-table walk in the child (<code>agent_subprocess.c</code>).</p>
+<h4 id="pipe-leak-fix--v121">Pipe leak fix — v1.2.1</h4>
+<p>The original spawn code used short-circuit evaluation:</p>
+<pre class="c"><code>if (pipe(stdin_pipe) != 0 ||
+    pipe(stdout_pipe) != 0 ||
+    pipe(stderr_pipe) != 0) return NULL;</code></pre>
+<p>When the first call succeeded and the second failed, the two stdin-pipe fds leaked — a classical partial-success resource leak (docs/HARDENING.md §<code>#182</code>). The current code gates every <code>pipe()</code> separately so cleanup closes exactly the fds that actually opened (<code>agent_subprocess.c</code> for shell form, <code>:730-753</code> for argv form). The pattern is identical on both paths.</p>
+<h4 id="pipe-drainer--single-blocking-waitpid--kqueue">Pipe drainer — single blocking waitpid + kqueue</h4>
+<p>The historical implementation spawned two pthread drainers per <code>process-wait</code> (one for stdout, one for stderr) plus a SIGALRM timer for the timeout. Inside eshkol-run that cost 5-10 ms per spawn even when the child itself was sub-millisecond — entirely pthread setup + signal-handler bookkeeping. The current implementation on macOS / FreeBSD uses kqueue with <code>EVFILT_PROC NOTE_EXIT</code> joined to <code>EVFILT_READ</code> on the two pipe fds (<code>agent_subprocess.c</code>):</p>
+<pre class="c"><code>EV_SET(&amp;evs[nev++], proc-&gt;pid, EVFILT_PROC,
+       EV_ADD | EV_ENABLE | EV_ONESHOT, NOTE_EXIT, 0, NULL);
+EV_SET(&amp;evs[nev++], proc-&gt;stdout_fd, EVFILT_READ,
+       EV_ADD | EV_ENABLE, 0, 0, NULL);
+EV_SET(&amp;evs[nev++], proc-&gt;stderr_fd, EVFILT_READ,
+       EV_ADD | EV_ENABLE, 0, 0, NULL);
+kevent(kq, evs, nev, NULL, 0, NULL);</code></pre>
+<p>The parent thread blocks in one syscall and wakes for any of: child exit, stdout-readable, stderr-readable. On Linux the path falls back to the pthread drainer pattern at <code>:1380-1450</code> because Linux pidfd_open arrived only in 5.3 — modern Linux distros are already past that and the fallback is the simpler-but-slower path.</p>
+<p>Per-stream drain cap is 16 MiB (<code>agent_subprocess.c</code>). Past the cap, the drainer keeps reading from the pipe so the child doesn’t deadlock on write but drops the bytes — agents that capture sub-tool output should size with this ceiling in mind.</p>
+<h4 id="environment-scrubbing--audit-c6">Environment scrubbing — audit C6</h4>
+<p>Every spawn passes a filtered <code>environ</code> to the child. The filter strips the dynamic-linker injection variables that would otherwise let a compromised shell profile inject a library into every git/lean/python/cmake the agent launches (<code>agent_subprocess.c §eshkol_scrub_environ</code>, lines 317-382):</p>
+<pre><code>LD_PRELOAD, LD_AUDIT, LD_LIBRARY_PATH, LD_BIND_NOW, LD_BIND_NOT,
+LD_DEBUG, LD_PROFILE, LD_USE_LOAD_BIAS,
+DYLD_INSERT_LIBRARIES, DYLD_LIBRARY_PATH, DYLD_FALLBACK_LIBRARY_PATH,
+DYLD_FRAMEWORK_PATH, DYLD_FALLBACK_FRAMEWORK_PATH,
+DYLD_FORCE_FLAT_NAMESPACE, DYLD_PRINT_LIBRARIES,
+DYLD_PRINT_LIBRARIES_POST_LAUNCH, DYLD_PRINT_ENV,
+DYLD_PRINT_BINDINGS, DYLD_BIND_AT_LAUNCH, DYLD_IMAGE_SUFFIX</code></pre>
+<p>PATH / HOME / USER / LANG still pass through. The filter is cached under a mutex (<code>g_env_cache</code>) so repeated spawns don’t redo the linear walk of <code>environ</code> each time. On the fork+exec fallback path, <code>eshkol_unset_env_injection_vars</code> performs the equivalent scrub in the child after fork but before exec (<code>agent_subprocess.c</code>).</p>
+<h4 id="resource-limits--audit-h7">Resource limits — audit H7</h4>
+<p><code>eshkol_apply_subproc_rlimits</code> (<code>agent_subprocess.c</code>) applies four <code>setrlimit(2)</code> caps inside the fork+exec child before <code>execvp</code>:</p>
+<pre><code>RLIMIT_AS     virtual memory    default 4 GiB  (ESHKOL_SUBPROC_MEM_MB)
+RLIMIT_CPU    CPU seconds       default 300 s  (ESHKOL_SUBPROC_CPU_SEC)
+RLIMIT_NOFILE file descriptors  default 1024   (ESHKOL_SUBPROC_NOFILE)
+RLIMIT_NPROC  processes per UID default 512    (ESHKOL_SUBPROC_NPROC)</code></pre>
+<p>The coverage gap noted in the source comment is that <code>posix_spawn</code> has no <code>posix_spawnattr</code> analogue for rlimits; the hot posix_spawn path therefore skips them. Callers that need guaranteed limits on every child should <code>setrlimit</code> the eshkol-run process itself at startup so every child inherits identical caps via the normal POSIX inheritance rule.</p>
+<h4 id="windows-cmdline-buffer--audit-193">Windows cmdline buffer — audit #193</h4>
+<p><code>CreateProcessA</code> mutates its lpCommandLine buffer in place. The historical code passed a 4096-byte stack buffer and silently <code>snprintf</code>-truncated longer commands, producing a valid-looking but malformed command line (docs/HARDENING.md <code>#193</code> HIGH). The current code measures <code>"cmd /c " + command</code> ahead of time, rejects ≥ 32768 (the Windows cmdline limit), and heap-allocates the exact size — no silent truncation, no overflow (<code>agent_subprocess.c</code>).</p>
+<h4 id="public-abi-posix--windows">Public ABI (POSIX + Windows)</h4>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Returns</th>
+<th>File:line</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>qllm_process_spawn</code></td>
+<td><code>eshkol_subprocess_t*</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_spawn_shell</code></td>
+<td><code>eshkol_subprocess_t*</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_spawn_argv</code></td>
+<td><code>eshkol_subprocess_t*</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_spawn_argv_flags</code></td>
+<td><code>eshkol_subprocess_t*</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_write_stdin</code></td>
+<td><code>int64_t bytes_written</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_close_stdin</code></td>
+<td><code>void</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_read_stdout</code></td>
+<td><code>int64_t bytes_read</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_read_stderr</code></td>
+<td><code>int64_t bytes_read</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_read_all_stdout</code></td>
+<td><code>char* (caller frees via qllm_process_free_buffer)</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_read_all_stderr</code></td>
+<td><code>char*</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_wait</code></td>
+<td><code>int32_t (0=exited, 1=timeout, -1=error)</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_running</code></td>
+<td><code>int32_t (1=running, 0=exited)</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_exit_code</code></td>
+<td><code>int32_t</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_pid</code></td>
+<td><code>int64_t</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_kill</code></td>
+<td><code>void (proc, signal)</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_destroy</code></td>
+<td><code>void</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+<tr>
+<td><code>qllm_process_free_buffer</code></td>
+<td><code>void (char* buf)</code></td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>qllm_process_wait</code> returns 0/1/-1 not the exit code — the caller reads the code separately. This is corrected from the historical contract that returned <code>exit_code</code> directly: a child exiting with status 1 (test failure, bad-proof, etc.) collided with the “1=timeout” sentinel, so every legitimate non-zero exit was misreported as a 124 timeout (Noesis v5 audit BUG A, see comment at <code>:1249-1259</code>).</p>
+<h4 id="read-all-buffer-ownership-and-cleanup">Read-all buffer ownership and cleanup</h4>
+<p><code>qllm_process_read_all_stdout</code> and <code>qllm_process_read_all_stderr</code> return malloc-owned C strings. Native callers must release those pointers with <code>qllm_process_free_buffer</code>. The Eshkol wrappers do this automatically: <code>process-read-stdout</code>, <code>process-read-stderr</code>, <code>process-read-all-stdout</code>, and <code>process-read-all-stderr</code> copy the C string with <code>ptr-&gt;string</code>, then immediately call <code>qllm_process_free_buffer</code> before returning the Eshkol string.</p>
+<p>The drain buffers attached to the process handle have a single transfer point. A successful read-all call copies any drained bytes into the returned malloc buffer and clears the handle’s internal buffer, so a second read-all call returns an empty string rather than the same pointer. If the caller never reads a stream, <code>qllm_process_destroy</code> frees the still-attached drain buffer.</p>
+<p><code>qllm_process_destroy</code> is also the final native cleanup boundary for the child process itself. If the child is still running, destroy terminates and reaps it before closing pipes and freeing the handle. Callers that need graceful application-level shutdown should call <code>process-kill</code>/<code>process-wait</code> explicitly before <code>process-destroy</code>; destroying a live handle is cleanup, not a protocol negotiation step.</p>
+<h4 id="eshkol-surface--libagentsubprocessesk">Eshkol surface — <code>lib/agent/subprocess.esk</code></h4>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Function</th>
+<th>Wraps</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(process-spawn command cwd)</code></td>
+<td><code>qllm_process_spawn</code></td>
+<td>legacy command-string</td>
+</tr>
+<tr>
+<td><code>(process-spawn-nostdin command cwd)</code></td>
+<td>same with <code>flags=PROCESS_SPAWN_STDIN_NULL</code></td>
+<td>wires child’s stdin to <code>/dev/null</code></td>
+</tr>
+<tr>
+<td><code>(process-spawn-shell command cwd)</code></td>
+<td><code>qllm_process_spawn_shell</code></td>
+<td>always <code>/bin/sh -c</code></td>
+</tr>
+<tr>
+<td><code>(process-spawn-shell-nostdin command cwd)</code></td>
+<td>same + stdin-null</td>
+<td></td>
+</tr>
+<tr>
+<td><code>(process-spawn-argv argv cwd)</code></td>
+<td><code>qllm_process_spawn_argv</code></td>
+<td><strong>safe</strong> — no shell</td>
+</tr>
+<tr>
+<td><code>(process-spawn-argv-nostdin argv cwd)</code></td>
+<td>flags-variant</td>
+<td></td>
+</tr>
+<tr>
+<td><code>(process-write-stdin proc data)</code></td>
+<td><code>qllm_process_write_stdin</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>(process-close-stdin proc)</code></td>
+<td><code>qllm_process_close_stdin</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>(process-read-stdout proc max-bytes)</code></td>
+<td><code>qllm_process_read_all_stdout</code></td>
+<td>returns string</td>
+</tr>
+<tr>
+<td><code>(process-read-stderr proc max-bytes)</code></td>
+<td><code>qllm_process_read_all_stderr</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>(process-wait proc timeout-ms)</code></td>
+<td><code>qllm_process_wait</code></td>
+<td>0 / 1 / -1</td>
+</tr>
+<tr>
+<td><code>(process-running? proc)</code></td>
+<td><code>qllm_process_running</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>(process-exit-code proc)</code></td>
+<td><code>qllm_process_exit_code</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>(process-pid proc)</code></td>
+<td><code>qllm_process_pid</code></td>
+<td>live PID for trace/observability</td>
+</tr>
+<tr>
+<td><code>(process-kill proc [signal])</code></td>
+<td><code>qllm_process_kill</code></td>
+<td>default SIGTERM (15)</td>
+</tr>
+<tr>
+<td><code>(process-destroy proc)</code></td>
+<td><code>qllm_process_destroy</code></td>
+<td>terminates/reaps live child, frees handle</td>
+</tr>
+<tr>
+<td><code>(run-command command [cwd] [timeout-ms])</code></td>
+<td>shell convenience</td>
+<td>returns exit code</td>
+</tr>
+<tr>
+<td><code>(run-command-capture command [cwd] [timeout-ms] [max-output])</code></td>
+<td>shell convenience</td>
+<td>returns alist</td>
+</tr>
+<tr>
+<td><code>(run-argv argv [cwd] [timeout-ms])</code></td>
+<td>argv convenience</td>
+<td>returns exit code</td>
+</tr>
+<tr>
+<td><code>(run-argv-capture argv [cwd] [timeout-ms] [max-output])</code></td>
+<td>argv convenience</td>
+<td>returns alist</td>
+</tr>
+</tbody>
+</table>
+<p><code>run-command-capture</code> and <code>run-argv-capture</code> return an association list of <code>((exit-code . N) (stdout . "…") (stderr . "…"))</code>. On timeout the exit code is 124 (matches GNU coreutils <code>timeout(1)</code> convention) and stderr is suffixed with <code>"\n[Process timed out after Ns]"</code> (<code>subprocess.esk</code>).</p>
+<p><code>process-spawn-shell</code>, <code>run-command</code>, and <code>run-command-capture</code> are the shell surfaces: use them only when the command string intentionally depends on pipes, redirection, globbing, variable expansion, shell builtins, or compound shell syntax. <code>process-spawn-argv</code>, <code>run-argv</code>, and <code>run-argv-capture</code> are the argv-safe surfaces: arguments are passed positionally and shell metacharacters stay literal. <code>process-spawn</code> remains the legacy command-string entrypoint for compatibility; callers must not rely on it as a guaranteed shell because the runtime may bypass the shell for simple commands where direct argv execution is equivalent.</p>
+<p><code>process-spawn-argv</code> enforces the argv invariants via <code>process-argv-check-args</code> (<code>subprocess.esk</code>): every element must be a string, contain no literal tab byte (which would be re-split by the tab-separated wire format) and no NUL byte (which would truncate at the C boundary).</p>
+<h4 id="examples-1">Examples</h4>
+<pre class="scheme"><code>(require agent.subprocess)
+
+;; Argv form — safe interpolation of a user-controlled filename.
+(define result (run-argv-capture
+                 (list &quot;lean&quot; &quot;--quiet&quot; user-filename)
+                 (current-directory) 60000))
+(display (cdr (assv &#39;exit-code result))) (newline)
+(display (cdr (assv &#39;stdout    result)))
+
+;; Streaming child — write commands, drain output as it arrives.
+(define proc (process-spawn-argv (list &quot;python3&quot; &quot;-u&quot; &quot;repl.py&quot;) &quot;.&quot;))
+(process-write-stdin proc &quot;print(1+1)\n&quot;)
+(process-close-stdin proc)
+(process-wait proc 30000)
+(display (process-read-stdout proc 65536))
+(process-destroy proc)</code></pre>
+<hr />
+<h2 id="7-filesystem-watch--two-surfaces">7. Filesystem watch — two surfaces</h2>
+<p>The agent FFI exposes filesystem watching at <strong>two distinct layers</strong>, and the choice matters.</p>
+<h3 id="71-native-kqueue--inotify--libagentcagent_watchc">7.1 Native kqueue / inotify — <code>lib/agent/c/agent_watch.c</code></h3>
+<p><code>agent_watch.c</code> is the proper native watcher. On macOS / FreeBSD it uses kqueue with <code>EVFILT_VNODE</code> and the <code>NOTE_WRITE|NOTE_DELETE|NOTE_RENAME|NOTE_ATTRIB</code> flags (<code>agent_watch.c</code>); on Linux it uses inotify with <code>IN_CREATE|IN_DELETE|IN_MODIFY|IN_MOVED_FROM|IN_MOVED_TO</code> (<code>agent_watch.c</code>). Recursive mode walks the directory tree at start time and adds a watch for each subdirectory (<code>agent_watch.c</code>); new directories created after start are <strong>not</strong> auto-watched.</p>
+<p>Events accumulate in an internal ring buffer with capacity 64 (<code>agent_watch.c</code>). The agent calls <code>eshkol_watch_poll</code> in its event loop and receives one “type” string per poll, or 0 when the buffer is empty and the OS has no new events. Overflowing the ring drops oldest events (<code>agent_watch.c</code>).</p>
+<p>Public ABI:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Signature</th>
+<th>File:line</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>eshkol_watch_start</code></td>
+<td><code>int64_t (const char* path, int32_t recursive)</code></td>
+<td><code>agent_watch.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_watch_poll</code></td>
+<td><code>int32_t (handle, buf, buf_size)</code></td>
+<td><code>agent_watch.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_watch_stop</code></td>
+<td><code>void (int64_t handle)</code></td>
+<td><code>agent_watch.c</code></td>
+</tr>
+</tbody>
+</table>
+<p>The JIT symbol table registers these at <code>repl_jit.cpp</code>, so they are available under <code>eshkol-repl</code> and <code>eshkol-run -e</code>. <strong>No <code>.esk</code> extern wrapper currently exposes these symbols</strong> — they are reachable from Scheme only by writing a fresh <code>(extern …)</code> declaration. This is an explicit limitation: the high-level wrapper at <code>lib/agent/fs-watch.esk</code> was written before the native runtime existed and still routes through <code>fswatch</code> / <code>inotifywait</code> subprocesses.</p>
+<h3 id="72-polling-builtins--fs-watch-native--fs-watch-recursive--fs-watch-poll">7.2 Polling builtins — <code>fs-watch-native</code> / <code>fs-watch-recursive</code> / <code>fs-watch-poll</code></h3>
+<p>Separately, <code>lib/core/system_builtins.c §eshkol_builtin_fs_watch_start_v</code> (line 1911) implements a <em>poll-based</em> watcher that diffs mtime + size of the watched path on each call. It is exposed to user code via the codegen builtins <code>fs-watch-native</code>, <code>fs-watch-recursive</code>, <code>fs-watch-poll</code>, and <code>fs-unwatch</code> (<code>lib/backend/llvm_codegen.cpp</code> and the function_return_types entries above them). This path does <em>not</em> use kqueue / inotify and is independent of <code>agent_watch.c</code>.</p>
+<p>The watcher table is fixed-size; events are derived from mtime/size diff between two consecutive <code>fs-watch-poll</code> calls, emitted as <code>"create"</code>, <code>"change"</code>, or <code>"delete"</code> (<code>system_builtins.c</code>). This is suitable for single files or coarse-grained polling but not for high-frequency directory monitoring — for that, use the native watcher above.</p>
+<h3 id="73-subprocess-based-fallback--libagentfs-watchesk">7.3 Subprocess-based fallback — <code>lib/agent/fs-watch.esk</code></h3>
+<p><code>fs-watch.esk</code> provides <code>fs-watch-start</code>, <code>fs-watch-poll</code>, <code>fs-watch-stop</code> as subprocess wrappers (<code>fswatch -1 --recursive</code> on macOS, <code>inotifywait -r -m</code> on Linux, find-newer fallback). Quoting routes through <code>shell-quote</code> to escape the directory path. This is the <strong>legacy path</strong> preserved for existing agents; new code should prefer the native runtime symbols.</p>
+<hr />
+<h2 id="8-regex-agentregex">8. Regex (<code>agent.regex</code>)</h2>
+<h3 id="81-c-runtime--libagentcagent_regexc">8.1 C runtime — <code>lib/agent/c/agent_regex.c</code></h3>
+<p>PCRE2 with UTF-8 (<code>PCRE2_CODE_UNIT_WIDTH=8</code>) is the default compile-time width (<code>agent_regex.c</code>, <code>CMakeLists.txt:1819</code>). Compiled patterns are stored in a 256-slot handle table (<code>agent_regex.c</code>) with the same wrap-around allocator the other agent modules use.</p>
+<p>Flags surfaced to Eshkol:</p>
+<pre><code>1 PCRE2_CASELESS   2 PCRE2_MULTILINE   4 PCRE2_DOTALL</code></pre>
+<p>(<code>agent_regex.c</code>). UTF mode is always on (<code>agent_regex.c</code>).</p>
+<h4 id="redos-hardening--audit-195">ReDoS hardening — audit <code>#195</code></h4>
+<p>A pattern like <code>"(a+)+$"</code> matched against a long subject of <code>a</code>s plus one unmatched trailing character triggers exponential backtracking and pins the calling thread. PCRE2 supports <code>pcre2_set_match_limit</code> and <code>pcre2_set_depth_limit</code> to bound this, but they must be applied via a <code>pcre2_match_context</code> — otherwise the engine has no upper bound.</p>
+<p><code>agent_regex.c §get_match_context</code> (line 91) builds a process-global, lazily-allocated match context with conservative caps:</p>
+<pre class="c"><code>pcre2_set_match_limit(s_ctx, 10000000);    /* ≈ 10 ms on modern CPUs */
+pcre2_set_depth_limit(s_ctx, 100000);</code></pre>
+<p>Every <code>pcre2_match</code> and <code>pcre2_substitute</code> in the file passes this context (<code>agent_regex.c</code>). The context is allocated once and never freed — process-lifetime is fine and reusing one context is documented as thread-safe (the context is read-only during matching).</p>
+<h4 id="public-abi-3">Public ABI</h4>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Signature</th>
+<th>File:line</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>eshkol_regex_compile</code></td>
+<td><code>int64_t (const char* pattern, int flags)</code></td>
+<td><code>agent_regex.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_regex_match</code></td>
+<td><code>int (handle, subject, match_buf, buf_size)</code></td>
+<td><code>agent_regex.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_regex_match_all</code></td>
+<td><code>int (handle, subject, buf, buf_size, max)</code></td>
+<td><code>agent_regex.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_regex_replace</code></td>
+<td><code>int (handle, subject, replacement, out, out_size)</code></td>
+<td><code>agent_regex.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_regex_free</code></td>
+<td><code>void (int64_t handle)</code></td>
+<td><code>agent_regex.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_regex_match_groups_count</code></td>
+<td><code>int (handle, subject)</code></td>
+<td><code>agent_regex.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_regex_match_groups</code></td>
+<td><code>int (handle, subject, out_buf, buf_size)</code></td>
+<td><code>agent_regex.c</code></td>
+</tr>
+<tr>
+<td><code>eshkol_regex_named_group_number</code></td>
+<td><code>int (handle, name)</code></td>
+<td><code>agent_regex.c</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>eshkol_regex_match_all</code> and <code>eshkol_regex_match_groups</code> return their results as a flat NUL-separated buffer (<code>"match0\0match1\0…"</code>) so the Scheme wrapper can split on NUL bytes into a list of strings (<code>agent_regex.c</code>). Unset optional groups (e.g. <code>(a(b)?c)</code> where the <code>b</code> was absent) are emitted as empty strings, not skipped (<code>agent_regex.c</code>).</p>
+<h3 id="82-eshkol-surface--libagentregexesk">8.2 Eshkol surface — <code>lib/agent/regex.esk</code></h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Function</th>
+<th>Wraps</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(regex-compile pattern [flags])</code></td>
+<td><code>eshkol_regex_compile</code></td>
+</tr>
+<tr>
+<td><code>(regex-match handle subject)</code></td>
+<td>first match or <code>#f</code></td>
+</tr>
+<tr>
+<td><code>(regex-match? handle subject)</code></td>
+<td>bool</td>
+</tr>
+<tr>
+<td><code>(regex-match-all handle subject [max])</code></td>
+<td>list of strings</td>
+</tr>
+<tr>
+<td><code>(regex-replace handle subject replacement)</code></td>
+<td>new string</td>
+</tr>
+<tr>
+<td><code>(regex-free handle)</code></td>
+<td>release</td>
+</tr>
+<tr>
+<td><code>(regex-match-groups handle subject)</code></td>
+<td>list of (full . groups) or <code>#f</code></td>
+</tr>
+<tr>
+<td><code>(regex-group match-groups idx)</code></td>
+<td>indexed access</td>
+</tr>
+<tr>
+<td><code>(regex-named-group-number handle name)</code></td>
+<td>int (1-based) or -1</td>
+</tr>
+</tbody>
+</table>
+<p>Flags constants: <code>REGEX_CASELESS = 1</code>, <code>REGEX_MULTILINE = 2</code>, <code>REGEX_DOTALL = 4</code>.</p>
+<p><code>regex-match-groups</code> returns a list whose head is the full match and whose tail elements are the captured subgroups in order (<code>regex.esk</code>). The walk over the NUL-separated buffer is bounded by both <code>count</code> and <code>buf-size</code> so a malformed result (or a buffer overflow inside the C side) returns whatever was readable rather than going past the intended payload.</p>
+<hr />
+<h2 id="9-crypto-agentcrypto">9. Crypto (<code>agent.crypto</code>)</h2>
+<h3 id="91-c-runtime--libcorecrypto_primitivesc">9.1 C runtime — <code>lib/core/crypto_primitives.c</code></h3>
+<p>Three primitives: HMAC-SHA256, SHA256, secure random bytes. This file lives in <code>lib/core/</code> (not <code>lib/agent/c/</code>) and is compiled into the core <code>eshkol-runtime</code> archive unconditionally — it is <strong>not</strong> part of the optional <code>eshkol-agent-ffi</code> bundle, even though <code>agent.crypto</code> (<code>lib/agent/crypto.esk</code>) is the only <code>.esk</code>-level module that declares <code>extern</code>s against it today. It moved out of <code>lib/agent/c/agent_crypto.c</code> in 2026-07 specifically so these symbols are always present in every <code>eshkol-run</code> AOT/<code>-r</code> binary, regardless of <code>ESHKOL_BUILD_AGENT_FFI</code> and regardless of whether the AOT link’s <code>(require agent.…)</code> scan fires — see the “Update (2026-07)” note in §2.1 above.</p>
+<p>The vendor backend is selected at compile time:</p>
+<pre class="c"><code>#ifdef __APPLE__
+#include &lt;CommonCrypto/CommonHMAC.h&gt;
+#include &lt;Security/SecRandom.h&gt;
+#define HAVE_COMMONCRYPTO 1
+#elif defined(_WIN32)
+#include &lt;bcrypt.h&gt;
+#define HAVE_BCRYPT 1
+#else
+#include &lt;openssl/hmac.h&gt;
+#include &lt;openssl/rand.h&gt;
+#define HAVE_OPENSSL 1
+#endif</code></pre>
+<p>(<code>crypto_primitives.c</code>). Random bytes use <code>SecRandomCopyBytes</code> on macOS, <code>BCryptGenRandom</code> on Windows, or <code>RAND_bytes</code> on Linux/other — all cryptographically secure CSPRNG interfaces. HMAC and SHA256 produce 32-byte digests, hex-encoded into a 65-byte output buffer (64 hex chars + NUL).</p>
+<p>Public ABI:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Signature</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>eshkol_hmac_sha256</code></td>
+<td><code>int (key, key_len, data, data_len, out_hex, out_size)</code></td>
+</tr>
+<tr>
+<td><code>eshkol_sha256</code></td>
+<td><code>int (data, data_len, out_hex, out_size)</code></td>
+</tr>
+<tr>
+<td><code>eshkol_random_bytes</code></td>
+<td><code>int (char* buf, size_t len)</code></td>
+</tr>
+<tr>
+<td><code>eshkol_random_hex</code></td>
+<td><code>int (char* buf, size_t hex_len)</code></td>
+</tr>
+</tbody>
+</table>
+<p>All return 0 on success, non-zero on failure.</p>
+<h3 id="92-eshkol-surface--libagentcryptoesk">9.2 Eshkol surface — <code>lib/agent/crypto.esk</code></h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Function</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(sha256 data)</code></td>
+<td>returns 64-char hex string or <code>#f</code></td>
+</tr>
+<tr>
+<td><code>(hmac-sha256 key data)</code></td>
+<td>returns 64-char hex string or <code>#f</code></td>
+</tr>
+<tr>
+<td><code>(random-bytes len)</code></td>
+<td>returns binary string</td>
+</tr>
+<tr>
+<td><code>(random-hex hex-len)</code></td>
+<td>returns hex string of <code>hex-len</code> chars</td>
+</tr>
+<tr>
+<td><code>(uuid-v4)</code></td>
+<td>spec-conformant UUID v4 string</td>
+</tr>
+<tr>
+<td><code>(base64url-encode data)</code></td>
+<td>RFC 4648 §5 — replaces <code>+/</code> with <code>-_</code>, strips <code>=</code></td>
+</tr>
+<tr>
+<td><code>(base64url-decode url-str)</code></td>
+<td>inverse</td>
+</tr>
+</tbody>
+</table>
+<p><code>uuid-v4</code> derives 16 random bytes via <code>random-hex</code>, then patches the version (nibble 12 = <code>4</code>) and variant (nibble 16 in <code>{8,9,a,b}</code>) bits in place to comply with RFC 4122 (<code>crypto.esk</code>).</p>
+<p><code>base64url-encode</code> and <code>base64url-decode</code> route through <code>base64-encode-string</code> / <code>base64-decode-string</code> from <code>core.data.base64</code>. The MEMORY.md note <em>Bug HH — base64url-encode wrong API entry</em> (<code>crypto.esk</code>, <code>:131-138</code>) documents that the previous version called <code>base64-encode</code> directly with a string, which expected a list of bytes and aborted with <code>cdr: argument is not a pair</code> — the entrypoints <code>*-string</code> exist precisely for the string-in / string-out symmetry agent callers need.</p>
+<hr />
+<h2 id="10-security-model--every-guard-with-citation">10. Security model — every guard, with citation</h2>
+<p>The agent FFI uses defense in depth. Each guard is implemented in a specific place; this section lists them by threat class.</p>
+<h3 id="101-shell-injection--eliminated-by-argv">10.1 Shell injection — eliminated by argv</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Mitigation</th>
+<th>Implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>process-spawn-argv</code></td>
+<td>direct <code>execvp</code>, no shell</td>
+<td><code>agent_subprocess.c §qllm_process_spawn_argv_flags</code> (line 712)</td>
+</tr>
+<tr>
+<td><code>process-spawn</code> (auto-detect)</td>
+<td>drops shell when no metacharacters</td>
+<td><code>agent_subprocess.c §command_is_shell_safe</code> (line 106)</td>
+</tr>
+<tr>
+<td>Tab in argv element</td>
+<td>rejected at wrapper</td>
+<td><code>subprocess.esk §process-argv-check-args</code> (line 85)</td>
+</tr>
+<tr>
+<td>NUL in argv element</td>
+<td>rejected at wrapper</td>
+<td>same, line 94</td>
+</tr>
+</tbody>
+</table>
+<p>The argv form is the recommended path for any caller that interpolates user-controlled values. The shell form is kept for callers that genuinely need pipes / redirection / globbing, on the explicit understanding that they own the quoting.</p>
+<h3 id="102-sql-injection--bound-parameters-or-safe-filter">10.2 SQL injection — bound parameters or <code>safe</code> filter</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Mitigation</th>
+<th>Implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sqlite-prepare</code> + <code>sqlite-bind-*</code></td>
+<td>parameterised queries — SQLite binds the value, no interpolation</td>
+<td><code>agent_sqlite.c §eshkol_sqlite_bind_*</code> (lines 149-170)</td>
+</tr>
+<tr>
+<td><code>sqlite-exec-safe</code></td>
+<td>rejects <code>;</code>, <code>--</code>, <code>/*</code></td>
+<td><code>sqlite.esk §sqlite-exec-safe</code> (line 63)</td>
+</tr>
+<tr>
+<td><code>sqlite-exec</code> (raw)</td>
+<td><strong>DOCUMENTED as risky</strong></td>
+<td><code>sqlite.esk</code> — caller responsibility</td>
+</tr>
+</tbody>
+</table>
+<p><code>sqlite-exec-safe</code> is explicitly <em>not</em> a substitute for prepared statements — it blocks the dumbest injection attempts on call sites that absolutely cannot migrate today. The docs/HARDENING.md table records this as DOC, not FIX.</p>
+<h3 id="103-crlf-injection--url--header-sanitisation">10.3 CRLF injection — URL + header sanitisation</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Mitigation</th>
+<th>Implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>URL</td>
+<td>reject CR / LF / NUL / TAB / VT / FF / DEL</td>
+<td><code>http.esk §http-safe-string?</code> (line 92), <code>http-check-url</code> (line 103)</td>
+</tr>
+<tr>
+<td>Headers</td>
+<td>same check on name AND value</td>
+<td><code>http.esk §http-check-headers</code> (line 107)</td>
+</tr>
+</tbody>
+</table>
+<p>The original CRLF audit was <code>#195</code>; the audit-M8 tightening added tab and the rest of C0 because some HTTP parsers re-split a header value on horizontal tab. The Scheme layer raises <code>error</code> on rejection — the byte never reaches libcurl.</p>
+<h3 id="104-path-traversal--toctou--o_nofollow">10.4 Path traversal — TOCTOU + O_NOFOLLOW</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Mitigation</th>
+<th>Implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>file-copy</code></td>
+<td><code>O_NOFOLLOW | O_CLOEXEC</code> on both fds</td>
+<td><code>system_builtins.c §eshkol_builtin_file_copy_v</code> (line 788)</td>
+</tr>
+<tr>
+<td><code>path-normalize</code></td>
+<td>reject inputs ≥ PATH_MAX</td>
+<td><code>system_builtins.c §eshkol_builtin_path_normalize_v</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>O_NOFOLLOW</code> refuses to follow symlinks: a symlink-swap attack between the open-of-src and open-of-dst calls cannot redirect writes to a sensitive target. <code>O_CLOEXEC</code> ensures the fds are closed across an exec — defensive against fd-passing amplification in the rare case file-copy is called from a about-to-exec context (docs/HARDENING.md <code>#193</code>).</p>
+<h3 id="105-redos--match-limit--depth-limit">10.5 ReDoS — match-limit + depth-limit</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Mitigation</th>
+<th>Implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>every <code>pcre2_match</code> / <code>pcre2_substitute</code></td>
+<td>10 M backtrack steps, 100 K depth</td>
+<td><code>agent_regex.c §get_match_context</code> (line 91)</td>
+</tr>
+</tbody>
+</table>
+<p>The numbers were chosen empirically: 10 M steps is ≈ a few tens of milliseconds on a modern CPU — well below the “noticeably slow” threshold but easily enough for any legitimate match. A pathological pattern hits the limit and returns a non-match instead of pinning the thread.</p>
+<h3 id="106-windows-command-line-buffer-overflow">10.6 Windows command-line buffer overflow</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Mitigation</th>
+<th>Implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>qllm_process_spawn_command_impl</code> (Windows branch)</td>
+<td>heap-alloc exact size, reject ≥ 32768</td>
+<td><code>agent_subprocess.c</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>CreateProcessA</code> mutates lpCommandLine in place; the previous 4096-byte stack buffer was overflowable. The fix measures the final length, rejects past the Windows hard limit, and heap-allocates exactly the needed size.</p>
+<h3 id="107-dynamic-linker-env-injection--child-env-scrubbing">10.7 Dynamic-linker env injection — child env scrubbing</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Mitigation</th>
+<th>Implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>posix_spawn child env</td>
+<td>filter LD_* / DYLD_* injection vars</td>
+<td><code>agent_subprocess.c §eshkol_scrub_environ</code> (line 317)</td>
+</tr>
+<tr>
+<td>fork+exec child</td>
+<td><code>unsetenv</code> same list pre-exec</td>
+<td><code>agent_subprocess.c §eshkol_unset_env_injection_vars</code> (line 264)</td>
+</tr>
+</tbody>
+</table>
+<p>A compromised shell profile that sets <code>DYLD_INSERT_LIBRARIES</code> or <code>LD_PRELOAD</code> to a malicious library would otherwise inject into every <code>git</code>/<code>lean</code>/<code>python</code> the agent launches. The scrub eliminates that lateral-movement primitive at the spawn boundary.</p>
+<h3 id="108-pipe-leak-on-partial-spawn">10.8 Pipe leak on partial spawn</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Mitigation</th>
+<th>Implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>qllm_process_spawn*</code></td>
+<td>separate gate per pipe() call</td>
+<td><code>agent_subprocess.c</code> (docs/HARDENING.md <code>#182</code>)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="109-resource-limits--rlimit_as--cpu--nofile--nproc">10.9 Resource limits — RLIMIT_AS / CPU / NOFILE / NPROC</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Mitigation</th>
+<th>Implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>fork+exec child</td>
+<td>setrlimit caps inside child</td>
+<td><code>agent_subprocess.c §eshkol_apply_subproc_rlimits</code> (line 204)</td>
+</tr>
+</tbody>
+</table>
+<p>Coverage gap acknowledged: posix_spawn skips the rlimits for performance. Callers needing guaranteed limits should setrlimit the parent eshkol-run at startup so children inherit via POSIX.</p>
+<hr />
+<h2 id="11-jit-vs-aot-operational-notes">11. JIT vs AOT operational notes</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>What works</th>
+<th>What the user must do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>eshkol-repl</code> interactive</td>
+<td>All agent FFI surfaces resolved via dlsym + forced symbols</td>
+<td>nothing — the build’s <code>force_load</code> of <code>eshkol-agent-ffi</code> puts every symbol in the process</td>
+</tr>
+<tr>
+<td><code>eshkol-run script.esk -e</code> (JIT)</td>
+<td>Same as REPL — agent symbols are live in the eshkol-run process</td>
+<td>nothing</td>
+</tr>
+<tr>
+<td><code>eshkol-run script.esk -o out</code> (AOT)</td>
+<td><code>requires_agent_ffi(asts)</code> detects <code>(require agent.…)</code> BEFORE process_requires inlines it, then splices <code>ESHKOL_HOST_AGENT_FFI_LINK_ARGS</code> into the link line</td>
+<td>nothing — but the build must have libcurl / sqlite3 / pcre2 installed at <em>configure</em> time for these to be linked. A binary built without libcurl will still run, but <code>http-get</code> returns <code>#f</code>.</td>
+</tr>
+<tr>
+<td>Cross-machine deploy</td>
+<td>The produced binary depends on the same <code>.dylib</code> / <code>.so</code> set the build host had</td>
+<td>install matching libcurl / sqlite3 / pcre2 packages on the target, or build statically</td>
+</tr>
+<tr>
+<td>Build host has no libcurl</td>
+<td><code>agent_http_client.c</code> is <code>#ifdef</code>’d out; <code>qllm_http_*</code> resolves to the weak fallback (returns NULL / “explicit unavailable”)</td>
+<td>install libcurl-dev and rebuild</td>
+</tr>
+</tbody>
+</table>
+<p>The bridge between AOT-time AST inspection and configure-time link args is the indirection through <code>build_config.h.in:15</code>:</p>
+<pre class="c"><code>#define ESHKOL_HOST_AGENT_FFI_LINK_ARGS &quot;@ESHKOL_HOST_AGENT_FFI_LINK_ARGS@&quot;</code></pre>
+<p>CMake substitutes the value during <code>configure_file</code>, the agent archive is built with PUBLIC transitive deps so the linker can resolve <code>_sqlite3_exec</code>, <code>_SecRandomCopyBytes</code>, etc. when force-loading the agent archive into the user binary.</p>
+<hr />
+<h2 id="12-limitations-and-future-work">12. Limitations and future work</h2>
+<p>Items called out explicitly in the source as deferred:</p>
+<ul>
+<li><p><strong>SSE / streaming HTTP</strong> (<code>agent_http_client.c</code>). The <code>qllm_http_stream_*</code> functions are stubs; <code>http-stream-open</code> returns <code>#f</code> today. Real SSE needs the libcurl multi interface or chunked-transfer line parsing. <code>MEMORY.md §native HTTP client (#234)</code> lists this as a follow-up.</p></li>
+<li><p><strong>TLS insecure mode</strong> (<code>agent_http_client.c</code>). No way through the API to disable peer/host verification. Callers needing self-signed dev origins shell out to <code>curl --insecure</code> via <code>subprocess</code>.</p></li>
+<li><p><strong><code>qllm_http_request</code> / <code>qllm_http_post</code> with header arrays</strong> (<code>http.esk</code>). The Eshkol wrapper currently routes everything via <code>qllm_http_post_json</code> and synthesises a single auth header from the alist; the full pass-through for arbitrary header lists is wired in the C ABI but not in the wrapper.</p></li>
+<li><p><strong>Subprocess spawn on Windows with argv form</strong> (<code>agent_subprocess.c</code>). The argv path is POSIX-only; the Windows branch returns NULL. A Windows port needs to build the cmdline string per Windows quoting rules and call CreateProcessW (or accept the lossy CreateProcessA path).</p></li>
+<li><p><strong>Recursive watch — new directories</strong> (<code>agent_watch.c</code>). Recursive mode enumerates subdirectories at start time and adds a watch per directory. Directories created <em>after</em> start are not auto-watched. Linux inotify supports IN_MOVE_SELF and IN_CREATE on parents that would let us detect and add new dirs; macOS kqueue would require an FSEvents migration.</p></li>
+<li><p><strong>WebSocket extensions</strong> (<code>agent_http_server.c</code>). No permessage-deflate, no fragmentation handling. Production workloads should link libwebsockets or libcurl 7.86+.</p></li>
+<li><p><strong>HTTP server beyond loopback</strong> (<code>agent_http_server.c</code>). The bind is hard-coded to <code>INADDR_LOOPBACK</code>. Programs needing public exposure must front with a proper proxy.</p></li>
+<li><p><strong>Match-callback regex substitution</strong> (<code>agent_regex.c</code>). <code>pcre2_substitute_callback</code> is not part of PCRE2’s stable API; the Scheme layer composes <code>regex-match-groups</code> + <code>regex-replace</code> for the equivalent.</p></li>
+<li><p><strong>posix_spawn rlimits coverage</strong> (<code>agent_subprocess.c §coverage gap comment</code>, line 186). Only the fork+exec fallback applies <code>setrlimit</code>; the hot posix_spawn path skips it. Callers needing guaranteed caps set them at the parent process.</p></li>
+</ul>
+<hr />
+<h2 id="13-see-also">13. See also</h2>
+<ul>
+<li><code>lib/agent/c/agent_http_client.c</code> — libcurl HTTP/HTTPS, qllm_http_* ABI</li>
+<li><code>lib/agent/c/agent_http_server.c</code> — minimal HTTP/1.1 + WebSocket client + AF_UNIX</li>
+<li><code>lib/agent/c/agent_sqlite.c</code> — SQLite3 bindings, dynamic column-text sizing</li>
+<li><code>lib/agent/c/agent_subprocess.c</code> — process spawn, pipe-drain, env scrub, rlimits</li>
+<li><code>lib/agent/c/agent_regex.c</code> — PCRE2 with ReDoS limits and capture groups</li>
+<li><code>lib/agent/c/agent_watch.c</code> — native kqueue / inotify watcher</li>
+<li><code>lib/core/crypto_primitives.c</code> — HMAC-SHA256 / SHA256 / CSPRNG (always linked into eshkol-runtime, not part of the optional agent-FFI bundle; moved here from <code>lib/agent/c/agent_crypto.c</code> in 2026-07)</li>
+<li><code>lib/agent/*.esk</code> — Scheme wrappers for each subsystem</li>
+<li><code>exe/eshkol-run.cpp §requires_agent_ffi</code> — AOT link-arg gating (for the <em>remaining</em> optional agent-FFI symbols — terminal, regex, sqlite, http; crypto no longer depends on this)</li>
+<li><code>cmake/build_config.h.in:15</code> — <code>ESHKOL_HOST_AGENT_FFI_LINK_ARGS</code></li>
+<li><code>CMakeLists.txt:1711-2007</code> — agent FFI build wiring and force-load</li>
+<li><code>lib/repl/repl_jit.cpp</code> — JIT symbol registration for agent FFI</li>
+<li><code>docs/HARDENING.md</code> <code>#178</code>, <code>#182</code>, <code>#190</code>, <code>#191</code>, <code>#192</code>, <code>#193</code>, <code>#195</code> — the hardening commits that closed each guard documented above</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/WEB_PLATFORM.md" target="_blank" rel="noopener noreferrer"><code>WEB_PLATFORM.md</code></a> — browser-side counterpart; the <code>--wasm</code> path emits the same kind of <code>(extern …)</code> bindings but with host JavaScript fulfilling the FFI rather than native C</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/REPL_JIT.md" target="_blank" rel="noopener noreferrer"><code>REPL_JIT.md</code></a> — JIT machinery, including the DynamicLibrarySearchGenerator that resolves agent FFI symbols at REPL time</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/COMPILATION_GUIDE.md" target="_blank" rel="noopener noreferrer"><code>COMPILATION_GUIDE.md</code></a> — AOT build pipeline</li>
+</ul>

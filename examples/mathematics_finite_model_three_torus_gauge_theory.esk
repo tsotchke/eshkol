@@ -1,0 +1,434 @@
+;; Gauge theory on a finite space: Dijkgraaf-Witten invariants of the
+;; 3-torus from its 64-point finite model.
+;;
+;; Sources: M. C. McCord (1966) and J. A. Barmak, LNM 2032 (2011), for finite
+;; models and products; R. Dijkgraaf, E. Witten, Comm. Math. Phys. 129 (1990);
+;; the classifying-space and order-eight examples in this directory for the
+;; state sum and the torus formula.
+;;
+;; The product of three pseudocircles is a 64-point finite space whose order
+;; complex is a triangulation of T^3 with 448 edges, 768 triangles and 384
+;; tetrahedra (the Kuhn triangulation of a 4 x 4 x 4 cubical torus). The poset
+;; order restricted to a simplex is a total order, so the finite space comes
+;; with its own branching structure, and a flat G-connection on it is an
+;; assignment of group elements to the comparable pairs satisfying the
+;; triangle relations: a functor from the poset to the one-object groupoid.
+;;
+;;   1. The order complex is enumerated from the poset and its integral
+;;      cohomology computed as in the sheaf-cohomology example: (Z, Z^3, Z^3, Z).
+;;   2. Each tetrahedron is oriented by the permutation of the axes along its
+;;      chain and the direction of the factor edges around each circle; the
+;;      signed sum of tetrahedra is checked to be a 3-cycle (the fundamental
+;;      class), which is what makes the state sum well defined.
+;;   3. Flat connections are enumerated gauge-fixed: a spanning tree of the
+;;      448 edges is set to the identity and the remaining 385 edges are
+;;      assigned in an order that closes triangles as early as possible, so
+;;      the search returns exactly |Hom(Z^3, G)| connections (8 for Z/2, 27
+;;      for Z/3), each representing a gauge orbit of size |G|^63.
+;;   4. The Dijkgraaf-Witten state sum with the cocycles of the
+;;      classifying-space example is evaluated on the finite model and agrees
+;;      with the commuting-triple formula: |G|^2 = 4 and 9 untwisted and
+;;      twisted alike (cyclic groups), and 0 when the cocycle is replaced by
+;;      a non-cocycle (a negative control: gauge invariance fails and the
+;;      orbit sum no longer factors).
+;;
+;; DEFECT NOTES (routed around): as in the sibling examples; phases are
+;; integers over the denominator |G|; heavy loops are scoped in regions.
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (product xs) (if (null? xs) 1 (* (car xs) (product (cdr xs)))))
+(define (last-of l) (if (null? (cdr l)) (car l) (last-of (cdr l))))
+(define (but-last l) (reverse (cdr (reverse l))))
+(define (remove-nth l i) (let loop ((l l) (k 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ k 1) (if (= k i) acc (cons (car l) acc))))))
+
+;; --- posets ---------------------------------------------------------------------
+;; A poset is (vector n leq) with leq a vector of vectors of booleans, leq[x][y] = (x <= y).
+(define (make-poset n covers)                    ;; covers: list of (x . y) meaning x < y (x covered by y); closure computed
+  (let ((leq (make-vector n 0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! leq i (make-vector n #f)) (vector-set! (vector-ref leq i) i #t) (loop (+ i 1)))))
+    (for-each (lambda (c) (vector-set! (vector-ref leq (car c)) (cdr c) #t)) covers)
+    ;; transitive closure
+    (let outer ((k 0))
+      (if (< k n)
+          (begin
+            (let li ((i 0))
+              (if (< i n)
+                  (begin
+                    (let lj ((j 0))
+                      (if (< j n)
+                          (begin (if (and (vector-ref (vector-ref leq i) k) (vector-ref (vector-ref leq k) j)) (vector-set! (vector-ref leq i) j #t))
+                                 (lj (+ j 1)))))
+                    (li (+ i 1)))))
+            (outer (+ k 1)))))
+    (vector n leq)))
+(define (p-size P) (vector-ref P 0))
+(define (leq? P x y) (vector-ref (vector-ref (vector-ref P 1) x) y))
+(define (lt? P x y) (and (leq? P x y) (not (= x y))))
+(define (down-set P x) (filter (lambda (y) (leq? P y x)) (range (p-size P))))
+(define (maximal-elements P) (filter (lambda (x) (all? (lambda (y) (not (lt? P x y))) (range (p-size P)))) (range (p-size P))))
+;; product poset: (x, y) encoded x * |Q| + y, componentwise order
+(define (poset-product P Q)
+  (let* ((n (* (p-size P) (p-size Q))) (leq (make-vector n 0)) (m (p-size Q)))
+    (let loop ((i 0))
+      (if (< i n)
+          (let ((row (make-vector n #f)))
+            (let inner ((j 0))
+              (if (< j n)
+                  (begin (vector-set! row j (and (leq? P (quotient i m) (quotient j m)) (leq? Q (remainder i m) (remainder j m)))) (inner (+ j 1)))))
+            (vector-set! leq i row) (loop (+ i 1)))))
+    (vector n leq)))
+
+;; chains x_0 > x_1 > ... > x_k (strictly decreasing) of length k+1, restricted to the elements in `allowed`
+(define (chains P k allowed)
+  (let extend ((k k) (partial '()))               ;; partial holds the chain so far, smallest element first
+    (if (= k -1)
+        (list partial)                            ;; partial is built largest-first: each new element exceeds the previous
+        (let ((cands (filter (lambda (x) (and (memv x allowed) (or (null? partial) (lt? P (car partial) x)))) (range (p-size P)))))
+          (let loop ((cs cands) (acc '()))
+            (if (null? cs) acc
+                (loop (cdr cs) (append (extend (- k 1) (cons (car cs) partial)) acc))))))))
+;; chains are stored largest-first: (x_0 x_1 ... x_k) with x_0 > x_1 > ... > x_k
+(define (chain-key P c) (let loop ((l c) (acc 0)) (if (null? l) acc (loop (cdr l) (+ (* acc (p-size P)) (car l))))))
+(define (index-table P cs k)                     ;; vector keyed by chain-key -> index
+  (let ((t (make-vector (ipow (p-size P) (+ k 1)) -1)))
+    (let loop ((l cs) (i 0)) (if (not (null? l)) (begin (vector-set! t (chain-key P (car l)) i) (loop (cdr l) (+ i 1)))))
+    t))
+
+;; --- integer matrices, Smith normal form with both transforms -----------------------
+(define (make-matrix rows cols) (let ((M (make-vector rows 0))) (let loop ((i 0)) (if (< i rows) (begin (vector-set! M i (make-vector cols 0)) (loop (+ i 1))))) M))
+(define (mat-rows A) (vector-length A))
+(define (mat-cols A) (if (= 0 (vector-length A)) 0 (vector-length (vector-ref A 0))))
+(define (mref A i j) (vector-ref (vector-ref A i) j))
+(define (mset! A i j v) (vector-set! (vector-ref A i) j v))
+(define (mat-copy A) (let ((B (make-vector (mat-rows A) 0))) (let loop ((i 0)) (if (< i (mat-rows A)) (begin (vector-set! B i (vector-copy (vector-ref A i))) (loop (+ i 1))))) B))
+(define (identity-matrix m) (let ((I (make-matrix m m))) (let loop ((i 0)) (if (< i m) (begin (mset! I i i 1) (loop (+ i 1))))) I))
+(define (swap-rows! A i j) (let ((t (vector-ref A i))) (vector-set! A i (vector-ref A j)) (vector-set! A j t)))
+(define (swap-cols! A i j) (let loop ((r 0)) (if (< r (mat-rows A)) (let ((t (mref A r i))) (mset! A r i (mref A r j)) (mset! A r j t) (loop (+ r 1))))))
+(define (add-row! A dst src q) (let ((rd (vector-ref A dst)) (rs (vector-ref A src))) (let loop ((j 0)) (if (< j (vector-length rd)) (begin (if (not (= 0 (vector-ref rs j))) (vector-set! rd j (+ (vector-ref rd j) (* q (vector-ref rs j))))) (loop (+ j 1)))))))
+(define (add-col! A dst src q) (let loop ((r 0)) (if (< r (mat-rows A)) (begin (if (not (= 0 (mref A r src))) (mset! A r dst (+ (mref A r dst) (* q (mref A r src))))) (loop (+ r 1))))))
+(define (negate-row! A i) (let ((r (vector-ref A i))) (let loop ((j 0)) (if (< j (vector-length r)) (begin (vector-set! r j (- 0 (vector-ref r j))) (loop (+ j 1)))))))
+(define (find-pivot A t)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let loop-i ((i t) (best #f) (bi 0) (bj 0))
+      (if (= i m) (if best (list bi bj) #f)
+          (let loop-j ((j t) (best best) (bi bi) (bj bj))
+            (if (= j n) (loop-i (+ i 1) best bi bj)
+                (let ((a (abs (mref A i j))))
+                  (cond ((= a 1) (list i j))
+                        ((and (not (= a 0)) (or (not best) (< a best))) (loop-j (+ j 1) a i j))
+                        (else (loop-j (+ j 1) best bi bj))))))))))
+;; U A V = D; U and V accumulate the row and column operations. Returns the diagonal.
+(define (snf! A U V)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let outer ((t 0) (diag '()))
+      (if (or (= t m) (= t n)) (reverse diag)
+          (let ((p (find-pivot A t)))
+            (if (not p) (reverse diag)
+                (begin
+                  (swap-rows! A t (car p)) (swap-rows! U t (car p)) (swap-cols! A t (cadr p)) (swap-cols! V t (cadr p))
+                  (let inner ()
+                    (let ((pivot (mref A t t)) (clean #t))
+                      (let loop ((i (+ t 1))) (if (< i m) (let ((a (mref A i t))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-row! A i t (- 0 q)) (add-row! U i t (- 0 q)) (if (not (= 0 (mref A i t))) (set! clean #f)))) (loop (+ i 1)))))
+                      (let loop ((j (+ t 1))) (if (< j n) (let ((a (mref A t j))) (if (not (= a 0)) (let ((q (quotient a pivot))) (add-col! A j t (- 0 q)) (add-col! V j t (- 0 q)) (if (not (= 0 (mref A t j))) (set! clean #f)))) (loop (+ j 1)))))
+                      (if (not clean)
+                          (let ((q (find-pivot A t))) (swap-rows! A t (car q)) (swap-rows! U t (car q)) (swap-cols! A t (cadr q)) (swap-cols! V t (cadr q)) (inner))
+                          (let ((bad (let loop-i ((i (+ t 1))) (if (= i m) #f (let loop-j ((j (+ t 1))) (if (= j n) (loop-i (+ i 1)) (if (= 0 (remainder (mref A i j) pivot)) (loop-j (+ j 1)) (list i j))))))))
+                            (if bad (begin (add-row! A t (car bad) 1) (add-row! U t (car bad) 1) (inner)) #t)))))
+                  (if (< (mref A t t) 0) (begin (negate-row! A t) (negate-row! U t)))
+                  (outer (+ t 1) (cons (mref A t t) diag)))))))))
+(define (snf-full A)                             ;; -> (list diag U V) leaving A intact
+  (let* ((B (mat-copy A)) (U (identity-matrix (mat-rows A))) (V (identity-matrix (mat-cols A))) (d (snf! B U V))) (list d U V)))
+(define (torsion-of d) (filter (lambda (x) (> x 1)) d))
+(define (mat-vec M z) (let ((w (make-vector (mat-rows M) 0))) (let loop ((i 0)) (if (< i (mat-rows M)) (let ((r (vector-ref M i))) (vector-set! w i (let inner ((j 0) (s 0)) (if (= j (vector-length r)) s (inner (+ j 1) (+ s (* (vector-ref r j) (vector-ref z j))))))) (loop (+ i 1))))) w))
+(define (mat-col M j) (let ((v (make-vector (mat-rows M) 0))) (let loop ((i 0)) (if (< i (mat-rows M)) (begin (vector-set! v i (mref M i j)) (loop (+ i 1))))) v))
+;; integer kernel basis of A: the last (cols - rank) columns of V
+(define (integer-kernel A)
+  (let* ((s (snf-full A)) (r (length (car s))) (V (caddr s)) (n (mat-cols A)))
+    (let loop ((j (- n 1)) (acc '())) (if (< j r) acc (loop (- j 1) (cons (mat-col V j) acc))))))
+;; solve B y = v for integer y given B's columns are a basis (B has full column rank): y = V D^-1 U v
+(define (solve-in-basis snf ncols v)
+  (let* ((d (car snf)) (U (cadr snf)) (V (caddr snf)) (w (mat-vec U v)) (y0 (make-vector ncols 0)))
+    (let loop ((i 0) (ds d))
+      (if (< i (length d))
+          (begin (if (not (= 0 (remainder (vector-ref w i) (car ds)))) (error "not in the span")) (vector-set! y0 i (quotient (vector-ref w i) (car ds))) (loop (+ i 1) (cdr ds)))))
+    (let loop ((i (length d))) (if (< i (vector-length w)) (begin (if (not (= 0 (vector-ref w i))) (error "not in the span")) (loop (+ i 1)))))
+    (mat-vec V y0)))
+(define (matrix-from-columns cols nrows) (let ((M (make-matrix nrows (length cols)))) (let loop ((cs cols) (j 0)) (if (not (null? cs)) (begin (let fill ((i 0)) (if (< i nrows) (begin (mset! M i j (vector-ref (car cs) i)) (fill (+ i 1))))) (loop (cdr cs) (+ j 1))))) M))
+
+;; --- sheaves as functors: stalk Z everywhere, restriction m(x, y) for y <= x -------------------
+;; m is a procedure (x y) -> integer; functoriality is checked on all comparable triples.
+(define (functorial? P m)
+  (let ((n (p-size P)))
+    (all? (lambda (x) (all? (lambda (y) (all? (lambda (z) (or (not (and (leq? P z y) (leq? P y x))) (= (m x z) (* (m x y) (m y z))))) (range n))) (range n))) (range n))))
+(define (constant-sheaf x y) 1)
+
+;; the cosimplicial replacement: C^k has one Z per chain of length k+1 (over `allowed` elements)
+(define (coboundary-matrix P m k allowed)
+  (let* ((src (chains P k allowed)) (dst (chains P (+ k 1) allowed))
+         (tab (index-table P src k)) (M (make-matrix (length dst) (length src))))
+    (let loop ((ds dst) (r 0))
+      (if (not (null? ds))
+          (let ((c (car ds)))
+            ;; faces omitting x_i for i <= k keep the target x_{k+1}
+            (let faces ((i 0) (sign 1))
+              (if (<= i k)
+                  (let ((idx (vector-ref tab (chain-key P (remove-nth c i)))))
+                    (mset! M r idx (+ (mref M r idx) sign))
+                    (faces (+ i 1) (- 0 sign)))))
+            ;; the last face drops x_{k+1} and applies the restriction m(x_k, x_{k+1})
+            (let* ((front (but-last c)) (idx (vector-ref tab (chain-key P front)))
+                   (sign (if (even? (+ k 1)) 1 -1)))
+              (mset! M r idx (+ (mref M r idx) (* sign (m (last-of front) (last-of c))))))
+            (loop (cdr ds) (+ r 1)))))
+    M))
+;; cohomology from a list of coboundary matrices D_0 .. D_kmax (D_k : C^k -> C^{k+1}) and the dimensions of C^k
+(define (cohomology-from-matrices dims Ds)
+  (let loop ((k 0) (ds Ds) (dims dims) (rank-prev 0) (prev #f) (acc '()))
+    (if (null? ds) (reverse acc)
+        (let* ((D (car ds)) (dim-k (car dims))
+               (rank-k (if (or (= 0 (mat-rows D)) (= 0 (mat-cols D))) 0 (length (car (snf-full D)))))
+               (betti (- dim-k rank-prev rank-k))
+               (tors (if (and prev (> (mat-rows prev) 0) (> (mat-cols prev) 0)) (torsion-of (car (snf-full prev))) '())))
+          (loop (+ k 1) (cdr ds) (cdr dims) rank-k D (cons (list k betti tors) acc))))))
+(define (sheaf-cohomology P m kmax)              ;; list of (k betti torsion)
+  (let* ((allowed (range (p-size P)))
+         (Ds (map (lambda (k) (coboundary-matrix P m k allowed)) (range (+ kmax 1))))
+         (dims (map (lambda (k) (length (chains P k allowed))) (range (+ kmax 1)))))
+    (cohomology-from-matrices dims Ds)))
+(define (euler-char P kmax) (let loop ((k 0) (s 0)) (if (> k kmax) s (loop (+ k 1) (+ s (* (if (even? k) 1 -1) (length (chains P k (range (p-size P))))))))))
+
+(define (any-zero? cols) (any? (lambda (c) (all? (lambda (i) (= 0 (vector-ref c i))) (range (vector-length c)))) cols))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (list-max xs) (let loop ((l (cdr xs)) (m (car xs))) (if (null? l) m (loop (cdr l) (if (> (car l) m) (car l) m)))))
+
+;; --- the finite model of T^3 ------------------------------------------------------------------
+(define S (make-poset 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define T3 (poset-product (poset-product S S) S))     ;; point (x, y, z) encoded (x * 4 + y) * 4 + z
+(define (coord p i) (case i ((0) (quotient p 16)) ((1) (remainder (quotient p 4) 4)) (else (remainder p 4))))
+(define (level-S x) (if (< x 2) 0 1))
+(define (level p) (+ (level-S (coord p 0)) (level-S (coord p 1)) (level-S (coord p 2))))
+(define all-points (range 64))
+(define vertices (chains T3 0 all-points))
+(define edges (chains T3 1 all-points))            ;; (larger smaller)
+(define triangles (chains T3 2 all-points))
+(define tets (chains T3 3 all-points))
+(show "vertices, edges, triangles, tetrahedra of the order complex" (list (length vertices) (length edges) (length triangles) (length tets)))
+(check "the order complex of the 64-point model has 448 edges, 768 triangles, 384 tetrahedra and Euler characteristic 0"
+       (and (= 64 (length vertices)) (= 448 (length edges)) (= 768 (length triangles)) (= 384 (length tets))
+            (= 0 (- (+ 64 768) (+ 448 384)))))
+(check "every tetrahedron climbs the levels 0, 1, 2, 3 one coordinate at a time"
+       (all? (lambda (t) (equal? (map level t) (list 3 2 1 0))) tets))
+
+(define HT3 (with-region (sheaf-cohomology T3 constant-sheaf 3)))
+(show "H^*(finite model of T^3; Z)" HT3)
+(check "the finite model has the integral cohomology of the 3-torus, (Z, Z^3, Z^3, Z)"
+       (equal? HT3 (list (list 0 1 '()) (list 1 3 '()) (list 2 3 '()) (list 3 1 '()))))
+
+;; --- orientation of the tetrahedra ---------------------------------------------------------------
+;; a chain, read from its smallest point upward, raises one coordinate per step: the axis order is a permutation
+(define (axis-changed p q) (cond ((not (= (coord p 0) (coord q 0))) 0) ((not (= (coord p 1) (coord q 1))) 1) (else 2)))
+(define (perm-sign p)
+  (let ((inv (count-if (lambda (pair) (> (car pair) (cadr pair)))
+                       (list (list (car p) (cadr p)) (list (car p) (caddr p)) (list (cadr p) (caddr p))))))
+    (if (even? inv) 1 -1)))
+;; the pseudocircle is oriented a -> c -> b -> d -> a; a poset edge from a lower point to an upper one is + if it runs with that orientation
+(define (circle-edge-sign lo hi) (cond ((and (= lo 0) (= hi 2)) 1) ((and (= lo 1) (= hi 2)) -1) ((and (= lo 1) (= hi 3)) 1) (else -1)))
+(define (tet-orientation t)                       ;; t = (x0 x1 x2 x3) largest first
+  (let* ((up (reverse t))                          ;; smallest first
+         (axes (list (axis-changed (list-ref up 0) (list-ref up 1)) (axis-changed (list-ref up 1) (list-ref up 2)) (axis-changed (list-ref up 2) (list-ref up 3))))
+         (lo (car up)) (hi (list-ref up 3))
+         (edge-signs (* (circle-edge-sign (coord lo 0) (coord hi 0)) (circle-edge-sign (coord lo 1) (coord hi 1)) (circle-edge-sign (coord lo 2) (coord hi 2)))))
+    (* (perm-sign axes) edge-signs)))
+(define orientations (map tet-orientation tets))
+(check "the orientations split evenly, 192 of each sign" (and (= 192 (count-if (lambda (e) (= e 1)) orientations)) (= 192 (count-if (lambda (e) (= e -1)) orientations))))
+;; the fundamental cycle: the boundary of sum eps_t t must vanish; the boundary is the transpose of the coboundary C^2 -> C^3
+(define D2 (with-region (coboundary-matrix T3 constant-sheaf 2 all-points)))   ;; rows: tets, cols: triangles
+(define fundamental (list->vector orientations))
+(check "the signed sum of the tetrahedra is a 3-cycle: the fundamental class of the oriented model"
+       (let ((ok #t))
+         (let loop ((c 0))
+           (if (< c (mat-cols D2))
+               (begin
+                 (if (not (= 0 (let inner ((r 0) (s 0)) (if (= r (mat-rows D2)) s (inner (+ r 1) (+ s (* (mref D2 r c) (vector-ref fundamental r))))))))
+                     (set! ok #f))
+                 (loop (+ c 1)))))
+         ok))
+(check "negative control -- flipping one orientation breaks the cycle condition"
+       (let ((bad (vector-copy fundamental)))
+         (vector-set! bad 0 (- 0 (vector-ref bad 0)))
+         (let ((ok #t))
+           (let loop ((c 0))
+             (if (< c (mat-cols D2))
+                 (begin (if (not (= 0 (let inner ((r 0) (s 0)) (if (= r (mat-rows D2)) s (inner (+ r 1) (+ s (* (mref D2 r c) (vector-ref bad r)))))))) (set! ok #f))
+                        (loop (+ c 1)))))
+           (not ok))))
+
+;; --- flat connections, gauge fixed -------------------------------------------------------------------
+;; edges as (lo . hi) pairs indexed 0..447; a group element g on the edge is the holonomy from lo to hi
+(define edge-index (let ((t (make-vector (* 64 64) -1))) (let loop ((es edges) (i 0)) (if (not (null? es)) (begin (vector-set! t (+ (* 64 (cadr (car es))) (car (car es))) i) (loop (cdr es) (+ i 1))))) t))
+(define (edge-id lo hi) (vector-ref edge-index (+ (* 64 lo) hi)))
+;; a triangle (w v u) largest first has lo = u, mid = v, hi = w and the relation g(u,v) g(v,w) = g(u,w)
+(define triangle-relations (map (lambda (t) (let ((w (car t)) (v (cadr t)) (u (caddr t))) (list (edge-id u v) (edge-id v w) (edge-id u w)))) triangles))
+;; spanning tree by breadth-first search over the comparability graph
+(define (spanning-tree)
+  (let ((visited (make-vector 64 #f)) (tree '()))
+    (vector-set! visited 0 #t)
+    (let loop ((frontier (list 0)))
+      (if (null? frontier) tree
+          (let ((next '()))
+            (for-each (lambda (p)
+                        (for-each (lambda (q)
+                                    (if (and (not (vector-ref visited q)) (or (lt? T3 p q) (lt? T3 q p)))
+                                        (begin (vector-set! visited q #t)
+                                               (set! tree (cons (if (lt? T3 p q) (edge-id p q) (edge-id q p)) tree))
+                                               (set! next (cons q next)))))
+                                  all-points))
+                      frontier)
+            (loop next))))))
+(define tree-edges (spanning-tree))
+(check "a breadth-first spanning tree of the comparability graph has 63 edges" (= 63 (length tree-edges)))
+;; order the non-tree edges in rounds: an edge is placed as soon as some triangle has its other two edges placed
+(define (closing-order)
+  (let ((placed (make-vector 448 #f)) (order '()))
+    (for-each (lambda (e) (vector-set! placed e #t)) tree-edges)
+    (let rounds ((round 0))
+      (let ((new (let loop ((rs triangle-relations) (acc '()))
+                   (if (null? rs) acc
+                       (let* ((r (car rs)) (a (car r)) (b (cadr r)) (c (caddr r))
+                              (unplaced (filter (lambda (e) (not (vector-ref placed e))) (list a b c))))
+                         (loop (cdr rs) (if (and (= 1 (length unplaced)) (not (memv (car unplaced) acc))) (cons (car unplaced) acc) acc)))))))
+        (if (null? new)
+            (append (reverse order) (filter (lambda (e) (not (vector-ref placed e))) (range 448)))   ;; anything left (should be none)
+            (begin (for-each (lambda (e) (vector-set! placed e #t)) new)
+                   (set! order (append (reverse new) order))
+                   (rounds (+ round 1))))))))
+(define free-order (closing-order))
+(check "every non-tree edge is reached by closing triangles: 385 edges placed in rounds" (= 385 (length free-order)))
+;; relations grouped by the position at which they become checkable
+(define (relations-by-position order)
+  (let ((pos (make-vector 448 -1)) (v (make-vector (length order) '())))
+    (let loop ((os order) (i 0)) (if (not (null? os)) (begin (vector-set! pos (car os) i) (loop (cdr os) (+ i 1)))))
+    (for-each (lambda (r)
+                (let ((p (list-max (map (lambda (e) (vector-ref pos e)) r))))   ;; tree edges have position -1
+                  (if (>= p 0) (vector-set! v p (cons r (vector-ref v p))))))
+              triangle-relations)
+    v))
+(define rbp (relations-by-position free-order))
+(define (make-cyclic n) (vector n))
+(define (g-order G) (vector-ref G 0))
+(define (g-mul G a b) (modulo (+ a b) (g-order G)))
+(define (relations-hold? G col rs)
+  (cond ((null? rs) #t)
+        ((= (g-mul G (vector-ref col (car (car rs))) (vector-ref col (cadr (car rs)))) (vector-ref col (caddr (car rs)))) (relations-hold? G col (cdr rs)))
+        (else #f)))
+;; every flat connection with the tree gauge-fixed to the identity, as a list of colorings (vectors over the 448 edges)
+(define (flat-connections G)
+  (let ((col (make-vector 448 0)) (order (list->vector free-order)) (n (g-order G)))
+    (let dfs ((i 0))
+      (if (= i 385)
+          (list (vector-copy col))
+          (let ((e (vector-ref order i)))
+            (let loop ((g 0) (acc '()))
+              (if (= g n) acc
+                  (begin (vector-set! col e g)
+                         (if (relations-hold? G col (vector-ref rbp i))
+                             (loop (+ g 1) (append (dfs (+ i 1)) acc))
+                             (loop (+ g 1) acc))))))))))
+(define Z2 (make-cyclic 2))
+(define Z3 (make-cyclic 3))
+(define flats-2 (with-region (flat-connections Z2)))
+(define flats-3 (with-region (flat-connections Z3)))
+(show "gauge-fixed flat connections for Z/2 and Z/3" (list (length flats-2) (length flats-3)))
+(check "the gauge-fixed search finds |Hom(Z^3, G)| flat connections: 8 for Z/2 and 27 for Z/3"
+       (and (= 8 (length flats-2)) (= 27 (length flats-3))))
+(check "every flat connection satisfies all 768 triangle relations, and the trivial one is among them"
+       (and (all? (lambda (c) (relations-hold? Z3 c triangle-relations)) flats-3)
+            (any-zero? flats-3)))
+
+;; --- the state sum ---------------------------------------------------------------------------------
+(define (carry n b c) (quotient (+ b c) n))
+(define (cyclic-cocycle n p) (lambda (a b c) (modulo (* p a (carry n b c)) n)))   ;; value k stands for k/n
+(define (not-a-cocycle n) (lambda (a b c) (modulo (* a b) n)))                 ;; fails the cocycle condition
+;; a delta function on one triple: neither a cocycle nor gauge invariant as a weight
+(define (delta-cochain-weight a b c) (if (and (= a 1) (= b 2) (= c 1)) 1 0))
+;; the weight of a coloring: sum over tetrahedra of eps * omega(g01, g12, g23), mod n
+(define (coloring-weight G w col)
+  (let loop ((ts tets) (os orientations) (acc 0))
+    (if (null? ts) (modulo acc (g-order G))
+        (let* ((up (reverse (car ts))) (v0 (car up)) (v1 (cadr up)) (v2 (caddr up)) (v3 (cadddr up)))
+          (loop (cdr ts) (cdr os)
+                (+ acc (* (car os) (w (vector-ref col (edge-id v0 v1)) (vector-ref col (edge-id v1 v2)) (vector-ref col (edge-id v2 v3))))))))))
+;; Z = |G|^-1 sum over gauge classes of exp(2 pi i weight / |G|), reduced exactly in Q(zeta_n) for n = 2, 3
+(define (reduce-phases n ks)
+  (let loop ((l ks) (re 0) (ze 0))
+    (if (null? l) (list re ze)
+        (let ((k (car l)))
+          (cond ((= k 0) (loop (cdr l) (+ re 1) ze))
+                ((and (= n 2) (= k 1)) (loop (cdr l) (- re 1) ze))
+                ((and (= n 3) (= k 1)) (loop (cdr l) re (+ ze 1)))
+                ((and (= n 3) (= k 2)) (loop (cdr l) (- re 1) (- ze 1)))
+                (else (loop (cdr l) re (+ ze 1000000))))))))
+(define (state-sum G w flats)
+  (let ((r (reduce-phases (g-order G) (map (lambda (c) (coloring-weight G w c)) flats))))
+    (if (= 0 (cadr r)) (/ (car r) (g-order G)) 'not-real)))
+(define z2-untwisted (state-sum Z2 (cyclic-cocycle 2 0) flats-2))
+(define z2-twisted (state-sum Z2 (cyclic-cocycle 2 1) flats-2))
+(define z3-untwisted (state-sum Z3 (cyclic-cocycle 3 0) flats-3))
+(define z3-twisted (state-sum Z3 (cyclic-cocycle 3 1) flats-3))
+(show "Z(T^3) on the finite model: Z/2 untwisted, twisted; Z/3 untwisted, twisted" (list z2-untwisted z2-twisted z3-untwisted z3-twisted))
+(check "Dijkgraaf-Witten on the finite model gives |G|^2 for the cyclic groups, untwisted and twisted: 4, 4, 9, 9"
+       (and (= 4 z2-untwisted) (= 4 z2-twisted) (= 9 z3-untwisted) (= 9 z3-twisted)))
+;; gauge transformations: h assigned to vertices, g(lo -> hi) becomes g + h_hi - h_lo; flatness is preserved
+(define (gauge-transform G col h)
+  (let ((out (make-vector 448 0)))
+    (let loop ((es edges) (i 0))
+      (if (not (null? es))
+          (let ((hi (car (car es))) (lo (cadr (car es))))
+            (vector-set! out i (modulo (+ (vector-ref col i) (vector-ref h hi) (- 0 (vector-ref h lo))) (g-order G)))
+            (loop (cdr es) (+ i 1)))))
+    out))
+(define test-gauge (let ((h (make-vector 64 0))) (let loop ((v 0)) (if (< v 64) (begin (vector-set! h v (modulo (* 7 v) 3)) (loop (+ v 1))))) h))
+(check "for cyclic groups every gauge-fixed connection has trivial twisted weight (the torus phase of a cyclic group is 1), which is why the twist leaves |G|^2"
+       (all? (lambda (c) (= 0 (coloring-weight Z3 (cyclic-cocycle 3 1) c))) flats-3))
+(check "the cocycle weight is gauge invariant: a gauge transformation of every Z/3 connection preserves flatness and the weight"
+       (all? (lambda (c) (let ((c2 (gauge-transform Z3 c test-gauge)))
+                          (and (relations-hold? Z3 c2 triangle-relations)
+                               (= (coloring-weight Z3 (cyclic-cocycle 3 1) c) (coloring-weight Z3 (cyclic-cocycle 3 1) c2)))))
+             flats-3))
+(define (coboundary-value G w a b c d)          ;; delta w on a quadruple, as an integer mod |G|
+  (modulo (+ (w b c d) (- 0 (w (g-mul G a b) c d)) (w a (g-mul G b c) d) (- 0 (w a b (g-mul G c d))) (w a b c)) (g-order G)))
+(define (cocycle? G w)
+  (all? (lambda (a) (all? (lambda (b) (all? (lambda (c) (all? (lambda (d) (= 0 (coboundary-value G w a b c d))) (range (g-order G)))) (range (g-order G)))) (range (g-order G)))) (range (g-order G))))
+(check "the cyclic cocycle satisfies the cocycle condition on Z/3 and (a, b, c) -> a b / 3 does not"
+       (and (cocycle? Z3 (cyclic-cocycle 3 1)) (not (cocycle? Z3 (not-a-cocycle 3)))))
+;; gauge change concentrated at one vertex
+(define (vertex-gauge v) (let ((h (make-vector 64 0))) (vector-set! h v 1) h))
+(define (weight-invariant-under-vertex-gauges? w c)
+  (with-region (all? (lambda (v) (= (coloring-weight Z3 w c) (coloring-weight Z3 w (gauge-transform Z3 c (vertex-gauge v))))) all-points)))
+(check "the cocycle weight is invariant under every single-vertex gauge change of every connection"
+       (all? (lambda (c) (weight-invariant-under-vertex-gauges? (cyclic-cocycle 3 1) c)) flats-3))
+(check "a delta-function cochain is not a cocycle" (not (cocycle? Z3 delta-cochain-weight)))
+(check "negative control -- the delta-function weight changes under some single-vertex gauge change of some connection: a non-cocycle defines no invariant of the space"
+       (any? (lambda (c) (not (weight-invariant-under-vertex-gauges? delta-cochain-weight c))) flats-3))
+(show "state sum with the non-cocycle on Z/3" (state-sum Z3 (not-a-cocycle 3) flats-3))
+
+(display "Gauge theory on a finite space: Dijkgraaf-Witten on the 64-point model of T^3") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

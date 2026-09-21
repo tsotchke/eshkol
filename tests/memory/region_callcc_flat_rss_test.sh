@@ -67,6 +67,8 @@ export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+# shellcheck source=../../scripts/lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 
 BUILD_DIR="${BUILD_DIR:-build}"
 if [ -z "${ESHKOL_RUN:-}" ]; then
@@ -298,7 +300,7 @@ else
         if [ "$aot_rc" -eq 0 ] && [ "$got" = "$want" ]; then rc=0; else rc=1; fi
         check "handle_close_inside_callcc_aot" \
             "native AOT under ESHKOL_ARENA_POISON=1 gave rc=$aot_rc and \"$got\" (want \"$want\")" $rc
-        rm -f "$HANDLE_BIN"
+        eshkol_checked_rm "$HANDLE_BIN"
     else
         check "handle_close_inside_callcc_aot" "AOT compile failed" 1
     fi

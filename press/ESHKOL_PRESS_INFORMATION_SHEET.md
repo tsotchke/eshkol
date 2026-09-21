@@ -17,8 +17,8 @@ artefact it carries.
 |:---|:---|
 | Project | Eshkol |
 | Version | v1.3.5-evolve |
-| Builds on | v1.3.4-evolve (31 July 2026), v1.3.3-evolve (16 July 2026), v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
-| Release date | 28 August 2026 |
+| Builds on | v1.3.4-evolve (19 August 2026), v1.3.3-evolve (16 July 2026), v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
+| Release date | 22 September 2026 |
 | Licence | MIT |
 | Source | https://github.com/tsotchke/eshkol |
 | Website | https://eshkol.ai |
@@ -444,7 +444,7 @@ v1.3.5 documentation wave and carry into this release unchanged.
 | Differing-signature mutual tail calls | tail-transfer dispatcher gate, `.icc/completion-oracles.yaml` | 100,000,000 hops at 9.1 MB peak RSS |
 | Resident daemon loop, two horizons 8× apart | `tests/memory/resident_longrun_flat_gate.sh` at 200,000 and 1,600,000 ticks | transient garbage and all four persistent-mutation channels at exactly 0.000 bytes/tick, identical byte totals at both horizons |
 | Frontend span coverage at the consumer | `scripts/run_node_identity_gate.py` against `tests/coverage/NODE_IDENTITY_BASELINE.json` | monotonic floor of 99.48% |
-| qLLM oracle | `tests/qllm_oracle/` | gate 10/10 across five exporters on the JIT and AOT lanes, over 77 in-language checks |
+| qLLM oracle | `tests/qllm_oracle/` | gate 12/12 across six exporters on the JIT and AOT lanes, over 82 in-language checks |
 | Geometric bridge backwards vs. independent golden Jacobians | `tests/bridge/` | agreement to 3.7e-16 and 1.1e-14 |
 | Geometric bridge backwards vs. derivation-independent identities | conformal gradient-norm and inverse-Jacobian identities, `.icc/silent-wrong-ledger.yaml` SW-65 evidence | max relative deviation 5.0e-16 and 6.7e-16 |
 | Embedding and Fréchet-mean producers, gradchecked through real dispatch | `tests/bridge/qllm_bridge_producer_gradcheck_test.cpp` | embedding exact scatter-add, 0 mismatches; Fréchet exact Euclidean closed form, 0.0; hyperbolic finite difference 8.3e-10 over 48 partials |
@@ -548,7 +548,8 @@ generated `docs/api/` reference by `eshkol-doc`.
 
 ### Target backend
 
-LLVM 21 is the version-enforced target on every platform; the build aborts
+The source compiles against LLVM 18 through 24. A build pins one major version
+— 21 by default, overridable with `ESHKOL_REQUIRED_LLVM_MAJOR` — and aborts
 with a clear error message if `llvm-config` reports any other major version
 (*cmake/LLVMToolchain.cmake §`eshkol_validate_llvm_major`*).
 Targets currently supported:
@@ -669,8 +670,9 @@ consists of:
   to be filled in, and an unclassified subtype, a continuation captured inside a
   region, or a failed bookkeeping allocation all pin the region, so every
   uncertainty degrades toward a bounded leak and never toward a dangling index.
-  Measured on one fixture swept by iteration count: 25, 26 and 27 MB at 1,000,
-  4,000 and 16,000 iterations, against 793 MB with `ESHKOL_VM_REGION_EVAC=0`.
+  Measured on one fixture swept by iteration count on the release cut: 33, 34
+  and 34 MB at 1,000, 4,000 and 16,000 iterations, against 304 MB with
+  `ESHKOL_VM_REGION_EVAC=0` and 125 MB for the unwrapped control.
   Five runtime variables — `ESHKOL_VM_REGION_EVAC`, `_VERIFY`, `_VERIFY_FATAL`,
   `_COMPACT`, `_RECYCLE` — are documented in
   [environment-variables.md](../docs/reference/runtime/environment-variables.md),
@@ -1256,9 +1258,9 @@ by-product:
   the canonical surface and builtin totals from the coverage policy files and
   fails on a mismatch against every registered doc, red-proofed by planting a
   stale claim and confirming the gate catches it; it runs in CI's assurance
-  job. The canonical totals it enforces are a 1,108-construct language surface
-  and 1,042 builtins.
-  <!-- source: tests/coverage/coverage_policy.json (baseline_surface_total 1108); tests/coverage/language_surface.json (counts.builtins_total 1042); scripts/check_surface_counts.py -->
+  job. The canonical totals it enforces are a 1,115-construct language surface
+  and 1,052 builtins.
+  <!-- source: tests/coverage/coverage_policy.json (baseline_surface_total 1115); tests/coverage/language_surface.json (counts.builtins_total 1052); scripts/check_surface_counts.py -->
 
 ---
 
@@ -1404,7 +1406,7 @@ bytecode-VM dual-number propagation path without native code. The
 interactive textbook has every example runnable in-browser.
 
 The browser REPL uses the bytecode VM rather than LLVM JIT: an
-opcode-dispatch register-plus-stack interpreter with 250+ native call IDs,
+72-opcode register-plus-stack interpreter with 743 native-call IDs,
 ESKB binary format with LEB128 encoding and CRC32 checksums
 (*docs/DESIGN.md §Dual backend architecture*).
 
@@ -1418,7 +1420,7 @@ independent value representations:
 - **LLVM native** (primary). 16-byte tagged values, roughly thirty codegen
   modules, the default for `eshkol-run`.
 - **Bytecode VM** (*lib/backend/eshkol_vm.c* plus its *vm_\*.c* modules). A
-  register-plus-stack interpreter with 250+ native call IDs, ESKB binary file
+  72-opcode register-plus-stack interpreter with 743 native-call IDs, ESKB binary file
   format (section-based, LEB128, CRC32). Invoked via `eshkol-run input.esk -B
   output.eskb`. Coverage: arithmetic, closures, multi-shot continuations,
   exception handling, tensors, complex / rational / bignum, logic / inference /
@@ -1504,7 +1506,7 @@ link errors.
 - **Website**: https://eshkol.ai
 - **Browser REPL**: https://eshkol.ai/learn
 - **Licence**: MIT
-- **Build prerequisites**: CMake 3.14+, LLVM 21, a C17 + C++20 compiler
+- **Build prerequisites**: CMake 3.14+, LLVM (18 through 24; 21 is the default pin), a C17 + C++20 compiler
   (GCC 11+ or Clang 14+ — the toolchain the CI matrix builds with; AppleClang
   on macOS, LLVM 21 ClangCL on Windows), Ninja recommended.
 - **Build**: `cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build`.

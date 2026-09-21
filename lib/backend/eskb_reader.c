@@ -345,7 +345,7 @@ int eskb_load_file(const char* path, EskbModule* mod) {
     }
 
     free(file_data);
-    printf("[ESKB] Loaded %s: %d instructions, %d constants\n",
+    fprintf(stderr, "[ESKB] Loaded %s: %d instructions, %d constants\n",
            path, mod->code_len, mod->n_constants);
     return 0;
 }

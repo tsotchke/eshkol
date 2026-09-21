@@ -295,10 +295,10 @@ Linear types ensure resources are **consumed exactly once** at compile-time. Att
 
 | Component | File | Lines | Purpose |
 |-----------|------|-------|---------|
-| **Arena Core** | [`lib/core/runtime_arena_core.cpp`](../../lib/core/runtime_arena_core.cpp) + `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings | 4,259 | Arena allocation, object headers, display |
-| **Arena Header** | [`lib/core/arena_memory.h`](../../lib/core/arena_memory.h) | 925 | Arena API, memory tracking |
+| **Arena Core** | [`lib/core/runtime_arena_core.cpp`](../../lib/core/runtime_arena_core.cpp) + `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings | 4,499 | Arena allocation, object headers, display |
+| **Arena Header** | [`lib/core/arena_memory.h`](../../lib/core/arena_memory.h) | 953 | Arena API, memory tracking |
 | **Object Headers** | [`inc/eshkol/eshkol.h:274-547`](../../inc/eshkol/eshkol.h) | 274 | Header structure, access macros |
-| **Memory Codegen** | [`lib/backend/memory_codegen.cpp`](../../lib/backend/memory_codegen.cpp) | 734 | OALR operator codegen |
+| **Memory Codegen** | [`lib/backend/memory_codegen.cpp`](../../lib/backend/memory_codegen.cpp) | 401 | OALR operator codegen |
 
 ### Allocation Functions
 
@@ -779,7 +779,7 @@ The current parallel primitives (`parallel-map`, `parallel-filter`, `parallel-fo
 
 1. **Task decomposition** happens on the main thread. The input Scheme list is converted to a `std::vector<eshkol_tagged_value_t>` (heap-allocated via the C++ allocator, not the arena).
 
-2. **Task structs** (`llvm_parallel_map_task`) are allocated in a `std::vector` on the main thread's stack/heap. Each task contains decomposed i64 fields (closure pointer, item type, item data, result pointer) -- no tagged value structs cross the C/LLVM boundary.
+2. **Task structs** (`eshkol_parallel_map_task`) are allocated in a `std::vector` on the main thread's stack/heap. Each task contains decomposed i64 fields (closure pointer, item type, item data, result pointer) -- no tagged value structs cross the C/LLVM boundary.
 
 3. **Workers** execute LLVM-generated functions (`__parallel_map_worker`, etc.) that reconstruct tagged values in pure LLVM IR and call the closure dispatcher. The worker writes its result via a pointer to a pre-allocated result slot in the main thread's `results` vector.
 
@@ -940,7 +940,7 @@ Eshkol's runtime passes `eshkol_tagged_value_t` (a 16-byte struct) across functi
 
 ### ARM64 Thunk Calling Convention (`call_thunk_closure`)
 
-**File:** `lib/core/arena_memory.cpp`
+**File:** `lib/core/runtime_continuations.cpp`
 
 Dynamic-wind and `call/cc` thunks are zero-argument closures invoked through a trampoline (`call_thunk_closure`). The trampoline bridges a typed function pointer (stored as `void*` in the closure) back to a call returning `eshkol_tagged_value_t`.
 
@@ -972,7 +972,7 @@ The fix introduces a compile-time branch:
 
 ### Windows x64 Struct-by-Value Parameter Fix (`region_escape_tagged_value_into`)
 
-**File:** `lib/core/arena_memory.cpp`
+**File:** `lib/core/runtime_regions.cpp`
 
 The Windows x64 ABI requires that structs larger than 8 bytes be passed by pointer, not by value. `region_escape_tagged_value_into` previously took `eshkol_tagged_value_t val` by value (16 bytes), violating this convention and causing misaligned stack frames on Windows.
 
@@ -1043,7 +1043,7 @@ PINNED, EXTERNAL.
 
 ### Arena Block Size: 1024-Byte Floor, 8192-Byte Default
 
-`arena_create` (`lib/core/arena_memory.cpp` §169–195) enforces a minimum
+`arena_create` (`lib/core/runtime_arena_core.cpp` §113–145) enforces a minimum
 block size of 1024 bytes. The common case is `arena_create(8192)` from
 `Arena` (the C++ wrapper, §2417). The REPL shared arena passes 8192 as
 well. Per-thread worker arenas pass 1 MB. The global arena and per-thread
@@ -1059,7 +1059,7 @@ arena's lifetime (until `arena_reset` or `arena_destroy`).
 
 ### Allocation Hardening: SIZE_MAX and UINT32_MAX Guards
 
-`arena_allocate_with_header` (`lib/core/arena_memory.cpp` §358–403)
+`arena_allocate_with_header` (`lib/core/runtime_object_alloc.cpp` §20–62)
 guards against two integer-overflow classes flagged in docs/HARDENING.md §192:
 
 ```c
@@ -1090,8 +1090,9 @@ a 5 GB allocation would succeed but record `size = 5G mod 2^32 ≈ 705 MB`,
 causing every downstream user that walks the object by header size to
 under-copy by 4 GB. Reject rather than truncate.
 
-Similar guards appear at every variable-size allocation site in
-`arena_memory.cpp`:
+Similar guards appear at every variable-size allocation site in the
+arena runtime (`lib/core/runtime_object_alloc.cpp`, `runtime_tagged_cons.cpp`,
+`runtime_tensor_alloc.cpp`):
 
 - `arena_allocate_multi_value` §421–434 — `count * sizeof(tagged_value)
   + sizeof(size_t)` overflow check.
@@ -1119,7 +1120,7 @@ void     eshkol_thread_init_worker(size_t arena_size_hint);
 void     eshkol_thread_shutdown_worker(void);
 ```
 
-`arena_create_thread_local` (§1752–1760 in `arena_memory.cpp`):
+`arena_create_thread_local` (§224–230 in `lib/core/runtime_regions.cpp`):
 
 ```c
 arena_t* arena_create_thread_local(size_t size_hint) {
@@ -1236,7 +1237,7 @@ void arena_push_scope(arena_t* arena);
 void arena_pop_scope(arena_t* arena);
 ```
 
-`arena_push_scope` (`arena_memory.cpp` §706–721) snapshots
+`arena_push_scope` (`lib/core/runtime_arena_core.cpp` §381–400) snapshots
 `{current_block, current_block->used}` into a malloc-allocated
 `arena_scope_t`, prepended to `arena->current_scope` (LIFO). No
 allocation of arena memory happens during push; this is a pure
@@ -1328,7 +1329,7 @@ target_link_options(eshkol-run PRIVATE "-Wl,-z,stack-size=536870912")
 `536870912` = 512 × 1024 × 1024 bytes.
 
 **Runtime, both platforms**: `eshkol_init_stack_size`
-(`lib/core/arena_memory.cpp` §62–90) uses `setrlimit(RLIMIT_STACK,
+(`lib/core/runtime_stack_hosted.cpp` §400–446) uses `setrlimit(RLIMIT_STACK,
 ...)` to raise the soft limit for spawned threads, and as a Linux
 fallback if the link-time flag was not applied. `ESHKOL_STACK_SIZE`
 env var overrides:

@@ -1,6 +1,6 @@
 # Runtime Reference
 
-Reference documentation for the Eshkol runtime and toolchain (v1.3.4-evolve).
+Reference documentation for the Eshkol runtime and toolchain (v1.3.5-evolve).
 
 ## Tools
 
@@ -8,7 +8,12 @@ Reference documentation for the Eshkol runtime and toolchain (v1.3.4-evolve).
   (AOT, `-r`/`-e` JIT, `-c`/`--emit-object`, `-s` shared lib, `-w` WASM,
   `--profile`, `--target`, `-O`, `--dump-ast`/`--dump-ir`, `--debug-info`, …).
 - [`eshkol-repl`](eshkol-repl.md) — interactive REPL and the `--machine`
-  warm-worker **EREPL** protocol (READY/DONE/FAIL framing).
+  warm-worker **EREPL v1** protocol: the original READY/DONE/FAIL bare-line
+  framing, plus a versioned JSON request/response layer on top of it
+  (`ready` handshake, `"op":"eval"` with the form's value and stdout reported
+  separately from the stdout pipe, structured error kinds). `tools/erepl_client.py`
+  is the stdlib-only Python reference client and the executable form of the
+  contract.
 - [`eshkol-vm-standalone`](eshkol-vm-standalone.md) — the bytecode VM, the
   **ESKB** binary format, `--emit-eskb`, and `--require-vm-entry[-zero-arg]`.
 
@@ -42,7 +47,7 @@ Reference documentation for the Eshkol runtime and toolchain (v1.3.4-evolve).
 
 ## Notes
 
-- The binary reports `v1.3.4-evolve` (`eshkol-run --version`), matching this
+- The binary reports `v1.3.5-evolve` (`eshkol-run --version`), matching this
   documentation.
 - `-e` does not auto-print a bare value expression; `--help` says so
   ("output is shown via `(display …)`"), and `eshkol-run -e '(+ 1 2)'` prints

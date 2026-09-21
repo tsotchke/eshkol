@@ -1,0 +1,75 @@
+; Arithmetic between a vector/tensor and a SCALAR fails the same way in both
+; operand orders, on every substrate.
+;
+; Element-wise arithmetic is a binary contract: two operands of matching shape
+; (docs/reference/tensors/operations.md), with scalar broadcast spelled as its
+; own operator (`tensor-scale`). A vector against a scalar is therefore a type
+; error — and the point of this entry is that it is the SAME type error whichever
+; side the vector is on, and that it is CATCHABLE rather than fatal.
+;
+; It used not to be. Native codegen chose its element-wise kernel from the LEFT
+; operand alone, so a vector on the left was handed to the Scheme-vector kernel,
+; which read the scalar as `[len:i64][tagged elems...]`:
+;
+;   (* (vector 1 2) 2)   native  SIGSEGV at 0xa, exit 139, no diagnostic
+;                        vm      error: *: expected numeric operands (catchable)
+;   (+ (vector 1 2) 1)   native  SIGSEGV at 0x9, exit 139, no diagnostic
+;   (* 2 (vector 1 2))   native  Type error in tensor-mul: expected tensor, …
+;                        vm      error: *: expected numeric operands
+;
+; One operator, two answers, decided by which operand happened to be written
+; first — and the wrong one was a fatal signal, which no `guard` can intercept
+; and no consumer can distinguish from a compiler bug. Native now classifies
+; BOTH operand positions before dereferencing either, so the two orders raise
+; the same catchable error and the VM's long-standing behaviour is matched
+; rather than diverged from.
+;
+; Only the rows both engines agree on live here. The VM has no vector/tensor
+; arithmetic under `+ - * /` at all (it raises for `(* (vector 1 2) (vector 3 4))`
+; too, which native answers element-wise), so the working element-wise results
+; and the mixed vector/tensor product are gated natively in
+; tests/features/vector_scalar_arithmetic_dispatch_test.esk instead. The
+; unguarded form's fail-closed exit status is gated in
+; tests/vm_parity/fatal/vector_scalar_arith.esk.
+
+; ---- a vector on the LEFT, a scalar on the right: catchable, not fatal ----
+(display (guard (e (#t "caught")) (* (vector 1 2) 2))) (newline)
+(display (guard (e (#t "caught")) (+ (vector 1 2) 1))) (newline)
+(display (guard (e (#t "caught")) (- (vector 1 2) 1))) (newline)
+(display (guard (e (#t "caught")) (/ (vector 2 4) 2))) (newline)
+
+; ---- inexact elements take the same route ----
+(display (guard (e (#t "caught")) (* (vector 1.0 2.0) 2))) (newline)
+(display (guard (e (#t "caught")) (* (vector 1.0 2.0) 2.0))) (newline)
+
+; ---- the other operand order agrees ----
+(display (guard (e (#t "caught")) (* 2 (vector 1 2)))) (newline)
+(display (guard (e (#t "caught")) (+ 1 (vector 1 2)))) (newline)
+(display (guard (e (#t "caught")) (- 1 (vector 1 2)))) (newline)
+(display (guard (e (#t "caught")) (/ 2 (vector 2 4)))) (newline)
+
+; ---- through a function: the numeric path first, then the vector call site ----
+(define (scale x m) (* x m))
+(display (scale 3 4)) (newline)
+(display (guard (e (#t "caught")) (scale (vector 1 2) 2))) (newline)
+(display (scale 5 6)) (newline)
+
+; ---- two vectors whose shapes cannot be broadcast: catchable on both ----
+; Native answered `(* (vector 1 2 3) (vector 4 5))` as `#(4 10 4.4e-323)` with
+; exit 0 — the element-wise kernel looped to operand 1's length over operand 2's
+; array and read past its end — where the VM had always refused the pair. Both
+; substrates now raise catchably.
+(display (guard (e (#t "caught")) (* (vector 1 2 3) (vector 4 5)))) (newline)
+(display (guard (e (#t "caught")) (* (vector 1 2) (vector 3 4 5)))) (newline)
+(display (guard (e (#t "caught")) (+ (vector 1 2 3) (vector 4 5)))) (newline)
+(display (guard (e (#t "caught")) (+ (vector 1 2) (vector 3 4 5)))) (newline)
+(display (guard (e (#t "caught")) (- (vector 1 2 3) (vector 4 5)))) (newline)
+(display (guard (e (#t "caught")) (/ (vector 2 4 6) (vector 2 2)))) (newline)
+
+; ---- a list is not a vector and raises as it always did ----
+(display (guard (e (#t "caught")) (* (list 1 2) 2))) (newline)
+
+; ---- scalar arithmetic is untouched ----
+(display (* 6 7)) (newline)
+(display (+ 6 7)) (newline)
+(display (* 2 3.5)) (newline)

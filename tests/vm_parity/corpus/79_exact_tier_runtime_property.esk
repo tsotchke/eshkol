@@ -1,0 +1,40 @@
+;; ESH-0394 runtime-property redesign (ledger SW-159, SW-160, SW-161, SW-162):
+;; the static AST whitelist that used to gate the native exact tier
+;; (towerSafeExpr) also made codegen decline -- unconditionally, with no
+;; diagnostic -- a `derivative` differentiand that composed a call several
+;; frames deep, referenced a top-level `define`d constant, took its point from
+;; an accessor like `(car …)`, or was itself a function-call expression. None
+;; of those are exactness concerns at an INEXACT point (op:DERIVATIVE in
+;; PARITY.tsv already documents that exact-point routing is native-only and
+;; not a VM-parity axis), so this corpus entry is scoped to exactly the shapes
+;; SW-159/SW-160/SW-161/SW-162 affected, evaluated at inexact points, where
+;; native and the VM's flat VmDual carrier are documented to agree byte-for-
+;; byte. It exists to pin that fixing the native-only exact tier did not
+;; disturb the shared (inexact) jet path both substrates run.
+
+;; SW-159: composition several frames deep.
+(define (simpson g a b)
+  (* (/ (- b a) 6) (+ (g a) (* 4 (g (/ (+ a b) 2))) (g b))))
+(define (Q1 X) (simpson (lambda (s) (* s X)) 0 1))
+(display (derivative Q1 2.0)) (newline)
+
+;; SW-160: a top-level constant reached by name, same arithmetic as a literal.
+(define (g0 x) (- 4 x))
+(define K 3)
+(define (h-topvar x) (/ (g0 x) K))
+(display (derivative h-topvar 0.5)) (newline)
+
+;; SW-161: the point argument comes from an accessor, not a bare literal/var.
+(define (k2 t) (- -0.5 (* 1 1 t)))
+(display (derivative k2 (car (list 0.0 1.0)))) (newline)
+
+;; SW-162: the differentiand is a function-call expression, not a bare lambda
+;; or a pre-bound variable.
+(define (mk a) (lambda (tau) (* a tau tau)))
+(display (derivative (mk 3.0) 0.5)) (newline)
+
+;; Composition depth 1..3, chained through top-level defines.
+(define (c1 x) (+ x 1))
+(define (c2 x) (* 2 (c1 x)))
+(define (c3 x) (* 2 (c2 x)))
+(display (derivative c3 0.25)) (newline)

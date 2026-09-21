@@ -1,0 +1,13 @@
+; (scheme base) is a BUILT-IN library: it has no source file on the load path,
+; so both engines must map the library name through the shared built-in table
+; (inc/eshkol/builtin_libraries.h) instead of handing `scheme.base` to the
+; source-file resolver, which refuses the program. The import modifiers wrap
+; the library name, so each one has to reach that same mapping.
+(import (scheme base))
+(import (only (scheme base) + -))
+(import (except (scheme base) not-an-export))
+
+(display (and (= (+ 2 3) 5)
+              (= (- 9 4) 5)
+              (= (* 3 4) 12)))
+(newline)

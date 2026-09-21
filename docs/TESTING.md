@@ -1,3 +1,16 @@
+---
+kind: guide
+status: current
+owner-area: testing
+since: v1.3.0-evolve
+sources:
+  - CMakeLists.txt
+  - .icc/completion-oracles.yaml
+  - .github/workflows/ci.yml
+  - tests/coverage/release_record.json
+  - tests/vm_parity/ENGINE_PARITY_BASELINE.json
+  - scripts/doc_audit/example_gate_baseline.json
+---
 # Testing & Adversarial Harnesses
 
 Eshkol's correctness is defended by two layers of automated tests:
@@ -11,7 +24,7 @@ Eshkol's correctness is defended by two layers of automated tests:
    readiness oracle consumes, so a green release requires them to pass.
 
 Every root-cause fix ships with a dedicated regression gate wired into the
-readiness oracle. The v1.3.4-evolve cycle adds, among others:
+readiness oracle. The gates of this kind include, since v1.3.4:
 `iter_scope_partial_reclaim` (resident-loop flat RSS with persistent mutation),
 `resident_longrun_flat` (SW-57: the same claim measured at two tick horizons and
 gated on the *slope*, on the arena's exact byte counter rather than peak RSS —
@@ -20,6 +33,31 @@ see `tests/memory/resident_longrun_flat_gate.sh`),
 `parallel-map`), the 25-check gradient-through-callable suite, the Ozaki-II
 exact/fast GEMM correctness gates, `i128` native+VM parity, and the
 `31_tensor_matmul` VM-parity corpus.
+
+Since v1.3.5 the set also includes the assurance-gate family (every
+`scripts/check_*.py` and `scripts/gate_*.py`, each with its own `--self-test`),
+the VM region-evacuator memory gates
+(`tests/memory/vm_region_flat_rss_test.sh`,
+`tests/memory/vm_region_evac_subtype_coverage_test.sh`,
+`tests/memory/vm_region_growth_watchdog_test.sh`), the leak-detector self-test
+and leak audit (`scripts/check_leak_detection_selftest.sh`,
+`tests/memory/leak_audit_gate.sh`), the closed-enum exhaustive-dispatch gate
+(`scripts/gate_exhaustive_dispatch.py`), the AD exactness and one-pass gradient
+gates (`scripts/run_ad_exactness_gate.sh`,
+`scripts/run_one_pass_gradient_gate.sh`), the AD carrier gate
+(`scripts/gate_ad_shared_node_model.py`), the node-identity and object-ABI
+baselines (`scripts/run_node_identity_gate.py`,
+`scripts/abi_header_inventory.py`), the linear-`Qubit` engine-parity gate
+(`tests/typesystem/qubit_linearity_engine_parity_gate.sh`), the continuations
+suite (`scripts/run_continuation_tests.sh`), and the GPU correctness gate with
+its must-fail canary (`tests/gpu/gpu_correctness_gate.sh`,
+`tests/gpu/gate_canary_must_fail.esk`), the language-coverage hook-guard and
+determinism tests, the documentation example gate
+(`scripts/doc_audit/check_doc_examples.py`), the release-record consistency
+gate (`scripts/check_surface_counts.py`), the changelog completeness gate
+(`scripts/check_changelog_completeness.py`), the documentation front-matter
+gate (`scripts/check_doc_front_matter.py`), and the release invariant probes
+(`scripts/run_release_invariant_probes.sh`). Each is described below.
 
 All harnesses honor the `BUILD_DIR` environment variable (default `build/`), so
 you can point them at any built tree:
@@ -35,12 +73,12 @@ cmake --build build --target eshkol-run stdlib -j
 ## The CTest gate
 
 `scripts/run_ctest_gate.sh` runs the CTest suite and turns its verdicts into
-oracle evidence. Until it existed, no completion-oracle criterion anywhere
-consumed a CTest *result* — the only `ctest` mentions in
-`.icc/completion-oracles.yaml` were `action:` strings, and the `test_evidence`
-criteria are index-level ("the tests exist and are runnable"). A pillar could
-therefore ship with a perfectly good CTest gate and still be unmeasured by the
-target that judges the release cut.
+oracle evidence. It is how a completion-oracle criterion consumes a CTest
+*result*: otherwise `.icc/completion-oracles.yaml` names `ctest` only in
+`action:` strings, and the `test_evidence` criteria are index-level ("the
+tests exist and are runnable"). Without it, a pillar could ship with a
+perfectly good CTest gate and still be unmeasured by the target that judges
+the release cut.
 
 ```bash
 BUILD_DIR=build scripts/run_ctest_gate.sh
@@ -81,14 +119,19 @@ them before returning. This gate belongs in the assurance-gates job because a
 zero-match CTest selector otherwise exits successfully and can make a
 criterion vacuous.
 
-Eight criteria are wired as of v1.3.4-evolve. Five read CTest directly — the
+Eight criteria are wired this way (since v1.3.4). Five read CTest directly — the
 `ctest_suite_green` whole-suite roll-up plus the
 `fixed_point_exact_accumulation_gate`, `exact_input_ad_identity_gate`,
-`runtime_closure_arity_spread_gate` and `define_library_same_unit_gate` groups —
-and three read the sibling harnesses that judge the same cut:
-`vm_surface_regression_suite` (kind `vm_surface`), `vm_parity_gate` (kind
-`vm_parity`) and `event_loop_works` (kind `eshkol_smoke`). Measured on the
-current v1.3.4 tree, CTest is **183/183**; the value-position and compound-accessor regression is green.
+`runtime_closure_arity_spread_gate`, `define_library_same_unit_gate` and
+`module_load_path_engine_parity_gate` groups — and three read the sibling
+harnesses that judge the same cut: `vm_surface_regression_suite` (kind
+`vm_surface`), `vm_parity_gate` (kind `vm_parity`) and `event_loop_works`
+(kind `eshkol_smoke`). The release evidence, regenerated at the tagged commit,
+is <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->; the
+value-position and compound-accessor regression is green. Superseded CTest
+figures that older documents quote: 541/541 and 198/198, each measured on an
+earlier commit; and 183/183, superseded by 190/190 for the v1.3.4-evolve cut
+(remeasured on 2026-08-25 against `4bf871a0`).
 
 ### ABI semantic inventory dependency
 
@@ -124,8 +167,10 @@ it in the script's coverage manifest.
 
 ## The five adversarial harnesses
 
-The campaign design lives in `.swarm/ADVERSARIAL_TESTING_CAMPAIGN.md`; the ICC
-oracle wiring lives in `.icc/completion-oracles.yaml`.
+The ICC oracle wiring for every pillar lives in
+`.icc/completion-oracles.yaml`; the per-harness CI census (what runs per-PR,
+what is nightly, what needs special hardware, and what is deliberately
+unwired) is `docs/design/PILLAR_CI_INVENTORY.md`.
 
 ### P1 — Multi-path differential harness + fuzzer
 
@@ -200,10 +245,32 @@ VM-supported nor consciously waived in `tests/vm_parity/PARITY.tsv`. A
 VM-vs-native differential over `tests/vm_parity/corpus/` then keeps shared
 symbols honest. Full write-up in [VM_PARITY.md](VM_PARITY.md).
 
-Measured on the current v1.3.4 tree: the differential is **184/184** and the
-manifest is **956 rows — 581 `vm-supported`, 44 `native-only-justified`, 331
-`gap`**; verified behavioral divergences remain explicit `gap` rows with
-reproducible programs under `tests/vm_parity/found/`.
+At the v1.3.5-evolve release commit the differential is
+<!-- release-record:vm-parity-figure -->**340/340**<!-- /release-record --> and the manifest is **961 rows — 604 `vm-supported`, 46
+`native-only-justified`, 311 `gap`**; verified behavioral divergences are
+explicit `gap` rows with reproducible programs under `tests/vm_parity/found/`.
+Superseded figures that older documents quote: 338/338 (the 2026-09-11
+documentation cut) and 188/188 (commit `afbaaf5b`); 184/184 is superseded by
+188/188, because it counted the corpus differential rather than the full
+manifest gate.
+
+**Engine differential floors are exact.** `scripts/run_engine_parity_coverage.py`
+measures how many language-surface constructs have differential evidence
+(native and VM both ran the program and agreed) and grades the result against
+the floors in `tests/vm_parity/ENGINE_PARITY_BASELINE.json`. Each floor is
+stored as its integer counts (`differential_floor_numerator` /
+`differential_floor_denominator`, and the `high_risk_` pair) beside the
+unrounded float they divide to. `scripts/check_engine_parity_threshold.py`
+defines `exact_fraction()` and `record_fraction()`, the coverage runner
+imports them, and every comparison is a `fractions.Fraction` comparison
+(integer cross-multiplication, no epsilon). A float that disagrees with its
+own counts is rejected as a malformed baseline, as is a floor above the
+corpus ceiling; a baseline or trace that carries only floats is read at the
+float's exact binary value. Failure messages print counts, for example
+`154/473 (32.56%)`. The recorded floors are 321/1,139 overall and 155/473
+high-risk, with 5 dispositioned divergent programs and 215 programs that ran
+clean on both engines. `check_engine_parity_threshold.py --self-test` runs in
+the `assurance-gates` CI job (since v1.3.5).
 
 ```bash
 BUILD_DIR=build scripts/run_vm_parity.sh
@@ -226,6 +293,42 @@ executes the VM-supported corpus under Node, and byte-diffs its stdout against
 native `eshkol-run -r`, so a VM regression that only manifests in WASM is caught.
 Per-file divergences are tracked in `tests/wasm_diff/EXCLUSIONS.tsv`
 (`EXCLUDED` / `XFAIL`), an unexpected match failing the gate.
+
+### Guard coverage gate (ESH-0101)
+
+**What:** R7RS `guard` on every engine, graded against a **hand-authored
+golden** rather than against another engine. `guard` previously had two kinds
+of coverage and neither was complete: `tests/error_handling/*.esk` are
+compiled AOT and run by `scripts/run_error_handling_tests.sh`, so no `guard`
+program was ever executed under `-r` or on the VM; and the harnesses that do
+run several engines (P1 differential, P5 parity) compare the engines to *each
+other*, so a clause form both backends get wrong the same way passes by
+agreement. That blind spot is why `(test => receiver)` and the test-only
+`(test)` clause — two of the three cond-clause shapes R7RS 4.2.7 allows inside
+`guard` — were silently wrong on native *and* on the VM (`SW-78`, `SW-79`).
+
+Each case in `tests/error_handling/guard_coverage/` carries a
+`<case>.expected` golden and runs on five axes: `jit` (`-r`), `aot-o0`,
+`aot-o2` (two optimization levels, because the ESH-0102 lineage was an
+`-O1`+-only crash), `vm-src` and `vm-eskb`. `fatal/*.esk` are fail-closed
+probes: an unhandled `raise`, an unmatched guard's re-raise, and an uncaught
+`error` must each exit nonzero, print a diagnostic on stderr, and never reach
+their `MUST-NOT-PRINT` sentinel. Any `(case, axis)` pair that is not required
+is declared — with a mandatory justification — in
+`tests/error_handling/guard_coverage/ENGINES.tsv`, and the gate fails on a
+stale or unjustified row, so an engine losing a form must be written down.
+
+`guard` in **tail position** is deliberately out of scope here; that is
+`SW-58` and is pinned by `tests/tco/guard_tail_context/`.
+
+```bash
+BUILD_DIR=build scripts/run_guard_coverage.sh
+```
+
+Trace kind: `guard_coverage` (`guard_coverage_gate` is the whole-gate
+verdict), consumed by the `guard_coverage_gate` criterion in
+`.icc/completion-oracles.yaml`. Runs in CI's `pillars-fast` job, which already
+builds the three targets it needs.
 
 
 ## P8 — escape-closure pillar
@@ -272,7 +375,16 @@ would have been caught here first. Each axis names the escape it closes.
    builtin across doc mention ↔ manifest entry ↔ native registration ↔ VM
    dispatch ↔ module provide list, against a shrink-only baseline
    (`tests/escape_matrix/five_way_baseline.json`). Closes a
-   documented-but-not-registered backend-asymmetry class.
+   documented-but-not-registered backend-asymmetry class. "Native
+   registration" means any vehicle the native engine actually reaches a name
+   by — a builtin/AOT dispatch table, the parser + codegen syntax path for a
+   declared special form, the compiled-in prelude, a core/stdlib module
+   definition, or the public construct a row's `mirrors:` annotation names
+   (see `tests/coverage/README.md`) — since reading the builtin tables alone
+   reports operators as absent from an engine that runs them.
+   `five_way_surface.py --self-test` checks those resolution rules on
+   synthetic surfaces, so a weakened rule fails the axis instead of turning it
+   green by excusing everything; the axis runs it before the gate.
 7. **Fault injection** — a matrix that injects missing / unopenable / malformed
    source, a bad `(require …)`, a broken `--lib`, a bad output path, an
    undefined symbol, and a hang into the `-r` and AOT drivers, asserting a
@@ -300,6 +412,45 @@ are not yet fixed are quarantined (tracked-open) and recorded under
 
 ---
 
+## Language-coverage instrumentation
+
+With `ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR` set, the compiler instruments every
+executed operation node and the runtime writes one record per site the first
+time it runs; `scripts/run_language_coverage.sh` turns those records into the
+executable language-coverage figure. The instrumentation records each site
+once (since v1.3.5):
+
+- **Native code.** Each instrumented site owns a private `i8` guard global.
+  Generated code loads it, compares it with 0 and branches, with the branch
+  weighted as unlikely, into a block that sets the guard and calls the
+  `eshkol_language_coverage_exec_op` and `exec_call` hooks. The unsynchronised
+  store is a benign race: the runtime still deduplicates records, so a race
+  costs at most a redundant hook call, never a lost or duplicated record.
+- **Fork.** The runtime detects a fork through a `pthread_atfork` child
+  handler that bumps a generation counter, not through a per-call `getpid()`;
+  a forked child gets its own trace stream.
+- **VM.** The native-dispatch, call and form markers consult direct-mapped
+  first-sighting tables (4,096 slots each, keyed by the builtin row or the
+  31-bit head-symbol hash) before entering the runtime. A colliding key only
+  costs a later redundant call; it cannot suppress a record.
+- **Exit.** `emergency-exit` flushes coverage before `_exit`, which bypasses
+  C++ destructors.
+
+Two CTests hold these properties, and `scripts/run_language_coverage.sh` runs
+both as part of the language-coverage gate:
+
+| CTest | Script | What it proves |
+|---|---|---|
+| `language_coverage_hook_guard_test` | `scripts/test_language_coverage_hook_guard.py` | A program run with 7 and with 20,000 loop iterations enters the coverage hooks the same number of times and writes the same record set, under the JIT, AOT and the VM (counted through `ESHKOL_LANGUAGE_COVERAGE_HOOK_STATS`, never by wall-clock time), and every generated hook call in the IR sits behind its guard |
+| `language_coverage_determinism_test` | `scripts/test_language_coverage_determinism.py` | A corpus of forms that lower into synthesised AST nodes (internal defines, body sequences, named let, `do`, `case`, record types, macro output), run twice under the JIT and AOT into fresh directories, writes identical sorted record sets, and every record's line and column lies inside the file it names |
+
+The determinism property rests on the frontend rule that every AST node is
+born with the location of the form it came from, and on the reader keeping
+its position per input stream; see
+[ESHKOL_V1_ARCHITECTURE.md](ESHKOL_V1_ARCHITECTURE.md#source-locations-and-node-identity).
+
+---
+
 ## ICC readiness oracle
 
 Each harness writes JSON-L trace events under `scripts/icc_traces/`. The oracle
@@ -308,17 +459,15 @@ release gates (e.g. `stress-budget`, `ad-oracle`). A release is "ready" only
 when the required oracles report their green verdicts, which is how the
 adversarial layer is enforced rather than merely available.
 
-On the v1.3.4-evolve cut the oracle reports a score of **100** with verdict
-**`ready`**. The gate figures behind it, all measured on that cut: aggregate
-suite **45/45** suites and **770** individual tests; CTest **183/183**;
-executable language coverage **1,091/1,091** (100.0%, floor PASS); SICP
-full-book **88/88** probes under both `-r` and AOT; reference-Scheme
-differential **34/34 AGREE** against chibi-scheme 0.12.0; VM parity
-differential **184/184**; qLLM oracle gate **10/10**.
+For v1.3.5-evolve the Release workflow regenerates the full evidence battery
+from the tagged commit and binds the ICC readiness verdict to that exact
+checkout; publication requires `ready` at 100. The gate figures are in
+`docs/TEST_COVERAGE.md` and in the "Final verification" section of
+`RELEASE_NOTES.md`.
 
 ---
 
-## Assurance gates (v1.3.5 wave 1, #454)
+## Assurance gates (v1.3.5-evolve)
 
 ### Split silent-wrong ledger and generated API reference
 
@@ -361,6 +510,14 @@ self-testing CI gates:
   no-open-silent-wrong gate gained a self-test mode; it graded the ledger
   already but had never actually been wired into any CI workflow before
   this wave.
+- **`scripts/gen_api_docs.py --check`** fails when `docs/api/` would
+  regenerate to different content than what's committed — a stale or
+  missing generated page for a public header. It is build-free (it reads
+  headers, not compiled output), so it runs in the same `assurance-gates`
+  job as the three gates above rather than only being a `make api-docs`
+  step contributors are asked to remember. Motivating incident: four PRs
+  in the v1.3.5 wave added public headers without regenerating
+  `docs/api/`, leaving six headers with no generated page at all.
 
 Each gate's self-test feeds it deliberately-broken fixtures (malformed
 YAML, a duplicate id, a missing required field) plus one well-formed one,
@@ -385,6 +542,307 @@ oracle alongside the pre-existing `no_open_silent_wrong` criterion, added
 as `ctest` entries next to the repo's other Python-based validators, and
 run in a fast `assurance-gates` CI job (pure Python over checked-out
 files, no build step) modeled on the existing surface-manifest job.
+
+### Wave 2 (#465) and the release-machinery gates (#493, #485, #500, #503)
+
+The `assurance-gates` job has since grown well past those three. It builds
+nothing — it is pure Python over the checked-out files — which is why it is
+the one required context that runs on every PR shape, docs-only included.
+Every gate runs its own `--self-test` first (deliberately broken fixtures it
+must go red on, plus a good fixture it must go green on), so the job proves
+each gate CAN fail before it reports that nothing failed.
+
+- **`scripts/check_self_verdicts.py`** scans harness output for a
+  self-reported failure hiding behind an overall PASS verdict. In this job
+  nothing has been built, so it grades vacuously clean; the real scan runs
+  inside `scripts/run_ctest_gate.sh`, `scripts/run_icc_smoke.sh` and
+  `scripts/run_vm_parity.sh`.
+- **`scripts/check_build_fingerprint.py`** records the binary a harness
+  actually measured, so a trace cannot be credited to a build it did not come
+  from. The latest record per harness and binary is the one judged: a harness
+  replaces its own evidence on every run, so re-running it against the
+  current binary clears the gate, while another harness's stale record still
+  fails it.
+- **`scripts/check_evidence_staleness.py --require-trace-dir`** runs last,
+  after the gates above have deposited fresh evidence in
+  `scripts/icc_traces/`. `--require-trace-dir` turns an empty or absent trace
+  directory into `NO_DATA` (exit 2) rather than a silent PASS.
+- **`scripts/audit_oracle_false_green.py`** enforces that no oracle target may
+  read `ready` on zero evidence. This is the gate that closed the
+  `gpu-execution` false green (#472): absent evidence now reads as unmeasured,
+  never as satisfied.
+- **`scripts/check_required_context_consistency.py --offline`** (#485)
+  certifies that every intended required status context in
+  `.icc/required-status-contexts.json` is reportable on every PR shape,
+  including a docs-only PR where the matrix jobs never instantiate. It grades
+  the committed target file, not only the live set, so a branch-protection
+  list that is temporarily narrower than intended cannot read as "nothing to
+  fix", and it reports `NO_DATA` rather than PASS when neither source is
+  readable.
+- **`scripts/check_doc_claims_residual.py`** (#493) requires every ICC
+  `doc-typed-claims` "wrong" finding to be either allowlisted in
+  `.icc/doc-claims-allowlist.yaml` or an open, maintainer-tracked DOC-DEBT
+  ledger entry — zero unexplained remainder. It is a completion-oracle
+  criterion and runs with ICC rather than in the fast job.
+- **`scripts/check_surface_counts.py`** (#492) is the drift checker for the
+  language-surface counts quoted across README, FEATURE_MATRIX, the
+  architecture model and every `docs/reference/*/INDEX.md`. It reads the
+  canonical totals from `tests/coverage/coverage_policy.json` and
+  `tests/coverage/language_surface.json` and fails on any mismatch. It also
+  grades the release-facing documents against the release record; see
+  [Release evidence and documentation gates](#release-evidence-and-documentation-gates).
+- **`scripts/check_package_manifest.py`** and
+  **`scripts/check_diagnostic_corpus.py`** check packaging-manifest and
+  diagnostic-corpus integrity.
+- **`scripts/check_ps1_encoding.py`** (#503) fails any tracked `*.ps1`/`*.psm1`
+  carrying a non-ASCII byte without a UTF-8 BOM. PowerShell 5.1 decodes a
+  BOM-less script in the system ANSI code page while pwsh 7 assumes UTF-8, so
+  a file that parses cleanly under pwsh 7 can throw a cascade of parse errors
+  on a real 5.1 host. Execution could not have caught this; reading the files'
+  own bytes can.
+- **`scripts/gate_exhaustive_dispatch.py --no-trace`** (#500) enforces that a
+  `switch` over a closed enum may not carry a `default:`. Primary enforcement
+  is the compiler (`-Werror=switch -Werror=switch-enum`, or the
+  `ESHKOL_EXHAUSTIVE_SWITCH_BEGIN` macros in
+  `inc/eshkol/exhaustive_dispatch.h`), which can only produce an absence, not
+  evidence. This gate is the half that reports: it re-derives each closed
+  enum's members from its own definition and fails on any registered dispatch
+  site that carries a `default:`, omits a member, or has had its arming
+  removed.
+- **`scripts/gate_ad_shared_node_model.py`** (#487) checks that every AD
+  operator routes through a declared, exact, source-verified carrier, by
+  re-deriving each declaration from the emitted `case` body and comparing it
+  against `.icc/ad-carrier-manifest.yaml`. It is structural, not comparative:
+  an output differential can only compare what two carriers compute, never
+  which carrier computed it.
+
+### Release evidence and documentation gates
+
+- **Evidence paths are absolute before first use** (#695).
+  `scripts/lib/evidence_paths.sh` fixes the meaning of a relative evidence
+  path once: a relative `TRACE_DIR` or `ICC_TRACE_DIR` is relative to the
+  repository root and is made absolute (`eshkol_evidence_abs_var`) before any
+  producer uses it, because tools change directory (`ctest --test-dir build
+  --output-junit P` resolves a relative `P` inside `build/`). Every script
+  that reads either variable from its environment sources the helper.
+  `tests/toolchain/test_v1_3_release_evidence_recipe.py` checks that every
+  environment-reading script normalises before use, the helper's contract,
+  and the producers' own prologue against a stub `ctest` given a relative
+  `TRACE_DIR`; `scripts/run_v1_3_release_producers.sh` runs it first.
+- **The release record is the single source of release facts** (#696).
+  `tests/coverage/release_record.json` holds the tag, the previous tag, the
+  release date, the status label and the CTest and VM-parity totals.
+  `scripts/check_surface_counts.py` grades the release-facing documents and
+  the generated site pages against it: every stated release date (and any
+  stated weekday against the calendar), the roadmap heading and ladder row,
+  pre-release wording once the status is `SHIPPED`, and every
+  `<!-- release-record:KEY -->...<!-- /release-record -->` span, which must
+  equal the record's rendering of `KEY` (`ctest`, `ctest-cell`, `vm-parity`,
+  `vm-parity-figure`). A null total renders as a sentence without a number.
+  `--sync` rewrites every graded claim from the record; `--require-complete`
+  fails while a total is unrecorded. Totals quoted in these documents go
+  through such a span, so they cannot drift from the record.
+- **Changelog completeness.** `scripts/check_changelog_completeness.py` is a
+  build-free gate: every pull request merged in `<previous_tag>..HEAD` (both
+  tags from the release record; numbers derived from commit subjects, no
+  network) must be referenced by the changelog section for the release (or
+  `[Unreleased]`) or listed, with a class from a closed set and a specific
+  reason, in `tests/coverage/changelog_no_user_facing_change.json`. The
+  ledger is graded as strictly as the changelog (stale, duplicate, redundant,
+  unsorted or wrong-release entries fail). A shallow clone reads `NO_DATA`,
+  never a pass. It runs, with `--self-test`, in the `assurance-gates` CI job,
+  which checks out full history; a pull request passes its own number as
+  `--pending-pr`.
+- **Documentation examples execute** (#697).
+  `scripts/doc_audit/check_doc_examples.py` runs every fenced example in the
+  scopes named by `GATED_SCOPES` in `scripts/doc_audit/extract_examples.py`
+  on the JIT (`eshkol-run -r`) and as an AOT binary, with a per-example time
+  limit, and compares every `;; =>` annotation and pasted output block with
+  what the build printed. It composes the existing `scripts/doc_audit/`
+  harness (`extract_examples.py`, `check_expected.py`,
+  `check_output_blocks.py`, `run_examples.py`); it names no documentation
+  path itself, so a page joins the gate by an entry in `GATED_SCOPES` and a
+  baseline refresh. Nothing is skipped by heuristic: an example that cannot
+  run carries an HTML-comment marker on the line above its fence,
+  `<!-- doc-example: KIND TOKEN: text -->`, where `KIND` is `skip` (not
+  executed; the token is a reason from a closed set), `run-only` (executed,
+  must exit 0, output not compared), `known-defect` (the token names an open
+  ledger entry; the example still runs, and the gate fails the day it
+  passes), `file` (the block is also a file that later examples on the page
+  read; not an exclusion) or `output` (`output stdout:` marks a pasted output
+  block further from its example). An unparseable marker is a failure. The
+  number of marked examples per file is ratcheted in
+  `scripts/doc_audit/example_gate_baseline.json` in both directions: a count
+  above the baseline fails, and a count below it fails until the baseline is
+  lowered with `--update-baseline`. CTest registers `doc_example_gate_selftest`
+  and `doc_example_gate_tutorials`; the completion oracle reads criterion
+  `doc_examples_tutorials_clean`; CI runs the self-test in `assurance-gates`
+  and the gate itself on one Linux and one macOS lane; and
+  `scripts/run_v1_3_release_producers.sh` runs it for release evidence.
+- **Documentation front matter.** `scripts/check_doc_front_matter.py` is a
+  build-free gate over every tracked page under `docs/` (except the generated
+  `docs/api/`) and the root project pages. A page that opens with a front
+  matter block must use exactly the keys `kind`, `status`, `owner-area`,
+  `since` and `sources` (plus `superseded-by` when and only when the status is
+  `superseded`), with values from closed sets and paths that exist; a
+  `report` page is never `current`. A current tutorial, guide, reference or
+  explanation page may not carry release narrative outside code fences
+  unless the line is marked `<!-- evergreen: allow <reason> -->`, and a
+  current page that links to a historical or superseded page says so on the
+  same line. The count of pages without a block is ratcheted in
+  `tests/coverage/doc_front_matter_baseline.json` and can only go down. It
+  runs, with `--self-test`, in `assurance-gates`, and the oracle reads
+  criterion `doc_front_matter_valid`
+  ([ADR 0019](design/adr/0019-evergreen-documentation-architecture.md)).
+- **Release invariants are measured before grading** (#693,
+  [ADR 0014](design/adr/0014-release-invariant-contracts.md)).
+  `scripts/run_release_invariant_probes.sh` runs four probes (ABI layout pin,
+  object-header ratchet, closed-enum dispatch, AD exactness with its live
+  finite-difference counter) and writes `test_result` receipts before the
+  ICC architecture grade; the VM parity gate supplies its own aggregate
+  receipt. `test_release_invariant_contracts`, `test_release_probe_receipts`
+  and `wasm_flat_ad_import_test` are CTests. The browser flat-AD WASM import
+  glue is generated from one fragment and one core-key manifest
+  (`scripts/generate_wasm_import_glue.py`, `scripts/wasm_core_import_keys.json`),
+  and the import test checks its freshness, its required keys and its
+  runtime behavior.
+- **Measured outcomes are distinct from infrastructure failure.** A smoke or
+  release probe emits a `test_result` receipt only for a measured `PASS` or
+  `FAIL`; an infrastructure failure (a signal from the environment, a
+  harness timeout) is counted as `INFRA`, reported as "no verdict obtained",
+  and emits no result that could be read as a verdict
+  (`scripts/lib/icc_probe.sh`, on the taxonomy in
+  `scripts/lib/harness_outcome.sh`).
+- **Continuation engines fail closed.** `scripts/run_continuation_tests.sh`
+  normalises each expected and actual transcript and fails the case when a
+  normalisation fails, on the expected transcript and on each of the JIT, AOT
+  and VM transcripts, so two failed normalisations can never compare equal as
+  empty strings. The `continuation_normalizer_failure` CTest
+  (`tests/continuations/normalizer_failure_test.sh`) injects each failure and
+  requires the runner to report it.
+- **Harnesses honour `BUILD_DIR`.** Test harnesses resolve the compiler, the
+  VM and the runtime from the selected build directory and pair a copied
+  compiler with its own runtime, so a run measures the build it names.
+- **Checked scratch writes** (#700). `scripts/lib/checked_write.sh` gives
+  test and gate scripts one rule for generated files and scratch paths:
+  `eshkol_install_tmp` and `eshkol_install_checked` write a here-doc or
+  generated program to a private temp file beside the target and install it
+  with one `mv` only if it is present and non-empty, so a reader sees the old
+  file or the complete new one; `eshkol_require_output_file_path` requires an
+  absolute, non-symlinked path before a redirect; `eshkol_checked_rm` refuses
+  an empty path, a relative path or `/`; `eshkol_resolve_trusted_command` and
+  `eshkol_command_available` resolve a command through `PATH` and require a
+  regular executable file. `.icc/modularity-justifications.json` records the
+  accepted justification for every source file above the 2,000-line
+  modularity threshold, each tied to an ADR or a tracked boundary task.
+
+### Pillar harnesses armed in CI (#470, ADR-0010 section 2.5)
+
+Several real, fast oracle pillars ran nowhere in CI, so their readiness
+criteria could only be graded from a trace a human generated by hand. The
+`pillars-fast` job builds `eshkol-run`, the standalone VM and the stdlib, then
+runs `scripts/check_depth_coverage.py`, `scripts/run_dbsp_gate.sh`,
+`scripts/run_mono_equiv_ad_taylor_gate.sh`,
+`scripts/run_ad_validated_bounds_gate.sh` and `scripts/run_vm_parity.sh`
+inside a disk-budget guard. `pillars-readiness` then asks ICC for a readiness
+verdict over the evidence that run produced, and uploads the trace bundle
+either way. The expensive sweeps stay nightly in `pillars-nightly.yml`.
+
+### Infrastructure failure is not code failure (#475)
+
+`scripts/lib/harness_outcome.sh` gives every harness a shared outcome
+taxonomy, so a trace records whether a probe failed because the code is wrong
+or because the environment could not run it. A missing toolchain, an
+unreachable network dependency or an absent GPU now emits a distinct outcome
+rather than an indistinguishable FAIL. Pinned by
+`tests/harness/harness_outcome_taxonomy_test.sh`.
+
+### Memory and leak gates (#461, #486)
+
+- **`scripts/check_leak_detection_selftest.sh`** proves LeakSanitizer is armed
+  under the exact `ASAN_OPTIONS`/`LSAN_OPTIONS` the `linux-x64-asan-ubsan`
+  lane uses, by compiling one probe that must be reported and one that must
+  not. Before it, the suppression file could quietly grow broad enough to
+  swallow a real leak and the lane would still read clean.
+- **`tests/memory/leak_audit_gate.sh`** is the product half: an AOT compile,
+  the compiled program, the VM and the REPL all run under `detect_leaks=1`,
+  failing on any leak `.icc/lsan-suppressions.txt` does not already name and
+  justify, plus a slope check on the one retention the suppressions do hide.
+  The slope counts AST node storage (suppressed) plus the AST string owner's
+  own report, so rooted retention stays measured (ADR-0021).
+- **`ast_strings_test`** and **`ast_string_owner_gate`** (ADR-0021) hold the
+  one-owner rule for AST string payloads. The first walks real parser,
+  macro-expander, rename and copy output and requires every string on every
+  node to come from `inc/eshkol/frontend/ast_strings.h`. The second
+  (`scripts/check_ast_string_owner.py`, with a `--self-test`) rejects a raw
+  `new char[]`/`strdup` in an AST producer, or a consumer freeing an AST
+  string. Sanitizer builds compile the standard library under
+  `detect_leaks=1` with the checked-in suppressions, in CI and in the release
+  producer alike.
+- **`source_paths_test`** and **`artifact_host_path_gate`** (ADR-0021) hold
+  the rule that a RECORDED source path — the interned file table, the parse
+  context, and the location constants the backend embeds — is never the
+  absolute host path. The gate
+  (`scripts/check_artifact_paths.py`, with a `--self-test`) reads shipped
+  artifacts as bytes and fails on any home-directory path; it also runs as
+  the third layer of `scripts/check_disclosure.py`, and takes a freshly built
+  binary with `--artifact`.
+- **`tests/memory/vm_region_flat_rss_test.sh`**,
+  **`tests/memory/vm_region_evac_subtype_coverage_test.sh`** and
+  **`tests/memory/vm_region_growth_watchdog_test.sh`** gate the Stage-1 VM
+  region evacuator: a flat peak-RSS curve across a swept iteration count,
+  complete subtype coverage on the evacuation walk, and the heap-growth
+  watchdog. The coverage gate re-runs its fixture with reclamation on and off
+  and requires identical printed results, so a reclamation knob can never
+  change an answer.
+
+### Identity, ABI, type-system and AD gates
+
+- **`scripts/run_node_identity_gate.py`** with
+  `tests/coverage/NODE_IDENTITY_BASELINE.json` feeds the
+  `adr0000-s1-identity` oracle target (#476). It measures coverage at a
+  *consumer*, not at the parser, and keeps "has an identity", "has a location"
+  and "has an extent" as three separate numbers.
+- **`scripts/abi_header_inventory.py`** with `.icc/abi-header-baseline.json`
+  ratchets the layout-dependent site inventory (ADR-0012, #488).
+- **`tests/typesystem/qubit_linearity_engine_parity_gate.sh`** pins that
+  cloning a linear `Qubit` is a rejected compile on both engines, not a
+  warning (#471).
+- **`scripts/run_ad_exactness_gate.sh`** and
+  **`scripts/run_one_pass_gradient_gate.sh`** (#474) run the
+  no-finite-differences assertion together with a negative control — a
+  difference quotient deliberately planted in the gradient path — on JIT, AOT
+  and the VM, so the assertion can still go red.
+
+### Benchmarks as a gate, not a number (#469, #490)
+
+`bench/run_public_benchmarks.sh` is a public, reproducible benchmark suite on
+the exactness axes. The `bench-smoke` job runs it with `--smoke` and asserts
+only that `results.json` is well-formed, carries the expected schema, is
+marked `smoke_mode: true`, and that every axis produced data. The job is
+`continue-on-error` and named so that a hosted-runner timing is never mistaken
+for a published figure. `bench/pgo_corpus/` is wired as a Stage-1 smoke
+consumer (ADR 0007) in the nightly `pgo-corpus-smoke` job.
+
+### GPU correctness gate (#501)
+
+See [GPU_ACCELERATION.md](breakdown/GPU_ACCELERATION.md). The gate was vacuous
+before this wave; it now carries a must-fail canary
+(`tests/gpu/gate_canary_must_fail.esk`, which asserts something permanently
+false and turns the whole run red if it exits 0, fails to compile, is missing,
+or exits non-zero without a `FAIL:` marker) and a trace-contract self-test
+proving that a SKIP writes no trace record at all, so an absent GPU can never
+be credited as a pass.
+
+### Release readiness on a self-hosted runner (#502)
+
+The `release-readiness-gate` job runs on a self-hosted Linux runner carrying
+the `eshkol` label, because ICC is not installed on hosted runners and a
+hosted runner can only report the oracle unavailable, never certify it. On a
+real tag push, absence of the oracle blocks the release; it never fail-opens
+to a green publish.
+
+## CI: docs-only PRs report every required context (#455, #477, #485)
 
 ## CI: assertion-enabled Debug lane
 
@@ -420,3 +878,205 @@ skipped (satisfying branch protection); a PR touching any non-doc file
 still runs the full matrix exactly as before. `paths-ignore` remains on
 the `push` trigger, where it only reduces CI load rather than blocking a
 merge.
+
+## CI: a build-impact classifier derived from the real build, not a second path list
+
+The docs-only predicate above answers one narrow question — "does this
+touch only documentation" — but plenty of PRs are just as inert to the
+build and test suite without touching `docs/`. Two examples that shipped
+before this classifier existed: #624 touched only
+`lib/backend/eshkol_compiler.c`, a file `CMakeLists.txt` explicitly
+excludes from the source list it compiles (kept as a reference-only
+standalone program); #618 and #619 each touched a single test shell
+script. All three ran the full 25-job cross-platform matrix anyway,
+because nothing in `changes` could tell a build-irrelevant source edit
+from a real one.
+
+`scripts/ci_change_class.py` closes that gap. Given a PR's changed-file
+list, it classifies the change as one of:
+
+- **`docs`** — the exact pre-existing docs-only predicate above, byte-for-
+  byte (kept as its own class rather than folded into `non-build` so this
+  section's semantics never drift from `changes`' original behaviour).
+- **`non-build`** — every changed file is consumed by neither the build
+  nor CI/tests, and none is a workflow file. The `changes` job's
+  `docs_only` output is `true` for this class too (see below), so the
+  heavy matrix is skipped exactly as it already is for `docs`.
+- **`tests-only`** — every changed file is under `tests/`, or is a script
+  CI actually runs as a test (discovered from real `add_test`/
+  `add_custom_target` COMMAND arguments in `CMakeLists.txt` and real
+  workflow `test_command`/`run:` references — never a hand-typed list), or
+  is a markdown page under a scope named in `GATED_SCOPES`
+  (`scripts/doc_audit/extract_examples.py`, read with `ast.literal_eval`).
+  A gated page is a test input, not inert prose, so a change to it runs the
+  lanes that execute the documentation example gate.
+  This class now drives a REDUCED lane set rather than the full matrix —
+  see "CI: the lane plan" below.
+- **`full`** — anything else, including every `.github/workflows/**`
+  change unconditionally.
+
+Critically, "what the build consumes" is **derived**, not maintained by
+hand as a second path list that could drift from `CMakeLists.txt` the
+same way the `docs-only-required-context-stubs` matrix twice drifted from
+branch protection's required contexts (see
+`scripts/check_required_context_consistency.py`). The script parses
+`CMakeLists.txt` and every `cmake/*.cmake` it `include()`s for the real
+`file(GLOB[_RECURSE] ...)` source globs, the `list(APPEND|REMOVE_ITEM|
+FILTER ... EXCLUDE REGEX ...)` mutations that add to or exclude from
+them, explicit `set(<VAR> path...)` source lists, `add_executable`/
+`add_library`/`target_sources` arguments, `target_include_directories`
+(an entire directory such as `inc/` is a build input the moment a header
+under it can be `#include`d), `configure_file` inputs, and
+`add_custom_command` COMMAND/DEPENDS arguments — which is how a generated-
+header producer or the precompiled-stdlib step (`lib/stdlib.esk` plus
+every `.esk` module it transitively `(require)`s) is picked up without a
+single filename typed into the classifier. "What CI/tests consume" comes
+from the same real sources: every workflow's matrix `test_command` field
+and `run:` steps, `add_test`/`add_custom_target` in `CMakeLists.txt`,
+`tests/**`, and `.icc/**` (read throughout the assurance gates). When a
+configured build's `build/compile_commands.json` is available, the
+script cross-checks that every real translation unit is in its derived
+build-input set and fails loud on a gap — see
+`scripts/ci_change_class.py --self-test`, which exercises that check
+against a synthetic fixture tree.
+
+The `changes` job wires this in without changing any existing job's `if:`
+condition: `docs_only` is `true` for `docs` **or** `non-build` impact (the
+classes where the heavy matrix has nothing to gain from running, joined
+later by `equivalent` — see below), and the job additionally exposes the
+raw `impact` class as its own output and in the run's step summary.
+`docs-only-required-context-stubs` therefore also covers non-build PRs,
+using the exact same stub-matrix mechanism described above — it needs no
+changes of its own.
+
+## CI: the lane plan — a `tests-only` change runs only the lanes that can see it
+
+Status: SHIPPED.
+
+`tests-only` was, at first, informational: the class was computed and
+reported, and the full 25-job matrix ran anyway. `scripts/ci_lane_plan.py`
+turns it into a decision. Given the impact class and the changed-file
+list, it emits the set of matrix lanes that can actually observe the
+change, and the `changes` job publishes that set as its `active_lanes`
+output.
+
+Every lane name, runner and capability flag the plan reasons about is
+re-derived from `.github/workflows/ci.yml`'s own matrix definitions on
+each run. There is no second lane list to keep in sync — the same
+discipline the build-impact classifier applies to `CMakeLists.txt`.
+
+The rules, in the order they are applied:
+
+- **Direct reference** — a changed file whose exact path appears in a
+  lane's `test_command` (or in an advisory job's own steps) activates that
+  lane. An edit to `scripts/run_gpu_tests.sh` reaches exactly the lanes
+  that run it.
+- **`tests/gpu/**`** — the lanes declaring `gpu_enabled: 'ON'`, and
+  nothing else.
+- **`tests/xla/**`** — the lanes declaring `xla_enabled: 'ON'`.
+- **`tests/vm_parity/**`** — that corpus is executed by `pillars-fast`
+  (via `scripts/run_vm_parity.sh`), which is not matrix-gated and runs on
+  every non-inert PR regardless; one portable lane is added alongside it
+  so the corpus is also exercised against a real compiler build.
+- **Anything else under `tests/`** — the first portable ("lite") lane of
+  each OS family in declaration order: today `linux-x64-lite`,
+  `macos-arm64-lite` and `windows-arm64-lite`, each of which runs the
+  whole `scripts/run_all_tests.sh` suite on its platform.
+
+The two advisory jobs that occupy hosted macOS runners
+(`quantum-macos`, `bench-smoke`) are planned the same way, and are
+skipped on a `tests-only` change that cannot reach them.
+
+### Why the lanes are gated per STEP, not per JOB
+
+This is the load-bearing detail, and it is the one place where the
+obvious implementation is the wrong one. A lane that is not selected
+still INSTANTIATES as a matrix leg; only its build and test steps are
+skipped, via a `LANE_ACTIVE` job-level `env` the leg computes from
+`active_lanes`. Its first step always runs and states in the log, and in
+the run summary, that the lane was skipped and why.
+
+Skipping the JOB instead would be a permanent merge block. A skipped
+matrix job never instantiates its per-leg names: they collapse to a
+single check run under the literal, unresolved `${{ matrix.name }}`
+string, so every required context that leg would have reported is ABSENT
+from the head SHA — and branch protection cannot resolve a required
+context that no check run ever reports. That is precisely the failure
+`docs-only-required-context-stubs` exists to work around for the
+docs-only path. Gating steps keeps the entire required-context set intact
+by construction, on every impact class, with no stub list to maintain.
+
+`scripts/check_required_context_consistency.py` enforces this rather than
+trusting it: a MATRIX job whose job-level `if:` references
+`needs.changes.outputs.impact` or `needs.changes.outputs.active_lanes` is
+held to the same stub-coverage requirement as a `docs_only`-gated one,
+and its self-test carries a red fixture that writes the lane gate the
+wrong way round and must fail. That gate now also grades every build-
+impact class in turn (`docs`, `non-build`, `tests-only`, `full`,
+`equivalent`), and cross-checks the classes `ci.yml` maps to
+`docs_only=true` against the classes the lane plan treats as inert, so
+adding a class to one and not the other fails a build instead of
+blocking a merge.
+
+## CI: skipping a head that is already verified
+
+Status: SHIPPED.
+
+A rebase, a re-cut onto a fresh base, or a cherry-pick into a new PR
+changes the head SHA without changing the content. Every required context
+then has to be produced again for a change that was already verified,
+which is the single largest avoidable cost in this repo's queue.
+
+The maintainer can mark such a PR with a label:
+
+```
+ci-equivalent:<40-hex sha>
+```
+
+The `changes` job honours it only when BOTH of two independent facts
+hold, neither of which the label itself asserts:
+
+1. **Content.** `scripts/ci_equivalent_head.py` proves, in pure git, that
+   the PR head is the same content as the referenced commit — either
+   **tree identity** (`git rev-parse <sha>^{tree}` equal, so the two
+   checkouts are byte-identical) or **patch identity** (`git diff
+   <merge-base(base, sha)> <sha> | git patch-id --stable` equal for both,
+   the same test `git rebase` uses to recognise an already-applied
+   commit). Nothing about GitHub is involved.
+2. **Verification.** The GitHub API confirms the referenced SHA has a
+   COMPLETED, SUCCESSFUL run of this workflow. Equivalence to a commit
+   that never passed CI is worth nothing.
+
+Only then does `impact` become `equivalent`, which gates exactly like
+`docs`: the heavy matrix is skipped at the job level and
+`docs-only-required-context-stubs` reports every required context. The
+summary states `Equivalent to verified head <sha> (tree|patch identity);
+matrix skipped`. If either fact fails to hold, the run falls through to
+the class the classifier computed and says so, as a warning, in the
+summary — the label is a POINTER, never a permission.
+
+Labels are read live from the API rather than from the event payload, so
+labelling a PR and re-running CI is enough; a re-run replays the original
+payload, in which a newly-added label does not exist.
+
+Rules for using it:
+
+- Only the maintainer sets this label, and only for a rebase or a re-cut
+  whose CONTENT is unchanged. It is not a way to wave through a change
+  that "looks the same".
+- The referenced SHA must be a commit that really has a green CI run —
+  which the job verifies, so a wrong SHA costs a full matrix run, not a
+  false green.
+- A push to the PR after labelling re-evaluates naturally: the head SHA
+  changes, equivalence is recomputed against the new content, and a real
+  edit stops matching.
+
+Both scripts carry `--self-test` (`python3 scripts/ci_lane_plan.py
+--self-test`, `python3 scripts/ci_equivalent_head.py --self-test`), both
+run in the `assurance-gates` job on every PR, and both are registered as
+ctest entries (`ci_lane_plan_selftest`, `ci_equivalent_head_selftest`).
+The equivalence self-test builds throwaway git repositories under
+`.scratch/` and proves tree identity, patch identity across different
+bases, and a negative case, including that its rebase fixture really does
+have a different tree so the patch-identity case is not silently proving
+the tree path twice.

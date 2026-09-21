@@ -125,7 +125,7 @@ void TypeSystem::createStructTypes() {
     complex_number_type = llvm::StructType::create(context, complex_fields, "complex_number");
 
     // AD node struct type for reverse-mode automatic differentiation
-    // Matches ad_node_t in eshkol.h (15 fields total)
+    // Matches ad_node_t in eshkol.h (17 fields total)
     // struct ad_node {
     //     int32_t type;          // 0: ad_node_type_t enum
     //     double value;          // 1: computed value (scalar)
@@ -159,6 +159,8 @@ void TypeSystem::createStructTypes() {
     ad_node_fields.push_back(llvm::ArrayType::get(int64_type, 6)); // 12: params union (6 x i64)
     ad_node_fields.push_back(ptr_type);    // 13: shape
     ad_node_fields.push_back(int64_type);  // 14: ndim
+    ad_node_fields.push_back(ptr_type);    // 15: exact_value tagged payload
+    ad_node_fields.push_back(ptr_type);    // 16: exact_gradient tagged payload
     ad_node_type = llvm::StructType::create(context, ad_node_fields, "ad_node");
     // Verify field count matches the constant defined in TypeSystem
     if (ad_node_fields.size() != AD_NODE_FIELD_COUNT) {

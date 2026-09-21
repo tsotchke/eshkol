@@ -1,7 +1,7 @@
 # Eshkol Language - Complete Technical Specification
 
-**Version:** v1.3.4
-**Generated:** 2026-07-08
+**Version:** v1.3.5
+**Generated:** 2026-09-07
 **Status:** Comprehensive implementation documentation from source code
 
 ---
@@ -460,6 +460,33 @@ struct eshkol_tagged_value {
 - **Vector syntax:** `#(1 2 3)`
 - **Mixed types:** `#(1 "two" #t)`
 
+A `#(...)` literal whose elements are ALL plain numbers (integer or
+inexact-real literals, or arbitrary sub-expressions such as the variable
+references `gradient` synthesizes) is Eshkol's tensor-literal syntax — see
+§4.10.1 — and a rectangular nest of such elements flattens into a
+higher-rank tensor at compile time (`#(#(1 2) #(3 4))` is a 2x2 tensor, not
+a vector of vectors; build the latter with `(vector (vector 1 2) (vector 3
+4))`). A `#(...)` literal containing an element the parser can prove is NOT
+safe to store as an f64 tensor element — an exact-rational literal (`1/2`),
+a bignum-magnitude integer literal, or a non-numeric literal (string, `#t`/
+`#f`, character, symbol) — stays a genuine vector instead: every element is
+preserved exactly (an exact rational element stays exact; `exact?` on it is
+`#t`) and `vector-length` reports the literal's own element count, never a
+flattened tensor count (SW-153). This is why `#(1 "two" #t)`, above, is a
+vector and not an attempted tensor.
+
+Both kinds of literal are mutable through the vector API, and both obey one
+store rule: a value stored into a slot is a value of the slot's declared
+representation. A vector slot holds any value. A tensor slot holds a real
+number, so `(vector-set! v 0 99)` on `(define v #(10 20 30))` stores 99 and
+`(vector-set! v 0 1/2)` stores `0.5` — the same conversion tensor construction
+applies to each element — while a value with no real-number representation (a
+string, boolean, character, symbol, pair, vector or procedure) raises a
+catchable error and leaves the tensor unchanged. `vector-fill!`, `vector-copy!`
+and `tensor-set!` follow the same rule. A heterogeneous mutable vector is built
+with `vector`, `make-vector` or `list->vector`
+([ADR-0020](design/adr/0020-container-slot-store-boundary.md)).
+
 ### 3.3 Variable Definition and Binding
 
 #### 3.3.1 `define` - Variable Definition
@@ -902,6 +929,49 @@ a **numeric-tower join** gives a recursive accumulator the least-upper-bound of
 the numeric types that flow into it (so an integer accumulator that later takes a
 rational or real value is accepted rather than rejected).
 
+#### 3.6.7.1 Where Checking Applies, and How Types Fit
+
+The rules below are normative for the checker; the
+[gradual typing guide](guide/GRADUAL_TYPING.md) presents them with runnable
+examples, and [ADR 0013](design/adr/0013-gradual-type-relation.md) records the
+decision.
+
+1. **Every evaluated subexpression is checked** (since v1.3.5). A call is
+   checked against the callee's annotations wherever it is written: in every
+   expression of a `begin` or body; in the tests, keys, scrutinee and branch
+   bodies of `if`, `cond`, `case`, `match`, `when` and `unless`; in every
+   operand of `and` and `or`; in the initialisers, steps, test, result and body
+   of `do`; in a `guard` body and handler, a `raise` operand, a `set!` value, a
+   quasiquote escape, the procedure of `call/cc`, the thunks of `dynamic-wind`
+   (and so a `parameterize` body), the operands of `values`, the producer and
+   consumer of `call-with-values`, a `let-values` producer and body, a
+   `with-region` body, a computed callee, and the function, point, direction and
+   order of a calculus operator. Quoted data is not evaluated and not checked.
+2. **One fitting rule.** An argument, a return-annotated body and an annotated
+   binding are accepted when the derived type is a *consistent subtype* of the
+   expected type: a static subtype, in which every component the checker does
+   not know (`Value`) is acceptable. A body of type `Value` therefore satisfies
+   any return annotation, as a `Value` argument satisfies any parameter; a
+   concrete contradiction (`String` where `Number` is expected) is reported.
+   Members of the numeric tower are mutually acceptable at a call.
+3. **Function types** `(-> A ... R)` are contravariant in their parameters and
+   covariant in their result, and a different number of parameters never fits.
+   `procedure` is the top of the function types. Diagnostics print a signature
+   as its arrow, for example `(-> Number Int64)`, and a variadic one as
+   `(-> String ... Value)`.
+4. **Branch results join.** The type of a multi-branch form is the join of its
+   branch types, plus `#f` for a `cond`, `case`, `when` or `unless` that may run
+   no branch. `if` and the equivalent `cond` have the same type. Branches with
+   nothing more specific in common have type `Value`.
+5. **Loop parameters are typed by what the loop carries** (since v1.3.5). An
+   unannotated named-`let` parameter has the join of its initial value and of
+   every argument the loop passes back to it, found by iterating the body to a
+   fixpoint. A join that reaches `Value` is not adopted: the parameter keeps its
+   type and the argument is reported. A parameter seeded with `#f` widens to
+   `Value`. An annotated or linear parameter is never widened. A `do` variable
+   is the join of its initialiser and its step, and adopts every join. A
+   recursive procedure's result is the least fixpoint over its own calls.
+
 #### 3.6.8 Linear Types — `Qubit`
 `Qubit` is a first-class **linear** type: its values must be used exactly once.
 A `define` or `lambda` parameter, or a `let`-family binding, may declare a
@@ -1260,7 +1330,25 @@ All arithmetic operators are polymorphic (work on integers, floats, dual numbers
 - `int + float` => `float`
 - `float + float` => `float`
 
-**Tensor Support:** Element-wise for vectors/tensors
+**Tensor Support:** Element-wise for vectors/tensors. The element-wise contract
+is BINARY: both operands must be vectors/tensors of matching shape. A vector or
+tensor against a SCALAR is a type error, in either operand order — scalar
+broadcast is a separate, explicitly named operator (`tensor-scale`), not an
+overload of the arithmetic operators. A vector and a rank-1 tensor are two
+spellings of one value, so a mixed pair is the element-wise result.
+
+Shapes broadcast NumPy-style, so "matching shape" means broadcast-compatible
+rather than identical; a pair that cannot be broadcast is a catchable error
+naming both shapes.
+
+```scheme
+(* #(1 2) #(3 4))         ; => #(3 8)
+(* #(2.0) #(1.0 2.0 3.0)) ; => #(2 4 6)      (a dimension of 1 broadcasts)
+(* #(1 2) 2)              ; ERROR: Type error in tensor-mul: expected tensor, got integer
+(* 2 #(1 2))              ; ERROR: the same error, same wording
+(* #(1 2 3) #(4 5))       ; ERROR: Shape mismatch in tensor-mul: shapes (3) and (2)
+                          ;        are not broadcast-compatible
+```
 
 **Examples:**
 ```scheme
@@ -1381,6 +1469,39 @@ All math functions support dual numbers and AD nodes for automatic differentiati
 - `(ceiling x)` - Round up to integer
 - `(truncate x)` - Round toward zero
 - `(round x)` - Round to nearest integer
+
+#### Directed Rounding
+
+Two unary `double -> double` builtins, wired into **both** execution engines
+(native codegen and the bytecode VM), with no `(require …)`:
+
+- `(fl-next-up x)` - the next representable double strictly greater than `x`
+- `(fl-next-down x)` - the next representable double strictly less than `x`
+
+Both wrap C99 `nextafter`, so the step is the true local ulp — correct across
+power-of-two boundaries and into the subnormals, unlike a hand-rolled
+`x * (1 ± epsilon)`. Unlike every other function in this section they take part
+in **no** automatic differentiation: directed rounding has no sound derivative,
+so they deliberately bypass the generic math dispatcher and reject complex,
+dual, AD-node and tensor operands with a typed error rather than misreading the
+payload as a double. They are also not vector-mapped.
+
+```scheme
+(display (fl-next-up 1.0)) (newline)
+(display (fl-next-down 1.0)) (newline)
+(display (= (fl-next-down (fl-next-up 0.1)) 0.1)) (newline)
+```
+```
+1.0000000000000002
+0.9999999999999999
+#t
+```
+
+They are the primitive beneath **certified enclosures** — outward-rounded
+interval arithmetic and rigorous Taylor models, where every result endpoint is
+built from exactly one such nudge so the soundness argument holds through a
+whole computation. See
+[reference/stdlib/certified-enclosures.md](reference/stdlib/certified-enclosures.md).
 
 ### 4.3 Comparison Operators
 
@@ -1542,9 +1663,22 @@ and `foldl` are exact synonyms. See
 
 **Example:**
 ```scheme
-(apply + '(1 2 3))  ; => 6
-(apply + 1 2 '(3 4))  ; => 10
+(apply + '(1 2 3))    ; => 6
+(apply + 1 2 '(3 4))  ; => 10   (native only, see below)
+(apply vector-copy (list (vector 7 8 9)))   ; => #(7 8 9)
 ```
+
+`proc` may be any callable value, including a builtin reached as a first-class
+value rather than in operator position: `apply` resolves its operator through
+the same route `map` and a user higher-order call use, so a builtin gains a
+value representation exactly once. A genuinely undefined name fails compilation
+with a diagnostic, never a silent `()`.
+
+> **Engine difference — the leading-args form is native-only.** The bytecode VM
+> supports `(apply proc arg-list)`. It does **not** support arguments before the
+> list, for any operator: under the VM, `(apply + 1 2 '(3 4))` raises
+> `arity mismatch: expected 2 arguments, got 4`. Write
+> `(apply + (append '(1 2) '(3 4)))` for a form that runs on both engines.
 
 ### 4.7 String Operations
 
@@ -1762,7 +1896,13 @@ and `foldl` are exact synonyms. See
 
 #### 4.14.2 System Calls
 - `(system command)` - Execute shell command
-- `(exit [code])` - Exit program with code
+- `(exit [code])` - Exit program with code. `code` may be a literal or a
+  computed expression, and is evaluated on every engine (native JIT, AOT,
+  and the bytecode VM) before the process terminates. An exact integer is
+  clamped to a valid process status; a flonum is clamped to `[0, 255]` and
+  truncated; a boolean follows R7RS 6.11 (`#t` => 0, `#f` => 1). Any other
+  argument type raises a catchable runtime error rather than terminating
+  with an unspecified status.
 - `(sleep seconds)` - Sleep for duration
 - `(current-seconds)` - Get Unix timestamp
 - `(command-line)` - Get command-line arguments as list
@@ -2042,7 +2182,8 @@ mechanisms. On the **bytecode VM** all three spellings evaluate the body
 identically and return the same value — the form is value- and
 effect-transparent — **and reclaim**, through the Stage-1 region evacuator
 (`lib/backend/vm_region_evac.c`): measured flat at 26 MB across
-1 000/4 000/16 000 iterations against 796 MB with the evacuator disabled. The VM
+1 000/4 000/16 000 iterations against 793 MB with the evacuator disabled and
+704 MB for an unwrapped control (commit `487c2a62`, #461). The VM
 sweeps at arena-block granularity rather than copying the escaping subgraph, so
 an escaping value with an out-of-line payload retains a little more there.
 Outside a region the VM heap still grows monotonically, and says so when the
@@ -2735,7 +2876,35 @@ Symbols in `provide` keep their original names and are visible to importers.
 #### Topological Sorting
 Modules loaded in dependency order (dependencies before dependents)
 
-### 9.4 Pre-compiled Modules
+### 9.4 Built-in R7RS Libraries
+
+Some R7RS library names have no source file on the load path because Eshkol
+provides them itself. Those names are mapped through **one** table,
+`inc/eshkol/builtin_libraries.h`, consulted by the native front end's
+`join_r7rs_library_name()` and by the bytecode VM's
+`vm_library_name_from_datum()` — neither engine can drift from the other's idea
+of which libraries exist, and adding one is a single row.
+
+| Library name | Provided by |
+|---|---|
+| `(scheme base)` | the built-in standard library |
+
+Any other library name resolves as a source file like every other module, and a
+name that resolves to nothing is refused rather than silently ignored. Because
+the mapping happens where the library-name datum is joined, every R7RS import
+modifier reaches it — `only`, `except`, `prefix`, `rename` — on both engines.
+
+```scheme
+(import (scheme base))
+(import (only (scheme base) car))
+(import (except (scheme base) vector-fill!))
+(display (list (car (list 1 2)) (cdr (list 1 2)))) (newline)
+```
+```
+(1 (2))
+```
+
+### 9.5 Pre-compiled Modules
 
 Modules can be pre-compiled to `.o` files for faster loading:
 - `stdlib.o` - Pre-compiled standard library
@@ -2882,6 +3051,41 @@ eshkol_tagged_value func(param1, param2, ..., capture1, capture2, ...)
 - Function names registered in global REPL context
 - Previous definitions injectable as external declarations
 - Cross-evaluation function calls supported
+
+### 11.3 Machine mode — the EREPL v1 protocol
+
+`eshkol-repl --machine` turns the REPL into a long-running, JIT-warm worker for
+a driver program (a kernel, a language-server backend, a sister project's test
+harness): it loads the standard library and warms the JIT once, then evaluates
+forms sent on stdin without paying the cold-start cost again.
+
+Two layers, and both are always present:
+
+- **Bare-line framing** (the original protocol, unchanged). `EREPL READY` once,
+  after warm-up; `EREPL DONE` / `EREPL FAIL` once per evaluated top-level form.
+  A driver that watches only those three lines and reads stdout between them
+  keeps working exactly as before.
+- **EREPL v1**, a versioned JSON request/response layer on top of it. A stdin
+  line whose first non-whitespace character is `{` is a request (no Eshkol form
+  can start with `{`, so the two can never collide); a response is one stderr
+  line beginning `EREPL/1 ` followed by a single-line JSON object, echoing the
+  request's `"id"`. A `ready` frame carries `protocol_version`, `pid` and
+  `eshkol_version`.
+
+**stdout carries only what an evaluated program itself wrote.** Framing never
+appears there, and a JSON `"op":"eval"` request does not auto-display the form's
+value either: the value comes back in the response frame's `value` field with a
+coarse `value_type`, and the bytes the form printed come back in `stdout` in the
+same frame. That is the property the protocol exists to guarantee — stdout and
+stderr are independent OS pipes, so a driver that had to correlate them by
+arrival order would be racing on every platform. Errors are reported as a
+structured `error` object with a `kind`, so a driver never classifies a failure
+by matching this project's message wording.
+
+`tools/erepl_client.py` is a complete, stdlib-only Python reference client and
+the executable form of this contract. The full frame grammar and the per-`op`
+schemas are in
+[reference/runtime/eshkol-repl.md](reference/runtime/eshkol-repl.md).
 
 ---
 
@@ -3284,11 +3488,26 @@ br i1 %overflow, label %bignum_path, label %int64_path
 
 #### 14.4.2 Exponentiation
 
-`(expt base exp)` where both operands are exact non-negative integers dispatches to `eshkol_bignum_pow_tagged`, which implements repeated squaring in O(log n) multiplications. If either operand is inexact, the operation falls through to `pow(double, double)`.
+`(expt base exp)` where both operands are exact non-negative integers dispatches to `eshkol_bignum_pow_tagged`, which implements repeated squaring in O(log n) multiplications.
 
-#### 14.4.3 Edge Cases
+Exactness extends past that fast path to the full exact tower (SW-152). If `base` is an exact rational (int64- or bignum-backed) and `exp` is an exact integer, `eshkol_bignum_pow_tagged` dispatches to `eshkol_rational_pow_tagged`, which raises the numerator and denominator bignums independently via the same repeated squaring, so `(expt 1/3 50)` is the exact rational `1/717897987691852588770249`, not an inexact approximation. A negative exact integer exponent — on an integer/bignum base OR a rational base — produces the exact reciprocal: `base^-n` is `1/base^n` (or, for a rational base, `denominator^n/numerator^n`), computed via `eshkol_rational_from_bignums_tagged` so the reciprocal stays exact even when `base^n` itself overflows `int64` (e.g. `(expt 10 -30)` is the exact `1/1000000000000000000000000000000`, not `1e-30`). `(expt 0 -n)` for a positive exact integer `n` raises `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO`. If either operand is inexact, the operation falls through to `pow(double, double)` — this is the only case that returns an inexact result for exact operands (R7RS exactness contagion): `(expt 2 0.5)` is inexact because there is no exact closed form, but `(expt 1/3 50)` and `(expt 2 -2)` are exact because there is.
+
+The VM (`lib/backend/vm_native.c`, native id 32) implements the identical contract: an exact rational base and/or a negative exact integer exponent route through the same numerator/denominator repeated-squaring idiom (`vm_rat_num_bn`/`vm_rat_den_bn`/`bignum_pow`/`vm_rational_alloc_bn`) rather than falling to `pow()` on an inexact coercion.
+
+Exactness extends past that fast path to the full exact tower (SW-152). If `base` is an exact rational (int64- or bignum-backed) and `exp` is an exact integer, `eshkol_bignum_pow_tagged` dispatches to `eshkol_rational_pow_tagged`, which raises the numerator and denominator bignums independently via the same repeated squaring, so `(expt 1/3 50)` is the exact rational `1/717897987691852588770249`, not an inexact approximation. A negative exact integer exponent — on an integer/bignum base OR a rational base — produces the exact reciprocal: `base^-n` is `1/base^n` (or, for a rational base, `denominator^n/numerator^n`), computed via `eshkol_rational_from_bignums_tagged` so the reciprocal stays exact even when `base^n` itself overflows `int64` (e.g. `(expt 10 -30)` is the exact `1/1000000000000000000000000000000`, not `1e-30`). `(expt 0 -n)` for a positive exact integer `n` raises `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO`. If either operand is inexact, the operation falls through to `pow(double, double)` — this is the only case that returns an inexact result for exact operands (R7RS exactness contagion): `(expt 2 0.5)` is inexact because there is no exact closed form, but `(expt 1/3 50)` and `(expt 2 -2)` are exact because there is.
+
+The VM (`lib/backend/vm_native.c`, native id 32) implements the identical contract: an exact rational base and/or a negative exact integer exponent route through the same numerator/denominator repeated-squaring idiom (`vm_rat_num_bn`/`vm_rat_den_bn`/`bignum_pow`/`vm_rational_alloc_bn`) rather than falling to `pow()` on an inexact coercion.
+
+**Fractional exact rational exponents (SW-167).** The exactness contract above extends one step further: when `exp` is itself an exact rational with a denominator greater than 1 — that is, a genuine root, not an integer power — the result is exact whenever the exact root exists. `eshkol_exact_rational_pow_tagged` (`lib/core/rational.cpp`) takes the exponent's denominator-th integer root of `base`'s numerator and denominator independently via `eshkol_bignum_iroot` (Newton's method in exact bignum arithmetic, verified by re-raising the candidate root to the n-th power), then raises each root to the exponent's numerator: `(expt 4 1/2)` is the exact `2`, `(expt 8 2/3)` is the exact `4`, `(expt 1/27 1/3)` is the exact `1/3`, `(expt 9 -1/2)` is the exact `1/3`. This is distinct from `(expt 2 0.5)` being inexact: there the EXPONENT `0.5` is itself an inexact double, so R7RS exactness contagion forces an inexact result before the question of an exact root even arises. `(expt 2 1/2)` has an EXACT exponent but NO exact root (2 is not a perfect square) and correctly stays inexact — the two failure modes (inexact operand vs. no exact root) are independent and both correctly fall through to `pow(double, double)`. A negative `base` with a fractional exponent is not promoted to an exact (or even real) result: unlike `sqrt`/`log` (14.4.3 below), `expt` has never promoted to the complex domain, so `(expt -8 1/3)` stays the ordinary inexact IEEE `pow()` result. The VM (`lib/backend/vm_native.c`, native id 32, `vm_exact_rational_pow`) implements the identical contract via the VM's own `bignum_iroot` (`lib/backend/vm_bignum.c`).
+
+#### 14.4.3 Exact `sqrt` (SW-167)
+
+R7RS 6.2.6 requires `(sqrt z)` to be exact when `z` is an exact nonnegative number and the exact square root of `z` is exact — extended in Eshkol to rationals: exact when both the numerator and the denominator are perfect squares. `(sqrt 16)` is the exact `4`; `(sqrt 1/4)` is the exact `1/2`; `(sqrt 4/9)` is the exact `2/3`; `(sqrt 15)` and `(sqrt 1/2)` stay inexact because no exact root exists. The implementation (`eshkol_exact_sqrt_tagged`, `lib/core/rational.cpp`) is the `n=2` case of the same `eshkol_bignum_iroot` root-finder 14.4.2 describes, applied independently to numerator and denominator. This composes with the pre-existing negative-exact-promotes-to-complex rule (§15, `(sqrt -4)` is `0.0+2.0i`): a negative exact operand is intercepted and promoted to a — necessarily inexact, since Eshkol's complex type has no exact form — complex value before the exact-root path is ever reached, so `(sqrt -4)` is unaffected by this section. The VM (`lib/backend/vm_native.c`, native id 25, `vm_exact_sqrt`) implements the identical contract, and shares `log`'s (native id 24) real-domain fallback, which this fix also corrected to read a rational/bignum operand through the heap-aware `as_number_vm` rather than the heap-blind `as_number` (a pre-existing, silently-wrong `(sqrt 1/2)` => `0` found while adding VM coverage for this section).
+
+#### 14.4.4 Edge Cases
 
 - `(expt 0 0)` returns `1` (R7RS 6.2.6).
+- `(expt 0 n)` for a positive exact integer `n` returns the exact `0`; for a negative exact integer `n` raises `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO` (SW-152).
 - `(/ 1 0)` raises `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO`.
 - `(quotient x 0)` and `(remainder x 0)` raise `ESHKOL_EXCEPTION_DIVIDE_BY_ZERO`.
 - Bignum operations that produce a result fitting INT64 always demote.
@@ -3373,8 +3592,10 @@ result_imag = (b - a * r) / denom
 
 The math builtins extend to the complex domain on the principal branch, with
 the branch cuts of C99 Annex G (signed zero selects the branch, so
-`(sqrt (make-rectangular -1.0 0.0))` is `0.0+1.0i` and
-`(sqrt (make-rectangular -1.0 -0.0))` is `0.0-1.0i`):
+`(sqrt (make-rectangular -1.0 0.0))` prints `+i` and
+`(sqrt (make-rectangular -1.0 -0.0))` prints `-i` — a zero real part is
+elided and an imaginary part of +/-1 prints as `+i`/`-i`, per 2.x's display
+convention):
 
 `sqrt`, `exp`, `log`, `exp2`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`,
 `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, and `expt`
@@ -3406,7 +3627,10 @@ Eshkol implements first-class continuations and dynamic extent management per R7
 
 `(call-with-current-continuation proc)` (abbreviated `call/cc`) captures the current continuation as a first-class callable object.
 
-**Implementation:** Single-shot capture via `setjmp`/`longjmp`.
+**Implementation:** Multi-shot. An escape-only capture keeps the plain
+`setjmp`/`longjmp` path; a capture that may outlive its frame takes a durable
+stack image on native or an operand-stack/call-frame snapshot on the bytecode
+VM. See 16.1.2.
 
 **Type Identification:**
 - **Type tag:** `ESHKOL_VALUE_CALLABLE` (9)
@@ -4174,13 +4398,27 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 **Vector Calculus:**
 `divergence`, `curl`, `laplacian`, `directional-derivative`
 
-**Arbitrary-Order Taylor Towers (v1.3.0-evolve, see 8.5):**
+**Arbitrary-Order Taylor Towers (see 8.5):**
 `taylor`, `derivative-n` (core, no `require` needed); `taylor-propagate`,
 `mixed-partial`, `gradient-n` (`core.ad.guw`); `taylor-model`, `tm-range`,
 `tm-eval`, `tm-add`, `tm-mul` and accessors (`core.ad.taylor_models`);
 `sparse-hessian`, `sparse-hessian-pat`, `sparse-mixed-partials` and
 accessors (`core.ad.sparse_guw`); `taylor-ode-solve`, `taylor-root`,
 `taylor-inverse-series` (`core.ad.taylor_numerics`)
+
+**Certified enclosures (directed rounding, see 4.2):**
+`fl-next-up`, `fl-next-down` (core builtins on both engines, no `require`
+needed); outward-rounded interval arithmetic `ia+ ia- ia* ia/ ia-neg ia-ipow
+ia-scale ia-sqrt ia-exp ia-log ia-sin ia-cos ia-atan (ia-pi)`
+(`core.ad.rigorous_interval`); rigorous Taylor models `tm-const tm-var tm+ tm*
+tm-compose tm-integrate tm-deriv tm-bound tm-enclose tm-rigorous?
+tm-prove-nonzero tm-prove-bound` plus `tm-exp tm-sin tm-cos tm-log tm-sqrt
+tm-atan tm-recip` (`core.ad.rigorous_taylor_models`). Both are re-exported from
+`(require core.ad.taylor_models)`. These are the **proof-backed** layer beneath
+the validated `core.ad.interval` / `core.ad.taylor_models` family above, whose
+remainders are epsilon-widened or sampled; `tm-rigorous?` distinguishes the two
+kinds of model at run time. See
+[reference/stdlib/certified-enclosures.md](reference/stdlib/certified-enclosures.md).
 
 ### 22.8 All Type Predicates (20+)
 
@@ -4356,9 +4594,10 @@ Keep original name (exported via `provide`)
 
 ## 26. Version Information
 
-**Current Version:** v1.3.4
+**Current Version:** v1.3.5
 
 **Version History:**
+- v1.3.5-evolve - Compiler/VM semantics, nested and exact AD, validated ESKM persistence, and release-assurance integration. Released 2026-09-22; verification is bound to the tagged commit.
 - v1.3.4-evolve - Consumer-hardening correctness wave: automatic per-iteration
   memory reclamation on the native engine that matches explicit `with-region`,
   race-free
@@ -4499,24 +4738,24 @@ Dynamic binding of parameter objects. Parameters created with `make-parameter` a
 
 ## Conclusion
 
-This document provides a **complete** specification of the Eshkol programming language version v1.3.3, documenting **every** feature, function, operator, and capability found in the implementation.
+This document provides a **complete** specification of the Eshkol programming language version v1.3.5-evolve, documenting **every** feature, function, operator, and capability found in the implementation.
 
-**Total Coverage:**
-- All 101 special forms and parser operations
-- All 555+ LLVM-compiled built-in functions
-- 250+ VM native call IDs
-- 63-opcode bytecode VM with ESKB binary format
+**Total Coverage:** (counts from `tests/coverage/language_surface.json` and `tests/coverage/coverage_policy.json`, the machine sources the coverage gate reads)
+- All 116 special forms and 113 parser AST operations
+- All 1,053 built-in functions (1,115 declared constructs in total)
+- 743 VM native-call IDs
+- 72-opcode bytecode VM with ESKB binary format
 - Complete type system (15+ types with 18+ heap subtypes)
 - Full memory management system (OALR arenas)
 - Entire standard library (40 modules)
-- Complete autodiff system (forward, reverse, symbolic, 73 AD node types)
+- Complete autodiff system (forward, reverse, symbolic, 83 AD node types declared in `inc/eshkol/ad_node_registry.def`)
 - Dual backend architecture (LLVM + bytecode VM)
 - Weight matrix transformer (3-way verified)
 - Module system with `require`, `provide`, `load`
 - REPL JIT with precompiled stdlib
 - Quantum RNG (8-qubit circuit simulation)
 - GPU dispatch (Metal SF64 + CUDA, forward and backward)
-- Compilation pipeline (LLVM 21 required)
+- Compilation pipeline (LLVM 18-24; major pinned per build, default 21)
 - Runtime architecture
 - Exact arithmetic (bignum, rational, numeric tower)
 - Complex number type with overflow-safe division

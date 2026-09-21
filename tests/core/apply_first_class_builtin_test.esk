@@ -1,0 +1,73 @@
+;;; apply_first_class_builtin_test.esk
+;;;
+;;; SW-169: `apply` resolving a BUILTIN operator is a SEPARATE value-position
+;;; route from the one LE-16 fixed for map/let/a user higher-order call, and
+;;; it had its own gap: `(apply vector-copy (list (vector 7 8 9)))` silently
+;;; answered `()` and `(apply car (list (list 5)))` silently answered `()` --
+;;; exit 0, no exception, only a debug-only "apply: Unknown function: <name>"
+;;; warning nobody sees at normal log levels. Not a missing diagnostic: apply
+;;; reported SUCCESS with the wrong value.
+;;;
+;;; Root cause: CallApplyCodegen::apply's ESHKOL_VAR branch
+;;; (lib/backend/call_apply_codegen.cpp) is its OWN hand-curated per-builtin
+;;; name table (arithmetic reductions, `list`, `cons`, a set of tensor
+;;; constructors via apply_builtin_callback_, then the comparison/predicate
+;;; wrapper callback) with no fallback to the general first-class-value
+;;; route. `map`/a user higher-order call do not have this gap because an
+;;; unmatched VAR falls back to the ordinary expression path
+;;; (codegen_ast_callback_ -> codegenVariable), which is the umbrella every
+;;; first-class-value mechanism sits under: codegenInlineBuiltinAsValue /
+;;; lookupInlineBuiltin (LE-16), the car/cdr/cons closure wrap, the
+;;; arithmetic-operator wrappers. apply lacked that same fallback.
+;;;
+;;; Fix: apply now falls back to that SAME general route (codegen_ast_
+;;; callback_ -> applyClosure) as the last resort before the existing
+;;; warning, rather than adding vector-copy/vector-append to apply's own
+;;; list (which would only have fixed these three names, not the general
+;;; class -- the exact anti-pattern LE-16 closed for map/let/a user HOF).
+;;; A name that is genuinely undefined still gets a hard compile-time
+;;; diagnostic from codegenVariable's own fallback (which fails the whole
+;;; compilation) rather than silence, because that IS the umbrella route.
+;;;
+;;; This file is written in the core-Scheme subset so it runs on both
+;;; engines EXCEPT the two cases marked native-only below: apply's LEADING-
+;;; ARGS form (`(apply f a ... arg-list)`, as opposed to `(apply f
+;;; arg-list)`) is a pre-existing, separate VM defect unrelated to operator
+;;; resolution -- `(apply + 1 (list 2 3))` answers 0 on the VM today, for
+;;; the builtin `+` which has never had a value-position gap on either
+;;; engine. That is a different code path (leading-argument extraction, not
+;;; operator resolution) and is out of scope here; flagged, not fixed.
+
+(define failures 0)
+
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; --- apply of a first-class BUILTIN, plain (apply f arg-list) form -------
+;; This is the exact repro shape: no leading args, just the argument list.
+(check "apply car, 1-elem list"
+       (equal? (apply car (list (list 5 6))) 5))
+(check "apply vector-copy, 1-elem list"
+       (equal? (apply vector-copy (list (vector 1 2 3))) (vector 1 2 3)))
+(check "apply vector-append, 2-elem list"
+       (equal? (apply vector-append (list (vector 1) (vector 2))) (vector 1 2)))
+
+;; --- control: apply of a user closure must keep working -------------------
+(define (my-double x) (* x 2))
+(check "apply user closure, list form"
+       (equal? (apply my-double (list 21)) 42))
+
+;; --- control: apply of an ALREADY-first-class builtin (+) must be
+;; unaffected -- this path predates LE-16/SW-169 entirely.
+(check "apply +, list form"
+       (equal? (apply + (list 3 4 5)) 12))
+
+(if (= failures 0)
+    (begin (display "PASS: apply first-class builtins -- 0 failures") (newline))
+    (begin (display "FAIL: apply first-class builtins -- ")
+           (display failures)
+           (display " failure(s)")
+           (newline)))

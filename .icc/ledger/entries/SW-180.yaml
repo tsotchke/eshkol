@@ -1,0 +1,72 @@
+id: SW-180
+bucket: SILENT-WRONG
+family: ad/complex-carrier
+status: fixed
+closed_at: "bbe5e31e"
+title: "a derivative taken through a complex value is silently 0: the tangent is dropped when a differentiated number enters make-rectangular or complex arithmetic"
+repro: >-
+  (1) (display (derivative (lambda (x) (real-part (make-rectangular (* x x) 0.0))) 3.0))
+  (2) (display (derivative (lambda (x) (magnitude (make-rectangular x 4.0))) 3.0))
+  (3) (require signal.filters)
+      (define (b0 c) (vector-ref (car (butterworth-lowpass 2 c)) 0))
+      (display (derivative b0 0.2))
+observed_before: >-
+  All three print `0`, exit 0, no diagnostic, under `eshkol-run -r`, from an
+  AOT binary and on the bytecode VM ((1) measured on the VM). For (3) the
+  central difference (b0(0.2001) - b0(0.1999)) / 0.0002 is 0.5665767907.
+  butterworth-lowpass computes its poles in complex arithmetic, so every
+  derivative with respect to a filter cutoff is 0. Derivatives through the
+  real-valued parts of the same library are correct: fir-filter and
+  apply-window give 5 and 13 where those are the exact answers.
+correct: >-
+  (1) 6, (2) 0.6, (3) 0.5665767907... Alternatively a diagnostic at the point
+  where a differentiated value enters a complex number, until a complex
+  carrier exists.
+root_cause: >-
+  make-rectangular and make-polar took the primal of each argument
+  (extractDoubleFromTagged natively, as_number on the VM), so a derivative
+  entering a complex number was dropped at construction. Every later complex
+  operation then worked on plain doubles. On the VM, vm_op_arith also checked
+  the dual carrier before complex, so a dual meeting a complex value was read
+  as a real, and real-part of a real dual flattened it to its primal.
+fix: >-
+  The ruling is to build the capability (tutorials 05 and 06 describe it).
+  Native: a complex value whose component carries a derivative keeps the
+  plain pair first and the two components after it as tagged values
+  (eshkol_complex_carrier_t, ESHKOL_COMPLEX_CARRIER_FLAG); every complex
+  operation on it is its component formula evaluated by the generic
+  arithmetic, so jets, tape nodes and Taylor towers flow through with their
+  existing rules (ArithmeticCodegen::makeRectangular and
+  withComplexCarrierDispatch, one helper per builtin kind in llvm_codegen).
+  VM: VmComplex carries the tangent of the VM's first-order dual and every
+  VM complex operation propagates it by its own rule; vm_real_with_tangent is
+  the one boundary. No derivative exists at the origin for magnitude, angle,
+  log and sqrt, and a derivative there raises. The docs that said complex
+  values carry no derivative are corrected. ADR-0025.
+evidence: >-
+  Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+  arm64 macOS. docs/tutorials/05_SIGNAL_PROCESSING.md Part 5 differentiates
+  filtered signal power with respect to the Butterworth cutoff;
+  scripts/doc_audit/check_doc_examples.py reports MISMATCH expected '73.81...'
+  got '0' on JIT and AOT (73.815 is the central difference).
+  Fixed on fix/v135-ad-complex-and-dense-identity, Release build, arm64 macOS:
+  tests/ad/complex_value_derivative_test.esk (25 analytic checks, including
+  the Butterworth cutoff derivative 0.566576801842721, whose central
+  difference is 0.5665767907) fails 22 of 25 on the base build and passes
+  25/25 on the fix, JIT cached and uncached, AOT and the bytecode VM. Corpus
+  program 89 gives identical output on both engines. Tutorial 05's example
+  runs with its marker removed.
+caught_by: [doc-example-gate]
+missed_by: [run_ad_oracle, run_ad_exactness_gate, doc_audit]
+notes: >-
+  The documentation disagrees with itself, which is why this needs a ruling
+  rather than an edit. docs/reference/ad/architecture.md ("Numeric boundary")
+  and docs/breakdown/AUTODIFF.md state that complex values have no derivative
+  carrier. docs/tutorials/05_SIGNAL_PROCESSING.md says every signal-processing
+  function composes with autodiff, docs/tutorials/06_EXACT_ARITHMETIC.md says
+  complex numbers integrate with autodiff, and docs/KNOWN_ISSUES.md lists
+  complex numbers as a first-class type with AD support. The tutorials were
+  left as the statement of intent and the example carries
+  `doc-example: known-defect SW-180`. Filed SILENT-WRONG because a wrong
+  derivative with exit 0 and no diagnostic is that bucket's definition; a
+  refusal at the boundary would make it a loud limitation.

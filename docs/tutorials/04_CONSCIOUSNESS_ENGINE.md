@@ -27,12 +27,12 @@ expects (see `lib/backend/logic_workspace_codegen.cpp` and
 ;; recognised by the parser as a logic variable, not a symbol)
 (display (kb-query kb (make-fact 'parent 'alice ?child)))
 (newline)
-;; => ((parent alice bob) (parent alice diana))
+;; => ({?child -> bob} {?child -> diana})
 
 ;; Query: who is charlie's parent?
 (display (kb-query kb (make-fact 'parent ?p 'charlie)))
 (newline)
-;; => ((parent bob charlie))
+;; => ({?p -> bob})
 ```
 
 The `?variable` syntax creates logic variables. Queries find all facts in
@@ -264,7 +264,7 @@ and `fg-marginal`, `fg-entropy`, `kb-retract!` reach the runtime through
 | `make-fact` | 1 + | Create a fact from a predicate and arguments |
 | `make-kb` | 0 | Create an empty knowledge base |
 | `kb-assert!` | 2 | Add a fact to a KB |
-| `kb-query` | 2 | Query a KB with a fact pattern; returns matching facts |
+| `kb-query` | 2 | Query a KB with a fact pattern; returns one substitution per matching fact |
 | `logic-var?` | 1 | Test if value is a logic variable |
 | `substitution?` | 1 | Test if value is a substitution |
 | `kb?` | 1 | Test if value is a knowledge base |

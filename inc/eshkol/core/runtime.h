@@ -125,6 +125,17 @@ bool eshkol_unregister_shutdown_hook(uint32_t hook_id);
 void eshkol_runtime_init_signals(void);
 
 /**
+ * @brief Give the calling thread its own alternate signal stack (ESH-0101).
+ *
+ * sigaltstack() is per thread while the fatal-signal handlers installed by
+ * eshkol_runtime_init_signals() are per process, so a runtime thread that
+ * never calls this dies silently on stack exhaustion where the main thread
+ * would print a diagnostic. Call it at the top of every runtime-created
+ * thread that runs user code. Idempotent; the stack is freed at thread exit.
+ */
+void eshkol_runtime_init_thread_signals(void);
+
+/**
  * @brief Restore the platform's default signal handlers.
  *
  * Call before exec() or fork() so a child process does not inherit
@@ -340,6 +351,32 @@ void eshkol_type_error_with_operand(const char* proc_name,
                                     const eshkol_tagged_value_t* actual);
 
 /**
+ * @brief Raise a shape error for an element-wise binary operation whose two
+ * operands cannot be broadcast against one another.
+ *
+ * Produces: "Shape mismatch in <proc>: shapes (3) and (2 4) are not
+ * broadcast-compatible", with the current "file:line:col: " prefix when one
+ * has been set. Catchable by `guard`, like the type errors above; does not
+ * return.
+ *
+ * Element-wise arithmetic broadcasts NumPy-style, so a shape mismatch is
+ * decided by compute_broadcast_shape() in lib/core/runtime_tensor_math.cpp,
+ * not by strict equality — `#(2.0)` against `#(1.0 2.0 3.0)` is compatible,
+ * `#(1.0 2.0 3.0)` against `#(4.0 5.0)` is not. Codegen calls this only once
+ * that computation has REFUSED the pair, so there is one authority on what
+ * "compatible" means and one wording for its refusal.
+ *
+ * @param proc_name Name of the operation that demanded the shapes.
+ * @param a_dims Shape of the first operand (NULL renders as "?").
+ * @param a_ndim Rank of the first operand.
+ * @param b_dims Shape of the second operand (NULL renders as "?").
+ * @param b_ndim Rank of the second operand.
+ */
+void eshkol_shape_error(const char* proc_name,
+                        const int64_t* a_dims, int64_t a_ndim,
+                        const int64_t* b_dims, int64_t b_ndim);
+
+/**
  * @brief Set the source location to prefix onto the *next* runtime error
  * (v1.3 source-span errors).
  *
@@ -553,6 +590,20 @@ void eshkol_language_coverage_vm_dispatch(const char* name,
 /** Record a validated direct Scheme closure call from serialized VM bytecode.
  * The stable hash is resolved against the manifest with collision rejection. */
 void eshkol_language_coverage_vm_call_hash(uint32_t name_hash);
+/**
+ * Record that the bytecode VM EXECUTED a compiled language form.
+ *
+ * The two hooks above only ever fire from builtin dispatch, so every
+ * construct the VM compiler lowers inline -- the arithmetic and comparison
+ * opcodes, `if`/`let`/`cond`/`do`/`lambda` and the rest of the special
+ * forms -- produced no VM evidence at all and could never earn cross-engine
+ * differential credit no matter how many programs exercised it. The VM
+ * compiler emits an OP_LANGUAGE_COVERAGE_FORM marker at the head of every
+ * compiled `(name ...)` form when tracing is armed, and reaching that marker
+ * at run time is what calls this. The stable hash is resolved against the
+ * manifest with collision rejection, exactly as for a validated call.
+ */
+void eshkol_language_coverage_vm_form_hash(uint32_t name_hash);
 /** Flush a pending opt-in language-coverage batch before exec/early exit. */
 void eshkol_language_coverage_flush(void);
 

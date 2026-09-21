@@ -5,6 +5,26 @@
 
 ---
 
+## eshkol (Unified Front Door)
+
+`eshkol check` performs non-executing workspace analysis. It parses the named
+source, resolves its transitive module graph with the same resolver used by the
+compiler, VM, LSP, and REPL, and reports binding diagnostics. It never runs
+project code, invokes LLVM, or writes build artifacts.
+
+```text
+eshkol check [--format human|json] <input.esk>
+eshkol doc modules [--format human|json] <input.esk>
+```
+
+The JSON output uses the stable `eshkol.workspace-check.v1` schema and includes
+deterministic module IDs, dependency IDs, diagnostic text, and binding counts.
+`eshkol doc modules` is the documentation-tooling view of the same graph; its
+JSON output is byte-identical to `eshkol check --format json` for the same
+source.
+
+---
+
 ## eshkol-run (AOT Compiler)
 
 The `eshkol-run` binary is the ahead-of-time compiler and JIT execution engine. It parses Eshkol source files, generates LLVM IR, compiles to native code, and optionally links into an executable.
@@ -23,7 +43,7 @@ eshkol-run -r <file.esk>
 
 | Flag | Short | Argument | Description |
 |------|-------|----------|-------------|
-| `--output` | `-o` | `<path>` | Output path for the compiled artifact. Without this flag, the binary is named from the first source file. The artifact kind follows the other flags: a native binary by default, a relocatable object with `-c`/`--compile-only`, a shared library with `--shared-lib`, or a WebAssembly module with `--wasm`. |
+| `--output` | `-o` | `<path>` | Output path for the compiled artifact. Without this flag, a native binary is written to `a.out`; an object, shared library, or WebAssembly module is named from the first source file (`prog.o`, `libprog.dylib`/`libprog.so`, `prog.wasm`). The artifact kind follows the other flags: a native binary by default, a relocatable object with `-c`/`--compile-only`, a shared library with `--shared-lib`, or a WebAssembly module with `--wasm`. |
 | `--compile-only` | `-c` | (none) | Compile to an object file (`.o`) only; do not link into an executable. Also produces a `.bc` bitcode file for REPL JIT use. |
 | `--emit-object` | (none) | (none) | Alias for `--compile-only`. |
 | `--emit-depfile` | (none) | `<path>` | With `-o`/`--emit-object`, write a Makefile-format depfile listing the entry source plus every file transitively reached via `(load ...)`/`(import ...)`/`(require ...)`, so a build system (e.g. `ninja DEPFILE`) recompiles the object when any of them change. |
@@ -61,8 +81,8 @@ eshkol-run hello.esk -o hello
 # Compile to object file only
 eshkol-run module.esk -c -o module.o
 
-# Compile as shared library
-eshkol-run mylib.esk -s -o mylib.o
+# Link a shared library (writes libmylib.dylib / libmylib.so)
+eshkol-run mylib.esk -s -o mylib
 
 # Compile to WebAssembly
 eshkol-run app.esk -w -o app.wasm
@@ -75,14 +95,14 @@ eshkol-run program.esk -B program.eskb
 
 | Flag | Short | Argument | Description |
 |------|-------|----------|-------------|
-| `--eval` | `-e` | `<expression>` | JIT-evaluate a single Eshkol expression and print the result. Does not compile to disk. |
+| `--eval` | `-e` | `<expression>` | JIT-evaluate a single Eshkol expression. Output is shown via `(display ...)`; the value of the expression is not echoed. Does not compile to disk. |
 | `--run` | `-r` | (none) | JIT-run a source file without compiling to disk. Uses LLVM OrcJIT for in-memory compilation. |
 
 **Examples:**
 
 ```bash
 # Evaluate an expression
-eshkol-run -e '(+ 1 2 3)'
+eshkol-run -e '(display (+ 1 2 3))'
 # Output: 6
 
 # Run a file via JIT
@@ -190,11 +210,12 @@ The `eshkol-repl` binary provides an interactive JIT-compiled read-eval-print lo
 
 ```bash
 eshkol-repl                # interactive session
+eshkol-repl --stdlib       # interactive session with the standard library loaded (-s)
 eshkol-repl --machine      # machine-driven warm-worker mode (EREPL framing on stderr)
 eshkol-repl -m             # short form of --machine
 ```
 
-The REPL automatically loads the standard library at startup if `stdlib.o` is found in the build directory.
+The REPL loads the standard library at startup when started with `--stdlib` (`-s`) or `--machine`; in a plain session, load it with the `:stdlib` command.
 
 The `--machine` (`-m`) mode disables the interactive readline frontend and emits machine-readable framing on stderr: `EREPL READY\n` after stdlib load, `EREPL DONE\n` after each form completes successfully, and `EREPL FAIL\n` on error. The marker is bare (no `<reason>` follows on the same line); any human-readable error message is printed via the REPL's normal error path before the marker, so the orchestrator should treat the marker as a frame boundary and parse anything emitted before it as form output / diagnostic text. The form's value still goes to stdout. This mode is intended for orchestrators (such as the Noesis warm-worker harness) that want to drive a persistent JIT worker without paying cold-start cost on every form.
 

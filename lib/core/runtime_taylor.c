@@ -133,8 +133,11 @@ esh_taylor_t* eshkol_taylor_alloc(arena_t* arena, uint32_t order_k, uint32_t fla
     esh_taylor_t* t = (esh_taylor_t*)(mem + sizeof(eshkol_object_header_t));
     t->order_k = order_k;
     t->flags = flags;
-    t->reserved0 = 0;
+    t->tangent_epoch = 0;
+    t->tangent2_epoch = 0;
+    t->carry_epoch = 0;
     t->reserved1 = 0;
+    t->exact_c = NULL;
     memset(t->c, 0, nstore * sizeof(double));
     return t;
 }
@@ -189,8 +192,11 @@ esh_taylor_t* eshkol_taylor_alloc_exact(arena_t* arena, uint32_t order_k, uint32
     esh_taylor_t* t = (esh_taylor_t*)(mem + sizeof(eshkol_object_header_t));
     t->order_k = order_k;
     t->flags = ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_RATIONAL, epoch);
-    t->reserved0 = 0;
+    t->tangent_epoch = 0;
+    t->tangent2_epoch = 0;
+    t->carry_epoch = 0;
     t->reserved1 = 0;
+    t->exact_c = NULL;
 
     eshkol_tagged_value_t* c = (eshkol_tagged_value_t*)(void*)t->c;
     eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
@@ -2498,7 +2504,13 @@ void eshkol_taylor_shift(arena_t* arena, const eshkol_tagged_value_t* tv,
  * otherwise -- so `(exact? (car (taylor f x k)))` reflects the tower's
  * actual coefficient type. */
 void eshkol_taylor_coeffs_list(arena_t* arena, const eshkol_tagged_value_t* tv,
-                               int32_t order_k_in, eshkol_tagged_value_t* out) {
+                               int32_t order_k_in, void* tape,
+                               eshkol_tagged_value_t* out) {
+    /* The release ABI supplies the active reverse tape so coefficient-list
+     * extraction can preserve it when required. Carrier coefficients retain
+     * their enclosing levels directly; this implementation needs no separate
+     * tape action, but must accept the full ABI rather than shift `out`. */
+    (void)tape;
     if (!arena) arena = get_global_arena();
     if (order_k_in < 0) order_k_in = 0;
     uint32_t order_k = (uint32_t)order_k_in;
@@ -2556,6 +2568,157 @@ void eshkol_taylor_coeffs_list(arena_t* arena, const eshkol_tagged_value_t* tv,
         acc = v;
     }
     *out = acc;
+}
+
+/* Release-ABI compatibility for the pre-carrier forward-mode entry points.
+ * Carrier levels do not use the legacy single carry epoch; returning 0 from
+ * that probe deliberately selects the ordinary carrier extraction below. */
+void eshkol_taylor_extract_tangent_tagged(arena_t* arena,
+                                          const eshkol_tagged_value_t* tv,
+                                          uint32_t n,
+                                          eshkol_tagged_value_t* out) {
+    (void)arena;
+    if (!out) return;
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    if (!t || !ESH_TAYLOR_HAS_TANGENT(t->flags) || n > t->order_k) {
+        *out = eshkol_make_double(0.0);
+        return;
+    }
+    *out = eshkol_make_double(factorial_d(n) * taylor_tan(t)[n]);
+}
+
+int32_t eshkol_ad_tower_carry_result(arena_t* arena,
+                                     const eshkol_tagged_value_t* result,
+                                     int32_t order_k,
+                                     eshkol_tagged_value_t* out) {
+    (void)arena;
+    (void)result;
+    (void)order_k;
+    (void)out;
+    return 0;
+}
+
+void eshkol_taylor_project_tangent_outer(arena_t* arena,
+                                         const eshkol_tagged_value_t* tv,
+                                         uint32_t n,
+                                         eshkol_tagged_value_t* out) {
+    eshkol_taylor_extract_tagged(arena, tv, n, out);
+}
+
+int32_t eshkol_taylor_project_forward_tangent(
+    arena_t* arena, const eshkol_tagged_value_t* tv, eshkol_tagged_value_t* out) {
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    if (!t || !ESH_TAYLOR_HAS_TANGENT(t->flags)) return 0;
+    eshkol_taylor_extract_tangent_tagged(arena, tv, 1u, out);
+    return 1;
+}
+
+int32_t eshkol_taylor_epoch_tagged(const eshkol_tagged_value_t* tv) {
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    return t ? (int32_t)ESH_TAYLOR_GET_EPOCH(t->flags) : 0;
+}
+
+int32_t eshkol_taylor_order_tagged(void* arena,
+                                   const eshkol_tagged_value_t* left,
+                                   const eshkol_tagged_value_t* right,
+                                   int op) {
+    eshkol_tagged_value_t lc, rc;
+    const eshkol_tagged_value_t* l = left;
+    const eshkol_tagged_value_t* r = right;
+    esh_taylor_t* lt = tagged_as_taylor(left);
+    esh_taylor_t* rt = tagged_as_taylor(right);
+    if (lt) {
+        lc = taylor_has_tagged_coeffs(lt) ? taylor_tagged_c_const(lt)[0]
+                                          : eshkol_make_double(lt->c[0]);
+        l = &lc;
+    }
+    if (rt) {
+        rc = taylor_has_tagged_coeffs(rt) ? taylor_tagged_c_const(rt)[0]
+                                          : eshkol_make_double(rt->c[0]);
+        r = &rc;
+    }
+    if (tagged_is_exact_number(l) && tagged_is_exact_number(r)) {
+        eshkol_tagged_value_t result;
+        eshkol_rational_compare_tagged_ptr(arena, l, r, op, &result);
+        return (int32_t)result.data.int_val;
+    }
+    const double a = tagged_scalar_value(l);
+    const double b = tagged_scalar_value(r);
+    switch (op) {
+        case 0: return a < b;
+        case 1: return a > b;
+        case 2: return a == b;
+        case 3: return a <= b;
+        case 4: return a >= b;
+        default: return 0;
+    }
+}
+
+void eshkol_taylor_project_selected_epoch(
+    arena_t* arena, const eshkol_tagged_value_t* tv, uint32_t selected_epoch,
+    uint32_t order, void* tape, eshkol_tagged_value_t* out) {
+    (void)selected_epoch;
+    (void)tape;
+    eshkol_taylor_extract_tagged(arena, tv, order, out);
+}
+
+/* Zip independently extracted real/imaginary coefficient carriers without
+ * collapsing any enclosing derivative carried by either component. */
+void eshkol_complex_coefficients_zip(arena_t* arena,
+                                     const eshkol_tagged_value_t* real_list,
+                                     const eshkol_tagged_value_t* imag_list,
+                                     eshkol_tagged_value_t* out) {
+    if (!arena) arena = get_global_arena();
+    eshkol_tagged_value_t nil = {0};
+    nil.type = ESHKOL_VALUE_NULL;
+    if (!out) return;
+    *out = nil;
+    if (!real_list || !imag_list) return;
+    eshkol_tagged_value_t r = *real_list, i = *imag_list;
+    arena_tagged_cons_cell_t* tail = NULL;
+    while ((r.type & 0x0F) != ESHKOL_VALUE_NULL ||
+           (i.type & 0x0F) != ESHKOL_VALUE_NULL) {
+        if ((r.type & 0x0F) != ESHKOL_VALUE_HEAP_PTR ||
+            (i.type & 0x0F) != ESHKOL_VALUE_HEAP_PTR ||
+            !r.data.ptr_val || !i.data.ptr_val) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                 "complex Taylor coefficient lists disagree");
+            return;
+        }
+        const arena_tagged_cons_cell_t* rc =
+            (const arena_tagged_cons_cell_t*)(uintptr_t)r.data.ptr_val;
+        const arena_tagged_cons_cell_t* ic =
+            (const arena_tagged_cons_cell_t*)(uintptr_t)i.data.ptr_val;
+        eshkol_complex_carrier_t* value =
+            (eshkol_complex_carrier_t*)arena_allocate(arena, sizeof(*value));
+        arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
+        if (!value || !cell) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                 "complex Taylor coefficient allocation failed");
+            return;
+        }
+        int32_t real_ok = 0, imag_ok = 0;
+        value->primal.real = eshkol_ad_seed_to_double(&rc->car, &real_ok);
+        value->primal.imag = eshkol_ad_seed_to_double(&ic->car, &imag_ok);
+        if (!real_ok || !imag_ok) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                 "complex Taylor coefficient is not numeric");
+            return;
+        }
+        value->real = rc->car;
+        value->imag = ic->car;
+        cell->car = eshkol_make_complex((uint64_t)(uintptr_t)value);
+        cell->car.flags |= ESHKOL_COMPLEX_CARRIER_FLAG;
+        cell->cdr = nil;
+        eshkol_tagged_value_t link = nil;
+        link.type = ESHKOL_VALUE_HEAP_PTR;
+        link.data.ptr_val = (uint64_t)(uintptr_t)cell;
+        if (tail) tail->cdr = link;
+        else *out = link;
+        tail = cell;
+        r = rc->cdr;
+        i = ic->cdr;
+    }
 }
 
 #ifdef __cplusplus

@@ -1,6 +1,6 @@
 # ADR 0007: PGO, Whole-Program Optimization, and Staged Training Throughput
 
-Status: Proposed
+Status: Accepted — partially implemented: the Phase 0 slice (persisted artifacts default to O2 and the contract is asserted by `scripts/run_codegen_optlevel_tests.sh`; the `bench/pgo_corpus/` training corpus is exercised under JIT and AOT by `scripts/run_pgo_corpus_smoke.sh`) is in v1.3.5-evolve; remaining phases Proposed
 
 Date: 2026-07-09
 
@@ -469,7 +469,7 @@ Before internalization, the linker constructs an explicit root set:
 - weak/override definitions that have not been resolved to a final definition.
 
 This is essential because ordinary definitions use external linkage outside
-library mode ([`lib/backend/llvm_codegen.cpp:1030-1042`](../../../lib/backend/llvm_codegen.cpp#L1030-L1042),
+library mode ([`lib/backend/llvm_codegen.cpp:1030-1044`](../../../lib/backend/llvm_codegen.cpp#L1030-L1044),
 [`lib/backend/llvm_codegen.cpp:4430-4447`](../../../lib/backend/llvm_codegen.cpp#L4430-L4447)).
 It is also essential because one direct-link path force-loads the runtime to
 preserve a parallel-worker constructor

@@ -21,6 +21,7 @@ TESTS=(
     tests/vm/workspace_introspection_regression.esk
     tests/vm/ad_tape_lowlevel_regression.esk
     tests/vm/vm_kb_tensor_test.esk
+    tests/vm/bignum_rational_literals_test.esk
 )
 
 # Every *_surface_regression probe is deterministic and self-checking.  Keep
@@ -75,11 +76,20 @@ for relative in "${TESTS[@]}"; do
     module="$RUN_DIR/$stem.eskb"
     output="$RUN_DIR/$stem.out"
     printf "Testing %-54s " "$stem"
+    # The compile status is part of the verdict. It used to be discarded with
+    # `|| true`, so a refused compile was reported only indirectly, as a VM
+    # that could not open a module, and a compile that failed after writing a
+    # module would have run it and could have passed.
+    compile_status=0
     "$ESHKOL_RUN" --profile hosted-vm --emit-eskb "$module" "$source_file" \
-        >"$RUN_DIR/$stem.compile.out" 2>&1 || true
+        >"$RUN_DIR/$stem.compile.out" 2>&1 || compile_status=$?
     verdict=PASS
     detail="self-checking VM surface probe green"
-    if ! ESHKOL_VM_NO_DISASM=1 run_guarded 20 "$VM" "$module" >"$output" 2>&1; then
+    if [ "$compile_status" -ne 0 ]; then
+        verdict=FAIL
+        detail="compile exited $compile_status: $(grep -m3 -E 'ERROR|error' "$RUN_DIR/$stem.compile.out" | tr '\n' ' ')"
+        cp "$RUN_DIR/$stem.compile.out" "$output"
+    elif ! ESHKOL_VM_NO_DISASM=1 run_guarded 20 "$VM" "$module" >"$output" 2>&1; then
         verdict=FAIL
         detail="$(tail -c 200 "$output")"
     elif grep -Eq '(^|[[:space:]:])FAIL([[:space:]:]|$)|ERROR:|unhandled native call' "$output"; then

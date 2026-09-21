@@ -1,0 +1,90 @@
+id: SW-151
+bucket: SILENT-WRONG
+subtag: autodiff
+family: ad-inline-differentiand-capture
+status: closed
+closed_at: "429444e3+fix-ad-inline-differentiand-loop-capture-worktree"
+title: "A named-let loop variable captured by an inline differentiand made derivative/derivative-n/taylor return garbage"
+repro: >-
+  Inside a named-let/TCO loop that forwards outer variables x, y, t into the
+  loop body, call `(derivative-n (lambda (s) (u-ref i x y s t)) z 1)` where
+  the differentiand lambda is written INLINE, directly as the argument to
+  `derivative-n`, and `i` is the loop's own carried variable while x/y/t are
+  captured free variables forwarded from the enclosing function. At
+  (x,y,z,t) = (-1/2, 0, 1/2, 1/3), u2 = (1+t) z^2 x has analytic derivative
+  -2/3 at z; u1 and u3 are analytically 0. The identical call is correct
+  when (a) the loop index is passed as a parameter of a named helper
+  instead of read as a free variable, or (b) the differentiand is reached
+  through a one-line wrapper function so the AD operator sees a runtime
+  closure value instead of a syntactically inline lambda AST.
+observed: >-
+  `(2.294206272433255e+29 37476150509501018008 0)` where the analytic
+  answer is `(0 -2/3 0)` — no error, no warning, a finite but wildly wrong
+  double (and, for one component, a value large enough to route through the
+  bignum/exact-tower display path). Reproduced identically under the JIT,
+  the run-cache/AOT route, and with plain `derivative` (order 1) in place
+  of `derivative-n`; `taylor`'s order-1 coefficient showed the same
+  corruption, since `derivative`/`derivative-n`/`taylor` share one backend
+  implementation (codegenDerivativeMonolith / taylorApiCore).
+correct: >-
+  An inline differentiand must capture a named-let/TCO loop's own carried
+  variable, and any outer variable the loop forwards into its body, BY
+  VALUE — identically to what a runtime closure computes for the same
+  program, and identically to what `gradient`/`jacobian`/`hessian` already
+  computed for the equivalent shape.
+root_cause: >-
+  lib/backend/autodiff_codegen.cpp's codegenDerivativeMonolith (the shared
+  backend for `derivative`, `derivative-n`, and `taylor`) manually rebuilds
+  an inline differentiand lambda's capture-argument list: for each free
+  variable it looks up `storage` and decides, by NAME, whether that storage
+  already points DIRECTLY at the captured value (forward the pointer
+  as-is) or must be packed as a fresh mutable-variable pointer-marker
+  (double indirection, for genuine `set!`-mutable captures). It recognized
+  only the name "captured_<var>" (a transitive capture through a nested
+  `derivative`, ESH-0117) and NOT "<var>_cap" — the name a named-let/TCO
+  loop gives a free variable it forwards from the enclosing scope into the
+  loop body (llvm_codegen.cpp codegenNamedLet, ESH-0070/#224). A forwarded
+  "<var>_cap" pointer therefore fell through to the double-indirection
+  branch and was re-wrapped; the differentiand's single-load body then read
+  the pointer-marker's raw bits as if they were the captured double,
+  producing the observed garbage. The four sibling capture resolvers this
+  file also carries — for `gradient` (two call sites), and the shared
+  jacobian/hessian/divergence/curl/laplacian resolver — already checked
+  both "<var>_cap" and "captured_<var>", so the equivalent shape was
+  already correct for those operators; only the derivative/derivative-n/
+  taylor monolith's own copy of the check was missing the "<var>_cap" arm.
+  This is a distinct defect from the named-let/TCO loop-alloca-vs-value-
+  capture bug already fixed by isTcoLoopAlloca (ESH-0221): that fix governs
+  the loop's OWN carried variable (i.e. i_tco); this defect governs an
+  OUTER variable the loop forwards through it (i.e. x_cap/y_cap/t_cap), and
+  both checks live in the same code path, one directly above the other.
+fix: >-
+  codegenDerivativeMonolith's capture-forwarding check at the top of the
+  manual capture-reconstruction loop now matches
+  `arg->getName() == (var_name + "_cap") || arg->getName() == ("captured_" +
+  var_name)`, mirroring the identical two-name check already present in the
+  gradient and jacobian/hessian/divergence/curl/laplacian resolvers in the
+  same file. No other call site needed a change; `gradient` was already
+  correct and is pinned alongside the fix as a same-file regression guard.
+guarded_by: >-
+  tests/ad/inline_differentiand_loop_capture_test.esk (native, JIT-cached,
+  JIT-uncached, and AOT CTest variants; named-let/do/nested-loop shapes;
+  derivative/derivative-n/taylor/gradient; exact-rational and inexact
+  seeds; a shadowing-global negative control; an ordinary mutable-`set!`-
+  capture negative control); tests/vm_parity/corpus/77_derivative_named_let_capture.esk
+  (plain `derivative`, the vm-supported axis per PARITY.tsv op:DERIVATIVE —
+  `derivative-n`/`taylor` are native-only per op:DERIVATIVE_N/op:TAYLOR, so
+  the CTest file is the sole gate for those two operators).
+evidence: >-
+  Before the fix, `tests/ad/inline_differentiand_loop_capture_test.esk`
+  failed 8 of 17 checks with garbage values matching the filed reproducer's
+  shape (verified by reverting only the "<var>_cap" arm of the fix and
+  rebuilding). After the fix, all 17 checks pass, and the VM parity corpus
+  program agrees with native on all three printed lines.
+caught_by: [ns-strengthen-worktree-repro, inline_differentiand_loop_capture_cached, inline_differentiand_loop_capture_uncached, inline_differentiand_loop_capture_aot_smoke, vm-parity]
+missed_by: [ad_capture_global_shadow_test.esk, nested_ad_loop_test.esk]
+notes: >-
+  The worktree is intentionally uncommitted at ledger-authoring time;
+  "429444e3" is the origin/master base this branch forked from, and the
+  suffix identifies the measured fix state on
+  fix/ad-inline-differentiand-loop-capture.

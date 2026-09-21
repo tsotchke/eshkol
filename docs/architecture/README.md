@@ -35,7 +35,7 @@ This directory indexes Eshkol's architecture documentation.
 
 **[AD Architecture](../breakdown/AUTODIFF.md)** - Automatic differentiation:
 - Symbolic mode (AST rewriting, 12 rules)
-- Forward mode (dual numbers, 16 bytes)
+- Forward mode (native mixed-mode dual jets, 64 bytes; simple dual accessors use the first two fields)
 - Reverse mode (computational graph, 32-level tape)
 
 ### Active Platform Architecture
@@ -47,6 +47,10 @@ This directory indexes Eshkol's architecture documentation.
 - Native freestanding and VM freestanding architecture
 - BSP contracts and downstream kernel handoff
 
+### Release Invariant Contracts
+
+**[Release invariant contracts](../design/adr/0014-release-invariant-contracts.md)** — keeps parser identity, OALR deep-walk dispatch, generated flat-AD WASM imports, and pre-grade release receipts aligned through executable contracts.
+
 ### TensorCore Integration
 
 **[TensorCore compiler-adapter ownership](tensorcore-adapter.md)** - ownership boundary between Eshkol and the TensorCore integration: AST/IR lowering, LLVM declarations, calling conventions, and packaging live in Eshkol; public C ABI, status/dtype/backend values, buffers, kernels, transports, and device discovery live in TensorCore.
@@ -56,3 +60,5 @@ This directory indexes Eshkol's architecture documentation.
 - [API Reference](../API_REFERENCE.md) - Complete function reference
 - [Feature Matrix](../FEATURE_MATRIX.md) - Implementation status
 - [Overview](../breakdown/OVERVIEW.md) - Design philosophy and positioning
+
+- [qLLM private ABI](qllm-private-abi.md) — real tensor ownership, native registration, LLVM compatibility, and the ESKB version boundary.

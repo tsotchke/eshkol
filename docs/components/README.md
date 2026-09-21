@@ -16,7 +16,7 @@ For detailed component documentation, see:
 ### Frontend
 
 **Parser** - [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp)
-- S-expression parsing (recursive descent)
+- S-expression parsing (explicit continuation stack; stack use independent of nesting depth)
 - AST construction with 93 operators
 - Line/column tracking for error messages
 
@@ -83,7 +83,7 @@ For detailed component documentation, see:
 
 ### Runtime System
 
-**Arena Memory** - [`lib/core/arena_memory.cpp`](../../lib/core/arena_memory.h)
+**Arena Memory** - [`lib/core/arena_memory.h`](../../lib/core/arena_memory.h) (implementation in `lib/core/runtime_arena_core.cpp` and the `lib/core/runtime_*` files)
 - Global arena allocation
 - Object header management
 - Display system

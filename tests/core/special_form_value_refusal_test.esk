@@ -1,0 +1,20 @@
+;;; special_form_value_refusal_test.esk
+;;;
+;;; LE-16 negative control: special forms are NOT builtins and the audit in
+;;; builtins_first_class_test_*.esk deliberately excludes every name in
+;;; tests/coverage/language_surface.json's "special_forms" list from its
+;;; iteration. This program pins the OTHER half of that claim: referencing a
+;;; special form as a bare value is a documented compile-time refusal, not
+;;; silence and not a crash.
+;;;
+;;; This program is INTENDED to fail to compile, the same shape as
+;;; undefined_variable_refusal_test.esk. The parser binds each of these names
+;;; to a dedicated AST op (ESHKOL_IF_OP, ESHKOL_DEFINE_OP, ...), so there is
+;;; no codegenVariable binding to fall back to and no first-class value could
+;;; be synthesized even in principle -- unlike a builtin, which just needs a
+;;; row in the lookupInlineBuiltin table (see LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml). Every one of these five names is a
+;;; documented special form (docs/reference/language special-forms
+;;; reference), so this is the expected, LOUD refusal rather than the SIGSEGV
+;;; class LE-01 fixed for builtins.
+(display (list if define quote lambda set!))

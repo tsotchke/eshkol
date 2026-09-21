@@ -1,0 +1,239 @@
+;; LE-23: a LOCAL recursive binding -- a named let or a letrec inside a
+;; procedure -- diverged with "Stack overflow (recursion too deep)" whenever
+;; the recursive call was made from inside a LAMBDA created in that binding's
+;; body. The canonical spelling is a depth-first walk that iterates with
+;; for-each or map:
+;;
+;;   (let dfs ((c 0))
+;;     (if (= c n) <leaf>
+;;         (for-each (lambda (f) (dfs (+ c 1))) (list 0 1))))
+;;
+;; Codegen resolved a call to the recursive name by calling "the LLVM function
+;; being emitted right now". That is the recursive binding's own function only
+;; while its body is being emitted directly; inside a nested lambda the
+;; function being emitted is the LAMBDA, so `(dfs ...)` compiled into a call to
+;; the for-each callback ITSELF. The named let's body never ran a second time,
+;; `c` never advanced, and the recursion-depth guard fired. Both native lanes
+;; (JIT and AOT) diverged; the bytecode VM, which resolves the name through its
+;; own environment, always answered correctly.
+;;
+;; It is NOT a for-each/map defect and NOT a capture defect: shape 4 below
+;; applies the lambda directly with no higher-order call anywhere, and shape 5
+;; passes a CONSTANT rather than the loop variable. Both diverged too.
+;;
+;; Minimized from .scratch/math-stream-repros/nl_foreach_min.esk,
+;; nl_map_min.esk and nl_letrec_foreach.esk, whose controls
+;; nl_toplevel_foreach.esk and nl_explicit_loop.esk are carried here as the
+;; controls that bound the finding.
+
+(define failures 0)
+
+(define (check name got want)
+  (if (equal? got want)
+      #t
+      (begin
+        (set! failures (+ failures 1))
+        (display "FAIL: ") (display name)
+        (display " expected ") (display want)
+        (display " got ") (display got) (newline)
+        #f)))
+
+(define (sum-list xs)
+  (if (null? xs) 0 (+ (car xs) (sum-list (cdr xs)))))
+
+;; ---------------------------------------------------------------- shape 1
+;; The ledger repro: a named let re-entered from a for-each lambda.
+;; A complete binary walk of depth n has 2^n leaves.
+(define (count-foreach n)
+  (let ((total (vector 0)))
+    (let dfs ((c 0))
+      (if (= c n)
+          (vector-set! total 0 (+ 1 (vector-ref total 0)))
+          (for-each (lambda (f) (dfs (+ c 1))) (list 0 1))))
+    (vector-ref total 0)))
+
+;; ---------------------------------------------------------------- shape 2
+;; Through `map`, and USING map's returned list, so a loop variable that
+;; failed to advance would show up as a wrong sum rather than only as a hang.
+(define (count-map n)
+  (let dfs ((c 0))
+    (if (= c n)
+        1
+        (sum-list (map (lambda (f) (dfs (+ c 1))) (list 0 1))))))
+
+;; ---------------------------------------------------------------- shape 3
+;; The same recursion written as a letrec lambda instead of a named let.
+;; Different lowering path, same defect.
+(define (count-letrec n)
+  (let ((total (vector 0)))
+    (letrec ((dfs (lambda (c)
+                    (if (= c n)
+                        (vector-set! total 0 (+ 1 (vector-ref total 0)))
+                        (for-each (lambda (f) (dfs (+ c 1))) (list 0 1))))))
+      (dfs 0))
+    (vector-ref total 0)))
+
+;; ---------------------------------------------------------- shape 3b
+;; letrec* -- the sequential sibling takes its own path through the binding
+;; module and had the identical defect.
+(define (count-letrec-star n)
+  (let ((total (vector 0)))
+    (letrec* ((dfs (lambda (c)
+                     (if (= c n)
+                         (vector-set! total 0 (+ 1 (vector-ref total 0)))
+                         (for-each (lambda (f) (dfs (+ c 1))) (list 0 1))))))
+      (dfs 0))
+    (vector-ref total 0)))
+
+;; ---------------------------------------------------------------- shape 4
+;; NO higher-order call at all: the same lambda, applied directly. This is
+;; what proves the defect was in how the recursive name resolves inside a
+;; lambda, not in for-each or map.
+(define (count-direct n)
+  (let ((total (vector 0)))
+    (let dfs ((c 0))
+      (if (= c n)
+          (vector-set! total 0 (+ 1 (vector-ref total 0)))
+          (begin ((lambda (f) (dfs (+ c 1))) 0)
+                 ((lambda (f) (dfs (+ c 1))) 1))))
+    (vector-ref total 0)))
+
+;; ---------------------------------------------------------------- shape 5
+;; The lambda passes a CONSTANT, never the loop variable, so no captured `c`
+;; is involved on the recursive edge. It diverged as well.
+(define (visit-constant n)
+  (let ((hits (vector 0)))
+    (let dfs ((c 0))
+      (if (>= c n)
+          (vector-set! hits 0 (+ 1 (vector-ref hits 0)))
+          (for-each (lambda (f) (dfs n)) (list 0))))
+    (vector-ref hits 0)))
+
+;; ---------------------------------------------------------------- shape 6
+;; The recursive call sits in a lambda handed to a USER procedure, in
+;; non-tail position -- nothing about the fix may depend on the callee being
+;; a stdlib higher-order builtin.
+(define (call-with-zero f) (f 0))
+
+(define (count-via-helper n)
+  (let ((total (vector 0)))
+    (let dfs ((c 0))
+      (if (= c n)
+          (vector-set! total 0 (+ 1 (vector-ref total 0)))
+          (begin (call-with-zero (lambda (x) (dfs (+ c 1))))
+                 (call-with-zero (lambda (x) (dfs (+ c 1)))))))
+    (vector-ref total 0)))
+
+;; ---------------------------------------------------------------- shape 7
+;; Two lambdas deep: the recursive name is reached from a lambda nested
+;; inside another lambda, so ownership must be decided per function and not
+;; by "is a lambda open".
+(define (count-nested-lambda n)
+  (let ((total (vector 0)))
+    (let dfs ((c 0))
+      (if (= c n)
+          (vector-set! total 0 (+ 1 (vector-ref total 0)))
+          (for-each (lambda (f)
+                      (for-each (lambda (g) (dfs (+ c 1))) (list 0)))
+                    (list 0 1))))
+    (vector-ref total 0)))
+
+;; ---------------------------------------------------------------- shape 8
+;; A MULTI-parameter named let, whose second loop variable carries a value
+;; through the recursion: 2^n leaves each holding w = 2^n.
+(define (weighted-foreach n)
+  (let ((total (vector 0)))
+    (let dfs ((c 0) (w 1))
+      (if (= c n)
+          (vector-set! total 0 (+ (vector-ref total 0) w))
+          (for-each (lambda (f) (dfs (+ c 1) (* w 2))) (list 0 1))))
+    (vector-ref total 0)))
+
+;; ---------------------------------------------------------------- shape 9
+;; VALUE-SENSITIVE: the lambda's own parameter `f` and the loop variable `c`
+;; are both read on the same edge. n=4 gives 2^n - 1 = 15 internal nodes, each
+;; contributing 0 + 1 from the two list elements, plus 2^n = 16 leaves each
+;; contributing 1: 31. A stale `c` cannot reach this number.
+(define (mixed-accumulate n)
+  (let ((acc (vector 0)))
+    (let dfs ((c 0))
+      (if (= c n)
+          (vector-set! acc 0 (+ (vector-ref acc 0) 1))
+          (for-each (lambda (f)
+                      (vector-set! acc 0 (+ (vector-ref acc 0) f))
+                      (dfs (+ c 1)))
+                    (list 0 1))))
+    (vector-ref acc 0)))
+
+;; ------------------------------------------------------------ control 1
+;; The same recursion as a TOP-LEVEL define. This always worked and must keep
+;; the same answer: it is the reference the defect was measured against.
+(define ctl-total (vector 0))
+
+(define (ctl-dfs c n)
+  (if (= c n)
+      (vector-set! ctl-total 0 (+ 1 (vector-ref ctl-total 0)))
+      (for-each (lambda (f) (ctl-dfs (+ c 1) n)) (list 0 1))))
+
+(define (count-toplevel n)
+  (vector-set! ctl-total 0 0)
+  (ctl-dfs 0 n)
+  (vector-ref ctl-total 0))
+
+;; ------------------------------------------------------------ control 2
+;; The inner iteration written as an explicit named-let loop over the list
+;; instead of for-each: no lambda, so the recursive name always resolved.
+(define (count-explicit-loop n)
+  (let ((total (vector 0)))
+    (let dfs ((c 0))
+      (if (= c n)
+          (vector-set! total 0 (+ 1 (vector-ref total 0)))
+          (let try ((fs (list 0 1)))
+            (if (not (null? fs))
+                (begin (dfs (+ c 1)) (try (cdr fs)))))))
+    (vector-ref total 0)))
+
+;; ------------------------------------------------------------ control 3
+;; A plain self-tail-recursive named let with no lambda anywhere: the TCO
+;; back-edge path the fix also guards must be untouched.
+(define (sum-to n)
+  (let loop ((i 0) (acc 0))
+    (if (> i n) acc (loop (+ i 1) (+ acc i)))))
+
+;; ------------------------------------------------------------ control 4
+;; A lambda inside a named let that does NOT call the loop: it must still be
+;; an ordinary closure over the loop variable.
+(define (double-each n)
+  (let loop ((i 0) (out (list)))
+    (if (= i n)
+        (sum-list (map (lambda (x) (* 2 x)) out))
+        (loop (+ i 1) (cons i out)))))
+
+(check "count-foreach"        (count-foreach 4)        16)
+(check "count-map"            (count-map 4)            16)
+(check "count-letrec"         (count-letrec 4)         16)
+(check "count-letrec-star"    (count-letrec-star 4)    16)
+(check "count-direct"         (count-direct 4)         16)
+(check "visit-constant"       (visit-constant 4)        1)
+(check "count-via-helper"     (count-via-helper 4)     16)
+(check "count-nested-lambda"  (count-nested-lambda 4)  16)
+(check "weighted-foreach"     (weighted-foreach 4)    256)
+(check "mixed-accumulate"     (mixed-accumulate 4)     31)
+(check "count-toplevel"       (count-toplevel 4)       16)
+(check "count-explicit-loop"  (count-explicit-loop 4)  16)
+(check "sum-to"               (sum-to 10)              55)
+(check "double-each"          (double-each 5)          20)
+
+;; Depth 6 as well: 64 leaves, so a fix that merely bounded the old runaway
+;; recursion instead of re-entering the loop would not reach the right count.
+(check "count-foreach-deeper" (count-foreach 6)        64)
+(check "count-map-deeper"     (count-map 6)            64)
+
+(if (= failures 0)
+    (begin
+      (display "PASS: local recursive binding re-entered from a nested lambda")
+      (newline))
+    (begin
+      (display "FAIL: ") (display failures)
+      (display " local-recursion checks failed") (newline)
+      (exit 1)))

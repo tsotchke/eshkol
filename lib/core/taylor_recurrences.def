@@ -56,6 +56,8 @@ TAYLOR_UN(abs,  7, "abs",  fabs,     1.5)  /* |u_0|, sign(u_0)*u_k            */
 TAYLOR_UN(sinh, 8, "sinh", sinh,     0.6)  /* (exp(u) - exp(-u))/2            */
 TAYLOR_UN(cosh, 9, "cosh", cosh,     0.6)  /* (exp(u) + exp(-u))/2            */
 TAYLOR_UN(tanh, 10, "tanh", tanh,    0.6)  /* sinh/cosh                       */
+TAYLOR_UN(relu, 11, "relu", relu,    0.6)  /* positive branch; zero at kink */
+TAYLOR_UN(sigmoid, 12, "sigmoid", sigmoid, 0.6) /* 1/(1+exp(-u))             */
 
 #undef TAYLOR_BIN
 #undef TAYLOR_UN

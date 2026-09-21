@@ -70,8 +70,11 @@ Addition, multiplication, min, max are all associative. Subtraction is NOT
 Futures represent asynchronous computations:
 
 ```scheme
+(define (fib n)
+  (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+
 ;; Launch a computation in the background
-(define f (future (lambda () (fib 40))))
+(define f (future (lambda () (fib 30))))
 
 ;; Do other work while f computes...
 (display "Computing in background...")
@@ -87,6 +90,11 @@ Futures are useful when you have independent computations that can
 overlap:
 
 ```scheme
+;; Something slow enough to be worth running in the background
+(define (heavy-compute seed)
+  (let loop ((i 0) (acc seed))
+    (if (= i 1000000) acc (loop (+ i 1) (+ acc 1)))))
+
 ;; Two expensive computations in parallel
 (define f1 (future (lambda () (heavy-compute 1))))
 (define f2 (future (lambda () (heavy-compute 2))))

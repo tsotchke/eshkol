@@ -1,0 +1,60 @@
+id: SW-156
+bucket: SILENT-WRONG
+status: closed
+closed_at: "fix/vm-bignum-rational-reader-printer"
+title: "VM's `/`-syntax rational-literal reader clamped a bignum-magnitude numerator or denominator to atoll()'s overflow result"
+repro: >-
+  `(display 1/123456789012345678901234567890)` on the bytecode VM
+  (`./build/eshkol-vm-standalone-test`), and via `--profile hosted-vm
+  --emit-eskb` then running the compiled `.eskb`.
+observed: >-
+  `1/9223372036854775807` — glibc's `atoll()` silently clamps to
+  `LLONG_MAX`/`LLONG_MIN` on decimal-string overflow rather than raising or
+  reading the true magnitude, and `lib/backend/vm_parser.c`'s rational-literal
+  branch called `atoll()` directly on the numerator and denominator digit
+  text with no overflow check, so a bignum-magnitude half silently became
+  `9223372036854775807` (or `1` for a numerator, when the reduction masked the
+  clamp) with exit 0 and no diagnostic. A bignum-magnitude numerator (e.g.
+  `123456789012345678901234567891/7`) was equally affected.
+correct: >-
+  A `/`-syntax rational literal whose numerator or denominator (or both)
+  overflow int64 reads as the exact reduced fraction it denotes — reduction
+  performed by the same bignum GCD the arithmetic runtime already uses
+  (`vm_rational_alloc_bn`, SW-18), so e.g. `246913578024691357802469135780/2`
+  reduces to the exact bignum integer `123456789012345678901234567890`
+  (collapsing out of the rational box entirely, matching how every other
+  exact-rational producer already canonicalizes a reduced-to-denominator-1
+  result). Native (`lib/frontend/parser.cpp` + `lib/core/rational.cpp`)
+  already read this correctly; this closes the VM's independent gap.
+fixed_by: >-
+  `lib/backend/vm_parser.c`'s rational-literal branch now captures the
+  numerator and denominator into growable buffers (no fixed-size cap) and
+  classifies each half independently via the new `make_int_or_bignum_node()`
+  helper shared with SW-155's plain-integer path — int64 when it fits, else
+  an `is_bignum` node carrying the exact digit text. The `(exact-rational num
+  denom)` desugar (`OP_NATIVE_CALL 330` in `vm_native.c`) previously computed
+  `vm_rational_make(arena, (int64_t)as_number(num), (int64_t)as_number(denom))`
+  — `as_number()` only recognizes `VAL_INT`/`VAL_FLOAT`/`VAL_CHAR` and reads a
+  `VAL_BIGNUM` operand (what a bignum half now compiles to) as `0.0`, so this
+  path would have silently clamped the bignum half to 0. Native call 330 now
+  detects a `VAL_BIGNUM` operand and builds the exact rational via
+  `vm_rational_alloc_bn` (the same reduce/demote path the runtime's
+  add/sub/mul/div already funnel bignum-carrying exact operands through,
+  SW-18) instead of the int64-only `vm_rational_make`, and pushes the result
+  through the shared `vm_push_rational_norm()` canonicalizer — the same one
+  every other exact-rational producer already uses — so a numerator/
+  denominator pair that reduces to an integer collapses out of the rational
+  box exactly as it does everywhere else, rather than staying a
+  `<bignum>/1` rational.
+evidence: >-
+  `tests/vm/bignum_rational_literals_test.esk` (ctest
+  `bignum_rational_literals_vm_smoke`) — the bignum-denominator,
+  bignum-numerator, bignum/bignum-reduces-to-integer and negative-
+  bignum-denominator checks all pass on the VM and on native (20/20 both).
+  `tests/vm_parity/corpus/79_bignum_rational_literals.esk` matches
+  byte-for-byte across native `-r`, VM source and VM ESKB via `scripts/
+  run_vm_parity.sh`. The task's exact repro line,
+  `(display 1/123456789012345678901234567890)`, now prints the exact
+  literal on the VM, matching native.
+caught_by: [task-assigned-repro]
+missed_by: [vm-parity-ratchet, prior-exact-arithmetic-audit]

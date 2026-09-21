@@ -1,0 +1,89 @@
+<h1 id="project-build-a-calculator-in-eshkol">Project: Build a Calculator in Eshkol</h1>
+<p>A complete interpreter for arithmetic expressions, demonstrating homoiconicity — in Eshkol, code IS data, so building an interpreter is natural.</p>
+<hr />
+<h2 id="the-complete-program">The Complete Program</h2>
+<pre class="scheme"><code>;; ═══════════════════════════════════════════════════════
+;; S-Expression Calculator
+;; Evaluates arithmetic expressions written as Scheme lists
+;; ═══════════════════════════════════════════════════════
+
+(require core.list.higher_order)
+
+;; --- The evaluator ---
+;; Evaluate an s-expression as arithmetic
+(define (calc expr)
+  (cond
+    ;; Numbers evaluate to themselves
+    ((number? expr) expr)
+
+    ;; Lists are function applications
+    ((pair? expr)
+     (let ((op (car expr))
+           (args (map calc (cdr expr))))
+       (cond
+         ((eq? op &#39;+) (fold-left + 0 args))
+         ((eq? op &#39;-) (if (null? (cdr args))
+                         (- 0 (car args))
+                         (fold-left - (car args) (cdr args))))
+         ((eq? op &#39;*) (fold-left * 1 args))
+         ((eq? op &#39;/) (fold-left / (car args) (cdr args)))
+         ((eq? op &#39;sqrt) (sqrt (car args)))
+         ((eq? op &#39;expt) (expt (car args) (cadr args)))
+         ((eq? op &#39;abs) (abs (car args)))
+         (else (begin (display &quot;Unknown operator: &quot;)
+                      (display op) (newline) 0)))))
+
+    ;; Anything else is an error
+    (else (begin (display &quot;Invalid expression: &quot;)
+                 (display expr) (newline) 0))))
+
+;; --- Test it ---
+(display &quot;=== S-Expression Calculator ===&quot;) (newline)
+
+(display &quot;(+ 1 2 3) = &quot;)
+(display (calc &#39;(+ 1 2 3)))
+(newline)
+
+(display &quot;(* 6 7) = &quot;)
+(display (calc &#39;(* 6 7)))
+(newline)
+
+(display &quot;(- 100 (+ 20 30)) = &quot;)
+(display (calc &#39;(- 100 (+ 20 30))))
+(newline)
+
+(display &quot;(/ (* 3 4) 2) = &quot;)
+(display (calc &#39;(/ (* 3 4) 2)))
+(newline)
+
+(display &quot;(sqrt (+ (* 3 3) (* 4 4))) = &quot;)
+(display (calc &#39;(sqrt (+ (* 3 3) (* 4 4)))))
+(newline)
+
+(display &quot;(expt 2 10) = &quot;)
+(display (calc &#39;(expt 2 10)))
+(newline)
+
+;; Homoiconicity: the calculator evaluates quoted Scheme as data.
+;; The expression &#39;(+ 1 2) is a LIST that we traverse and compute.
+;; This is the same list that Eshkol&#39;s own compiler works with.
+(display &quot;Homoiconicity: code = data&quot;) (newline)</code></pre>
+<hr />
+<h2 id="expected-output">Expected Output</h2>
+<!-- doc-example: output stdout: what the program above prints -->
+<pre><code>=== S-Expression Calculator ===
+(+ 1 2 3) = 6
+(* 6 7) = 42
+(- 100 (+ 20 30)) = 50
+(/ (* 3 4) 2) = 6
+(sqrt (+ (* 3 3) (* 4 4))) = 5.0
+(expt 2 10) = 1024
+Homoiconicity: code = data</code></pre>
+<hr />
+<h2 id="key-concepts">Key Concepts</h2>
+<ol type="1">
+<li><p><strong>Homoiconicity</strong> — Eshkol code and Eshkol data have the same structure (s-expressions). A quoted expression <code>'(+ 1 2)</code> is a list you can traverse with <code>car</code>/<code>cdr</code> — AND valid Eshkol code.</p></li>
+<li><p><strong>Recursive evaluation</strong> — <code>calc</code> calls itself on sub-expressions, building up results from leaves to root. This is exactly how a real interpreter works.</p></li>
+<li><p><strong>Pattern dispatch</strong> — <code>cond</code> with type predicates (<code>number?</code>, <code>pair?</code>) dispatches on the structure of the input.</p></li>
+<li><p><strong>Variadic arithmetic</strong> — <code>(+ 1 2 3)</code> handles any number of arguments via <code>fold-left</code>.</p></li>
+</ol>

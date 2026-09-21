@@ -1,0 +1,71 @@
+;;; vm.tensor_slot_store -- the VM half of the ADR-0016 slot store boundary.
+;;;
+;;; A tensor slot holds a real number. The VM's tensor writers -- vector-set!
+;;; on a tensor operand and both tensor-set! forms -- convert a real number of
+;;; any exactness to the slot's double and refuse a value with no real-number
+;;; representation. Before the fix vector-set! on a tensor stored 0 for an exact
+;;; rational, and every writer stored 0 for a string or a boolean without a
+;;; diagnostic.
+
+(define pass 0)
+(define fail 0)
+(define (check nm ok)
+  (if ok
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display nm) (newline))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display nm) (newline))))
+(define (refused? thunk) (eq? (guard (e (#t 'refused)) (thunk) 'stored) 'refused))
+(define big 123456789012345678901234567890)
+
+(define t (tensor 1.0 2.0 3.0))
+(vector-set! t 0 5)
+(check "vector-set! integer into a tensor" (= (tensor-ref t 0) 5))
+(vector-set! t 1 1/2)
+(check "vector-set! rational into a tensor is 0.5" (= (tensor-ref t 1) 0.5))
+(vector-set! t 2 big)
+(check "vector-set! bignum into a tensor is its nearest double"
+       (= (tensor-ref t 2) 1.2345678901234568e29))
+(vector-set! t 2 2.5)
+(check "vector-set! double into a tensor" (= (tensor-ref t 2) 2.5))
+(check "vector-set! string into a tensor is refused"
+       (refused? (lambda () (vector-set! t 0 "x"))))
+(check "vector-set! boolean into a tensor is refused"
+       (refused? (lambda () (vector-set! t 0 #t))))
+(check "vector-set! character into a tensor is refused"
+       (refused? (lambda () (vector-set! t 0 #\a))))
+(check "vector-set! symbol into a tensor is refused"
+       (refused? (lambda () (vector-set! t 0 'sym))))
+(check "vector-set! pair into a tensor is refused"
+       (refused? (lambda () (vector-set! t 0 (list 1 2)))))
+(check "vector-set! vector into a tensor is refused"
+       (refused? (lambda () (vector-set! t 0 (vector 1 2)))))
+(check "refused stores left slot 0 at 5" (= (tensor-ref t 0) 5))
+(check "vector-set! out of range is refused"
+       (refused? (lambda () (vector-set! t 3 1))))
+
+(tensor-set! t 0 9)
+(check "tensor-set! integer" (= (tensor-ref t 0) 9))
+(tensor-set! t 1 1/4)
+(check "tensor-set! rational is 0.25" (= (tensor-ref t 1) 0.25))
+(check "tensor-set! string is refused" (refused? (lambda () (tensor-set! t 0 "x"))))
+(check "tensor-set! boolean is refused" (refused? (lambda () (tensor-set! t 0 #f))))
+(check "refused tensor-set! left slot 0 at 9" (= (tensor-ref t 0) 9))
+
+(define m (tensor-reshape (tensor 1.0 2.0 3.0 4.0) (list 2 2)))
+(tensor-set! m 1 0 7)
+(check "tensor-set! rank-2 integer" (= (tensor-ref m 1 0) 7))
+(check "tensor-set! rank-2 string is refused"
+       (refused? (lambda () (tensor-set! m 1 0 "x"))))
+(check "refused rank-2 store left the slot at 7" (= (tensor-ref m 1 0) 7))
+
+;; a Scheme vector slot keeps every kind unchanged
+(define s (vector 10 20 30))
+(vector-set! s 0 "str")
+(check "string into a vector" (equal? (vector-ref s 0) "str"))
+(vector-set! s 1 1/2)
+(check "rational into a vector stays exact" (and (exact? (vector-ref s 1)) (= (vector-ref s 1) 1/2)))
+(vector-set! s 2 #t)
+(check "boolean into a vector" (eq? (vector-ref s 2) #t))
+
+(newline)
+(display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)

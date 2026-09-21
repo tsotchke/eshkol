@@ -896,48 +896,46 @@ static int run_source_tests(void) {
         "(display (guard (e (#t 'caught)) (diff '(* x x) 'x) 'no))", "caught");
     source_test_expect("derivative-non-callable-raises",
         "(display (guard (e (#t 'caught)) (derivative 5 1.0) 'no))", "caught");
-    source_test_expect("i128-add-raises",
+    /* Generic arithmetic now deliberately dispatches i128 operands to the
+     * fixed-width kernel. Keep every opcode on that path pinned here: a
+     * numeric coercion fallback would otherwise silently turn boxed i128
+     * values into 0.0. */
+    source_test_expect("i128-add-generic",
         "(define a (i128 5)) (define b (i128 7))"
-        "(display (guard (e (#t 'caught)) (+ a b) 'no))", "caught");
-
-    /* SW-09b: the i128-misread bug shape is not unique to `+` — every
-     * arithmetic/comparison opcode that falls through to as_number_vm()
-     * (both the threaded lbl_* and switch-based OP_* dispatch loops in
-     * lib/backend/vm_run.c) has the identical defect. Pin the whole family:
-     * -, *, /, modulo, unary -, abs, =, <, >, <=, >=. */
-    source_test_expect("i128-sub-raises",
+        "(display (+ a b))", "12");
+    source_test_expect("i128-sub-generic",
         "(define a (i128 5)) (define b (i128 7))"
-        "(display (guard (e (#t 'caught)) (- a b) 'no))", "caught");
-    source_test_expect("i128-mul-raises",
+        "(display (- a b))", "-2");
+    source_test_expect("i128-mul-generic",
         "(define a (i128 5)) (define b (i128 7))"
-        "(display (guard (e (#t 'caught)) (* a b) 'no))", "caught");
-    source_test_expect("i128-div-raises",
+        "(display (* a b))", "35");
+    source_test_expect("i128-div-generic",
         "(define a (i128 5)) (define b (i128 7))"
-        "(display (guard (e (#t 'caught)) (/ a b) 'no))", "caught");
-    source_test_expect("i128-modulo-raises",
+        "(display (/ a b))", "0");
+    source_test_expect("i128-modulo-generic",
         "(define a (i128 5)) (define b (i128 7))"
-        "(display (guard (e (#t 'caught)) (modulo a b) 'no))", "caught");
-    source_test_expect("i128-neg-raises",
+        "(display (modulo a b))", "5");
+    source_test_expect("i128-neg-generic",
         "(define a (i128 5))"
-        "(display (guard (e (#t 'caught)) (- a) 'no))", "caught");
-    source_test_expect("i128-abs-raises",
+        "(display (- a))", "-5");
+    source_test_expect("i128-abs-generic",
         "(define a (i128 5))"
-        "(display (guard (e (#t 'caught)) (abs a) 'no))", "caught");
-    source_test_expect("i128-eq-raises",
+        "(display (abs a))", "5");
+    source_test_expect("i128-eq-generic",
         "(define a (i128 5)) (define b (i128 7))"
-        "(display (guard (e (#t 'caught)) (= a b) 'no))", "caught");
-    source_test_expect("i128-lt-raises",
+        "(display (= a b))", "#f");
+    source_test_expect("i128-lt-generic",
         "(define a (i128 5)) (define b (i128 7))"
-        "(display (guard (e (#t 'caught)) (< a b) 'no))", "caught");
-    source_test_expect("i128-gt-raises",
+        "(display (< a b))", "#t");
+    source_test_expect("i128-gt-generic",
         "(define a (i128 5)) (define b (i128 7))"
-        "(display (guard (e (#t 'caught)) (> a b) 'no))", "caught");
-    source_test_expect("i128-le-raises",
+        "(display (> a b))", "#f");
+    source_test_expect("i128-le-generic",
         "(define a (i128 5)) (define b (i128 7))"
-        "(display (guard (e (#t 'caught)) (<= a b) 'no))", "caught");
-    source_test_expect("i128-ge-raises",
+        "(display (<= a b))", "#t");
+    source_test_expect("i128-ge-generic",
         "(define a (i128 5)) (define b (i128 7))"
-        "(display (guard (e (#t 'caught)) (>= a b) 'no))", "caught");
+        "(display (>= a b))", "#f");
 
     printf("\n  Source tests: %d/%d passed\n", source_test_pass, source_test_count);
     return source_test_count - source_test_pass;

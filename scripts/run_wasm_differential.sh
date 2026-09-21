@@ -75,6 +75,9 @@ REPO_ROOT="$(pwd)"
 if eshkol_durable_enabled; then
     WASM_DIFF_WORK="$(eshkol_durable_prepare_dir wasm-differential)" || exit $?
     TRACE_DIR="${TRACE_DIR:-$WASM_DIFF_WORK/traces}"
+    # Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+    . "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+    eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 else
     TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 fi
@@ -100,14 +103,18 @@ WASM_DIFF_DIR="${WASM_DIFF_DIR:-$BUILD_DIR/wasm-diff}"
 WASM_MODULE="$WASM_DIFF_DIR/eshkol-vm-diff.js"
 RUNNER_JS="$REPO_ROOT/scripts/lib/wasm_diff_runner.js"
 VM_WASM_SRC="$REPO_ROOT/lib/backend/vm_wasm_repl.c"
-# The VM is a C unity build, but the Unicode classifier is a separate C++
-# translation unit.  Keep every source that belongs to this link in one list:
+# The VM is a C unity build, but shared runtime dependencies are separate
+# translation units. Keep every source that belongs to this link in one list:
 # otherwise the C header declaration is visible while the WASM link silently
-# supplies an aborting unresolved-symbol stub.
-WASM_VM_SOURCES=(
-    "$VM_WASM_SRC"
-    "$REPO_ROOT/lib/core/unicode.cpp"
-)
+# supplies an aborting unresolved-symbol stub.  That list is shared with
+# scripts/build-wasm-repl.sh (the shipped browser bundle) so this lane cannot
+# be testing a different link surface from the one users load.
+# shellcheck source=./scripts/lib/wasm_vm_sources.sh
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/wasm_vm_sources.sh"
+# shellcheck source=./scripts/lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
+WASM_VM_SOURCES=("${ESHKOL_WASM_VM_SOURCES[@]}")
 # Per-file overrides for the supported subset (documented exclusions + xfails).
 MANIFEST="$REPO_ROOT/tests/wasm_diff/EXCLUSIONS.tsv"
 
@@ -183,11 +190,15 @@ normalize() { # infile outfile
         print' "$1" | tr -d '\n' > "$2"
 }
 
-# A wasm run is "clean" iff the runner did not trap/abort and emitted no
-# fatal VM markers on stderr.  (The VM exits 0 even on fatal errors, so
-# markers — not exit codes — are the failure signal, same as vm-parity.)
-wasm_run_clean() { # errfile rc
-    [ "$2" -eq 0 ] || return 1
+# A wasm run is "clean" iff its return code matches the reference the caller
+# passes in (native's $?, i.e. exactly what a program's own `(exit N)` — 0
+# included — set), and the runner emitted no trap/abort markers on stderr.
+# (A VM runtime error that does NOT call exit still returns 0 from
+# run_program with fatal markers on stderr, so markers remain load-bearing
+# alongside the code — same as vm-parity — while the code comparison is what
+# makes an explicit `(exit N)` on both engines actually compare as equal.)
+wasm_run_clean() { # errfile rc expected_rc
+    [ "$2" -eq "$3" ] || return 1
     ! grep -qE "WASM-RUNNER-EXCEPTION|WASM-RUNNER-ABORT|WASM-RUNNER-FATAL|ERROR|OVERFLOW|unhandled native call|Assertion|abort" "$1"
 }
 # ── prerequisites ────────────────────────────────────────────────────────
@@ -211,7 +222,7 @@ if ! command -v emcc >/dev/null 2>&1; then
     exit 77
 fi
 NODE_BIN="${NODE:-node}"
-if ! command -v "$NODE_BIN" >/dev/null 2>&1; then
+if ! eshkol_command_available "$NODE_BIN"; then
     echo "run_wasm_differential.sh: SKIP — node not found on PATH." >&2
     emit_event "wasm_parity_gate" "SKIP" "node unavailable — WASM diff lane not exercised"
     exit 77
@@ -252,13 +263,20 @@ if [ "$need_build" -eq 1 ]; then
     # (e.g. tests/vm_parity/corpus/31_tensor_matmul.esk traps "out of bounds"
     # at 64KB, passes at 8MB) — a build limit, NOT a codegen divergence, so we
     # provision to parity rather than mask it in normalization.
-    if ! emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVMDiff' \
+    # -ffp-contract=off mirrors the project-wide setting in CMakeLists.txt: the
+    # native build must not fuse `a*b + c` into a singly-rounded multiply-add
+    # that WebAssembly (which has no scalar f64 FMA instruction) cannot
+    # reproduce, and this side states the same rule explicitly instead of
+    # relying on the wasm backend's inability to contract.  Without it the
+    # forward-dual quotient rule in the layer-norm AD kernel diverged by one
+    # ulp from native (551_tensor_transformer_dual.esk).
+    if ! emcc -O2 -ffp-contract=off -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVMDiff' \
             -s ENVIRONMENT=node -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
-            -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
-            -s EXPORTED_FUNCTIONS='["_run_program","_fflush","_malloc","_free"]' \
+            -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS"]' \
+            -s EXPORTED_FUNCTIONS='["_run_program","_repl_init","_repl_reset","_repl_eval","_eshkol_tensor_shape_total","_fflush","_malloc","_free"]' \
             -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=67108864 -s STACK_SIZE=8388608 \
-            -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
-            -I"$REPO_ROOT/inc" -I"$REPO_ROOT/lib/backend" "${WASM_VM_SOURCES[@]}" \
+            -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM -DESHKOL_VM_TEST_MODULES \
+            -I"$REPO_ROOT/inc" -I"$BUILD_DIR/generated" -I"$REPO_ROOT/lib/backend" "${WASM_VM_SOURCES[@]}" \
             -o "$WASM_MODULE" -lm 2> "$WASM_DIFF_DIR/emcc.log"; then
         echo "run_wasm_differential.sh: emcc build FAILED:" >&2
         tail -20 "$WASM_DIFF_DIR/emcc.log" >&2
@@ -365,16 +383,17 @@ diff_one() {
     local wrc=$?
     normalize "$d/wasm.raw" "$d/wasm.out"
 
-    if ! wasm_run_clean "$d/wasm.err" "$wrc"; then
+    if ! wasm_run_clean "$d/wasm.err" "$wrc" "$nrc"; then
         if [ "$mclass" = "XFAIL" ]; then
             # Known WASM bug that manifests as a trap/error — expected.
             report_xfail "$nodeid::wasm-vs-native" "wasm_${base}" \
                 "known WASM bug (errored as expected): $mreason"
         else
-            # A supported program the WASM VM could not execute cleanly is a
-            # real WASM failure — surface it, do not mask it.
+            # A supported program the WASM VM could not execute cleanly, or
+            # whose exit code diverged from native's (rc=$wrc vs native
+            # rc=$nrc), is a real WASM failure — surface it, do not mask it.
             report FAIL "$nodeid::wasm-vs-native" "wasm_${base}" \
-                "WASM run failed (rc=$wrc): $(head -c 180 "$d/wasm.err")"
+                "WASM run failed (rc=$wrc, native rc=$nrc): $(head -c 180 "$d/wasm.err")"
         fi
         return
     fi
@@ -410,6 +429,58 @@ fi
 for f in "${corpus_files[@]}"; do
     diff_one "$f" "tests/vm_parity/corpus" 1
 done
+
+# ── browser-REPL transcript gate (the `repl_eval` surface) ───────────────
+# The sweep above drives `run_program`, the BATCH entry point.  The website's
+# REPL and every runnable docs code block call `repl_eval` instead, and that
+# surface had NO gate at all — which is how the REPL's auto-print came to lose
+# its line terminator while every batch check stayed green.  Assert it here,
+# through a `print` callback shaped exactly like the site's, so "the answer
+# never becomes a complete line" fails as loudly as a wrong answer.
+echo
+echo "== WASM browser-REPL transcript (repl_eval, tests/wasm_diff/REPL_TRANSCRIPT.tsv) =="
+REPL_CASES="$REPO_ROOT/tests/wasm_diff/REPL_TRANSCRIPT.tsv"
+REPL_RUNNER="$REPO_ROOT/scripts/lib/wasm_repl_runner.js"
+if [ ! -f "$REPL_CASES" ] || [ ! -f "$REPL_RUNNER" ]; then
+    report FAIL "tests/wasm_diff/REPL_TRANSCRIPT.tsv::repl-transcript" "wasm_repl_transcript" \
+        "missing $REPL_CASES or $REPL_RUNNER"
+else
+    repl_work="$WORK/repl-transcript"; mkdir -p "$repl_work"
+    grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$REPL_CASES" > "$repl_work/cases.tsv"
+    run_guarded "$TIMEOUT_RUN" "$NODE_BIN" "$REPL_RUNNER" "$WASM_MODULE" "$repl_work/cases.tsv" \
+        >"$repl_work/got.tsv" 2>"$repl_work/err.txt"
+    repl_rc=$?
+    if [ "$repl_rc" -ne 0 ]; then
+        report FAIL "tests/wasm_diff/REPL_TRANSCRIPT.tsv::repl-transcript" "wasm_repl_transcript" \
+            "repl runner failed (rc=$repl_rc): $(head -c 200 "$repl_work/err.txt")"
+    else
+        idx=0
+        # Split on TAB by hand: TAB is an IFS *whitespace* character, so
+        # `IFS=$'\t' read` collapses a run of them and an EMPTY expected
+        # transcript — precisely the rows that matter here — would silently
+        # take the note column's text as its expectation.
+        while IFS= read -r line; do
+            expr="${line%%$'\t'*}"
+            rest="${line#*$'\t'}"
+            want="${rest%%$'\t'*}"
+            note="${rest#*$'\t'}"
+            got="$(awk -F'\t' -v i="$idx" '$1=="GOT" && $2==i {print $3; exit}' "$repl_work/got.tsv")"
+            stray="$(awk -F'\t' -v i="$idx" '$1=="ERR" && $2==i {print $3; exit}' "$repl_work/got.tsv")"
+            nodeid="tests/wasm_diff/REPL_TRANSCRIPT.tsv::$expr"
+            if [ -n "$stray" ]; then
+                report FAIL "$nodeid" "wasm_repl_$idx" \
+                    "VM wrote to stderr: $stray"
+            elif [ "$got" = "$want" ]; then
+                report PASS "$nodeid" "wasm_repl_$idx" \
+                    "page received <$got> — $note"
+            else
+                report FAIL "$nodeid" "wasm_repl_$idx" \
+                    "transcript diverges: want=<$want> got=<$got> ($note)"
+            fi
+            idx=$((idx+1))
+        done < "$repl_work/cases.tsv"
+    fi
+fi
 
 # ── extended sweep: tests/differential/corpus (READ-ONLY; nightly) ────────
 if [ "$DO_FULL" -eq 1 ]; then

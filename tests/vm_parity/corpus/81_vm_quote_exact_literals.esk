@@ -1,0 +1,26 @@
+; SW-168: quoted and quasiquoted rational and bignum literals must read and
+; print identically between native and the VM. The VM's own compile_quote()
+; (lib/backend/vm_parser.c) had no case for its own rational-literal desugar
+; (exact-rational num denom, generated for `1/3` syntax) and fell through to
+; the generic quoted-list path, so `'1/3` quoted to a 3-element list instead
+; of the rational value; compile_quasiquote()'s (lib/backend/vm_compiler.c)
+; numeric-atom arm ignored the is_bignum flag, so a quasiquoted bignum atom
+; lost its exactness. Both already correct on native since SW-163 (#645).
+(display (exact? '1/3)) (newline)
+(display (number->string '1/3)) (newline)
+(display '1/3) (newline)
+(display (exact? '123456789012345678901234567890)) (newline)
+(display (number->string '123456789012345678901234567890)) (newline)
+(display '123456789012345678901234567890) (newline)
+(display (car '(1/3 123456789012345678901234567890 . 2/7))) (newline)
+(display (car (cdr '(1/3 123456789012345678901234567890 . 2/7)))) (newline)
+(display (cdr (cdr '(1/3 123456789012345678901234567890 . 2/7)))) (newline)
+(define x 42)
+(display `(a ,x 1/3 123456789012345678901234567890)) (newline)
+(display (exact? (caddr `(a ,x 1/3 123456789012345678901234567890)))) (newline)
+(display (vector-ref (vector '1/3 '123456789012345678901234567890) 0)) (newline)
+(display (vector-ref (vector '1/3 '123456789012345678901234567890) 1)) (newline)
+(display (equal? '1/3 (/ 1 3))) (newline)
+(display (equal? '123456789012345678901234567890 123456789012345678901234567890)) (newline)
+(display (exact? '3.14)) (newline)
+(display (symbol? '|1/3|)) (newline)

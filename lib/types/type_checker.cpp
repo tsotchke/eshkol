@@ -4,6 +4,8 @@
  */
 
 #include "eshkol/types/type_checker.h"
+#include <eshkol/frontend/ast_strings.h>
+#include "eshkol/types/type_relation.h"
 #include "../../lib/core/arena_memory.h"
 #include <cstdio>
 #include <sstream>
@@ -86,6 +88,17 @@ std::optional<TypeId> Context::lookup(const std::string& name) const {
         if (found != it->end()) {
             return found->second;
         }
+    }
+    return std::nullopt;
+}
+
+/**
+ * @brief Index (0 = global) of the innermost scope binding @p name — the
+ * binding lookup() resolves to — or std::nullopt if @p name is unbound.
+ */
+std::optional<size_t> Context::bindingScopeOf(const std::string& name) const {
+    for (size_t i = scopes_.size(); i-- > 0;) {
+        if (scopes_[i].count(name)) return i;
     }
     return std::nullopt;
 }
@@ -186,7 +199,7 @@ static hott_type_expr_t* substituteTypeVars(
     switch (type_expr->kind) {
         case HOTT_TYPE_VAR:
             // Already handled above, but needed for completeness
-            result->var_name = type_expr->var_name ? strdup(type_expr->var_name) : nullptr;
+            result->var_name = type_expr->var_name ? eshkol_ast_strdup(type_expr->var_name) : nullptr;
             break;
 
         case HOTT_TYPE_ARROW:
@@ -211,7 +224,7 @@ static hott_type_expr_t* substituteTypeVars(
                 // Create a modified substitution map excluding bound variables
                 std::map<std::string, hott_type_expr_t*> inner_subst = substitutions;
                 for (uint64_t i = 0; i < type_expr->forall.num_vars; i++) {
-                    result->forall.type_vars[i] = strdup(type_expr->forall.type_vars[i]);
+                    result->forall.type_vars[i] = eshkol_ast_strdup(type_expr->forall.type_vars[i]);
                     inner_subst.erase(type_expr->forall.type_vars[i]);
                 }
                 result->forall.num_vars = type_expr->forall.num_vars;
@@ -952,17 +965,28 @@ static void bindKnownRequireExports(Context& ctx,
  *
  * Dispatches on @p expr's AST node kind to the appropriate synthesize*
  * helper (literals/symbols to synthesizeLiteral(), variable references to
- * synthesizeVariable(), operation forms to synthesizeOperation(), lambdas to
- * synthesizeLambda(), and cons cells trivially to BuiltinTypes::List). On
+ * synthesizeVariable(), operation forms to synthesizeOperationTask(), lambdas to
+ * synthesizeLambdaTask(), and cons cells trivially to BuiltinTypes::List). On
  * success, stores the inferred type into @p expr->inferred_hott_type via
  * storeAndReturn().
  * @return A successful TypeCheckResult carrying the inferred type, or a
  * failing result (e.g. null expression, or an AST node kind with no
  * synthesis rule).
  */
+// Public callers remain synchronous. Recursive checking/synthesis rules await
+// one another on the same explicit continuation stack used by the parser;
+// scopes, linear-use state and argument results survive each suspension.
 TypeCheckResult TypeChecker::synthesize(eshkol_ast_t* expr) {
+    return synthesizeTask(expr).run();
+}
+
+TypeCheckResult TypeChecker::check(eshkol_ast_t* expr, TypeId expected) {
+    return checkTask(expr, expected).run();
+}
+
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeTask(eshkol_ast_t* expr) {
     if (!expr) {
-        return TypeCheckResult::error("Null expression");
+        co_return TypeCheckResult::error("Null expression");
     }
 
     TypeCheckResult result;
@@ -983,11 +1007,11 @@ TypeCheckResult TypeChecker::synthesize(eshkol_ast_t* expr) {
             break;
 
         case ESHKOL_OP:
-            result = synthesizeOperation(expr);
+            result = (co_await synthesizeOperationTask(expr));
             break;
 
         case ESHKOL_FUNC:
-            result = synthesizeLambda(expr);
+            result = (co_await synthesizeLambdaTask(expr));
             break;
 
         case ESHKOL_CONS:
@@ -996,49 +1020,51 @@ TypeCheckResult TypeChecker::synthesize(eshkol_ast_t* expr) {
             break;
 
         default:
-            return TypeCheckResult::error("Cannot synthesize type for this expression");
+            co_return TypeCheckResult::error("Cannot synthesize type for this expression");
     }
 
-    return storeAndReturn(expr, result, &env_);
+    co_return storeAndReturn(expr, result, &env_);
 }
 
 /**
  * @brief Checking-mode entry point: verify @p expr has the expected type, top-down (Γ ⊢ e ⇐ τ).
  *
- * Lambdas get a dedicated checking rule (checkLambda()) so their parameter
+ * Lambdas get a dedicated checking rule (checkLambdaTask()) so their parameter
  * types can be inferred from @p expected rather than requiring annotations.
  * All other expression kinds fall back to synthesizing @p expr's type and
- * verifying it is a subtype of @p expected via TypeEnvironment::isSubtype().
+ * verifying it is consistent with @p expected via
+ * TypeRelation::isConsistentSubtype(): a Value expression is accepted, a
+ * concrete type must be a subtype.
  * @param expr The expression to check.
  * @param expected The type @p expr is expected to have.
  * @return TypeCheckResult::ok(expected) on success; a type-mismatch error
  * (also recorded via addTypeMismatch()) if synthesis succeeds but the
- * inferred type is not a subtype of @p expected; or the failing result from
+ * inferred type is not consistent with @p expected; or the failing result from
  * synthesis if that fails first.
  */
-TypeCheckResult TypeChecker::check(eshkol_ast_t* expr, TypeId expected) {
+ContinuationTask<TypeCheckResult> TypeChecker::checkTask(eshkol_ast_t* expr, TypeId expected) {
     if (!expr) {
-        return TypeCheckResult::error("Null expression");
+        co_return TypeCheckResult::error("Null expression");
     }
 
     // Special case: lambda can infer param types from expected
     if (expr->type == ESHKOL_OP &&
         expr->operation.op == ESHKOL_LAMBDA_OP) {
-        return checkLambda(expr, expected);
+        co_return (co_await checkLambdaTask(expr, expected));
     }
 
     // General case: synthesize then check subtyping
-    auto result = synthesize(expr);
+    auto result = (co_await synthesizeTask(expr));
     if (!result.success) {
-        return result;
+        co_return result;
     }
 
-    if (env_.isSubtype(result.inferred_type, expected)) {
-        return TypeCheckResult::ok(expected);
+    if (TypeRelation(env_).isConsistentSubtype(result.inferred_type, expected)) {
+        co_return TypeCheckResult::ok(expected);
     }
 
     addTypeMismatch(expected, result.inferred_type, expr->line, expr->column);
-    return errorAt(expr,
+    co_return errorAt(expr,
         "Type mismatch: expected " + env_.getTypeName(expected) +
         ", got " + env_.getTypeName(result.inferred_type));
 }
@@ -1105,6 +1131,7 @@ TypeCheckResult TypeChecker::synthesizeVariable(eshkol_ast_t* expr) {
 
     std::string name = expr->variable.id;
     auto type = ctx_.lookup(name);
+    if (type && !loop_frames_.empty()) noteRecursiveUse(name, *type);
     if (!type) {
         // Check if it's a builtin arithmetic operator (used as first-class value)
         // These are valid but not in the type context when used as values
@@ -1142,52 +1169,75 @@ TypeCheckResult TypeChecker::synthesizeVariable(eshkol_ast_t* expr) {
 }
 
 /**
+ * @brief True for the primitive operations the parser lays out as a call_op
+ * whose variables[] are ordinary argument expressions and whose func is null:
+ * the logic, inference, workspace, DNC and SDNC primitives and make-parameter.
+ * Mirrors the parser's own test for that layout.
+ */
+static bool hasCallLayoutOperands(eshkol_op_t op) {
+    return (op >= ESHKOL_UNIFY_OP && op <= ESHKOL_WORKSPACE_PRED_OP) ||
+           op == ESHKOL_KB_QUERY_PREFIX_OP ||
+           (op >= ESHKOL_DNC_MAKE_OP && op <= ESHKOL_SDNC_PRED_OP) ||
+           op == ESHKOL_MAKE_PARAMETER_OP;
+}
+
+/**
  * @brief Synthesis rule for ESHKOL_OP nodes: dispatches on the operation kind
  * (expr->operation.op) to the appropriate typing rule.
  *
  * Delegates the structurally interesting forms to dedicated helpers:
- * `define` to synthesizeDefine(), `let`/`let*`/`letrec`/`letrec*` to
- * synthesizeLet(), `if` to synthesizeIf(), `lambda`/`case-lambda` to
- * synthesizeLambda(), and function calls to synthesizeApplication().
+ * `define` to synthesizeDefineTask(), `let`/`let*`/`letrec`/`letrec*` to
+ * synthesizeLetTask(), `if` to synthesizeIfTask(), `lambda`/`case-lambda` to
+ * synthesizeLambdaTask(), and function calls to synthesizeApplicationTask().
  * `define-type` is handled inline: it registers the named (possibly
  * parameterized) type alias into the context via Context::defineTypeAlias()
  * and synthesizes BuiltinTypes::Null. `require` binds the known exported
  * procedures of imported stdlib modules via bindKnownRequireExports() and
- * also synthesizes Null. Arithmetic (+, -, *, /) synthesizes its first two
- * operands and returns their arithmetic-promoted type via
- * TypeEnvironment::promoteForArithmetic(); `begin`/sequence returns the type
- * of its last sub-expression (or Null if empty). All remaining operation
- * kinds (tensors, booleans, predicates, control flow, continuations,
- * multiple values, quoting, logic/consciousness/DNC constructors, memory
- * management, extern declarations, macro/syntax forms, and the catch-all
- * default) synthesize a fixed builtin type — mostly BuiltinTypes::Value for
- * forms whose precise result type is branch- or runtime-dependent, Boolean
- * for predicates and and/or, and Function for calculus operators
- * (diff/gradient/jacobian/etc).
+ * also synthesizes Null. Arithmetic (+, -, *, /) synthesizes every operand
+ * and returns the arithmetic-promoted type of the first two via
+ * TypeEnvironment::promoteForArithmetic(); `begin`/sequence synthesizes every
+ * sub-expression and returns the type of the last (or Null if empty). The
+ * control and binding forms (cond, case, match, when, unless, do, guard,
+ * and/or, let-values) have dedicated rules below synthesizeIfTask(). Every
+ * other form whose subexpressions are evaluated (set!, raise, call/cc,
+ * dynamic-wind, values, call-with-values, quasiquote escapes, the region and
+ * ownership forms, tensor elements, the calculus operators' function and
+ * point, and the call-layout primitives) synthesizes those subexpressions and
+ * then yields its builtin result type: mostly BuiltinTypes::Value where the
+ * result is runtime-dependent, Boolean for predicates, and Function for the
+ * calculus operators. Forms with no evaluated subexpression (quote, extern,
+ * syntax and type declarations) synthesize their type directly.
  * @return A successful TypeCheckResult per the rule above; this function has
  * no failure path of its own (unsuccessful results only propagate from
  * delegated helpers or nested synthesize() calls).
  */
-TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeOperationTask(eshkol_ast_t* expr) {
+    if (hasCallLayoutOperands(expr->operation.op)) {
+        const auto& args = expr->operation.call_op;
+        for (uint64_t i = 0; i < args.num_vars && args.variables; ++i) {
+            (co_await synthesizeTask(&args.variables[i]));
+        }
+    }
+
     switch (expr->operation.op) {
         case ESHKOL_DEFINE_OP:
-            return synthesizeDefine(expr);
+            co_return (co_await synthesizeDefineTask(expr));
 
         case ESHKOL_LET_OP:
         case ESHKOL_LET_STAR_OP:
         case ESHKOL_LETREC_OP:
         case ESHKOL_LETREC_STAR_OP:
-            return synthesizeLet(expr);
+            co_return (co_await synthesizeLetTask(expr));
 
         case ESHKOL_IF_OP:
-            return synthesizeIf(expr);
+            co_return (co_await synthesizeIfTask(expr));
 
         case ESHKOL_LAMBDA_OP:
         case ESHKOL_CASE_LAMBDA_OP:
-            return synthesizeLambda(expr);
+            co_return (co_await synthesizeLambdaTask(expr));
 
         case ESHKOL_CALL_OP:
-            return synthesizeApplication(expr);
+            co_return (co_await synthesizeApplicationTask(expr));
 
         case ESHKOL_THE_OP: {
             // Expression-level checked cast (the <type> <expr>): a trusted
@@ -1200,7 +1250,7 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
             // as a whole-program refinement rather than a soundness proof.
             const TypeId ascribed = resolveType(expr->operation.the_op.type_expr);
             if (expr->operation.the_op.expr) {
-                auto inner = synthesize(expr->operation.the_op.expr);
+                auto inner = (co_await synthesizeTask(expr->operation.the_op.expr));
                 if (inner.success) {
                     // SW-11: "trusted" governs which type flows ONWARD; it was
                     // silently also suppressing the one question the checker
@@ -1241,7 +1291,7 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
                                     expr->operation.the_op.expr);
                 }
             }
-            return TypeCheckResult::ok(ascribed);
+            co_return TypeCheckResult::ok(ascribed);
         }
 
         case ESHKOL_DEFINE_TYPE_OP: {
@@ -1260,7 +1310,7 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
                     expr->operation.define_type_op.type_expr,
                     type_params);
             }
-            return TypeCheckResult::ok(BuiltinTypes::Null);
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
         }
 
         // Arithmetic operations
@@ -1269,34 +1319,51 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
         case ESHKOL_MUL_OP:
         case ESHKOL_DIV_OP: {
             if (expr->operation.call_op.num_vars < 2) {
-                return errorAt(expr, "Arithmetic requires at least 2 operands");
+                co_return errorAt(expr, "Arithmetic requires at least 2 operands");
             }
-            auto left = synthesize(&expr->operation.call_op.variables[0]);
-            auto right = synthesize(&expr->operation.call_op.variables[1]);
-            if (!left.success) return left;
-            if (!right.success) return right;
+            auto left = (co_await synthesizeTask(&expr->operation.call_op.variables[0]));
+            auto right = (co_await synthesizeTask(&expr->operation.call_op.variables[1]));
+            for (uint64_t i = 2; i < expr->operation.call_op.num_vars; ++i) {
+                (co_await synthesizeTask(&expr->operation.call_op.variables[i]));
+            }
+            if (!left.success) co_return left;
+            if (!right.success) co_return right;
 
             // Promote types
             TypeId result_type = env_.promoteForArithmetic(
                 left.inferred_type, right.inferred_type);
-            return TypeCheckResult::ok(result_type);
+            co_return TypeCheckResult::ok(result_type);
         }
 
-        // Tensor operations
-        case ESHKOL_TENSOR_OP:
-            return TypeCheckResult::ok(BuiltinTypes::Vector);
-
-        // Sequence returns last expression type
-        case ESHKOL_SEQUENCE_OP:
-            if (expr->operation.sequence_op.num_expressions > 0) {
-                return synthesize(&expr->operation.sequence_op.expressions[expr->operation.sequence_op.num_expressions - 1]);
+        // Tensor operations. An unquoted `#(...)`, `(tensor ...)` and
+        // `(matrix ...)` evaluate their elements; a quoted vector is wrapped
+        // in a quote and never reaches here as an expression.
+        case ESHKOL_TENSOR_OP: {
+            const auto& tensor = expr->operation.tensor_op;
+            for (uint64_t i = 0; i < tensor.total_elements && tensor.elements; ++i) {
+                (co_await synthesizeTask(&tensor.elements[i]));
             }
-            return TypeCheckResult::ok(BuiltinTypes::Null);
+            co_return TypeCheckResult::ok(BuiltinTypes::Vector);
+        }
 
-        // Boolean operations
+        // A sequence runs every expression and yields the last one's value.
+        // Every expression is synthesized; the last one's result, success or
+        // failure, is the sequence's.
+        case ESHKOL_SEQUENCE_OP: {
+            const auto& seq = expr->operation.sequence_op;
+            if (seq.num_expressions == 0 || !seq.expressions) {
+                co_return TypeCheckResult::ok(BuiltinTypes::Null);
+            }
+            for (uint64_t i = 0; i + 1 < seq.num_expressions; ++i) {
+                (co_await synthesizeTask(&seq.expressions[i]));
+            }
+            co_return (co_await synthesizeTask(&seq.expressions[seq.num_expressions - 1]));
+        }
+
+        // Short-circuit operators
         case ESHKOL_AND_OP:
         case ESHKOL_OR_OP:
-            return TypeCheckResult::ok(BuiltinTypes::Boolean);
+            co_return (co_await synthesizeAndOrTask(expr));
 
         // Predicate operations — always return Boolean
         case ESHKOL_LOGIC_VAR_PRED_OP:
@@ -1305,10 +1372,16 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
         case ESHKOL_FACT_PRED_OP:
         case ESHKOL_FACTOR_GRAPH_PRED_OP:
         case ESHKOL_WORKSPACE_PRED_OP:
-            return TypeCheckResult::ok(BuiltinTypes::Boolean);
+            co_return TypeCheckResult::ok(BuiltinTypes::Boolean);
+
+        // set! evaluates its value and yields nothing useful.
+        case ESHKOL_SET_OP:
+            if (expr->operation.set_op.value) {
+                (co_await synthesizeTask(expr->operation.set_op.value));
+            }
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
 
         // Side-effect operations — return Null (void)
-        case ESHKOL_SET_OP:
         case ESHKOL_IMPORT_OP:
         case ESHKOL_PROVIDE_OP:
         case ESHKOL_KB_ASSERT_OP:
@@ -1317,60 +1390,145 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
         case ESHKOL_DEFINE_SYNTAX_OP:
         case ESHKOL_DEFINE_RECORD_TYPE_OP:
         case ESHKOL_TYPE_ANNOTATION_OP:
-            return TypeCheckResult::ok(BuiltinTypes::Null);
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
 
         case ESHKOL_REQUIRE_OP:
             bindKnownRequireExports(ctx_, env_, expr->operation);
-            return TypeCheckResult::ok(BuiltinTypes::Null);
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
 
-        // Calculus operations — return Function (closures over differentiated functions)
+        // Calculus operations. The function and evaluation point are ordinary
+        // expressions and are synthesized. diff's expression is differentiated
+        // symbolically with respect to a variable it does not bind, not
+        // evaluated, so it is left alone.
         case ESHKOL_DIFF_OP:
-        case ESHKOL_DERIVATIVE_OP:
+            co_return TypeCheckResult::ok(BuiltinTypes::Function);
+        // Given an evaluation point, an operator yields its value there (a
+        // derivative is a number, a gradient a vector, a Hessian or Jacobian a
+        // matrix), not a procedure. Its precise shape depends on the function
+        // and the point, so it is Value. Without a point, the operator yields
+        // the derivative procedure.
+        case ESHKOL_DERIVATIVE_OP: {
+            const auto& d = expr->operation.derivative_op;
+            if (d.function) (co_await synthesizeTask(d.function));
+            if (!d.point) co_return TypeCheckResult::ok(BuiltinTypes::Function);
+            (co_await synthesizeTask(d.point));
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
+        }
         case ESHKOL_GRADIENT_OP:
         case ESHKOL_JACOBIAN_OP:
         case ESHKOL_HESSIAN_OP:
         case ESHKOL_DIVERGENCE_OP:
         case ESHKOL_CURL_OP:
-        case ESHKOL_LAPLACIAN_OP:
-        case ESHKOL_DIRECTIONAL_DERIV_OP:
-            return TypeCheckResult::ok(BuiltinTypes::Function);
+        case ESHKOL_LAPLACIAN_OP: {
+            // These six share the {function, point} layout.
+            const auto& field = expr->operation.gradient_op;
+            if (field.function) (co_await synthesizeTask(field.function));
+            if (!field.point) co_return TypeCheckResult::ok(BuiltinTypes::Function);
+            (co_await synthesizeTask(field.point));
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
+        }
+        case ESHKOL_DIRECTIONAL_DERIV_OP: {
+            const auto& dd = expr->operation.directional_deriv_op;
+            if (dd.function) (co_await synthesizeTask(dd.function));
+            if (dd.direction) (co_await synthesizeTask(dd.direction));
+            if (!dd.point) co_return TypeCheckResult::ok(BuiltinTypes::Function);
+            (co_await synthesizeTask(dd.point));
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
+        }
+        case ESHKOL_TAYLOR_OP:
+        case ESHKOL_DERIVATIVE_N_OP: {
+            const auto& taylor = expr->operation.taylor_op;
+            if (taylor.function) (co_await synthesizeTask(taylor.function));
+            if (taylor.point) (co_await synthesizeTask(taylor.point));
+            if (taylor.order) (co_await synthesizeTask(taylor.order));
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
+        }
 
         // Free energy operations — return scalar Float64
         case ESHKOL_FREE_ENERGY_OP:
         case ESHKOL_EXPECTED_FREE_ENERGY_OP:
-            return TypeCheckResult::ok(BuiltinTypes::Float64);
+            co_return TypeCheckResult::ok(BuiltinTypes::Float64);
 
-        // Control flow — return Value (branch-dependent)
+        // Control flow: see the rules below synthesizeIfTask().
         case ESHKOL_COND_OP:
+            co_return (co_await synthesizeCondTask(expr));
         case ESHKOL_CASE_OP:
+            co_return (co_await synthesizeCaseTask(expr));
         case ESHKOL_MATCH_OP:
+            co_return (co_await synthesizeMatchTask(expr));
         case ESHKOL_WHEN_OP:
         case ESHKOL_UNLESS_OP:
+            co_return (co_await synthesizeWhenUnlessTask(expr));
         case ESHKOL_DO_OP:
+            co_return (co_await synthesizeDoTask(expr));
         case ESHKOL_GUARD_OP:
+            co_return (co_await synthesizeGuardTask(expr));
         case ESHKOL_RAISE_OP:
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            if (expr->operation.raise_op.exception) {
+                (co_await synthesizeTask(expr->operation.raise_op.exception));
+            }
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
 
-        // Continuation/dynamic wind — return Value
+        // Continuations. A continuation may be invoked with any value, so
+        // call/cc's result is Value. dynamic-wind yields what its thunk returns.
         case ESHKOL_CALL_CC_OP:
-        case ESHKOL_DYNAMIC_WIND_OP:
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            if (expr->operation.call_cc_op.proc) {
+                (co_await synthesizeTask(expr->operation.call_cc_op.proc));
+            }
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
+        case ESHKOL_DYNAMIC_WIND_OP: {
+            const auto& wind = expr->operation.dynamic_wind_op;
+            if (wind.before) (co_await synthesizeTask(wind.before));
+            TypeId result_type = BuiltinTypes::Value;
+            if (wind.thunk) {
+                auto thunk = (co_await synthesizeTask(wind.thunk));
+                if (thunk.success) result_type = applicationResultOf(thunk.inferred_type);
+            }
+            if (wind.after) (co_await synthesizeTask(wind.after));
+            co_return TypeCheckResult::ok(result_type);
+        }
 
-        // Multiple values — return Value
-        case ESHKOL_VALUES_OP:
-        case ESHKOL_CALL_WITH_VALUES_OP:
+        // Multiple values. Types are not tracked through the values protocol,
+        // except that call-with-values yields what its consumer returns.
+        case ESHKOL_VALUES_OP: {
+            const auto& values = expr->operation.values_op;
+            for (uint64_t i = 0; i < values.num_values && values.expressions; ++i) {
+                (co_await synthesizeTask(&values.expressions[i]));
+            }
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
+        }
+        case ESHKOL_CALL_WITH_VALUES_OP: {
+            const auto& cwv = expr->operation.call_with_values_op;
+            if (cwv.producer) (co_await synthesizeTask(cwv.producer));
+            TypeId result_type = BuiltinTypes::Value;
+            if (cwv.consumer) {
+                auto consumer = (co_await synthesizeTask(cwv.consumer));
+                if (consumer.success) result_type = applicationResultOf(consumer.inferred_type);
+            }
+            co_return TypeCheckResult::ok(result_type);
+        }
         case ESHKOL_LET_VALUES_OP:
         case ESHKOL_LET_STAR_VALUES_OP:
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            co_return (co_await synthesizeLetValuesTask(expr));
 
-        // Quoting — return Value (any datum)
+        // Quoting — return Value (any datum). A quasiquote template's escapes
+        // are evaluated; an unquote outside a template evaluates its operand.
         case ESHKOL_QUOTE_OP:
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
         case ESHKOL_QUASIQUOTE_OP:
+            if (expr->operation.call_op.num_vars > 0 && expr->operation.call_op.variables) {
+                (co_await synthesizeQuasiTemplateTask(&expr->operation.call_op.variables[0], 1));
+            }
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
         case ESHKOL_UNQUOTE_OP:
         case ESHKOL_UNQUOTE_SPLICING_OP:
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            if (expr->operation.call_op.num_vars > 0 && expr->operation.call_op.variables) {
+                (co_await synthesizeTask(&expr->operation.call_op.variables[0]));
+            }
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
 
-        // Logic/consciousness constructors — return Value (opaque heap objects)
+        // Logic/consciousness constructors — return Value (opaque heap objects).
+        // Their operands were synthesized by the call-layout pre-pass above.
         case ESHKOL_LOGIC_VAR_OP:
         case ESHKOL_UNIFY_OP:
         case ESHKOL_WALK_OP:
@@ -1399,22 +1557,39 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
         case ESHKOL_SDNC_SET_PARAMS_OP:
         case ESHKOL_SDNC_IMPROVE_OP:
         case ESHKOL_SDNC_PRED_OP:
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
 
-        // Memory management — return Value (identity-like wrappers)
-        case ESHKOL_WITH_REGION_OP:
+        // Memory management. with-region and borrow are blocks that yield
+        // their body's value; the ownership wrappers yield Value.
+        case ESHKOL_WITH_REGION_OP: {
+            const auto& region = expr->operation.with_region_op;
+            co_return (co_await synthesizeSequenceTask(region.body, region.num_body_exprs,
+                                                       BuiltinTypes::Value));
+        }
+        case ESHKOL_BORROW_OP: {
+            const auto& borrow = expr->operation.borrow_op;
+            if (borrow.value) (co_await synthesizeTask(borrow.value));
+            co_return (co_await synthesizeSequenceTask(borrow.body, borrow.num_body_exprs,
+                                                       BuiltinTypes::Value));
+        }
         case ESHKOL_OWNED_OP:
+            if (expr->operation.owned_op.value) (co_await synthesizeTask(expr->operation.owned_op.value));
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
         case ESHKOL_MOVE_OP:
-        case ESHKOL_BORROW_OP:
+            if (expr->operation.move_op.value) (co_await synthesizeTask(expr->operation.move_op.value));
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
         case ESHKOL_SHARED_OP:
+            if (expr->operation.shared_op.value) (co_await synthesizeTask(expr->operation.shared_op.value));
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
         case ESHKOL_WEAK_REF_OP:
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            if (expr->operation.weak_ref_op.value) (co_await synthesizeTask(expr->operation.weak_ref_op.value));
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
 
         // External declarations — return Value
         case ESHKOL_EXTERN_OP:
         case ESHKOL_EXTERN_VAR_OP:
         case ESHKOL_COMPOSE_OP:
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
 
         // Macro/syntax forms — return Value (should be expanded before reaching here)
         case ESHKOL_LET_SYNTAX_OP:
@@ -1425,11 +1600,11 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
         case ESHKOL_INCLUDE_OP:
         case ESHKOL_FORALL_OP:
         case ESHKOL_SYNTAX_ERROR_OP:
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
 
         case ESHKOL_INVALID_OP:
         default:
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
     }
 }
 
@@ -1450,7 +1625,7 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
  * parameter types to the return type, respecting lambda.is_variadic; or an
  * error if the body fails to synthesize or violates the return annotation.
  */
-TypeCheckResult TypeChecker::synthesizeLambda(eshkol_ast_t* expr) {
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLambdaTask(eshkol_ast_t* expr) {
     const auto& lambda = expr->operation.lambda_op;
 
     ctx_.pushScope();
@@ -1479,7 +1654,7 @@ TypeCheckResult TypeChecker::synthesizeLambda(eshkol_ast_t* expr) {
     }
 
     // Synthesize body type
-    auto body_result = synthesize(lambda.body);
+    auto body_result = (co_await synthesizeTask(lambda.body));
 
     // Enforce linearity for THIS lambda's own linear parameters, over THIS
     // lambda's body. The previous scope-exit check consulted
@@ -1492,17 +1667,20 @@ TypeCheckResult TypeChecker::synthesizeLambda(eshkol_ast_t* expr) {
     ctx_.popScope();
 
     if (!body_result.success) {
-        return body_result;
+        co_return body_result;
     }
 
     // Determine return type
     TypeId return_type = body_result.inferred_type;
 
-    // If return type annotation exists, check against it
+    // If return type annotation exists, check against it. The check is gradual
+    // consistency, not subtyping: a body the checker types as Value is unknown,
+    // not wrong, and satisfies any annotation; a concrete body that is not a
+    // subtype (String against Number) is still reported.
     if (lambda.return_type) {
         TypeId expected_return = resolveType(lambda.return_type);
-        if (!env_.isSubtype(body_result.inferred_type, expected_return)) {
-            return TypeCheckResult::error(
+        if (!TypeRelation(env_).isConsistentSubtype(body_result.inferred_type, expected_return)) {
+            co_return TypeCheckResult::error(
                 "Lambda body type " + env_.getTypeName(body_result.inferred_type) +
                 " doesn't match return annotation " + env_.getTypeName(expected_return));
         }
@@ -1512,11 +1690,11 @@ TypeCheckResult TypeChecker::synthesizeLambda(eshkol_ast_t* expr) {
     // Create proper function type encoding param types and return type
     if (param_types.empty()) {
         // Nullary function
-        return TypeCheckResult::ok(env_.makeFunctionType({}, return_type,
+        co_return TypeCheckResult::ok(env_.makeFunctionType({}, return_type,
                                                          lambda.is_variadic));
     }
 
-    return TypeCheckResult::ok(env_.makeFunctionType(param_types, return_type,
+    co_return TypeCheckResult::ok(env_.makeFunctionType(param_types, return_type,
                                                       lambda.is_variadic));
 }
 
@@ -1561,21 +1739,21 @@ TypeCheckResult TypeChecker::synthesizeLambda(eshkol_ast_t* expr) {
  *   adam, l-bfgs, conjugate-gradient, line-search, tensor-dot/norm/svd);
  *   display/newline/write, set!, begin, textual/binary I/O; and the
  *   not/and/or and `if`-as-procedure forms, with `if` computing the least
- *   common supertype of its branches via TypeEnvironment::leastCommonSupertype().
+ *   common supertype of its branches via TypeRelation::join().
  * - If the callee is not (or is no longer, having fallen through) a
  *   recognized builtin, resolves its function type by looking it up in the
  *   context (named callee) or synthesizing it (inline lambda callee). If
  *   that resolves to a function type, checks argument count against the
  *   PiType (skipped for variadic callees) and checks each argument's
  *   synthesized type against the parameter type (allowing Value on either
- *   side, and using leastCommonSupertype() for compatibility), reporting a
+ *   side, and using the relation's consistent-subtyping judgment), reporting a
  *   type issue via reportTypeIssue() for any mismatch, then returns the
  *   function's return type.
  * @return A TypeCheckResult per the builtin/generic rule above.
  * BuiltinTypes::Value is used as the fallback whenever the callee's
  * signature or the call itself cannot be determined precisely.
  */
-TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_ast_t* expr) {
     const auto& call = expr->operation.call_op;
 
     // The function being called is in call.func, arguments are in call.variables
@@ -1583,7 +1761,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
 
     // If we have no function expression, return Value
     if (!func_expr) {
-        return TypeCheckResult::ok(BuiltinTypes::Value);
+        co_return TypeCheckResult::ok(BuiltinTypes::Value);
     }
 
     std::string builtin_name;
@@ -1593,11 +1771,11 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
     }
 
     // `if` is lowered by the parser to a call to the builtin "if" (func == "if",
-    // args = condition/then/else). Route it to synthesizeIf() BEFORE the generic
+    // args = condition/then/else). Route it to synthesizeIfTask() BEFORE the generic
     // argument pre-synthesis below, so the then-branch is synthesized under
     // predicate-guarded narrowing rather than being eagerly checked without it.
     if (has_builtin_name && builtin_name == "if" && call.num_vars >= 2) {
-        return synthesizeIf(expr);
+        co_return (co_await synthesizeIfTask(expr));
     }
 
     const auto should_skip_builtin_designator_arg = [&](size_t index) {
@@ -1641,7 +1819,31 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             arg_types.push_back(TypeCheckResult::ok(BuiltinTypes::Value));
             continue;
         }
-        arg_types.push_back(synthesize(const_cast<eshkol_ast_t*>(&call.variables[i])));
+        arg_types.push_back((co_await synthesizeTask(const_cast<eshkol_ast_t*>(&call.variables[i]))));
+    }
+
+    // A call to an enclosing named let's own loop binding supplies values for
+    // its parameters; record their types so synthesizeLetTask() can type each
+    // parameter by everything the loop carries in it. Only the innermost frame
+    // of that name can be the target, and only when the name still resolves to
+    // that frame's binding — an inner `let` rebinding the name shadows it.
+    if (!loop_frames_.empty() && func_expr->type == ESHKOL_VAR && func_expr->variable.id) {
+        const std::string callee = func_expr->variable.id;
+        for (auto frame = loop_frames_.rbegin(); frame != loop_frames_.rend(); ++frame) {
+            if (frame->name != callee) continue;
+            auto scope = ctx_.bindingScopeOf(callee);
+            auto bound = ctx_.lookup(callee);
+            if (scope && *scope == frame->scope_index && bound && *bound == frame->loop_type) {
+                ++frame->uses;
+                size_t n = std::min(frame->args.size(), static_cast<size_t>(call.num_vars));
+                for (size_t i = 0; i < n; ++i) {
+                    if (arg_types[i].success) {
+                        frame->args[i].push_back(arg_types[i].inferred_type);
+                    }
+                }
+            }
+            break;
+        }
     }
 
     // Check for builtin operators first
@@ -1662,9 +1864,9 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             if (call.num_vars >= 2 && arg_types[0].success && arg_types[1].success) {
                 TypeId result_type = env_.promoteForArithmetic(
                     arg_types[0].inferred_type, arg_types[1].inferred_type);
-                return TypeCheckResult::ok(result_type);
+                co_return TypeCheckResult::ok(result_type);
             }
-            return TypeCheckResult::ok(BuiltinTypes::Number);
+            co_return TypeCheckResult::ok(BuiltinTypes::Number);
         }
 
         // Comparison operators return Boolean
@@ -1681,7 +1883,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                     }
                 }
             }
-            return TypeCheckResult::ok(BuiltinTypes::Boolean);
+            co_return TypeCheckResult::ok(BuiltinTypes::Boolean);
         }
         // Polymorphic predicates (work on any type, no narrowing)
         if (func_name == "equal?" || func_name == "eq?" || func_name == "eqv?" ||
@@ -1693,7 +1895,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             func_name == "exact-integer?" || func_name == "char?" || func_name == "port?" ||
             func_name == "input-port?" || func_name == "output-port?" ||
             func_name == "eof-object?" || func_name == "bytevector?") {
-            return TypeCheckResult::ok(BuiltinTypes::Boolean);
+            co_return TypeCheckResult::ok(BuiltinTypes::Boolean);
         }
 
         // List operations — with parametric pair type tracking
@@ -1702,29 +1904,34 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             if (call.num_vars >= 1 && arg_types[0].success) {
                 auto elems = env_.getPairElementTypes(arg_types[0].inferred_type);
                 if (elems) {
-                    return TypeCheckResult::ok(elems->first);
+                    co_return TypeCheckResult::ok(elems->first);
                 }
             }
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
         }
         if (func_name == "cdr" || func_name == "rest") {
             // If argument is a tracked Pair<A,B>, return B (precise element type)
             if (call.num_vars >= 1 && arg_types[0].success) {
                 auto elems = env_.getPairElementTypes(arg_types[0].inferred_type);
                 if (elems) {
-                    return TypeCheckResult::ok(elems->second);
+                    co_return TypeCheckResult::ok(elems->second);
                 }
                 // cdr of a known List → List (proper list tail)
                 TypeId arg_type = arg_types[0].inferred_type;
                 if (arg_type == BuiltinTypes::List) {
-                    return TypeCheckResult::ok(BuiltinTypes::List);
+                    co_return TypeCheckResult::ok(BuiltinTypes::List);
                 }
                 // cdr of bare Pair or Value → Value (could be anything)
                 if (arg_type == BuiltinTypes::Value || arg_type == BuiltinTypes::Pair) {
-                    return TypeCheckResult::ok(BuiltinTypes::Value);
+                    co_return TypeCheckResult::ok(BuiltinTypes::Value);
                 }
             }
-            return TypeCheckResult::ok(BuiltinTypes::List);
+            // Nothing above proved the argument is a proper list, so nothing
+            // proves its tail is one. The tail of a dotted pair such as a
+            // parser's (value . next-index) is whatever was consed there;
+            // claiming List for it reported a correct index argument as
+            // "expected Number, got List".
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
         }
         if (func_name == "cons") {
             // R7RS: a list is either '() or (cons X list). When the cdr is
@@ -1745,22 +1952,22 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                 // Narrow to List when the cdr is a List / Null.
                 if (cdr_type == BuiltinTypes::List ||
                     cdr_type == BuiltinTypes::Null) {
-                    return TypeCheckResult::ok(BuiltinTypes::List);
+                    co_return TypeCheckResult::ok(BuiltinTypes::List);
                 }
                 TypeId pair_type = env_.makePairType(
                     arg_types[0].inferred_type, cdr_type);
-                return TypeCheckResult::ok(pair_type);
+                co_return TypeCheckResult::ok(pair_type);
             }
-            return TypeCheckResult::ok(BuiltinTypes::Pair);
+            co_return TypeCheckResult::ok(BuiltinTypes::Pair);
         }
         if (func_name == "list" || func_name == "append" ||
             func_name == "reverse" || func_name == "map" || func_name == "filter" ||
             func_name == "reduce" || func_name == "for-each" ||
             func_name == "list-copy" || func_name == "list-set!") {
-            return TypeCheckResult::ok(BuiltinTypes::List);
+            co_return TypeCheckResult::ok(BuiltinTypes::List);
         }
         if (func_name == "length") {
-            return TypeCheckResult::ok(BuiltinTypes::Int64);
+            co_return TypeCheckResult::ok(BuiltinTypes::Int64);
         }
 
         // String operations — narrow Value-typed string arguments
@@ -1778,7 +1985,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                     }
                 }
             }
-            return TypeCheckResult::ok(BuiltinTypes::String);
+            co_return TypeCheckResult::ok(BuiltinTypes::String);
         }
         if (func_name == "string-length" || func_name == "string-byte-length" || func_name == "string->number") {
             // Narrow first arg to String
@@ -1788,7 +1995,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                     ctx_.bind(call.variables[0].variable.id, BuiltinTypes::String);
                 }
             }
-            return TypeCheckResult::ok(BuiltinTypes::Int64);
+            co_return TypeCheckResult::ok(BuiltinTypes::Int64);
         }
         if (func_name == "string=?" || func_name == "string<?" || func_name == "string>?") {
             // Narrow both args to String
@@ -1800,7 +2007,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                     }
                 }
             }
-            return TypeCheckResult::ok(BuiltinTypes::Boolean);
+            co_return TypeCheckResult::ok(BuiltinTypes::Boolean);
         }
 
         // Math functions
@@ -1816,10 +2023,10 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                 // Most math functions return Float64, some preserve int
                 if (func_name == "abs" || func_name == "min" || func_name == "max" ||
                     func_name == "modulo" || func_name == "remainder" || func_name == "quotient") {
-                    return TypeCheckResult::ok(arg_types[0].inferred_type);
+                    co_return TypeCheckResult::ok(arg_types[0].inferred_type);
                 }
             }
-            return TypeCheckResult::ok(BuiltinTypes::Float64);
+            co_return TypeCheckResult::ok(BuiltinTypes::Float64);
         }
 
         // Low-level pointer conversions
@@ -2026,7 +2233,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                 }
             }
 
-            return TypeCheckResult::ok(load_type.value_or(BuiltinTypes::Value));
+            co_return TypeCheckResult::ok(load_type.value_or(BuiltinTypes::Value));
         }
 
         if (func_name == "volatile-store!") {
@@ -2073,7 +2280,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                 }
             }
 
-            return TypeCheckResult::ok(BuiltinTypes::Null);
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
         }
 
         if (func_name == "atomic-load") {
@@ -2099,7 +2306,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                 resolve_atomic_ordering(call.variables[2], "atomic-load", false);
             }
 
-            return TypeCheckResult::ok(load_type.value_or(BuiltinTypes::Value));
+            co_return TypeCheckResult::ok(load_type.value_or(BuiltinTypes::Value));
         }
 
         if (func_name == "atomic-store!") {
@@ -2148,7 +2355,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                 resolve_atomic_ordering(call.variables[3], "atomic-store!", true);
             }
 
-            return TypeCheckResult::ok(BuiltinTypes::Null);
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
         }
 
         if (func_name == "atomic-exchange!") {
@@ -2197,7 +2404,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                 resolve_atomic_rmw_ordering(call.variables[3], "atomic-exchange!");
             }
 
-            return TypeCheckResult::ok(exchange_type.value_or(BuiltinTypes::Value));
+            co_return TypeCheckResult::ok(exchange_type.value_or(BuiltinTypes::Value));
         }
 
         if (func_name == "atomic-compare-exchange!") {
@@ -2262,7 +2469,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                     call.variables[4], call.variables[5], "atomic-compare-exchange!");
             }
 
-            return TypeCheckResult::ok(cas_type.value_or(BuiltinTypes::Value));
+            co_return TypeCheckResult::ok(cas_type.value_or(BuiltinTypes::Value));
         }
 
         if (func_name == "atomic-fetch-add!" || func_name == "atomic-fetch-sub!" ||
@@ -2311,7 +2518,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                 resolve_atomic_rmw_ordering(call.variables[3], builtin);
             }
 
-            return TypeCheckResult::ok(rmw_type.value_or(BuiltinTypes::Value));
+            co_return TypeCheckResult::ok(rmw_type.value_or(BuiltinTypes::Value));
         }
 
         if (func_name == "target-intrinsic") {
@@ -2367,7 +2574,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                 }
             }
 
-            return TypeCheckResult::ok(return_type.value_or(BuiltinTypes::Value));
+            co_return TypeCheckResult::ok(return_type.value_or(BuiltinTypes::Value));
         }
 
         if (func_name == "compiler-fence") {
@@ -2376,7 +2583,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             } else {
                 resolve_fence_ordering(call.variables[0], "compiler-fence");
             }
-            return TypeCheckResult::ok(BuiltinTypes::Null);
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
         }
 
         if (func_name == "memory-fence") {
@@ -2385,7 +2592,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             } else {
                 resolve_fence_ordering(call.variables[0], "memory-fence");
             }
-            return TypeCheckResult::ok(BuiltinTypes::Null);
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
         }
 
         if (func_name == "addr-of") {
@@ -2395,10 +2602,10 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                        !call.variables[0].variable.id) {
                 reportTypeIssue("addr-of requires a variable reference", &call.variables[0]);
             }
-            return TypeCheckResult::ok(BuiltinTypes::Pointer);
+            co_return TypeCheckResult::ok(BuiltinTypes::Pointer);
         }
         if (func_name == "null-ptr") {
-            return TypeCheckResult::ok(BuiltinTypes::Pointer);
+            co_return TypeCheckResult::ok(BuiltinTypes::Pointer);
         }
         if (func_name == "ptr->usize") {
             if (call.num_vars >= 1 && arg_types[0].success) {
@@ -2411,7 +2618,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                     reportTypeIssue("ptr->usize expects a Ptr argument", &call.variables[0]);
                 }
             }
-            return TypeCheckResult::ok(BuiltinTypes::USize);
+            co_return TypeCheckResult::ok(BuiltinTypes::USize);
         }
         if (func_name == "usize->ptr") {
             if (call.num_vars >= 1 && arg_types[0].success) {
@@ -2424,7 +2631,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                     reportTypeIssue("usize->ptr expects an integer address value", &call.variables[0]);
                 }
             }
-            return TypeCheckResult::ok(BuiltinTypes::Pointer);
+            co_return TypeCheckResult::ok(BuiltinTypes::Pointer);
         }
         if (func_name == "ptr-add") {
             if (call.num_vars != 2) {
@@ -2454,12 +2661,12 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                     }
                 }
             }
-            return TypeCheckResult::ok(BuiltinTypes::Pointer);
+            co_return TypeCheckResult::ok(BuiltinTypes::Pointer);
         }
 
         // Vector operations
         if (func_name == "vector" || func_name == "make-vector" || func_name == "vector-copy") {
-            return TypeCheckResult::ok(BuiltinTypes::Vector);
+            co_return TypeCheckResult::ok(BuiltinTypes::Vector);
         }
         if (func_name == "vector-ref") {
             // Dimension checking: if index is a literal, validate non-negative
@@ -2470,10 +2677,10 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                         std::to_string(idx_arg.int64_val), &idx_arg);
                 }
             }
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
         }
         if (func_name == "vector-length") {
-            return TypeCheckResult::ok(BuiltinTypes::Int64);
+            co_return TypeCheckResult::ok(BuiltinTypes::Int64);
         }
         if (func_name == "vector-set!") {
             // Dimension checking: validate index
@@ -2484,81 +2691,81 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                         std::to_string(idx_arg.int64_val), &idx_arg);
                 }
             }
-            return TypeCheckResult::ok(BuiltinTypes::Null);
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
         }
         if (func_name == "vector-copy!" || func_name == "vector-fill!") {
-            return TypeCheckResult::ok(BuiltinTypes::Null);
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
         }
         if (func_name == "vector-append" || func_name == "list->vector") {
-            return TypeCheckResult::ok(BuiltinTypes::Vector);
+            co_return TypeCheckResult::ok(BuiltinTypes::Vector);
         }
         if (func_name == "vector->list") {
-            return TypeCheckResult::ok(BuiltinTypes::List);
+            co_return TypeCheckResult::ok(BuiltinTypes::List);
         }
 
         // Port operations
         if (func_name == "current-input-port" || func_name == "current-output-port" ||
             func_name == "current-error-port") {
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
         }
         if (func_name == "input-port?" || func_name == "output-port?" ||
             func_name == "port?" || func_name == "char-ready?") {
-            return TypeCheckResult::ok(BuiltinTypes::Boolean);
+            co_return TypeCheckResult::ok(BuiltinTypes::Boolean);
         }
         if (func_name == "read-char" || func_name == "peek-char") {
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
         }
         if (func_name == "make-promise" || func_name == "%make-lazy-promise" ||
             func_name == "%make-lazy-promise-force" || func_name == "force") {
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
         }
         if (func_name == "promise?") {
-            return TypeCheckResult::ok(BuiltinTypes::Boolean);
+            co_return TypeCheckResult::ok(BuiltinTypes::Boolean);
         }
         // Bytevector operations
         if (func_name == "make-bytevector" || func_name == "bytevector" ||
             func_name == "bytevector-copy" || func_name == "bytevector-append" ||
             func_name == "string->utf8") {
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
         }
         if (func_name == "bytevector-length" || func_name == "bytevector-u8-ref") {
-            return TypeCheckResult::ok(BuiltinTypes::Int64);
+            co_return TypeCheckResult::ok(BuiltinTypes::Int64);
         }
         if (func_name == "bytevector-u8-set!" || func_name == "bytevector-copy!") {
-            return TypeCheckResult::ok(BuiltinTypes::Null);
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
         }
         if (func_name == "bytevector?") {
-            return TypeCheckResult::ok(BuiltinTypes::Boolean);
+            co_return TypeCheckResult::ok(BuiltinTypes::Boolean);
         }
         if (func_name == "utf8->string") {
-            return TypeCheckResult::ok(BuiltinTypes::String);
+            co_return TypeCheckResult::ok(BuiltinTypes::String);
         }
         if (func_name == "tensor-save" || func_name == "model-save") {
-            return TypeCheckResult::ok(BuiltinTypes::Boolean);
+            co_return TypeCheckResult::ok(BuiltinTypes::Boolean);
         }
         if (func_name == "tensor-load") {
-            return TypeCheckResult::ok(BuiltinTypes::Tensor);
+            co_return TypeCheckResult::ok(BuiltinTypes::Tensor);
         }
         if (func_name == "model-load") {
-            return TypeCheckResult::ok(BuiltinTypes::List);
+            co_return TypeCheckResult::ok(BuiltinTypes::List);
         }
 
         // Rational operations
         if (func_name == "rational?" || func_name == "exact-rational?") {
-            return TypeCheckResult::ok(BuiltinTypes::Boolean);
+            co_return TypeCheckResult::ok(BuiltinTypes::Boolean);
         }
         if (func_name == "numerator" || func_name == "denominator") {
-            return TypeCheckResult::ok(BuiltinTypes::Int64);
+            co_return TypeCheckResult::ok(BuiltinTypes::Int64);
         }
         if (func_name == "make-rational" || func_name == "rationalize") {
-            return TypeCheckResult::ok(BuiltinTypes::Number);
+            co_return TypeCheckResult::ok(BuiltinTypes::Number);
         }
         if (func_name == "make-complex" || func_name == "make-rectangular" || func_name == "make-polar") {
-            return TypeCheckResult::ok(BuiltinTypes::Complex);
+            co_return TypeCheckResult::ok(BuiltinTypes::Complex);
         }
         if (func_name == "real-part" || func_name == "imag-part" ||
             func_name == "magnitude" || func_name == "angle") {
-            return TypeCheckResult::ok(BuiltinTypes::Float64);
+            co_return TypeCheckResult::ok(BuiltinTypes::Float64);
         }
 
         // Signal Processing Filters (stdlib: signal.filters)
@@ -2568,29 +2775,29 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             func_name == "apply-window" || func_name == "convolve" ||
             func_name == "fast-convolve" || func_name == "fir-filter" ||
             func_name == "iir-filter") {
-            return TypeCheckResult::ok(BuiltinTypes::Vector);
+            co_return TypeCheckResult::ok(BuiltinTypes::Vector);
         }
         if (func_name == "butterworth-lowpass" || func_name == "butterworth-highpass" ||
             func_name == "butterworth-bandpass" || func_name == "frequency-response") {
-            return TypeCheckResult::ok(BuiltinTypes::Pair);
+            co_return TypeCheckResult::ok(BuiltinTypes::Pair);
         }
 
         // Optimization Algorithms (stdlib: ml.optimization)
         if (func_name == "gradient-descent" || func_name == "adam" ||
             func_name == "l-bfgs" || func_name == "conjugate-gradient") {
-            return TypeCheckResult::ok(BuiltinTypes::Vector);
+            co_return TypeCheckResult::ok(BuiltinTypes::Vector);
         }
         if (func_name == "line-search" || func_name == "tensor-dot" ||
             func_name == "tensor-norm") {
-            return TypeCheckResult::ok(BuiltinTypes::Float64);
+            co_return TypeCheckResult::ok(BuiltinTypes::Float64);
         }
         if (func_name == "tensor-svd") {
-            return TypeCheckResult::ok(BuiltinTypes::List);
+            co_return TypeCheckResult::ok(BuiltinTypes::List);
         }
 
         // I/O operations
         if (func_name == "display" || func_name == "newline" || func_name == "write") {
-            return TypeCheckResult::ok(BuiltinTypes::Null);
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
         }
 
         // Mutation operations — borrow check the target
@@ -2610,70 +2817,41 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                     }
                 }
             }
-            return TypeCheckResult::ok(BuiltinTypes::Null);
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
         }
 
         // Begin expression - returns type of last expression (already pre-synthesized)
         if (func_name == "begin") {
             if (call.num_vars == 0) {
-                return TypeCheckResult::ok(BuiltinTypes::Null);
+                co_return TypeCheckResult::ok(BuiltinTypes::Null);
             }
-            return arg_types[call.num_vars - 1];
+            co_return arg_types[call.num_vars - 1];
         }
         if (func_name == "read" || func_name == "read-line" || func_name == "read-string") {
-            return TypeCheckResult::ok(BuiltinTypes::String);
+            co_return TypeCheckResult::ok(BuiltinTypes::String);
         }
 
         // Binary I/O
         if (func_name == "open-binary-input-file" || func_name == "open-binary-output-file") {
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
         }
         if (func_name == "read-u8" || func_name == "read-bytevector" || func_name == "read-bytevector!") {
-            return TypeCheckResult::ok(BuiltinTypes::Value);
+            co_return TypeCheckResult::ok(BuiltinTypes::Value);
         }
         if (func_name == "write-u8" || func_name == "write-bytevector") {
-            return TypeCheckResult::ok(BuiltinTypes::Null);
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
         }
         if (func_name == "u8-ready?") {
-            return TypeCheckResult::ok(BuiltinTypes::Boolean);
+            co_return TypeCheckResult::ok(BuiltinTypes::Boolean);
         }
 
         // Boolean operations
         if (func_name == "not" || func_name == "and" || func_name == "or") {
-            return TypeCheckResult::ok(BuiltinTypes::Boolean);
+            co_return TypeCheckResult::ok(BuiltinTypes::Boolean);
         }
 
-        // If expression - use pre-synthesized branch types and compute LCS
-        if (func_name == "if") {
-            // if has: condition (0), then-branch (1), else-branch (2)
-            if (call.num_vars >= 2) {
-                if (!arg_types[1].success) return arg_types[1];
-
-                if (call.num_vars >= 3) {
-                    if (!arg_types[2].success) return arg_types[2];
-
-                    TypeId then_t = arg_types[1].inferred_type;
-                    TypeId else_t = arg_types[2].inferred_type;
-
-                    // If one branch is Value (unknown/top), prefer the other branch's type
-                    // This handles loops/recursion where one branch is a recursive call
-                    if (then_t == BuiltinTypes::Value && else_t != BuiltinTypes::Value) {
-                        return TypeCheckResult::ok(else_t);
-                    }
-                    if (else_t == BuiltinTypes::Value && then_t != BuiltinTypes::Value) {
-                        return TypeCheckResult::ok(then_t);
-                    }
-
-                    // Compute LCS of branches
-                    auto lcs = env_.leastCommonSupertype(then_t, else_t);
-                    if (lcs) {
-                        return TypeCheckResult::ok(*lcs);
-                    }
-                }
-                return arg_types[1];
-            }
-            return TypeCheckResult::ok(BuiltinTypes::Value);
-        }
+        // `if` never reaches this point: it is routed to synthesizeIfTask()
+        // before the arguments are pre-synthesized.
     }
 
     // Try to determine the function type from context
@@ -2687,10 +2865,15 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
         }
     } else if (func_expr->type == ESHKOL_OP && func_expr->operation.op == ESHKOL_LAMBDA_OP) {
         // Inline lambda - synthesize its type
-        auto lambda_result = synthesize(const_cast<eshkol_ast_t*>(func_expr));
+        auto lambda_result = (co_await synthesizeTask(const_cast<eshkol_ast_t*>(func_expr)));
         if (lambda_result.success) {
             func_type = lambda_result.inferred_type;
         }
+    } else if (func_expr->type == ESHKOL_OP) {
+        // Any other computed callee, `((if a f g) x)` or `((make-adder 1) 2)`,
+        // is evaluated too, so it is checked. Its type is not used to check the
+        // arguments: a callee chosen at runtime may be either branch's function.
+        (co_await synthesizeTask(const_cast<eshkol_ast_t*>(func_expr)));
     }
 
     // If we have a proper function type, return its return type
@@ -2726,16 +2909,26 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                         // the ordinary hierarchy and additionally accepts a value
                         // of any arm of an explicit sum parameter (item 1) —
                         // e.g. Vector <: (+ boolean (vector any)).
-                        bool compatible = env_.isSubtype(actual, expected);
+                        // Consistency rather than plain subtyping, so a
+                        // Value nested inside a signature (a lambda whose
+                        // result is unknown) is not reported against a
+                        // declared (-> Number Number) parameter.
+                        bool compatible = TypeRelation(env_).isConsistentSubtype(actual, expected);
 
-                        // Numeric-tower join (item 4): a numeric accumulator
-                        // declared/inferred at one rung (e.g. Float64 from a 0.0
-                        // seed) recombined with a value widened to Number through
-                        // heterogeneous records must not error on the recursive
-                        // call — all operands are real and the tower promotes them
-                        // at runtime regardless. Two numeric types are always
-                        // reconcilable to their join, so accept. A non-numeric
-                        // actual (e.g. String) is still rejected below.
+                        // Numeric-tower join (item 4) for DECLARED numeric
+                        // parameters: `(define (scale (x : float64)) ...)` called
+                        // with a value widened to Number through heterogeneous
+                        // records must not warn — all operands are real and the
+                        // tower promotes them at runtime regardless. Two numeric
+                        // types are always reconcilable to their join, so accept.
+                        // A non-numeric actual (e.g. String) is still rejected
+                        // below. An INFERRED named-let accumulator (Float64 from a
+                        // 0.0 seed, fed Number on the recursive call) no longer
+                        // reaches this rule: synthesizeLetTask() types the loop
+                        // parameter by the join of everything the loop carries,
+                        // for every type, so the recursive argument is already a
+                        // subtype. This rule remains for annotated parameters,
+                        // which are contracts and are never widened.
                         if (!compatible &&
                             isNumericType(env_, expected) && isNumericType(env_, actual)) {
                             compatible = true;
@@ -2753,11 +2946,11 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             }
         }
 
-        return TypeCheckResult::ok(return_type);
+        co_return TypeCheckResult::ok(return_type);
     }
 
     // Fallback: unknown function type
-    return TypeCheckResult::ok(BuiltinTypes::Value);
+    co_return TypeCheckResult::ok(BuiltinTypes::Value);
 }
 
 /**
@@ -2774,7 +2967,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
  * synthesizing the body — this makes recursive calls to `name` resolve
  * during body checking. The body is then synthesized in a fresh scope with
  * parameters bound. Because arithmetic/comparison rules in
- * synthesizeApplication() can narrow a Value-typed parameter to a more
+ * synthesizeApplicationTask() can narrow a Value-typed parameter to a more
  * precise type (e.g. Number) as a side effect of checking the body, the
  * parameter types are re-read from the context immediately after body
  * synthesis but before the scope is popped, and this narrowed parameter
@@ -2790,11 +2983,11 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
  * fails for a variable define, or if a function's body type violates its
  * return annotation.
  */
-TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDefineTask(eshkol_ast_t* expr) {
     const auto& def = expr->operation.define_op;
 
     if (!def.name) {
-        return errorAt(expr, "Define without name");
+        co_return errorAt(expr, "Define without name");
     }
 
     if (def.is_external) {
@@ -2820,7 +3013,7 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
         } else {
             ctx_.bind(def.name, BuiltinTypes::Value);
         }
-        return TypeCheckResult::ok(BuiltinTypes::Null);
+        co_return TypeCheckResult::ok(BuiltinTypes::Null);
     }
 
     TypeCheckResult value_type = TypeCheckResult::ok(BuiltinTypes::Value);
@@ -2848,56 +3041,95 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
         if (def.return_type) {
             declared_return = resolveType(def.return_type);
         }
-        TypeId func_type = env_.makeFunctionType(param_types, declared_return,
-                                                  def.is_variadic);
-        ctx_.bind(def.name, func_type);
-
-        // Now push scope and bind parameters
-        ctx_.pushScope();
+        // Without a return annotation the result is inferred as the least
+        // fixpoint over the body's own calls, as for a named let (see
+        // synthesizeLetTask()): the first pass binds the name with result
+        // Never, which a join ignores, and a pass that referred to the name is
+        // repeated against the join of the guess and the body type until the
+        // body adds nothing. A body that never refers to its own name takes one
+        // pass, as before. With an annotation the declared result is the
+        // contract and the body is checked once against it.
+        const bool infer_result = !def.return_type;
+        TypeId recursion_result = infer_result ? BuiltinTypes::Never : declared_return;
+        const size_t define_scope = ctx_.scopeCount() - 1;
+        std::vector<TypeId> narrowed_param_types;
         std::vector<std::string> linear_params;
-        for (size_t i = 0; i < def.num_params; i++) {
-            if (def.parameters && def.parameters[i].type == ESHKOL_VAR &&
-                def.parameters[i].variable.id) {
-                // Register linear parameters for use-once checking
-                if (param_types[i].flags & TYPE_FLAG_LINEAR) {
-                    ctx_.bindLinear(def.parameters[i].variable.id, param_types[i]);
-                    linear_params.push_back(def.parameters[i].variable.id);
-                } else {
-                    ctx_.bind(def.parameters[i].variable.id, param_types[i]);
+        for (size_t pass = 0;; ++pass) {
+            TypeId func_type = env_.makeFunctionType(param_types, recursion_result,
+                                                      def.is_variadic);
+            ctx_.bind(def.name, func_type);
+            const SpeculationMark mark = markSpeculation();
+            if (infer_result) {
+                loop_frames_.push_back(LoopFrame{def.name, define_scope, func_type,
+                                                 std::vector<std::vector<TypeId>>(param_types.size())});
+                ++speculation_depth_;
+            }
+            linear_params.clear();
+
+            // Now push scope and bind parameters
+            ctx_.pushScope();
+            for (size_t i = 0; i < def.num_params; i++) {
+                if (def.parameters && def.parameters[i].type == ESHKOL_VAR &&
+                    def.parameters[i].variable.id) {
+                    // Register linear parameters for use-once checking
+                    if (param_types[i].flags & TYPE_FLAG_LINEAR) {
+                        ctx_.bindLinear(def.parameters[i].variable.id, param_types[i]);
+                        linear_params.push_back(def.parameters[i].variable.id);
+                    } else {
+                        ctx_.bind(def.parameters[i].variable.id, param_types[i]);
+                    }
                 }
             }
-        }
 
-        // Type check the body if present
-        if (def.value) {
-            value_type = synthesize(def.value);
-        }
-
-        // Re-read parameter types BEFORE popping scope — body synthesis may have
-        // narrowed them via backward type inference (e.g., used in arithmetic → Number)
-        std::vector<TypeId> narrowed_param_types;
-        for (size_t i = 0; i < def.num_params; i++) {
-            if (def.parameters && def.parameters[i].type == ESHKOL_VAR &&
-                def.parameters[i].variable.id) {
-                auto narrowed = ctx_.lookup(def.parameters[i].variable.id);
-                narrowed_param_types.push_back(narrowed ? *narrowed : param_types[i]);
+            // Type check the body if present
+            if (def.value) {
+                value_type = (co_await synthesizeTask(def.value));
             }
+
+            // Re-read parameter types BEFORE popping scope — body synthesis may have
+            // narrowed them via backward type inference (e.g., used in arithmetic → Number)
+            narrowed_param_types.clear();
+            for (size_t i = 0; i < def.num_params; i++) {
+                if (def.parameters && def.parameters[i].type == ESHKOL_VAR &&
+                    def.parameters[i].variable.id) {
+                    auto narrowed = ctx_.lookup(def.parameters[i].variable.id);
+                    narrowed_param_types.push_back(narrowed ? *narrowed : param_types[i]);
+                }
+            }
+
+            // Enforce linearity for THIS define's own linear parameters, over THIS
+            // define's body — see the matching comment in synthesizeLambdaTask() for
+            // why the old context-wide check was both too broad and too shallow.
+            enforceLinearBindings(linear_params, def.value, expr);
+
+            ctx_.popScope();
+
+            if (!infer_result) break;
+            --speculation_depth_;
+            LoopFrame frame = std::move(loop_frames_.back());
+            loop_frames_.pop_back();
+            const TypeId body_type =
+                value_type.success ? value_type.inferred_type : BuiltinTypes::Value;
+            const TypeId next = nextRecursionResult(recursion_result, body_type, pass);
+            if (frame.uses == 0 || next == recursion_result) {
+                releaseSpeculation(mark);
+                break;
+            }
+            rollbackSpeculation(mark);
+            recursion_result = next;
         }
-
-        // Enforce linearity for THIS define's own linear parameters, over THIS
-        // define's body — see the matching comment in synthesizeLambda() for
-        // why the old context-wide check was both too broad and too shallow.
-        enforceLinearBindings(linear_params, def.value, expr);
-
-        ctx_.popScope();
 
         // Determine return type
         TypeId return_type = value_type.success ? value_type.inferred_type : BuiltinTypes::Value;
         if (def.return_type) {
             TypeId annotated_return = resolveType(def.return_type);
-            // Check that body type is compatible with annotation
-            if (value_type.success && !env_.isSubtype(value_type.inferred_type, annotated_return)) {
-                return errorAt(expr,
+            // Check that the body type is consistent with the annotation: a
+            // Value body is statically unknown and satisfies any annotation, as
+            // a Value argument satisfies any parameter; a concrete body must be
+            // a subtype.
+            if (value_type.success &&
+                !TypeRelation(env_).isConsistentSubtype(value_type.inferred_type, annotated_return)) {
+                co_return errorAt(expr,
                     "Function '" + std::string(def.name) + "' body type " +
                     env_.getTypeName(value_type.inferred_type) +
                     " doesn't match return annotation " + env_.getTypeName(annotated_return));
@@ -2915,9 +3147,9 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
     } else {
         // Variable define: (define name value)
         if (def.value) {
-            value_type = synthesize(def.value);
+            value_type = (co_await synthesizeTask(def.value));
             if (!value_type.success) {
-                return value_type;
+                co_return value_type;
             }
         }
     }
@@ -2927,7 +3159,7 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
         ctx_.bind(def.name, value_type.inferred_type);
     }
 
-    return TypeCheckResult::ok(BuiltinTypes::Null);
+    co_return TypeCheckResult::ok(BuiltinTypes::Null);
 }
 
 static bool exprAssignsVar(const eshkol_ast_t* e, const std::string& var);
@@ -2940,11 +3172,12 @@ static bool exprAssignsVar(const eshkol_ast_t* e, const std::string& var);
  * bound expression, and binds the name in the (already-pushed) scope — so
  * later bindings and the body can see earlier ones, matching letrec-style
  * visibility for all four let variants. For a named let (`(let loop
- * ((i 0)) body)`), pre-binds `loop` as a recursive function from the
- * binding types to BuiltinTypes::Value so recursive calls resolve during
- * body synthesis, then re-binds it with the body's actual inferred return
- * type afterward (best-effort, since this happens after the body was
- * already checked against the placeholder type). The body is synthesized
+ * ((i 0)) body)`), binds `loop` as a recursive function over the bindings and
+ * iterates the body to a fixpoint of both its parameter types and its result
+ * type (the result starts at BuiltinTypes::Never, so a recursive call does not
+ * contribute to it), then re-binds it with the body's inferred return type. A
+ * letrec or letrec* lambda binding gets the same result fixpoint through
+ * synthesizeRecursiveLambdaTask(). The body is synthesized
  * and its result becomes the let's type; the scope is popped before
  * returning.
  *
@@ -2956,7 +3189,7 @@ static bool exprAssignsVar(const eshkol_ast_t* e, const std::string& var);
  * rather than the value, and warn on every downstream use.
  * @return The body's TypeCheckResult (success or failure).
  */
-TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLetTask(eshkol_ast_t* expr) {
     const auto& let = expr->operation.let_op;
 
     ctx_.pushScope();
@@ -2964,6 +3197,9 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
     // Collect binding types
     std::vector<TypeId> binding_types;
     std::vector<std::string> binding_names;
+    // Whether each binding's type was inferred from its initialiser (and so
+    // describes only the seed) rather than declared by an annotation or linear.
+    std::vector<bool> binding_inferred;
     // Name plus the index it was bound at: a binding's scope runs from the next
     // binding's value through the body, so its region depends on where it sits.
     std::vector<std::pair<std::string, size_t>> linear_bindings;
@@ -2985,7 +3221,19 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
         if (let.binding_types && let.binding_types[i]) {
             binding_type = resolveType(let.binding_types[i]);
         } else if (binding.cons_cell.cdr) {
-            auto inferred = synthesize(binding.cons_cell.cdr);
+            // A letrec lambda may call itself; its result is inferred as the
+            // least fixpoint over those calls (synthesizeRecursiveLambdaTask()).
+            const bool recursive_lambda =
+                (expr->operation.op == ESHKOL_LETREC_OP ||
+                 expr->operation.op == ESHKOL_LETREC_STAR_OP) &&
+                binding.cons_cell.cdr->type == ESHKOL_OP &&
+                binding.cons_cell.cdr->operation.op == ESHKOL_LAMBDA_OP;
+            TypeCheckResult inferred;
+            if (recursive_lambda) {
+                inferred = (co_await synthesizeRecursiveLambdaTask(name, binding.cons_cell.cdr));
+            } else {
+                inferred = (co_await synthesizeTask(binding.cons_cell.cdr));
+            }
             if (inferred.success) {
                 binding_type = inferred.inferred_type;
             }
@@ -2995,7 +3243,7 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
             // value define's slot to '() in the letrec* head and assigns it at
             // its source position, so narrowing to Null here would warn on every
             // downstream numeric use of a perfectly well-typed program. Same
-            // soundness rule synthesizeIf() applies when a guarded branch
+            // soundness rule synthesizeIfTask() applies when a guarded branch
             // reassigns the refined variable: a reassigned slot cannot be
             // narrowed to what it held before.
             if (expr->operation.op == ESHKOL_LETREC_STAR_OP &&
@@ -3007,6 +3255,8 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
 
         binding_names.push_back(name);
         binding_types.push_back(binding_type);
+        binding_inferred.push_back(!(let.binding_types && let.binding_types[i]) &&
+                                   !(binding_type.flags & TYPE_FLAG_LINEAR));
         // A linear-typed let binding is use-once checked over the let body, the
         // same way a linear parameter is over a function body. This used to be
         // skipped (#320) because the incidental usage counters were too coarse
@@ -3021,23 +3271,127 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
         }
     }
 
-    // Handle named let (loop): pre-bind the loop name as a recursive function
-    // Named let: (let loop ((i 0)) body) - loop is a function that takes i and returns body type
-    if (let.name) {
-        // For named let, we need to figure out the return type
-        // Pre-bind with Value return type, then update after body synthesis
-        TypeId loop_type = env_.makeFunctionType(binding_types, BuiltinTypes::Value);
-        ctx_.bind(let.name, loop_type);
-    }
+    TypeCheckResult body_result = TypeCheckResult::ok(BuiltinTypes::Value);
 
-    // Synthesize body type
-    auto body_result = synthesize(let.body);
+    if (!let.name) {
+        body_result = (co_await synthesizeTask(let.body));
+    } else {
+        // Named let: `(let loop ((x seed) ...) body)` binds `loop` as a
+        // recursive procedure over the bindings. A loop parameter holds the
+        // seed on the first iteration and whatever a recursive call passes on
+        // every later one, so its type is the JOIN of all of those — not the
+        // seed's synthesized type. Freezing it to the seed made a correct loop
+        // warn whenever the seed was synthesized more precisely than the values
+        // the loop computes: an interval accumulator seeded (cons 0.0 0.0) is
+        // Pair<Float64, Float64>, the interval sum fed back is Pair, and
+        // `Pair <: Pair<Float64, Float64>` rightly fails.
+        //
+        // The join is computed to a fixpoint over the body. Each pass binds the
+        // parameters and the loop at the current signature, synthesizes the
+        // body while recording the argument types of every call to this loop
+        // (loop_frames_), then widens each inferred parameter to its least
+        // common supertype with each recorded argument. Widening one parameter
+        // can change the types computed for another's arguments, and the loop
+        // may be called from several sites, hence the iteration. It terminates:
+        // a parameter only ever moves strictly up its own finite supertype
+        // chain. A pass that widened something is discarded — its diagnostics
+        // were judged against a signature that was too narrow — and the pass
+        // that widens nothing is the real check.
+        //
+        // Widening is to INFORMATIVE joins only. A join that reaches the
+        // dynamic top type `Value` (Pair with String, Int64 with String) says
+        // the loop carries unrelated kinds of value in one slot; adopting it
+        // would switch the call-site check off for exactly the argument that
+        // is wrong. Such an argument contributes nothing, so the parameter keeps
+        // its type and the recursive call is reported against it. The one
+        // exception is a Boolean slot joined with another kind: Scheme's `#f`
+        // for "nothing yet" beside the value found later. That join is adopted
+        // as Value, because the slot is a flag-or-value by design and reporting
+        // the value against the seed's Boolean is a false positive on a correct
+        // loop. A declared (annotated) or linear binding is a contract and is
+        // never widened.
+        //
+        // The loop's RESULT is inferred by the same iteration, as the least
+        // fixpoint over its own calls. A recursive call returns whatever the
+        // loop eventually returns, so the first pass binds the loop with result
+        // Never, the empty type, which a join ignores: (if (< i n) (loop (+ i 1)) i)
+        // is then Int64 because i is, not Value because the call was not yet
+        // typed. Each later pass is checked against the join of the guess and
+        // the body type, until the body adds nothing. A loop no path returns
+        // from, or one that exhausts the pass budget, gets Value.
+        std::vector<TypeId> params = binding_types;
+        TypeId loop_result = BuiltinTypes::Never;
+        const size_t loop_scope = ctx_.scopeCount() - 1;
+        const auto linear_before = ctx_.snapshotLinearUsage();
 
-    // For named let, update the loop function's return type based on body
-    if (let.name && body_result.success) {
-        // Re-bind with the actual return type (though this is after the fact)
-        TypeId loop_type = env_.makeFunctionType(binding_types, body_result.inferred_type);
-        ctx_.bind(let.name, loop_type);
+        for (size_t pass = 0;; ++pass) {
+            // Parameters may have been narrowed as a side effect of the previous
+            // pass (arithmetic narrows a Value-typed variable); start each pass
+            // from the signature being tested.
+            for (size_t i = 0; i < params.size(); ++i) {
+                if (binding_inferred[i]) ctx_.bind(binding_names[i], params[i]);
+            }
+            TypeId loop_type = env_.makeFunctionType(params, loop_result);
+            ctx_.bind(let.name, loop_type);
+
+            const size_t errors_mark = errors_.size();
+            const size_t deferred_mark = deferred_diagnostics_.size();
+            const size_t linearity_mark = linearity_violations_;
+
+            loop_frames_.push_back(LoopFrame{let.name, loop_scope, loop_type,
+                                             std::vector<std::vector<TypeId>>(params.size())});
+            ++speculation_depth_;
+            body_result = (co_await synthesizeTask(let.body));
+            --speculation_depth_;
+            LoopFrame frame = std::move(loop_frames_.back());
+            loop_frames_.pop_back();
+
+            bool widened = false;
+            for (size_t i = 0; i < params.size(); ++i) {
+                if (!binding_inferred[i]) continue;
+                for (TypeId arg : frame.args[i]) {
+                    const WidenResult result = TypeRelation(env_).widen(
+                        params[i], arg, WidenPolicy::InferenceSlot);
+                    if (result.changed) {
+                        params[i] = result.type;
+                        widened = true;
+                    }
+                }
+            }
+
+            if (frame.uses > 0) {
+                const TypeId body_type =
+                    body_result.success ? body_result.inferred_type : BuiltinTypes::Value;
+                const TypeId next = nextRecursionResult(loop_result, body_type, pass);
+                if (next != loop_result) {
+                    loop_result = next;
+                    widened = true;
+                }
+            }
+
+            if (!widened) {
+                // Fixpoint: this pass is the check. Release what it held unless
+                // an enclosing loop's pass is still deciding.
+                if (speculation_depth_ == 0) {
+                    for (size_t d = deferred_mark; d < deferred_diagnostics_.size(); ++d) {
+                        fprintf(stderr, "%s\n", deferred_diagnostics_[d].c_str());
+                    }
+                    deferred_diagnostics_.resize(deferred_mark);
+                }
+                break;
+            }
+
+            // Not yet a fixpoint: undo everything this pass recorded.
+            errors_.resize(errors_mark);
+            deferred_diagnostics_.resize(deferred_mark);
+            linearity_violations_ = linearity_mark;
+            ctx_.restoreLinearUsage(linear_before);
+        }
+
+        // Re-bind the loop with the body's return type for the rest of the scope.
+        if (body_result.success) {
+            ctx_.bind(let.name, env_.makeFunctionType(params, body_result.inferred_type));
+        }
     }
 
     // A named let is a loop: its body runs an unknown number of times, so a
@@ -3064,7 +3418,7 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
 
     ctx_.popScope();
 
-    return body_result;
+    co_return body_result;
 }
 
 // ============================================================================
@@ -3236,21 +3590,23 @@ static bool exprAssignsVar(const eshkol_ast_t* e, const std::string& var) {
  * value typed number-or-#f checks cleanly. The refinement is conservative:
  * it is dropped entirely for any variable the then-branch reassigns (`set!`).
  *
- * As a special case for named-let recursive loops (where a recursive-call
- * branch often still carries the placeholder BuiltinTypes::Value while the
- * base-case branch has a concrete type), if exactly one branch is Value, the
- * other (concrete) branch's type is preferred outright rather than computing
- * an LCS. Otherwise the result is TypeEnvironment::leastCommonSupertype() of
- * the two branch types. With no else-branch, the then-branch's type is
- * returned directly.
- * @return The then-branch's TypeCheckResult if there is no else-branch or
- * synthesis of a branch fails; otherwise the LCS (or preferred concrete
- * branch type) of both branches.
+ * The result is joinBranchTypes() of the two branches, the rule every other
+ * branching form uses, so `(if c a b)` and `(cond (c a) (else b))` have one
+ * type. A Value branch makes the join Value: an `if` whose branch the checker
+ * cannot type does not claim the other branch's type. (It used to, for a
+ * named let whose recursive call is still Value, and it fell back to the
+ * then-branch's type when the branches shared no supertype; both claimed more
+ * than the branches show.) A recursive call no longer yields Value while its
+ * procedure's result is being inferred: it yields Never, which the join
+ * ignores (see synthesizeLetTask()). The parser supplies `'()` for a missing
+ * else.
+ * @return The failing branch's result if synthesis of a branch fails;
+ * otherwise the join of both branch types.
  */
-TypeCheckResult TypeChecker::synthesizeIf(eshkol_ast_t* expr) {
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeIfTask(eshkol_ast_t* expr) {
     // if has: condition, then-branch, else-branch
     if (expr->operation.call_op.num_vars < 2) {
-        return errorAt(expr, "if requires condition and then-branch");
+        co_return errorAt(expr, "if requires condition and then-branch");
     }
 
     eshkol_ast_t* cond = &expr->operation.call_op.variables[0];
@@ -3261,7 +3617,7 @@ TypeCheckResult TypeChecker::synthesizeIf(eshkol_ast_t* expr) {
     // nested expressions and recording their inferred types) — matching the
     // pre-synthesis the generic application path used to perform.
     std::vector<PredicateNarrowing> narrowings = collectPredicateNarrowings(cond);
-    synthesize(cond);
+    (co_await synthesizeTask(cond));
     // Drop any refinement whose variable is reassigned inside the branch.
     std::vector<PredicateNarrowing> active;
     for (const auto& n : narrowings) {
@@ -3279,14 +3635,15 @@ TypeCheckResult TypeChecker::synthesizeIf(eshkol_ast_t* expr) {
     if (!active.empty()) {
         ctx_.pushScope();
         for (const auto& n : active) {
-            ctx_.bind(n.var, n.type);
+            const TypeId current = ctx_.lookup(n.var).value_or(BuiltinTypes::Value);
+            ctx_.bind(n.var, TypeRelation(env_).narrow(current, n.type));
         }
-        then_type = synthesize(then_branch);
+        then_type = (co_await synthesizeTask(then_branch));
         ctx_.popScope();
     } else {
-        then_type = synthesize(then_branch);
+        then_type = (co_await synthesizeTask(then_branch));
     }
-    if (!then_type.success) return then_type;
+    if (!then_type.success) co_return then_type;
 
     if (expr->operation.call_op.num_vars >= 3) {
         // Rewind linear usage to the pre-branch baseline, synthesize the else
@@ -3295,31 +3652,837 @@ TypeCheckResult TypeChecker::synthesizeIf(eshkol_ast_t* expr) {
         auto after_then = ctx_.snapshotLinearUsage();
         ctx_.restoreLinearUsage(linear_before);
 
-        auto else_type = synthesize(&expr->operation.call_op.variables[2]);
-        if (!else_type.success) return else_type;
+        auto else_type = (co_await synthesizeTask(&expr->operation.call_op.variables[2]));
+        if (!else_type.success) co_return else_type;
 
         ctx_.mergeMaxLinearUsage(after_then);
 
-        TypeId then_t = then_type.inferred_type;
-        TypeId else_t = else_type.inferred_type;
+        co_return TypeCheckResult::ok(
+            joinBranchTypes({then_type.inferred_type, else_type.inferred_type}));
+    }
 
-        // For named let loops: if one branch is Value (recursive call),
-        // prefer the concrete type from the base case branch
-        if (then_t == BuiltinTypes::Value && else_t != BuiltinTypes::Value) {
-            return TypeCheckResult::ok(else_t);
-        }
-        if (else_t == BuiltinTypes::Value && then_t != BuiltinTypes::Value) {
-            return TypeCheckResult::ok(then_t);
-        }
+    co_return TypeCheckResult::ok(joinBranchTypes({then_type.inferred_type, BuiltinTypes::Null}));
+}
 
-        // Compute LCS of branches
-        auto lcs = env_.leastCommonSupertype(then_t, else_t);
-        if (lcs) {
-            return TypeCheckResult::ok(*lcs);
+// ============================================================================
+// CONTROL AND BINDING FORMS
+// ============================================================================
+//
+// Each form below evaluates subexpressions, and every one of them is
+// synthesized here in the scope it runs in. These forms used to return a fixed
+// type without looking inside (and `begin` synthesized only its last
+// expression), so a wrong argument in a clause, a loop body, a handler or a
+// template escape was never reported although the same call warned at top
+// level.
+//
+// Rules shared by the branching forms:
+//  - A branch body runs in a scope of its own. Backward inference inside one
+//    branch (arithmetic narrowing a Value-typed variable to Number) describes
+//    that path only. If it escaped, it would narrow an enclosing function's
+//    parameter and warn at a caller whose argument takes another path.
+//  - Linear-usage counters are charged the maximum over mutually exclusive
+//    branches, as in synthesizeIfTask().
+//  - A branch whose synthesis fails contributes Value. A failure inside a
+//    branch is not the form's own failure, and propagating it would report the
+//    enclosing definition for a subexpression the checker merely could not type.
+//  - The result is the join of the branch types, including the value the form
+//    yields when no branch is taken: #f for cond, case, when and unless. An
+//    unmatched match raises and a guard with no matching clause re-raises, so
+//    neither contributes a fall-through value.
+//  - Unknowns are Value. Nothing here claims more than the branches show.
+
+namespace {
+
+/** True if a clause head is the `else` keyword. */
+bool isElseHead(const eshkol_ast_t* head) {
+    return head && head->type == ESHKOL_VAR && head->variable.id &&
+           std::strcmp(head->variable.id, "else") == 0;
+}
+
+/** True if a clause body is R7RS 4.2.1's `=> receiver` form. */
+bool isArrowBody(const eshkol_ast_t* body, uint64_t count) {
+    return body && count == 2 && body[0].type == ESHKOL_VAR && body[0].variable.id &&
+           std::strcmp(body[0].variable.id, "=>") == 0;
+}
+
+/** True if any of @p count expressions assigns @p var. */
+bool anyAssigns(const eshkol_ast_t* items, uint64_t count, const std::string& var) {
+    for (uint64_t i = 0; i < count; ++i) {
+        if (exprAssignsVar(&items[i], var)) return true;
+    }
+    return false;
+}
+
+/**
+ * The occurrence-typing refinements a true @p test proves for a body of
+ * @p count expressions, minus any variable that body reassigns (the same
+ * cancellation synthesizeIfTask() applies).
+ */
+std::vector<PredicateNarrowing> narrowingsForBody(const eshkol_ast_t* test,
+                                                  const eshkol_ast_t* body,
+                                                  uint64_t count) {
+    std::vector<PredicateNarrowing> active;
+    for (const auto& n : collectPredicateNarrowings(test)) {
+        if (!anyAssigns(body, count, n.var)) active.push_back(n);
+    }
+    return active;
+}
+
+/** Call @p fn with every name @p p binds. */
+template <class Fn>
+void forEachPatternName(const eshkol_pattern_t* p, Fn&& fn) {
+    if (!p) return;
+    switch (p->type) {
+        case PATTERN_VARIABLE:
+            if (p->variable.name) fn(p->variable.name);
+            break;
+        case PATTERN_CONS:
+            forEachPatternName(p->cons.car_pattern, fn);
+            forEachPatternName(p->cons.cdr_pattern, fn);
+            break;
+        case PATTERN_LIST:
+            for (uint64_t i = 0; i < p->list.num_patterns; ++i) {
+                forEachPatternName(p->list.patterns[i], fn);
+            }
+            break;
+        case PATTERN_PREDICATE:
+            if (p->predicate.binding_name) fn(p->predicate.binding_name);
+            break;
+        case PATTERN_OR:
+            for (uint64_t i = 0; i < p->or_pat.num_patterns; ++i) {
+                forEachPatternName(p->or_pat.patterns[i], fn);
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+}  // namespace
+
+namespace {
+/** Passes a recursive procedure's result may take before it is given Value. */
+constexpr size_t kMaxRecursionPasses = 8;
+}  // namespace
+
+/** @brief Count a reference to @p name against the innermost frame of that name, if it resolves to that frame's binding. */
+void TypeChecker::noteRecursiveUse(const std::string& name, TypeId bound) {
+    for (auto frame = loop_frames_.rbegin(); frame != loop_frames_.rend(); ++frame) {
+        if (frame->name != name) continue;
+        auto scope = ctx_.bindingScopeOf(name);
+        if (scope && *scope == frame->scope_index && bound == frame->loop_type) {
+            ++frame->uses;
+        }
+        break;
+    }
+}
+
+TypeChecker::SpeculationMark TypeChecker::markSpeculation() const {
+    return SpeculationMark{errors_.size(), deferred_diagnostics_.size(), linearity_violations_,
+                           ctx_.snapshotLinearUsage()};
+}
+
+void TypeChecker::rollbackSpeculation(const SpeculationMark& mark) {
+    errors_.resize(mark.errors);
+    deferred_diagnostics_.resize(mark.deferred);
+    linearity_violations_ = mark.linearity;
+    ctx_.restoreLinearUsage(mark.linear_usage);
+}
+
+void TypeChecker::releaseSpeculation(const SpeculationMark& mark) {
+    if (speculation_depth_ != 0) return;
+    for (size_t d = mark.deferred; d < deferred_diagnostics_.size(); ++d) {
+        fprintf(stderr, "%s\n", deferred_diagnostics_[d].c_str());
+    }
+    deferred_diagnostics_.resize(mark.deferred);
+}
+
+TypeId TypeChecker::nextRecursionResult(TypeId current, TypeId body, size_t pass) const {
+    TypeId next = joinBranchTypes({current, body});
+    if (next == BuiltinTypes::Never || pass + 1 >= kMaxRecursionPasses) {
+        next = BuiltinTypes::Value;
+    }
+    return next;
+}
+
+/**
+ * @brief Synthesis of a lambda bound by letrec / letrec* under @p name.
+ *
+ * The lambda may call itself through @p name, so its result is inferred the
+ * way a function define's is: the name is bound to the lambda's parameters
+ * with result Never for the first pass, and a pass that referred to the name
+ * is repeated against the join of the guess and the result it produced, until
+ * that join is stable. A lambda with a return annotation is checked once
+ * against it. The binding the caller makes afterwards is unchanged.
+ */
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeRecursiveLambdaTask(const std::string& name,
+                                                                           eshkol_ast_t* expr) {
+    const auto& lambda = expr->operation.lambda_op;
+    if (lambda.return_type) {
+        co_return (co_await synthesizeTask(expr));
+    }
+    std::vector<TypeId> params;
+    for (size_t i = 0; i < lambda.num_params; ++i) {
+        params.push_back(lambda.param_types && lambda.param_types[i]
+                             ? resolveType(lambda.param_types[i])
+                             : BuiltinTypes::Value);
+    }
+    const size_t scope = ctx_.scopeCount() - 1;
+    TypeId guess = BuiltinTypes::Never;
+    TypeCheckResult result;
+    for (size_t pass = 0;; ++pass) {
+        const TypeId self = env_.makeFunctionType(params, guess, lambda.is_variadic);
+        ctx_.bind(name, self);
+        const SpeculationMark mark = markSpeculation();
+        loop_frames_.push_back(LoopFrame{name, scope, self,
+                                         std::vector<std::vector<TypeId>>(params.size())});
+        ++speculation_depth_;
+        result = (co_await synthesizeTask(expr));
+        --speculation_depth_;
+        LoopFrame frame = std::move(loop_frames_.back());
+        loop_frames_.pop_back();
+        const TypeId produced =
+            result.success ? applicationResultOf(result.inferred_type) : BuiltinTypes::Value;
+        const TypeId next = nextRecursionResult(guess, produced, pass);
+        if (frame.uses == 0 || next == guess) {
+            releaseSpeculation(mark);
+            break;
+        }
+        rollbackSpeculation(mark);
+        guess = next;
+    }
+    co_return result;
+}
+
+/**
+ * @brief Join of branch result types: their least common supertype, or Value
+ * when any branch is Value or the branches share no supertype but the top.
+ * Never, the result of a recursive call whose procedure is still being
+ * inferred, is the identity.
+ */
+TypeId TypeChecker::joinBranchTypes(const std::vector<TypeId>& types) const {
+    return TypeRelation(env_).joinAll(types);
+}
+
+/** @brief The result type of applying a value of type @p callee: its codomain, or Value. */
+TypeId TypeChecker::applicationResultOf(TypeId callee) const {
+    return env_.isFunctionType(callee) ? env_.getFunctionReturnType(callee)
+                                       : BuiltinTypes::Value;
+}
+
+/**
+ * @brief Synthesize @p count expressions run in sequence; the result is the
+ * last one's type, @p empty_type when there are none, and Value when the last
+ * one cannot be typed. Never fails.
+ */
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeSequenceTask(eshkol_ast_t* exprs,
+                                                                     uint64_t count,
+                                                                     TypeId empty_type) {
+    TypeId last = empty_type;
+    for (uint64_t i = 0; i < count; ++i) {
+        auto result = (co_await synthesizeTask(&exprs[i]));
+        last = result.success ? result.inferred_type : BuiltinTypes::Value;
+    }
+    co_return TypeCheckResult::ok(last);
+}
+
+/**
+ * @brief Synthesize one cond/case/guard clause body laid out as @p count
+ * expressions.
+ *
+ * An empty body yields the clause's test value (`(cond (x) ...)` returns x),
+ * whose type is @p test_type. `(test => receiver)` applies the receiver to that
+ * value, so the body's type is the receiver's codomain. Otherwise the body is
+ * a sequence.
+ */
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeClauseBodyTask(eshkol_ast_t* body,
+                                                                       uint64_t count,
+                                                                       TypeId test_type) {
+    if (count == 0) {
+        co_return TypeCheckResult::ok(test_type);
+    }
+    if (isArrowBody(body, count)) {
+        auto receiver = (co_await synthesizeTask(&body[1]));
+        co_return TypeCheckResult::ok(receiver.success
+                                          ? applicationResultOf(receiver.inferred_type)
+                                          : BuiltinTypes::Value);
+    }
+    co_return (co_await synthesizeSequenceTask(body, count, BuiltinTypes::Value));
+}
+
+/**
+ * @brief Synthesize a ladder of `(test body ...)` clauses (cond, and a guard's
+ * handler clauses).
+ *
+ * Tests run in order, each only if every earlier one was false, so a test's
+ * narrowing (occurrence typing and backward inference) stays visible to the
+ * tests after it; the caller supplies the scope that bounds it. Each body runs
+ * in its own scope under its test's predicate refinements. Appends one result
+ * type per clause to @p results and sets @p has_else when an `else` clause was
+ * reached. Linear usage on return is the maximum over "every test, no body"
+ * and each "tests up to i, then body i" path.
+ */
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeClauseLadderTask(
+    eshkol_ast_t* clauses, uint64_t count, std::vector<TypeId>& results, bool& has_else) {
+    has_else = false;
+    auto tests_so_far = ctx_.snapshotLinearUsage();
+    std::vector<std::map<std::string, int>> branch_usage;
+
+    for (uint64_t i = 0; i < count; ++i) {
+        eshkol_ast_t* clause = &clauses[i];
+        if (clause->type != ESHKOL_OP || clause->operation.op != ESHKOL_CALL_OP) continue;
+        auto& cl = clause->operation.call_op;
+        const bool is_else = isElseHead(cl.func);
+
+        ctx_.restoreLinearUsage(tests_so_far);
+        TypeId test_type = BuiltinTypes::Value;
+        if (!is_else && cl.func) {
+            auto test = (co_await synthesizeTask(cl.func));
+            if (test.success) test_type = test.inferred_type;
+        }
+        tests_so_far = ctx_.snapshotLinearUsage();
+
+        std::vector<PredicateNarrowing> active;
+        if (!is_else) active = narrowingsForBody(cl.func, cl.variables, cl.num_vars);
+        ctx_.pushScope();
+        for (const auto& n : active) {
+            const TypeId current = ctx_.lookup(n.var).value_or(BuiltinTypes::Value);
+            ctx_.bind(n.var, TypeRelation(env_).narrow(current, n.type));
+        }
+        auto body = (co_await synthesizeClauseBodyTask(cl.variables, cl.num_vars, test_type));
+        ctx_.popScope();
+
+        results.push_back(body.success ? body.inferred_type : BuiltinTypes::Value);
+        branch_usage.push_back(ctx_.snapshotLinearUsage());
+        if (is_else) {
+            // R7RS requires else to be last; clauses after it never run.
+            has_else = true;
+            break;
         }
     }
 
-    return then_type;
+    ctx_.restoreLinearUsage(tests_so_far);
+    for (const auto& usage : branch_usage) ctx_.mergeMaxLinearUsage(usage);
+    co_return TypeCheckResult::ok(BuiltinTypes::Value);
+}
+
+/**
+ * @brief Synthesis rule for `cond`: variables[i] is a clause whose func is the
+ * test (or `else`) and whose variables are the body.
+ *
+ * The result is the join of the clause results, plus Boolean when there is no
+ * `else` clause, because a cond that matches nothing yields #f.
+ */
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeCondTask(eshkol_ast_t* expr) {
+    auto& cond = expr->operation.call_op;
+    std::vector<TypeId> results;
+    bool has_else = false;
+    ctx_.pushScope();
+    (co_await synthesizeClauseLadderTask(cond.variables, cond.num_vars, results, has_else));
+    ctx_.popScope();
+    if (!has_else) results.push_back(BuiltinTypes::Boolean);
+    co_return TypeCheckResult::ok(joinBranchTypes(results));
+}
+
+/**
+ * @brief Synthesis rule for `case`: func is the key, variables[i] is
+ * CONS(datums | else, CALL(body ...)).
+ *
+ * The key is synthesized once; the datums are quoted data and are not. Each
+ * body runs in its own scope, and a `=> receiver` body applies the receiver to
+ * the key. The result joins the clause results, plus Boolean without an
+ * `else` clause (a case that matches nothing yields #f).
+ */
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeCaseTask(eshkol_ast_t* expr) {
+    auto& cs = expr->operation.call_op;
+    ctx_.pushScope();
+    TypeId key_type = BuiltinTypes::Value;
+    if (cs.func) {
+        auto key = (co_await synthesizeTask(cs.func));
+        if (key.success) key_type = key.inferred_type;
+    }
+    const auto after_key = ctx_.snapshotLinearUsage();
+
+    std::vector<TypeId> results;
+    std::vector<std::map<std::string, int>> branch_usage;
+    bool has_else = false;
+    for (uint64_t i = 0; i < cs.num_vars; ++i) {
+        eshkol_ast_t* clause = &cs.variables[i];
+        if (clause->type != ESHKOL_CONS) continue;
+        const bool is_else = isElseHead(clause->cons_cell.car);
+        eshkol_ast_t* body = clause->cons_cell.cdr;
+
+        ctx_.restoreLinearUsage(after_key);
+        ctx_.pushScope();
+        TypeCheckResult body_result = TypeCheckResult::ok(BuiltinTypes::Value);
+        if (body && body->type == ESHKOL_OP && body->operation.op == ESHKOL_CALL_OP) {
+            body_result = (co_await synthesizeClauseBodyTask(body->operation.call_op.variables,
+                                                             body->operation.call_op.num_vars,
+                                                             key_type));
+        } else if (body) {
+            body_result = (co_await synthesizeTask(body));
+        }
+        ctx_.popScope();
+
+        results.push_back(body_result.success ? body_result.inferred_type : BuiltinTypes::Value);
+        branch_usage.push_back(ctx_.snapshotLinearUsage());
+        if (is_else) {
+            has_else = true;
+            break;
+        }
+    }
+
+    ctx_.restoreLinearUsage(after_key);
+    for (const auto& usage : branch_usage) ctx_.mergeMaxLinearUsage(usage);
+    ctx_.popScope();
+    if (!has_else) results.push_back(BuiltinTypes::Boolean);
+    co_return TypeCheckResult::ok(joinBranchTypes(results));
+}
+
+/**
+ * @brief Synthesis rule for `when` / `unless`: variables[0] is the test, the
+ * rest is the body.
+ *
+ * The body runs in its own scope; under `when` it sees the test's predicate
+ * refinements. A form whose body does not run yields #f, and an empty body
+ * yields #t, so the result is the join of the body's type with Boolean.
+ */
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeWhenUnlessTask(eshkol_ast_t* expr) {
+    auto& form = expr->operation.call_op;
+    if (form.num_vars == 0 || !form.variables) {
+        co_return TypeCheckResult::ok(BuiltinTypes::Value);
+    }
+    const bool is_when = expr->operation.op == ESHKOL_WHEN_OP;
+    eshkol_ast_t* test = &form.variables[0];
+    eshkol_ast_t* body = form.variables + 1;
+    const uint64_t body_count = form.num_vars - 1;
+
+    ctx_.pushScope();
+    (co_await synthesizeTask(test));
+    std::vector<PredicateNarrowing> active;
+    if (is_when) active = narrowingsForBody(test, body, body_count);
+    ctx_.pushScope();
+    for (const auto& n : active) {
+        const TypeId current = ctx_.lookup(n.var).value_or(BuiltinTypes::Value);
+        ctx_.bind(n.var, TypeRelation(env_).narrow(current, n.type));
+    }
+    auto body_result = (co_await synthesizeSequenceTask(body, body_count, BuiltinTypes::Boolean));
+    ctx_.popScope();
+    ctx_.popScope();
+
+    co_return TypeCheckResult::ok(
+        joinBranchTypes({body_result.inferred_type, BuiltinTypes::Boolean}));
+}
+
+/**
+ * @brief Synthesis rule for `do`.
+ *
+ * Layout: func is CONS(CALL(bindings), CONS(test, CALL(results))), each binding
+ * is CONS(var, CONS(init, step)) where a missing step is the variable itself,
+ * and variables[] is the body.
+ *
+ * The inits run once, in the enclosing scope. A loop variable holds its init on
+ * the first iteration and its step's value on every later one, so its type is
+ * the join of the init and the step, the principle synthesizeLetTask() applies
+ * to a named let's parameters. The join is computed to a fixpoint: each pass
+ * binds the variables at the current types and synthesizes the test, the body
+ * and the steps speculatively. If a step widened a variable, the pass's
+ * diagnostics, recorded errors, linearity count and linear-usage counters are
+ * rolled back and the loop is checked again. The pass that widens nothing is
+ * the real check.
+ *
+ * One difference from the named let: a join that reaches Value IS adopted. A
+ * named let's recursive call is itself an argument check, so an incompatible
+ * argument that is not joined in is still reported there. A `do` step has no
+ * such check, and a variable that kept its init's type would claim a type the
+ * step's value does not have. A step of unknown type (Value) likewise makes the
+ * variable Value. Termination: a variable only moves strictly up its finite
+ * supertype chain, and Value is the top.
+ *
+ * The result expressions run once, after the loop, with the variables in
+ * scope. The result is the last one's type, or Value when there are none (an
+ * unspecified value).
+ */
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDoTask(eshkol_ast_t* expr) {
+    auto& form = expr->operation.call_op;
+    eshkol_ast_t* main_cons = form.func;
+    if (!main_cons || main_cons->type != ESHKOL_CONS || !main_cons->cons_cell.cdr ||
+        main_cons->cons_cell.cdr->type != ESHKOL_CONS) {
+        co_return TypeCheckResult::ok(BuiltinTypes::Value);
+    }
+    eshkol_ast_t* bindings = main_cons->cons_cell.car;
+    eshkol_ast_t* test = main_cons->cons_cell.cdr->cons_cell.car;
+    eshkol_ast_t* results = main_cons->cons_cell.cdr->cons_cell.cdr;
+
+    std::vector<std::string> names;
+    std::vector<eshkol_ast_t*> steps;
+    std::vector<TypeId> types;
+    if (bindings && bindings->type == ESHKOL_OP && bindings->operation.op == ESHKOL_CALL_OP) {
+        auto& list = bindings->operation.call_op;
+        for (uint64_t i = 0; i < list.num_vars; ++i) {
+            eshkol_ast_t* binding = &list.variables[i];
+            if (binding->type != ESHKOL_CONS) continue;
+            eshkol_ast_t* var = binding->cons_cell.car;
+            eshkol_ast_t* rest = binding->cons_cell.cdr;
+            if (!var || var->type != ESHKOL_VAR || !var->variable.id ||
+                !rest || rest->type != ESHKOL_CONS) {
+                continue;
+            }
+            TypeId init_type = BuiltinTypes::Value;
+            if (rest->cons_cell.car) {
+                auto init = (co_await synthesizeTask(rest->cons_cell.car));
+                if (init.success) init_type = init.inferred_type;
+            }
+            names.push_back(var->variable.id);
+            steps.push_back(rest->cons_cell.cdr);
+            types.push_back(init_type);
+        }
+    }
+
+    ctx_.pushScope();
+    const auto linear_before = ctx_.snapshotLinearUsage();
+
+    for (;;) {
+        for (size_t i = 0; i < names.size(); ++i) ctx_.bind(names[i], types[i]);
+
+        const size_t errors_mark = errors_.size();
+        const size_t deferred_mark = deferred_diagnostics_.size();
+        const size_t linearity_mark = linearity_violations_;
+
+        ++speculation_depth_;
+        if (test) (co_await synthesizeTask(test));
+        (co_await synthesizeSequenceTask(form.variables, form.num_vars, BuiltinTypes::Value));
+        // R7RS 4.2.4: every step is evaluated before any variable is rebound,
+        // so each sees the same bindings the body saw.
+        std::vector<TypeId> step_types(names.size(), BuiltinTypes::Value);
+        for (size_t i = 0; i < names.size(); ++i) {
+            if (!steps[i]) {
+                step_types[i] = types[i];
+                continue;
+            }
+            auto step = (co_await synthesizeTask(steps[i]));
+            step_types[i] = step.success ? step.inferred_type : BuiltinTypes::Value;
+        }
+        --speculation_depth_;
+
+        bool widened = false;
+        for (size_t i = 0; i < names.size(); ++i) {
+            const WidenResult result = TypeRelation(env_).widen(
+                types[i], step_types[i], WidenPolicy::AdoptTop);
+            if (result.changed) {
+                types[i] = result.type;
+                widened = true;
+            }
+        }
+
+        if (!widened) {
+            if (speculation_depth_ == 0) {
+                for (size_t d = deferred_mark; d < deferred_diagnostics_.size(); ++d) {
+                    fprintf(stderr, "%s\n", deferred_diagnostics_[d].c_str());
+                }
+                deferred_diagnostics_.resize(deferred_mark);
+            }
+            break;
+        }
+
+        errors_.resize(errors_mark);
+        deferred_diagnostics_.resize(deferred_mark);
+        linearity_violations_ = linearity_mark;
+        ctx_.restoreLinearUsage(linear_before);
+    }
+
+    TypeId result_type = BuiltinTypes::Value;
+    if (results && results->type == ESHKOL_OP && results->operation.op == ESHKOL_CALL_OP) {
+        auto result = (co_await synthesizeSequenceTask(results->operation.call_op.variables,
+                                                       results->operation.call_op.num_vars,
+                                                       BuiltinTypes::Value));
+        result_type = result.inferred_type;
+    }
+    ctx_.popScope();
+    co_return TypeCheckResult::ok(result_type);
+}
+
+/**
+ * @brief Synthesis rule for `guard`: `(guard (var clause ...) body ...)`.
+ *
+ * The body runs in its own scope. A handler clause runs with the condition
+ * variable bound to whatever was raised, about which nothing is known, so it
+ * is Value (a predicate test such as `(string? e)` still refines it in that
+ * clause's body). The clauses form a ladder like cond's. The result joins the
+ * body's type with the clause results; a guard with no matching clause
+ * re-raises, so no fall-through value is added.
+ */
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeGuardTask(eshkol_ast_t* expr) {
+    auto& guard = expr->operation.guard_op;
+    const auto before = ctx_.snapshotLinearUsage();
+
+    ctx_.pushScope();
+    auto body = (co_await synthesizeSequenceTask(guard.body, guard.num_body_exprs,
+                                                 BuiltinTypes::Value));
+    ctx_.popScope();
+    const auto after_body = ctx_.snapshotLinearUsage();
+
+    std::vector<TypeId> results{body.inferred_type};
+    bool has_else = false;
+    ctx_.restoreLinearUsage(before);
+    ctx_.pushScope();
+    if (guard.var_name) ctx_.bind(guard.var_name, BuiltinTypes::Value);
+    (co_await synthesizeClauseLadderTask(guard.clauses, guard.num_clauses, results, has_else));
+    ctx_.popScope();
+
+    const auto handlers = ctx_.snapshotLinearUsage();
+    ctx_.restoreLinearUsage(after_body);
+    ctx_.mergeMaxLinearUsage(handlers);
+    co_return TypeCheckResult::ok(joinBranchTypes(results));
+}
+
+/** @brief Synthesize the evaluated expressions inside a pattern: its `(? pred)` predicates. */
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizePatternExpressionsTask(
+    const eshkol_pattern_t* pattern) {
+    if (!pattern) co_return TypeCheckResult::ok(BuiltinTypes::Value);
+    switch (pattern->type) {
+        case PATTERN_PREDICATE:
+            if (pattern->predicate.predicate) {
+                (co_await synthesizeTask(pattern->predicate.predicate));
+            }
+            break;
+        case PATTERN_CONS:
+            (co_await synthesizePatternExpressionsTask(pattern->cons.car_pattern));
+            (co_await synthesizePatternExpressionsTask(pattern->cons.cdr_pattern));
+            break;
+        case PATTERN_LIST:
+            for (uint64_t i = 0; i < pattern->list.num_patterns; ++i) {
+                (co_await synthesizePatternExpressionsTask(pattern->list.patterns[i]));
+            }
+            break;
+        case PATTERN_OR:
+            for (uint64_t i = 0; i < pattern->or_pat.num_patterns; ++i) {
+                (co_await synthesizePatternExpressionsTask(pattern->or_pat.patterns[i]));
+            }
+            break;
+        default:
+            // Literals are data; variables and wildcards evaluate nothing.
+            break;
+    }
+    co_return TypeCheckResult::ok(BuiltinTypes::Value);
+}
+
+/**
+ * @brief Bind the variables @p pattern binds, given that it matches a value of
+ * type @p matched.
+ *
+ * A variable pattern at this position binds the matched value itself. A
+ * `(? pred name)` pattern binds a value that passed pred: when pred is one of
+ * the narrowing predicates (number?, string?, ...), that proves the predicate's
+ * type unless @p matched is already at least as precise. A component of a
+ * cons or list pattern is not tracked through the destructuring, so it is
+ * Value. An `or` pattern binds Value throughout, because each alternative may
+ * bind a different value, or none, under the same name.
+ */
+void TypeChecker::bindPatternVariables(const eshkol_pattern_t* pattern, TypeId matched) {
+    if (!pattern) return;
+    switch (pattern->type) {
+        case PATTERN_VARIABLE:
+            if (pattern->variable.name) ctx_.bind(pattern->variable.name, matched);
+            break;
+        case PATTERN_CONS:
+            bindPatternVariables(pattern->cons.car_pattern, BuiltinTypes::Value);
+            bindPatternVariables(pattern->cons.cdr_pattern, BuiltinTypes::Value);
+            break;
+        case PATTERN_LIST:
+            for (uint64_t i = 0; i < pattern->list.num_patterns; ++i) {
+                bindPatternVariables(pattern->list.patterns[i], BuiltinTypes::Value);
+            }
+            break;
+        case PATTERN_PREDICATE:
+            if (pattern->predicate.binding_name) {
+                TypeId bound = matched;
+                const eshkol_ast_t* pred = pattern->predicate.predicate;
+                if (pred && pred->type == ESHKOL_VAR && pred->variable.id) {
+                    TypeId proven = narrowTypeForPredicate(pred->variable.id);
+                    if (proven.isValid()) bound = TypeRelation(env_).narrow(matched, proven);
+                }
+                ctx_.bind(pattern->predicate.binding_name, bound);
+            }
+            break;
+        case PATTERN_OR:
+            forEachPatternName(pattern, [this](const char* name) {
+                ctx_.bind(name, BuiltinTypes::Value);
+            });
+            break;
+        default:
+            break;
+    }
+}
+
+/**
+ * @brief Synthesis rule for `match`.
+ *
+ * The scrutinee is synthesized once. Each clause runs in its own scope: its
+ * pattern's predicate expressions are synthesized, its variables are bound as
+ * bindPatternVariables() describes, and its guard and body are synthesized
+ * there. The result is the join of the clause bodies; a match with no matching
+ * clause raises, so no fall-through value is added.
+ */
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeMatchTask(eshkol_ast_t* expr) {
+    auto& match = expr->operation.match_op;
+    ctx_.pushScope();
+    TypeId scrutinee = BuiltinTypes::Value;
+    if (match.expr) {
+        auto matched = (co_await synthesizeTask(match.expr));
+        if (matched.success) scrutinee = matched.inferred_type;
+    }
+    const auto after_scrutinee = ctx_.snapshotLinearUsage();
+
+    std::vector<TypeId> results;
+    std::vector<std::map<std::string, int>> branch_usage;
+    for (uint64_t i = 0; i < match.num_clauses; ++i) {
+        eshkol_match_clause_t& clause = match.clauses[i];
+        ctx_.restoreLinearUsage(after_scrutinee);
+        ctx_.pushScope();
+        (co_await synthesizePatternExpressionsTask(clause.pattern));
+        bindPatternVariables(clause.pattern, scrutinee);
+        if (clause.guard) (co_await synthesizeTask(clause.guard));
+        TypeId body_type = BuiltinTypes::Value;
+        if (clause.body) {
+            auto body = (co_await synthesizeTask(clause.body));
+            if (body.success) body_type = body.inferred_type;
+        }
+        ctx_.popScope();
+        results.push_back(body_type);
+        branch_usage.push_back(ctx_.snapshotLinearUsage());
+    }
+
+    ctx_.restoreLinearUsage(after_scrutinee);
+    for (const auto& usage : branch_usage) ctx_.mergeMaxLinearUsage(usage);
+    ctx_.popScope();
+    co_return TypeCheckResult::ok(joinBranchTypes(results));
+}
+
+/**
+ * @brief Synthesis rule for `and` / `or`.
+ *
+ * Every operand is synthesized. Operands after the first run only when the
+ * earlier ones allowed it, so they share a scope that bounds their narrowing;
+ * under `and`, each operand also sees the predicate refinements of the operands
+ * before it, as `(and (pair? x) (car x))` intends.
+ *
+ * `(and)` is #t and `(or)` is #f. `(and e ... last)` yields #f or last's value,
+ * so its type is the join of Boolean with last's. `(or e ...)` yields the first
+ * true operand's value or the last operand's value, so its type is the join of
+ * all operand types. A single operand is that operand's value.
+ */
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeAndOrTask(eshkol_ast_t* expr) {
+    auto& seq = expr->operation.sequence_op;
+    const bool is_and = expr->operation.op == ESHKOL_AND_OP;
+    if (seq.num_expressions == 0 || !seq.expressions) {
+        co_return TypeCheckResult::ok(BuiltinTypes::Boolean);
+    }
+
+    std::vector<TypeId> types;
+    ctx_.pushScope();
+    for (uint64_t i = 0; i < seq.num_expressions; ++i) {
+        eshkol_ast_t* operand = &seq.expressions[i];
+        auto result = (co_await synthesizeTask(operand));
+        types.push_back(result.success ? result.inferred_type : BuiltinTypes::Value);
+        if (is_and) {
+            const eshkol_ast_t* later = seq.expressions + i + 1;
+            const uint64_t later_count = seq.num_expressions - i - 1;
+            for (const auto& n : collectPredicateNarrowings(operand)) {
+                if (!anyAssigns(later, later_count, n.var)) {
+                    const TypeId current = ctx_.lookup(n.var).value_or(BuiltinTypes::Value);
+                    ctx_.bind(n.var, TypeRelation(env_).narrow(current, n.type));
+                }
+            }
+        }
+    }
+    ctx_.popScope();
+
+    if (types.size() == 1) co_return TypeCheckResult::ok(types.front());
+    if (is_and) {
+        co_return TypeCheckResult::ok(joinBranchTypes({BuiltinTypes::Boolean, types.back()}));
+    }
+    co_return TypeCheckResult::ok(joinBranchTypes(types));
+}
+
+/**
+ * @brief Synthesis rule for `let-values` / `let*-values`.
+ *
+ * let-values evaluates every producer in the enclosing scope; let*-values
+ * evaluates each producer with the earlier bindings visible. The bound
+ * variables receive values whose types are not tracked through the values
+ * protocol, so they are Value. The result is the body's type.
+ */
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLetValuesTask(eshkol_ast_t* expr) {
+    auto& lv = expr->operation.let_values_op;
+    const bool sequential = expr->operation.op == ESHKOL_LET_STAR_VALUES_OP;
+
+    if (!sequential) {
+        for (uint64_t i = 0; i < lv.num_bindings; ++i) {
+            (co_await synthesizeTask(&lv.producers[i]));
+        }
+    }
+    ctx_.pushScope();
+    for (uint64_t i = 0; i < lv.num_bindings; ++i) {
+        if (sequential) (co_await synthesizeTask(&lv.producers[i]));
+        for (uint64_t j = 0; lv.binding_vars && j < lv.binding_var_counts[i]; ++j) {
+            if (lv.binding_vars[i][j]) ctx_.bind(lv.binding_vars[i][j], BuiltinTypes::Value);
+        }
+    }
+    TypeId body_type = BuiltinTypes::Value;
+    if (lv.body) {
+        auto body = (co_await synthesizeTask(lv.body));
+        if (body.success) body_type = body.inferred_type;
+    }
+    ctx_.popScope();
+    co_return TypeCheckResult::ok(body_type);
+}
+
+/**
+ * @brief Synthesize the escapes in a quasiquote template at nesting level
+ * @p depth.
+ *
+ * The parser lays a template list out as a call to `list` (or `cons` for a
+ * dotted tail) over its elements, and a vector template as a tensor. Only an
+ * unquote or unquote-splicing at level 1 is evaluated. A nested quasiquote
+ * raises the level and an unquote inside it lowers it again. Plain data,
+ * including anything under a quote, is not an expression and is not
+ * synthesized.
+ */
+ContinuationTask<TypeCheckResult> TypeChecker::synthesizeQuasiTemplateTask(eshkol_ast_t* node,
+                                                                          int depth) {
+    if (!node || node->type != ESHKOL_OP) co_return TypeCheckResult::ok(BuiltinTypes::Value);
+    auto& op = node->operation;
+    switch (op.op) {
+        case ESHKOL_UNQUOTE_OP:
+        case ESHKOL_UNQUOTE_SPLICING_OP:
+            if (op.call_op.num_vars > 0 && op.call_op.variables) {
+                if (depth <= 1) {
+                    (co_await synthesizeTask(&op.call_op.variables[0]));
+                } else {
+                    (co_await synthesizeQuasiTemplateTask(&op.call_op.variables[0], depth - 1));
+                }
+            }
+            break;
+        case ESHKOL_QUASIQUOTE_OP:
+            if (op.call_op.num_vars > 0 && op.call_op.variables) {
+                (co_await synthesizeQuasiTemplateTask(&op.call_op.variables[0], depth + 1));
+            }
+            break;
+        case ESHKOL_CALL_OP:
+            for (uint64_t i = 0; i < op.call_op.num_vars; ++i) {
+                (co_await synthesizeQuasiTemplateTask(&op.call_op.variables[i], depth));
+            }
+            break;
+        case ESHKOL_TENSOR_OP:
+            for (uint64_t i = 0; i < op.tensor_op.total_elements && op.tensor_op.elements; ++i) {
+                (co_await synthesizeQuasiTemplateTask(&op.tensor_op.elements[i], depth));
+            }
+            break;
+        default:
+            break;
+    }
+    co_return TypeCheckResult::ok(BuiltinTypes::Value);
 }
 
 /**
@@ -3327,13 +4490,13 @@ TypeCheckResult TypeChecker::synthesizeIf(eshkol_ast_t* expr) {
  *
  * Currently a placeholder: rather than propagating @p expected's domain
  * types down into unannotated parameters, it simply defers entirely to the
- * synthesis rule synthesizeLambda(). The @p expected parameter is unused.
- * @return Whatever synthesizeLambda() returns for @p expr.
+ * synthesis rule synthesizeLambdaTask(). The @p expected parameter is unused.
+ * @return Whatever synthesizeLambdaTask() returns for @p expr.
  */
-TypeCheckResult TypeChecker::checkLambda(eshkol_ast_t* expr, TypeId expected) {
+ContinuationTask<TypeCheckResult> TypeChecker::checkLambdaTask(eshkol_ast_t* expr, TypeId expected) {
     // If expected is a function type, use its domain for param types
     // For now, just synthesize
-    return synthesizeLambda(expr);
+    co_return (co_await synthesizeLambdaTask(expr));
 }
 
 /**
@@ -3533,34 +4696,7 @@ void TypeChecker::addTypeMismatch(TypeId expected, TypeId actual, int line, int 
  * @return false only when no value could ever inhabit both types.
  */
 bool TypeChecker::ascriptionIsBelievable(TypeId actual, TypeId ascribed) const {
-    // An unresolved ascription or a failed synthesis carries no information.
-    if (actual == BuiltinTypes::Invalid || ascribed == BuiltinTypes::Invalid) {
-        return true;
-    }
-
-    // `Value` is the dynamic root: it says "unknown", never "wrong".
-    if (actual == BuiltinTypes::Value || ascribed == BuiltinTypes::Value) {
-        return true;
-    }
-
-    // Widening: the value already has the ascribed type.
-    if (env_.isSubtype(actual, ascribed)) return true;
-
-    // Narrowing: the programmer knows more than the checker inferred. This is
-    // the primary use of `the` and must stay unchallenged.
-    if (env_.isSubtype(ascribed, actual)) return true;
-
-    // The numeric tower is deliberately flat here — Integer, Rational, Real
-    // and Complex are siblings under Number, not a chain — so neither
-    // direction of subtyping holds between any two of them. Ascribing across
-    // the tower (`(the real 1)`, `(the float64 (+ 1 2))`) is ordinary and must
-    // not be reported; only leaving the tower entirely is a contradiction.
-    if (env_.isSubtype(actual, BuiltinTypes::Number) &&
-        env_.isSubtype(ascribed, BuiltinTypes::Number)) {
-        return true;
-    }
-
-    return false;
+    return TypeRelation(env_).castable(actual, ascribed);
 }
 
 /**
@@ -3585,12 +4721,25 @@ void TypeChecker::reportTypeIssue(const std::string& msg, const eshkol_ast_t* no
         loc_msg += ")";
     }
 
-    if (strict_types_) {
-        fprintf(stderr, "[ERROR] Type error: %s\n", loc_msg.c_str());
-    } else {
-        fprintf(stderr, "[WARN] Type warning: %s\n", loc_msg.c_str());
-    }
+    emitDiagnostic((strict_types_ ? "[ERROR] Type error: " : "[WARN] Type warning: ") +
+                   loc_msg);
     addError(msg, node ? node->line : 0, node ? node->column : 0);
+}
+
+/**
+ * @brief Print @p line (plus a newline) to stderr, or hold it back while a
+ * named-let body is being synthesized against a signature that may still widen.
+ *
+ * See synthesizeLetTask(): a pass that does not reach the fixpoint discards
+ * what it held; the pass that does releases it, in order, once no enclosing
+ * speculative pass remains.
+ */
+void TypeChecker::emitDiagnostic(const std::string& line) {
+    if (speculation_depth_ > 0) {
+        deferred_diagnostics_.push_back(line);
+        return;
+    }
+    fprintf(stderr, "%s\n", line.c_str());
 }
 
 /**
@@ -3630,7 +4779,7 @@ void TypeChecker::reportLinearViolation(const std::string& msg,
     std::string loc_msg = msg;
     appendLocation(loc_msg, node);
 
-    fprintf(stderr, "[ERROR] Type error: %s\n", loc_msg.c_str());
+    emitDiagnostic("[ERROR] Type error: " + loc_msg);
     linearity_violations_++;
     addError(msg, node ? node->line : 0, node ? node->column : 0);
 }
@@ -4659,7 +5808,7 @@ void TypeChecker::reportLinearVerdict(const std::string& name,
                               "' is not statically decidable here (body contains " +
                               verdict.blocker + "); use-exactly-once is NOT enforced for it";
             appendLocation(loc, site);
-            fprintf(stderr, "[WARN] Linearity not enforced: %s\n", loc.c_str());
+            emitDiagnostic("[WARN] Linearity not enforced: " + loc);
         }
         return;
     }

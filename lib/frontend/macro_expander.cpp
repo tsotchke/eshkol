@@ -6,6 +6,8 @@
  * MacroExpander implementation - Hygienic macro expansion for syntax-rules
  */
 
+#include <eshkol/core/ast_routing.h>
+#include <eshkol/frontend/ast_strings.h>
 #include <eshkol/frontend/macro_expander.h>
 #include <eshkol/logger.h>
 #include <cstring>
@@ -164,8 +166,34 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
     // We track seen macro names per expansion chain to detect cycles.
     static thread_local int expansion_depth = 0;
     struct DepthGuard { DepthGuard() { ++expansion_depth; } ~DepthGuard() { --expansion_depth; } } depth_guard;
+    // Nodes the expander creates for this form (as opposed to copies of
+    // template nodes, which keep the template's own location) are born with
+    // the location of the form being expanded.
+    EshkolAstBirthLocationScope birth_location(ast.line, ast.column);
     if (expansion_depth > 1000) {
-        eshkol_error("macro expansion depth limit exceeded (>1000)");
+        // A deeply nested ordinary call is AST traversal, not macro
+        // expansion. Reporting it as a macro-depth failure made a pure
+        // arithmetic expression fail before LLVM codegen could measure its
+        // actual complexity (ESH-0103). Keep the bound for real macro forms,
+        // where it prevents runaway syntax expansion, but let non-macro
+        // subtrees pass through unchanged. The caller's existing recursive
+        // walk then returns the original deep subtree and codegen processes it
+        // without inventing diagnostics for a macro-free program.
+        bool is_macro_form = false;
+        if (ast.type == ESHKOL_OP) {
+            const auto op = ast.operation.op;
+            if (op == ESHKOL_LET_SYNTAX_OP || op == ESHKOL_LETREC_SYNTAX_OP) {
+                is_macro_form = true;
+            } else if (op == ESHKOL_CALL_OP && ast.operation.call_op.func &&
+                       ast.operation.call_op.func->type == ESHKOL_VAR &&
+                       ast.operation.call_op.func->variable.id) {
+                is_macro_form = isMacro(ast.operation.call_op.func->variable.id);
+            }
+        }
+        if (is_macro_form) {
+            eshkol_error("macro expansion depth limit exceeded (>1000)");
+            return ast;
+        }
         return ast;
     }
     eshkol_ast_t current = ast;
@@ -226,8 +254,62 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
     if (result.type == ESHKOL_OP) {
         auto* op = &result.operation;
 
-        switch (op->op) {
-            case ESHKOL_CALL_OP:
+        {
+            enum class AstRoute {
+                Call, Sequence, Define, Lambda, Let, Match,
+                Cond, Set, Guard, Raise, Values, CallCc,
+                DynamicWind, The, OtherOperations
+            };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::Call,
+                    ESHKOL_CALL_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Sequence,
+                    ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Let,
+                    ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Match, ESHKOL_MATCH_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Cond,
+                    ESHKOL_COND_OP, ESHKOL_CASE_OP, ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP,
+                    ESHKOL_DO_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Raise, ESHKOL_RAISE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Values, ESHKOL_VALUES_OP>{},
+                eshkol::AstRouteGroup<AstRoute::CallCc, ESHKOL_CALL_CC_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DynamicWind, ESHKOL_DYNAMIC_WIND_OP>{},
+                eshkol::AstRouteGroup<AstRoute::The, ESHKOL_THE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_IF_OP, ESHKOL_ADD_OP,
+                    ESHKOL_SUB_OP, ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP,
+                    ESHKOL_EXTERN_VAR_OP, ESHKOL_QUOTE_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                    ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
+                    ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
+                    ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
+                    ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP,
+                    ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP,
+                    ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP,
+                    ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP,
+                    ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP,
+                    ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP,
+                    ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP,
+                    ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP,
+                    ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP,
+                    ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP,
+                    ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP,
+                    ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP,
+                    ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP,
+                    ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP,
+                    ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP,
+                    ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP
+                >{}
+            )) {
+            case AstRoute::Call:
             // Descend into quasiquote and unquote/unquote-splicing so macro
             // calls that a template introduced inside an unquote escape get
             // re-expanded (e.g. `(car `(,(+ (add1q 0) 1)))`). Note: QUOTE_OP is
@@ -235,9 +317,9 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
             // be macro-expanded. Quasiquoted sub-lists are built as (list …)
             // calls with literal atoms, so real macro calls only ever appear in
             // unquote regions, which is exactly what we recurse through.
-            case ESHKOL_QUASIQUOTE_OP:
-            case ESHKOL_UNQUOTE_OP:
-            case ESHKOL_UNQUOTE_SPLICING_OP:
+
+
+
                 if (op->call_op.func) {
                     eshkol_ast_t* new_func = new eshkol_ast_t;
                     *new_func = expandNode(*op->call_op.func);
@@ -252,9 +334,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case ESHKOL_SEQUENCE_OP:
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP:
+            case AstRoute::Sequence:
                 if (op->sequence_op.num_expressions > 0 && op->sequence_op.expressions) {
                     eshkol_ast_t* new_exprs = new eshkol_ast_t[op->sequence_op.num_expressions];
                     for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
@@ -264,7 +344,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case ESHKOL_DEFINE_OP:
+            case AstRoute::Define:
                 if (op->define_op.value) {
                     eshkol_ast_t* new_val = new eshkol_ast_t;
                     *new_val = expandNode(*op->define_op.value);
@@ -272,7 +352,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case ESHKOL_LAMBDA_OP:
+            case AstRoute::Lambda:
                 if (op->lambda_op.body) {
                     eshkol_ast_t* new_body = new eshkol_ast_t;
                     *new_body = expandNode(*op->lambda_op.body);
@@ -280,10 +360,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case ESHKOL_LET_OP:
-            case ESHKOL_LET_STAR_OP:
-            case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP:
+            case AstRoute::Let:
                 if (op->let_op.num_bindings > 0 && op->let_op.bindings) {
                     eshkol_ast_t* new_bindings = new eshkol_ast_t[op->let_op.num_bindings];
                     for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
@@ -305,7 +382,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case ESHKOL_MATCH_OP:
+            case AstRoute::Match:
                 if (op->match_op.expr) {
                     eshkol_ast_t* new_expr = new eshkol_ast_t;
                     *new_expr = expandNode(*op->match_op.expr);
@@ -323,11 +400,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 break;
 
             // Ops that reuse call_op struct layout
-            case ESHKOL_COND_OP:
-            case ESHKOL_CASE_OP:
-            case ESHKOL_WHEN_OP:
-            case ESHKOL_UNLESS_OP:
-            case ESHKOL_DO_OP:
+            case AstRoute::Cond:
                 if (op->call_op.func) {
                     eshkol_ast_t* new_func = new eshkol_ast_t;
                     *new_func = expandNode(*op->call_op.func);
@@ -342,7 +415,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case ESHKOL_SET_OP:
+            case AstRoute::Set:
                 if (op->set_op.value) {
                     eshkol_ast_t* new_val = new eshkol_ast_t;
                     *new_val = expandNode(*op->set_op.value);
@@ -350,7 +423,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case ESHKOL_GUARD_OP:
+            case AstRoute::Guard:
                 if (op->guard_op.num_clauses > 0 && op->guard_op.clauses) {
                     eshkol_ast_t* new_clauses = new eshkol_ast_t[op->guard_op.num_clauses];
                     for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
@@ -367,7 +440,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case ESHKOL_RAISE_OP:
+            case AstRoute::Raise:
                 if (op->raise_op.exception) {
                     eshkol_ast_t* new_exc = new eshkol_ast_t;
                     *new_exc = expandNode(*op->raise_op.exception);
@@ -375,7 +448,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case ESHKOL_VALUES_OP:
+            case AstRoute::Values:
                 if (op->values_op.num_values > 0 && op->values_op.expressions) {
                     eshkol_ast_t* new_exprs = new eshkol_ast_t[op->values_op.num_values];
                     for (uint64_t i = 0; i < op->values_op.num_values; i++) {
@@ -385,7 +458,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case ESHKOL_CALL_CC_OP:
+            case AstRoute::CallCc:
                 if (op->call_cc_op.proc) {
                     eshkol_ast_t* new_proc = new eshkol_ast_t;
                     *new_proc = expandNode(*op->call_cc_op.proc);
@@ -393,7 +466,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case ESHKOL_DYNAMIC_WIND_OP:
+            case AstRoute::DynamicWind:
                 if (op->dynamic_wind_op.before) {
                     eshkol_ast_t* new_before = new eshkol_ast_t;
                     *new_before = expandNode(*op->dynamic_wind_op.before);
@@ -411,7 +484,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case ESHKOL_THE_OP:
+            case AstRoute::The:
                 // Expand macros inside the wrapped expression of a (the T e)
                 // ascription; the type expression carries no macro calls.
                 if (op->the_op.expr) {
@@ -421,8 +494,9 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            default:
+            case AstRoute::OtherOperations:
                 break;
+        }
         }
     }
 
@@ -540,7 +614,7 @@ eshkol_ast_t MacroExpander::instantiateTemplate(const eshkol_macro_template_t* t
             // Variable not found - return as symbol reference
             eshkol_ast_t var_ast;
             var_ast.type = ESHKOL_VAR;
-            var_ast.variable.id = strdup(tmpl->variable_name);
+            var_ast.variable.id = eshkol_ast_strdup(tmpl->variable_name);
             return var_ast;
         }
 
@@ -700,21 +774,67 @@ bool MacroExpander::findEllipsisDriver(const eshkol_ast_t& ast,
     }
 
     const auto* op = &ast.operation;
-    switch (op->op) {
-        case ESHKOL_CALL_OP:
-        case ESHKOL_COND_OP:
-        case ESHKOL_CASE_OP:
-        case ESHKOL_WHEN_OP:
-        case ESHKOL_UNLESS_OP:
-        case ESHKOL_DO_OP:
+    {
+        enum class AstRoute {
+            Call, Sequence, Define, Lambda, Let, Match,
+            Set, Guard, Raise, Values, CallCc, DynamicWind,
+            OtherOperations
+        };
+        switch (eshkol::routeAstOperation(op->op,
+            eshkol::AstRouteGroup<AstRoute::Call,
+                ESHKOL_CALL_OP, ESHKOL_COND_OP, ESHKOL_CASE_OP, ESHKOL_WHEN_OP,
+                ESHKOL_UNLESS_OP, ESHKOL_DO_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
+                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_QUOTE_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Sequence,
+                ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Let,
+                ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Match, ESHKOL_MATCH_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Raise, ESHKOL_RAISE_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Values, ESHKOL_VALUES_OP>{},
+            eshkol::AstRouteGroup<AstRoute::CallCc, ESHKOL_CALL_CC_OP>{},
+            eshkol::AstRouteGroup<AstRoute::DynamicWind, ESHKOL_DYNAMIC_WIND_OP>{},
+            eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_IF_OP, ESHKOL_ADD_OP,
+                ESHKOL_SUB_OP, ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP,
+                ESHKOL_EXTERN_VAR_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
+                ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
+                ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
+                ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
+                ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP,
+                ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP,
+                ESHKOL_FORALL_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
+                ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_LOGIC_VAR_OP,
+                ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP,
+                ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP,
+                ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP,
+                ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP,
+                ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP,
+                ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP,
+                ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP,
+                ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP,
+                ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP,
+                ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP,
+                ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP,
+                ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+            >{}
+        )) {
+        case AstRoute::Call:
         // Same call_op layout for the quote family — an ellipsis-repeated
         // template element may reference its driving pattern variable from
         // inside (quasi)quoted data (parallels the quote-family recursion in
         // substituteBindings).
-        case ESHKOL_QUASIQUOTE_OP:
-        case ESHKOL_UNQUOTE_OP:
-        case ESHKOL_UNQUOTE_SPLICING_OP:
-        case ESHKOL_QUOTE_OP:
+
+
+
+
             if (op->call_op.func &&
                 findEllipsisDriver(*op->call_op.func, bindings, binding_name)) {
                 return true;
@@ -726,9 +846,7 @@ bool MacroExpander::findEllipsisDriver(const eshkol_ast_t& ast,
             }
             return false;
 
-        case ESHKOL_SEQUENCE_OP:
-        case ESHKOL_AND_OP:
-        case ESHKOL_OR_OP:
+        case AstRoute::Sequence:
             for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                 if (findEllipsisDriver(op->sequence_op.expressions[i], bindings, binding_name)) {
                     return true;
@@ -736,18 +854,15 @@ bool MacroExpander::findEllipsisDriver(const eshkol_ast_t& ast,
             }
             return false;
 
-        case ESHKOL_DEFINE_OP:
+        case AstRoute::Define:
             return op->define_op.value &&
                    findEllipsisDriver(*op->define_op.value, bindings, binding_name);
 
-        case ESHKOL_LAMBDA_OP:
+        case AstRoute::Lambda:
             return op->lambda_op.body &&
                    findEllipsisDriver(*op->lambda_op.body, bindings, binding_name);
 
-        case ESHKOL_LET_OP:
-        case ESHKOL_LET_STAR_OP:
-        case ESHKOL_LETREC_OP:
-        case ESHKOL_LETREC_STAR_OP:
+        case AstRoute::Let:
             for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                 if (findEllipsisDriver(op->let_op.bindings[i], bindings, binding_name)) {
                     return true;
@@ -756,7 +871,7 @@ bool MacroExpander::findEllipsisDriver(const eshkol_ast_t& ast,
             return op->let_op.body &&
                    findEllipsisDriver(*op->let_op.body, bindings, binding_name);
 
-        case ESHKOL_MATCH_OP:
+        case AstRoute::Match:
             if (op->match_op.expr &&
                 findEllipsisDriver(*op->match_op.expr, bindings, binding_name)) {
                 return true;
@@ -769,11 +884,11 @@ bool MacroExpander::findEllipsisDriver(const eshkol_ast_t& ast,
             }
             return false;
 
-        case ESHKOL_SET_OP:
+        case AstRoute::Set:
             return op->set_op.value &&
                    findEllipsisDriver(*op->set_op.value, bindings, binding_name);
 
-        case ESHKOL_GUARD_OP:
+        case AstRoute::Guard:
             for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
                 if (findEllipsisDriver(op->guard_op.clauses[i], bindings, binding_name)) {
                     return true;
@@ -786,11 +901,11 @@ bool MacroExpander::findEllipsisDriver(const eshkol_ast_t& ast,
             }
             return false;
 
-        case ESHKOL_RAISE_OP:
+        case AstRoute::Raise:
             return op->raise_op.exception &&
                    findEllipsisDriver(*op->raise_op.exception, bindings, binding_name);
 
-        case ESHKOL_VALUES_OP:
+        case AstRoute::Values:
             for (uint64_t i = 0; i < op->values_op.num_values; i++) {
                 if (findEllipsisDriver(op->values_op.expressions[i], bindings, binding_name)) {
                     return true;
@@ -798,11 +913,11 @@ bool MacroExpander::findEllipsisDriver(const eshkol_ast_t& ast,
             }
             return false;
 
-        case ESHKOL_CALL_CC_OP:
+        case AstRoute::CallCc:
             return op->call_cc_op.proc &&
                    findEllipsisDriver(*op->call_cc_op.proc, bindings, binding_name);
 
-        case ESHKOL_DYNAMIC_WIND_OP:
+        case AstRoute::DynamicWind:
             return (op->dynamic_wind_op.before &&
                     findEllipsisDriver(*op->dynamic_wind_op.before, bindings, binding_name)) ||
                    (op->dynamic_wind_op.thunk &&
@@ -810,8 +925,9 @@ bool MacroExpander::findEllipsisDriver(const eshkol_ast_t& ast,
                    (op->dynamic_wind_op.after &&
                     findEllipsisDriver(*op->dynamic_wind_op.after, bindings, binding_name));
 
-        default:
+        case AstRoute::OtherOperations:
             return false;
+    }
     }
 }
 
@@ -981,9 +1097,9 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
         auto rn = active_renames_.find(name);
         if (!in_datum_ && rn != active_renames_.end()) {
             eshkol_ast_t result = copyAst(ast);
-            // copyAst() strdup()s the id, so this must be free()/strdup() too.
-            free(result.variable.id);
-            result.variable.id = strdup(rn->second.c_str());
+            // Identifier text is owned by the AST string owner, so the copy's
+            // id is replaced, never freed (ast_strings.h).
+            result.variable.id = eshkol_ast_string_copy(rn->second);
             return result;
         }
         return copyAst(ast);
@@ -1009,8 +1125,62 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
         result.operation = ast.operation;
         auto* op = &result.operation;
 
-        switch (op->op) {
-            case ESHKOL_CALL_OP:
+        {
+            enum class AstRoute {
+                Call, Sequence, Define, Lambda, Let, Match,
+                Cond, Set, Guard, Raise, Values, CallCc,
+                DynamicWind, OtherOperations
+            };
+            switch (eshkol::routeAstOperation(op->op,
+                eshkol::AstRouteGroup<AstRoute::Call,
+                    ESHKOL_CALL_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
+                    ESHKOL_QUOTE_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Sequence,
+                    ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Let,
+                    ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Match, ESHKOL_MATCH_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Cond,
+                    ESHKOL_COND_OP, ESHKOL_CASE_OP, ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP,
+                    ESHKOL_DO_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Raise, ESHKOL_RAISE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Values, ESHKOL_VALUES_OP>{},
+                eshkol::AstRouteGroup<AstRoute::CallCc, ESHKOL_CALL_CC_OP>{},
+                eshkol::AstRouteGroup<AstRoute::DynamicWind, ESHKOL_DYNAMIC_WIND_OP>{},
+                eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_IF_OP, ESHKOL_ADD_OP,
+                    ESHKOL_SUB_OP, ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP,
+                    ESHKOL_EXTERN_VAR_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
+                    ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
+                    ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
+                    ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
+                    ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP,
+                    ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP,
+                    ESHKOL_FORALL_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
+                    ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_LOGIC_VAR_OP,
+                    ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP,
+                    ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP,
+                    ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP,
+                    ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP,
+                    ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP,
+                    ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP,
+                    ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP,
+                    ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP,
+                    ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP,
+                    ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP,
+                    ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP,
+                    ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+                >{}
+            )) {
+            case AstRoute::Call:
             // quasiquote/unquote/unquote-splicing/quote store their operand(s)
             // in the same call_op layout (func=nullptr, variables[], num_vars).
             // R7RS §4.3.2: pattern variables occurring anywhere in a template —
@@ -1019,10 +1189,10 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
             // makes `(car `(,(+ x 1)))`-style macro templates substitute x
             // (previously these ops hit default: and copied the operand verbatim,
             // leaving x undefined and collapsing nested expansions).
-            case ESHKOL_QUASIQUOTE_OP:
-            case ESHKOL_UNQUOTE_OP:
-            case ESHKOL_UNQUOTE_SPLICING_OP:
-            case ESHKOL_QUOTE_OP: {
+
+
+
+             {
                 // Hygiene: a symbol in quoted data is DATA, so it keeps its
                 // literal name; unquote escapes back to identifier position.
                 // Pattern-variable substitution is unaffected either way.
@@ -1056,9 +1226,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 break;
             }
 
-            case ESHKOL_SEQUENCE_OP:
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP:
+            case AstRoute::Sequence:
                 if (op->sequence_op.num_expressions > 0 && op->sequence_op.expressions) {
                     std::vector<eshkol_ast_t> new_exprs_vec =
                         substituteBindingsInList(op->sequence_op.expressions,
@@ -1077,7 +1245,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 }
                 break;
 
-            case ESHKOL_DEFINE_OP:
+            case AstRoute::Define:
                 if (op->define_op.value) {
                     eshkol_ast_t* new_val = new eshkol_ast_t;
                     *new_val = substituteBindings(*op->define_op.value, bindings);
@@ -1085,7 +1253,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 }
                 break;
 
-            case ESHKOL_LAMBDA_OP: {
+            case AstRoute::Lambda: {
                 // Hygiene: a template-introduced parameter is fresh in the body.
                 auto saved_renames = active_renames_;
                 if (op->lambda_op.num_params > 0 && op->lambda_op.parameters) {
@@ -1103,7 +1271,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 if (op->lambda_op.rest_param &&
                     isRenameableBinder(op->lambda_op.rest_param, bindings)) {
                     op->lambda_op.rest_param =
-                        strdup(freshName(op->lambda_op.rest_param).c_str());
+                        eshkol_ast_string_copy(freshName(op->lambda_op.rest_param));
                 }
                 if (op->lambda_op.body) {
                     eshkol_ast_t* new_body = new eshkol_ast_t;
@@ -1114,10 +1282,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 break;
             }
 
-            case ESHKOL_LET_OP:
-            case ESHKOL_LET_STAR_OP:
-            case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP: {
+            case AstRoute::Let: {
                 // Hygiene: each template-introduced binder gets a fresh name,
                 // visible exactly where the binding construct makes it visible.
                 //   let          inits see the OUTER scope
@@ -1141,7 +1306,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                     }
                 }
                 if (op->let_op.name && isRenameableBinder(op->let_op.name, bindings)) {
-                    op->let_op.name = strdup(freshName(op->let_op.name).c_str());
+                    op->let_op.name = eshkol_ast_string_copy(freshName(op->let_op.name));
                 }
 
                 if (op->let_op.num_bindings > 0 && op->let_op.bindings) {
@@ -1206,7 +1371,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 break;
             }
 
-            case ESHKOL_MATCH_OP:
+            case AstRoute::Match:
                 if (op->match_op.expr) {
                     eshkol_ast_t* new_expr = new eshkol_ast_t;
                     *new_expr = substituteBindings(*op->match_op.expr, bindings);
@@ -1224,11 +1389,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 break;
 
             // Ops that reuse call_op struct layout
-            case ESHKOL_COND_OP:
-            case ESHKOL_CASE_OP:
-            case ESHKOL_WHEN_OP:
-            case ESHKOL_UNLESS_OP:
-            case ESHKOL_DO_OP:
+            case AstRoute::Cond:
                 if (op->call_op.func) {
                     eshkol_ast_t* new_func = new eshkol_ast_t;
                     *new_func = substituteBindings(*op->call_op.func, bindings);
@@ -1250,7 +1411,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 }
                 break;
 
-            case ESHKOL_SET_OP:
+            case AstRoute::Set:
                 // The TARGET is a bare char*, not an AST node, so it was never
                 // reached by the substitution walk. A template like
                 //     ((_ a b) (let ((tmp a)) (set! a b) (set! b tmp)))
@@ -1264,7 +1425,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                     if (it != bindings.end() && matchTreeHasValue(it->second.tree)) {
                         const eshkol_ast_t& v = matchTreeFirstScalar(it->second.tree);
                         if (v.type == ESHKOL_VAR && v.variable.id) {
-                            op->set_op.name = strdup(v.variable.id);
+                            op->set_op.name = eshkol_ast_strdup(v.variable.id);
                         }
                         // A non-identifier operand in a set! target position is
                         // a user error; leave the name alone so the compiler
@@ -1272,7 +1433,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                     } else {
                         auto rn = active_renames_.find(target);
                         if (rn != active_renames_.end()) {
-                            op->set_op.name = strdup(rn->second.c_str());
+                            op->set_op.name = eshkol_ast_string_copy(rn->second);
                         }
                     }
                 }
@@ -1283,7 +1444,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 }
                 break;
 
-            case ESHKOL_GUARD_OP:
+            case AstRoute::Guard:
                 if (op->guard_op.num_clauses > 0 && op->guard_op.clauses) {
                     eshkol_ast_t* new_clauses = new eshkol_ast_t[op->guard_op.num_clauses];
                     for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
@@ -1309,7 +1470,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 }
                 break;
 
-            case ESHKOL_RAISE_OP:
+            case AstRoute::Raise:
                 if (op->raise_op.exception) {
                     eshkol_ast_t* new_exc = new eshkol_ast_t;
                     *new_exc = substituteBindings(*op->raise_op.exception, bindings);
@@ -1317,7 +1478,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 }
                 break;
 
-            case ESHKOL_VALUES_OP:
+            case AstRoute::Values:
                 if (op->values_op.num_values > 0 && op->values_op.expressions) {
                     std::vector<eshkol_ast_t> new_values_vec =
                         substituteBindingsInList(op->values_op.expressions,
@@ -1336,7 +1497,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 }
                 break;
 
-            case ESHKOL_CALL_CC_OP:
+            case AstRoute::CallCc:
                 if (op->call_cc_op.proc) {
                     eshkol_ast_t* new_proc = new eshkol_ast_t;
                     *new_proc = substituteBindings(*op->call_cc_op.proc, bindings);
@@ -1344,7 +1505,7 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 }
                 break;
 
-            case ESHKOL_DYNAMIC_WIND_OP:
+            case AstRoute::DynamicWind:
                 if (op->dynamic_wind_op.before) {
                     eshkol_ast_t* new_before = new eshkol_ast_t;
                     *new_before = substituteBindings(*op->dynamic_wind_op.before, bindings);
@@ -1362,8 +1523,9 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                 }
                 break;
 
-            default:
+            case AstRoute::OtherOperations:
                 break;
+        }
         }
 
         return result;
@@ -1374,11 +1536,11 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
 }
 
 /**
- * @brief Shallow-copies an AST node, deep-copying any owned string data so
- * the copy does not alias the original's heap allocations.
+ * @brief Shallow-copies an AST node, deep-copying its string payload into the
+ * AST string owner so the copy never aliases the original's text.
  *
  * For @c ESHKOL_STRING and @c ESHKOL_VAR nodes, the string/identifier
- * pointer is duplicated via strdup(). @c ESHKOL_OP nodes are copied
+ * pointer is duplicated via eshkol_ast_strdup(). @c ESHKOL_OP nodes are copied
  * shallowly here; deep-copying their nested operand pointers is the
  * responsibility of the caller (expandNode()/substituteBindings()), which
  * know which sub-pointers are relevant for each operation kind. All other
@@ -1393,15 +1555,16 @@ eshkol_ast_t MacroExpander::copyAst(const eshkol_ast_t& ast) {
     switch (ast.type) {
         case ESHKOL_STRING:
             if (ast.str_val.ptr) {
-                result.str_val.ptr = new char[ast.str_val.size];
-                memcpy(result.str_val.ptr, ast.str_val.ptr, ast.str_val.size);
+                // strndup terminates the copy even when a producer's size
+                // excludes the NUL.
+                result.str_val.ptr = eshkol_ast_strndup(ast.str_val.ptr, ast.str_val.size);
                 result.str_val.size = ast.str_val.size;
             }
             break;
 
         case ESHKOL_VAR:
             if (ast.variable.id) {
-                result.variable.id = strdup(ast.variable.id);
+                result.variable.id = eshkol_ast_strdup(ast.variable.id);
             }
             break;
 

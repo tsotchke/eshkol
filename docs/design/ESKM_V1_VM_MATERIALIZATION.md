@@ -140,9 +140,11 @@ Extend #597's focused compatibility runner after its dependencies settle:
    16 producer/consumer combinations per fixture. Verify metadata and exact
    golden bytes again. The scalar/empty producer step deliberately loads the
    historical fixture, so it does not require a new language constructor rule.
-3. For VM source and VM bytecode, also verify their ESKM `tensor-load` /
-   `tensor-save` route on the five single-record fixtures. Native compiler
-   tensor I/O's separate ESKT route must not be presented as ESKM evidence.
+3. Also verify the public ESKM `tensor-load` / `tensor-save` route on the five
+   single-record fixtures across all four engines. Since #555 merged on
+   2026-09-08, native and VM public tensor I/O both use ESKM; the previous
+   separate native ESKT route is no longer the baseline. This proposal remains
+   Proposed and does not authorize additional dispatch changes.
 4. Add bounded positive cases returning a loaded scalar/empty model from an
    ordinary function/region scope, then inspect and rewrite after return.
    Prove the payload, inline shape pointers, and empty storage remain valid

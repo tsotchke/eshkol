@@ -1,0 +1,73 @@
+id: SW-155
+bucket: SILENT-WRONG
+status: closed
+closed_at: "fix/vm-bignum-rational-reader-printer"
+title: "VM's own numeric-literal reader promoted an int64-overflowing integer literal to an inexact double instead of an exact bignum"
+repro: >-
+  `(display (exact? 123456789012345678901234567890))` on the bytecode VM
+  (`./build/eshkol-vm-standalone-test`), and via `--profile hosted-vm
+  --emit-eskb` then running the compiled `.eskb`.
+observed: >-
+  `#f`. `lib/backend/vm_parser.c`'s `parse_sexp()` reads a digit token into a
+  buffer, tries `strtoll()`, and on int64 overflow (`errno == ERANGE`) fell
+  through to `n->numval = atof(buf); n->is_inexact = inexact_syntax;` with
+  `inexact_syntax` false for a plain integer token — the AST `N_NUMBER` node
+  carries no bignum representation at all, only an `int64_t ival` (for
+  `is_int`) or a `double numval`, so ANY integer literal beyond int64 silently
+  became an inexact double-precision approximation with no diagnostic and exit
+  0. `(display 123456789012345678901234567890)` printed a rounded value, not
+  the exact integer, and `(exact? ...)` on it answered `#f` where native and
+  the VM's own `expt`/`+` runtime (already bignum-capable, SW-18) answer `#t`.
+  The same fixed-64-byte token buffer additionally truncated any digit run
+  past 63 characters and left the un-consumed tail in the source stream,
+  corrupting the NEXT token read — a second, narrower defect fixed by the same
+  change (not independently observed via exit 0/wrong-value on the task's
+  three-line repro, but a latent reader bug in the same code path).
+correct: >-
+  A plain integer literal whose magnitude overflows int64 reads as the exact
+  bignum it denotes: `(exact? 123456789012345678901234567890)` is `#t`,
+  `(display ...)` and `(number->string ...)` print the full exact digit
+  string, and it participates in exact arithmetic
+  (`(+ 123456789012345678901234567890 1)` is exact). A quoted bignum literal
+  (`'123456789012345678901234567890`) is equally exact. This is the VM's OWN
+  reader; the native engine's parser (`lib/frontend/parser.cpp` +
+  `lib/core/bignum.cpp`) already got this right, so the fix brings the VM
+  into parity rather than changing any native-observable behavior.
+fixed_by: >-
+  `lib/backend/vm_parser.c`: the digit-token reader now grows its capture
+  buffer via the existing `append_char_buf()` helper (no fixed-size cap, so a
+  literal of any length reads correctly) and, on `strtoll()` overflow, routes
+  through a new `make_int_or_bignum_node()` helper that marks the `N_NUMBER`
+  node `is_bignum` and carries its exact decimal digit text in
+  `string_data`/`string_len` instead of `atof()`-ing it. `lib/backend/
+  vm_compiler.c`'s `compile_expr_impl()` (evaluated position) and
+  `lib/backend/vm_parser.c`'s `compile_quote()` (quoted datum) both grew an
+  `is_bignum` arm that emits the digit text as a packed-string constant (the
+  same encoding ordinary string literals already use, factored into a shared
+  `compile_packed_string_literal()` so there is exactly one packing routine)
+  followed by `OP_NATIVE_CALL 351` (`bignum_from_string` — already the VM's
+  own bignum runtime, `lib/backend/vm_bignum.c`, mirroring
+  `lib/core/bignum.cpp`) to build the real `VAL_BIGNUM` at runtime. No VM
+  constant-pool format change: the literal compiles to ordinary
+  `OP_CONST`/`OP_NATIVE_CALL` bytecode, so ESKB round-trips it unchanged.
+  Fixing this also exposed and closed a second, previously-unreachable
+  defect in `bignum_from_string`'s native-call wrapper (case 351 in
+  `vm_native.c`): it cast a `VAL_STRING` heap object's `VmString*` payload
+  directly to `const char*` instead of following `->data`, reading the
+  struct's `byte_len`/`char_len` fields as text. That call had no real
+  caller before this fix (every other site passed a raw C string directly);
+  this fix is the first codegen path that pushes a genuine heap string onto
+  the stack and invokes it, so the corrected unwrap is load-bearing here.
+evidence: >-
+  `tests/vm/bignum_rational_literals_test.esk` (ctest
+  `bignum_rational_literals_vm_smoke`, and via `scripts/
+  run_vm_surface_tests.sh` compiled to `.eskb` and run from there) — 20/20
+  checks pass on the VM, `(exit 0)`; the same file also passes on native
+  `-r` (20/20), pinning that the fix changes only the VM. `tests/vm_parity/
+  corpus/79_bignum_rational_literals.esk` matches byte-for-byte across
+  native `-r`, `eshkol-vm-standalone-test` (source) and `eshkol-vm-
+  standalone-test` (ESKB) via `scripts/run_vm_parity.sh`. The task's exact
+  repro line, `(display (exact? 123456789012345678901234567890))`, now
+  prints `#t` on the VM.
+caught_by: [task-assigned-repro]
+missed_by: [vm-parity-ratchet, prior-exact-arithmetic-audit]

@@ -1,0 +1,23 @@
+;; LE-08: an intervening top-level expression must not split recursion bindings.
+(define (interleaved-a n) (if (= n 0) 0 (interleaved-b (- n 1))))
+(display 0)
+(define (interleaved-b n) (if (= n 0) 0 (interleaved-a (- n 1))))
+(display (interleaved-a 5000))
+
+;; Long-form lambda definitions must receive the same complete-unit
+;; predeclaration as shorthand definitions.
+(define lambda-even?
+  (lambda (n) (if (= n 0) #t (lambda-odd? (- n 1)))))
+(display 0)
+(define lambda-odd?
+  (lambda (n) (if (= n 0) #f (lambda-even? (- n 1)))))
+(display (lambda-even? 10))
+
+;; Redefinition updates the captured box rather than allocating a second cell.
+(define boxed-redefined-value 1)
+(define (read-boxed-redefined-value) boxed-redefined-value)
+(set! boxed-redefined-value 2)
+(define boxed-redefined-value 3)
+(display (read-boxed-redefined-value))
+
+(display "PASS: interleaved mutual recursion")

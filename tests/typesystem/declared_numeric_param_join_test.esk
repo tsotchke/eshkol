@@ -1,0 +1,20 @@
+;; Type System Test: a DECLARED numeric parameter accepts any numeric argument
+;; (numeric-tower join, item 4), outside any loop.
+;;
+;; `scale` declares Float64; `running-total` returns Number. The call passes a
+;; Number where Float64 is declared. Every operand is real and the tower
+;; promotes at runtime, so this must not warn. Named-let accumulators are typed
+;; by the join of what the loop carries (see
+;; named_let_accumulator_widening_test.esk); an annotated parameter is a
+;; contract and is never widened, so this rule is what accepts it.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: [WARN]
+;; EXPECT-NO-STDERR: [ERROR]
+
+(define (running-total (a : number) (b : number)) (+ a b))
+(define (scale (x : float64)) (* x 2.0))
+(define (use v) (scale (running-total 1 (vector-ref v 0))))
+
+(display (use (vector 1.0)))   ;; runtime: (1 + 1.0) * 2.0 = 4.0
+(newline)

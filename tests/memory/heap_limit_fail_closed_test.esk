@@ -1,0 +1,13 @@
+;; SW-165: a workload that allocates well past any small heap ceiling.
+;;
+;; Deliberately builds a live structure rather than garbage, so the allocation
+;; is real under any reclamation policy and the ceiling is genuinely reached.
+;; Prints COMPLETED only if the whole thing ran, which is what lets the gate
+;; tell "the limit stopped it" from "the limit was ignored".
+(define (build n)
+  (let lp ((i 0) (acc '()))
+    (if (= i n) (length acc) (lp (+ i 1) (cons (make-vector 400 i) acc)))))
+(display (build 60000))
+(newline)
+(display "COMPLETED")
+(newline)

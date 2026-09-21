@@ -122,8 +122,18 @@
 (newline)
 (display "Passed: ")(display pass)(newline)
 (display "Failed: ")(display fail)(newline)
-(if (= fail 0)
+;; Count ratchet. The old verdict printed `pass/pass`, which is 0/0 -- a PASS --
+;; on a run where every check was skipped, and cannot distinguish 18 checks from
+;; 12. This file is half of the P5+P6 joint acceptance (reverse-over-Taylor 18/18
+;; together with the exact-coefficient tier's 68/68): the two rewrote the SAME
+;; tower-extraction point, one for the seed tangent and one for exactness, so
+;; either suite shrinking quietly is exactly the regression the joint gate exists
+;; to catch.
+(define expected-checks 18)
+(if (and (= fail 0) (= pass expected-checks))
     (begin (display "PASS: reverse-over-Taylor ")(display pass)
-           (display "/")(display pass)
+           (display "/")(display expected-checks)
            (display " checks (k=2..4, scalar/2-vec/3-vec, epoch safety, JET8 parity)")(newline))
-    (begin (display "FAIL: reverse-over-Taylor ")(display fail)(display " checks failed")(newline)))
+    (begin (display "FAIL: reverse-over-Taylor ")(display pass)
+           (display "/")(display expected-checks)(display " passed, ")
+           (display fail)(display " failed")(newline)))

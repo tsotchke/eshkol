@@ -20,6 +20,7 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/backend/codegen_context.h>
+#include <eshkol/backend/mutation_observation.h>
 #include <eshkol/backend/tagged_value_codegen.h>
 #include <eshkol/eshkol.h>
 #include <llvm/IR/Value.h>
@@ -151,6 +152,12 @@ private:
     using GetTypedValueTypeFunc = int (*)(void* typed_value, void* context);
     // Register function binding (for apply/call resolution)
     using RegisterFuncBindingFunc = void (*)(const char* var_name, void* typed_value, void* context);
+    // Decide whether a lexical binding is the target of set! in its scope.
+    using IsVarSetFunc = bool (*)(const void* ast, const char* name, void* context);
+    using IsVarObservedFunc = bool (*)(const void* ast, const char* name, void* context);
+    // Decide whether an escaping continuation may restore control across the
+    // scope, requiring the mutable cell to outlive the native stack frame.
+    using IsContinuationEscapeFunc = bool (*)(const void* ast, void* context);
 
     // Stored callback instances set via setCodegenCallbacks() (see the
     // typedefs above for each callback's signature/purpose)
@@ -159,6 +166,12 @@ private:
     TypedToTaggedFunc typed_to_tagged_callback_ = nullptr;
     GetTypedValueTypeFunc get_typed_value_type_callback_ = nullptr;
     RegisterFuncBindingFunc register_func_binding_callback_ = nullptr;
+    IsVarSetFunc is_var_set_callback_ = nullptr;
+    IsVarObservedFunc is_var_observed_callback_ = nullptr;
+    IsContinuationEscapeFunc is_continuation_escape_callback_ = nullptr;
+    // Decide whether a top-level name is reassigned in the compilation unit.
+    using IsReassignedTopLevelFunc = bool (*)(const char* name, void* context);
+    IsReassignedTopLevelFunc is_reassigned_toplevel_callback_ = nullptr;
     void* callback_context_ = nullptr;
 
     // Symbol tables (references to main codegen's tables)
@@ -207,13 +220,26 @@ private:
     llvm::Value* ensureTaggedValue(llvm::Value* value, eshkol_value_type_t value_type);
 
     /**
-     * Register a lambda function binding.
-     * Sets up _func and _sexpr entries in symbol tables.
+     * Record, or refuse, the static `<var>_func` alias of a lambda binding
+     * (see static_callee_binding.h).
      *
      * @param var_name Variable name
      * @param lambda_name Lambda function name
+     * @param reassigned True when the binding is the target of a set! in its
+     *        scope or is a redefined top-level name; such a binding gets no
+     *        alias and every call through it dispatches on its runtime value.
      */
-    void registerLambdaBinding(const std::string& var_name, const std::string& lambda_name);
+    void registerLambdaBinding(const std::string& var_name, const std::string& lambda_name,
+                               bool reassigned);
+
+    /** @return true if @p name is a top-level name that is reassigned (set!
+     *  at top-level scope, or defined more than once). Without an analysis
+     *  callback every name is reported reassigned, which only forgoes the
+     *  static alias. */
+    bool isReassignedTopLevelName(const char* name) const {
+        return !is_reassigned_toplevel_callback_ ||
+               is_reassigned_toplevel_callback_(name, callback_context_);
+    }
 
 public:
     /**
@@ -233,6 +259,19 @@ public:
         get_typed_value_type_callback_ = get_typed_value_type;
         register_func_binding_callback_ = register_func_binding;
         callback_context_ = context;
+    }
+
+    /** Set the compiler-owned lexical mutation analysis callback. */
+    void setMutationAnalysisCallback(IsVarSetFunc callback) {
+        is_var_set_callback_ = callback;
+    }
+
+    void setObservationAnalysisCallback(IsVarObservedFunc callback) {
+        is_var_observed_callback_ = callback;
+    }
+
+    void setContinuationEscapeAnalysisCallback(IsContinuationEscapeFunc callback) {
+        is_continuation_escape_callback_ = callback;
     }
 
     /**
@@ -279,6 +318,15 @@ public:
         letrec_excluded_capture_names_ = names;
     }
 
+    /**
+     * Set the compiler-owned query for reassigned top-level names: names that
+     * are the target of a set! at top-level scope or are defined more than
+     * once. A top-level lambda binding of such a name gets no static alias.
+     */
+    void setReassignedTopLevelAnalysisCallback(IsReassignedTopLevelFunc callback) {
+        is_reassigned_toplevel_callback_ = callback;
+    }
+
     // === Tail Call Optimization ===
 
     /**
@@ -286,8 +334,32 @@ public:
      */
     struct TailCallContext {
         std::string func_name = "";           // Name of function being compiled
+        // LE-23: the LLVM function that actually IMPLEMENTS `func_name`.
+        //
+        // `func_name` alone does not identify a call target. While the body of
+        // a recursive LOCAL binding (a `letrec`/`letrec*` lambda or a named
+        // let) is being emitted, codegen descends into any NESTED lambda the
+        // body creates -- the `(lambda (x) (dfs ...))` handed to `for-each` /
+        // `map`, a lambda stored in a data structure, a callback. Inside that
+        // nested lambda the recursive name is still in scope and still equals
+        // `func_name`, but the function currently being emitted is the nested
+        // lambda, NOT the recursive binding.
+        //
+        // Any codegen path that resolves a self-call by calling "the function
+        // being emitted right now" must therefore compare against THIS field
+        // instead of merely matching the name. Without it the nested lambda
+        // calls ITSELF forever: the recursive binding's body never runs again,
+        // its loop variable never advances, and the program dies with
+        // "Stack overflow (recursion too deep)" instead of terminating.
+        //
+        // nullptr means "not claimed yet": letrec sets `func_name` BEFORE the
+        // binding's lambda exists, so the first lambda emitted under an
+        // unclaimed context claims ownership. `codegenNamedLet` and the
+        // self-tail-recursive `define` path know their function up front and
+        // set this directly.
+        llvm::Function* owner_function = nullptr;
         llvm::BasicBlock* loop_header = nullptr;    // Loop header for tail call transformation
-        std::vector<llvm::AllocaInst*> param_allocas;  // Allocas for mutable parameters
+        std::vector<llvm::Value*> param_allocas;  // Mutable parameter cells
         std::vector<std::string> param_names;    // Parameter names for lookup
         bool enabled = false;                 // Whether TCO is enabled for current lambda
         bool iter_scope = false;              // ESH-0214b: loop body runs inside a
@@ -347,6 +419,51 @@ public:
         //     wrap each iteration in a per-iteration `guard` error boundary.
         unsigned open_guard_handlers = 0;
         llvm::Value* loop_stack_save = nullptr;
+
+        // --- SW-58: exact handler semantics for a guard that carries the loop ---
+        //
+        // Draining the handler chain on the back edge (above) is correct only
+        // when the collapsed activations' guards can never be observed. R7RS
+        // keeps one LIVE handler per activation, so a handler that re-raises —
+        // or a clause body that raises — must find the NEXT activation's guard,
+        // holding THAT activation's loop-carried values. ESH-0222 drained them,
+        // so the re-raise reached whatever stood outside the loop instead: the
+        // wrong handler answered, silently (SW-58).
+        //
+        // `guard_replay` selects the exact lowering for this loop: back edges
+        // taken from inside an open guard body LEAVE the handler frames
+        // standing and attach a snapshot of the departing activation's loop
+        // parameters to each (eshkol_guard_replay_snapshot). A raise landing on
+        // such a frame restores the snapshot before the clauses run
+        // (eshkol_guard_replay_restore, emitted at the top of the guard's
+        // landing pad), so the chain the program observes is exactly the chain
+        // it would have observed with one native frame per activation. Stack
+        // stays flat either way; what the replay lowering costs is one handler
+        // frame per LIVE guard, which is the space R7RS's semantics require.
+        //
+        // It is off when every guard that carries this loop is COLLAPSIBLE —
+        // a catch-all clause whose tests and bodies cannot raise, so the
+        // innermost activation's handler always answers and the enclosing ones
+        // are unobservable. That is the resident tick-loop shape
+        // (docs/LONG_RUNNING_LOOPS.md), and it keeps ESH-0222's flat RSS.
+        //
+        //  * `guard_replay_mark`  — i64 alloca holding the handler-chain depth
+        //    at loop setup. Every exit from the loop unwinds back to it, so the
+        //    frames a back edge left standing cannot outlive the loop. An
+        //    ALLOCA, not an SSA value: a longjmp back into this frame clobbers
+        //    registers.
+        //  * `guard_replay_slots` — `[arity x tagged_value]` alloca in the
+        //    function entry block, the contiguous staging buffer the snapshot
+        //    is written from and restored into.
+        //  * `open_guard_forbid` — guards open on the current path whose
+        //    clauses read a binding that the loop rebinds every iteration, so
+        //    no snapshot of the loop PARAMETERS could restore them. A back edge
+        //    under one of these declines TCO entirely and stays a real call:
+        //    correct semantics at R7RS's own stack cost, never a wrong answer.
+        bool guard_replay = false;
+        llvm::Value* guard_replay_mark = nullptr;
+        llvm::Value* guard_replay_slots = nullptr;
+        unsigned open_guard_forbid = 0;
     };
 
     /**

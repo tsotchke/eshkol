@@ -1,0 +1,602 @@
+;; Group cohomology of the groups of order eight, the classification of their
+;; Dijkgraaf-Witten twists, and the first non-abelian twisted quantum double.
+;;
+;; Sources: K. Brown, "Cohomology of Groups" (1982), I.5 (bar resolution),
+;; II.7 (Kunneth), VI.9 (periodic cohomology of Q_8); R. Dijkgraaf, V. Pasquier,
+;; P. Roche, "Quasi Hopf algebras, group cohomology and orbifold models",
+;; Nucl. Phys. B Proc. Suppl. 18B (1990) (the twisted quantum double D^omega(G)
+;; and its simple objects); M. de Wild Propitius, "Topological interactions
+;; in broken gauge theories", PhD thesis (1995), Chapter 3 (type I, II, III
+;; cocycles on (Z/2)^3 and the equivalence D^{omega_III}((Z/2)^3) ~ D(D_4)).
+;;
+;; Everything in exact integer/rational arithmetic:
+;;
+;;   1. The NORMALIZED bar complex of a finite group (nondegenerate tuples
+;;      only) has (|G|-1)^n generators in degree n; its homology equals that
+;;      of the unnormalized nerve (the normalization theorem), which the
+;;      program checks directly for Z/2 and Z/3 before relying on it.
+;;   2. H_1, H_2, H_3 with torsion coefficients, by Smith normal form over
+;;      bignum integers, for S_3 and for all five groups of order eight:
+;;      Z/8, Z/4 x Z/2, (Z/2)^3, D_4, Q_8. Checked against Kunneth, the Schur
+;;      multipliers, and the periodicity of Q_8.
+;;   3. |H^3(G; Q/Z)| = |H_3(G; Z)| counts the Dijkgraaf-Witten twists of G:
+;;      8, 16, 128, 16, 8 for the five groups (and 6 for S_3).
+;;   4. On (Z/2)^3 the type-III cocycle omega(a,b,c) = (-1)^{a_1 b_2 c_3}
+;;      makes the twisted quantum double non-abelian: the torus invariant
+;;      Z(T^3) counts its simple objects and drops from 64 = |G|^2 to 22,
+;;      which is the number of simple objects of the untwisted doubles of
+;;      D_4 and Q_8, computed here from commuting triples and from the state
+;;      sum on the Kuhn triangulation. Types I and II keep 64. The drop to 22
+;;      is also the proof that the type-III class is nonzero: a coboundary
+;;      gives the untwisted value.
+;;   5. Z(S^3) = 1/8 for every twist; Z(RP^3) from the lens formula and from
+;;      the cross-polytope Delta-complex: 3/4 for D_4 and for the type-III
+;;      theory, 1/4 for Q_8.
+;;
+;; DEFECT NOTES (routed around, not fixed): `#(...)` literals promote to f64
+;; tensors (all vectors built with `vector`/`make-vector`); integer powers by
+;; repeated multiplication; `make-vector` with a vector fill shares the fill;
+;; arithmetic on exact rationals allocates without reclamation (SW-164), so
+;; every phase below is an INTEGER numerator over the common denominator 2
+;; (a value k stands for k/2 in Q/Z) and the only rational operations are the
+;; final divisions by |G|^V.
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+
+(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))
+(define (mod2 x) (modulo x 2))                 ;; phases as integers over the denominator 2
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (list-max xs) (let loop ((l (cdr xs)) (m (car xs))) (if (null? l) m (loop (cdr l) (if (> (car l) m) (car l) m)))))
+(define (product xs) (if (null? xs) 1 (* (car xs) (product (cdr xs)))))
+
+;; ---------------------------------------------------------------------------
+;; Groups: (vector order mul-table inverse-table); identity is 0.
+;; ---------------------------------------------------------------------------
+
+(define (make-group n mul)
+  (let ((table (make-vector n 0)) (inv (make-vector n 0)))
+    (let loop ((a 0))
+      (if (< a n)
+          (let ((row (make-vector n 0)))
+            (let inner ((b 0))
+              (if (< b n)
+                  (begin (vector-set! row b (mul a b))
+                         (if (= 0 (mul a b)) (vector-set! inv a b))
+                         (inner (+ b 1)))))
+            (vector-set! table a row)
+            (loop (+ a 1)))))
+    (vector n table inv)))
+(define (g-order G) (vector-ref G 0))
+(define (g-mul G a b) (vector-ref (vector-ref (vector-ref G 1) a) b))
+(define (g-inv G a) (vector-ref (vector-ref G 2) a))
+(define (elements G) (range (g-order G)))
+(define (make-cyclic n) (make-group n (lambda (a b) (modulo (+ a b) n))))
+(define (group-product G H)
+  (let ((m (g-order H)))
+    (make-group (* (g-order G) m)
+                (lambda (x y) (+ (* m (g-mul G (quotient x m) (quotient y m))) (g-mul H (remainder x m) (remainder y m)))))))
+
+;; S_3 as permutations of (0 1 2), identity first.
+(define s3-perms (list (list 0 1 2) (list 1 2 0) (list 2 0 1) (list 0 2 1) (list 2 1 0) (list 1 0 2)))
+(define (perm-index p) (let loop ((ps s3-perms) (i 0)) (if (equal? (car ps) p) i (loop (cdr ps) (+ i 1)))))
+(define (perm-compose p q) (map (lambda (i) (list-ref p (list-ref q i))) (list 0 1 2)))
+(define (perm-sign p)
+  (let ((inv (count-if (lambda (pair) (> (car pair) (cadr pair)))
+                       (list (list (car p) (cadr p)) (list (car p) (caddr p)) (list (cadr p) (caddr p))))))
+    (if (even? inv) 1 -1)))
+(define S3 (make-group 6 (lambda (a b) (perm-index (perm-compose (list-ref s3-perms a) (list-ref s3-perms b))))))
+
+;; D_4 = <r, s | r^4 = s^2 = e, s r s = r^-1>; r^i s^j is encoded 2 i + j.
+(define (d4-mul x y)
+  (let ((i (quotient x 2)) (j (remainder x 2)) (k (quotient y 2)) (l (remainder y 2)))
+    (+ (* 2 (modulo (+ i (if (= j 0) k (- 0 k))) 4)) (modulo (+ j l) 2))))
+(define D4 (make-group 8 d4-mul))
+
+;; Q_8 = {+-1, +-i, +-j, +-k}; unit u in 0..3 (1, i, j, k) and sign bit, encoded 2 u + sign.
+(define q8-unit-table
+  (vector (vector (cons 0 0) (cons 1 0) (cons 2 0) (cons 3 0))
+          (vector (cons 1 0) (cons 0 1) (cons 3 0) (cons 2 1))
+          (vector (cons 2 0) (cons 3 1) (cons 0 1) (cons 1 0))
+          (vector (cons 3 0) (cons 2 0) (cons 1 1) (cons 0 1))))
+(define (q8-mul x y)
+  (let* ((p (vector-ref (vector-ref q8-unit-table (quotient x 2)) (quotient y 2))))
+    (+ (* 2 (car p)) (modulo (+ (remainder x 2) (remainder y 2) (cdr p)) 2))))
+(define Q8 (make-group 8 q8-mul))
+
+(define Z2 (make-cyclic 2))
+(define Z3 (make-cyclic 3))
+(define Z8 (make-cyclic 8))
+(define Z4Z2 (group-product (make-cyclic 4) Z2))
+(define Z2Z2Z2 (group-product (group-product Z2 Z2) Z2))
+
+(define (group-axioms? G)
+  (let ((n (g-order G)))
+    (all? (lambda (a)
+            (and (= a (g-mul G 0 a)) (= a (g-mul G a 0)) (= 0 (g-mul G a (g-inv G a)))
+                 (all? (lambda (b) (all? (lambda (c) (= (g-mul G (g-mul G a b) c) (g-mul G a (g-mul G b c)))) (range n))) (range n))))
+          (range n))))
+(define (abelian? G) (all? (lambda (a) (all? (lambda (b) (= (g-mul G a b) (g-mul G b a))) (elements G))) (elements G)))
+(define (element-order G a) (let loop ((x a) (k 1)) (if (= x 0) k (loop (g-mul G x a) (+ k 1)))))
+(define (order-count G k) (count-if (lambda (a) (= k (element-order G a))) (elements G)))
+
+(check "the five constructed groups of order eight satisfy the group axioms, as does S_3"
+       (all? group-axioms? (list Z8 Z4Z2 Z2Z2Z2 D4 Q8 S3)))
+(check "D_4 and Q_8 are non-abelian; the other three are abelian"
+       (and (not (abelian? D4)) (not (abelian? Q8)) (abelian? Z8) (abelian? Z4Z2) (abelian? Z2Z2Z2)))
+(check "D_4 has five elements of order 2 and Q_8 has one: they are not isomorphic"
+       (and (= 5 (order-count D4 2)) (= 1 (order-count Q8 2)) (= 6 (order-count Q8 4)) (= 2 (order-count D4 4))))
+
+;; ---------------------------------------------------------------------------
+;; Integer matrices and Smith normal form (unit pivots taken first).
+;; ---------------------------------------------------------------------------
+
+(define (make-matrix rows cols)
+  (let ((M (make-vector rows 0)))
+    (let loop ((i 0)) (if (< i rows) (begin (vector-set! M i (make-vector cols 0)) (loop (+ i 1)))))
+    M))
+(define (mat-rows A) (vector-length A))
+(define (mat-cols A) (if (= 0 (vector-length A)) 0 (vector-length (vector-ref A 0))))
+(define (mref A i j) (vector-ref (vector-ref A i) j))
+(define (mset! A i j v) (vector-set! (vector-ref A i) j v))
+(define (swap-rows! A i j) (let ((t (vector-ref A i))) (vector-set! A i (vector-ref A j)) (vector-set! A j t)))
+(define (swap-cols! A i j)
+  (let loop ((r 0)) (if (< r (mat-rows A)) (let ((t (mref A r i))) (mset! A r i (mref A r j)) (mset! A r j t) (loop (+ r 1))))))
+(define (add-row! A dst src q)
+  (let ((rd (vector-ref A dst)) (rs (vector-ref A src)))
+    (let loop ((j 0))
+      (if (< j (vector-length rd))
+          (begin (if (not (= 0 (vector-ref rs j))) (vector-set! rd j (+ (vector-ref rd j) (* q (vector-ref rs j)))))
+                 (loop (+ j 1)))))))
+(define (add-col! A dst src q)
+  (let loop ((r 0))
+    (if (< r (mat-rows A))
+        (begin (if (not (= 0 (mref A r src))) (mset! A r dst (+ (mref A r dst) (* q (mref A r src)))))
+               (loop (+ r 1))))))
+(define (find-pivot A t)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let loop-i ((i t) (best #f) (bi 0) (bj 0))
+      (if (= i m)
+          (if best (list bi bj) #f)
+          (let loop-j ((j t) (best best) (bi bi) (bj bj))
+            (if (= j n)
+                (loop-i (+ i 1) best bi bj)
+                (let ((a (abs (mref A i j))))
+                  (cond ((= a 1) (list i j))
+                        ((and (not (= a 0)) (or (not best) (< a best))) (loop-j (+ j 1) a i j))
+                        (else (loop-j (+ j 1) best bi bj))))))))))
+(define (snf! A)
+  (let ((m (mat-rows A)) (n (mat-cols A)))
+    (let outer ((t 0) (diag '()))
+      (if (or (= t m) (= t n))
+          (reverse diag)
+          (let ((p (find-pivot A t)))
+            (if (not p)
+                (reverse diag)
+                (begin
+                  (swap-rows! A t (car p)) (swap-cols! A t (cadr p))
+                  (let inner ()
+                    (let ((pivot (mref A t t)) (clean #t))
+                      (let loop ((i (+ t 1)))
+                        (if (< i m)
+                            (let ((a (mref A i t)))
+                              (if (not (= a 0))
+                                  (let ((q (quotient a pivot)))
+                                    (add-row! A i t (- 0 q))
+                                    (if (not (= 0 (mref A i t))) (set! clean #f))))
+                              (loop (+ i 1)))))
+                      (let loop ((j (+ t 1)))
+                        (if (< j n)
+                            (let ((a (mref A t j)))
+                              (if (not (= a 0))
+                                  (let ((q (quotient a pivot)))
+                                    (add-col! A j t (- 0 q))
+                                    (if (not (= 0 (mref A t j))) (set! clean #f))))
+                              (loop (+ j 1)))))
+                      (if (not clean)
+                          (let ((q (find-pivot A t))) (swap-rows! A t (car q)) (swap-cols! A t (cadr q)) (inner))
+                          (let ((bad (let loop-i ((i (+ t 1)))
+                                       (if (= i m) #f
+                                           (let loop-j ((j (+ t 1)))
+                                             (if (= j n) (loop-i (+ i 1))
+                                                 (if (= 0 (remainder (mref A i j) pivot)) (loop-j (+ j 1)) (list i j))))))))
+                            (if bad (begin (add-row! A t (car bad) 1) (inner)) #t)))))
+                  (outer (+ t 1) (cons (abs (mref A t t)) diag)))))))))
+(define (torsion-of diag) (filter (lambda (x) (> x 1)) diag))
+(define (mat-from-lists rows) (list->vector (map (lambda (r) (list->vector r)) rows)))
+(check "Smith normal form: [[2,4],[6,8]] -> (2 4), diag(2,3) -> (1 6), [[0,0],[0,0]] -> ()"
+       (and (equal? (snf! (mat-from-lists (list (list 2 4) (list 6 8)))) (list 2 4))
+            (equal? (snf! (mat-from-lists (list (list 2 0) (list 0 3)))) (list 1 6))
+            (equal? (snf! (mat-from-lists (list (list 0 0) (list 0 0)))) '())))
+
+;; ---------------------------------------------------------------------------
+;; The nerve, unnormalized (all tuples) and normalized (no identity entries).
+;; ---------------------------------------------------------------------------
+
+(define (nerve-face G t i)
+  (let ((k (length t)))
+    (cond ((= i 0) (cdr t))
+          ((= i k) (reverse (cdr (reverse t))))
+          (else (let loop ((ts t) (j 1) (acc '()))
+                  (if (= j i)
+                      (append (reverse acc) (cons (g-mul G (car ts) (cadr ts)) (cddr ts)))
+                      (loop (cdr ts) (+ j 1) (cons (car ts) acc))))))))
+
+;; unnormalized: index = sum g_i |G|^(i-1)
+(define (u-index->tuple G idx k)
+  (let ((n (g-order G))) (let loop ((i 0) (x idx) (acc '())) (if (= i k) (reverse acc) (loop (+ i 1) (quotient x n) (cons (remainder x n) acc))))))
+(define (u-tuple->index G t)
+  (let ((n (g-order G))) (let loop ((ts (reverse t)) (acc 0)) (if (null? ts) acc (loop (cdr ts) (+ (* acc n) (car ts)))))))
+(define (unnormalized-boundary G k)
+  (let* ((n (g-order G)) (rows (ipow n (- k 1))) (cols (ipow n k)) (M (make-matrix rows cols)))
+    (let loop ((c 0))
+      (if (< c cols)
+          (let ((t (u-index->tuple G c k)))
+            (let faces ((i 0) (sign 1))
+              (if (<= i k)
+                  (let ((r (u-tuple->index G (nerve-face G t i))))
+                    (mset! M r c (+ (mref M r c) sign))
+                    (faces (+ i 1) (- 0 sign)))))
+            (loop (+ c 1)))))
+    M))
+
+;; normalized: tuples over G \ {e}, index in base |G|-1 with entries 1..|G|-1;
+;; a face containing the identity is degenerate and contributes nothing.
+(define (nz-count G k) (ipow (- (g-order G) 1) k))
+(define (nz-index->tuple G idx k)
+  (let ((m (- (g-order G) 1))) (let loop ((i 0) (x idx) (acc '())) (if (= i k) (reverse acc) (loop (+ i 1) (quotient x m) (cons (+ 1 (remainder x m)) acc))))))
+(define (nz-tuple->index G t)
+  (let ((m (- (g-order G) 1))) (let loop ((ts (reverse t)) (acc 0)) (if (null? ts) acc (loop (cdr ts) (+ (* acc m) (- (car ts) 1)))))))
+(define (has-identity? t) (cond ((null? t) #f) ((= 0 (car t)) #t) (else (has-identity? (cdr t)))))
+(define (normalized-boundary G k)
+  (let* ((rows (nz-count G (- k 1))) (cols (nz-count G k)) (M (make-matrix rows cols)))
+    (let loop ((c 0))
+      (if (< c cols)
+          (let ((t (nz-index->tuple G c k)))
+            (let faces ((i 0) (sign 1))
+              (if (<= i k)
+                  (let ((f (nerve-face G t i)))
+                    (if (not (has-identity? f))
+                        (let ((r (nz-tuple->index G f))) (mset! M r c (+ (mref M r c) sign))))
+                    (faces (+ i 1) (- 0 sign)))))
+            (loop (+ c 1)))))
+    M))
+
+;; H_k for k = 0..kmax as a list of (k betti torsion), from a boundary constructor
+;; and a generator-count function.
+(define (homology-table boundary count G kmax)
+  (let loop ((k 0) (rank-k 0) (acc '()))
+    (if (> k kmax)
+        (reverse acc)
+        (let* ((s (snf! (boundary G (+ k 1))))
+               (rank-next (length s))
+               (betti (- (count G k) rank-k rank-next)))
+          (loop (+ k 1) rank-next (cons (list k betti (torsion-of s)) acc))))))
+(define (u-count G k) (ipow (g-order G) k))
+(define (H-unnormalized G kmax) (homology-table unnormalized-boundary u-count G kmax))
+(define (H-normalized G kmax) (homology-table normalized-boundary nz-count G kmax))
+
+;; --- the normalization theorem, checked ------------------------------------
+
+(define HZ2u (H-unnormalized Z2 3))
+(define HZ2n (H-normalized Z2 3))
+(define HZ3u (H-unnormalized Z3 3))
+(define HZ3n (H-normalized Z3 3))
+(show "H_*(BZ/2) unnormalized / normalized" (list HZ2u HZ2n))
+(check "normalized and unnormalized bar complexes give the same H_0..H_3 for Z/2 and Z/3"
+       (and (equal? HZ2u HZ2n) (equal? HZ3u HZ3n)))
+(check "the normalized complex is smaller: (|G|-1)^n generators in degree n against |G|^n"
+       (and (= 1 (nz-count Z2 3)) (= 8 (u-count Z2 3)) (= 4 (nz-count Z3 2)) (= 9 (u-count Z3 2))
+            (= 343 (nz-count Z8 3)) (= 2401 (nz-count Z8 4)) (= 4096 (u-count Z8 4))))
+(check "d d = 0 in the normalized complex of Q_8 on C_3 -> C_1"
+       (let ((A (normalized-boundary Q8 2)) (B (normalized-boundary Q8 3)))
+         (let loop-i ((i 0))
+           (if (= i (mat-rows A)) #t
+               (if (let loop-j ((j 0))
+                     (if (= j (mat-cols B)) #t
+                         (if (= 0 (let inner ((l 0) (s 0)) (if (= l (mat-cols A)) s (inner (+ l 1) (+ s (* (mref A i l) (mref B l j)))))))
+                             (loop-j (+ j 1)) #f)))
+                   (loop-i (+ i 1)) #f)))))
+
+;; ---------------------------------------------------------------------------
+;; H_1, H_2, H_3 of S_3 and of the five groups of order eight.
+;; ---------------------------------------------------------------------------
+
+(define (row table k) (list-ref table k))
+(define (tors table k) (caddr (row table k)))
+(define (betti table k) (cadr (row table k)))
+(define (torsion-order t) (product t))
+
+(define HS3 (H-normalized S3 3))
+(show "H_*(BS_3; Z), k = 0..3" HS3)
+(check "H_*(BS_3; Z) = Z, Z/2, 0, Z/6" (equal? HS3 (list (list 0 1 '()) (list 1 0 (list 2)) (list 2 0 '()) (list 3 0 (list 6)))))
+
+(define HZ8 (H-normalized Z8 3))
+(define HZ4Z2 (H-normalized Z4Z2 3))
+(define HZ2Z2Z2 (H-normalized Z2Z2Z2 3))
+(define HD4 (H-normalized D4 3))
+(define HQ8 (H-normalized Q8 3))
+(show "H_*(BZ/8)" HZ8)
+(show "H_*(B(Z/4 x Z/2))" HZ4Z2)
+(show "H_*(B(Z/2)^3)" HZ2Z2Z2)
+(show "H_*(BD_4)" HD4)
+(show "H_*(BQ_8)" HQ8)
+
+(define (no-free-part? table) (all? (lambda (k) (= 0 (betti table k))) (list 1 2 3)))
+(check "every group of order eight has finite H_1, H_2, H_3 (no free part), with H_0 = Z"
+       (all? (lambda (T) (and (= 1 (betti T 0)) (no-free-part? T))) (list HZ8 HZ4Z2 HZ2Z2Z2 HD4 HQ8)))
+(check "H_1 is the abelianization: Z/8, Z/4 x Z/2, (Z/2)^3, (Z/2)^2 for D_4, (Z/2)^2 for Q_8"
+       (and (equal? (tors HZ8 1) (list 8)) (equal? (tors HZ4Z2 1) (list 2 4)) (equal? (tors HZ2Z2Z2 1) (list 2 2 2))
+            (equal? (tors HD4 1) (list 2 2)) (equal? (tors HQ8 1) (list 2 2))))
+(check "H_2 is the Schur multiplier: 0, Z/2, (Z/2)^3, Z/2 for D_4, 0 for Q_8"
+       (and (equal? (tors HZ8 2) '()) (equal? (tors HZ4Z2 2) (list 2)) (equal? (tors HZ2Z2Z2 2) (list 2 2 2))
+            (equal? (tors HD4 2) (list 2)) (equal? (tors HQ8 2) '())))
+(check "H_3: Z/8 (cyclic), Z/2 x Z/2 x Z/4 (Kunneth), (Z/2)^7 (Kunneth), Z/2 x Z/2 x Z/4 for D_4, Z/8 for Q_8 (periodic cohomology)"
+       (and (equal? (tors HZ8 3) (list 8)) (equal? (tors HZ4Z2 3) (list 2 2 4)) (equal? (tors HZ2Z2Z2 3) (list 2 2 2 2 2 2 2))
+            (equal? (tors HD4 3) (list 2 2 4)) (equal? (tors HQ8 3) (list 8))))
+(check "D_4 and Q_8 have isomorphic H_1 but are separated by H_2 and H_3"
+       (and (equal? (tors HD4 1) (tors HQ8 1)) (not (equal? (tors HD4 2) (tors HQ8 2))) (not (equal? (tors HD4 3) (tors HQ8 3)))))
+
+(define twist-counts (map (lambda (T) (torsion-order (tors T 3))) (list HZ8 HZ4Z2 HZ2Z2Z2 HD4 HQ8)))
+(show "|H^3(G; Q/Z)| = number of Dijkgraaf-Witten twists: Z/8, Z/4xZ/2, (Z/2)^3, D_4, Q_8" twist-counts)
+(check "the twist counts are 8, 16, 128, 16, 8 (and 6 for S_3)"
+       (and (equal? twist-counts (list 8 16 128 16 8)) (= 6 (torsion-order (tors HS3 3)))))
+
+;; ---------------------------------------------------------------------------
+;; Cocycles on (Z/2)^3 and the twisted quantum double.
+;; Element x of (Z/2)^3 = (Z/2 x Z/2) x Z/2 has bits x1 = x div 4, x2 = (x div 2) mod 2, x3 = x mod 2.
+;; ---------------------------------------------------------------------------
+
+(define (bit1 x) (quotient x 4))
+(define (bit2 x) (remainder (quotient x 2) 2))
+(define (bit3 x) (remainder x 2))
+(define (carry2 b c) (quotient (+ b c) 2))
+(define (trivial-cocycle a b c) 0)
+(define (type-I a b c) (mod2 (* (bit1 a) (carry2 (bit1 b) (bit1 c)))))
+(define (type-II a b c) (mod2 (* (bit1 a) (carry2 (bit2 b) (bit2 c)))))
+(define (type-III a b c) (mod2 (* (bit1 a) (bit2 b) (bit3 c))))
+(define (not-a-cocycle a b c) (mod2 (* (bit1 a) (bit2 b))))
+
+(define (coboundary-value G w a b c d)
+  (mod2 (+ (w b c d) (- 0 (w (g-mul G a b) c d)) (w a (g-mul G b c) d) (- 0 (w a b (g-mul G c d))) (w a b c))))
+(define (cocycle? G w)
+  (all? (lambda (a) (all? (lambda (b) (all? (lambda (c) (all? (lambda (d) (= 0 (coboundary-value G w a b c d))) (elements G))) (elements G))) (elements G))) (elements G)))
+
+(check "type I, type II and type III are 3-cocycles on (Z/2)^3 (all 4096 quadruples)"
+       (and (cocycle? Z2Z2Z2 type-I) (cocycle? Z2Z2Z2 type-II) (cocycle? Z2Z2Z2 type-III)))
+(check "negative control -- (a,b,c) -> a_1 b_2 / 2 is not a cocycle" (not (cocycle? Z2Z2Z2 not-a-cocycle)))
+
+;; Z(T^3) = |G|^-1 sum over commuting triples of prod_pi omega(a_pi1, a_pi2, a_pi3)^sgn(pi):
+;; the number of simple objects of the twisted quantum double D^omega(G).
+(define (reduce-phases phases)                  ;; exact sum of exp(2 pi i k/2) for k in {0, 1}
+  (let loop ((ps phases) (re 0) (bad 0))
+    (cond ((null? ps) (list re bad))
+          ((= (car ps) 0) (loop (cdr ps) (+ re 1) bad))
+          ((= (car ps) 1) (loop (cdr ps) (- re 1) bad))
+          (else (loop (cdr ps) re (+ bad 1))))))
+(define (torus-phase G w a b c)
+  (mod2 (let loop ((ps s3-perms) (acc 0))
+          (if (null? ps) acc
+              (let* ((p (car ps)) (x (list a b c)) (v (w (list-ref x (car p)) (list-ref x (cadr p)) (list-ref x (caddr p)))))
+                (loop (cdr ps) (+ acc (* (perm-sign p) v))))))))
+(define (commuting? G x y) (= (g-mul G x y) (g-mul G y x)))
+(define (commuting-triples G)
+  (let loop-a ((a 0) (acc '()))
+    (if (= a (g-order G)) acc
+        (loop-a (+ a 1)
+                (let loop-b ((b 0) (acc acc))
+                  (if (= b (g-order G)) acc
+                      (loop-b (+ b 1)
+                              (let loop-c ((c 0) (acc acc))
+                                (if (= c (g-order G)) acc
+                                    (loop-c (+ c 1)
+                                            (if (and (commuting? G a b) (commuting? G b c) (commuting? G a c)) (cons (list a b c) acc) acc)))))))))))
+(define (torus-invariant G w)
+  (let ((r (reduce-phases (map (lambda (t) (torus-phase G w (car t) (cadr t) (caddr t))) (commuting-triples G)))))
+    (if (= 0 (cadr r)) (/ (car r) (g-order G)) 'unsupported-phase)))
+
+;; Simple objects of the untwisted double, counted the representation-theoretic way:
+;; sum over conjugacy classes [g] of the number of irreducible representations of the
+;; centralizer C(g), which equals the number of conjugacy classes of C(g).
+(define (centralizer G g) (filter (lambda (x) (commuting? G x g)) (elements G)))
+(define (class-count-in G S)                   ;; conjugacy classes of the subgroup S (as a list)
+  (let loop ((rest S) (classes 0))
+    (if (null? rest) classes
+        (let* ((g (car rest))
+               (orbit (map (lambda (h) (g-mul G (g-mul G h g) (g-inv G h))) S)))
+          (loop (filter (lambda (x) (not (memv x orbit))) rest) (+ classes 1))))))
+(define (conjugacy-classes G) (class-count-in G (elements G)))
+(define (double-simple-objects G)
+  (let loop ((rest (elements G)) (total 0))
+    (if (null? rest) total
+        (let* ((g (car rest))
+               (orbit (map (lambda (h) (g-mul G (g-mul G h g) (g-inv G h))) (elements G)))
+               (C (centralizer G g)))
+          (loop (filter (lambda (x) (not (memv x orbit))) rest) (+ total (class-count-in G C)))))))
+
+(show "conjugacy classes of D_4, Q_8, S_3" (list (conjugacy-classes D4) (conjugacy-classes Q8) (conjugacy-classes S3)))
+(check "D_4 and Q_8 have 5 conjugacy classes, S_3 has 3"
+       (and (= 5 (conjugacy-classes D4)) (= 5 (conjugacy-classes Q8)) (= 3 (conjugacy-classes S3))))
+
+(define t3-Z2Z2Z2-0 (torus-invariant Z2Z2Z2 trivial-cocycle))
+(define t3-Z2Z2Z2-I (torus-invariant Z2Z2Z2 type-I))
+(define t3-Z2Z2Z2-II (torus-invariant Z2Z2Z2 type-II))
+(define t3-Z2Z2Z2-III (torus-invariant Z2Z2Z2 type-III))
+(define t3-D4 (torus-invariant D4 trivial-cocycle))
+(define t3-Q8 (torus-invariant Q8 trivial-cocycle))
+(define t3-S3 (torus-invariant S3 trivial-cocycle))
+(show "Z(T^3) for (Z/2)^3: untwisted, type I, type II, type III" (list t3-Z2Z2Z2-0 t3-Z2Z2Z2-I t3-Z2Z2Z2-II t3-Z2Z2Z2-III))
+(show "Z(T^3) for D_4, Q_8, S_3 untwisted" (list t3-D4 t3-Q8 t3-S3))
+(check "untwisted (Z/2)^3 and its type I and type II twists keep 64 = |G|^2 simple objects"
+       (and (= 64 t3-Z2Z2Z2-0) (= 64 t3-Z2Z2Z2-I) (= 64 t3-Z2Z2Z2-II)))
+(check "the type III twist of (Z/2)^3 has 22 simple objects: the twisted double is non-abelian"
+       (= 22 t3-Z2Z2Z2-III))
+(check "the untwisted doubles of D_4 and Q_8 have 22 simple objects, S_3 has 8, by the state-sum count and by summing centralizer classes"
+       (and (= 22 t3-D4) (= 22 (double-simple-objects D4))
+            (= 22 t3-Q8) (= 22 (double-simple-objects Q8))
+            (= 8 t3-S3) (= 8 (double-simple-objects S3))
+            (= 64 (double-simple-objects Z2Z2Z2))))
+(check "the type III class is nonzero in H^3((Z/2)^3; Q/Z): a coboundary would leave the untwisted value 64"
+       (not (= t3-Z2Z2Z2-III t3-Z2Z2Z2-0)))
+
+;; ---------------------------------------------------------------------------
+;; State sums on branched Delta-complexes: S^3, RP^3, T^3 (as in the
+;; classifying-space example), now for groups of order eight.
+;; ---------------------------------------------------------------------------
+
+(define (pair-index i j n) (let loop ((a 0) (acc 0)) (if (= a i) (+ acc (- j i 1)) (loop (+ a 1) (+ acc (- n a 1))))))
+(define (manifold-S3)
+  (vector 5 10
+          (let loop ((k 0) (acc '()))
+            (if (= k 5) (reverse acc)
+                (let* ((vs (filter (lambda (v) (not (= v k))) (list 0 1 2 3 4)))
+                       (v0 (list-ref vs 0)) (v1 (list-ref vs 1)) (v2 (list-ref vs 2)) (v3 (list-ref vs 3)))
+                  (loop (+ k 1)
+                        (cons (list (if (even? k) 1 -1) (pair-index v0 v1 5) (pair-index v0 v2 5) (pair-index v0 v3 5)
+                                    (pair-index v1 v2 5) (pair-index v1 v3 5) (pair-index v2 v3 5))
+                              acc)))))))
+(define (rp3-edge i j sign) (+ (* 2 (pair-index i j 4)) (if (= sign 1) 0 1)))
+(define (manifold-RP3)
+  (vector 4 12
+          (let loop ((code 0) (acc '()))
+            (if (= code 8) (reverse acc)
+                (let* ((s1 1) (s2 (if (= 0 (remainder code 2)) 1 -1))
+                       (s3 (if (= 0 (remainder (quotient code 2) 2)) 1 -1))
+                       (s4 (if (= 0 (quotient code 4)) 1 -1)))
+                  (loop (+ code 1)
+                        (cons (list (* s1 s2 s3 s4)
+                                    (rp3-edge 0 1 (* s1 s2)) (rp3-edge 0 2 (* s1 s3)) (rp3-edge 0 3 (* s1 s4))
+                                    (rp3-edge 1 2 (* s2 s3)) (rp3-edge 1 3 (* s2 s4)) (rp3-edge 2 3 (* s3 s4)))
+                              acc)))))))
+(define (t3-edge d) (- (+ (car d) (* 2 (cadr d)) (* 4 (caddr d))) 1))
+(define (unit-vec i) (map (lambda (k) (if (= k i) 1 0)) (list 0 1 2)))
+(define (vec-add u v) (map + u v))
+(define (manifold-T3)
+  (vector 1 7
+          (map (lambda (p)
+                 (let ((e1 (unit-vec (car p))) (e2 (unit-vec (cadr p))) (e3 (unit-vec (caddr p))))
+                   (list (perm-sign p)
+                         (t3-edge e1) (t3-edge (vec-add e1 e2)) (t3-edge (vec-add e1 (vec-add e2 e3)))
+                         (t3-edge e2) (t3-edge (vec-add e2 e3)) (t3-edge e3))))
+               s3-perms)))
+(define (m-vertices M) (vector-ref M 0))
+(define (m-edges M) (vector-ref M 1))
+(define (m-tets M) (vector-ref M 2))
+(define (tet-eps t) (list-ref t 0))
+(define (tet-e t k) (list-ref t (+ k 1)))
+(define (tet-faces t)
+  (list (list (tet-e t 0) (tet-e t 3) (tet-e t 1)) (list (tet-e t 1) (tet-e t 5) (tet-e t 2))
+        (list (tet-e t 3) (tet-e t 5) (tet-e t 4)) (list (tet-e t 0) (tet-e t 4) (tet-e t 2))))
+(define (faces-by-edge M)
+  (let ((v (make-vector (m-edges M) '())))
+    (for-each (lambda (t) (for-each (lambda (f) (let ((e (list-max f))) (vector-set! v e (cons f (vector-ref v e))))) (tet-faces t))) (m-tets M))
+    v))
+(define (coloring-phase M w col)
+  (let loop ((ts (m-tets M)) (acc 0))
+    (if (null? ts) (mod2 acc)
+        (let ((t (car ts)))
+          (loop (cdr ts) (+ acc (* (tet-eps t) (w (vector-ref col (tet-e t 0)) (vector-ref col (tet-e t 3)) (vector-ref col (tet-e t 5))))))))))
+;; Enumeration order: edges are visited in an order that closes a face as
+;; early as possible (greedy: next take an edge completing the most faces
+;; whose other two edges are already colored), so the depth-first search
+;; prunes at depth 3 instead of exploring |G|^k partial colorings first.
+(define (all-faces M)
+  (let loop ((ts (m-tets M)) (acc '()))
+    (if (null? ts) acc (loop (cdr ts) (append (tet-faces (car ts)) acc)))))
+(define (edge-order M)
+  (let ((E (m-edges M)) (faces (all-faces M)))
+    (let loop ((chosen '()) (order '()))
+      (if (= (length order) E)
+          (reverse order)
+          (let pick ((e 0) (best -1) (best-score -1))
+            (if (= e E)
+                (loop (cons best chosen) (cons best order))
+                (if (memv e chosen)
+                    (pick (+ e 1) best best-score)
+                    (let ((score (count-if (lambda (f) (and (memv e f)
+                                                            (all? (lambda (x) (or (= x e) (memv x chosen))) f)))
+                                           faces)))
+                      (if (> score best-score) (pick (+ e 1) e score) (pick (+ e 1) best best-score))))))))))
+;; Faces grouped by the POSITION (in the enumeration order) at which they
+;; become fully colored.
+(define (faces-by-position M order)
+  (let* ((E (m-edges M)) (pos (make-vector E 0)) (v (make-vector E '())))
+    (let loop ((os order) (i 0)) (if (not (null? os)) (begin (vector-set! pos (car os) i) (loop (cdr os) (+ i 1)))))
+    (for-each (lambda (f)
+                (let ((p (list-max (map (lambda (x) (vector-ref pos x)) f))))
+                  (vector-set! v p (cons f (vector-ref v p)))))
+              (all-faces M))
+    v))
+(define (face-holds? G col f)
+  (= (g-mul G (vector-ref col (car f)) (vector-ref col (cadr f))) (vector-ref col (caddr f))))
+(define (faces-hold? G col fs)
+  (cond ((null? fs) #t) ((face-holds? G col (car fs)) (faces-hold? G col (cdr fs))) (else #f)))
+(define (flat-phases M G w)
+  (let* ((E (m-edges M)) (n (g-order G)) (col (make-vector E 0))
+         (order (list->vector (edge-order M))) (fbp (faces-by-position M (vector->list order))))
+    (let dfs ((i 0))
+      (if (= i E)
+          (list (coloring-phase M w col))
+          (let ((e (vector-ref order i)))
+            (let loop ((g 0) (acc '()))
+              (if (= g n) acc
+                  (begin
+                    (vector-set! col e g)
+                    (if (faces-hold? G col (vector-ref fbp i))
+                        (loop (+ g 1) (append (dfs (+ i 1)) acc))
+                        (loop (+ g 1) acc))))))))))
+(define (state-sum M G w)
+  (let ((r (reduce-phases (flat-phases M G w))))
+    (if (= 0 (cadr r)) (/ (car r) (ipow (g-order G) (m-vertices M))) 'unsupported-phase)))
+(define (lens2-formula G w)
+  (let ((r (reduce-phases (map (lambda (a) (w a a a)) (filter (lambda (a) (= 0 (g-mul G a a))) (elements G))))))
+    (/ (car r) (g-order G))))
+(define (hom-count-Z2 G) (count-if (lambda (a) (= 0 (g-mul G a a))) (elements G)))
+
+(define S3m (manifold-S3))
+(define RP3m (manifold-RP3))
+(define T3m (manifold-T3))
+
+(check "Z(S^3) = 1/8 for (Z/2)^3 with each of the four cocycle types, and for D_4 and Q_8 untwisted"
+       (and (= 1/8 (state-sum S3m Z2Z2Z2 trivial-cocycle)) (= 1/8 (state-sum S3m Z2Z2Z2 type-I))
+            (= 1/8 (state-sum S3m Z2Z2Z2 type-II)) (= 1/8 (state-sum S3m Z2Z2Z2 type-III))
+            (= 1/8 (state-sum S3m D4 trivial-cocycle)) (= 1/8 (state-sum S3m Q8 trivial-cocycle))))
+(check "Z(T^3) on the Kuhn triangulation equals the commuting-triple formula: 22 for type III, 64 for type I, 22 for D_4 and Q_8"
+       (and (= 22 (state-sum T3m Z2Z2Z2 type-III)) (= 64 (state-sum T3m Z2Z2Z2 type-I))
+            (= 22 (state-sum T3m D4 trivial-cocycle)) (= 22 (state-sum T3m Q8 trivial-cocycle))))
+(define rp3-III (state-sum RP3m Z2Z2Z2 type-III))
+(define rp3-D4 (state-sum RP3m D4 trivial-cocycle))
+(define rp3-Q8 (state-sum RP3m Q8 trivial-cocycle))
+(show "Z(RP^3): (Z/2)^3 type III, D_4 untwisted, Q_8 untwisted" (list rp3-III rp3-D4 rp3-Q8))
+(check "Z(RP^3) for the type III theory is 3/4: only the all-ones element picks up the sign"
+       (and (= 3/4 rp3-III) (= rp3-III (lens2-formula Z2Z2Z2 type-III))))
+(check "Z(RP^3) untwisted counts homomorphisms Z/2 -> G over |G|: 6/8 for D_4, 2/8 for Q_8"
+       (and (= 3/4 rp3-D4) (= 6 (hom-count-Z2 D4)) (= 1/4 rp3-Q8) (= 2 (hom-count-Z2 Q8))
+            (= rp3-D4 (lens2-formula D4 trivial-cocycle)) (= rp3-Q8 (lens2-formula Q8 trivial-cocycle))))
+;; Orientation flips are invisible to order-2 phases (omega^-1 = omega when
+;; omega takes values in {0, 1/2}), so the control here breaks the complex
+;; itself: swapping two edges of one tetrahedron of S^3 destroys the face
+;; consistency, the flat colorings are no longer the |G|^(V-1) gauge
+;; transforms, and the state sum leaves 1/8.
+(check "negative control -- swapping two edges of one tetrahedron of S^3 breaks Z(S^3) = 1/8 for D_4 and for the type III theory"
+       (let* ((t (car (m-tets S3m)))
+              (swapped (list (tet-eps t) (tet-e t 0) (tet-e t 1) (tet-e t 2) (tet-e t 4) (tet-e t 3) (tet-e t 5)))
+              (broken (vector 5 10 (cons swapped (cdr (m-tets S3m))))))
+         (and (not (equal? 1/8 (state-sum broken D4 trivial-cocycle)))
+              (not (equal? 1/8 (state-sum broken Z2Z2Z2 type-III))))))
+
+(display "Group cohomology of the groups of order eight and their twisted doubles") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

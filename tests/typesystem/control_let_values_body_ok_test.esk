@@ -1,0 +1,17 @@
+;; Type System Test: well-typed code inside a `let-values` producer and body stays silent now that
+;; the checker synthesizes it (no false positive from descending into it).
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (split x)
+  (let-values (((a b) (values x 2)))
+    (area a b)))
+(display (split 3))
+(newline)
+
+(display (area 2 3))
+(newline)

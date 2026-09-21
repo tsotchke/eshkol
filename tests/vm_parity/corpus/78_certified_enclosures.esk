@@ -1,0 +1,53 @@
+; core.ad.rigorous_interval / core.ad.rigorous_taylor_models must agree
+; between the native and VM engines: fl-next-up/fl-next-down (native id
+; 2228/2229 in the VM, codegenNextafter in native codegen), the outward-
+; rounded ia+/ia-/ia*/ia/, the rigorous transcendentals, and a rigorous
+; Taylor-model containment + polynomial no-root certification. Only a
+; final PASS/FAIL line is printed (not raw doubles) so this stays
+; byte-identical across -r, vm-src and vm-eskb regardless of any engine's
+; float-formatting quirks -- the parity harness diffs stdout.
+(require core.ad.taylor_models)
+
+(define ok
+  (and
+    ;; directed rounding brackets its argument and round-trips exactly
+    (> (fl-next-up 0.1) 0.1)
+    (< (fl-next-down 0.1) 0.1)
+    (= (fl-next-down (fl-next-up 0.1)) 0.1)
+    (= (fl-next-up (fl-next-down 5e-324)) 5e-324)
+
+    ;; exact stays exact; inexact gets a genuine outward nudge
+    (let ((r (ia+ (cons 1/3 1/3) (cons 1/6 1/6))))
+      (and (exact? (car r)) (= (car r) 1/2) (= (cdr r) 1/2)))
+    (let ((r (ia+ (cons 0.1 0.1) (cons 0.2 0.2))))
+      (and (not (exact? (car r))) (< (car r) (cdr r))
+           (<= (car r) (+ 0.1 0.2)) (>= (cdr r) (+ 0.1 0.2))))
+
+    ;; rigorous transcendentals contain their libm point value
+    (let ((e (ia-exp (cons 1/2 1/2)))) (and (<= (car e) (exp 0.5)) (>= (cdr e) (exp 0.5))))
+    (let ((e (ia-sqrt (cons 2 2)))) (and (<= (car e) (sqrt 2.0)) (>= (cdr e) (sqrt 2.0))))
+    (let ((e (ia-sin (cons 1.0 1.0)))) (and (<= (car e) (sin 1.0)) (>= (cdr e) (sin 1.0))))
+    (let ((e (ia-atan (cons 3.0 3.0)))) (and (<= (car e) (atan 3.0)) (>= (cdr e) (atan 3.0))))
+
+    ;; rigorous Taylor-model containment of exp on a rational interval
+    (let* ((tm (tm-enclose (lambda (x) (tm-exp x 10)) 0 1/2 6))
+           (rng (tm-bound tm)))
+      (and (tm-rigorous? tm)
+           (interval-contains? rng (exp 0.0))
+           (interval-contains? rng (exp 0.4))
+           (interval-contains? rng (exp -0.4))))
+
+    ;; application: certify x^2-4 has no root on [0,1], but does on [1,3]
+    (let* ((p (lambda (x0 r k)
+                (let ((xv (tm-var x0 r k))) (tm+ (tm* xv xv) (tm-const -4 x0 r k))))))
+      (and (tm-prove-nonzero (p 1/2 1/2 2))
+           (not (tm-prove-nonzero (p 2 1 2)))))
+
+    ;; rigorous? flag on core.ad.interval: opt-in matches ia+ exactly
+    (let ((d (interval-add (cons 0.1 0.1) (cons 0.2 0.2) #t))
+          (r (ia+ (cons 0.1 0.1) (cons 0.2 0.2))))
+      (and (= (car d) (car r)) (= (cdr d) (cdr r))))))
+
+(if ok
+    (begin (display "PASS: certified_enclosures native/VM parity") (newline))
+    (begin (display "FAIL: certified_enclosures native/VM parity") (newline)))

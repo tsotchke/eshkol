@@ -23,7 +23,7 @@ observed_after: >-
 evidence: >-
   tests/json/json_test.esk section 12 contains the nested session-message
   reduction and exact expected JSON. Verification was run against the
-  uncommitted worktree on old-donkey.
+  uncommitted worktree on a Linux CI worker.
 close_condition: >-
   Reopen if the nested session-message test crashes, drops tool_calls or
   function arguments, or changes the object-versus-array classification.

@@ -30,7 +30,7 @@ fixed_by: >-
   dispatch case 2097; `tests/vm_parity/PARITY.tsv` now marks the construct
   `vm-supported`.
 evidence: >-
-  Remote old-donkey terminal, process, and FFI suite runs on native and VM;
+  Remote Linux CI worker terminal, process, and FFI suite runs on native and VM;
   the explicit VM exit-status probe verifies status 7 and no output after
   the call.
 caught_by: [direct-measurement, vm-parity-surface-audit]

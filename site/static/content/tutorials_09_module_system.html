@@ -1,0 +1,106 @@
+<h1 id="tutorial-9-the-module-system">Tutorial 9: The Module System</h1>
+<p>Eshkol uses <code>require</code> and <code>provide</code> for module loading with dependency resolution and cycle detection.</p>
+<hr />
+<h2 id="part-1-using-modules">Part 1: Using Modules</h2>
+<pre class="scheme"><code>;; Load the standard library
+(require stdlib)
+
+;; Load specific sub-modules
+(require core.list.higher_order)   ;; map, fold, filter, etc.
+(require core.list.transform)      ;; take, drop, append, reverse
+(require core.list.sort)           ;; sort
+(require core.strings)             ;; string operations
+(require core.json)                ;; JSON parsing
+(require core.data.csv)            ;; CSV parsing
+(require core.data.base64)         ;; Base64 encoding/decoding
+(require core.functional.compose)  ;; compose, pipe
+(require core.functional.curry)    ;; curry, flip</code></pre>
+<hr />
+<h2 id="part-2-creating-modules">Part 2: Creating Modules</h2>
+<p>A module is an <code>.esk</code> file with a <code>provide</code> declaration listing its exports:</p>
+<!-- doc-example: file mylib.esk: the module the next example requires -->
+<pre class="scheme"><code>;;; mylib.esk — a custom library
+
+(provide square cube hypotenuse)
+
+(define (square x) (* x x))
+(define (cube x) (* x x x))
+
+;; Internal helper — NOT exported
+(define (sum-of-squares a b) (+ (square a) (square b)))
+
+(define (hypotenuse a b) (sqrt (sum-of-squares a b)))</code></pre>
+<p>Use it:</p>
+<pre class="scheme"><code>(require mylib)
+
+(display (square 5))      ;; =&gt; 25
+(display (hypotenuse 3 4))  ;; =&gt; 5.0
+;; (sum-of-squares 3 4) would error — it&#39;s not exported</code></pre>
+<hr />
+<h2 id="part-3-module-paths">Part 3: Module Paths</h2>
+<p>Module names map to file paths with dots as separators:</p>
+<table>
+<thead>
+<tr>
+<th>Module name</th>
+<th>File path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>stdlib</code></td>
+<td><code>lib/core/**/*.esk</code> (all sub-modules)</td>
+</tr>
+<tr>
+<td><code>core.list.higher_order</code></td>
+<td><code>lib/core/list/higher_order.esk</code></td>
+</tr>
+<tr>
+<td><code>core.json</code></td>
+<td><code>lib/core/json.esk</code></td>
+</tr>
+<tr>
+<td><code>mylib</code></td>
+<td><code>./mylib.esk</code> (relative to current file)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="part-4-available-standard-library-modules">Part 4: Available Standard Library Modules</h2>
+<h3 id="lists">Lists</h3>
+<ul>
+<li><code>core.list.higher_order</code> — map, fold, fold-left, fold-right, filter, for-each, any, every</li>
+<li><code>core.list.transform</code> — take, drop, append, reverse, partition, list-copy</li>
+<li><code>core.list.sort</code> — sort (merge sort)</li>
+<li><code>core.list.search</code> — member, assoc, list-ref, list-tail</li>
+<li><code>core.list.query</code> — count-if, find, length</li>
+<li><code>core.list.generate</code> — iota, range, make-list, repeat, zip</li>
+<li><code>core.list.convert</code> — list-&gt;vector, vector-&gt;list</li>
+<li><code>core.list.compound</code> — caar, cadr, cdar, cddr, etc.</li>
+</ul>
+<h3 id="functional">Functional</h3>
+<ul>
+<li><code>core.functional.compose</code> — compose, pipe</li>
+<li><code>core.functional.curry</code> — curry, flip</li>
+</ul>
+<h3 id="data">Data</h3>
+<ul>
+<li><code>core.json</code> — JSON parsing and generation</li>
+<li><code>core.data.csv</code> — CSV parsing and writing</li>
+<li><code>core.data.base64</code> — Base64 encode/decode</li>
+<li><code>core.strings</code> — string operations</li>
+</ul>
+<h3 id="io">I/O</h3>
+<ul>
+<li><code>core.io</code> — display, write, read, newline, ports</li>
+</ul>
+<h3 id="operators">Operators</h3>
+<ul>
+<li><code>core.operators.arithmetic</code> — +, -, *, /</li>
+<li><code>core.operators.compare</code> — &lt;, &gt;, &lt;=, &gt;=, =</li>
+<li><code>core.logic.predicates</code> — null?, pair?, number?, etc.</li>
+<li><code>core.logic.boolean</code> — and, or, not</li>
+<li><code>core.logic.types</code> — type predicates</li>
+</ul>
+<hr />
+<p><em>Next: Tutorial 10 — Macros and Metaprogramming</em></p>

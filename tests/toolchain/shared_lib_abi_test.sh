@@ -62,6 +62,9 @@ fail() {
     exit 1
 }
 
+# shellcheck source=../../scripts/lib/checked_write.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../scripts/lib" && pwd)/checked_write.sh"
+
 if [ -z "$ESHKOL_RUN" ] || [ ! -x "$ESHKOL_RUN" ]; then
     fail "eshkol-run not executable: '$ESHKOL_RUN'"
 fi
@@ -94,14 +97,14 @@ esac
 # failure mode the defect itself had. A missing tool is a broken environment,
 # reported as such.
 CC="${CC:-cc}"
-command -v "$CC" >/dev/null 2>&1 || fail "no C compiler ('$CC') to build the ABI harness"
+eshkol_command_available "$CC" || fail "no C compiler ('$CC') to build the ABI harness"
 command -v nm >/dev/null 2>&1 \
     || fail "no 'nm': cannot verify which symbols the library exports"
 
 PYTHON=""
 for candidate in "${PYTHON:-}" python3 python; do
     [ -n "$candidate" ] || continue
-    if command -v "$candidate" >/dev/null 2>&1; then PYTHON="$candidate"; break; fi
+    if eshkol_command_available "$candidate"; then PYTHON="$candidate"; break; fi
 done
 [ -n "$PYTHON" ] \
     || fail "no python3: the ctypes leg is a required second consumer, not an optional one"

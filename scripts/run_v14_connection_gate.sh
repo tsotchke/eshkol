@@ -52,8 +52,14 @@ ESHKOL_RUN="$BUILD_DIR_PATH/eshkol-run"
 VM_RUN="$BUILD_DIR_PATH/eshkol-vm-standalone-test"
 
 TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
+# Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
+# shellcheck source=lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 TRACE_FILE="$TRACE_DIR/v1_4_connection.jsonl"
 mkdir -p "$TRACE_DIR"
+eshkol_require_output_file_path "$TRACE_FILE"
 : > "$TRACE_FILE"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-v14-gate.XXXXXX")"
@@ -63,6 +69,7 @@ PROBE_TOTAL=0
 PROBE_FAILURES=0
 
 emit_event() { # name PASS|FAIL snippet
+    eshkol_require_output_file_path "$TRACE_FILE"
     python3 -c '
 import json, sys
 print(json.dumps({"kind": "v1_4_connection", "name": sys.argv[1], "value": sys.argv[2],

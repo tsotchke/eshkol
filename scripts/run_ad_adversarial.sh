@@ -46,6 +46,9 @@ fi
 GEN_DIR="$REPO_ROOT/tests/ad_adversarial/generated"
 if eshkol_durable_enabled; then
     TRACE_DIR="${TRACE_DIR:-$ADV_WORK/traces}"
+    # Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+    . "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+    eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 else
     TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 fi

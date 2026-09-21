@@ -1,6 +1,6 @@
 # ADR 0009: Native DBSP-Style Incremental Dataflow and Unified Differentiation
 
-- Status: Proposed
+- Status: Accepted — partially implemented: the pure-Eshkol `core.dbsp` library slice (`lib/core/dbsp.esk`: Z-sets, `stream-D`, `stream-I`, `dbsp-incrementalize` and the incremental map, filter, project, union, join and distinct operators; gate `scripts/run_dbsp_gate.sh`) is in v1.3.5-evolve; remaining stages Proposed
 - Date: 2026-07-09
 - Decision owners: Eshkol compiler/runtime maintainers; `core.memory` and Selene maintainers
 - Research cluster: 9

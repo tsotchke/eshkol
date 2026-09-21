@@ -397,6 +397,31 @@ void eshkol_bignum_pow_tagged(arena_t* arena,
     const eshkol_tagged_value_t* base, const eshkol_tagged_value_t* exponent,
     eshkol_tagged_value_t* result);
 
+/* ===== Exact n-th root (MS-05 / SW-167) ===== */
+
+/**
+ * @brief Exact/floor n-th integer root of a non-negative bignum.
+ *
+ * Computes via Newton's method in bignum arithmetic
+ * (x_{k+1} = ((n-1)*x_k + a/x_k^(n-1)) / n), seeded from a bit-length
+ * estimate so iteration count stays small regardless of magnitude. Always
+ * returns floor(a^(1/n)); @p out_exact is set true iff the returned root,
+ * raised back to the n-th power, reproduces @p a exactly (verified, not
+ * assumed).
+ *
+ * @param arena Arena to allocate intermediate/result values from.
+ * @param a Non-negative radicand (n=0 is invalid; n=1 returns a itself,
+ *          always exact; a==0 returns 0, always exact; a<0 is a domain
+ *          error the caller must avoid — this function defensively
+ *          reports inexact rather than computing a nonsensical root).
+ * @param n Root degree (n=2 for sqrt).
+ * @param[out] out_exact Set true iff root^n == a exactly.
+ * @return floor(a^(1/n)) as a newly allocated bignum, or NULL on
+ *         allocation failure (or n==0).
+ */
+eshkol_bignum_t* eshkol_bignum_iroot(arena_t* arena, const eshkol_bignum_t* a,
+    uint64_t n, bool* out_exact);
+
 /* ===== String Conversion ===== */
 
 /* Parse a string to a tagged number value.

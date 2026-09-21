@@ -1,0 +1,57 @@
+;; ESH-0101 guard coverage — nesting. Innermost matching guard wins, outer
+;; guards must not fire, a guard nested in a CLAUSE BODY works, and a guard
+;; nested inside another guard's normal (non-raising) body is transparent.
+
+(define (chk name ok)
+  (if ok
+      (begin (display "PASS:") (display name) (display " "))
+      (begin (display "FAIL:") (display name) (display " "))))
+
+;; innermost matching guard wins; outer never fires
+(define outer-fired #f)
+(define r1
+  (guard (o (#t (set! outer-fired #t) "outer"))
+    (guard (i (#t "inner")) (raise 'x))))
+(chk "innermost-wins" (equal? r1 "inner"))
+(chk "outer-silent" (equal? outer-fired #f))
+
+;; three levels, innermost catches
+(chk "three-level-innermost"
+     (equal? (guard (a (#t "a")) (guard (b (#t "b")) (guard (c (#t "c")) (raise 1))))
+             "c"))
+
+;; a guard INSIDE a clause body of another guard
+(chk "guard-in-clause-body"
+     (equal? (guard (o (#t (guard (i (#t (list 'inner i))) (raise (list 'from o)))))
+               (raise 'seed))
+             (list 'inner (list 'from 'seed))))
+
+;; a guard nested in a normal body returns the inner body value untouched
+(chk "nested-normal-path"
+     (equal? (guard (a (#t "a")) (guard (b (#t "b")) (+ 40 2))) 42))
+
+;; the two guard variables are distinct bindings, both live at once
+(chk "distinct-vars"
+     (equal? (guard (o (#t (list 'o o)))
+               (guard (i ((number? i) (raise (list i 'inner))))
+                 (raise 99)))
+             (list 'o (list 99 'inner))))
+
+;; same variable NAME at both levels — inner shadows, outer restored
+(chk "same-name-shadowing"
+     (equal? (guard (e (#t (list 'outer e)))
+               (guard (e (#t (raise (list 'inner e)))) (raise 'seed)))
+             (list 'outer (list 'inner 'seed))))
+
+;; a raise from a procedure called inside the guard body is caught
+(define (thrower) (raise 'from-callee))
+(chk "callee-raise-caught"
+     (equal? (guard (e (#t e)) (thrower)) 'from-callee))
+
+;; a callee's OWN guard catches first; the caller's guard does not fire
+(define caller-fired #f)
+(define (safe-callee) (guard (e (#t "callee-handled")) (raise 'boom)))
+(chk "callee-guard-wins"
+     (equal? (guard (e (#t (set! caller-fired #t) "caller")) (safe-callee))
+             "callee-handled"))
+(chk "caller-guard-silent" (equal? caller-fired #f))

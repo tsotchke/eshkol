@@ -25,8 +25,8 @@ Thank you for your interest in contributing to Eshkol! This document provides gu
   - [Project Structure](#project-structure)
   - [Communication](#communication)
   - [Priority Areas for Contribution (v1.4+)](#priority-areas-for-contribution-v14)
-    - [Immediate Priorities (v1.4-connection - July 2026)](#immediate-priorities-v14-connection---july-2026)
-    - [Near-Term (v1.5-intelligence - August 2026)](#near-term-v15-intelligence---august-2026)
+    - [Immediate Priorities (v1.4-connection)](#immediate-priorities-v14-connection)
+    - [Near-Term (v1.5.0-intelligence - target 2026-12-05)](#near-term-v150-intelligence---target-2026-12-05)
     - [Ongoing](#ongoing)
   - [Recognition](#recognition)
 
@@ -115,19 +115,30 @@ bash scripts/run_macros_tests.sh
 The bytecode VM can be built and tested independently:
 
 ```bash
-# Build
-gcc -O2 -std=c11 -w lib/backend/eshkol_vm.c -o test_vm -lm -lpthread
+# Build through the canonical target so every runtime dependency is linked.
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target eshkol-vm-standalone-test --parallel
 
 # Run all 50 built-in tests
-ESHKOL_VM_NO_DISASM=1 ./test_vm
+ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test
 
 # Run a single Eshkol program through the VM
-./test_vm program.esk
+./build/eshkol-vm-standalone-test program.esk
 ```
 
 ### Building the Website
 
-The website is written in Eshkol and compiled to WebAssembly:
+The website is written in Eshkol and compiled to WebAssembly. Its published
+documentation pages come from one manifest, `site/pages.json`, which names each
+Markdown source, its slug and its navigation section. To publish a page, add a
+manifest entry and run `scripts/build-site-content.sh`; the generated sidebars
+pick it up with no change to `site/src/main.esk`. Before opening a pull request,
+run `python3 scripts/build_site_content.py --check` (manifest, fragments and
+navigation agree), `python3 scripts/verify_site_release.py` (release facts match
+`tests/coverage/release_record.json`) and `python3 scripts/site_smoke.py`
+(the pages render in a real browser with no console errors); the Pages deploy
+runs the same three.
+
 
 ```bash
 # Compile the website
@@ -136,39 +147,58 @@ The website is written in Eshkol and compiled to WebAssembly:
 # Rebuild the browser REPL VM (site/static/eshkol-vm.{js,wasm})
 # CI pins emsdk 4.0.22 (.github/workflows/ci.yml); use the same version locally
 # or the bundle can diverge from the checked-in artifact.
-emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
-  -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
-  -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
-  -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
-  -I inc -I lib/backend lib/backend/vm_wasm_repl.c lib/core/unicode.cpp \
-  -o site/static/eshkol-vm.js -lm
+. "$EMSDK/emsdk_env.sh"
+scripts/build-wasm-repl.sh
 
 # Serve locally
 cd site/static && python3 -m http.server 8888
 ```
 
 The REPL VM bundle is a **checked-in artifact** and neither `scripts/build-site.sh`
-nor the Pages deploy regenerates it, so it must be rebuilt by hand whenever
-`lib/backend/vm_wasm_repl.c`, `lib/backend/eshkol_vm.c`, or the prelude cache
-changes — otherwise the browser REPL silently keeps running an older VM. Two
-flags are not optional: `-I inc` (the VM includes `eshkol/backend/vm_limits.h`)
-and `ERROR_ON_UNDEFINED_SYMBOLS=0`, which leaves the native leaf runtime deps
-that are not part of the VM WASM (`eshkol_qrng_uint64`, `eshkol_qrng_double`,
-`eshkol_linear_solve`) as aborting stubs so a program calling them fails cleanly.
+nor the Pages deploy regenerates it, so it must be rebuilt whenever
+`lib/backend/vm_wasm_repl.c`, `lib/backend/eshkol_vm.c`, one of the `lib/core`
+translation units it links, or the prelude cache changes — otherwise the
+browser REPL silently keeps running an older VM.
+
+`scripts/build-wasm-repl.sh` is the canonical recipe and the only place it is
+written down. It used to be a copied-out `emcc` line here, and a copied-out
+list of sources is a list that drifts: because the link needs
+`ERROR_ON_UNDEFINED_SYMBOLS=0` (a few leaf runtime deps genuinely have no WASM
+implementation), a translation unit missing from the list does not fail the
+build — emscripten substitutes an ABORTING STUB and the omission only shows up
+when a visitor's expression reaches it and kills the whole module. That is how
+the list came to lag `lib/core/tensor_validation.cpp` and ship a bundle in
+which `(make-tensor (list 2 2) 1.0)` aborted the REPL. The script now shares
+its source list with the CI execute-and-diff lane
+(`scripts/lib/wasm_vm_sources.sh`), so the bundle users load and the module CI
+executes are the same link, and it FAILS on any undefined symbol outside the
+documented allowlist (`eshkol_qrng_uint64`, `eshkol_qrng_double`,
+`eshkol_linear_solve`, `eshkol_capability_require` — kept as aborting stubs on
+purpose, so a program calling them fails cleanly rather than mis-executing).
+
+The script needs a CONFIGURED CMake build dir for `eshkol/build_config.h`;
+configuring is enough, nothing native is linked.
 
 After rebuilding, check the bundle in node before committing it — the same
-`repl_eval` entry point the site uses:
+`repl_eval` entry point the site uses. Note that Emscripten delivers stdout to
+the embedder one COMPLETE LINE at a time, so this smoke test ends with an
+expression whose auto-printed answer terminates the line:
 
 ```bash
 node -e '
 const f=require("./site/static/eshkol-vm.js");
 f({print:t=>console.log(t)}).then(m=>{
   const ev=m.cwrap("repl_eval","string",["string"]);
-  ev("(display (sqrt 2.0))");                                   // 1.4142135623730951
+  ev("(sqrt 2.0)");                                             // 1.4142135623730951
   ev("(define (v p) (+ (* (vref p 0) (vref p 0)) (* (vref p 1) (vref p 1))))");
-  ev("(display (gradient v (vector 3.0 4.0)))");                // #(6 8)
+  ev("(gradient v (vector 3.0 4.0))");                          // #(6 8)
+  ev("(tensor-shape (make-tensor (list 2 2) 1.0))");            // (2 2)
 });'
 ```
+
+The CI lane `wasm-execute-diff` gates this surface too: see
+`tests/wasm_diff/REPL_TRANSCRIPT.tsv`, which pins the transcript a
+line-oriented host receives from `repl_eval`.
 
 Then update the VM WASM size statistic in `site/src/main.esk` (the `s2`
 `"...KB"` cell) to match the new artifact — `scripts/verify_site_release.py`
@@ -270,17 +300,84 @@ advisory ones, before merging, and dedupes stale check entries by taking the lat
 run per lane name. Re-run the failed jobs once before treating a lite-lane red as a
 real regression.
 
+**What `assurance-gates` actually checks.** This is the one required context
+that runs on every PR shape, docs-only included, because it builds nothing —
+it is pure Python over the checked-out files. Every gate below runs its own
+`--self-test` first (deliberately broken fixtures it must go red on), so the
+job proves each gate CAN fail before it reports that nothing failed. Run any
+of them locally before pushing:
+
+```bash
+python3 scripts/check_ledger_integrity.py    # .icc/silent-wrong-ledger.yaml: no duplicate ids, every entry well-formed
+python3 scripts/check_oracle_schema.py       # .icc/completion-oracles.yaml parses; every criterion is gradeable
+python3 scripts/gate_no_silent_wrong.py      # no open, unwaived SILENT-WRONG flaw ships
+python3 scripts/audit_oracle_false_green.py  # no oracle target reads ready on zero evidence
+python3 scripts/gate_ad_shared_node_model.py # every AD op routes through a declared, exact carrier
+python3 scripts/gate_exhaustive_dispatch.py  # no dispatch switch over a closed enum carries a `default:`
+python3 scripts/check_required_context_consistency.py --offline
+python3 scripts/check_surface_counts.py      # quoted language-surface counts have not drifted
+python3 scripts/check_ps1_encoding.py        # tracked *.ps1 are ASCII, or BOM-marked UTF-8
+python3 scripts/check_self_verdicts.py       # no self-reported failure hides behind a PASS verdict
+python3 scripts/check_build_fingerprint.py   # no harness's recorded binary fingerprint is stale
+python3 scripts/check_evidence_staleness.py --require-trace-dir
+```
+
+Three of these reject changes that look harmless:
+
+- **Exhaustive dispatch.** A `switch` over a closed enum may not carry a
+  `default:` clause. Adding an enumerator means updating every registered
+  dispatch site; a `default:` that silently absorbs the new member is the
+  defect this gate exists to stop. The compiler enforces it too
+  (`-Werror=switch -Werror=switch-enum`, or the
+  `ESHKOL_EXHAUSTIVE_SWITCH_BEGIN` macros in
+  `inc/eshkol/exhaustive_dispatch.h`), but a failed build produces an absence
+  rather than evidence, so the gate re-derives each enum's members from its
+  own definition and reports.
+- **PowerShell encoding.** A tracked `*.ps1` or `*.psm1` may not contain a
+  non-ASCII byte without a UTF-8 BOM. PowerShell 5.1 decodes a BOM-less script
+  in the system ANSI code page; pwsh 7 assumes UTF-8. A file that parses
+  cleanly under pwsh 7 can throw a cascade of parse errors on a Windows 5.1
+  host, so an em dash in a comment is a real breakage.
+- **Surface counts.** If you change the language surface, the counts quoted in
+  `README.md`, `docs/FEATURE_MATRIX.md`, `docs/TEST_COVERAGE.md`,
+  `.icc/architecture-model.yaml` and every `docs/reference/*/INDEX.md` must
+  move with it. `scripts/check_surface_counts.py` is the drift checker.
+- **Release facts.** The release date, the release status and the CTest and
+  VM-parity totals live in `tests/coverage/release_record.json` and nowhere
+  else. Change the record, run `python3 scripts/check_surface_counts.py --sync`
+  and `scripts/build-site-content.sh`, and the same gate confirms that every
+  release-facing document and generated site page agrees.
+
+Two further gates run with ICC rather than in this job:
+`scripts/check_doc_claims_residual.py` requires every ICC `doc-typed-claims`
+"wrong" finding to be either allowlisted in `.icc/doc-claims-allowlist.yaml`
+or an open, tracked DOC-DEBT ledger item, and
+`scripts/check_evidence_staleness.py` refuses to grade an empty trace
+directory as a pass.
+
 **Release-blocking readiness.** Publishing a release is additionally gated by the
 `release-readiness-gate` job in `.github/workflows/release.yml`, which regenerates
 the oracle traces at the tagged SHA and runs `icc architecture-verify` +
-`icc readiness --target v1.3-evolve`. `publish-release` depends on it, so **no
+`icc readiness --target v1.3.5-evolve`. `publish-release` depends on it, so **no
 release asset is published unless readiness is ready/100** at the cut SHA. The gate
 requires ICC to be provisioned on the release runner via the `ICC_BIN` repository
 variable (a path to the ICC binary; optionally `ICC_REPO` for the registered index
 name, default `eshkol_lang`). If ICC is unavailable on a real tag push the gate
 emits a loud error and blocks the release — it never fail-opens to a green publish.
-A non-publishing `workflow_dispatch` dry-run treats the same conditions as advisory
-warnings, since it ships nothing.
+A non-publishing `workflow_dispatch` dry run requires the same evidence when
+`strict_readiness=true`; the default dry run reports readiness as advisory.
+
+The runner also needs SBCL and `prlimit` for the pinned Rosette Wire oracle,
+and Python development headers matching its interpreter. The workflow creates
+an isolated environment containing pybind11, NumPy, and PyYAML and enables the
+Python binding lifetime test. Provision native prerequisites before dispatch;
+the workflow does not install system packages on the shared runner.
+
+The readiness recipe runs baseline coverage and VM parity, smoke probes,
+remaining evidence producers and architecture verification, then the final ICC
+verdict in separate steps. Each step uses the same compiler/runtime artifacts
+and evidence cohort, bound to the commit and workflow run attempt. A failed or
+missing earlier phase cannot be resumed as a completed phase.
 
 ## Development Guidelines
 
@@ -318,6 +415,53 @@ Good documentation is crucial for the project:
 - Keep the README and other high-level documentation up to date.
 - Use Markdown for all documentation files.
 
+The documentation system (page kinds, front matter, evergreen wording, facts
+rendered from sources, executed examples and every documentation gate) is
+described in [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md). In short:
+
+- **A change updates its pages in the same pull request.** A behaviour change
+  updates the reference, guide or tutorial that describes it; a new capability
+  adds its reference entry, a runnable example and a changelog line.
+- **Every pull request has a changelog home.** Reference it as `(#N)` in the
+  release section of `CHANGELOG.md`, or, if no user can observe it, add a
+  reasoned entry to `tests/coverage/changelog_no_user_facing_change.json`.
+  `python3 scripts/check_changelog_completeness.py --pending-pr <N>` checks it.
+- **New and substantially edited pages carry front matter**, and evergreen pages
+  carry no release narrative; `python3 scripts/check_doc_front_matter.py`
+  checks both.
+- **Release facts come from `tests/coverage/release_record.json`.** Edit the
+  record and run `python3 scripts/check_surface_counts.py --sync`; never retype
+  a date, total or status.
+- **Generated artifacts are regenerated, never hand-edited**, and each has a
+  freshness check: `docs/api/` (`scripts/gen_api_docs.py --check`), the
+  language surface (`scripts/gen_language_surface.py --check`), the ledger
+  aggregate (`scripts/gen_silent_wrong_ledger.py --check`), the browser import
+  glue (`scripts/generate_wasm_import_glue.py --check`) and the site pages
+  (`scripts/build-site-content.sh`).
+
+#### Scripts, evidence paths and generated files
+
+A script that reads `TRACE_DIR` or `ICC_TRACE_DIR` makes it absolute with the
+helpers in `scripts/lib/evidence_paths.sh` before first use; a relative value
+means relative to the repository root. A script that writes a generated file at
+a path held in a variable uses `scripts/lib/checked_write.sh`
+(`eshkol_install_tmp` then `eshkol_install_checked`, `eshkol_checked_rm`,
+`eshkol_resolve_trusted_command`), so a reader never sees a partial file.
+
+#### Auditing a change with ICC
+
+The repository's code-index and audit tool (ICC) is how a change is checked
+against the rest of the tree. Register the checkout once
+(`icc init --repo <alias> --path <checkout>`), reindex after committing
+(`icc reindex --repo <alias> --full`), then before opening a pull request run
+`icc impact-analysis --repo <alias> --since <base>` to see what the change
+reaches, `icc pre-commit-check --repo <alias> --architecture-model
+.icc/architecture-model.yaml` for the architecture invariants, and, for a
+documentation change, `icc doc-typed-claims` with
+`python3 scripts/check_doc_claims_residual.py` so no new wrong claim lands.
+A new Architecture Decision Record takes the next free number and is registered
+with `icc adr import-markdown --repo <alias> --dir docs/design/adr`.
+
 #### API Reference (docs/api/)
 
 `docs/api/` is a generated browsable reference for the public C/C++ headers
@@ -341,6 +485,55 @@ CI runs `make api-docs-check` for every pull request. After merge,
 only when there is a diff, with concurrency protection and no attribution
 trailers. Do not use a `.gitattributes` merge driver for this directory.
 
+#### Examples in the tutorials and gated guides are executed
+
+Every fenced `scheme` block in a gated documentation scope (`docs/tutorials/`,
+the gradual-typing guide and the upgrade page; the list is `GATED_SCOPES` in
+`scripts/doc_audit/extract_examples.py`) is run by
+`scripts/doc_audit/check_doc_examples.py` on the JIT (`eshkol-run -r`, what
+the REPL runs) and as an AOT binary, in CI and in the release evidence run.
+Run it before you push a tutorial change:
+
+```sh
+python3 scripts/doc_audit/check_doc_examples.py --eshkol-run build/eshkol-run \
+    --only docs/tutorials/12_LISTS.md
+```
+
+An example must exit 0 within its time limit without writing an error
+diagnostic, and what it prints must be what the page says:
+
+- `(take '(a b c) 2)  ;; => (a b)` on the same line, or `;; => (a b)` on the
+  line under the form, is compared with the value the build shows. The
+  annotation names a value, so `12.0` matches a printed `12`, `"abc"` matches
+  `abc`, text after the value is commentary, `0.7616...` matches a number that
+  shortens to those digits, and `~2.0` means approximately.
+- A block that starts with `> ` is a REPL transcript: the lines under each
+  input are its expected output.
+- A bare or `text` fence directly under an example is its exact stdout.
+
+A block is tried on its own and then after the page's earlier examples, so a
+later example may use an earlier definition. When an example cannot be checked,
+say so on the line above its fence; the rendered page does not change:
+
+```markdown
+<!-- doc-example: skip platform-specific: needs the browser DOM -->
+<!-- doc-example: run-only nondeterministic: prints the current time -->
+<!-- doc-example: known-defect SW-179: the documented result, and what the build does instead -->
+<!-- doc-example: file mylib.esk: the module the next example requires -->
+<!-- doc-example: output stdout: what the program above prints -->
+```
+
+`skip` and `run-only` take one of `pseudo-code`, `fragment`,
+`platform-specific`, `nondeterministic`, `interactive` or `external-resource`.
+`known-defect` names an open ledger entry: use it when the page states the
+designed behaviour and the implementation is wrong, instead of editing the page
+down to match the bug. The example is still run, and the gate fails the day it
+passes so the marker cannot outlive the defect. The number of marked examples
+per file is ratcheted in `scripts/doc_audit/example_gate_baseline.json`; after
+removing a marker, lower it with `--update-baseline`. The conventions are
+specified in the headers of `scripts/doc_audit/extract_examples.py` and
+`scripts/doc_audit/check_expected.py`.
+
 ### Silent-wrong ledger entries
 
 The aggregate `.icc/silent-wrong-ledger.yaml` is generated. Add a new ledger
@@ -358,6 +551,14 @@ We strive for good test coverage:
 - Update tests when modifying existing features.
 - Ensure all tests pass before submitting a pull request.
 - Follow the existing test patterns in the codebase.
+
+Every root-cause fix ships with a dedicated regression gate wired into the
+readiness oracle, not merely a test file. A gate that cannot fail is not a
+gate: if you add one, add a self-test or a deliberate-failure fixture that
+proves it goes red. See [docs/TESTING.md](docs/TESTING.md) for the full
+harness inventory and
+[docs/design/PILLAR_CI_INVENTORY.md](docs/design/PILLAR_CI_INVENTORY.md) for
+what runs per-PR versus nightly.
 
 ## Project Structure
 
@@ -393,7 +594,7 @@ eshkol/
 │   ├── web/                # Web/WASM platform
 │   ├── repl/               # JIT compiler
 │   └── types/              # Type checker, HoTT types
-├── tests/                  # Test suite (45 suites by feature)
+├── tests/                  # Test suite (46 suites by feature)
 │   ├── autodiff/           # AD tests (3 modes)
 │   ├── bignum/             # Arbitrary-precision integer tests
 │   ├── complex/            # Complex number tests
@@ -430,7 +631,8 @@ resident programs, an opt-in differentiable quantum stack, and a
 consumer-hardening correctness wave (automatic per-iteration reclamation,
 race-free `parallel-map`, exact gradients through every callable form, R7RS
 exactness contagion on both engines). We welcome contributions for upcoming
-releases:
+releases. v1.3.5-evolve integrates compiler/VM, AD, tensor and checkpoint
+correctness work; its release battery is recorded in `RELEASE_NOTES.md`.
 
 ### Immediate Priorities (v1.4-connection)
 1. **TCP/UDP Sockets**: Linear resource types with guaranteed close
@@ -444,7 +646,7 @@ IOCP) shipped in v1.3.4-evolve, `eshkol-doc` shipped in v1.3.2-evolve, and the
 linear-type machinery landed in v1.3.4-evolve as the linear `Qubit` type —
 extending it to handles is what remains.
 
-### Near-Term (v1.5-intelligence - August 2026)
+### Near-Term (v1.5.0-intelligence - target 2026-12-05)
 1. **Neural-Symbolic Search**: Differentiable logic programs (building on v1.1 consciousness engine)
 2. **Symbol Embeddings & Soft Unification**: Differentiable similarity over the knowledge base
 3. **LSTM/GRU Cells**: Standard recurrent neural architectures

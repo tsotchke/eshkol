@@ -57,7 +57,8 @@ public:
      * Construct ParallelCodegen for the given context.
      * Declares all runtime function signatures.
      */
-    explicit ParallelCodegen(CodegenContext& ctx);
+    using ClosureCallCallback = llvm::Value* (*)(llvm::Value*, const std::vector<llvm::Value*>&, const char*, void*);
+    ParallelCodegen(CodegenContext& ctx, ClosureCallCallback closure_call, void* context);
 
     // === Parallel Operations ===
 
@@ -228,6 +229,7 @@ private:
     // Callback for AST code generation (uses void* for compatibility with wrapper)
     using CodegenASTCallback = llvm::Value* (*)(const void*, void*);
     CodegenASTCallback codegen_ast_callback_ = nullptr;
+    ClosureCallCallback closure_call_callback_;
     void* callback_context_ = nullptr;
 
 public:

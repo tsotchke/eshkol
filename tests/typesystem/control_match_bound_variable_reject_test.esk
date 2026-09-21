@@ -1,0 +1,22 @@
+;; Type System Test: a match pattern variable is typed by what the pattern implies.
+;; A top-level variable pattern binds the scrutinee itself; (? string? s) binds a
+;; value that passed string?, so it is a String.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN]
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Int64
+;; EXPECT-STDERR: argument 1 of 'area': expected Number, got String
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (never-called v)
+  (match 42
+    (n (label n))))
+(define (also-never-called v)
+  (match v
+    ((? string? s) (area s 1))
+    (_ 0)))
+
+(display (area 2 3))
+(newline)

@@ -1,0 +1,16 @@
+;; Type System Test: well-typed code inside an `or` operand stays silent now that
+;; the checker synthesizes it (no false positive from descending into it).
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+(define (area-or-label x)
+  (or (and (string? x) (label x)) (area 2 2)))
+(display (area-or-label "abc"))
+(newline)
+
+(display (area 2 3))
+(newline)

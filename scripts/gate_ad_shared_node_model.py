@@ -393,7 +393,7 @@ def classify_carrier(block: str, carriers: dict, path: str) -> str:
 
 AD_PARITY_ROW = re.compile(
     r"^(?:op:(?:GRADIENT|JACOBIAN|HESSIAN|DIVERGENCE|CURL|LAPLACIAN|DERIVATIVE"
-    r"|DERIVATIVE_N|DIFF|DIRECTIONAL_DERIV)"
+    r"|DERIVATIVE_N|TAYLOR|DIFF|DIRECTIONAL_DERIV)"
     r"|gradient|jacobian|hessian|divergence|curl|laplacian|derivative"
     r"|directional-derivative|ad-tape-new|ad-var|ad-const|ad-backward|ad-gradient)$"
 )

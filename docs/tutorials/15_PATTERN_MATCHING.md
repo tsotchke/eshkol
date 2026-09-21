@@ -30,9 +30,9 @@ The `_` wildcard matches anything without binding.
 ;; Match list structure
 (define (first-two lst)
   (match lst
-    ((a b . rest) (list a b))
-    ((a) (list a))
-    (() '())))
+    ((cons a (cons b rest)) (list a b))
+    ((list a) (list a))
+    (_ '())))
 
 (display (first-two '(1 2 3 4)))   ;; => (1 2)
 (display (first-two '(42)))        ;; => (42)
@@ -47,7 +47,7 @@ The `_` wildcard matches anything without binding.
 ;; Match on nested structure
 (define (tree-sum tree)
   (match tree
-    ((left right) (+ (tree-sum left) (tree-sum right)))
+    ((list left right) (+ (tree-sum left) (tree-sum right)))
     (n n)))  ;; leaf node
 
 (display (tree-sum '((1 2) (3 (4 5)))))

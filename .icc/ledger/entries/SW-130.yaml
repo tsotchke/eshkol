@@ -25,7 +25,7 @@ fixed_by: >-
   lib/agent/c/agent_platform.c; negative publication regression in
   tests/stdlib/atomic_file_test.esk.
 evidence: >-
-  Remote old-donkey runs of tests/stdlib/filesystem_metadata_test.esk
+  Remote Linux CI worker runs of tests/stdlib/filesystem_metadata_test.esk
   passed 8/8 under AOT and 8/8 under JIT; the standalone VM run of
   tests/vm/filesystem_metadata_surface_regression.esk passed T1, T2, and
   T3. tests/stdlib/atomic_file_test.esk passed 10/10, including the

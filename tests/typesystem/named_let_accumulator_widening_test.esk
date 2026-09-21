@@ -1,0 +1,97 @@
+;; Type System Test: a named-let loop parameter is typed by what the loop
+;; carries, not by its seed.
+;;
+;; Each loop below seeds an accumulator with a literal pair and feeds it back,
+;; on the recursive call, the result of an interval operation. The seed's
+;; synthesized type is more precise than what the loop actually carries
+;; (Pair<Float64, Float64> from (cons 0.0 0.0), Pair<Number, Number> from an
+;; ordered constructor, Pair<Value, Value> from an untyped point constructor),
+;; while the operation's result is the wider Pair. These are the five shapes
+;; in core.ad.rigorous_interval, core.ad.rigorous_taylor_models and
+;; core.ad.taylor_models; every one is a correct program in which an interval
+;; is a pair of numbers throughout, so none may warn.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: [WARN]
+;; EXPECT-NO-STDERR: [ERROR]
+
+(define (iv-min2 a b) (if (<= a b) a b))
+(define (iv-max2 a b) (if (>= a b) a b))
+
+;; point interval: untyped endpoints -> Pair<Value, Value>
+(define (iv-pt x) (cons x x))
+
+;; ordered constructor: endpoints narrowed by <= -> Pair<Number, Number>
+(define (iv-of lo hi) (if (<= lo hi) (cons lo hi) (cons hi lo)))
+
+;; exact/inexact split: the two arms build differently-typed pairs
+(define (iv+ a b)
+  (let ((al (car a)) (ah (cdr a)) (bl (car b)) (bh (cdr b)))
+    (if (and (exact? al) (exact? bl))
+        (cons (+ al bl) (+ ah bh))
+        (cons (exact->inexact (+ al bl)) (exact->inexact (+ ah bh))))))
+
+(define (iv* a b)
+  (let* ((al (car a)) (ah (cdr a)) (bl (car b)) (bh (cdr b))
+         (p1 (* al bl)) (p2 (* al bh)) (p3 (* ah bl)) (p4 (* ah bh)))
+    (if (and (exact? al) (exact? bl))
+        (cons (iv-min2 (iv-min2 p1 p2) (iv-min2 p3 p4))
+              (iv-max2 (iv-max2 p1 p2) (iv-max2 p3 p4)))
+        (cons (exact->inexact (iv-min2 (iv-min2 p1 p2) (iv-min2 p3 p4)))
+              (exact->inexact (iv-max2 (iv-max2 p1 p2) (iv-max2 p3 p4)))))))
+
+;; optional-argument operation, as core.ad.interval's interval-add
+(define (iv-add a b . opt)
+  (if (and (pair? opt) (car opt))
+      (iv+ a b)
+      (iv-of (+ (car a) (car b)) (+ (cdr a) (cdr b)))))
+
+;; Shape 1 (rigorous_interval ia-ipow): seed from a point constructor.
+(define (iv-ipow a e)
+  (let loop ((n e) (acc (iv-pt 1)))
+    (if (<= n 0) acc (loop (- n 1) (iv* acc a)))))
+
+;; Shape 2 (rigorous_taylor_models ia-horner-local): seed from the ordered
+;; constructor, fed a sum of products.
+(define (iv-horner coeffs-desc tv)
+  (let loop ((cs (cdr coeffs-desc))
+             (acc (iv-of (car coeffs-desc) (car coeffs-desc))))
+    (if (pair? cs)
+        (loop (cdr cs) (iv+ (iv-of (car cs) (car cs)) (iv* acc tv)))
+        acc)))
+
+;; Shape 3 (rigorous_taylor_models tail): seed (iv-of 0 0), fed a sum.
+(define (iv-tail full k tdom)
+  (let tloop ((m (+ k 1)) (acc (iv-of 0 0)))
+    (if (<= m (* 2 k))
+        (tloop (+ m 1)
+               (iv+ acc (iv* (iv-of (vector-ref full m) (vector-ref full m))
+                             (iv-ipow tdom m))))
+        acc)))
+
+;; Shape 4 (taylor_models tm-poly-range): seed built by a let, fed a sum
+;; through the optional-argument operation.
+(define (iv-poly-range rc tdom)
+  (let loop ((cs (cdr rc))
+             (acc (let ((c (car rc))) (cons c c))))
+    (if (pair? cs)
+        (loop (cdr cs)
+              (iv-add (iv* acc tdom) (let ((c (car cs))) (cons c c))))
+        acc)))
+
+;; Shape 5 (taylor_models tail): seed (cons 0.0 0.0), fed a sum.
+(define (iv-float-tail full k tdom)
+  (let tloop ((m (+ k 1)) (acc (cons 0.0 0.0)))
+    (if (<= m (* 2 k))
+        (tloop (+ m 1)
+               (iv-add acc
+                       (let ((c (vector-ref full m)))
+                         (iv* (cons c c) (iv-ipow tdom m)))))
+        acc)))
+
+(define dom (cons 1 2))
+(display (iv-ipow dom 3)) (newline)                          ; (1 . 8)
+(display (iv-horner (list 1 2 3) dom)) (newline)
+(display (iv-tail (vector 1 1 1 1 1) 1 dom)) (newline)
+(display (iv-poly-range (list 3 2 1) dom)) (newline)
+(display (iv-float-tail (vector 1.0 1.0 1.0 1.0 1.0) 1 dom)) (newline)

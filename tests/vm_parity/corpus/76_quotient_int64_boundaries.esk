@@ -1,0 +1,10 @@
+; Exact quotient must remain in the integer/bignum domain at both signed
+; int64 boundaries, including the one-result-overflow case.
+(display (quotient 9223372036854775806 2))
+(newline)
+(display (quotient (+ 9223372036854775807 1) 2))
+(newline)
+(display (quotient -9223372036854775808 -1))
+(newline)
+(display (quotient (+ 9223372036854775807 1) -1))
+(newline)

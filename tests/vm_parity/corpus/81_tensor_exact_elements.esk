@@ -1,0 +1,15 @@
+; MS-04 / SW-166: constructing an f64 tensor from exact rational elements
+; converts each element with correctly-rounded nearest-double conversion —
+; never silently zero for a nonzero rational — on both engines.
+(define t (tensor (vector 1/2 1/3)))
+(display (tensor-ref t 0)) (newline)
+(display (tensor-ref t 1)) (newline)
+(define u (tensor (vector 3 4)))
+(display (tensor-ref u 0)) (newline)
+(display (exact? (tensor-ref u 0))) (newline)
+(display (tensor-ref (tensor 1/2 1/3) 0)) (newline)
+(define filled (make-tensor (list 2 2) 1/2))
+(display (tensor-ref filled 0)) (newline)
+(define ts (make-tensor (list 2) 0.0))
+(tensor-set! ts 0 1/2)
+(display (tensor-ref ts 0)) (newline)

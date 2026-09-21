@@ -1,6 +1,6 @@
 # ADR 0008 — One semantic tooling core for Eshkol developer experience
 
-- Status: Proposed
+- Status: Accepted — partially implemented: the M0 extraction and the first M1 commands (the LLVM-free `WorkspaceResolver` in `inc/eshkol/frontend/workspace.h`, Diagnostic v1 in `inc/eshkol/frontend/diagnostic.h`, and `eshkol check` and `eshkol doc modules` in `exe/eshkol.cpp`) are in v1.3.5-evolve; remaining milestones Proposed
 - Date: 2026-07-09
 - Deciders: developer-experience/tooling cluster
 - Scope: documentation, diagnostics, workspace analysis, LSP/editor support,
@@ -90,17 +90,16 @@ server:
 - It advertises diagnostics, completion, hover, and definition
   (`tools/lsp/eshkol_lsp.cpp:1-12`) and stores versioned open-document contents
   (`tools/lsp/eshkol_lsp.cpp:360-394`).
-- It reparses on full-document changes (`tools/lsp/eshkol_lsp.cpp:587-608`). It
-  calls the real parser but discards parser failures, then reports only a local
-  parenthesis scan (`tools/lsp/eshkol_lsp.cpp:621-719`).
-- Keywords, builtins, and short documentation are hardcoded in the server
+- It reparses on full-document changes (`tools/lsp/eshkol_lsp.cpp:500-590`) through
+  the shared workspace analysis core; syntax, module-resolution, and binding
+  diagnostics are returned by that query rather than a private parenthesis scan.
+- Completion keywords, builtins, and short documentation remain hardcoded in the server
   (`tools/lsp/eshkol_lsp.cpp:419-520`); local definitions are found with text
   scanning (`tools/lsp/eshkol_lsp.cpp:912-965`), and go-to-definition is limited
   to string patterns in the current file (`tools/lsp/eshkol_lsp.cpp:835-873`,
-  `tools/lsp/eshkol_lsp.cpp:968-990`).
-- CMake links the LSP against the complete compiler and LLVM libraries
-  (`CMakeLists.txt:2154-2172`), although ordinary editing should not initialize
-  or depend on code generation.
+  `tools/lsp/eshkol_lsp.cpp:900-930`).
+- CMake links the LSP against the LLVM-free `eshkol-workspace` target, so ordinary
+  editing does not initialize or depend on code generation.
 - The VS Code extension is appropriately thin around LSP startup, but compile
   and run commands are assembled as terminal strings
   (`tools/vscode-eshkol/src/extension.ts:20-53`). Its TextMate grammar carries

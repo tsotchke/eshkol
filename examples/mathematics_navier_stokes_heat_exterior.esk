@@ -1,0 +1,272 @@
+;; Navier-Stokes blowup construction -- the azimuthal heat exterior and its
+;; radial moment matching.
+;;
+;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
+;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Section 2.3 ("Exterior flow and localization") and Appendix A ("Matching
+;; radial moments and constructing the heat exterior"), Lemma A.1.
+;;
+;; Section 2.3: "Beyond the annulus, the flow is purely azimuthal and
+;; independent of height ... We choose this outer flow to satisfy the radial
+;; heat equation for the azimuthal velocity exactly, and call it the heat
+;; exterior ... At every fixed positive radius, the exterior velocity and
+;; pressure have smooth limits, together with all their derivatives, as the
+;; singular time approaches."
+;;
+;; PART A mechanizes the first claim exactly.  For a purely azimuthal,
+;; height-independent, axisymmetric field v(r, t) = u_theta(r, t), the
+;; momentum equation reduces to the curvature-corrected radial heat equation
+;;     d_t v = nu ( d_r^2 v + (1/r) d_r v - v / r^2 ).
+;; The operator L[v] = d_r^2 v + (1/r) d_r v - v/r^2 satisfies the closed
+;; form L[r^n] = (n^2 - 1) r^{n-2} (immediate from L[r^n] = n(n-1)r^{n-2} +
+;; n r^{n-2} - r^{n-2}), so an ODD polynomial in r with time-dependent
+;; coefficients solves the heat equation exactly whenever those coefficients
+;; solve the resulting LINEAR, TRIANGULAR system in t -- no transcendental
+;; function is needed for a finite truncation, and every coefficient below is
+;; the exact rational antiderivative that system demands.  This file uses
+;; v(r,t) = c0(t) r + c1(t) r^3 + c2 r^5 with c2 constant, c1 linear in t and
+;; c0 quadratic in t, matched to nu = 1/10 by direct substitution (verified
+;; below by AD, not asserted).
+;;
+;; PART B mechanizes Appendix A's Lemma A.1 ("distinct power weights give an
+;; invertible moment matrix") for a small, fully exact finite-dimensional
+;; case: two polynomial correction bumps and two power weights.  It also
+;; states, honestly, the ONE place a transcendental profile piece forces an
+;; inexact moment (Appendix A's own outer profile pieces are not all
+;; polynomial in general) -- computed here to a stated numerical tolerance,
+;; never asserted exact.
+;;
+;; PART C mechanizes the smooth-limit claim: v and both its r- and
+;; t-derivatives stay finite at t = 1 (trivial for a polynomial, but
+;; contrasted against a deliberately wrong candidate exterior carrying the
+;; INNER profile's own q^{-A} blowup factor, which does not).
+;;
+;; AD surface note.  Every top-level constant (nu, c2, c1_0, c0_0) that
+;; flows into a `derivative` call is inlined as a literal in the
+;; differentiand's own body (examples/mathematics_navier_stokes_stress_cone.esk's
+;; AD surface note); every differentiand is bound to a variable before being
+;; passed to `derivative`, and every point argument is bound to a variable
+;; before being passed to `derivative`, even when it looks like a literal
+;; already (examples/mathematics_navier_stokes_pulse_growth.esk's AD surface
+;; note) -- both route around distinct exactness leaks in the AD operators,
+;; documented in .scratch/, not fixed here.
+
+(define pass-count 0)
+(define fail-count 0)
+(define icc-target "ns_heat_exterior_exact")
+
+(define (icc-event name value)
+  (display "ICC-EVENT {\"kind\":\"ns_mechanization\",\"name\":\"")
+  (display name)
+  (display "\",\"value\":\"")
+  (display value)
+  (display "\",\"confidence\":0.95}")
+  (newline))
+
+(define (check label ok)
+  (icc-event (string-append icc-target "::" label) (if ok "PASS" "FAIL"))
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+
+;; ---------------------------------------------------------------------------
+;; PART A.  The heat exterior, exactly.  nu = 1/10, c2 = 1/5, c1_0 = 1/3,
+;; c0_0 = 1 -- all inlined below (AD surface note).
+;;   c1(t) = c1_0 + 24 nu c2 t         = 1/3 + (12/25) t
+;;   c0(t) = c0_0 + 8 nu c1_0 t + 96 nu^2 c2 t^2  = 1 + (4/15) t + (24/125) t^2
+;; ---------------------------------------------------------------------------
+
+(define (v-of r t)
+  (+ (* (+ 1 (* 4/15 t) (* 24/125 t t)) r)
+     (* (+ 1/3 (* 12/25 t)) r r r)
+     (* 1/5 r r r r r)))
+
+;; The residual d_t v - nu (d_r^2 v + (1/r) d_r v - v/r^2), at a fixed (r, t).
+;; Every differentiand is let-bound before being passed to `derivative`
+;; (route-around); every point argument is let-bound too.
+(define (heat-residual r t)
+  (let* ((vt-fn (lambda (s) (v-of r s)))
+         (dvt (derivative vt-fn t))
+         (vr-fn (lambda (s) (v-of s t)))
+         (dvr (derivative vr-fn r))
+         (d2vr (derivative-n vr-fn r 2))
+         (v0 (v-of r t)))
+    (- dvt (* 1/10 (+ d2vr (/ dvr r) (- (/ v0 (* r r))))))))
+
+(define sample-rt
+  (list (list 1 0) (list 2 1/2) (list 3/2 1) (list 5/2 3/10)))
+
+;; `d_t v` and `d_r v` above come back inexact -- v-of is a 3-term sum of
+;; 2-4-way products, deep enough to hit the SAME composition-depth
+;; exactness leak documented in
+;; examples/mathematics_navier_stokes_stress_cone.esk's AD surface note and
+;; .scratch/ns_derivative_composition_exactness_repro.esk (the raw second
+;; derivative `derivative-n vr-fn r 2` stays exact; the two first
+;; derivatives do not). The residual value itself is still correct to
+;; float roundoff (~1e-15), so this is checked to a tight numerical
+;; tolerance rather than an exact zero, exactly as stress_cone.esk's Q_s
+;; check is.
+(check "the heat exterior solves the curvature-corrected radial heat equation to numerical tolerance (composition-depth exactness leak, not asserted exact)"
+       (let loop ((ps sample-rt))
+         (cond ((null? ps) #t)
+               ((let* ((p (car ps)) (r (car p)) (t (car (cdr p))) (res (heat-residual r t)))
+                  (< (abs res) 1e-9))
+                (loop (cdr ps)))
+               (else #f))))
+
+;; Negative control: perturb c2 (the r^5 coefficient) without updating the
+;; recursion that ties c1, c0 to it -- the residual is exactly nonzero.
+(define (heat-residual-perturbed r t)
+  (let* ((v-bad (lambda (rr tt)
+                  (+ (* (+ 1 (* 4/15 tt) (* 24/125 tt tt)) rr)
+                     (* (+ 1/3 (* 12/25 tt)) rr rr rr)
+                     (* 3/10 rr rr rr rr rr))))   ;; c2 perturbed 1/5 -> 3/10
+         (vt-fn (lambda (s) (v-bad r s)))
+         (dvt (derivative vt-fn t))
+         (vr-fn (lambda (s) (v-bad s t)))
+         (dvr (derivative vr-fn r))
+         (d2vr (derivative-n vr-fn r 2))
+         (v0 (v-bad r t)))
+    (- dvt (* 1/10 (+ d2vr (/ dvr r) (- (/ v0 (* r r))))))))
+
+(check "negative control -- perturbing c2 without its coupled c1, c0 leaves a nonzero residual"
+       (let ((res (heat-residual-perturbed 2 1/2)))
+         (> (abs res) 1e-3)))
+
+;; ---------------------------------------------------------------------------
+;; PART B.  Appendix A, Lemma A.1: distinct power weights give an invertible
+;; moment matrix.  Two bumps, beta1(x) = x(1-x), beta2(x) = x^2(1-x) on
+;; [0, 1] (polynomial, degree <= 3, vanishing at both endpoints); two power
+;; weights, x^0 and x^2.  Simpson is exact for the resulting degree <= 5
+;; integrands with 4 subintervals -- but since a degree-5 polynomial is not
+;; exactly integrated by a single 3-point Simpson rule, the moment
+;; functional below uses the closed-form ANTIDERIVATIVE, which is exact by
+;; construction and needs no quadrature rule at all for a polynomial
+;; integrand.
+;; ---------------------------------------------------------------------------
+
+(define (beta1 x) (- x (* x x)))
+(define (beta2 x) (- (* x x) (* x x x)))
+
+;; moment(alpha, beta) = int_0^1 x^alpha * beta(x) dx, alpha a nonnegative
+;; integer, computed by the exact closed-form antiderivative of the resulting
+;; monomial difference (no `derivative`, no quadrature -- plain rational
+;; arithmetic, so none of the AD exactness leaks above apply here).
+(define (moment-beta1 alpha) (- (/ 1 (+ alpha 2)) (/ 1 (+ alpha 3))))
+(define (moment-beta2 alpha) (- (/ 1 (+ alpha 3)) (/ 1 (+ alpha 4))))
+
+(define B11 (moment-beta1 0))
+(define B12 (moment-beta2 0))
+(define B21 (moment-beta1 2))
+(define B22 (moment-beta2 2))
+
+(show "moment matrix B = ((B11 B12) (B21 B22))" (list (list B11 B12) (list B21 B22)))
+
+(define (det2 a b c d) (- (* a d) (* b c)))
+(define detB (det2 B11 B12 B21 B22))
+
+(show "det B" detB)
+
+(check "the moment matrix for distinct power weights (alpha = 0, 2) is exactly invertible"
+       (and (exact? detB) (not (= detB 0))))
+
+;; Cramer's rule: solve B c = d exactly, for a prescribed moment discrepancy
+;; d = (d1, d2), then verify B c reproduces d exactly.
+(define (solve-2x2 a b c d d1 d2)
+  (let ((det (det2 a b c d)))
+    (list (/ (det2 d1 b d2 d) det)
+          (/ (det2 a d1 c d2) det))))
+
+(define target-d (list 1/6 1/9))
+(define correction (solve-2x2 B11 B12 B21 B22 (car target-d) (car (cdr target-d))))
+(define c1-corr (car correction))
+(define c2-corr (car (cdr correction)))
+
+(show "correction coefficients (c1, c2)" correction)
+
+(check "solving the moment system exactly reproduces the prescribed discrepancy (M, I)"
+       (and (= (+ (* B11 c1-corr) (* B12 c2-corr)) (car target-d))
+            (= (+ (* B21 c1-corr) (* B22 c2-corr)) (car (cdr target-d)))
+            (exact? c1-corr) (exact? c2-corr)))
+
+;; Negative control: colliding power weights (alpha = 0, 0) give a singular
+;; matrix -- Lemma A.1 needs alpha_i DISTINCT.
+(define B11-collide (moment-beta1 0))
+(define B12-collide (moment-beta2 0))
+(define B21-collide (moment-beta1 0))
+(define B22-collide (moment-beta2 0))
+
+(check "negative control -- colliding power weights (alpha1 = alpha2) give a singular moment matrix"
+       (= 0 (det2 B11-collide B12-collide B21-collide B22-collide)))
+
+;; The exactness boundary Appendix A itself does not require: a transcendental
+;; profile piece.  This ONE moment is stated, not asserted, to be inexact --
+;; computed to a numerical tolerance via Simpson refinement, never compared
+;; with `=`.
+(define (transcendental-bump x) (* x (exp (- (* 4.0 x x)))))
+
+(define (simpson-n g a b n)
+  (let* ((h (/ (- b a) n)))
+    (let loop ((i 1) (acc (+ (g a) (g b))))
+      (if (>= i n)
+          (* (/ h 3.0) acc)
+          (loop (+ i 2)
+                (+ acc (* 4.0 (g (+ a (* i h))))
+                   (if (< (+ i 1) n) (* 2.0 (g (+ a (* (+ i 1) h)))) 0.0)))))) )
+
+(define moment-transcendental-coarse (simpson-n transcendental-bump 0.0 1.0 20))
+(define moment-transcendental-fine (simpson-n transcendental-bump 0.0 1.0 200))
+
+(show "transcendental moment (coarse mesh)" moment-transcendental-coarse)
+(show "transcendental moment (fine mesh)  " moment-transcendental-fine)
+
+(check "the transcendental piece's moment is NOT exact -- stated to converge numerically, not asserted exact"
+       (and (not (exact? moment-transcendental-fine))
+            (< (abs (- moment-transcendental-coarse moment-transcendental-fine)) 1e-4)))
+
+;; ---------------------------------------------------------------------------
+;; PART C.  The smooth limit as t -> 1, contrasted with a deliberately wrong
+;; candidate exterior carrying the inner profile's q^{-A} blowup factor.
+;; ---------------------------------------------------------------------------
+
+(define r-fixed 2)
+
+;; The two `derivative` calls below hit the same composition-depth leak as
+;; PART A (value correct, `exact?` tag lost); only finiteness/boundedness is
+;; checked for them. `(v-of r-fixed t-near-one)` is a plain evaluation, no
+;; `derivative` involved, and stays exact.
+(check "v(r, t) and its r-, t-derivatives stay finite as t -> 1 at fixed r"
+       (let* ((t-near-one 999999/1000000)
+              (vt-fn (lambda (s) (v-of r-fixed s)))
+              (vr-fn (lambda (s) (v-of s t-near-one))))
+         (and (exact? (v-of r-fixed t-near-one))
+              (< (abs (v-of r-fixed t-near-one)) 100)
+              (< (abs (derivative vt-fn t-near-one)) 100)
+              (< (abs (derivative vr-fn r-fixed)) 100))))
+
+;; The wrong candidate: divide by (1 - t) (the inner profile's own
+;; q^{-A}-type blowup factor, in a contrasting exponent chosen only to make
+;; the blowup obvious at these sample times) -- this diverges as t -> 1 at
+;; fixed r, which is exactly what Section 2.3 says the heat exterior must
+;; NOT do.
+(define (v-wrong r t) (/ (v-of r t) (- 1.0 t)))
+
+(check "negative control -- a candidate exterior carrying an inner-profile blowup factor is NOT bounded near t = 1"
+       (let ((far (abs (v-wrong r-fixed 0.9)))
+             (near (abs (v-wrong r-fixed 0.999999))))
+         (> near (* 10.0 far))))
+
+;; ---------------------------------------------------------------------------
+
+(display "Navier-Stokes azimuthal heat exterior and radial moment matching (Section 2.3, Appendix A)")
+(newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(icc-event icc-target (if (= fail-count 0) "PASS" "FAIL"))
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

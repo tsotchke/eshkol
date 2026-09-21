@@ -39,6 +39,9 @@ void eshkol_i128_from_string_tagged(arena_t* arena,
 void eshkol_i128_predicate_tagged(const eshkol_tagged_value_t* x,
                                   eshkol_tagged_value_t* out);
 
+/* Generic arithmetic dispatch predicate for the LLVM backend. */
+bool eshkol_is_i128_tagged(const eshkol_tagged_value_t* x);
+
 /* Binary arithmetic. op: 0=add 1=sub 2=mul 3=quotient 4=remainder. */
 void eshkol_i128_binary_tagged(arena_t* arena,
                                const eshkol_tagged_value_t* a,

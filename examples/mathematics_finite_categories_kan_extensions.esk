@@ -1,0 +1,502 @@
+;; Finite categories as computations: categories from generators and
+;; relations, functors and natural transformations checked rather than
+;; assumed, limits and colimits over finite diagrams built as objects, Kan
+;; extensions along functors of finite categories with the adjunctions
+;; verified by their triangle identities, the Grothendieck construction of
+;; a presheaf of sets with its fibration, and sheaf cohomology on a finite
+;; space recovered as the right derived functors of the limit functor on a
+;; presheaf category. Everything is computed on small categories where the
+;; answers are known, so every construction is checked against the theory.
+;;
+;; Sources: S. Mac Lane, "Categories for the Working Mathematician", 2nd
+;; ed. (1998), III (limits), IV (adjoints), X (Kan extensions: the pointwise
+;; formula Lan_F G(d) = colim_{(c, F c -> d)} G c and Ran_F G(d) =
+;; lim_{(c, d -> F c)} G c, X.3); E. Riehl, "Category Theory in Context"
+;; (2016), 6.2 (Kan extensions computed as (co)limits over comma categories)
+;; and 4.5 (adjunctions from Kan extensions); A. Grothendieck, SGA 1, VI
+;; (the Grothendieck construction); C. Weibel, "An Introduction to
+;; Homological Algebra" (1994), 2.6 (lim^n as the right derived functors of
+;; lim over a poset, computed by the cosimplicial replacement); M. C. McCord
+;; (1966) and J. A. Barmak, LNM 2032 (2011) for the finite spaces.
+;;
+;; A finite category is a vector of objects, a table of arrows (each with
+;; source, target and an integer label), a composition table and identity
+;; indices; it is built from generators and relations by enumerating words
+;; and quotienting by the relations as a confluent rewriting system checked
+;; by hand for each presentation (the free category on a graph, then the
+;; identifications). Functors are arrow maps checked on composites and
+;; identities; natural transformations are components checked on every
+;; arrow. Set-valued functors are the concrete data: each object carries a
+;; finite set and each arrow a function, so limits are subsets of products
+;; (compatible families), colimits are quotients of coproducts by the
+;; zigzag relation, and a Kan extension is a limit or colimit over a comma
+;; category, which is itself constructed as a finite category.
+;;
+;;   1. The walking arrow, the parallel pair, the span and cospan, the
+;;      commutative square, the posets of the pseudocircle, its cone and the
+;;      pseudo-2-sphere, and Z/2 and Z/3 as one-object categories are built
+;;      from presentations; arrow counts, compositions and identities checked.
+;;   2. Products, equalizers, pullbacks, coequalizers and pushouts of finite
+;;      sets computed as limits and colimits over the corresponding shapes
+;;      agree with the direct constructions (cardinalities and the universal
+;;      property tested against every cone from a probe object).
+;;   3. Left and right Kan extensions along the collapse of Z/2 to the point
+;;      (orbits and fixed points: regular set 1 and 0, trivial 2-element set
+;;      2 and 2), along the inclusion of the pseudocircle into its cone (at
+;;      the top Lan is the colimit of G, Ran the terminal set) and along the
+;;      walking arrow into the commutative square (Lan pushes G forward
+;;      along b and along the identified composite, Ran fills the rest with
+;;      terminal sets), all computed pointwise over comma categories built
+;;      as finite categories; the unit of Lan -| F^* is constructed and
+;;      checked natural, the counit is constructed, and the triangle
+;;      identity eps o Lan(eta) = id holds on every component.
+;;   4. The Grothendieck construction of a presheaf of sets on the
+;;      pseudocircle is a finite category with the expected object count,
+;;      and the discrete fibration condition (unique lifts) holds on every
+;;      arrow.
+;;   5. The cosimplicial replacement of the constant presheaf Z on the
+;;      pseudocircle and on the pseudo-2-sphere, assembled by iterating the
+;;      arrow table, recovers lim^0, lim^1, lim^2 = (Z, Z), (Z, 0, Z), i.e. the
+;;      sheaf cohomology of the earlier examples, now as derived functors of
+;;      lim on the presheaf category.
+;;
+;; DEFECT NOTES (routed around): as in the sibling examples; inner loop
+;; variables never reuse an outer named-let parameter's name (LE-20, fixed
+;; in #658 but not yet on the build used here).
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (count-if pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+(define (position-of item items) (let loop ((l items) (i 0)) (cond ((null? l) #f) ((equal? (car l) item) i) (else (loop (cdr l) (+ i 1))))))
+(define (dedup xs) (let loop ((l xs) (acc '())) (cond ((null? l) (reverse acc)) ((member (car l) acc) (loop (cdr l) acc)) (else (loop (cdr l) (cons (car l) acc))))))
+(define (cartesian lists) (if (null? lists) (list '()) (let ((rest (cartesian (cdr lists)))) (let loop ((xs (car lists)) (acc '())) (if (null? xs) acc (loop (cdr xs) (append (map (lambda (t) (cons (car xs) t)) rest) acc)))))))
+(define (list-index-of pred xs) (let loop ((l xs) (i 0)) (cond ((null? l) #f) ((pred (car l)) i) (else (loop (cdr l) (+ i 1))))))
+
+;; --- finite categories -------------------------------------------------------------------------------------
+;; A category: (vector nobj arrows comp ids) with arrows a vector of (vector src tgt name), comp a hash table
+;; (g . f) -> g o f keyed by (+ (* n g) f), ids a vector object -> identity arrow index. Arrows are composed
+;; as (compose C g f) = g o f, defined when tgt f = src g.
+(define (c-nobj C) (vector-ref C 0))
+(define (c-arrows C) (vector-ref C 1))
+(define (c-narr C) (vector-length (vector-ref C 1)))
+(define (a-src C a) (vector-ref (vector-ref (c-arrows C) a) 0))
+(define (a-tgt C a) (vector-ref (vector-ref (c-arrows C) a) 1))
+(define (a-name C a) (vector-ref (vector-ref (c-arrows C) a) 2))
+(define (c-id C x) (vector-ref (vector-ref C 3) x))
+(define (compose C g f) (hash-table-ref/default (vector-ref C 2) (+ (* (c-narr C) g) f) #f))
+(define (composable? C g f) (= (a-tgt C f) (a-src C g)))
+(define (hom C x y) (filter (lambda (a) (and (= x (a-src C a)) (= y (a-tgt C a)))) (range (c-narr C))))
+;; build from generators and relations: objects 0..n-1, generators (src tgt name), and a normal-form function
+;; on words (lists of generator indices, applied right to left: (g2 g1) means g2 o g1) that returns the canonical
+;; word; arrows are the distinct normal forms of all composable words up to a length bound, identities the empty word
+(define (make-category n gens normal-form max-len)
+  (let* ((ngen (length gens))
+         (gsrc (lambda (g) (car (list-ref gens g)))) (gtgt (lambda (g) (cadr (list-ref gens g))))
+         (word-src (lambda (w x) (if (null? w) x (gsrc (car (reverse w))))))
+         (word-tgt (lambda (w x) (if (null? w) x (gtgt (car w)))))
+         ;; enumerate composable words by length, keyed by (object, normal-form word)
+         (words (let loop ((len 0) (frontier (map (lambda (x) (cons x '())) (range n))) (acc '()))
+                  (if (> len max-len) acc
+                      (let* ((new (dedup (map (lambda (p) (cons (car p) (normal-form (cdr p)))) frontier)))
+                             (fresh (filter (lambda (p) (not (member p acc))) new))
+                             (next (let ext ((ps fresh) (out '()))
+                                     (if (null? ps) out
+                                         (ext (cdr ps)
+                                              (append (map (lambda (g) (cons (car (car ps)) (cons g (cdr (car ps)))))
+                                                           (filter (lambda (g) (= (gsrc g) (word-tgt (cdr (car ps)) (car (car ps))))) (range ngen)))
+                                                      out))))))
+                        (loop (+ len 1) next (append acc fresh))))))
+         (arrows (list->vector (map (lambda (p) (vector (car p) (word-tgt (cdr p) (car p)) (cdr p))) words)))
+         (narr (vector-length arrows))
+         (index (let ((t (make-hash-table))) (let loop ((i 0)) (if (< i narr) (begin (hash-table-set! t (list (a-src (vector 0 arrows) i) (vector-ref (vector-ref arrows i) 2)) i) (loop (+ i 1))))) t))
+         (comp (make-hash-table))
+         (ids (list->vector (map (lambda (x) (hash-table-ref/default index (list x '()) #f)) (range n)))))
+    (let loop-g ((g 0))
+      (if (< g narr)
+          (begin
+            (let loop-f ((f 0))
+              (if (< f narr)
+                  (begin
+                    (if (= (vector-ref (vector-ref arrows f) 1) (vector-ref (vector-ref arrows g) 0))
+                        (let* ((w (normal-form (append (vector-ref (vector-ref arrows g) 2) (vector-ref (vector-ref arrows f) 2))))
+                               (k (hash-table-ref/default index (list (vector-ref (vector-ref arrows f) 0) w) #f)))
+                          (if k (hash-table-set! comp (+ (* narr g) f) k) (error "composite outside the enumerated arrows: raise max-len"))))
+                    (loop-f (+ f 1)))))
+            (loop-g (+ g 1)))))
+    (vector n arrows comp ids)))
+(define (category-laws? C)
+  (and (all? (lambda (a) (and (= a (compose C a (c-id C (a-src C a)))) (= a (compose C (c-id C (a-tgt C a)) a)))) (range (c-narr C)))
+       (all? (lambda (h) (all? (lambda (g) (all? (lambda (f)
+               (or (not (composable? C g f)) (not (composable? C h g))
+                   (= (compose C h (compose C g f)) (compose C (compose C h g) f))))
+             (range (c-narr C)))) (range (c-narr C)))) (range (c-narr C)))))
+;; presentations
+(define (free-nf w) w)                            ;; free category: every word is its own normal form
+(define (poset-nf w) (if (null? w) '() (list (car w))))   ;; thin: any composite x -> y is THE arrow; encode by target gen
+(define walking-arrow (make-category 2 (list (list 0 1 'f)) free-nf 1))
+(define parallel-pair (make-category 2 (list (list 0 1 'f) (list 0 1 'g)) free-nf 1))
+(define span-shape (make-category 3 (list (list 0 1 'l) (list 0 2 'r)) free-nf 1))
+(define cospan-shape (make-category 3 (list (list 1 0 'l) (list 2 0 'r)) free-nf 1))
+;; the commutative square: objects 0..3, generators a: 0->1, b: 0->2, c: 1->3, d: 2->3, relation c a = d b
+(define (square-nf w) (if (equal? w (list 3 1)) (list 2 0) w))   ;; d o b -> c o a (generators indexed 0..3 = a b c d)
+(define square (make-category 4 (list (list 0 1 'a) (list 0 2 'b) (list 1 3 'c) (list 2 3 'd)) square-nf 2))
+;; posets as categories: pseudocircle S (a, b < c, d), its cone (adds a top 4), the pseudo-2-sphere
+(define (poset-category n covers)                ;; thin category from a cover relation; arrows = comparable pairs
+  (let* ((leq (make-vector (* n n) #f)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! leq (+ (* n i) i) #t) (loop (+ i 1)))))
+    (for-each (lambda (c) (vector-set! leq (+ (* n (car c)) (cdr c)) #t)) covers)
+    (let outer ((k 0)) (if (< k n) (begin (let li ((i 0)) (if (< i n) (begin (let lj ((j 0)) (if (< j n) (begin (if (and (vector-ref leq (+ (* n i) k)) (vector-ref leq (+ (* n k) j))) (vector-set! leq (+ (* n i) j) #t)) (lj (+ j 1))))) (li (+ i 1))))) (outer (+ k 1)))))
+    (let* ((pairs (filter (lambda (p) (vector-ref leq (+ (* n (car p)) (cadr p)))) (cartesian (list (range n) (range n)))))
+           (arrows (list->vector (map (lambda (p) (vector (car p) (cadr p) (list (car p) (cadr p)))) pairs)))
+           (narr (vector-length arrows)) (comp (make-hash-table))
+           (idx (lambda (x y) (list-index-of (lambda (p) (and (= (car p) x) (= (cadr p) y))) pairs))))
+      (let lg ((g 0)) (if (< g narr) (begin (let lf ((f 0)) (if (< f narr) (begin (if (= (vector-ref (vector-ref arrows f) 1) (vector-ref (vector-ref arrows g) 0)) (hash-table-set! comp (+ (* narr g) f) (idx (vector-ref (vector-ref arrows f) 0) (vector-ref (vector-ref arrows g) 1)))) (lf (+ f 1))))) (lg (+ g 1)))))
+      (vector n arrows comp (list->vector (map (lambda (x) (idx x x)) (range n)))))))
+(define S (poset-category 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define ConeS (poset-category 5 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3) (cons 2 4) (cons 3 4))))
+(define S2 (poset-category 6 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3) (cons 2 4) (cons 3 4) (cons 2 5) (cons 3 5))))
+;; the group Z/2 as a one-object category and the terminal category
+(define (z2-nf w) (if (even? (length w)) '() (list 0)))
+(define BZ2 (make-category 1 (list (list 0 0 's)) z2-nf 2))
+(define point (make-category 1 '() free-nf 0))
+(define (z3-nf w) (let ((k (modulo (length w) 3))) (if (= k 0) '() (if (= k 1) (list 0) (list 0 0)))))
+(define BZ3 (make-category 1 (list (list 0 0 'x)) z3-nf 3))
+(show "arrow counts: walking arrow, parallel pair, span, cospan, square, S, cone(S), S^2, BZ/2, point" (map c-narr (list walking-arrow parallel-pair span-shape cospan-shape square S ConeS S2 BZ2 point)))
+(check "arrow counts 3, 4, 5, 5, 9, 8, 13, 18, 2, 1 and the category laws hold in every one"
+       (and (equal? (map c-narr (list walking-arrow parallel-pair span-shape cospan-shape square S ConeS S2 BZ2 point)) (list 3 4 5 5 9 8 13 18 2 1))
+            (all? category-laws? (list walking-arrow parallel-pair span-shape cospan-shape square S ConeS S2 BZ2 point))))
+(check "the square has exactly one arrow 0 -> 3 (c a = d b identified) and Z/3 as a one-object category has 3 arrows with x o x o x = id"
+       (and (= 1 (length (hom square 0 3))) (= 3 (c-narr BZ3)) (category-laws? BZ3)
+            (let ((x (car (filter (lambda (a) (equal? (a-name BZ3 a) (list 0))) (range 3))))) (= (c-id BZ3 0) (compose BZ3 x (compose BZ3 x x))))))
+
+;; --- functors, set-valued functors, natural transformations ------------------------------------------------------
+;; a functor C -> D: (vector obj-map arrow-map); checked on identities and all composites
+(define (functor? C D F)
+  (let ((F0 (vector-ref F 0)) (F1 (vector-ref F 1)))
+    (and (all? (lambda (a) (and (= (vector-ref F0 (a-src C a)) (a-src D (vector-ref F1 a))) (= (vector-ref F0 (a-tgt C a)) (a-tgt D (vector-ref F1 a))))) (range (c-narr C)))
+         (all? (lambda (x) (= (vector-ref F1 (c-id C x)) (c-id D (vector-ref F0 x)))) (range (c-nobj C)))
+         (all? (lambda (g) (all? (lambda (f) (or (not (composable? C g f)) (= (vector-ref F1 (compose C g f)) (compose D (vector-ref F1 g) (vector-ref F1 f))))) (range (c-narr C)))) (range (c-narr C))))))
+;; a Set-valued functor on C: (vector sets maps): sets a vector of lists (elements), maps a vector arrow -> vector
+;; (function on element indices)
+(define (sf-set X x) (vector-ref (vector-ref X 0) x))
+(define (sf-map X a) (vector-ref (vector-ref X 1) a))
+(define (sf-apply X a i) (vector-ref (sf-map X a) i))
+(define (set-functor? C X)
+  (and (all? (lambda (x) (let ((n (length (sf-set X x)))) (all? (lambda (i) (= i (sf-apply X (c-id C x) i))) (range n)))) (range (c-nobj C)))
+       (all? (lambda (g) (all? (lambda (f) (or (not (composable? C g f))
+                                              (all? (lambda (i) (= (sf-apply X (compose C g f) i) (sf-apply X g (sf-apply X f i)))) (range (length (sf-set X (a-src C f)))))))
+                              (range (c-narr C)))) (range (c-narr C)))))
+(define (natural? C X Y eta)                     ;; eta: vector object -> vector (component function on indices)
+  (all? (lambda (a) (let ((x (a-src C a)) (y (a-tgt C a)))
+                      (all? (lambda (i) (= (vector-ref (vector-ref eta y) (sf-apply X a i)) (sf-apply Y a (vector-ref (vector-ref eta x) i)))) (range (length (sf-set X x))))))
+        (range (c-narr C))))
+(define (make-set-functor C sets maps) (vector (list->vector sets) (list->vector maps)))
+(define (arrow-named C name) (list-index-of (lambda (a) (equal? (a-name C a) name)) (range (c-narr C))))
+;; a Set-functor from an alist name -> function vector; identities are filled in automatically
+(define (set-functor-by-names C sets alist)
+  (make-set-functor C sets
+                    (map (lambda (a) (let ((x (a-src C a)))
+                                       (if (= a (c-id C x)) (list->vector (range (length (list-ref sets x))))
+                                           (let ((e (assoc (a-name C a) alist))) (if e (cdr e) (error "no map for arrow"))))))
+                         (range (c-narr C)))))
+
+;; --- limits and colimits of Set-valued functors over finite shapes ----------------------------------------------------
+;; limit: compatible families (one element per object) such that every arrow carries the source component to the
+;; target component; elements are lists of indices
+(define (limit C X)
+  (filter (lambda (fam) (all? (lambda (a) (= (list-ref fam (a-tgt C a)) (sf-apply X a (list-ref fam (a-src C a))))) (range (c-narr C))))
+          (cartesian (map (lambda (x) (range (length (sf-set X x)))) (range (c-nobj C))))))
+;; colimit: coproduct (object, index) modulo the equivalence generated by (src, i) ~ (tgt, X a i); union-find
+(define (colimit C X)
+  (let* ((offsets (let loop ((x 0) (o 0) (acc '())) (if (= x (c-nobj C)) (reverse acc) (loop (+ x 1) (+ o (length (sf-set X x))) (cons o acc)))))
+         (total (let loop ((x 0) (o 0)) (if (= x (c-nobj C)) o (loop (+ x 1) (+ o (length (sf-set X x)))))))
+         (parent (make-vector total 0))
+         (uf-root (lambda (i) (let loop ((i i)) (if (= i (vector-ref parent i)) i (loop (vector-ref parent i))))))
+         (key (lambda (x i) (+ (list-ref offsets x) i))))
+    (let init ((i 0)) (if (< i total) (begin (vector-set! parent i i) (init (+ i 1)))))
+    (let loop ((a 0))
+      (if (< a (c-narr C))
+          (begin (let elts ((i 0))
+                   (if (< i (length (sf-set X (a-src C a))))
+                       (let ((p (uf-root (key (a-src C a) i))) (q (uf-root (key (a-tgt C a) (sf-apply X a i)))))
+                         (if (not (= p q)) (vector-set! parent p q))
+                         (elts (+ i 1)))))
+                 (loop (+ a 1)))))
+    (let ((classes (dedup (map uf-root (range total)))))
+      (vector classes (lambda (x i) (position-of (uf-root (key x i)) classes))))))   ;; (classes, injection (x, i) -> class index)
+(define (colimit-size co) (length (vector-ref co 0)))
+(define (colimit-inj co x i) ((vector-ref co 1) x i))
+;; the direct constructions on sets, for comparison
+(define A (list 'a1 'a2 'a3)) (define B (list 'b1 'b2))
+(define X-prod (make-set-functor (make-category 2 '() free-nf 0) (list A B) (list (vector 0 1 2) (vector 0 1))))
+(check "the product A x B as a limit over the discrete two-object category has 6 elements" (= 6 (length (limit (make-category 2 '() free-nf 0) X-prod))))
+;; equalizer of f, g: A -> B with f = (0 1 0), g = (0 1 1): agree on a1, a2
+(define X-eq (set-functor-by-names parallel-pair (list A B) (list (cons (list 0) (vector 0 1 0)) (cons (list 1) (vector 0 1 1)))))
+(check "the equalizer of f = (b1 b2 b1) and g = (b1 b2 b2) is {a1, a2}: the limit over the parallel pair has 2 elements and the coequalizer identifies b1 ~ b2 to 1 element"
+       (and (set-functor? parallel-pair X-eq) (= 2 (length (limit parallel-pair X-eq))) (= 1 (colimit-size (colimit parallel-pair X-eq)))))
+;; pullback of l: A -> P and r: B -> P over P = {p1, p2}: l = (0 0 1), r = (1 0)
+(define P (list 'p1 'p2))
+(define X-pb (set-functor-by-names cospan-shape (list P A B) (list (cons (list 0) (vector 0 0 1)) (cons (list 1) (vector 1 0)))))
+(check "the pullback of l = (p1 p1 p2) and r = (p2 p1) has 3 elements (a1 b2, a2 b2, a3 b1)" (and (set-functor? cospan-shape X-pb) (= 3 (length (limit cospan-shape X-pb)))))
+;; pushout of l: P -> A and r: P -> B: l = (0 0), r = (0 1): glue a1 ~ b1 ~ b2 -> |A + B| - 2 - 1 + ... = 3 classes
+(define X-po (set-functor-by-names span-shape (list P A B) (list (cons (list 0) (vector 0 0)) (cons (list 1) (vector 0 1)))))
+(check "the pushout of l = (a1 a1) and r = (b1 b2) has 3 elements (a1 ~ b1 ~ b2, a2, a3)" (and (set-functor? span-shape X-po) (= 3 (colimit-size (colimit span-shape X-po)))))
+;; universal property of the pullback tested against every cone from a probe set of size 2
+(define (cones-to C X probe-size)                ;; families of functions probe -> X(x) making all triangles commute
+  (filter (lambda (legs) (all? (lambda (a) (all? (lambda (t) (= (vector-ref (list-ref legs (a-tgt C a)) t) (sf-apply X a (vector-ref (list-ref legs (a-src C a)) t)))) (range probe-size))) (range (c-narr C))))
+          (cartesian (map (lambda (x) (map list->vector (cartesian (map (lambda (t) (range (length (sf-set X x)))) (range probe-size))))) (range (c-nobj C))))))
+(check "universal property: the cones from a 2-element probe to the pullback diagram are exactly the maps into the limit, 3^2 = 9 of them"
+       (= (length (cones-to cospan-shape X-pb 2)) (let ((L (length (limit cospan-shape X-pb)))) (* L L))))
+
+;; --- comma categories and pointwise Kan extensions -------------------------------------------------------------------
+;; for F: C -> D and an object d of D, the comma category (F down d) has objects (c, u: F c -> d) and arrows the
+;; c-arrows compatible with the u's; (d down F) dually. Both are finite categories; Lan_F G(d) = colim over (F down d)
+;; of G o proj, Ran_F G(d) = lim over (d down F).
+(define (comma-down C D F d)                     ;; (F down d): objects (c . u) with u: F c -> d
+  (let* ((F0 (vector-ref F 0)) (F1 (vector-ref F 1))
+         (objs (let loop ((c 0) (acc '())) (if (= c (c-nobj C)) (reverse acc) (loop (+ c 1) (append (reverse (map (lambda (u) (cons c u)) (hom D (vector-ref F0 c) d))) acc)))))
+         (obj-index (lambda (o) (position-of o objs)))
+         (arrs (let loop ((a 0) (acc '()))
+                 (if (= a (c-narr C)) (reverse acc)
+                     (loop (+ a 1)
+                           (append (reverse (let inner ((os objs) (acc2 '()))
+                                              (if (null? os) acc2
+                                                  (inner (cdr os)
+                                                         (let ((o (car os)))
+                                                           (if (= (car o) (a-src C a))
+                                                               ;; target object: (tgt a, u') with u' o F a = u, i.e. u' such that compose D u' (F1 a) = u
+                                                               (let ((tgts (filter (lambda (u2) (= (cdr o) (compose D u2 (vector-ref F1 a)))) (hom D (vector-ref F0 (a-tgt C a)) d))))
+                                                                 (append (map (lambda (u2) (vector (obj-index o) (obj-index (cons (a-tgt C a) u2)) (list a))) tgts) acc2))
+                                                               acc2))))))
+                                   acc)))))
+         (arrows (list->vector arrs)) (narr (vector-length arrows)) (comp (make-hash-table)))
+    ;; composition: arrows carry the underlying C-arrow; compose in C and look up
+    (let lg ((g 0)) (if (< g narr) (begin (let lf ((f 0)) (if (< f narr) (begin (if (= (vector-ref (vector-ref arrows f) 1) (vector-ref (vector-ref arrows g) 0)) (let ((ca (compose C (car (vector-ref (vector-ref arrows g) 2)) (car (vector-ref (vector-ref arrows f) 2))))) (hash-table-set! comp (+ (* narr g) f) (list-index-of (lambda (v) (and (= (vector-ref v 0) (vector-ref (vector-ref arrows f) 0)) (= (vector-ref v 1) (vector-ref (vector-ref arrows g) 1)) (= (car (vector-ref v 2)) ca))) arrs)))) (lf (+ f 1))))) (lg (+ g 1)))))
+    (vector (length objs) arrows comp (list->vector (map (lambda (o) (list-index-of (lambda (v) (and (= (vector-ref v 0) (obj-index o)) (= (vector-ref v 1) (obj-index o)) (= (car (vector-ref v 2)) (c-id C (car o))))) arrs)) objs)) objs)))
+(define (comma-up C D F d)                       ;; (d down F): objects (c . u) with u: d -> F c; arrows a with F a o u = u'
+  (let* ((F0 (vector-ref F 0)) (F1 (vector-ref F 1))
+         (objs (let loop ((c 0) (acc '())) (if (= c (c-nobj C)) (reverse acc) (loop (+ c 1) (append (reverse (map (lambda (u) (cons c u)) (hom D d (vector-ref F0 c)))) acc)))))
+         (obj-index (lambda (o) (position-of o objs)))
+         (arrs (let loop ((a 0) (acc '()))
+                 (if (= a (c-narr C)) (reverse acc)
+                     (loop (+ a 1)
+                           (append (reverse (let inner ((os objs) (acc2 '()))
+                                              (if (null? os) acc2
+                                                  (inner (cdr os)
+                                                         (let ((o (car os)))
+                                                           (if (= (car o) (a-src C a))
+                                                               (let ((u2 (compose D (vector-ref F1 a) (cdr o))))
+                                                                 (cons (vector (obj-index o) (obj-index (cons (a-tgt C a) u2)) (list a)) acc2))
+                                                               acc2))))))
+                                   acc)))))
+         (arrows (list->vector arrs)) (narr (vector-length arrows)) (comp (make-hash-table)))
+    (let lg ((g 0)) (if (< g narr) (begin (let lf ((f 0)) (if (< f narr) (begin (if (= (vector-ref (vector-ref arrows f) 1) (vector-ref (vector-ref arrows g) 0)) (let ((ca (compose C (car (vector-ref (vector-ref arrows g) 2)) (car (vector-ref (vector-ref arrows f) 2))))) (hash-table-set! comp (+ (* narr g) f) (list-index-of (lambda (v) (and (= (vector-ref v 0) (vector-ref (vector-ref arrows f) 0)) (= (vector-ref v 1) (vector-ref (vector-ref arrows g) 1)) (= (car (vector-ref v 2)) ca))) arrs)))) (lf (+ f 1))))) (lg (+ g 1)))))
+    (vector (length objs) arrows comp (list->vector (map (lambda (o) (list-index-of (lambda (v) (and (= (vector-ref v 0) (obj-index o)) (= (vector-ref v 1) (obj-index o)) (= (car (vector-ref v 2)) (c-id C (car o))))) arrs)) objs)) objs)))
+(define (comma-objects K) (vector-ref K 4))
+;; restrict a Set-functor G on C along the projection of a comma category
+(define (restrict-along-comma K G)
+  (let ((objs (comma-objects K)))
+    (vector (list->vector (map (lambda (o) (sf-set G (car o))) objs))
+            (list->vector (map (lambda (a) (sf-map G (car (vector-ref (vector-ref (c-arrows K) a) 2)))) (range (c-narr K)))))))
+;; pointwise Kan extensions as Set-functors on D. Lan: object d -> colimit classes; arrow v: d -> d' acts by
+;; postcomposition (c, u) -> (c, v o u). Ran: object d -> limit families; arrow v: d -> d' acts by precomposition
+;; on (d' down F) -> (d down F): (c, u) -> (c, u o v).
+(define (lan C D F G)
+  (let* ((commas (list->vector (map (lambda (d) (comma-down C D F d)) (range (c-nobj D)))))
+         (colims (list->vector (map (lambda (d) (colimit (vector-ref commas d) (restrict-along-comma (vector-ref commas d) G))) (range (c-nobj D)))))
+         (sets (map (lambda (d) (range (colimit-size (vector-ref colims d)))) (range (c-nobj D))))
+         (maps (map (lambda (v)
+                      (let* ((d (a-src D v)) (d2 (a-tgt D v)) (K (vector-ref commas d)) (K2 (vector-ref commas d2)) (co (vector-ref colims d)) (co2 (vector-ref colims d2))
+                             (out (make-vector (colimit-size co) #f)))
+                        ;; every class of co has a representative (object k of K, element i); map it to (c, v o u), i in co2
+                        (let loop ((k 0))
+                          (if (< k (c-nobj K))
+                              (let ((o (list-ref (comma-objects K) k)))
+                                (let elts ((i 0))
+                                  (if (< i (length (sf-set G (car o))))
+                                      (let* ((cls (colimit-inj co k i))
+                                             (o2 (cons (car o) (compose D v (cdr o))))
+                                             (k2 (position-of o2 (comma-objects K2))))
+                                        (vector-set! out cls (colimit-inj co2 k2 i))
+                                        (elts (+ i 1)))))
+                                (loop (+ k 1)))))
+                        out))
+                    (range (c-narr D)))))
+    (make-set-functor D sets maps)))
+(define (ran C D F G)
+  (let* ((commas (list->vector (map (lambda (d) (comma-up C D F d)) (range (c-nobj D)))))
+         (lims (list->vector (map (lambda (d) (limit (vector-ref commas d) (restrict-along-comma (vector-ref commas d) G))) (range (c-nobj D)))))
+         (sets (map (lambda (d) (range (length (vector-ref lims d)))) (range (c-nobj D))))
+         (maps (map (lambda (v)
+                      (let* ((d (a-src D v)) (d2 (a-tgt D v)) (K (vector-ref commas d)) (K2 (vector-ref commas d2)) (L (vector-ref lims d)) (L2 (vector-ref lims d2)))
+                        ;; a family on (d down F) restricts to (d2 down F)? no: v: d -> d2 gives (d2 down F) -> (d down F) by u -> u o v,
+                        ;; so a family on (d down F) is pulled back to a family on (d2 down F)
+                        (list->vector (map (lambda (fam)
+                                             (let ((fam2 (map (lambda (o2) (list-ref fam (position-of (cons (car o2) (compose D (cdr o2) v)) (comma-objects K)))) (comma-objects K2))))
+                                               (position-of fam2 L2)))
+                                           L))))
+                    (range (c-narr D)))))
+    (make-set-functor D sets maps)))
+;; restriction F^*: a Set-functor on D pulled back to C
+(define (restrict C D F Y) (vector (list->vector (map (lambda (c) (sf-set Y (vector-ref (vector-ref F 0) c))) (range (c-nobj C))))
+                                   (list->vector (map (lambda (a) (sf-map Y (vector-ref (vector-ref F 1) a))) (range (c-narr C))))))
+;; the unit of Lan -| F^*: G -> F^* Lan_F G, at c: g -> class of (c, id) in Lan(F c); the counit of F^* -| Ran: F^* Ran_F G -> G
+;; the triangle identities are checked through the universal property: the unit is natural and, for the counit
+;; eps: Lan_F F^* Y -> Y (class of (c, u: F c -> d), y in Y(F c)) -> Y(u)(y), eps o Lan(eta) = id on Lan_F G
+(define (lan-unit C D F G L)
+  (let ((commas (list->vector (map (lambda (d) (comma-down C D F d)) (range (c-nobj D)))))
+        (F0 (vector-ref F 0)))
+    (list->vector (map (lambda (c)
+                         (let* ((d (vector-ref F0 c)) (K (vector-ref commas d)) (co (colimit K (restrict-along-comma K G)))
+                                (k (position-of (cons c (c-id D d)) (comma-objects K))))
+                           (list->vector (map (lambda (i) (colimit-inj co k i)) (range (length (sf-set G c)))))))
+                       (range (c-nobj C))))))
+(define (lan-counit C D F Y)                      ;; eps_d: Lan_F F^* Y (d) -> Y(d)
+  (let ((commas (list->vector (map (lambda (d) (comma-down C D F d)) (range (c-nobj D))))) (FY (restrict C D F Y)))
+    (list->vector (map (lambda (d)
+                         (let* ((K (vector-ref commas d)) (co (colimit K (restrict-along-comma K FY))) (out (make-vector (colimit-size co) #f)))
+                           (let loop ((k 0))
+                             (if (< k (c-nobj K))
+                                 (let ((o (list-ref (comma-objects K) k)))
+                                   (let elts ((i 0)) (if (< i (length (sf-set FY (car o)))) (begin (vector-set! out (colimit-inj co k i) (sf-apply Y (cdr o) i)) (elts (+ i 1)))))
+                                   (loop (+ k 1)))))
+                           out))
+                       (range (c-nobj D))))))
+(define (well-defined-vector? v) (all? (lambda (i) (vector-ref v i)) (range (vector-length v))))
+(define (compose-components eta theta) (list->vector (map (lambda (x) (let ((e (vector-ref eta x)) (t (vector-ref theta x))) (list->vector (map (lambda (i) (vector-ref t (vector-ref e i))) (range (vector-length e)))))) (range (vector-length eta)))))
+(define (identity-components? eta) (all? (lambda (x) (all? (lambda (i) (= i (vector-ref (vector-ref eta x) i))) (range (vector-length (vector-ref eta x))))) (range (vector-length eta))))
+
+;; 3a. Kan extensions along the collapse BZ/2 -> point: Lan = orbits, Ran = fixed points
+(define collapse (vector (vector 0) (list->vector (map (lambda (a) 0) (range (c-narr BZ2))))))   ;; every arrow of BZ/2 to the identity of the point
+(check "the collapse BZ/2 -> point is a functor and the inclusion of the pseudocircle into its cone is a functor"
+       (and (functor? BZ2 point collapse)
+            (functor? S ConeS (vector (vector 0 1 2 3) (list->vector (map (lambda (a) (position-of (list (a-src S a) (a-tgt S a)) (map (lambda (b) (list (a-src ConeS b) (a-tgt ConeS b))) (range (c-narr ConeS))))) (range (c-narr S))))))))
+(define regular-z2 (set-functor-by-names BZ2 (list (list 'e 's)) (list (cons (list 0) (vector 1 0)))))
+(define trivial-z2 (set-functor-by-names BZ2 (list (list 'p 'q)) (list (cons (list 0) (vector 0 1)))))
+(check "regular and trivial Z/2-sets are functors" (and (set-functor? BZ2 regular-z2) (set-functor? BZ2 trivial-z2)))
+(define orbits-reg (lan BZ2 point collapse regular-z2))
+(define fixed-reg (ran BZ2 point collapse regular-z2))
+(define orbits-triv (lan BZ2 point collapse trivial-z2))
+(define fixed-triv (ran BZ2 point collapse trivial-z2))
+(show "Lan and Ran along BZ/2 -> point: (orbits, fixed points) of the regular and the trivial 2-element Z/2-sets" (list (list (length (sf-set orbits-reg 0)) (length (sf-set fixed-reg 0))) (list (length (sf-set orbits-triv 0)) (length (sf-set fixed-triv 0)))))
+(check "left Kan extension = orbits, right Kan extension = fixed points: regular (1, 0), trivial (2, 2)"
+       (equal? (list (list (length (sf-set orbits-reg 0)) (length (sf-set fixed-reg 0))) (list (length (sf-set orbits-triv 0)) (length (sf-set fixed-triv 0)))) (list (list 1 0) (list 2 2))))
+;; 3b. along the inclusion of S into its cone: Ran of a presheaf-like functor is its limit at the top
+(define incl (vector (vector 0 1 2 3) (list->vector (map (lambda (a) (position-of (list (a-src S a) (a-tgt S a)) (map (lambda (b) (list (a-src ConeS b) (a-tgt ConeS b))) (range (c-narr ConeS))))) (range (c-narr S))))))
+;; a functor on S (covariant on the poset a, b < c, d): sets at a, b of size 2, at c, d of size 3, maps injections
+(define G-S (make-set-functor S (list (list 'a0 'a1) (list 'b0 'b1) (list 'c0 'c1 'c2) (list 'd0 'd1 'd2))
+                              (map (lambda (a) (let ((x (a-src S a)) (y (a-tgt S a)))
+                                                 (cond ((= x y) (list->vector (range (if (< x 2) 2 3))))
+                                                       ((and (= x 0) (= y 2)) (vector 0 1)) ((and (= x 1) (= y 2)) (vector 1 2))
+                                                       ((and (= x 0) (= y 3)) (vector 0 2)) (else (vector 1 2)))))
+                                   (range (c-narr S)))))
+(check "G on the pseudocircle is a functor" (set-functor? S (vector (vector-ref G-S 0) (vector-ref G-S 1))))
+(define G-S* (vector (vector-ref G-S 0) (vector-ref G-S 1)))
+(define LanG (lan S ConeS incl G-S*))
+(define RanG (ran S ConeS incl G-S*))
+(show "Lan and Ran along S -> cone(S): sizes at a, b, c, d, top" (list (map (lambda (x) (length (sf-set LanG x))) (range 5)) (map (lambda (x) (length (sf-set RanG x))) (range 5))))
+(check "along a full inclusion both Kan extensions restrict to G (sizes 2, 2, 3, 3 at the old objects); at the top, which every object maps to, Lan is the colimit of G (2 classes: a0~c0~d0 and everything else) and Ran is the terminal set (the comma category (top down F) is empty), while lim G itself has no compatible family"
+       (and (equal? (map (lambda (x) (length (sf-set LanG x))) (range 4)) (list 2 2 3 3)) (equal? (map (lambda (x) (length (sf-set RanG x))) (range 4)) (list 2 2 3 3))
+            (= 2 (length (sf-set LanG 4))) (= (length (sf-set LanG 4)) (colimit-size (colimit S G-S*))) (= 1 (length (sf-set RanG 4))) (= 0 (length (limit S G-S*)))))
+(check "the Kan extensions are functors on the cone and the restriction of Lan along the inclusion is naturally isomorphic to G through the unit"
+       (and (set-functor? ConeS LanG) (set-functor? ConeS RanG)
+            (let ((eta (lan-unit S ConeS incl G-S* LanG))) (and (natural? S G-S* (restrict S ConeS incl LanG) eta) (all? (lambda (c) (= (length (dedup (vector->list (vector-ref eta c)))) (length (sf-set G-S* c)))) (range 4))))))
+;; triangle identity for Lan -| F^*: eps_{Lan G} o Lan(eta) = id, tested on the collapse and on the inclusion
+(define (triangle-lan? C D F G)
+  (let* ((L (lan C D F G)) (eta (lan-unit C D F G L)) (eps (lan-counit C D F L))
+         ;; Lan(eta): Lan_F G -> Lan_F F^* Lan_F G, class of (c, u, g) -> class of (c, u, eta_c g)
+         (commas (list->vector (map (lambda (d) (comma-down C D F d)) (range (c-nobj D)))))
+         (lan-eta (list->vector (map (lambda (d)
+                                       (let* ((K (vector-ref commas d)) (co (colimit K (restrict-along-comma K G))) (co2 (colimit K (restrict-along-comma K (restrict C D F L)))) (out (make-vector (colimit-size co) #f)))
+                                         (let loop ((k 0)) (if (< k (c-nobj K)) (let ((o (list-ref (comma-objects K) k))) (let elts ((i 0)) (if (< i (length (sf-set G (car o)))) (begin (vector-set! out (colimit-inj co k i) (colimit-inj co2 k (vector-ref (vector-ref eta (car o)) i))) (elts (+ i 1))))) (loop (+ k 1)))))
+                                         out))
+                                     (range (c-nobj D))))))
+    (and (all? well-defined-vector? (vector->list eps)) (identity-components? (compose-components lan-eta eps)))))
+(check "triangle identity eps_{Lan G} o Lan(eta_G) = id holds for Lan along the collapse (regular and trivial Z/2-sets) and along the inclusion S -> cone(S)"
+       (and (triangle-lan? BZ2 point collapse regular-z2) (triangle-lan? BZ2 point collapse trivial-z2) (triangle-lan? S ConeS incl G-S*)))
+;; 3c. along the walking arrow into the square (0 -> 1 as a: 0 -> 1): Ran at 3 is the pullback-like limit over (3 down F) = empty
+(define arrow-into-square (vector (vector 0 1) (list->vector (map (lambda (a) (cond ((= a (c-id walking-arrow 0)) (c-id square 0)) ((= a (c-id walking-arrow 1)) (c-id square 1)) (else (arrow-named square (list 0))))) (range (c-narr walking-arrow))))))
+(check "the walking arrow embeds in the square along a" (functor? walking-arrow square arrow-into-square))
+(define G-arrow (set-functor-by-names walking-arrow (list (list 'x0 'x1 'x2) (list 'y0 'y1)) (list (cons (list 0) (vector 0 1 1)))))
+(define RanA (ran walking-arrow square arrow-into-square G-arrow))
+(define LanA (lan walking-arrow square arrow-into-square G-arrow))
+(show "Ran and Lan of a functor on the walking arrow, along a: 0 -> 1 into the square: sizes at 0, 1, 2, 3" (list (map (lambda (x) (length (sf-set RanA x))) (range 4)) (map (lambda (x) (length (sf-set LanA x))) (range 4))))
+(check "Ran: objects with no arrow into the image get the terminal set (2 and 3: sizes 3, 2, 1, 1); Lan: object 2 receives G(0) along b (3 elements) and object 3 the pushout of G(0) along f and c a = d b (2 elements): sizes 3, 2, 3, 2"
+       (and (equal? (map (lambda (x) (length (sf-set RanA x))) (range 4)) (list 3 2 1 1)) (equal? (map (lambda (x) (length (sf-set LanA x))) (range 4)) (list 3 2 3 2))))
+
+;; --- 4. the Grothendieck construction of a presheaf of sets ----------------------------------------------------------
+;; for a Set-functor X on C (covariant), the category of elements has objects (c, x in X c) and arrows (c, x) -> (c', x')
+;; the arrows a: c -> c' with X a x = x'; the projection to C is a discrete opfibration: unique lifts of arrows
+(define (category-of-elements C X)
+  (let* ((objs (let loop ((c 0) (acc '())) (if (= c (c-nobj C)) (reverse acc) (loop (+ c 1) (append (reverse (map (lambda (i) (cons c i)) (range (length (sf-set X c))))) acc)))))
+         (arrs (let loop ((a 0) (acc '())) (if (= a (c-narr C)) (reverse acc) (loop (+ a 1) (append (reverse (map (lambda (i) (vector (position-of (cons (a-src C a) i) objs) (position-of (cons (a-tgt C a) (sf-apply X a i)) objs) (list a))) (range (length (sf-set X (a-src C a)))))) acc))))))
+    (vector (length objs) (list->vector arrs) (make-hash-table) (vector) objs)))
+(define El (category-of-elements S G-S*))
+(check "the category of elements of G on the pseudocircle has 10 objects and 18 arrows (10 identities and 8 lifts), and the projection is a discrete opfibration (each arrow out of an object's image has exactly one lift)"
+       (and (= 10 (c-nobj El)) (= 18 (c-narr El))
+            (all? (lambda (a) (all? (lambda (i) (= 1 (count-if (lambda (e) (and (= (car (vector-ref e 2)) a) (= (vector-ref e 0) (position-of (cons (a-src S a) i) (comma-objects El))))) (vector->list (c-arrows El))))) (range (length (sf-set G-S* (a-src S a)))))) (range (c-narr S)))))
+
+;; --- 5. derived functors of lim on a presheaf category: lim^n of the constant presheaf recovers sheaf cohomology ----------
+;; cosimplicial replacement over the poset category P (arrows x -> y for x <= y): C^n = prod over chains of n
+;; composable non-identity arrows x_0 -> ... -> x_n of Z (constant coefficients); d as in Bousfield-Kan
+(define (nondegenerate-chains P n)               ;; lists of n composable non-identity arrows, as object sequences x0 < ... < xn
+  (if (= n 0) (map (lambda (x) (list x)) (range (c-nobj P)))
+      (let ((prev (nondegenerate-chains P (- n 1))))
+        (let loop ((cs prev) (acc '()))
+          (if (null? cs) (reverse acc)
+              (loop (cdr cs) (append (reverse (map (lambda (y) (append (car cs) (list y))) (filter (lambda (y) (and (not (= y (car (reverse (car cs))))) (not (null? (hom P (car (reverse (car cs))) y))))) (range (c-nobj P))))) acc)))))))
+(define (drop-nth l i) (let loop ((l l) (k 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ k 1) (if (= k i) acc (cons (car l) acc))))))
+(define (coboundary-rows P n)                    ;; delta^n : C^n -> C^{n+1} as a vector of rows over the (n+1)-chains
+  (let* ((src (nondegenerate-chains P n)) (tgt (nondegenerate-chains P (+ n 1))))
+    (list->vector (map (lambda (c)
+                         (let ((row (make-vector (length src) 0)))
+                           (let loop ((i 0) (sign 1))
+                             (if (<= i (+ n 1))
+                                 (let ((face (drop-nth c i)))
+                                   (let ((j (position-of face src)))
+                                     (if j (vector-set! row j (+ (vector-ref row j) sign))))   ;; degenerate faces (equal neighbours) vanish: absent from src
+                                   (loop (+ i 1) (- 0 sign)))))
+                           row))
+                       tgt))))
+(define (rank-mod-p R p)
+  (let* ((m (vector-length R)) (n (if (= m 0) 0 (vector-length (vector-ref R 0))))
+         (M (list->vector (map (lambda (row) (list->vector (map (lambda (x) (modulo x p)) (vector->list row)))) (vector->list R)))))
+    (let loop ((r 0) (c 0))
+      (if (or (= r m) (= c n)) r
+          (let ((piv (let seek ((i r)) (cond ((= i m) #f) ((not (= 0 (vector-ref (vector-ref M i) c))) i) (else (seek (+ i 1)))))))
+            (if (not piv) (loop r (+ c 1))
+                (begin (let ((t (vector-ref M r))) (vector-set! M r (vector-ref M piv)) (vector-set! M piv t))
+                       (let* ((prow (vector-ref M r)) (inv (let li ((x 1)) (if (= 1 (modulo (* (vector-ref prow c) x) p)) x (li (+ x 1))))))
+                         (let rows ((i (+ r 1))) (if (< i m) (let ((row (vector-ref M i))) (if (not (= 0 (vector-ref row c))) (let ((f (modulo (* (vector-ref row c) inv) p))) (let sub ((j c)) (if (< j n) (begin (vector-set! row j (modulo (- (vector-ref row j) (* f (vector-ref prow j))) p)) (sub (+ j 1))))))) (rows (+ i 1))))))
+                       (loop (+ r 1) (+ c 1)))))))))
+(define (lim-n-ranks P nmax p)                    ;; dims of lim^n over F_p (no torsion for these posets)
+  (let* ((dims (map (lambda (n) (length (nondegenerate-chains P n))) (range (+ nmax 2))))
+         (ranks (map (lambda (n) (let ((R (coboundary-rows P n))) (if (= 0 (vector-length R)) 0 (rank-mod-p R p)))) (range (+ nmax 1)))))
+    (let loop ((n 0) (prev 0) (acc '()))
+      (if (> n nmax) (reverse acc)
+          (loop (+ n 1) (list-ref ranks n) (cons (- (list-ref dims n) prev (list-ref ranks n)) acc))))))
+(define limS (lim-n-ranks S 2 10007))
+(define limS2 (lim-n-ranks S2 3 10007))
+(show "lim^n of the constant presheaf over the pseudocircle and the pseudo-2-sphere (as F_p-dimensions)" (list limS limS2))
+(check "derived limits recover sheaf cohomology: (1, 1, 0) for the pseudocircle and (1, 0, 1, 0) for the pseudo-2-sphere, the values of the finite-spaces example"
+       (and (equal? limS (list 1 1 0)) (equal? limS2 (list 1 0 1 0))))
+(check "lim^0 agrees with the limit of the constant functor computed categorically: one compatible family on each connected poset"
+       (and (= 1 (length (limit S (make-set-functor S (map (lambda (x) (list 'z)) (range 4)) (map (lambda (a) (vector 0)) (range (c-narr S)))))))
+            (= 1 (length (limit S2 (make-set-functor S2 (map (lambda (x) (list 'z)) (range 6)) (map (lambda (a) (vector 0)) (range (c-narr S2)))))))))
+
+(display "Finite categories as computations: presentations, limits, Kan extensions with their adjunctions, the Grothendieck construction, derived limits") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

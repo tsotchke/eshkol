@@ -20,6 +20,9 @@ failure — it is the next ratchet.
 | `coverage_policy.json` | monotonic ratchet | Minimum covered count/fraction and the categories that must reach zero uncovered before TOTAL-LANGUAGE completion. The floor can only increase. |
 | `coverage_run.json` | `scripts/language_coverage.py --update-committed-run` | Committed snapshot of the sidecar: covered / total, covered fraction, the nested effective policy block, and covered + uncovered names by category. **Build output by nature** — an ordinary gate run writes the sidecar to the gitignored `build/coverage/coverage_run.json` instead, so running the gate never dirties the tree. Refresh this copy deliberately (see below). |
 | `coverage_gap.md` | analysis | Human-readable gap report ranked by silent-wrong risk. |
+| `release_record.json` | release cut | The release tag, the previous release's tag, the date, status label and the CTest and VM-parity totals. `scripts/check_surface_counts.py` grades every release-facing document and generated site page against it, and `--sync` rewrites their claims from it. |
+| `changelog_no_user_facing_change.json` | hand-maintained, gated | The merged pull requests of the release range that deliberately have no `CHANGELOG.md` entry, each with a class from a closed set and a specific reason. Graded by `scripts/check_changelog_completeness.py` (see below). |
+| `doc_front_matter_baseline.json` | `scripts/check_doc_front_matter.py --update-baseline` | The number of documentation pages that carry no front-matter block. It can only go down (see below). |
 
 Collect evidence and regenerate everything:
 
@@ -81,6 +84,22 @@ silently drift from the compiler:
 Each builtin records which backend(s) register it (`native`, `vm`,
 `native_llvm`) so a construct that exists in only one backend is visible.
 
+A row in either `BUILTINS[]` table may also carry a trailing block comment
+reading `mirrors: <public-name>`, which the generator copies onto the entry as
+`"mirrors"`. It marks the row as one engine's private spelling of a public
+construct — an arity split (`_newline1` for the explicit-port `newline`, whose
+native codegen takes the optional port directly), or a lower-level handle form
+(`make-euclidean-manifold-handle` for `core.manifold`'s
+`make-euclidean-manifold`) — rather than a construct of its own. Registering a
+row on both engines makes the annotation redundant, and the generator then
+fails rather than letting a stale one stand.
+
+The annotation exists because the cross-surface gates could otherwise relate
+the two spellings only by name identity, so renaming a private spelling apart
+from its public one reported a backend asymmetry that did not exist. It cannot
+excuse a real gap: `scripts/p8/five_way_surface.py` resolves the named public
+construct on the native surface itself before it treats the row as covered.
+
 ## How coverage is measured (dynamic)
 
 `language_coverage.py` is the "ICC tracks the language dynamically" mechanism:
@@ -92,10 +111,15 @@ Each builtin records which backend(s) register it (`native`, `vm`,
 2. LLVM code generation records reached AST nodes (`G`) and injects lightweight
    runtime hooks into that instrumented module. Executed operations (`O`) and
    direct calls (`C`) are emitted by the running JIT/AOT program.
-3. The bytecode compiler serializes two exact dispatch witnesses. Native calls
-   carry their native-ID alias marker (`V name`), while direct Scheme closure
-   calls carry a stable 31-bit FNV-1a marker (`V hash @call`). The VM validates
-   each marker immediately beside the actual `CALL`/`TAIL_CALL` dispatch;
+3. The bytecode compiler serializes three exact execution witnesses. Native
+   calls carry their native-ID alias marker (`V name`), direct Scheme closure
+   calls carry a stable 31-bit FNV-1a marker (`V hash @call`) validated
+   immediately beside the actual `CALL`/`TAIL_CALL` dispatch, and every
+   compiled `(name ...)` form carries the same stable hash as a per-form
+   marker (`V hash @form`) at the head of its lowering. The first two fire
+   only from builtin dispatch, so before the third existed the arithmetic and
+   comparison opcode fast paths and every inline special form produced no VM
+   evidence at all — `(display (+ 1 2))` wrote no VM trace file whatsoever.
    `language_coverage.py` resolves hashes only against the checked-in manifest
    and rejects collisions rather than granting ambiguous credit.
 4. `language_coverage.py` grants ordinary builtins and runtime forms credit only
@@ -109,7 +133,9 @@ Each builtin records which backend(s) register it (`native`, `vm`,
    untaken branch has `P` and `G`, but no `O`/`C`, and is therefore uncovered.
 6. The regression test `scripts/test_runtime_language_coverage.py` exercises a
    real untaken branch, exact ESKB native aliases, exact serialized direct
-   Scheme calls, collision rejection, and an unset trace environment.
+   Scheme calls, per-form markers on both engine binaries (the standalone VM
+   and the `--profile hosted-vm` ESKB route), the differential gate's own
+   hash resolution, collision rejection, and an unset trace environment.
 
 Normal generated programs contain no hooks unless tracing was enabled in the
 compiler process. Parser dispatch has one cached false branch in production;
@@ -200,3 +226,81 @@ prioritisation: `numeric`, `tensor_ad`, `geometry`, `control_flow`,
 `predicate`, `io_port`, `binding_form`, `macro_syntax`, `module`,
 `memory_region`, `misc_core`, `ffi_system`, `misc`. See `coverage_gap.md` for
 the remaining lower-risk surface and the next monotonic ratchet.
+
+## The changelog accounts for every merged pull request
+
+`scripts/check_changelog_completeness.py` is a build-free release gate. It
+reads `tag` and `previous_tag` from `release_record.json`, walks
+`<previous_tag>..HEAD`, and derives every merged pull request number from the
+commit subjects alone (a squash subject ending in `(#N)`, or
+`Merge pull request #N ...`); it needs no network. Each number must have
+exactly one home:
+
+- a `#N` reference inside the `## [<version>]` section of `CHANGELOG.md` for the
+  record's tag, or inside `## [Unreleased]`; a reference in an older release
+  section does not count; or
+- an entry in `changelog_no_user_facing_change.json`:
+  `{"pr": N, "class": ..., "reason": ...}`, where the class is one of `ci`,
+  `test-only`, `docs-only`, `release-machinery`, `build-internal`,
+  `merge-integration` or `reverted-or-superseded`, and the reason says what the
+  pull request changed and why a user cannot observe it.
+
+Anything else is reported as unaccounted, with its commit subject, and the gate
+fails. The ledger is graded as strictly as the changelog: an unknown class, a
+reason under 25 characters or a generic one, a duplicate, an entry whose pull
+request is not in the range (stale), an entry whose pull request is also
+referenced in the changelog (one home per pull request), entries out of
+numeric order, or a `release` that differs from the record's tag all fail.
+Prefer a changelog entry whenever a user could observe the change; the ledger
+is for CI wiring, tests, release machinery, integration merges and internal
+refactors.
+
+The gate fails closed. Without git, without the previous tag, in a shallow
+clone, or when the range yields no pull request at all, it exits 2 (`NO_DATA`)
+or 1 rather than passing over an empty list; fetch the full history and tags
+(`git fetch --unshallow --tags`) and run it again.
+
+```sh
+python3 scripts/check_changelog_completeness.py --no-trace   # grade the tree
+python3 scripts/check_changelog_completeness.py --self-test  # every rule, red and green
+# In a pull request, before it merges: its own ledger entry is not stale
+python3 scripts/check_changelog_completeness.py --no-trace --pending-pr <N>
+```
+
+CI runs it in the `assurance-gates` job (full-history checkout, runs on
+docs-only pull requests too), and `scripts/release_autopilot.py` runs it with
+the other documentation checks before a release. When the record's tag moves to
+the next release, set the ledger's `release` to the new tag and delete the
+entries the gate then reports as stale.
+
+## Documentation front matter
+
+`scripts/check_doc_front_matter.py` is a build-free gate over every tracked
+`*.md` under `docs/` (except the generated `docs/api/`) and the root project
+pages. The block and its vocabulary are defined in `docs/DOCUMENTATION.md`.
+
+- A page without front matter is valid and is counted. The count is recorded
+  in `doc_front_matter_baseline.json`: a higher count fails (a new page carries
+  the block), and a lower count fails until the number is lowered with
+  `--update-baseline`, so it only goes down. `--update-baseline` refuses to
+  raise it unless `--allow-increase` is passed for a reviewed scope change.
+- A page with front matter must have exactly the keys `kind`, `status`,
+  `owner-area`, `since` and `sources` (plus `superseded-by` when, and only
+  when, the status is `superseded`), values from the closed sets, source paths
+  that exist, and its H1 as the first line after the block. A `report` is never
+  `current`.
+- A current tutorial, guide, reference or explanation page carries no release
+  narrative outside code fences; a line that must keep such a phrase carries
+  `<!-- evergreen: allow <reason> -->` (on the line or the one above), and every
+  exemption is printed.
+- A current page that links to a historical or superseded page says
+  "historical", "superseded", "dated" or "archived" on the same line.
+
+```sh
+python3 scripts/check_doc_front_matter.py --no-trace          # grade the tree
+python3 scripts/check_doc_front_matter.py --self-test         # every rule, red and green
+python3 scripts/check_doc_front_matter.py --update-baseline   # after adding front matter to a page
+```
+
+CI runs it in the `assurance-gates` job, and `scripts/release_autopilot.py`
+runs it with the other documentation checks.

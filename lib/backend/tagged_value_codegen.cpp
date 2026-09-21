@@ -43,6 +43,26 @@ llvm::Value* TaggedValueCodegen::createEntryAlloca(const char* name) {
 
 llvm::Value* TaggedValueCodegen::buildTaggedValue(uint8_t type, uint8_t flags, llvm::Value* data_i64) {
     auto& B = ctx_.builder();
+    // The payload slot is an i64. IRBuilder does not type-check insertvalue in
+    // a release build, so a caller handing this a raw double or pointer used to
+    // produce a STRUCTURALLY MALFORMED tagged value whose field 4 is a double:
+    // every later reader (unpackInt64 -> getSubtypeFromHeader -> GEP) then built
+    // invalid IR and the module failed verification far from the cause. Coerce
+    // here — bit-identically, so the payload is unchanged — rather than trust
+    // every call site (packInt64 has several that pass a raw scalar).
+    if (data_i64 && data_i64->getType() != ctx_.int64Type()) {
+        llvm::Type* dt = data_i64->getType();
+        if (dt->isDoubleTy()) {
+            data_i64 = B.CreateBitCast(data_i64, ctx_.int64Type());
+        } else if (dt->isPointerTy()) {
+            data_i64 = B.CreatePtrToInt(data_i64, ctx_.int64Type());
+        } else if (dt->isIntegerTy()) {
+            data_i64 = B.CreateZExtOrTrunc(data_i64, ctx_.int64Type());
+        } else if (dt->isFloatingPointTy()) {
+            data_i64 = B.CreateBitCast(
+                B.CreateFPExt(data_i64, ctx_.doubleType()), ctx_.int64Type());
+        }
+    }
     llvm::Value* v = llvm::UndefValue::get(ctx_.taggedValueType());
     v = B.CreateInsertValue(v, llvm::ConstantInt::get(ctx_.int8Type(), type), {0});
     v = B.CreateInsertValue(v, llvm::ConstantInt::get(ctx_.int8Type(), flags), {1});
@@ -207,6 +227,115 @@ llvm::Value* TaggedValueCodegen::packCallable(llvm::Value* ptr_val, uint8_t flag
     return packPtr(ptr_val, ESHKOL_VALUE_CALLABLE, flags);
 }
 
+// === Cons slots ===
+// The contract is stated once, on the declarations in tagged_value_codegen.h.
+
+namespace {
+llvm::Value* consCellAsPointer(eshkol::CodegenContext& ctx, llvm::Value* cell) {
+    if (!cell) return nullptr;
+    if (cell->getType()->isPointerTy()) return cell;
+    if (cell->getType()->isIntegerTy(64)) {
+        return ctx.builder().CreateIntToPtr(cell, ctx.ptrType());
+    }
+    return nullptr;
+}
+
+llvm::StructType* consCellType(eshkol::CodegenContext& ctx) {
+    return llvm::StructType::get(ctx.context(),
+                                 {ctx.taggedValueType(), ctx.taggedValueType()});
+}
+} // namespace
+
+llvm::Value* TaggedValueCodegen::loadConsSlot(llvm::Value* cell, bool is_cdr) {
+    auto& b = ctx_.builder();
+    llvm::Value* cell_ptr = consCellAsPointer(ctx_, cell);
+    if (!cell_ptr) return nullptr;
+
+    // Packing emits instructions, so the null result is materialised in the
+    // block the null edge leaves from.
+    llvm::Value* empty_list = packNull();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* from_bb = b.GetInsertBlock();
+    llvm::BasicBlock* load_bb = llvm::BasicBlock::Create(ctx_.context(), "cons_slot_load", fn);
+    llvm::BasicBlock* join_bb = llvm::BasicBlock::Create(ctx_.context(), "cons_slot_join", fn);
+    llvm::Value* is_null = b.CreateICmpEQ(
+        b.CreatePtrToInt(cell_ptr, ctx_.int64Type()),
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    b.CreateCondBr(is_null, join_bb, load_bb);
+
+    b.SetInsertPoint(load_bb);
+    llvm::Value* slot_ptr = b.CreateStructGEP(consCellType(ctx_), cell_ptr, is_cdr ? 1 : 0,
+                                              is_cdr ? "cdr_slot_ptr" : "car_slot_ptr");
+    llvm::Value* loaded = b.CreateLoad(ctx_.taggedValueType(), slot_ptr,
+                                       is_cdr ? "cdr_slot" : "car_slot");
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(join_bb);
+    llvm::PHINode* slot = b.CreatePHI(ctx_.taggedValueType(), 2,
+                                      is_cdr ? "cdr_value" : "car_value");
+    slot->addIncoming(empty_list, from_bb);
+    slot->addIncoming(loaded, load_bb);
+    return slot;
+}
+
+llvm::Value* TaggedValueCodegen::resolveDenseTensorNode(llvm::Value* tagged) {
+    if (!tagged || tagged->getType() != ctx_.taggedValueType()) return tagged;
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    auto null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+
+    llvm::BasicBlock* from_bb = b.GetInsertBlock();
+    llvm::BasicBlock* header_bb = llvm::BasicBlock::Create(ctx_.context(), "dense_node_header", fn);
+    llvm::BasicBlock* field_bb = llvm::BasicBlock::Create(ctx_.context(), "dense_node_field", fn);
+    llvm::BasicBlock* project_bb = llvm::BasicBlock::Create(ctx_.context(), "dense_node_project", fn);
+    llvm::BasicBlock* join_bb = llvm::BasicBlock::Create(ctx_.context(), "dense_node_join", fn);
+
+    llvm::Value* is_callable = b.CreateICmpEQ(getBaseType(getType(tagged)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    b.CreateCondBr(is_callable, header_bb, join_bb);
+
+    // Only an AD node's fields may be read; the subtype comes through the one
+    // header accessor every subtype check in this component uses.
+    b.SetInsertPoint(header_bb);
+    llvm::Value* ptr = b.CreateIntToPtr(unpackInt64(tagged), ctx_.ptrType());
+    llvm::Value* is_ad_node = checkCallableSubtype(tagged, CALLABLE_SUBTYPE_AD_NODE);
+    b.CreateCondBr(is_ad_node, field_bb, join_bb);
+
+    b.SetInsertPoint(field_bb);
+    llvm::Value* tensor_value = b.CreateLoad(ctx_.ptrType(),
+        b.CreateStructGEP(ctx_.adNodeType(), ptr, 6));
+    b.CreateCondBr(b.CreateICmpNE(tensor_value, null_ptr), project_bb, join_bb);
+
+    b.SetInsertPoint(project_bb);
+    llvm::FunctionCallee project = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_dense_node_elements",
+        llvm::FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
+    llvm::Value* projected = b.CreateCall(project, {ptr}, "dense_node_elements");
+    llvm::Value* projected_tagged = packPtr(
+        b.CreatePtrToInt(projected, ctx_.int64Type()), ESHKOL_VALUE_HEAP_PTR);
+    llvm::BasicBlock* project_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(join_bb);
+    llvm::PHINode* out = b.CreatePHI(ctx_.taggedValueType(), 4, "dense_resolved");
+    out->addIncoming(tagged, from_bb);
+    out->addIncoming(tagged, header_bb);
+    out->addIncoming(tagged, field_bb);
+    out->addIncoming(projected_tagged, project_exit);
+    return out;
+}
+
+bool TaggedValueCodegen::storeConsSlot(llvm::Value* cell, bool is_cdr, llvm::Value* tagged) {
+    if (!tagged || tagged->getType() != ctx_.taggedValueType()) return false;
+    llvm::Value* cell_ptr = consCellAsPointer(ctx_, cell);
+    if (!cell_ptr) return false;
+    auto& b = ctx_.builder();
+    llvm::Value* slot_ptr = b.CreateStructGEP(consCellType(ctx_), cell_ptr, is_cdr ? 1 : 0,
+                                              is_cdr ? "cdr_slot_ptr" : "car_slot_ptr");
+    b.CreateStore(tagged, slot_ptr);
+    return true;
+}
+
 /** @brief Build the NULL tagged value (via an entry alloca + field stores, then a load). */
 llvm::Value* TaggedValueCodegen::packNull() {
     llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_null");
@@ -215,6 +344,32 @@ llvm::Value* TaggedValueCodegen::packNull() {
         ctx_.taggedValueType(), tagged_val_ptr, 0);
     ctx_.builder().CreateStore(
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL), type_ptr);
+
+    llvm::Value* flags_ptr = ctx_.builder().CreateStructGEP(
+        ctx_.taggedValueType(), tagged_val_ptr, 1);
+    ctx_.builder().CreateStore(
+        llvm::ConstantInt::get(ctx_.int8Type(), 0), flags_ptr);
+
+    llvm::Value* reserved_ptr = ctx_.builder().CreateStructGEP(
+        ctx_.taggedValueType(), tagged_val_ptr, 2);
+    ctx_.builder().CreateStore(
+        llvm::ConstantInt::get(ctx_.int16Type(), 0), reserved_ptr);
+
+    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
+        ctx_.taggedValueType(), tagged_val_ptr, 4);
+    ctx_.builder().CreateStore(
+        llvm::ConstantInt::get(ctx_.int64Type(), 0), data_ptr);
+
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), tagged_val_ptr);
+}
+
+llvm::Value* TaggedValueCodegen::packUnspecified() {
+    llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_unspecified");
+
+    llvm::Value* type_ptr = ctx_.builder().CreateStructGEP(
+        ctx_.taggedValueType(), tagged_val_ptr, 0);
+    ctx_.builder().CreateStore(
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_UNSPECIFIED), type_ptr);
 
     llvm::Value* flags_ptr = ctx_.builder().CreateStructGEP(
         ctx_.taggedValueType(), tagged_val_ptr, 1);
@@ -778,6 +933,27 @@ llvm::Value* TaggedValueCodegen::getSubtypeFromHeader(llvm::Value* ptr_val) {
 }
 
 /** @brief Unpack @p tagged_val's pointer and compare its object-header subtype byte against @p expected_subtype. */
+llvm::Value* TaggedValueCodegen::isTaggedSubtype(llvm::Value* value,
+                                                uint8_t base_type,
+                                                uint8_t subtype) {
+    auto& b = ctx_.builder();
+    llvm::Value* matches_type = b.CreateICmpEQ(getBaseType(getType(value)),
+        llvm::ConstantInt::get(ctx_.int8Type(), base_type));
+    llvm::BasicBlock* entry = b.GetInsertBlock();
+    llvm::Function* fn = entry->getParent();
+    llvm::BasicBlock* check = llvm::BasicBlock::Create(ctx_.context(), "subtype_check", fn);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "subtype_done", fn);
+    b.CreateCondBr(matches_type, check, done);
+    b.SetInsertPoint(check);
+    llvm::Value* matches = checkHeapSubtype(value, subtype);
+    b.CreateBr(done);
+    b.SetInsertPoint(done);
+    llvm::PHINode* result = b.CreatePHI(ctx_.int1Type(), 2);
+    result->addIncoming(llvm::ConstantInt::getFalse(ctx_.context()), entry);
+    result->addIncoming(matches, check);
+    return result;
+}
+
 llvm::Value* TaggedValueCodegen::checkHeapSubtype(llvm::Value* tagged_val, uint8_t expected_subtype) {
     // Extract pointer from tagged value and check subtype in header
     llvm::Value* ptr_val = unpackInt64(tagged_val);

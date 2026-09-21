@@ -1,3 +1,19 @@
+---
+kind: reference
+status: current
+owner-area: web
+since: v1.1.13-accelerate
+sources:
+  - lib/web/web.esk
+  - web/eshkol-repl.js
+  - site/static/eshkol-runtime.js
+  - scripts/wasm_flat_ad_imports.fragment.js
+  - scripts/wasm_core_import_keys.json
+  - scripts/generate_wasm_import_glue.py
+  - scripts/check_wasm_imports.py
+  - tests/toolchain/wasm_flat_ad_import_test.py
+  - tests/toolchain/wasm_flat_ad_import_test.js
+---
 # Eshkol Web Platform
 
 **Status**: Stable — v1.2.1-scale
@@ -1088,6 +1104,75 @@ Strings passed as `ptr` arguments are null-terminated UTF-8 in WASM linear
 memory. The host must read them with `TextDecoder` or equivalent. Strings
 returned from the browser (e.g., `web-get-attribute`, `web-storage-get`) are
 written back into caller-provided WASM linear memory buffers by the host.
+
+
+### 10.1 Import glue is generated
+
+Two JavaScript bundles host Eshkol WebAssembly modules in a browser:
+`web/eshkol-repl.js` (the REPL) and `site/static/eshkol-runtime.js` (the
+website runtime). Each is a self-contained classic script whose `env` object
+supplies every runtime function a module imports. Beyond the `web_*` DOM
+imports above, a module imports the runtime helpers it calls, as `env.eshkol_*`
+and `env.region_*`. Both bundles must provide the same core set.
+
+One part of that surface is generated, and the rest is checked against one
+manifest (ADR-0014):
+
+| File | Role |
+|------|------|
+| `scripts/wasm_flat_ad_imports.fragment.js` | **Source.** The browser's flat automatic-differentiation imports: the Taylor-tower entry points that decline the tower, and `eshkol_ad_nested_capture_unsupported`, which throws so nested differentiation through captured values cannot look valid. |
+| `scripts/wasm_core_import_keys.json` | **Source.** The single core-key manifest: a sorted JSON array of every `eshkol_*` and `region_*` key the glue provides. DOM adapter keys are not listed. |
+| `web/eshkol-repl.js`, `site/static/eshkol-runtime.js` | **Generated in part.** Each carries exactly one block between `// BEGIN GENERATED FLAT-AD IMPORTS` and `// END GENERATED FLAT-AD IMPORTS`, which is the fragment, indented. Everything outside the block is hand-written. |
+
+Commands, from the repository root:
+
+| Command | Effect |
+|---------|--------|
+| `python3 scripts/generate_wasm_import_glue.py --write` | Regenerate the marked block in both bundles from the fragment, then check. |
+| `python3 scripts/generate_wasm_import_glue.py --check` | Freshness gate: each bundle has exactly one generated block, it equals the fragment, and each bundle's core keys equal the manifest. Modifies nothing. |
+| `python3 scripts/generate_wasm_import_glue.py --selftest` | Negative controls: the checked-in glue passes, a deliberately stale block and a deliberately missing core key are both rejected. |
+| `python3 scripts/check_wasm_imports.py --build-dir build` | Compiles a set of smoke programs with `eshkol-run --wasm`, reads each module's import section, and fails when either bundle lacks an `env` import a module asks for. `--strict` also fails on stubs no module requests. `--prebuilt-wasm-dir DIR` checks existing `.wasm` files without compiling. |
+| `python3 scripts/check_wasm_imports.py --selftest` | The import scanner's own regression suite, the ABI-geometry check and the generated-glue self-test, with no build. |
+
+The import check runs its self-tests first, unconditionally, and refuses to
+report a verdict from a broken scanner (exit 2). It extracts the `env` keys by
+tokenizing the JavaScript, so comments, strings and nested object literals
+cannot add or hide a key.
+
+CTest registers `wasm_flat_ad_import_test` (labels `toolchain`, `wasm`,
+`imports`) when tests are built and a Python interpreter is found. It runs the
+generator self-test, then `tests/toolchain/wasm_flat_ad_import_test.js` under
+Node.js, which requires both bundles to embed the identical block, evaluates
+it, and instantiates a WebAssembly module, assembled by the test, that imports
+the five flat-AD entry points from `env`: the imports must link and be
+callable, and the unsupported path must throw through the module. The Release workflow runs
+`scripts/check_wasm_imports.py` on every lite package build.
+
+#### Adding a runtime function that a WebAssembly build imports
+
+1. Add the function to the runtime. When a WebAssembly build calls it, the
+   module imports it as `env.<name>`.
+2. If it belongs to the flat-AD surface, add its stub to
+   `scripts/wasm_flat_ad_imports.fragment.js` and run
+   `python3 scripts/generate_wasm_import_glue.py --write`. Otherwise add the
+   same stub by hand to the `env` object of **both** `web/eshkol-repl.js` and
+   `site/static/eshkol-runtime.js`, outside the generated block. Never edit
+   inside the block.
+3. If the name starts with `eshkol_` or `region_`, add it to
+   `scripts/wasm_core_import_keys.json`, keeping the array sorted.
+4. A function the browser cannot support must throw with a message naming the
+   unsupported operation. It must not return a value that could be mistaken for
+   a result.
+5. Verify:
+
+   ```sh
+   python3 scripts/generate_wasm_import_glue.py --check
+   python3 scripts/check_wasm_imports.py --build-dir build
+   ctest --test-dir build -R wasm_flat_ad_import_test --output-on-failure
+   ```
+
+A missing stub otherwise surfaces only at page load, as
+`function import requires a callable` during instantiation.
 
 ---
 

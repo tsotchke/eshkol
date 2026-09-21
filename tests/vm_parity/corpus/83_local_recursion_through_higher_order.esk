@@ -1,0 +1,127 @@
+; LE-23: cross-engine parity for a LOCAL recursive binding -- a named let
+; inside a procedure -- re-entered from a lambda created in that binding's
+; body, the shape a depth-first walk takes when it iterates with for-each or
+; map.
+;
+; Native codegen resolved a call to the recursive name by calling "the LLVM
+; function currently being emitted". Inside a nested lambda that is the LAMBDA,
+; not the loop, so `(dfs ...)` compiled into a call to the for-each callback
+; itself: the loop body never ran again, the loop variable never advanced, and
+; both native lanes died with "Stack overflow (recursion too deep)". The
+; bytecode VM resolves the name through its own environment and always answered
+; correctly, which is what made it the reference for the fix. This program puts
+; both engines on the differential gate for that shape.
+;
+; The letrec/letrec* spellings of the same recursion are deliberately NOT here:
+; the native lanes answer them correctly after the fix, but the VM computes 1
+; instead of 16 for a letrec lambda that closes over an enclosing binding --
+; a separate, pre-existing VM defect that is not what this entry gates.
+
+(define (sum-list xs)
+  (if (null? xs) 0 (+ (car xs) (sum-list (cdr xs)))))
+
+; the ledger repro: a named let re-entered from a for-each lambda
+(define (count-foreach n)
+  (let ((total (vector 0)))
+    (let dfs ((c 0))
+      (if (= c n)
+          (vector-set! total 0 (+ 1 (vector-ref total 0)))
+          (for-each (lambda (f) (dfs (+ c 1))) (list 0 1))))
+    (vector-ref total 0)))
+
+; through map, using the returned list so a stale loop variable shows up as a
+; wrong sum and not only as a hang
+(define (count-map n)
+  (let dfs ((c 0))
+    (if (= c n)
+        1
+        (sum-list (map (lambda (f) (dfs (+ c 1))) (list 0 1))))))
+
+; no higher-order call at all: the same lambda applied directly
+(define (count-direct n)
+  (let ((total (vector 0)))
+    (let dfs ((c 0))
+      (if (= c n)
+          (vector-set! total 0 (+ 1 (vector-ref total 0)))
+          (begin ((lambda (f) (dfs (+ c 1))) 0)
+                 ((lambda (f) (dfs (+ c 1))) 1))))
+    (vector-ref total 0)))
+
+; the lambda passes a constant, so no captured loop variable is on the
+; recursive edge
+(define (visit-constant n)
+  (let ((hits (vector 0)))
+    (let dfs ((c 0))
+      (if (>= c n)
+          (vector-set! hits 0 (+ 1 (vector-ref hits 0)))
+          (for-each (lambda (f) (dfs n)) (list 0))))
+    (vector-ref hits 0)))
+
+; a multi-parameter named let carrying a value through the recursion
+(define (weighted-foreach n)
+  (let ((total (vector 0)))
+    (let dfs ((c 0) (w 1))
+      (if (= c n)
+          (vector-set! total 0 (+ (vector-ref total 0) w))
+          (for-each (lambda (f) (dfs (+ c 1) (* w 2))) (list 0 1))))
+    (vector-ref total 0)))
+
+; both the lambda's own parameter and the loop variable read on one edge:
+; 2^n - 1 internal nodes contributing 0+1 each, plus 2^n leaves contributing 1
+(define (mixed-accumulate n)
+  (let ((acc (vector 0)))
+    (let dfs ((c 0))
+      (if (= c n)
+          (vector-set! acc 0 (+ (vector-ref acc 0) 1))
+          (for-each (lambda (f)
+                      (vector-set! acc 0 (+ (vector-ref acc 0) f))
+                      (dfs (+ c 1)))
+                    (list 0 1))))
+    (vector-ref acc 0)))
+
+; control: the same recursion as a top-level define -- always worked
+(define ctl-total (vector 0))
+
+(define (ctl-dfs c n)
+  (if (= c n)
+      (vector-set! ctl-total 0 (+ 1 (vector-ref ctl-total 0)))
+      (for-each (lambda (f) (ctl-dfs (+ c 1) n)) (list 0 1))))
+
+(define (count-toplevel n)
+  (vector-set! ctl-total 0 0)
+  (ctl-dfs 0 n)
+  (vector-ref ctl-total 0))
+
+; control: the inner iteration as an explicit named-let loop, no lambda
+(define (count-explicit-loop n)
+  (let ((total (vector 0)))
+    (let dfs ((c 0))
+      (if (= c n)
+          (vector-set! total 0 (+ 1 (vector-ref total 0)))
+          (let try ((fs (list 0 1)))
+            (if (not (null? fs))
+                (begin (dfs (+ c 1)) (try (cdr fs)))))))
+    (vector-ref total 0)))
+
+(display (count-foreach 4)) (newline)
+(display (count-map 4)) (newline)
+(display (count-direct 4)) (newline)
+(display (visit-constant 4)) (newline)
+(display (weighted-foreach 4)) (newline)
+(display (mixed-accumulate 4)) (newline)
+(display (count-toplevel 4)) (newline)
+(display (count-explicit-loop 4)) (newline)
+(display (count-foreach 6)) (newline)
+
+(if (and (= (count-foreach 4) 16)
+         (= (count-map 4) 16)
+         (= (count-direct 4) 16)
+         (= (visit-constant 4) 1)
+         (= (weighted-foreach 4) 256)
+         (= (mixed-accumulate 4) 31)
+         (= (count-toplevel 4) 16)
+         (= (count-explicit-loop 4) 16)
+         (= (count-foreach 6) 64))
+    (begin (display "PASS: local recursion through higher order") (newline))
+    (begin (display "FAIL: local recursion through higher order") (newline)
+           (exit 1)))

@@ -1,0 +1,20 @@
+;; A call is tail-position inside the generated handler closure but must not
+;; retire the guard's enclosing activation unless the guard itself is tail.
+(define (check label actual expected)
+  (if (equal? actual expected)
+      (begin (display "PASS: ") (display label) (newline))
+      (error label actual expected)))
+
+(check "top-level handler builtin returns to its argument context"
+       (list (guard (e (#t (error-object? e))) (error "caught")) 77)
+       (list #t 77))
+
+(define (nested-argument)
+  (+ 2 (guard (e (#t (e 20))) (raise (lambda (x) (* x 2))))))
+(check "raised closure returns to enclosing arithmetic" (nested-argument) 42)
+
+(define (handler-tail n)
+  (guard (e (#t (handler-tail (- e 1))))
+    (if (= n 0) 'finished (raise n))))
+(check "genuine handler tail calls remain constant-stack" (handler-tail 10000) 'finished)
+(display "PASS: guard non-tail handler return") (newline)

@@ -36,6 +36,19 @@
 #   gate: a criterion that silently stops being covered because its tests were
 #   renamed or configured out is exactly the hole this script closes.
 #
+#   A group may also declare a MEMBER FLOOR — the third column, or `-` for
+#   none. "Matched at least one" is the right rule for a pillar whose test set
+#   is configuration-dependent (the fixed-point engine's shared-ABI test only
+#   exists when the shared library is built), but it is the WRONG rule for a
+#   pillar whose whole claim is that several suites hold TOGETHER. The
+#   exact-coefficient Taylor tier (P6) and the reverse-over-Taylor seed tangent
+#   (P5) rewrote the SAME tower-extraction point from two directions, so
+#   "68/68 and 18/18 in one run" is the acceptance; with no floor, deleting the
+#   reverse-over-Taylor registration would leave the group matching, green, and
+#   no longer making that claim. The floor is a MINIMUM, not an equality, so
+#   adding tests to a pillar never fails the gate — a shrink-only ratchet, the
+#   same shape as the P8 baselines.
+#
 # USAGE
 #   scripts/run_ctest_gate.sh [--build-dir DIR] [-- <extra ctest args>]
 #   BUILD_DIR=build-quantum scripts/run_ctest_gate.sh
@@ -50,6 +63,8 @@ export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/harness_outcome.sh"
+# shellcheck source=lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/ctest_gate.jsonl"
 mkdir -p "$TRACE_DIR"
@@ -85,11 +100,13 @@ fi
 # Each line becomes one roll-up event of kind "ctest", consumed by one
 # criterion under `eshkol-compiler-readiness`.
 CTEST_GATE_GROUPS=$(cat <<'GROUPS'
-fixed_point_exact_accumulation_gate	^fixedpoint_	Fixed-point / i128 exact-accumulation engine
-exact_input_ad_identity_gate	^(exact_point_ad|exact_taylor)_(runtime|aot)_smoke$	Exact-input AD identity tier
-runtime_closure_arity_spread_gate	^runtime_closure_arity_spread_	Runtime-closure gradient arity spread
-define_library_same_unit_gate	^define_library_same_unit_	R7RS same-unit define-library resolution
-module_load_path_engine_parity_gate	^load_path_engine_parity_test$	Relative (load …) resolves identically on every execution engine
+fixed_point_exact_accumulation_gate	^fixedpoint_	-	Fixed-point / i128 exact-accumulation engine
+exact_input_ad_identity_gate	^(exact_point_ad|exact_taylor|exactness_runtime_property)_(runtime|aot)_smoke$	-	Exact-input AD identity tier
+taylor_tower_exactness_gate	^(taylor_tower|taylor_tower_mono|exact_taylor|reverse_over_taylor|taylor_numerics|region_evac_taylor_exact)_(runtime|aot)_smoke$	12	Taylor-tower exactness stack (P1/P2/P5/P6/P11) in one run
+runtime_closure_arity_spread_gate	^runtime_closure_arity_spread_	-	Runtime-closure gradient arity spread
+define_library_same_unit_gate	^define_library_same_unit_	-	R7RS same-unit define-library resolution
+module_load_path_engine_parity_gate	^load_path_engine_parity_test$	-	Relative (load …) resolves identically on every execution engine
+squared_distance_exact_gate	^squared_distance_gradcheck$	-	Squared geodesic distance is exact and differentiable THROUGH the diagonal
 GROUPS
 )
 
@@ -136,9 +153,10 @@ if ctest --test-dir "$BUILD_DIR" --output-junit "$JUNIT" -N >/dev/null 2>&1; the
     HAVE_JUNIT=1
 else
     HAVE_JUNIT=0
-    rm -f "$JUNIT"
+    eshkol_checked_rm "$JUNIT"
 fi
 
+eshkol_require_output_file_path "$RUN_LOG"
 if [ "$HAVE_JUNIT" -eq 1 ]; then
     ctest --test-dir "$BUILD_DIR" --output-on-failure --output-junit "$JUNIT" \
         ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} >"$RUN_LOG" 2>&1
@@ -155,6 +173,7 @@ echo
 # One "<name>\t<PASS|FAIL>\t<detail>" line per test on stdout.
 RESULTS="$RUN_DIR/ctest-results.tsv"
 if [ "$HAVE_JUNIT" -eq 1 ] && [ -s "$JUNIT" ]; then
+    eshkol_require_output_file_path "$RESULTS"
     python3 - "$JUNIT" > "$RESULTS" <<'PY'
 import re, sys, xml.etree.ElementTree as ET
 root = ET.parse(sys.argv[1]).getroot()
@@ -201,6 +220,7 @@ else
     # literally "Timeout" — recognize it explicitly rather than folding it
     # into the FAIL bucket with every other non-"Passed" word (see the
     # JUnit branch above for why: a timeout is INFRA, not a code verdict).
+    eshkol_require_output_file_path "$RESULTS"
     perl -ne '
         if (m{^\s*\d+/\d+\s+Test\s+#\d+:\s+(\S+)\s+\.+\s*(\**)\s*(\w[\w ]*?)\s+([\d.]+)\s+sec}) {
             my ($n, $verdict, $secs) = ($1, $3, $4);
@@ -246,7 +266,7 @@ if [ "$TOTAL" -eq 0 ]; then
     emit_event "ctest_suite_green" FAIL "ctest produced no parseable test verdicts"
     emit_test_result "ctest::suite" FAIL "no parseable test verdicts"
     echo "ctest gate: FAIL — no test verdicts parsed from the run" >&2
-    rm -f "$RESULTS"
+    eshkol_checked_rm "$RESULTS"
     exit 1
 fi
 
@@ -277,7 +297,7 @@ fi
 # ── group roll-ups ───────────────────────────────────────────────────────
 GROUP_FAILURES=0
 GROUP_INFRA=0
-while IFS="$(printf '\t')" read -r event regex label; do
+while IFS="$(printf '\t')" read -r event regex floor label; do
     [ -n "${event:-}" ] || continue
     matched=0; g_pass=0; g_fail=0; g_infra=0; first_fail=""
     while IFS="$(printf '\t')" read -r name verdict detail; do
@@ -299,6 +319,16 @@ while IFS="$(printf '\t')" read -r event regex label; do
         emit_event "$event" FAIL "ABSENT: no configured test matches /$regex/ — $label is not covered by this build"
         emit_test_result "ctest-group::$event" FAIL "no test matches /$regex/"
         echo "FAILED ctest-group::$event — ABSENT (no test matches /$regex/)"
+        continue
+    fi
+    # Member floor (see GROUPS above). A pillar that claims several suites hold
+    # TOGETHER stops making that claim the moment one of them is unregistered,
+    # and it does so while still matching, still green and still reported.
+    if [ "$floor" != "-" ] && [ "$matched" -lt "$floor" ]; then
+        GROUP_FAILURES=$((GROUP_FAILURES + 1))
+        emit_event "$event" FAIL "SHRUNK: $matched configured test(s) match /$regex/, floor is $floor — $label no longer covers what it asserts"
+        emit_test_result "ctest-group::$event" FAIL "$matched < floor $floor"
+        echo "FAILED ctest-group::$event — SHRUNK ($matched < floor $floor)"
         continue
     fi
     if [ "$g_fail" -gt 0 ]; then
@@ -350,7 +380,7 @@ if [ "$FAILED" -eq 0 ] && [ "$GROUP_FAILURES" -eq 0 ] && [ "$SELF_VERDICT_FAILUR
         echo
         echo "Trace written: $TRACE_FILE"
         echo "ctest gate: PASS ($SUMMARY)"
-        rm -f "$RESULTS"
+        eshkol_checked_rm "$RESULTS"
         exit 0
     elif [ "$INFRA" -gt 0 ]; then
         SUMMARY="$SUMMARY; $INFRA infra (no verdict, not counted as failure)"
@@ -360,7 +390,7 @@ if [ "$FAILED" -eq 0 ] && [ "$GROUP_FAILURES" -eq 0 ] && [ "$SELF_VERDICT_FAILUR
         echo "Trace written: $TRACE_FILE"
         echo "ctest gate: PASS ($SUMMARY)"
         echo "WARNING: $INFRA ctest test(s) could not obtain a verdict (per-test TIMEOUT) — re-run under less contention if this persists." >&2
-        rm -f "$RESULTS"
+        eshkol_checked_rm "$RESULTS"
         exit 0
     else
         DETAIL="$SUMMARY; every parsed testcase is PASS/INFRA but ctest itself exited $CTEST_RC with 0 INFRA to explain it — harness contradiction, not trusted"
@@ -369,7 +399,7 @@ if [ "$FAILED" -eq 0 ] && [ "$GROUP_FAILURES" -eq 0 ] && [ "$SELF_VERDICT_FAILUR
         echo
         echo "Trace written: $TRACE_FILE"
         echo "ctest gate: FAIL ($DETAIL)" >&2
-        rm -f "$RESULTS"
+        eshkol_checked_rm "$RESULTS"
         exit 1
     fi
 fi
@@ -380,5 +410,5 @@ emit_test_result "ctest::suite" FAIL "$DETAIL"
 echo
 echo "Trace written: $TRACE_FILE"
 echo "ctest gate: FAIL ($DETAIL)" >&2
-rm -f "$RESULTS"
+eshkol_checked_rm "$RESULTS"
 exit 1

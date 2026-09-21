@@ -162,13 +162,13 @@ Eshkol uses **S-expression syntax** familiar to Lisp/Scheme programmers:
 | Factor Graph | `(make-factor-graph n)` | Probabilistic graphical model |
 | Workspace | `(make-workspace dim max-modules)` | Global workspace (consciousness) |
 
-### 555+ Built-in Functions
+### 1,053 Built-in Functions
 
-Eshkol v1.1 ships with over 555 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
+Eshkol v1.3.5-evolve ships 1,053 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
 
 **Arithmetic:** `+`, `-`, `*`, `/`, `abs`, `floor`, `ceiling`, `round`, `truncate`, `modulo`, `remainder`, `quotient`, `gcd`, `lcm`, `min`, `max`, `expt`, `exact->inexact`, `inexact->exact`
 
-**Math:** `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `exp`, `log`, `log10`, `sqrt`, `pow`
+**Math:** `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `exp`, `log`, `log10`, `sqrt`, `pow`, `fl-next-up`, `fl-next-down` (directed rounding — the next representable double above / below its argument; the primitive beneath certified enclosures)
 
 **Comparison:** `<`, `>`, `=`, `<=`, `>=`, `eq?`, `eqv?`, `equal?`
 
@@ -180,7 +180,7 @@ Eshkol v1.1 ships with over 555 built-in functions. They span arithmetic, math, 
 
 **I/O:** `display`, `newline`, `printf`, `open-input-file`, `open-output-file`, `read-line`, `write-string`, `read-char`, `peek-char`, `close-port`
 
-**Exact Arithmetic:** `exact?`, `inexact?`, `exact->inexact`, `inexact->exact`, `numerator`, `denominator`, `rationalize`
+**Exact Arithmetic:** `exact?`, `inexact?`, `exact->inexact`, `inexact->exact`, `numerator`, `denominator`, `rationalize`, and exact `sqrt`/`expt` wherever an exact result exists
 
 **Complex:** `make-rectangular`, `make-polar`, `real-part`, `imag-part`, `magnitude`, `angle`
 
@@ -280,7 +280,7 @@ Built-in operators for physics and engineering:
 (directional-derivative f (vector 3.0 4.0) (vector 1.0 0.0))  ;; -> 6
 ```
 
-### Arbitrary-Order AD: Taylor Towers (v1.3.0-evolve)
+### Arbitrary-Order AD: Taylor Towers
 
 Everything above differentiates once (or, with nesting, a small fixed number
 of times). The Taylor-tower engine computes **every** derivative up to an
@@ -321,15 +321,25 @@ partial derivatives of a multivariate function:
 ```
 
 And `core.ad.taylor_models` gives **validated** AD -- a Taylor polynomial
-paired with a rigorous interval-remainder bound, so `tm-range`/`tm-eval`
-return a provable enclosure rather than a point estimate:
+paired with an interval remainder, so `tm-range`/`tm-eval` return an enclosure
+rather than a point estimate:
 
 ```scheme
 (require core.ad.taylor_models)
 (define tm (taylor-model (lambda (x) (sin x)) 0.0 0.1 4))
-(tm-range tm)      ;; -> a (lo . hi) pair guaranteed to contain sin over [-0.1, 0.1]
-(tm-eval tm 0.05)  ;; -> a (lo . hi) pair guaranteed to contain sin(0.05)
+(tm-range tm)      ;; -> (-0.10016700000000073 . 0.10016700000000073)
+(tm-eval tm 0.05)  ;; -> (0.04997883333333298 . 0.049979500000000364)
 ```
+
+That family's remainder is **sampled**, so its enclosure is validated rather
+than proved. Beneath it sits a proof-backed layer reached from the same
+require -- `core.ad.rigorous_interval` and `core.ad.rigorous_taylor_models`,
+built on the directed-rounding builtins `fl-next-up` / `fl-next-down`, where
+every remainder is derived with an a-priori bound at each step and
+`tm-prove-bound` / `tm-prove-nonzero` answer `#t` only when the enclosure
+proves the claim. Use `tm-rigorous?` to tell which kind of model you are
+holding. See
+[reference/stdlib/certified-enclosures.md](reference/stdlib/certified-enclosures.md).
 
 ---
 
@@ -395,7 +405,7 @@ return a provable enclosure rather than a point estimate:
 
 ## Exact Arithmetic
 
-Eshkol v1.1 implements the full R7RS numeric tower with arbitrary precision integers (bignums) and exact rational numbers. Exact arithmetic preserves precision through all operations -- no floating-point rounding errors.
+Eshkol implements the full R7RS numeric tower with arbitrary-precision integers (bignums) and exact rational numbers. Exact arithmetic preserves precision through all operations -- no floating-point rounding errors -- and the native engine and the bytecode VM answer identically across the whole tower, bignum-backed rationals included.
 
 ### Bignums (Arbitrary Precision Integers)
 
@@ -458,6 +468,51 @@ Eshkol v1.1 implements the full R7RS numeric tower with arbitrary precision inte
 (string->number "99999999999999999999999")  ;; -> bignum
 ```
 
+### Exact Roots and Exact `expt`
+
+Exactness is decided by the **value**, not by which operator was called: when
+an exact result exists over the rationals it is the answer, and the inexact
+path is used only when it does not.
+
+```scheme
+(sqrt 4/9)             ;; -> 2/3   exact
+(sqrt 16)              ;; -> 4     exact
+(expt 8 1/3)           ;; -> 2     exact rational exponent with an exact root
+(expt 2/3 -3)          ;; -> 27/8  rational base, negative exponent
+(expt 1/3 50)          ;; -> 1/717897987691852588770249
+(sqrt 2)               ;; -> 1.4142135623730951   (no exact root)
+```
+
+### Exactness Survives Literals, Quotes and Vectors
+
+```scheme
+#(1/2 3 1.5 123456789012345678901234567890)   ;; every element keeps its kind
+'123456789012345678901234567890               ;; exact, quoted or evaluated
+`(x ,(/ 1 3))                                 ;; -> (x 1/3)
+(tensor 1/2 2/3)                              ;; -> #(0.5 0.6666666666666666)
+```
+
+A **tensor** is a dense `f64` carrier by construction, so an exact element is
+converted once, explicitly, at construction. A Scheme `#(...)` vector keeps it
+exact.
+
+### Exactness Under Differentiation
+
+The AD exactness tier reads the **runtime** value the carrier holds, not the
+shape of the source, so the same arithmetic stays exact whether the constant is
+an inline literal, a top-level `define`, or the value of an expression:
+
+```scheme
+(define c 1/5)
+(derivative (lambda (x) (* x x)) 1/3)       ;; -> 2/3   exact
+(derivative (lambda (x) (* c x x)) 1/3)     ;; -> 2/15  exact
+```
+
+See [reference/language/numeric-tower.md](reference/language/numeric-tower.md)
+for the whole tower and [reference/ad/INDEX.md](reference/ad/INDEX.md) for the
+exactness tier, including the one nesting shape that is not supported in
+v1.3.5.
+
 ---
 
 ## Complex Numbers
@@ -505,15 +560,15 @@ doubles 3.0 and 4.0.
    (make-rectangular 0.0 1.0))     ;; -> -i  (zero real part is elided)
 
 ;; Math functions extend to complex domain
-(sqrt (make-rectangular -1.0 0.0)) ;; -> 0.0+1.0i
-(exp (make-rectangular 0.0 3.14159)) ;; -> -1.0+0.0i (approximately)
+(sqrt (make-rectangular -1.0 0.0)) ;; -> +i   (zero real part elided; +/-1 imaginary prints as +i/-i)
+(exp (make-rectangular 0.0 3.14159)) ;; -> -0.9999999999964793+2.65358979335273e-06i
 ```
 
 ---
 
 ## Continuations & Exception Handling
 
-Eshkol implements first-class continuations (`call/cc`), dynamic wind guards, and structured exception handling following R7RS semantics.
+Eshkol implements first-class continuations (`call/cc`), dynamic wind guards, and structured exception handling following R7RS semantics. Continuations are multi-shot and re-entrant on every engine (native JIT, native AOT, bytecode VM): a captured continuation may be invoked any number of times, including after the capturing procedure has returned, which is what generators, coroutines and `amb`-style backtracking need. Escape-only captures keep the zero-overhead `setjmp`/`longjmp` path.
 
 ### First-Class Continuations
 
@@ -531,6 +586,14 @@ Eshkol implements first-class continuations (`call/cc`), dynamic wind guards, an
     #f)))
 
 (find-first even? (list 1 3 5 4 7))  ;; -> 4
+```
+
+```scheme
+;; Re-entrant: the continuation outlives the frame that captured it
+(define k #f)
+(define (f) (+ 1 (call/cc (lambda (c) (set! k c) 1))))
+(f)        ;; -> 2
+(k 10)     ;; -> 11, re-entering f after it returned
 ```
 
 ### Dynamic Wind
@@ -936,7 +999,14 @@ eshkol-run program.esk --wasm -o program.wasm
 
 ;; Apply: call a function on an argument list, with optional leading args
 (apply + '(1 2 3))             ;; -> 6
-(apply + 1 2 '(3 4 5))         ;; -> 15 (leading args are consed onto the list)
+(apply + 1 2 '(3 4 5))         ;; -> 15 (leading args are consed onto the list;
+                               ;;    NATIVE ONLY — the bytecode VM rejects the
+                               ;;    leading-args form for any operator)
+
+;; Builtins are first-class values, in apply as everywhere else
+(apply vector-copy (list (vector 7 8 9)))   ;; -> #(7 8 9)
+(map list '(1 2 3))                          ;; -> ((1) (2) (3))
+(define f string-append) (f "a" "b" "c")     ;; -> "abc"
 ```
 
 ### Closures
@@ -1131,7 +1201,7 @@ Map Eshkol names to C names:
 
 ### Features
 
-- **Tab completion** for all 555+ builtins
+- **Tab completion** for all 1,053 builtins
 - **Syntax highlighting** with ANSI colors
 - **Command history** (persistent across sessions)
 - **Multi-line input** with balanced parenthesis detection
@@ -1156,7 +1226,7 @@ Map Eshkol names to C names:
 
 ```
 $ ./eshkol-repl
-Eshkol REPL v1.3.4
+Eshkol REPL v1.3.5
 Type :help for assistance, :quit to exit
 
 eshkol> (define (square x) (* x x))
@@ -1408,7 +1478,9 @@ Eshkol uses a **polymorphic tagged value system** at runtime:
 
 On top of the runtime tagged-value system, Eshkol has an optional static type
 checker (gradual typing: warnings, not errors — programs run regardless). Strict
-mode accepts idiomatic dynamic-but-validated code without escape hatches:
+mode accepts idiomatic dynamic-but-validated code without escape hatches. The
+full account, with runnable examples and a guide to reading a diagnostic, is
+[the gradual typing guide](guide/GRADUAL_TYPING.md):
 
 - **Checked ascription `(the <type> expr)`.** Asserts that `expr` has type
   `<type>` as a **trusted assertion to the checker** — it narrows the checker's
@@ -1440,12 +1512,44 @@ mode accepts idiomatic dynamic-but-validated code without escape hatches:
   (and (pair? p) (car p))         ; p is a pair for (car p)
   ```
 
+- **Checking reaches every control form.** A call is checked against its
+  callee's annotations wherever it is written: in a `cond` or `case` clause, a
+  `match` body, a `when` or `unless`, every part of a `do`, a `guard` body or
+  handler, an `and`/`or` operand, a `set!` value, a quasiquote escape, the
+  thunks of `dynamic-wind`, the producer and consumer of `call-with-values`, a
+  `with-region` body, a computed callee, and every non-final expression of a
+  body. The diagnostic is the one the same call gets at top level.
+
+  ```scheme
+  (define (area (w : number) (h : number)) (* w h))
+  (define (describe flag)
+    (cond (flag (area "wide" 3))   ; reported: expected Number, got String
+          (else 0)))
+  ```
+
+- **One rule for fitting types.** Arguments, return annotations and annotated
+  bindings accept a *consistent subtype*: a static subtype in which anything
+  the checker does not know is acceptable. A body the checker types as `Value`
+  satisfies any return annotation; `String` where `Number` is expected is
+  reported.
+- **Function types.** `(-> number number)` is a type. Function types are
+  contravariant in their parameters and covariant in their result, and they
+  print as arrows in diagnostics: `expected (-> Number Number), got (-> Int64
+  Number)`.
+- **Branches join.** The type of an `if`, `cond`, `case`, `match`, `when`,
+  `unless`, `and` or `or` is the join of its branches, so an `if` and the
+  equivalent `cond` have the same type.
 - **Sum-type annotations on named-let parameters** are honored, so a `named-let`
   accumulator declared as a sum type keeps that type across iterations.
-- **Numeric-tower join for recursive accumulators.** A recursive accumulator is
-  given the least-upper-bound (join) of the numeric types that flow into it,
-  rather than being rejected when it widens (e.g. integer accumulator that later
-  takes a rational or real value).
+- **Loops are typed by what they carry.** An unannotated named-`let` parameter
+  has the join of its seed and of every argument the loop passes back to it, so
+  an accumulator seeded with `(cons 0.0 0)` and fed the result of arithmetic is
+  accepted, as is an integer accumulator that later takes a rational or a real.
+  A join that would reach `Value` is refused and the argument is reported:
+  `(loop "three")` for a parameter seeded with `0` warns. A `#f` seed means
+  "nothing yet" and widens. A recursive procedure's result type is inferred the
+  same way, from its base cases.
+
 - **Linear `Qubit` type.** A first-class linear type whose values must be used
   exactly once. `define`/`lambda` parameters and `let` bindings may declare a
   linear type, and double-use (a clone) and drop are both **compile-time type
@@ -1575,5 +1679,5 @@ MIT License - Copyright (C) tsotchke
 ---
 
 <p align="center">
-<strong>Eshkol v1.3.4</strong>: Where functional programming meets scientific computing, GPU acceleration, and machine consciousness.
+<strong>Eshkol v1.3.5</strong>: Where functional programming meets scientific computing, GPU acceleration, and machine consciousness.
 </p>

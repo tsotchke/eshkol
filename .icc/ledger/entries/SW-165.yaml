@@ -1,0 +1,74 @@
+id: SW-165
+bucket: SILENT-WRONG
+status: closed
+closed_at: "fix/bignum-rational-memory-reclamation"
+title: "The heap ceiling announced its own breach for the rest of the run and then exited 0, and a malformed ESHKOL_MAX_HEAP fell back to the default in silence"
+repro: >-
+  Any workload that allocates past the ceiling; committed as
+  `tests/memory/heap_limit_fail_closed_test.esk`, driven by
+  `tests/memory/heap_limit_fail_closed_test.sh`. Run it with no
+  `ESHKOL_MAX_HEAP` set, with `ESHKOL_MAX_HEAP=512`, and with
+  `ESHKOL_MAX_HEAP=512MBB`.
+observed: >-
+  With no ceiling requested, a run that crossed the DEFAULT heap limit printed
+  "Heap limit exceeded" once per arena block for as long as it kept running —
+  and then completed with exit status 0. With `ESHKOL_MAX_HEAP=512` the same
+  line reported the ceiling as "0MB > 0MB" and the run again continued to a zero
+  exit. A malformed value such as `ESHKOL_MAX_HEAP=512MBB` was silently
+  discarded and the process ran with the default ceiling, so an operator who set
+  a bound believed one was in force when it was not.
+
+  Three causes. `eshkol_track_allocation()`
+  (`lib/core/resource_limits.cpp:390`) is heap ACCOUNTING, called for every
+  arena block, and it did the diagnosing itself — so the message repeated
+  indefinitely, and it fired on the default ceiling that no user had asked for.
+  The interrupt it requested named `ESHKOL_SHUTDOWN_MEMORY`, but the only reader
+  of that flag, `eshkol_limit_poll_interrupt()`, acts on
+  `ESHKOL_SHUTDOWN_TIMEOUT` and returns for every other reason, so nothing ever
+  acted on it. The one site that CAN fail closed,
+  `create_arena_block()` -> `eshkol_limit_enforce()`
+  (`lib/core/runtime_arena_core.cpp:55-63`), is gated on the heap limit being
+  ACTIVE and so never ran for the default. And `parse_size_or_default()` returned
+  the caller's fallback for any unparseable value without saying so.
+
+  A ceiling that is loud but does not bind is worse than either a silent one or
+  an enforced one: it teaches a reader to ignore it.
+correct: >-
+  The unit contract documented in `docs/reference/runtime/environment-variables.md`
+  — a byte count with an optional K/M/G (or KiB/MiB/GiB) suffix — is what the
+  parser implements, and the ceiling is fail-closed. With no ceiling requested
+  the default is an accounting reference only: nothing is printed and no run is
+  stopped. With a ceiling requested, crossing it is reported ONCE, at the site
+  that acts on it, in the unit it was given, and the process exits nonzero
+  without completing. A malformed value is reported — naming the variable, the
+  value and the accepted grammar — before falling back to the default, so an
+  operator learns the bound they set is not in force.
+fixed_by: >-
+  `eshkol_track_allocation()` now only accounts: it records
+  `ESHKOL_LIMIT_HEAP_HARD` and returns false, and neither prints nor requests an
+  interrupt. Enforcement is left to the single site that can carry it out —
+  `create_arena_block()`, the one place the arena asks the OS for memory —
+  which reports once through `eshkol_limit_enforce()` and exits with a nonzero
+  status. The one-shot soft-limit warning is gated on
+  `ESHKOL_LIMIT_ACTIVE_HEAP`, so it too speaks only for a ceiling that was
+  asked for. Every heap diagnostic reports bytes instead of integer megabytes,
+  which is what rendered a sub-megabyte ceiling as "0MB". A new
+  `parse_size_or_report()` makes a malformed `ESHKOL_MAX_HEAP`,
+  `ESHKOL_MAX_STACK`, `ESHKOL_MAX_TENSOR_ELEMS` or `ESHKOL_MAX_STRING_LEN` say
+  so before falling back, instead of falling back in silence. Reporting rather
+  than refusing is deliberate: it is what `ESHKOL_STACK_SIZE` already did, and
+  the three non-size variables in this family fall back on a bad value too, so
+  refusing for four of the seven would leave the family answering one mistake
+  three different ways. The operator's actual need — knowing the bound they set
+  is not in force — is met by the diagnostic.
+evidence: >-
+  `tests/memory/heap_limit_fail_closed_test.sh` pins the contract in both
+  directions: no ceiling asked for completes with a silent stderr; a binding
+  ceiling produces exactly one fatal line, a nonzero exit, no completion marker,
+  and no "0MB"; a ceiling with ample room completes silently; a malformed value
+  is reported, names the accepted grammar, and falls back; and 1K / 1KiB / 1KB
+  all parse and all bind, which is the documented suffix grammar. The ample-room and no-ceiling cases are the
+  negative controls — without them, a runtime that failed EVERY run would pass
+  the fail-closed case.
+caught_by: [task-assigned-repro]
+missed_by: [resource-limit-tests, prior-production-audit]

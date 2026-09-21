@@ -28,12 +28,15 @@
 ;;       the amplitude is amplified while the radial wavelength is long, and
 ;;       viscous damping takes over once the shear has shortened it.
 ;;
-;; DEFECT NOTE.  `derivative` returns 0 whenever a non-integer exact rational
-;; reaches the differentiand, even at a double seed, so nothing differentiated
-;; below may carry one.  The pulse amplitudes are kept exact for the covariance
-;; algebra and converted once, through `fam-*`, for the field evaluations; the
-;; exact-arithmetic derivative check uses `derivative-n`, which is correct.
-;; Minimal repro: (derivative (lambda (s) (* 1/2 s s)) 0.4) returns 0.
+;; AD surface note.  Every derivative below is taken by calling the operator
+;; directly -- `derivative` at an exact rational seed, with exact rationals
+;; inside the differentiand, and nested where the assembly needs it.  Three
+;; defects that once made that impossible (an exact operand stealing the
+;; scalar dispatch from a live jet, a vanishing tangent returning an INEXACT
+;; zero, and a captured outer variable lost by an inner pass) were repaired
+;; together and are pinned by tests/ad/exact_rational_derivative_test.esk and
+;; tests/ad/nested_operator_matrix_test.esk; they are ledger entries SW-148,
+;; SW-149 and SW-150.
 
 (define pass-count 0)
 (define fail-count 0)
@@ -63,7 +66,7 @@
 (define family-2 (list 1 1/5 1 5 3))
 
 ;; The exact amplitudes drive the covariance algebra; `fam-*` hands the field
-;; evaluations their inexact images (see the defect note above).
+;; evaluations their inexact images, since the phases below are transcendental.
 (define (fam-ar-exact f) (list-ref f 0))
 (define (fam-at-exact f) (list-ref f 1))
 (define (fam-az-exact f) (list-ref f 2))
@@ -273,9 +276,9 @@
 
 (check "the closed-form wavevector satisfies k' = -S^T k exactly"
        (let* ((t 3/7)
-              (dk (vector (derivative-n (lambda (s) (k-comp 0 s)) t 1)
-                          (derivative-n (lambda (s) (k-comp 1 s)) t 1)
-                          (derivative-n (lambda (s) (k-comp 2 s)) t 1)))
+              (dk (vector (derivative (lambda (s) (k-comp 0 s)) t)
+                          (derivative (lambda (s) (k-comp 1 s)) t)
+                          (derivative (lambda (s) (k-comp 2 s)) t)))
               (rhs (St-apply (k-of t))))
          (and (= (vector-ref dk 0) (- (vector-ref rhs 0)))
               (= (vector-ref dk 1) (- (vector-ref rhs 1)))

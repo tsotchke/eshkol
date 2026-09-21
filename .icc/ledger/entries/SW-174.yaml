@@ -1,0 +1,79 @@
+id: SW-174
+bucket: SILENT-WRONG
+subtag: parameterised-lowering
+family: codegen/tensor-activations
+status: fixed
+closed_at: "7c75e2b0"
+title: "leaky-relu ignored the alpha argument it accepted: every alpha answered the 0.01 default, forward and through the AD tape"
+repro: >-
+  Native JIT and AOT, no module required:
+  (define x (tensor (list -2.0 -1.0 0.5 3.0)))
+  (display (tensor-ref (leaky-relu x 0.1) 0))
+  (display (tensor-ref (leaky-relu x 0.5) 0))
+  (display (tensor-ref (leaky-relu x) 0))
+  and, for the derivative,
+  (define (g x) (tensor-sum (leaky-relu x 0.5)))
+  (display (gradient g (tensor (list -2.0 3.0)))).
+  Each compiles and exits 0 with no diagnostic.
+observed_before: >-
+  All three forward calls answered the SAME tensor,
+  (-0.02 -0.01 0.5 3) -- the default 0.01 slope -- so
+  (leaky-relu x 0.1), (leaky-relu x 0.5) and (leaky-relu x) were
+  indistinguishable. The gradient answered #(0.01 1) where alpha was
+  0.5. An integral alpha was no better: (leaky-relu x 1) also gave
+  -0.02 rather than the identity -2.0.
+correct: >-
+  The supplied alpha is the slope used for x <= 0 and the default
+  remains 0.01: (leaky-relu x 0.1) is (-0.2 -0.1 0.5 3),
+  (leaky-relu x 0.5) is (-1.0 -0.5 0.5 3), (leaky-relu x 1) is the
+  identity, (leaky-relu x) is (-0.02 -0.01 0.5 3), and the reverse-mode
+  gradient of (tensor-sum (leaky-relu x 0.5)) at (-2 3) is #(0.5 1).
+  An alpha arriving through a function parameter answers the same as the
+  literal call.
+root_cause: >-
+  TensorCodegen::tensorLeakyRelu evaluated only variables[0]. The alpha
+  operand was counted by the arity guard and then thrown away for a
+  C++ `double alpha_val = 0.01`, splatted as an LLVM constant into both
+  the SIMD and the scalar remainder loop; the source carried the
+  admission "For now we use compile-time constant alpha; runtime alpha
+  would need extraction". The AD path had the same defect one level
+  down and for a structurally similar reason: the lowering routed AD
+  mode through emitTensorADUnaryDispatch with the single op code 17
+  (AD_NODE_LEAKY_RELU), and that node's lowering in autodiff_codegen.cpp
+  hard-codes a 0.01 leak, because one fixed op code has nowhere to put a
+  caller's parameter.
+fix: >-
+  Alpha is evaluated when supplied and coerced with
+  TensorCodegen::taggedNumericToDouble (so an integral alpha reads as
+  its value, not as the bit pattern of a tagged integer), defaulting to
+  a 0.01 constant otherwise; the SIMD loop splats that runtime value
+  with CreateVectorSplat and the scalar loop multiplies by it directly.
+  For the tape, emitTensorADUnaryDispatch is refactored into the
+  one-op-code special case of a general emitTensorADElementDispatch that
+  takes a node builder, and leaky ReLU records the identity
+  leaky_relu(x, a) = a*x + (1-a)*relu(x) (AD_NODE_MUL / AD_NODE_RELU /
+  AD_NODE_ADD) instead of a parameterless op code. That identity is
+  exact in value for every alpha and carries the same subgradient at
+  x = 0 the numeric path uses, so no second definition of leaky ReLU is
+  introduced -- it is composed from ops that already exist.
+evidence: >-
+  tests/ml/parameterised_scalar_arguments_test.esk asserts both
+  documented slopes, the default, an integral alpha, the positive-side
+  identity, an alpha passed through a parameter, and -- the assertion
+  the old lowering could not satisfy at any tolerance -- that alpha 0.1
+  and alpha 0.5 DISAGREE on the negative side. 32 checks, 0 failures on
+  native JIT and on AOT. The reporter's own reproducer now prints
+  -0.2 -0.1 0.5 3 / -1 -0.5 0.5 3 / -0.02 -0.01 0.5 3, and the gradient
+  prints #(0.5 1). ctest:
+  parameterised_scalar_arguments_runtime_smoke and
+  parameterised_scalar_arguments_aot_smoke.
+caught_by: [v135-doc-verification, direct-measurement]
+missed_by: [tests/ml/activation_test.esk, tests/ml/activations_comprehensive_test.esk,
+  tests/ml/simd_activation_test.esk, ctest, icc-smoke, icc-readiness]
+notes: >-
+  Native-only. The bytecode VM's activation dispatch (vm_native.c fid
+  466) pops exactly one operand, so (leaky-relu x 0.1) on the VM is a
+  LOUD "calling non-function" abort rather than a silent wrong answer;
+  the VM's one-argument form uses the same 0.01 default and agrees.
+  Extending the VM to a two-argument leaky-relu is a separate surface
+  item, not a correction.

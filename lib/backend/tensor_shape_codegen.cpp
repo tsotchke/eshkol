@@ -14,6 +14,7 @@
  * pre-shape-extract baseline.
  */
 #include <eshkol/backend/tensor_codegen.h>
+#include <eshkol/backend/autodiff_codegen.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -57,8 +58,7 @@ llvm::Value* TensorCodegen::squeeze(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "squeeze");
@@ -210,8 +210,7 @@ llvm::Value* TensorCodegen::unsqueeze(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "unsqueeze");
@@ -325,8 +324,7 @@ llvm::Value* TensorCodegen::flatten(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "flatten");
@@ -386,8 +384,7 @@ llvm::Value* TensorCodegen::concatenate(const eshkol_operations_t* op) {
     }
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Type* tensor_type = ctx_.tensorType();
 
@@ -612,8 +609,7 @@ llvm::Value* TensorCodegen::stack(const eshkol_operations_t* op) {
     }
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     llvm::Type* tensor_type = ctx_.tensorType();
 
@@ -772,8 +768,7 @@ llvm::Value* TensorCodegen::split(const eshkol_operations_t* op) {
     }
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "split");
@@ -970,8 +965,7 @@ llvm::Value* TensorCodegen::slice(const eshkol_operations_t* op) {
     }
 
     // Get arena
-    llvm::Value* arena_ptr = builder.CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Unpack input tensor
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "slice");
@@ -1033,13 +1027,7 @@ llvm::Value* TensorCodegen::tensorShape(const eshkol_operations_t* op) {
     // Build a proper cons-based list from dimensions (build from end to front)
     // Start with null (empty list) and prepend each dimension
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-    llvm::GlobalVariable* arena_global = ctx_.globalArena();
-
-    if (!arena_global) {
-        eshkol_error("tensor-shape requires arena for list allocation");
-        return tagged_.packNull();
-    }
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
+    llvm::Value* arena_ptr = ctx_.currentArena();
 
     // Create alloca at function entry for the accumulator
     llvm::BasicBlock* current_block = ctx_.builder().GetInsertBlock();
@@ -1159,27 +1147,75 @@ llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
-    // ESH-0069: validate/coerce the operand up front. A non-tensor now raises a
-    // catchable type error (a homogeneous numeric vector is coerced) instead of
-    // the legacy behavior of silently returning null via the error_block below.
-    llvm::Value* src_ptr = unpackTensorOperandChecked(src_tensor, "transpose");
-    llvm::Value* is_tensor = llvm::ConstantInt::getTrue(ctx_.context());
-
+    llvm::Value* src_ad_node = llvm::ConstantPointerNull::get(ctx_.ptrType());
+    llvm::Value* src_ptr = nullptr;
+    // A dense AD node is a callable value, not an eshkol_tensor_t. Build the
+    // same zero-copy numeric view used by the dense arithmetic consumers; the
+    // parent node is retained so the transpose VJP can return to it.
+    if (autodiff_ && denseTensorADNodesEnabled()) {
+        llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::Value* null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+        llvm::BasicBlock* callable = llvm::BasicBlock::Create(ctx_.context(), "transpose_callable", fn);
+        llvm::BasicBlock* ad = llvm::BasicBlock::Create(ctx_.context(), "transpose_ad", fn);
+        llvm::BasicBlock* dense = llvm::BasicBlock::Create(ctx_.context(), "transpose_dense", fn);
+        llvm::BasicBlock* plain = llvm::BasicBlock::Create(ctx_.context(), "transpose_plain", fn);
+        llvm::BasicBlock* join = llvm::BasicBlock::Create(ctx_.context(), "transpose_input_join", fn);
+        llvm::Value* base = tagged_.getBaseType(tagged_.getType(src_tensor));
+        llvm::Value* is_callable = ctx_.builder().CreateICmpEQ(base,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+        ctx_.builder().CreateCondBr(is_callable, callable, plain);
+        ctx_.builder().SetInsertPoint(callable);
+        llvm::Value* is_ad = tagged_.checkCallableSubtype(src_tensor, CALLABLE_SUBTYPE_AD_NODE);
+        ctx_.builder().CreateCondBr(is_ad, ad, plain);
+        ctx_.builder().SetInsertPoint(ad);
+        llvm::Value* raw = ctx_.builder().CreateIntToPtr(
+            tagged_.unpackInt64(src_tensor), ctx_.ptrType());
+        llvm::Value* dense_elems = ctx_.builder().CreateLoad(ctx_.ptrType(),
+            ctx_.builder().CreateStructGEP(ctx_.adNodeType(), raw, 6));
+        ctx_.builder().CreateCondBr(ctx_.builder().CreateICmpNE(dense_elems, null_ptr),
+                                    dense, plain);
+        ctx_.builder().SetInsertPoint(dense);
+        llvm::Value* shape = ctx_.builder().CreateLoad(ctx_.ptrType(),
+            ctx_.builder().CreateStructGEP(ctx_.adNodeType(), raw, 13));
+        llvm::Value* ndim = ctx_.builder().CreateLoad(ctx_.int64Type(),
+            ctx_.builder().CreateStructGEP(ctx_.adNodeType(), raw, 14));
+        llvm::FunctionCallee total_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_ad_node_total_elements",
+            llvm::FunctionType::get(ctx_.int64Type(), {ctx_.ptrType()}, false));
+        llvm::Value* total = ctx_.builder().CreateCall(total_fn, {raw}, "transpose_ad_total");
+        llvm::Value* view = ctx_.builder().CreateCall(
+            mem_.getArenaAllocateTensorWithHeader(), {allocationArena()}, "transpose_ad_view");
+        ctx_.builder().CreateStore(shape, ctx_.builder().CreateStructGEP(tensor_type, view, 0));
+        ctx_.builder().CreateStore(ndim, ctx_.builder().CreateStructGEP(tensor_type, view, 1));
+        ctx_.builder().CreateStore(dense_elems, ctx_.builder().CreateStructGEP(tensor_type, view, 2));
+        ctx_.builder().CreateStore(total, ctx_.builder().CreateStructGEP(tensor_type, view, 3));
+        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0),
+                                   ctx_.builder().CreateStructGEP(tensor_type, view, 4));
+        llvm::BasicBlock* dense_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().CreateBr(join);
+        ctx_.builder().SetInsertPoint(plain);
+        llvm::Value* plain_ptr = unpackTensorOperandChecked(src_tensor, "transpose");
+        llvm::BasicBlock* plain_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().CreateBr(join);
+        ctx_.builder().SetInsertPoint(join);
+        llvm::PHINode* ptr = ctx_.builder().CreatePHI(ctx_.ptrType(), 2, "transpose_input");
+        ptr->addIncoming(view, dense_exit);
+        ptr->addIncoming(plain_ptr, plain_exit);
+        llvm::PHINode* node = ctx_.builder().CreatePHI(ctx_.ptrType(), 2, "transpose_parent");
+        node->addIncoming(raw, dense_exit);
+        node->addIncoming(null_ptr, plain_exit);
+        src_ad_node = node;
+        src_ptr = ptr;
+    }
+    if (!src_ptr) src_ptr = unpackTensorOperandChecked(src_tensor, "transpose");
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* tensor_block = llvm::BasicBlock::Create(ctx_.context(), "transpose_tensor", current_func);
-    llvm::BasicBlock* error_block = llvm::BasicBlock::Create(ctx_.context(), "transpose_error", current_func);
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "transpose_exit", current_func);
 
     // Use alloca-based merge (avoids PHI predecessor issues with XLA blocks)
     llvm::Value* result_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "trans_result");
 
-    ctx_.builder().CreateCondBr(is_tensor, tensor_block, error_block);
-
-    // Error path - return null for non-tensor inputs
-    ctx_.builder().SetInsertPoint(error_block);
-    llvm::Value* error_result = tagged_.packNull();
-    ctx_.builder().CreateStore(error_result, result_alloca);
-    ctx_.builder().CreateBr(exit_block);
+    ctx_.builder().CreateBr(tensor_block);
 
     // Tensor path - proceed with normal transpose (src_ptr validated above)
     ctx_.builder().SetInsertPoint(tensor_block);
@@ -1207,7 +1243,7 @@ llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
     }
 
 #ifdef ESHKOL_XLA_ENABLED
-    if (xla_ && xla_->isAvailable()) {
+    if (!(autodiff_ && denseTensorADNodesEnabled()) && xla_ && xla_->isAvailable()) {
         // Check if tensor is large enough for XLA dispatch
         llvm::Value* total_field = ctx_.builder().CreateStructGEP(tensor_type, src_ptr, 3);
         llvm::Value* total_elements = ctx_.builder().CreateLoad(ctx_.int64Type(), total_field, "trans_total");
@@ -1310,6 +1346,41 @@ llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
 
     // Merge — load from alloca (all paths store their result)
     ctx_.builder().SetInsertPoint(exit_block);
+    if (autodiff_ && denseTensorADNodesEnabled()) {
+        llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* record = llvm::BasicBlock::Create(ctx_.context(), "transpose_record", fn);
+        llvm::BasicBlock* plain = llvm::BasicBlock::Create(ctx_.context(), "transpose_plain_result", fn);
+        llvm::BasicBlock* join = llvm::BasicBlock::Create(ctx_.context(), "transpose_result_join", fn);
+        llvm::Value* has_parent = ctx_.builder().CreateICmpNE(
+            src_ad_node, llvm::ConstantPointerNull::get(ctx_.ptrType()));
+        ctx_.builder().CreateCondBr(has_parent, record, plain);
+        ctx_.builder().SetInsertPoint(record);
+        llvm::Value* result_elems = ctx_.builder().CreateLoad(ctx_.ptrType(),
+            ctx_.builder().CreateStructGEP(tensor_type, result_ptr, 2));
+        llvm::Value* result_dims = ctx_.builder().CreateLoad(ctx_.ptrType(),
+            ctx_.builder().CreateStructGEP(tensor_type, result_ptr, 0));
+        llvm::Value* node = autodiff_->recordADNodeTensor(
+            static_cast<uint32_t>(AD_NODE_TRANSPOSE), src_ad_node, nullptr,
+            nullptr, nullptr, result_elems, nullptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0), result_dims,
+            llvm::ConstantInt::get(ctx_.int64Type(), 2));
+        llvm::ArrayType* params_ty = llvm::ArrayType::get(ctx_.int64Type(), 6);
+        llvm::Value* params = ctx_.builder().CreateStructGEP(ctx_.adNodeType(), node, 12);
+        ctx_.builder().CreateStore(rows, ctx_.builder().CreateConstGEP2_32(params_ty, params, 0, 0));
+        ctx_.builder().CreateStore(cols, ctx_.builder().CreateConstGEP2_32(params_ty, params, 0, 1));
+        llvm::Value* dense_result = tagged_.packPtr(node, ESHKOL_VALUE_CALLABLE);
+        llvm::BasicBlock* record_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().CreateBr(join);
+        ctx_.builder().SetInsertPoint(plain);
+        llvm::Value* plain_result = ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca);
+        llvm::BasicBlock* plain_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().CreateBr(join);
+        ctx_.builder().SetInsertPoint(join);
+        llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "transpose_result");
+        result->addIncoming(dense_result, record_exit);
+        result->addIncoming(plain_result, plain_exit);
+        return result;
+    }
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca, "transpose_result");
 }
 
@@ -1346,8 +1417,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
     llvm::Value* svec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), svec_ptr);
 
     // Allocate arena for conversion
-    llvm::Value* conv_arena_ptr = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* conv_arena_ptr = ctx_.currentArena();
 
     // Allocate tensor structure with header
     llvm::Function* conv_alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
@@ -1667,7 +1737,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
 
         // TENSOR DIMS PATH: call runtime to extract dims from tensor elements
         ctx_.builder().SetInsertPoint(tensor_dims_path);
-        llvm::Value* t_arena = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+        llvm::Value* t_arena = ctx_.currentArena();
         // Rank comes from the shape operand, so the dims array is sized at
         // runtime from its own length. A fixed 16-entry array silently dropped
         // every dimension past the sixteenth.
@@ -1715,8 +1785,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
         llvm::Value* cons_ptr = ctx_.builder().CreateIntToPtr(heap_ptr_int, ctx_.ptrType());
 
         // Allocate dims array for up to 16 dimensions
-        llvm::Value* list_arena = ctx_.builder().CreateLoad(
-            llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+        llvm::Value* list_arena = ctx_.currentArena();
         // Size the dims array from the shape list's own length (see
         // eshkol_cons_list_dim_count) rather than a fixed 16 entries.
         auto* list_count_ft = llvm::FunctionType::get(ctx_.int64Type(),
@@ -1786,8 +1855,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
         llvm::Value* single_dim = extract_structural_int(
             dim_arg, "reshape", "integer dimension");
         // Allocate 1-element dims array
-        llvm::Value* single_arena = ctx_.builder().CreateLoad(
-            llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+        llvm::Value* single_arena = ctx_.currentArena();
         llvm::Value* single_bytes = llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t));
         llvm::Value* single_dims_array = ctx_.builder().CreateCall(
             arena_alloc, {single_arena, single_bytes}, "single_dims");
@@ -1823,8 +1891,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
         // Multiple explicit dimension arguments: (reshape tensor 3 3 2)
         size_t ndim_count = op->call_op.num_vars - 1;
 
-        llvm::Value* multi_arena = ctx_.builder().CreateLoad(
-            llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+        llvm::Value* multi_arena = ctx_.currentArena();
         llvm::Value* multi_bytes = llvm::ConstantInt::get(ctx_.int64Type(), ndim_count * sizeof(int64_t));
         llvm::Value* multi_dims_array = ctx_.builder().CreateCall(
             arena_alloc, {multi_arena, multi_bytes}, "multi_dims");
@@ -1851,9 +1918,28 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
         final_total = multi_total;
     }
 
+    // A reshape is a view, never an implicit truncate/pad. Validate through
+    // the shared checked product before allocating or publishing new metadata.
+    auto* shape_total_fn = ctx_.module().getFunction("eshkol_tensor_shape_total");
+    if (!shape_total_fn) shape_total_fn = llvm::Function::Create(llvm::FunctionType::get(
+        ctx_.int64Type(), {ctx_.ptrType(), ctx_.int64Type()}, false),
+        llvm::Function::ExternalLinkage, "eshkol_tensor_shape_total", &ctx_.module());
+    final_total = ctx_.builder().CreateCall(shape_total_fn, {final_dims_ptr, final_ndim});
+    llvm::Value* source_total = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateStructGEP(tensor_type, src_ptr, 3));
+    llvm::Value* invalid_shape = ctx_.builder().CreateOr(
+        ctx_.builder().CreateICmpSLT(final_total, llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+        ctx_.builder().CreateICmpNE(final_total, source_total));
+    llvm::Function* reshape_func = ctx_.builder().GetInsertBlock()->getParent();
+    auto* valid_shape_block = llvm::BasicBlock::Create(ctx_.context(), "reshape_shape_valid", reshape_func);
+    auto* invalid_shape_block = llvm::BasicBlock::Create(ctx_.context(), "reshape_shape_invalid", reshape_func);
+    ctx_.builder().CreateCondBr(invalid_shape, invalid_shape_block, valid_shape_block);
+    ctx_.builder().SetInsertPoint(invalid_shape_block);
+    emitCatchableError("reshape: invalid shape or element count mismatch");
+    ctx_.builder().SetInsertPoint(valid_shape_block);
+
     // Allocate using arena
-    llvm::Value* reshape_arena_ptr = ctx_.builder().CreateLoad(
-        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* reshape_arena_ptr = ctx_.currentArena();
 
     // Create new tensor structure with header (reuse elements - no copy needed for reshape)
     llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();

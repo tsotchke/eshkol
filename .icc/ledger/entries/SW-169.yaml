@@ -1,0 +1,92 @@
+id: SW-169
+bucket: SILENT-WRONG
+status: fixed
+closed_at: '2026-09-10'
+title: "apply of a first-class builtin operator (vector-copy, car, ...) silently answered () instead of raising or computing the right value"
+repro: >-
+  (display (apply vector-copy (list (vector 7 8 9)))) and
+  (display (apply car (list (list 5)))), each run via `eshkol-run -r` and
+  under `-O0`/AOT. Both compile and exit 0 -- no exception, no diagnostic at
+  normal log levels.
+observed_before: >-
+  Native native printed `()` for both: `(apply vector-copy (list (vector 7 8
+  9)))` -> `()` where `(vector-copy (vector 7 8 9))` (call position) and
+  `(map vector-copy (list (vector 7 8 9)))` (LE-16's fixed route) both
+  answer `#(7 8 9)`; `(apply car (list (list 5)))` -> `()` where `(car (list
+  5))` answers `5`. A debug-only `eshkol_warn("apply: Unknown function:
+  %s", ...)` fired (visible only with `-d`), but at normal log levels apply
+  reported plain SUCCESS with the wrong value -- SILENT-WRONG, not a missing
+  diagnostic. The VM was unaffected: `(apply vector-copy (list (vector 7 8
+  9)))` and `(apply car (list (list 5)))` already answered correctly there,
+  so this was a native/VM parity break as well as a native defect.
+correct: >-
+  `apply` is defined identically to any other call: `(apply proc arg-list)`
+  invokes `proc` with the list's elements as arguments, and `proc` may be
+  any procedure value, builtin or user-defined -- the same rule LE-16 states
+  in docs/reference/language/functions-and-parameters.md ("every procedure
+  Eshkol can call in operator position is also a value like any other").
+root_cause: >-
+  CallApplyCodegen::apply's ESHKOL_VAR branch (lib/backend/
+  call_apply_codegen.cpp) resolves its operator name through its OWN
+  hand-curated table -- arithmetic reductions (+/-/*//,min,max), `list`,
+  `cons`, a fixed set of tensor constructors via apply_builtin_callback_,
+  then a comparison/predicate wrapper callback (get_builtin_predicate_
+  callback_) -- with no further fallback. `vector-copy` and `car` matched
+  none of those rows and fell through every one to the closing
+  `eshkol_warn` + `tagged_.packNull()`. `map` and a user higher-order call
+  (`(define (h f a) (f a))`) do not have this gap: an unmatched VAR there
+  falls back to the ordinary expression path (codegen_ast_callback_ ->
+  codegenVariable), which is the umbrella every first-class-value mechanism
+  already sits under -- codegenInlineBuiltinAsValue / lookupInlineBuiltin
+  (LE-16), the car/cdr/cons closure wrap, the arithmetic-operator wrappers.
+  apply's ESHKOL_VAR branch never called back into that umbrella; it had its
+  own parallel, shorter list instead, exactly the anti-pattern LE-16 closed
+  for the general first-class-value route -- just one call site over.
+fixed_by: >-
+  branch fix/builtins-are-first-class-values -- after every existing
+  special case in CallApplyCodegen::apply (arithmetic reductions, list/cons,
+  tensor constructors, the predicate-wrapper callback, the REPL forward-ref
+  callback) declines, apply now calls codegen_ast_callback_(func_arg, ...)
+  -- the same callback map/codegenVariable already resolve an unmatched VAR
+  through -- and dispatches the result via the existing applyClosure() path,
+  the same one already used for captured-closure and stored-variable
+  operators just above it in the same function. One fallback to the
+  existing umbrella mechanism, not new per-builtin rows in apply's own
+  table: a builtin gains a value representation exactly once
+  (lookupInlineBuiltin, or one of the other existing first-class routes)
+  and every call site that needs one -- codegenVariable, map, now apply --
+  agrees with it by construction. A name that is genuinely undefined still
+  gets a real compile-time diagnostic from codegenVariable's own fallback
+  (codegen_error_at, which fails the whole compilation with a nonzero exit),
+  so apply's residual eshkol_warn is now reached only after that diagnostic
+  has already fired, never as apply's own silent success-with-wrong-value.
+evidence: >-
+  tests/core/apply_first_class_builtin_test.esk (native JIT + AOT-O0,
+  `apply` of car/vector-copy/vector-append with 1- and 2-argument-list
+  arity plus a user-closure and an already-first-class-builtin (+)
+  control); tests/vm_parity/corpus/79_apply_first_class_builtin.esk pins
+  byte-identical native/VM output for the same five calls. Manually
+  verified: `(display (apply no-such-builtin (list 1)))` still fails
+  compilation with `Undefined variable: no-such-builtin` and exit 1 (the
+  residual warning fires alongside the real error, not instead of it).
+caught_by: [coordinator-post-merge-verification, direct-measurement]
+missed_by: [tests/core/builtins_first_class_test_*.esk (LE-16 -- exercises
+  let/map/apply-of-__id, never apply of the builtin itself as the
+  operator), tests/value_position/BASELINE.json's sweep (probes map/let/a
+  user HOF, not apply as the direct operator call), tests/vm_parity (no
+  corpus entry exercised apply of a builtin that had no VM name binding at
+  all until LE-16 added one -- vector-copy was both routes' first
+  never-worked case)]
+notes: >-
+  Found immediately after LE-16 merged, verifying that PR's own claim
+  ("(map vector-copy ...)" fixed) against the sibling apply form the same
+  ledger entry did not itself probe. A SEPARATE, pre-existing, unrelated VM
+  defect was found while writing this entry's tests and deliberately left
+  open: apply's LEADING-ARGS form, `(apply f a1 ... arg-list)` as opposed to
+  `(apply f arg-list)`, is broken on the VM for ANY operator, not only
+  builtins -- `(apply + 1 (list 2 3))` answers `0` on the VM today, and `+`
+  has never had a value-position gap on either engine. That is a different
+  code path (leading-argument list construction before the operator is even
+  resolved) from this entry's defect (operator resolution itself), so it is
+  flagged here rather than folded into this fix or this fix's tests, which
+  therefore use only the `(apply f arg-list)` form throughout.

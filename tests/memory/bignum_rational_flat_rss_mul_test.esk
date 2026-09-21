@@ -1,0 +1,16 @@
+;; SW-164: repeated exact-rational multiplication must stay flat in resident
+;; size. Multiplying by 1 is the cleanest probe: the VALUE never changes, so
+;; every byte the loop allocates is garbage by construction, and any growth in
+;; resident size is retention and nothing else.
+(define r (/ (expt 7 600) (expt 11 550)))
+
+(define (spin n)
+  (let lp ((i 0) (acc r))
+    (if (= i n) acc (lp (+ i 1) (* acc 1)))))
+
+(define result (spin 100000))
+(define digits (string-length (number->string (denominator result))))
+
+(if (and (= result r) (= digits 573))
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL digits=") (display digits) (newline)))

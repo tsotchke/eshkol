@@ -1,0 +1,102 @@
+;;; builtins_first_class_test_12.esk — AUTO-GENERATED, do not hand-edit.
+;;;
+;;; Chunk 12 of 17 of the LE-16 first-class-builtins audit. Regenerate
+;;; ALL chunks (this file is one of several — see the module docstring in
+;;; the generator for why) with:
+;;;     python3 scripts/gen_builtins_first_class_test.py
+;;; Source of truth: tests/coverage/language_surface.json +
+;;; tests/coverage/builtins_first_class_known_args.json. See LE-16 in
+;;; .icc/ledger/entries/LE-16.yaml for the root cause and the fix.
+;;;
+;;; Every builtin that can be called in operator position must also be a
+;;; first-class value: it must evaluate to a procedure, survive being
+;;; stored (let), passed to a user higher-order procedure, mapped, and
+;;; applied — and, wherever this audit could verify a real call safely
+;;; (i.e. without executing an FFI/GPU/atomics/pointer side effect), a
+;;; value-position call must compute the identical answer to the same
+;;; call in operator position. This chunk carries 50 such checks.
+
+;; hN calls its first argument with N further arguments. Each is a bare
+;; PARAMETER, so its value must be a real callable — there is no name here
+;; for codegenCall to special-case; this is what forces the value-position
+;; route (codegenVariable / resolveLambdaFunction) rather than the call-site
+;; lowering, which was never broken.
+(define (h0 f) (f))
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (h3 f a b c) (f a b c))
+(define (h4 f a b c d) (f a b c d))
+(define (h5 f a b c d e) (f a b c d e))
+(define (__id x) x)
+;; Shared hash-table fixture for the hash-category call-correctness checks
+;; below (mirrors scripts/run_value_position_sweep.py's own __ht convention).
+(define __ht (make-hash-table))
+(hash-table-set! __ht 1 10)
+
+(define failures 0)
+(define checked 0)
+(define (check name ok)
+  (set! checked (+ checked 1))
+  (if ok
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name) (newline))))
+
+(check "socket-send::value" (and (procedure? socket-send) (let ((f socket-send)) (procedure? f)) (procedure? (__id socket-send)) (procedure? (car (map __id (list socket-send)))) (procedure? (apply __id (list socket-send)))))
+(check "softmax::value" (and (procedure? softmax) (let ((f softmax)) (procedure? f)) (procedure? (__id softmax)) (procedure? (car (map __id (list softmax)))) (procedure? (apply __id (list softmax)))))
+(check "softplus::value" (and (procedure? softplus) (let ((f softplus)) (procedure? f)) (procedure? (__id softplus)) (procedure? (car (map __id (list softplus)))) (procedure? (apply __id (list softplus)))))
+(check "split::value" (and (procedure? split) (let ((f split)) (procedure? f)) (procedure? (__id split)) (procedure? (car (map __id (list split)))) (procedure? (apply __id (list split)))))
+(check "split-at::value" (and (procedure? split-at) (let ((f split-at)) (procedure? f)) (procedure? (__id split-at)) (procedure? (car (map __id (list split-at)))) (procedure? (apply __id (list split-at)))))
+(check "sqrt::value" (and (procedure? sqrt) (let ((f sqrt)) (procedure? f)) (procedure? (__id sqrt)) (procedure? (car (map __id (list sqrt)))) (procedure? (apply __id (list sqrt)))))
+(check "square::value" (and (procedure? square) (let ((f square)) (procedure? f)) (procedure? (__id square)) (procedure? (car (map __id (list square)))) (procedure? (apply __id (list square)))))
+(check "squeeze::value" (and (procedure? squeeze) (let ((f squeeze)) (procedure? f)) (procedure? (__id squeeze)) (procedure? (car (map __id (list squeeze)))) (procedure? (apply __id (list squeeze)))))
+(check "stack::value" (and (procedure? stack) (let ((f stack)) (procedure? f)) (procedure? (__id stack)) (procedure? (car (map __id (list stack)))) (procedure? (apply __id (list stack)))))
+(check "step-decay-lr::value" (and (procedure? step-decay-lr) (let ((f step-decay-lr)) (procedure? f)) (procedure? (__id step-decay-lr)) (procedure? (car (map __id (list step-decay-lr)))) (procedure? (apply __id (list step-decay-lr)))))
+(check "string::value" (and (procedure? string) (let ((f string)) (procedure? f)) (procedure? (__id string)) (procedure? (car (map __id (list string)))) (procedure? (apply __id (list string)))))
+(check "string->i128::value" (and (procedure? string->i128) (let ((f string->i128)) (procedure? f)) (procedure? (__id string->i128)) (procedure? (car (map __id (list string->i128)))) (procedure? (apply __id (list string->i128)))))
+(check "string->list::value" (and (procedure? string->list) (let ((f string->list)) (procedure? f)) (procedure? (__id string->list)) (procedure? (car (map __id (list string->list)))) (procedure? (apply __id (list string->list)))))
+(check "string->number::value" (and (procedure? string->number) (let ((f string->number)) (procedure? f)) (procedure? (__id string->number)) (procedure? (car (map __id (list string->number)))) (procedure? (apply __id (list string->number)))))
+(check "string->symbol::value" (and (procedure? string->symbol) (let ((f string->symbol)) (procedure? f)) (procedure? (__id string->symbol)) (procedure? (car (map __id (list string->symbol)))) (procedure? (apply __id (list string->symbol)))))
+(check "string->utf8::value" (and (procedure? string->utf8) (let ((f string->utf8)) (procedure? f)) (procedure? (__id string->utf8)) (procedure? (car (map __id (list string->utf8)))) (procedure? (apply __id (list string->utf8)))))
+(check "string-append::value" (and (procedure? string-append) (let ((f string-append)) (procedure? f)) (procedure? (__id string-append)) (procedure? (car (map __id (list string-append)))) (procedure? (apply __id (list string-append)))))
+(check "string-byte-length::value" (and (procedure? string-byte-length) (let ((f string-byte-length)) (procedure? f)) (procedure? (__id string-byte-length)) (procedure? (car (map __id (list string-byte-length)))) (procedure? (apply __id (list string-byte-length)))))
+(check "string-ci<=?::value" (and (procedure? string-ci<=?) (let ((f string-ci<=?)) (procedure? f)) (procedure? (__id string-ci<=?)) (procedure? (car (map __id (list string-ci<=?)))) (procedure? (apply __id (list string-ci<=?)))))
+(check "string-ci<?::value" (and (procedure? string-ci<?) (let ((f string-ci<?)) (procedure? f)) (procedure? (__id string-ci<?)) (procedure? (car (map __id (list string-ci<?)))) (procedure? (apply __id (list string-ci<?)))))
+(check "string-ci=?::value" (and (procedure? string-ci=?) (let ((f string-ci=?)) (procedure? f)) (procedure? (__id string-ci=?)) (procedure? (car (map __id (list string-ci=?)))) (procedure? (apply __id (list string-ci=?)))))
+(check "string-ci>=?::value" (and (procedure? string-ci>=?) (let ((f string-ci>=?)) (procedure? f)) (procedure? (__id string-ci>=?)) (procedure? (car (map __id (list string-ci>=?)))) (procedure? (apply __id (list string-ci>=?)))))
+(check "string-ci>?::value" (and (procedure? string-ci>?) (let ((f string-ci>?)) (procedure? f)) (procedure? (__id string-ci>?)) (procedure? (car (map __id (list string-ci>?)))) (procedure? (apply __id (list string-ci>?)))))
+(check "string-contains?::value" (and (procedure? string-contains?) (let ((f string-contains?)) (procedure? f)) (procedure? (__id string-contains?)) (procedure? (car (map __id (list string-contains?)))) (procedure? (apply __id (list string-contains?)))))
+(check "string-copy::value" (and (procedure? string-copy) (let ((f string-copy)) (procedure? f)) (procedure? (__id string-copy)) (procedure? (car (map __id (list string-copy)))) (procedure? (apply __id (list string-copy)))))
+(check "string-copy!::value" (and (procedure? string-copy!) (let ((f string-copy!)) (procedure? f)) (procedure? (__id string-copy!)) (procedure? (car (map __id (list string-copy!)))) (procedure? (apply __id (list string-copy!)))))
+(check "string-display-width::value" (and (procedure? string-display-width) (let ((f string-display-width)) (procedure? f)) (procedure? (__id string-display-width)) (procedure? (car (map __id (list string-display-width)))) (procedure? (apply __id (list string-display-width)))))
+(check "string-downcase::value" (and (procedure? string-downcase) (let ((f string-downcase)) (procedure? f)) (procedure? (__id string-downcase)) (procedure? (car (map __id (list string-downcase)))) (procedure? (apply __id (list string-downcase)))))
+(check "string-ends-with?::value" (and (procedure? string-ends-with?) (let ((f string-ends-with?)) (procedure? f)) (procedure? (__id string-ends-with?)) (procedure? (car (map __id (list string-ends-with?)))) (procedure? (apply __id (list string-ends-with?)))))
+(check "string-fill!::value" (and (procedure? string-fill!) (let ((f string-fill!)) (procedure? f)) (procedure? (__id string-fill!)) (procedure? (car (map __id (list string-fill!)))) (procedure? (apply __id (list string-fill!)))))
+(check "string-foldcase::value" (and (procedure? string-foldcase) (let ((f string-foldcase)) (procedure? f)) (procedure? (__id string-foldcase)) (procedure? (car (map __id (list string-foldcase)))) (procedure? (apply __id (list string-foldcase)))))
+(check "string-for-each::value" (and (procedure? string-for-each) (let ((f string-for-each)) (procedure? f)) (procedure? (__id string-for-each)) (procedure? (car (map __id (list string-for-each)))) (procedure? (apply __id (list string-for-each)))))
+(check "string-index::value" (and (procedure? string-index) (let ((f string-index)) (procedure? f)) (procedure? (__id string-index)) (procedure? (car (map __id (list string-index)))) (procedure? (apply __id (list string-index)))))
+(check "string-index-of::value" (and (procedure? string-index-of) (let ((f string-index-of)) (procedure? f)) (procedure? (__id string-index-of)) (procedure? (car (map __id (list string-index-of)))) (procedure? (apply __id (list string-index-of)))))
+(check "string-length::value" (and (procedure? string-length) (let ((f string-length)) (procedure? f)) (procedure? (__id string-length)) (procedure? (car (map __id (list string-length)))) (procedure? (apply __id (list string-length)))))
+(check "string-map::value" (and (procedure? string-map) (let ((f string-map)) (procedure? f)) (procedure? (__id string-map)) (procedure? (car (map __id (list string-map)))) (procedure? (apply __id (list string-map)))))
+(check "string-pad-left::value" (and (procedure? string-pad-left) (let ((f string-pad-left)) (procedure? f)) (procedure? (__id string-pad-left)) (procedure? (car (map __id (list string-pad-left)))) (procedure? (apply __id (list string-pad-left)))))
+(check "string-pad-right::value" (and (procedure? string-pad-right) (let ((f string-pad-right)) (procedure? f)) (procedure? (__id string-pad-right)) (procedure? (car (map __id (list string-pad-right)))) (procedure? (apply __id (list string-pad-right)))))
+(check "string-port?::value" (and (procedure? string-port?) (let ((f string-port?)) (procedure? f)) (procedure? (__id string-port?)) (procedure? (car (map __id (list string-port?)))) (procedure? (apply __id (list string-port?)))))
+(check "string-ref::value" (and (procedure? string-ref) (let ((f string-ref)) (procedure? f)) (procedure? (__id string-ref)) (procedure? (car (map __id (list string-ref)))) (procedure? (apply __id (list string-ref)))))
+(check "string-set!::value" (and (procedure? string-set!) (let ((f string-set!)) (procedure? f)) (procedure? (__id string-set!)) (procedure? (car (map __id (list string-set!)))) (procedure? (apply __id (list string-set!)))))
+(check "string-split::value" (and (procedure? string-split) (let ((f string-split)) (procedure? f)) (procedure? (__id string-split)) (procedure? (car (map __id (list string-split)))) (procedure? (apply __id (list string-split)))))
+(check "string-truncate-display::value" (and (procedure? string-truncate-display) (let ((f string-truncate-display)) (procedure? f)) (procedure? (__id string-truncate-display)) (procedure? (car (map __id (list string-truncate-display)))) (procedure? (apply __id (list string-truncate-display)))))
+(check "string-upcase::value" (and (procedure? string-upcase) (let ((f string-upcase)) (procedure? f)) (procedure? (__id string-upcase)) (procedure? (car (map __id (list string-upcase)))) (procedure? (apply __id (list string-upcase)))))
+(check "string<=?::value" (and (procedure? string<=?) (let ((f string<=?)) (procedure? f)) (procedure? (__id string<=?)) (procedure? (car (map __id (list string<=?)))) (procedure? (apply __id (list string<=?)))))
+(check "string<?::value" (and (procedure? string<?) (let ((f string<?)) (procedure? f)) (procedure? (__id string<?)) (procedure? (car (map __id (list string<?)))) (procedure? (apply __id (list string<?)))))
+(check "string=?::value" (and (procedure? string=?) (let ((f string=?)) (procedure? f)) (procedure? (__id string=?)) (procedure? (car (map __id (list string=?)))) (procedure? (apply __id (list string=?)))))
+(check "string>=?::value" (and (procedure? string>=?) (let ((f string>=?)) (procedure? f)) (procedure? (__id string>=?)) (procedure? (car (map __id (list string>=?)))) (procedure? (apply __id (list string>=?)))))
+(check "string>?::value" (and (procedure? string>?) (let ((f string>?)) (procedure? f)) (procedure? (__id string>?)) (procedure? (car (map __id (list string>?)))) (procedure? (apply __id (list string>?)))))
+(check "string?::value" (and (procedure? string?) (let ((f string?)) (procedure? f)) (procedure? (__id string?)) (procedure? (car (map __id (list string?)))) (procedure? (apply __id (list string?)))))
+
+(display "checked=") (display checked) (newline)
+(display "failures=") (display failures) (newline)
+(if (= failures 0)
+    (begin (display "PASS: builtins first-class -- 0 failures") (newline))
+    (begin (display "FAIL: builtins first-class -- ")
+           (display failures) (display " failure(s)") (newline)))
+(if (> failures 0) (exit 1) (exit 0))

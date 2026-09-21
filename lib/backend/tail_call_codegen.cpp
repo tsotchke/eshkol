@@ -15,6 +15,7 @@
  * without breaking changes, allowing gradual adoption of TCO.
  */
 
+#include <eshkol/core/ast_routing.h>
 #include <eshkol/backend/tail_call_codegen.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -77,29 +78,64 @@ bool TailCallCodegen::isOperationInTailPosition(const eshkol_operations_t* op,
                                                  const eshkol_operations_t* parent) const {
     if (!parent) return true;
 
-    switch (parent->op) {
-        case ESHKOL_IF_OP:
+    {
+        enum class AstRoute { If, Let, Lambda, Sequence, OtherOperations };
+        switch (eshkol::routeAstOperation(parent->op,
+            eshkol::AstRouteGroup<AstRoute::If, ESHKOL_IF_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Let,
+                ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Sequence, ESHKOL_SEQUENCE_OP>{},
+            eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_CALL_OP, ESHKOL_DEFINE_OP,
+                ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_AND_OP, ESHKOL_OR_OP,
+                ESHKOL_COND_OP, ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
+                ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
+                ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP,
+                ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP,
+                ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
+                ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
+                ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP,
+                ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP,
+                ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP,
+                ESHKOL_RAISE_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP,
+                ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP,
+                ESHKOL_CALL_CC_OP, ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP,
+                ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP,
+                ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP,
+                ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP,
+                ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP,
+                ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP,
+                ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP,
+                ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP,
+                ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP,
+                ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP,
+                ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP,
+                ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP,
+                ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+            >{}
+        )) {
+        case AstRoute::If:
             // Both branches of if are in tail position
             return (parent->if_op.if_true == op || parent->if_op.if_false == op);
 
-        case ESHKOL_LET_OP:
-        case ESHKOL_LET_STAR_OP:
-        case ESHKOL_LETREC_OP:
-        case ESHKOL_LETREC_STAR_OP:
+        case AstRoute::Let:
             // Body of let/let*/letrec/letrec* is in tail position
             if (parent->let_op.body && parent->let_op.body->type == ESHKOL_OP) {
                 return &parent->let_op.body->operation == op;
             }
             return false;
 
-        case ESHKOL_LAMBDA_OP:
+        case AstRoute::Lambda:
             // Lambda body is in tail position
             if (parent->lambda_op.body && parent->lambda_op.body->type == ESHKOL_OP) {
                 return &parent->lambda_op.body->operation == op;
             }
             return false;
 
-        case ESHKOL_SEQUENCE_OP:
+        case AstRoute::Sequence:
             // Last expression in sequence is in tail position
             if (parent->sequence_op.num_expressions > 0) {
                 size_t last_idx = parent->sequence_op.num_expressions - 1;
@@ -110,9 +146,10 @@ bool TailCallCodegen::isOperationInTailPosition(const eshkol_operations_t* op,
             }
             return false;
 
-        default:
+        case AstRoute::OtherOperations:
             // Other operations don't create tail contexts
             return false;
+    }
     }
 }
 
@@ -269,8 +306,57 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
 
     const eshkol_operations_t* op = &expr->operation;
 
-    switch (op->op) {
-        case ESHKOL_CALL_OP: {
+    {
+        enum class AstRoute {
+            Call, If, Sequence, Let, Cond, And,
+            When, Case, Lambda, Guard, OtherOperations
+        };
+        switch (eshkol::routeAstOperation(op->op,
+            eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
+            eshkol::AstRouteGroup<AstRoute::If, ESHKOL_IF_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Sequence, ESHKOL_SEQUENCE_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Let,
+                ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Cond, ESHKOL_COND_OP>{},
+            eshkol::AstRouteGroup<AstRoute::And,
+                ESHKOL_AND_OP, ESHKOL_OR_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::When,
+                ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP
+            >{},
+            eshkol::AstRouteGroup<AstRoute::Case, ESHKOL_CASE_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+            eshkol::AstRouteGroup<AstRoute::OtherOperations,
+                ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
+                ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
+                ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP,
+                ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
+                ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP,
+                ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP,
+                ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP,
+                ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP,
+                ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP,
+                ESHKOL_RAISE_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_VALUES_OP,
+                ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP,
+                ESHKOL_CALL_CC_OP, ESHKOL_DYNAMIC_WIND_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP,
+                ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP,
+                ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP,
+                ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP,
+                ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP,
+                ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP,
+                ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP,
+                ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP,
+                ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP,
+                ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP,
+                ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP,
+                ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP,
+                ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
+            >{}
+        )) {
+        case AstRoute::Call: {
             // PARSER QUIRK (see llvm_codegen.cpp countAllRecursiveCalls /
             // findTailCalls / collectMutualTailCallSites for the same
             // convention): `if` is not represented as ESHKOL_IF_OP — the
@@ -361,7 +447,7 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
             return true;
         }
 
-        case ESHKOL_IF_OP: {
+        case AstRoute::If: {
             // The condition is NOT in tail position
             // Both branches inherit the tail position status
             // Note: if_op uses eshkol_operations_t* not eshkol_ast_t*
@@ -385,7 +471,7 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
             return true;
         }
 
-        case ESHKOL_SEQUENCE_OP: {
+        case AstRoute::Sequence: {
             // Only the last expression is in tail position
             for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                 bool is_last = (i == op->sequence_op.num_expressions - 1);
@@ -398,10 +484,7 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
             return true;
         }
 
-        case ESHKOL_LET_OP:
-        case ESHKOL_LET_STAR_OP:
-        case ESHKOL_LETREC_OP:
-        case ESHKOL_LETREC_STAR_OP: {
+        case AstRoute::Let: {
             // Binding values are NOT in tail position
             for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                 if (!allSelfCallsInTailPosition(&op->let_op.bindings[i], func_name, false)) {
@@ -415,7 +498,7 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
             return true;
         }
 
-        case ESHKOL_COND_OP: {
+        case AstRoute::Cond: {
             // COND_OP uses call_op structure: each variable is a clause
             // Each clause is itself a CALL_OP with test as func and body exprs as vars
             for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
@@ -437,8 +520,7 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
             return true;
         }
 
-        case ESHKOL_AND_OP:
-        case ESHKOL_OR_OP: {
+        case AstRoute::And: {
             // AND_OP and OR_OP use sequence_op structure
             // Only the last operand is in tail position
             for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
@@ -452,8 +534,7 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
             return true;
         }
 
-        case ESHKOL_WHEN_OP:
-        case ESHKOL_UNLESS_OP: {
+        case AstRoute::When: {
             // when/unless use call_op structure: variables[0] = test,
             // variables[1..] = body expressions (implicit begin — only the
             // LAST body expression is in tail position; the test and any
@@ -475,7 +556,7 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
             return true;
         }
 
-        case ESHKOL_CASE_OP: {
+        case AstRoute::Case: {
             // CASE_OP uses call_op structure: call_op.func = key expression
             // (NOT in tail position), call_op.variables[i] = clauses. Each
             // clause is an ESHKOL_CONS: car = datums (literal data — quoted,
@@ -506,13 +587,13 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
             return true;
         }
 
-        case ESHKOL_LAMBDA_OP: {
+        case AstRoute::Lambda: {
             // A nested lambda creates its own tail context — self-calls inside
             // a nested lambda are not our self-calls (different function boundary)
             return true;
         }
 
-        case ESHKOL_GUARD_OP: {
+        case AstRoute::Guard: {
             // (guard (var clause ...) body ...) — ESH-0222.
             //
             // This used to fall through to `default: return true`, silently
@@ -557,9 +638,10 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
             return true;
         }
 
-        default:
+        case AstRoute::OtherOperations:
             // For other ops (arithmetic, etc.), sub-expressions are not in tail position
             return true;
+    }
     }
 }
 

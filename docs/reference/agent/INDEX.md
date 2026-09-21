@@ -10,7 +10,9 @@ mechanism and link native C runtimes (`qllm_*`, `eshkol_*`). Load one with
 
 - [FFI](ffi.md) — the `extern` / `:real` declaration syntax, the type-keyword →
   C ABI mapping, tagged-value boundary conversion, and how `requires_agent_ffi`
-  drives **transitive** agent-FFI linking for AOT binaries (vs JIT resolution).
+  drives **transitive** agent-FFI linking for AOT binaries (vs JIT resolution),
+  plus the object-ABI guard symbol `eshkol_object_abi_v*` — what an undefined
+  reference to it means, its four causes, and the three cases it does not cover.
 - [Capabilities](capabilities.md) — the process-local allow-list policy and which
   agent operation requires which capability.
 
@@ -18,7 +20,7 @@ mechanism and link native C runtimes (`qllm_*`, `eshkol_*`). Load one with
 
 | Module | Doc | Summary |
 |--------|-----|---------|
-| `agent.http`, `agent.http-server` | [http](http.md) | HTTP client (GET/POST, SSE), HTTP/Unix-socket/WebSocket server |
+| `agent.http`, `agent.http_server` | [http](http.md) | HTTP client (GET/POST, SSE), HTTP/Unix-socket/WebSocket server |
 | `agent.sqlite` | [sqlite](sqlite.md) | Embedded SQLite: connections, prepared statements, `with-db`/`with-statement` |
 | platform filesystem ABI | [platform](platform.md) | Precision-safe file metadata and stable file identity |
 | `agent.subprocess` | [subprocess](subprocess.md) | Process spawning (shell + injection-safe argv), ownership/cleanup contract (#94) |

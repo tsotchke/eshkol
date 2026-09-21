@@ -1,3 +1,8 @@
+/* Shared i128 boxing helpers are defined by vm_native.c, which is included
+ * before this interpreter in the VM unity build. */
+extern __int128 vm_unbox_i128(VM* vm, Value v);
+extern void vm_push_i128(VM* vm, __int128 value);
+
 /**
  * @file vm_run.c
  * @brief The bytecode interpreter's DISPATCH LOOP: fetch, decode, and route
@@ -27,6 +32,58 @@
  * nodes), the local-variable, string-accessor, call and call/cc bodies, and
  * the loop's own control flow.
  */
+
+/* Shared application contract for both interpreter dispatches and native
+ * higher-order operations. Arguments and callable are already rooted on the
+ * VM stack; positive means enter bytecode, zero means an immediate result. */
+static int vm_enter_call(VM* vm, int argc, int32_t return_pc) {
+    Value func = vm->stack[vm->sp - 1 - argc];
+
+    vm_language_coverage_named_call(vm, func);
+
+    if (func.type == VAL_PARAMETER_OBJ) {
+        Value result = vm_parameter_invoke(vm, func, &vm->stack[vm->sp - argc], argc);
+        vm->sp -= argc + 1;
+        vm_push(vm, result);
+        return 0;
+    }
+
+    /* Continuation invocation carries the complete value frame. */
+    if (func.type == VAL_CONTINUATION) {
+        Value val;
+        if (!vm_continuation_result(vm, &vm->stack[vm->sp - argc], argc, &val)) {
+            fprintf(stderr, "ERROR: cannot allocate continuation value frame\n");
+            vm->error = 1; return -1;
+        }
+        VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
+        if (cont) {
+            vm_continuation_resume(vm, cont, val);
+            return 0;
+        }
+    }
+
+    HeapObject* cl = vm_callable_closure(vm, func, argc);
+    if (!cl) return -1;
+
+    if (vm->frame_count >= MAX_FRAMES) { fprintf(stderr, "FRAME OVERFLOW\n"); vm->error = 1; return -1; }
+    vm->frames[vm->frame_count].return_pc = return_pc;
+    vm->frames[vm->frame_count].return_fp = vm->fp;
+    vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
+    vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
+    vm->frames[vm->frame_count].exception_handler_frame =
+        (uint8_t)vm->handler_call_pending;
+    vm->frames[vm->frame_count].handler_region_bracket_mark =
+        vm->handler_region_bracket_mark;
+    vm->frames[vm->frame_count].handler_region_active =
+        (uint8_t)vm->handler_call_pending;
+    vm->handler_call_pending = 0;
+    vm->handler_region_bracket_mark = -1;
+    vm->frame_count++;
+
+    vm->fp = vm->sp - argc;
+    vm->pc = cl->closure.func_pc;
+    return 1;
+}
 
 void vm_run(VM* vm) {
     const int owns_native_escape = !vm->native_escape_ready;
@@ -82,6 +139,7 @@ void vm_run(VM* vm) {
         [OP_CLOSURE_COUNT] = &&lbl_CLOSURE_COUNT,
         [OP_CALL]          = &&lbl_CALL,
         [OP_TAIL_CALL]     = &&lbl_TAIL_CALL,
+        [OP_TAIL_CALL_POPN] = &&lbl_TAIL_CALL,
         [OP_RETURN]        = &&lbl_RETURN,
         [OP_JUMP]          = &&lbl_JUMP,
         [OP_JUMP_IF_FALSE] = &&lbl_JUMP_IF_FALSE,
@@ -121,7 +179,9 @@ void vm_run(VM* vm) {
         [OP_VOID]          = &&lbl_VOID,
         [OP_LANGUAGE_COVERAGE] = &&lbl_LANGUAGE_COVERAGE,
         [OP_LANGUAGE_COVERAGE_CALL] = &&lbl_LANGUAGE_COVERAGE_CALL,
+        [OP_LANGUAGE_COVERAGE_FORM] = &&lbl_LANGUAGE_COVERAGE_FORM,
         [OP_GLOBAL_MARK]   = &&lbl_GLOBAL_MARK,
+        [OP_RAISE_SECONDARY] = &&lbl_RAISE_SECONDARY,
     };
 
     #define DISPATCH() do { \
@@ -177,18 +237,7 @@ void vm_run(VM* vm) {
      * tracked ones are promoted to ad_const nodes on the tape.
      */
 
-#define VM_AD_BINARY(vm, a_sp, b_sp, tape_fn, result_val) do { \
-    if ((vm)->active_tape) { \
-        AdTape* _t = (AdTape*)(vm)->active_tape; \
-        int _an = (vm)->ad_node_map[(a_sp)]; \
-        int _bn = (vm)->ad_node_map[(b_sp)]; \
-        if (_an != -1 || _bn != -1) { \
-            if (_an == -1) _an = ad_const(_t, as_number((vm)->stack[(a_sp)])); \
-            if (_bn == -1) _bn = ad_const(_t, as_number((vm)->stack[(b_sp)])); \
-            (vm)->ad_node_map[(vm)->sp] = tape_fn(_t, _an, _bn); \
-        } else { (vm)->ad_node_map[(vm)->sp] = -1; } \
-    } else { (vm)->ad_node_map[(vm)->sp] = -1; } \
-} while(0)
+/* VM_AD_BINARY is defined in vm_ops.c, beside vm_op_arith, its only user. */
 
 #define VM_AD_UNARY(vm, a_sp, tape_fn) do { \
     if ((vm)->active_tape) { \
@@ -200,120 +249,17 @@ void vm_run(VM* vm) {
     } else { (vm)->ad_node_map[(vm)->sp] = -1; } \
 } while(0)
 
-    lbl_ADD: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
-        Value b = vm_pop(vm), a = vm_pop(vm);
-        if (!vm_require_arithmetic_numbers(vm, a, b, "+")) DISPATCH();
-        /* SW-09: neither operand check below recognizes VAL_I128, so a
-         * generic `+` over i128 values used to fall all the way through to
-         * the double path, where as_number_vm() reads a heap-boxed i128 as
-         * 0.0 — silently answering 0 with exit 0. The VM has no i128
-         * opcodes (that is v1.3.5 scope); raise instead of fabricating a
-         * result. The native engine already raises for the same case
-         * (LE-03, "Type error in +: expected number, vector, or tensor"). */
-        if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "+: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                "are implemented in the bytecode interpreter); use the native "
-                "backend");
-            DISPATCH();
-        }
-        if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1905); }
-        else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 373); }
-        else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 331); }
-        else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 307); }
-        else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '+'); }
-        else if (a.type == VAL_INT && b.type == VAL_INT) { int64_t r; VM_AD_BINARY(vm, a_sp, b_sp, ad_add, 0);
-            if (__builtin_add_overflow(a.as.i, b.as.i, &r)) vm_bignum_arith(vm, a, b, '+'); else vm_push(vm, INT_VAL(r)); }
-        else { VM_AD_BINARY(vm, a_sp, b_sp, ad_add, 0);
-            vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) + as_number_vm(vm, b))); } DISPATCH(); }
-    lbl_SUB: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
-        Value b = vm_pop(vm), a = vm_pop(vm);
-        if (!vm_require_arithmetic_numbers(vm, a, b, "-")) DISPATCH();
-        /* SW-09b: same family as lbl_ADD's guard — every arithmetic/
-         * comparison opcode that falls through to as_number_vm() misreads
-         * a heap-boxed VAL_I128 as 0.0. */
-        if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "-: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                "are implemented in the bytecode interpreter); use the native "
-                "backend");
-            DISPATCH();
-        }
-        if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1906); }
-        else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 374); }
-        else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 332); }
-        else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 308); }
-        else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '-'); }
-        else if (a.type == VAL_INT && b.type == VAL_INT) { int64_t r; VM_AD_BINARY(vm, a_sp, b_sp, ad_sub, 0);
-            if (__builtin_sub_overflow(a.as.i, b.as.i, &r)) vm_bignum_arith(vm, a, b, '-'); else vm_push(vm, INT_VAL(r)); }
-        else { VM_AD_BINARY(vm, a_sp, b_sp, ad_sub, 0);
-            vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) - as_number_vm(vm, b))); } DISPATCH(); }
-    lbl_MUL: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
-        Value b = vm_pop(vm), a = vm_pop(vm);
-        if (!vm_require_arithmetic_numbers(vm, a, b, "*")) DISPATCH();
-        /* SW-09b: see lbl_ADD/lbl_SUB. */
-        if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "*: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                "are implemented in the bytecode interpreter); use the native "
-                "backend");
-            DISPATCH();
-        }
-        if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1907); }
-        else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 375); }
-        else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 333); }
-        else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 309); }
-        else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '*'); }
-        else if (a.type == VAL_INT && b.type == VAL_INT) { int64_t r; VM_AD_BINARY(vm, a_sp, b_sp, ad_mul, 0);
-            if (__builtin_mul_overflow(a.as.i, b.as.i, &r)) vm_bignum_arith(vm, a, b, '*'); else vm_push(vm, INT_VAL(r)); }
-        else { VM_AD_BINARY(vm, a_sp, b_sp, ad_mul, 0);
-            vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) * as_number_vm(vm, b))); } DISPATCH(); }
-    lbl_DIV: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
-        Value b = vm_pop(vm), a = vm_pop(vm);
-        if (!vm_require_arithmetic_numbers(vm, a, b, "/")) DISPATCH();
-        /* SW-09b: see lbl_ADD/lbl_SUB/lbl_MUL. */
-        if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "/: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                "are implemented in the bytecode interpreter); use the native "
-                "backend");
-            DISPATCH();
-        }
-        if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 1908); }
-        else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 376); }
-        else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 334); }
-        else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 310); }
-        else if (a.type == VAL_INT && b.type == VAL_INT) {
-            /* exact/exact -> exact result (R7RS): native 334 (rational div)
-             * reduces the fraction and collapses denom==1 back to an integer,
-             * so (/ 1 3) yields 1/3 and (/ 6 3) yields 2 rather than the
-             * inexact float the double path produced. */
-            if (b.as.i == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
-            vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 334);
-        }
-        /* A bignum operand must reach the bignum domain: as_number() reads a
-         * heap pointer's .as.i and answers 0.0, so falling through to the
-         * double path below made every bignum division silently produce 0. */
-        else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '/'); if (vm->error) goto vm_exit; }
-        else {
-        double bd = as_number_vm(vm, b);
-        /* Only EXACT-by-exact-zero is an error.  With any inexact operand this
-         * is IEEE-754 division and must yield +nan.0 / ±inf.0 like native —
-         * erroring here aborted the run and dropped every later top-level
-         * form (tests/vm_parity/corpus/37_float_div_zero.esk). */
-        if (bd == 0 && vm_is_exact_number(a) && vm_is_exact_number(b)) {
-            fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
-        VM_AD_BINARY(vm, a_sp, b_sp, ad_div, 0);
-        vm_push(vm, number_val_contagious(a, b, as_number_vm(vm, a) / bd)); } DISPATCH(); }
+    lbl_ADD: vm_op_arith(vm, '+'); DISPATCH();
+    lbl_SUB: vm_op_arith(vm, '-'); DISPATCH();
+    lbl_MUL: vm_op_arith(vm, '*'); DISPATCH();
+    lbl_DIV: vm_op_arith(vm, '/'); DISPATCH();
     lbl_MOD: {
         Value b = vm_pop(vm), a = vm_pop(vm);
         /* SW-09b: see lbl_ADD. modulo's double path (fmod) reads a
          * heap-boxed VAL_I128 as 0.0 exactly like the other arithmetic ops. */
         if (a.type == VAL_I128 || b.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "modulo: i128 arithmetic is not supported on the VM (no i128 "
-                "opcodes are implemented in the bytecode interpreter); use the "
-                "native backend");
+            vm_push(vm, a); vm_push(vm, b);
+            vm_dispatch_native(vm, 2119); /* generic modulo/floor-remainder */
             DISPATCH();
         }
         if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, 'm'); DISPATCH(); }
@@ -333,10 +279,7 @@ void vm_run(VM* vm) {
         /* SW-09b: see lbl_ADD. Unary negate has the same fall-through-to-
          * double shape as the binary ops. */
         if (a.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "-: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                "are implemented in the bytecode interpreter); use the native "
-                "backend");
+            vm_push_i128(vm, eshkol_i128_neg(vm_unbox_i128(vm, a))); /* i128-neg */
             DISPATCH();
         }
         if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 1909); }
@@ -352,10 +295,8 @@ void vm_run(VM* vm) {
     lbl_ABS: { int a_sp = vm->sp - 1; Value a = vm_pop(vm);
         /* SW-09b: see lbl_NEG. */
         if (a.type == VAL_I128) {
-            vm_raise_error_msg(vm,
-                "abs: i128 arithmetic is not supported on the VM (no i128 "
-                "opcodes are implemented in the bytecode interpreter); use the "
-                "native backend");
+            __int128 av = vm_unbox_i128(vm, a);
+            vm_push_i128(vm, av < 0 ? eshkol_i128_neg(av) : av);
             DISPATCH();
         }
         if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 1916); }
@@ -414,50 +355,14 @@ void vm_run(VM* vm) {
     /* --- Function call --- */
 
     lbl_CALL: {
-        int argc = instr.operand;
-        Value func = vm->stack[vm->sp - 1 - argc];
-
-        vm_language_coverage_named_call(vm, func);
-
-        if (func.type == VAL_PARAMETER_OBJ) {
-            Value result = vm_parameter_invoke(vm, func, &vm->stack[vm->sp - argc], argc);
-            vm->sp -= argc + 1;
-            vm_push(vm, result);
-            DISPATCH();
-        }
-
-        /* Continuation invocation: (k value) */
-        if (func.type == VAL_CONTINUATION && argc >= 1) {
-            Value val = vm->stack[vm->sp - 1];
-            VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
-            if (cont) {
-                vm_continuation_resume(vm, cont, val);
-                DISPATCH();
-            }
-        }
-
-        if (func.type != VAL_CLOSURE) {
-            fprintf(stderr,
-                    "ERROR: calling non-function at pc=%d argc=%d type=%d\n",
-                    vm->pc - 1, argc, (int)func.type);
-            vm->error = 1; goto vm_exit;
-        }
-
-        HeapObject* cl = vm->heap.objects[func.as.ptr];
-
-        if (vm->frame_count >= MAX_FRAMES) { fprintf(stderr, "FRAME OVERFLOW\n"); vm->error = 1; goto vm_exit; }
-        vm->frames[vm->frame_count].return_pc = vm->pc;
-        vm->frames[vm->frame_count].return_fp = vm->fp;
-        vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
-        vm->frame_count++;
-
-        vm->fp = vm->sp - argc;
-        vm->pc = cl->closure.func_pc;
+        if (vm_enter_call(vm, instr.operand, vm->pc) < 0) goto vm_exit;
         DISPATCH();
     }
 
     lbl_TAIL_CALL: {
-        int argc = instr.operand;
+        int argc = instr.op == OP_TAIL_CALL_POPN
+                       ? (instr.operand & 0xFFFF) : instr.operand;
+        vm_mark_tail_retained_handlers(vm);
         Value func = vm->stack[vm->sp - 1 - argc];
         vm_language_coverage_named_call(vm, func);
         if (func.type == VAL_PARAMETER_OBJ) {
@@ -468,6 +373,7 @@ void vm_run(VM* vm) {
                 vm->halted = 1;
                 goto vm_exit;
             }
+            vm_pop_tail_retained_handlers(vm);
             vm->frame_count--;
             if (vm->frames[vm->frame_count].return_pc == -1) {
                 vm->sp = 0;
@@ -481,9 +387,13 @@ void vm_run(VM* vm) {
             vm_push(vm, result);
             DISPATCH();
         }
-        /* Continuation invocation in tail position */
-        if (func.type == VAL_CONTINUATION && argc >= 1) {
-            Value val = vm->stack[vm->sp - 1];
+        /* Continuation invocation in tail position carries all values. */
+        if (func.type == VAL_CONTINUATION) {
+            Value val;
+            if (!vm_continuation_result(vm, &vm->stack[vm->sp - argc], argc, &val)) {
+                fprintf(stderr, "ERROR: cannot allocate continuation value frame\n");
+                vm->error = 1; goto vm_exit;
+            }
             VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
             if (cont) {
                 vm_continuation_resume(vm, cont, val);
@@ -492,6 +402,15 @@ void vm_run(VM* vm) {
         }
         if (func.type != VAL_CLOSURE) { vm->error = 1; goto vm_exit; }
         HeapObject* cl = vm->heap.objects[func.as.ptr];
+        if (!vm_check_closure_arity(vm, cl, argc)) goto vm_exit;
+
+        if (!vm_validate_closure_arity(vm, cl, argc)) goto vm_exit;
+
+        if (vm_tail_call_from_exception_handler(vm, argc, &func)) {
+            cl = vm->heap.objects[func.as.ptr];
+            vm->pc = cl->closure.func_pc;
+            DISPATCH();
+        }
 
         for (int i = 0; i < argc; i++) {
             vm->stack[vm->fp + i] = vm->stack[vm->sp - argc + i];
@@ -536,7 +455,7 @@ void vm_run(VM* vm) {
         Value v = vm_pop(vm);
         if (v.type != VAL_VOID) {
             print_value(vm, v);
-            printf("\n"); fflush(stdout);
+            fflush(stdout);
             if (vm->n_outputs < 256) vm->outputs[vm->n_outputs++] = v;
         }
         DISPATCH();
@@ -554,6 +473,10 @@ void vm_run(VM* vm) {
         vm->language_coverage_call_pc = vm->pc;
         DISPATCH();
 
+    lbl_LANGUAGE_COVERAGE_FORM:
+        vm_language_coverage_form(instr.operand);
+        DISPATCH();
+
     lbl_HALT:
         vm->halted = 1;
         goto vm_exit;
@@ -564,7 +487,13 @@ void vm_run(VM* vm) {
         DISPATCH();
     }
 
-    lbl_CLOSE_UPVALUE: vm_exec_close_upvalue(vm, instr.operand); DISPATCH();
+    lbl_RAISE_SECONDARY:
+        vm_raise_secondary_exception(vm);
+        DISPATCH();
+
+    lbl_CLOSE_UPVALUE:
+        vm_exec_close_upvalue(vm, instr.operand);
+        DISPATCH();
 
     lbl_VEC_CREATE: vm_exec_vec_create(vm, instr.operand); DISPATCH();
 
@@ -621,6 +550,8 @@ void vm_run(VM* vm) {
     lbl_CALLCC: {
         Value proc = vm_pop(vm);
         if (proc.type != VAL_CLOSURE) { vm_push(vm, NIL_VAL); DISPATCH(); }
+        HeapObject* proc_closure = vm->heap.objects[proc.as.ptr];
+        if (!vm_check_closure_arity(vm, proc_closure, 1)) goto vm_exit;
         /* Validate bounds before capture */
         if (vm->sp > STACK_SIZE || vm->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
         int32_t cont_ptr = heap_alloc(&vm->heap);
@@ -635,7 +566,10 @@ void vm_run(VM* vm) {
         cont->n_handlers = vm->n_handlers;
         cont->promise_mark = vm->promise_eval_head;
         vm_capture_continuation_stack(vm, cont);
-        vm_capture_continuation_dynamic_state(vm, cont);
+        if (!vm_capture_continuation_dynamic_state(vm, cont)) {
+            vm->error = 1;
+            goto vm_exit;
+        }
         vm->heap.objects[cont_ptr]->opaque.ptr = cont;
         /* Create continuation closure: a special closure that invokes OP_INVOKE_CC */
         Value cont_val = (Value){.type = VAL_CONTINUATION, .as.ptr = cont_ptr};
@@ -648,6 +582,10 @@ void vm_run(VM* vm) {
         vm->frames[vm->frame_count].return_pc = vm->pc;
         vm->frames[vm->frame_count].return_fp = vm->fp;
         vm->frames[vm->frame_count].func_pc = cl_cc->closure.func_pc;
+        vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
+        vm->frames[vm->frame_count].exception_handler_frame = 0;
+        vm->frames[vm->frame_count].handler_region_bracket_mark = -1;
+        vm->frames[vm->frame_count].handler_region_active = 0;
         vm->frame_count++;
         vm->fp = vm->sp - 1; /* 1 arg: the continuation */
         vm->pc = cl_cc->closure.func_pc;
@@ -657,7 +595,7 @@ void vm_run(VM* vm) {
     lbl_PUSH_HANDLER: vm_exec_push_handler(vm, instr.operand); DISPATCH();
 
     lbl_POP_HANDLER: {
-        if (vm->n_handlers > 0) vm->n_handlers--;
+        vm_pop_handler(vm);
         DISPATCH();
     }
 
@@ -757,97 +695,16 @@ vm_exit:
         case OP_DUP:   vm_push(vm, vm_peek(vm, 0)); break;
 
         /* Arithmetic */
-        case OP_ADD: { Value b = vm_pop(vm), a = vm_pop(vm);
-            if (!vm_require_arithmetic_numbers(vm, a, b, "+")) break;
-            /* SW-09: see the identical guard in lbl_ADD above — this switch-
-             * based loop is the non-computed-goto twin of the same opcode
-             * and must reject i128 operands the same way, not silently
-             * coerce them to 0.0 via as_number_vm(). */
-            if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "+: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                    "are implemented in the bytecode interpreter); use the native "
-                    "backend");
-                break;
-            }
-            if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1905); }
-            else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,373); }
-            else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,331); }
-            else if (a.type==VAL_COMPLEX||b.type==VAL_COMPLEX) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,307); }
-            else if (vm_either_bignum(a,b)) vm_bignum_arith(vm,a,b,'+');
-            else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_add_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'+'); else vm_push(vm, INT_VAL(r)); }
-            else vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) + as_number_vm(vm,b))); break; }
-        case OP_SUB: { Value b = vm_pop(vm), a = vm_pop(vm);
-            if (!vm_require_arithmetic_numbers(vm, a, b, "-")) break;
-            /* SW-09b: switch-based twin of lbl_SUB. */
-            if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "-: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                    "are implemented in the bytecode interpreter); use the native "
-                    "backend");
-                break;
-            }
-            if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1906); }
-            else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,374); }
-            else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,332); }
-            else if (a.type==VAL_COMPLEX||b.type==VAL_COMPLEX) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,308); }
-            else if (vm_either_bignum(a,b)) vm_bignum_arith(vm,a,b,'-');
-            else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_sub_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'-'); else vm_push(vm, INT_VAL(r)); }
-            else vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) - as_number_vm(vm,b))); break; }
-        case OP_MUL: { Value b = vm_pop(vm), a = vm_pop(vm);
-            if (!vm_require_arithmetic_numbers(vm, a, b, "*")) break;
-            /* SW-09b: switch-based twin of lbl_MUL. */
-            if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "*: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                    "are implemented in the bytecode interpreter); use the native "
-                    "backend");
-                break;
-            }
-            if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1907); }
-            else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,375); }
-            else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,333); }
-            else if (a.type==VAL_COMPLEX||b.type==VAL_COMPLEX) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,309); }
-            else if (vm_either_bignum(a,b)) vm_bignum_arith(vm,a,b,'*');
-            else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_mul_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'*'); else vm_push(vm, INT_VAL(r)); }
-            else vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) * as_number_vm(vm,b))); break; }
-        case OP_DIV: { Value b = vm_pop(vm), a = vm_pop(vm);
-            if (!vm_require_arithmetic_numbers(vm, a, b, "/")) break;
-            /* SW-09b: switch-based twin of lbl_DIV. */
-            if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "/: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                    "are implemented in the bytecode interpreter); use the native "
-                    "backend");
-                break;
-            }
-            if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1908); }
-            else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,376); }
-            else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,334); }
-            else if (a.type==VAL_COMPLEX||b.type==VAL_COMPLEX) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,310); }
-            else if (a.type==VAL_INT && b.type==VAL_INT) {
-                /* exact/exact → exact result (R7RS): native 334 (rational div)
-                 * reduces the fraction and collapses denom==1 back to an
-                 * integer, so (/ 1 3) yields 1/3 and (/ 6 3) yields 2 rather
-                 * than the inexact float the double path produced. */
-                if (b.as.i == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
-                vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,334);
-            }
-            /* See the threaded-dispatch OP_DIV above: bignums need the bignum
-             * domain, and only EXACT-by-exact-zero is an error. */
-            else if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'/'); }
-            else { double bd = as_number_vm(vm,b);
-            if (bd == 0 && vm_is_exact_number(a) && vm_is_exact_number(b)) {
-                fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
-            vm_push(vm, number_val_contagious(a, b, as_number_vm(vm,a) / bd)); } break; }
+        case OP_ADD: vm_op_arith(vm, '+'); break;
+        case OP_SUB: vm_op_arith(vm, '-'); break;
+        case OP_MUL: vm_op_arith(vm, '*'); break;
+        case OP_DIV: vm_op_arith(vm, '/'); break;
         case OP_MOD: {
             Value b = vm_pop(vm), a = vm_pop(vm);
             /* SW-09b: switch-based twin of lbl_MOD. */
             if (a.type == VAL_I128 || b.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "modulo: i128 arithmetic is not supported on the VM (no i128 "
-                    "opcodes are implemented in the bytecode interpreter); use the "
-                    "native backend");
+                vm_push(vm, a); vm_push(vm, b);
+                vm_dispatch_native(vm, 2119); /* generic modulo/floor-remainder */
                 break;
             }
             if (vm_either_bignum(a, b)) { vm_bignum_arith(vm, a, b, 'm'); break; }
@@ -866,10 +723,7 @@ vm_exit:
         case OP_NEG: { Value a = vm_pop(vm);
             /* SW-09b: switch-based twin of lbl_NEG. */
             if (a.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "-: i128 arithmetic is not supported on the VM (no i128 opcodes "
-                    "are implemented in the bytecode interpreter); use the native "
-                    "backend");
+                vm_push_i128(vm, eshkol_i128_neg(vm_unbox_i128(vm, a))); /* i128-neg */
                 break;
             }
             /* See the threaded lbl_NEG: a rational needs the rational domain;
@@ -882,10 +736,8 @@ vm_exit:
         case OP_ABS: { Value a = vm_pop(vm);
             /* SW-09b: switch-based twin of lbl_ABS. */
             if (a.type == VAL_I128) {
-                vm_raise_error_msg(vm,
-                    "abs: i128 arithmetic is not supported on the VM (no i128 "
-                    "opcodes are implemented in the bytecode interpreter); use the "
-                    "native backend");
+                __int128 av = vm_unbox_i128(vm, a);
+                vm_push_i128(vm, av < 0 ? eshkol_i128_neg(av) : av);
                 break;
             }
             /* SW-40: this switch arm is the twin of lbl_ABS and must carry the
@@ -934,53 +786,15 @@ vm_exit:
 
         /* Function call */
         case OP_CALL: {
-            int argc = instr.operand;
-            Value func = vm->stack[vm->sp - 1 - argc]; /* function is below args */
-
-            vm_language_coverage_named_call(vm, func);
-
-            if (func.type == VAL_PARAMETER_OBJ) {
-                Value result = vm_parameter_invoke(vm, func,
-                    &vm->stack[vm->sp - argc], argc);
-                vm->sp -= argc + 1;
-                vm_push(vm, result);
-                break;
-            }
-
-            /* Continuation invocation: (k value) */
-            if (func.type == VAL_CONTINUATION && argc >= 1) {
-                Value val = vm->stack[vm->sp - 1];
-                VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
-                if (cont) {
-                    vm_continuation_resume(vm, cont, val);
-                }
-                break;
-            }
-
-            if (func.type != VAL_CLOSURE) {
-                fprintf(stderr,
-                        "ERROR: calling non-function at pc=%d argc=%d type=%d\n",
-                        vm->pc - 1, argc, (int)func.type);
-                vm->error = 1; break;
-            }
-
-            HeapObject* cl = vm->heap.objects[func.as.ptr];
-
-            /* Save call frame */
-            if (vm->frame_count >= MAX_FRAMES) { fprintf(stderr, "FRAME OVERFLOW\n"); vm->error = 1; break; }
-            vm->frames[vm->frame_count].return_pc = vm->pc;
-            vm->frames[vm->frame_count].return_fp = vm->fp;
-            vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
-            vm->frame_count++;
-
-            /* Set up new frame: func sits at sp-argc-1, args at sp-argc..sp-1 */
-            vm->fp = vm->sp - argc;
-            vm->pc = cl->closure.func_pc;
+            vm_enter_call(vm, instr.operand, vm->pc);
             break;
         }
 
-        case OP_TAIL_CALL: {
-            int argc = instr.operand;
+        case OP_TAIL_CALL:
+        case OP_TAIL_CALL_POPN: {
+            int argc = instr.op == OP_TAIL_CALL_POPN
+                           ? (instr.operand & 0xFFFF) : instr.operand;
+            vm_mark_tail_retained_handlers(vm);
             Value func = vm->stack[vm->sp - 1 - argc];
             vm_language_coverage_named_call(vm, func);
             if (func.type == VAL_PARAMETER_OBJ) {
@@ -992,6 +806,7 @@ vm_exit:
                     vm->halted = 1;
                     break;
                 }
+                vm_pop_tail_retained_handlers(vm);
                 vm->frame_count--;
                 if (vm->frames[vm->frame_count].return_pc == -1) {
                     vm->sp = 0;
@@ -1005,8 +820,12 @@ vm_exit:
                 vm_push(vm, result);
                 break;
             }
-            if (func.type == VAL_CONTINUATION && argc >= 1) {
-                Value val = vm->stack[vm->sp - 1];
+            if (func.type == VAL_CONTINUATION) {
+                Value val;
+                if (!vm_continuation_result(vm, &vm->stack[vm->sp - argc], argc, &val)) {
+                    fprintf(stderr, "ERROR: cannot allocate continuation value frame\n");
+                    vm->error = 1; break;
+                }
                 VmContinuation* cont = (VmContinuation*)
                     vm->heap.objects[func.as.ptr]->opaque.ptr;
                 if (cont) {
@@ -1016,6 +835,15 @@ vm_exit:
             }
             if (func.type != VAL_CLOSURE) { vm->error = 1; break; }
             HeapObject* cl = vm->heap.objects[func.as.ptr];
+            if (!vm_check_closure_arity(vm, cl, argc)) break;
+
+            if (!vm_validate_closure_arity(vm, cl, argc)) break;
+
+            if (vm_tail_call_from_exception_handler(vm, argc, &func)) {
+                cl = vm->heap.objects[func.as.ptr];
+                vm->pc = cl->closure.func_pc;
+                break;
+            }
 
             /* Move args to current frame position (reuse frame) */
             for (int i = 0; i < argc; i++) {
@@ -1058,7 +886,6 @@ vm_exit:
             Value v = vm_pop(vm);
             if (v.type != VAL_VOID) {
                 print_value(vm, v);
-                printf("\n");
                 if (vm->n_outputs < 256) vm->outputs[vm->n_outputs++] = v;
             }
             break;
@@ -1074,6 +901,10 @@ vm_exit:
         case OP_LANGUAGE_COVERAGE_CALL:
             vm->language_coverage_call_hash = (uint32_t)instr.operand;
             vm->language_coverage_call_pc = vm->pc;
+            break;
+
+        case OP_LANGUAGE_COVERAGE_FORM:
+            vm_language_coverage_form(instr.operand);
             break;
 
         case OP_HALT:
@@ -1142,6 +973,8 @@ vm_exit:
             /* Switch fallback: same logic as computed-goto lbl_CALLCC */
             Value proc = vm_pop(vm);
             if (proc.type != VAL_CLOSURE) { vm_push(vm, NIL_VAL); break; }
+            HeapObject* proc_closure = vm->heap.objects[proc.as.ptr];
+            if (!vm_check_closure_arity(vm, proc_closure, 1)) break;
             int32_t cont_ptr = heap_alloc(&vm->heap);
             if (cont_ptr < 0) { vm->error = 1; break; }
             vm->heap.objects[cont_ptr]->type = HEAP_CONTINUATION;
@@ -1153,7 +986,10 @@ vm_exit:
             cont->n_handlers = vm->n_handlers;
             cont->promise_mark = vm->promise_eval_head;
             vm_capture_continuation_stack(vm, cont);
-            vm_capture_continuation_dynamic_state(vm, cont);
+            if (!vm_capture_continuation_dynamic_state(vm, cont)) {
+                vm->error = 1;
+                break;
+            }
             vm->heap.objects[cont_ptr]->opaque.ptr = cont;
             Value cont_val = (Value){.type = VAL_CONTINUATION, .as.ptr = cont_ptr};
             vm_push(vm, proc); vm_push(vm, cont_val);
@@ -1162,6 +998,10 @@ vm_exit:
             vm->frames[vm->frame_count].return_pc = vm->pc;
             vm->frames[vm->frame_count].return_fp = vm->fp;
             vm->frames[vm->frame_count].func_pc = cl_cc->closure.func_pc;
+            vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
+            vm->frames[vm->frame_count].exception_handler_frame = 0;
+            vm->frames[vm->frame_count].handler_region_bracket_mark = -1;
+            vm->frames[vm->frame_count].handler_region_active = 0;
             vm->frame_count++;
             vm->fp = vm->sp - 1; vm->pc = cl_cc->closure.func_pc;
             break;
@@ -1169,8 +1009,9 @@ vm_exit:
         case OP_INVOKE_CC: vm_exec_invoke_cc(vm); break;
         case OP_OPEN_CLOSURE: break;
         case OP_PUSH_HANDLER: vm_exec_push_handler(vm, instr.operand); break;
-        case OP_POP_HANDLER: { if (vm->n_handlers > 0) vm->n_handlers--; break; }
+        case OP_POP_HANDLER: { vm_pop_handler(vm); break; }
         case OP_GET_EXN: { vm_push(vm, vm->current_exception); break; }
+        case OP_RAISE_SECONDARY: { vm_raise_secondary_exception(vm); break; }
         case OP_PACK_REST: {
             int n_fixed = instr.operand;
             int n_args = vm->sp - vm->fp;

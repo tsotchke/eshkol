@@ -1,0 +1,141 @@
+;;; core.exact_expt — SW-152: `expt` over the full exact tower.
+;;;
+;;; `(expt base exp)` with an exact rational base silently overflowed to
+;;; inexact 0 instead of computing an exact result: `(expt 1/3 50)` printed
+;;; `0` and `(exact? (expt 1/3 50))` answered `#f`, where the correct answer
+;;; is the exact rational `1/717897987691852588770249`.
+;;;
+;;; Root cause (both engines): `eshkol_bignum_pow_tagged` (native,
+;;; lib/core/bignum.cpp) and the VM's `expt` dispatch (lib/backend/
+;;; vm_native.c, native id 32) only recognized an exact INT64/bignum base.
+;;; A rational base is a HEAP_PTR that is neither, so it fell into each
+;;; engine's inexact fallback — which then read the rational's
+;;; {numerator,denominator,is_big,...} fields as if they were a bignum's
+;;; {sign,num_limbs,...} (native) or called a heap-unaware `as_number()`
+;;; that only reads VAL_INT/VAL_FLOAT/VAL_CHAR (VM) — both landing on 0.0.
+;;; A negative exact integer exponent on a bignum base, and a bignum
+;;; exponent overflowing int64, hit related mis-extractions.
+;;;
+;;; docs/COMPLETE_LANGUAGE_SPECIFICATION.md:3287 documented the int/bignum-
+;;; base, non-negative-exponent fast path only ("`(expt base exp)` where
+;;; both operands are exact non-negative integers dispatches to
+;;; `eshkol_bignum_pow_tagged`... If either operand is inexact, the
+;;; operation falls through to `pow(double, double)`") — silent on a
+;;; rational base and on a negative exponent, which is exactly the gap this
+;;; fixes and documents (docs/COMPLETE_LANGUAGE_SPECIFICATION.md #14.4.2 is
+;;; extended alongside this test).
+;;;
+;;; Fixed by: lib/core/rational.cpp (new eshkol_rational_pow_tagged),
+;;; lib/core/bignum.cpp (eshkol_bignum_pow_tagged dispatches rational bases
+;;; to it, and its inexact fallback no longer mistypes a bignum/rational
+;;; heap payload), lib/backend/vm_native.c (native id 32: negative-exponent
+;;; and VAL_RATIONAL branches, heap-aware as_number_vm fallback).
+
+(define pass 0)
+(define fail 0)
+(define (check nm ok)
+  (if ok
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display nm) (newline))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display nm) (newline))))
+
+(define (raises? thunk)
+  (call-with-current-continuation
+    (lambda (k) (with-exception-handler (lambda (e) (k #t)) (lambda () (thunk) #f)))))
+
+;; ---- the reported defect, verbatim ----
+;;
+;; The reference value is built via `(/ 1 (expt 3 50))` rather than typed as
+;; the bignum-magnitude rational LITERAL `1/717897987691852588770249`
+;; directly: this file is native-only in CTest (see the CMakeLists.txt entry
+;; below), but the comparison is written to also hold on the VM, where a
+;; bignum-magnitude `n/d` literal token is a separate, pre-existing, and
+;; unrelated defect in the VM's OWN reader (lib/backend/vm_parser.c) that
+;; clamps the denominator to INT64_MAX instead of building a bignum — filed
+;; for a follow-up, not fixed here (out of SW-152's scope: that reader path
+;; is untouched by eshkol_bignum_pow_tagged/eshkol_rational_pow_tagged and
+;; by lib/backend/vm_native.c's expt dispatch, which is exactly what this
+;; file exists to pin). (expt 3 50), by contrast, exercises the SAME exact
+;; integer-base repeated-squaring path on both engines and is unaffected.
+(define r1/3^50 (expt 1/3 50))
+(check "(expt 1/3 50) is exact" (exact? r1/3^50))
+(check "(expt 1/3 50) = 1/(3^50)"
+       (= r1/3^50 (/ 1 (expt 3 50))))
+(check "(expt 1/3 50) printed form"
+       (equal? (number->string r1/3^50) "1/717897987691852588770249"))
+
+;; ---- exact rational base: positive, negative, and zero exponent ----
+
+(check "(expt 1/2 3) = 1/8 exact" (and (exact? (expt 1/2 3)) (= (expt 1/2 3) 1/8)))
+(check "(expt 2/3 4) = 16/81 exact" (and (exact? (expt 2/3 4)) (= (expt 2/3 4) 16/81)))
+(check "(expt 1/3 -2) = 9 exact" (and (exact? (expt 1/3 -2)) (= (expt 1/3 -2) 9)))
+(check "(expt 2/3 -2) = 9/4 exact" (and (exact? (expt 2/3 -2)) (= (expt 2/3 -2) 9/4)))
+(check "(expt 1/3 0) = 1 exact" (and (exact? (expt 1/3 0)) (= (expt 1/3 0) 1)))
+;; A negative rational base: sign must land correctly (odd exponent keeps
+;; the sign, even exponent clears it), matching plain-integer expt.
+(check "(expt -1/2 3) = -1/8 exact" (and (exact? (expt -1/2 3)) (= (expt -1/2 3) -1/8)))
+(check "(expt -1/2 2) = 1/4 exact" (and (exact? (expt -1/2 2)) (= (expt -1/2 2) 1/4)))
+(check "(expt -1/2 -3) = -8 exact" (and (exact? (expt -1/2 -3)) (= (expt -1/2 -3) -8)))
+
+;; ---- bignum base (still exact integer, not rational) — pre-existing fast
+;; path, pinned here alongside the rational case so a shared regression in
+;; eshkol_bignum_pow_tagged's dispatch would fail this file too ----
+
+(define big-base (expt 10 30))
+(check "bignum base ^ small exponent is exact"
+       (exact? (expt big-base 2)))
+(check "bignum base ^ small exponent value"
+       (= (expt big-base 2) (expt 10 60)))
+
+;; ---- negative exponent on an exact integer/bignum base (was already
+;; partially supported for int64-range denominators; this pins the bignum-
+;; overflow case staying exact rather than degrading to double) ----
+
+(check "(expt 2 -2) = 1/4 exact" (and (exact? (expt 2 -2)) (= (expt 2 -2) 1/4)))
+(check "(expt 10 -30) exact" (exact? (expt 10 -30)))
+(check "(expt 10 -30) value" (= (expt 10 -30) (/ 1 (expt 10 30))))
+;; Exponent large enough that base^|exponent| does not fit int64 even
+;; before inversion — exercises eshkol_rational_from_bignums_tagged's
+;; bignum-numerator path inside the negative-exponent branch.
+(check "(expt 10 -60) exact (bignum-denominator inversion)"
+       (exact? (expt 10 -60)))
+(check "(expt 10 -60) value" (= (expt 10 -60) (/ 1 (expt 10 60))))
+
+;; ---- large exponent, both engines' repeated-squaring path ----
+
+(check "(expt 2 200) exact and matches doubled squaring"
+       (and (exact? (expt 2 200))
+            (= (expt 2 200) (* (expt 2 100) (expt 2 100)))))
+
+;; ---- edge cases: 0 and 1 ----
+
+(check "(expt 0 0) = 1" (= (expt 0 0) 1))
+(check "(expt 0 0) is exact" (exact? (expt 0 0)))
+(check "(expt 5 0) = 1 exact" (and (exact? (expt 5 0)) (= (expt 5 0) 1)))
+(check "(expt 0 5) = 0 exact" (and (exact? (expt 0 5)) (= (expt 0 5) 0)))
+(check "(expt 1 999999999999) = 1" (= (expt 1 999999999999) 1))
+(check "(expt 0 -3) raises (division by zero)" (raises? (lambda () (expt 0 -3))))
+
+;; ---- R7RS exactness contagion: an inexact participant demotes the result ----
+
+(check "(expt 1/3 2.0) is inexact" (not (exact? (expt 1/3 2.0))))
+(check "(expt 1/3 2.0) value" (< (abs (- (expt 1/3 2.0) (/ 1.0 9.0))) 1e-12))
+(check "(expt 2.0 3) is inexact" (not (exact? (expt 2.0 3))))
+(check "(expt 2.0 3) = 8." (= (expt 2.0 3) 8.0))
+
+;; ---- from the task repro: bignum-backed rational multiplication was
+;; already exact; this pins expt feeding the same rational substrate ----
+
+(define r (/ (expt 7 30) (expt 11 25)))
+(check "(expt 7 30) is exact" (exact? (expt 7 30)))
+(check "(expt 11 25) is exact" (exact? (expt 11 25)))
+(check "r = (expt 7 30)/(expt 11 25) is exact" (exact? r))
+(check "(* r r) is exact" (exact? (* r r)))
+
+;; ---- negative control: expt is NOT special-cased into always-exact when
+;; there is no exact path at all (irrational-valued exponent stays double) ----
+
+(check "(expt 2 0.5) is inexact" (not (exact? (expt 2 0.5))))
+
+(newline) (display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)
+(if (> fail 0) (exit 1))

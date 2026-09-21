@@ -21,6 +21,8 @@ if [ ! -r "$ESHKOL_TEST_LIB" ]; then
     exit 2
 fi
 source "$ESHKOL_TEST_LIB"
+# shellcheck source=lib/checked_write.sh
+. "$(dirname "$ESHKOL_TEST_LIB")/checked_write.sh"
 eshkol_test_isolation_init "control-flow"
 
 # Colors for output
@@ -44,9 +46,10 @@ BUILD_DIR="${BUILD_DIR:-build}"
 # Some O0 AOT control-flow tests have large generated stack frames. Raise the
 # stack limit for child test binaries where the host allows it, so the harness
 # checks generated behavior instead of the caller shell's small default stack.
-if ! ulimit -s unlimited 2>/dev/null; then
-    ulimit -s 65532 2>/dev/null || true
-fi
+# Always a finite request: an unlimited RLIMIT_STACK switches Linux to the
+# legacy mmap layout, which collides with AddressSanitizer's shadow range and
+# aborts every sanitized binary this harness launches.
+ulimit -s 524288 2>/dev/null || ulimit -s 65532 2>/dev/null || true
 
 # Ensure build directory exists
 if [ ! -d "$BUILD_DIR" ]; then
@@ -80,6 +83,7 @@ for test_file in tests/control_flow/*.esk; do
     eshkol_test_reset_bin
     # Compile and run the test
     if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
+        eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
         if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
             # Check for failures in output
             # A failure marker anywhere in the output fails the test — the old
@@ -113,7 +117,7 @@ echo -e "${RED}Failed:         $FAIL${NC}"
 echo ""
 
 # Clean up
-rm -f "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_BIN"
+eshkol_checked_rm "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_BIN"
 
 # Exit with appropriate code
 if [ $FAIL -eq 0 ]; then

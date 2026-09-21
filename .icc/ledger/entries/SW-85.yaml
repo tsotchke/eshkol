@@ -1,0 +1,54 @@
+id: SW-85
+bucket: SILENT-WRONG
+subtag: exactness
+family: vm-ad-carrier/exact-point-forward-mode
+status: fixed
+needs_decision: false
+fix_lane: BI-30(d)
+closed_at: '2026-08-28'
+fixed_by: 'BI-30(d): lib/backend/vm_dual.c and vm_numeric.h add exact rational halves and a K+1 Taylor
+  carrier; vm_native.c seeds/extracts them; vm_region_evac.c retains their arena-owned coefficient graphs.'
+evidence: 'build-core CTest: selected AD/Taylor set 18/18 passed, including exact_taylor 68/68, reverse_over_taylor
+  18/18, exhaustive_dispatch and ad_vm_exactness_gate. tests/vm/vm_exact_ad_test.esk: 19/19 checks.'
+title: "The bytecode VM's forward-mode AD answers INEXACTLY at an exact point where native answers exactly,\
+  \ and RELEASE_NOTES states the opposite \u2014 exact AD is claimed 'available on every substrate'"
+repro: "Measured on a Linux CI worker at origin/master e7f2c685, same source file on both substrates:\n\n  (define\
+  \ (sq x) (* x x))\n  (define d (derivative sq (/ 1 3)))\n  (display d) (display (exact? d))\n\nnative\
+  \ (eshkol-run -r) : 2/3                   exact? #t VM (eshkol-vm-standalone-test) : 0.6666666666666666\
+  \   exact? #f\n`gradient` at the same exact scalar point diverges identically."
+observed: "The two answers are numerically EQUAL \u2014 (= 2/3 0.6666666666666666) is #t \u2014 and differ\
+  \ only in exactness, which is what makes this silent rather than loud: nothing raises, nothing prints,\
+  \ and a differential that compares values by = passes. Only `exact?` separates them, and the VM's answer\
+  \ is the one that is wrong against R7RS exactness contagion, since every operation applied to the exact\
+  \ point 1/3 in this program is exactness-preserving (* on two exact operands)."
+correct: 'An exact point through an exactness-preserving function must yield an exact derivative on every
+  substrate, exactly as the native Taylor-tower exact tier (ESH-0394, #393) already does. The VM should
+  answer 2/3 with exact? #t.'
+root_cause: "lib/backend/vm_numeric.h:117 \u2014 the VM's forward-mode carrier is `typedef struct { double\
+  \ primal; double tangent; } VmDual`, two raw C doubles. There is no exact half to carry a rational or\
+  \ bignum, so lib/backend/vm_native.c's derivative entry (fid 393) seeds the dual through as_number_vm(),\
+  \ which correctly UNWRAPS the rational 1/3 to 0.333\u2026 \u2014 the coercion is not a bug, it is the\
+  \ only thing a double field can accept \u2014 and the tangent is read back out with FLOAT_VAL. The exactness\
+  \ is lost at the seed, before any arithmetic runs."
+fix_sketch: "A hybrid carrier keeps the blast radius small and mirrors how native does it (an exactness\
+  \ flag on the tower, not a separate tower): add two `VmRational*` halves to VmDual, NULL meaning \"\
+  this half is inexact\". VmRational already spans int64 and bignum via its is_big field and already has\
+  \ vm_rational_add/sub/mul/div (lib/backend/vm_rational.c:323-351), so the exact-preserving ops (+ -\
+  \ * / and integer expt) compute exactly when BOTH operands carry exact halves, and every transcendental\
+  \ simply leaves them NULL \u2014 R7RS contagion, for free. Keeping the existing double fields in place\
+  \ means the ~40 sites in vm_native.c that read d->primal / d->tangent need no change; only the seed\
+  \ (fid 393 and the gradient path at vm_native.c:13408+), the extraction, and the six exact-preserving\
+  \ ops do. THEN, and not optionally: the dual gains interior heap pointers, so lib/backend/vm_region_evac.c:289\
+  \ \u2014 which today classifies VAL_DUAL as a LEAF alongside VAL_BIGNUM \u2014 must gain a deep-walk\
+  \ arm, or the exact halves dangle into a freed region arena. That is precisely the SW-66 defect class,\
+  \ one subtype over."
+scope_note: 'This entry covers exact scalar-point forward AD on the VM. BI-30(d) closes derivative, gradient,
+  derivative-n and taylor together: the existing dual envelope now carries exact rational halves for first-order
+  results and a K+1 Taylor coefficient array for arbitrary-order results.'
+doc_conflict: RELEASE_NOTES.md:9's claim that exact automatic differentiation is available on every substrate
+  is now met for the scalar derivative, gradient, derivative-n and taylor surfaces. Exact vector gradients
+  remain outside this scalar-carrier scope and are documented separately.
+notes: Surfaced by the release-notes audit and fixed in BI-30(d). The VM exact-point suite passes 19/19,
+  including derivative-n/taylor parity; the native exact-coefficient and reverse-over-Taylor suites pass
+  68/68 and 18/18 together. The carrier's exact halves and Taylor arrays are covered by vm_region_evac.c's
+  deep-walk.
