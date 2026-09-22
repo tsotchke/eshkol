@@ -7611,18 +7611,22 @@ private:
             builder->CreateCondBr(builder->CreateICmpUGT(spread->full_count, fixed_params),
                                   nonvar_overflow, nonvar_checked);
             builder->SetInsertPoint(nonvar_overflow);
-            Function* arity_err = module->getFunction("eshkol_type_error_with_operand");
+            // An arity-contract violation, raised as one: the runtime renders
+            // it with the shared arity formatter ("Arity mismatch: ...") and
+            // raises ESHKOL_EXCEPTION_ARITY_ERROR, the class the bytecode VM
+            // and the static call-site guards already report. The callee is a
+            // procedure value with no public name here, hence NULL.
+            Function* arity_err = module->getFunction("eshkol_arity_mismatch_error");
             if (!arity_err) {
                 arity_err = Function::Create(FunctionType::get(builder->getVoidTy(),
-                    {builder->getPtrTy(), builder->getPtrTy(), builder->getPtrTy()}, false),
-                    Function::ExternalLinkage, "eshkol_type_error_with_operand", module.get());
+                    {builder->getPtrTy(), int64_type, int64_type}, false),
+                    Function::ExternalLinkage, "eshkol_arity_mismatch_error", module.get());
                 arity_err->setDoesNotReturn();
             }
-            Value* proc_name = builder->CreateGlobalString("apply", "apply_fixed_proc");
-            Value* expected = builder->CreateGlobalString("fixed-arity procedure", "apply_fixed_expected");
-            Value* operand_slot = builder->CreateAlloca(tagged_value_type, nullptr, "apply_fixed_operand");
-            builder->CreateStore(func_result, operand_slot);
-            builder->CreateCall(arity_err, {proc_name, expected, operand_slot});
+            builder->CreateCall(arity_err, {
+                ConstantPointerNull::get(PointerType::getUnqual(*context)),
+                builder->CreateZExtOrTrunc(fixed_params, int64_type),
+                builder->CreateZExtOrTrunc(spread->full_count, int64_type)});
             builder->CreateUnreachable();
             builder->SetInsertPoint(nonvar_checked);
         }

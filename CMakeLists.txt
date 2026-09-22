@@ -8386,6 +8386,58 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|fatal runtime error")
     endif()
 
+    # apply spreading a longer list into a fixed-arity procedure is an arity
+    # error that guard catches as an error object, in operator position and
+    # through apply as a value (native JIT and AOT).
+    if(TARGET eshkol-run AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/apply_surplus_arity_test.esk")
+        add_test(
+            NAME apply_surplus_arity_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/apply_surplus_arity_test.esk")
+        set_tests_properties(apply_surplus_arity_jit_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: apply surplus arguments raise an arity error"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME apply_surplus_arity_aot_o0_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -O0 '${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/apply_surplus_arity_test.esk' -o '${CMAKE_CURRENT_BINARY_DIR}/apply_surplus_arity_o0' && '${CMAKE_CURRENT_BINARY_DIR}/apply_surplus_arity_o0'")
+        set_tests_properties(apply_surplus_arity_aot_o0_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: apply surplus arguments raise an arity error"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endif()
+
+    # A condition the runtime raises itself (car of a non-pair, an arithmetic
+    # type error) reaches guard as an error object on every engine.
+    if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/runtime_condition_error_object_test.esk")
+        add_test(
+            NAME runtime_condition_error_object_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/runtime_condition_error_object_test.esk")
+        set_tests_properties(runtime_condition_error_object_jit_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: runtime conditions are error objects"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME runtime_condition_error_object_aot_o0_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -O0 '${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/runtime_condition_error_object_test.esk' -o '${CMAKE_CURRENT_BINARY_DIR}/runtime_condition_error_object_o0' && '${CMAKE_CURRENT_BINARY_DIR}/runtime_condition_error_object_o0'")
+        set_tests_properties(runtime_condition_error_object_aot_o0_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: runtime conditions are error objects"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME runtime_condition_error_object_vm_src_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/error_handling/runtime_condition_error_object_test.esk")
+        set_tests_properties(runtime_condition_error_object_vm_src_smoke PROPERTIES
+            TIMEOUT 180
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "PASS: runtime conditions are error objects"
+            FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|fatal runtime error")
+    endif()
+
     # Continuation region-pin budget boundary: native JIT/AOT and the
     # standalone VM must reject a capture once the bounded cumulative pin
     # budget is reached, while the ordinary continuation fixtures retain

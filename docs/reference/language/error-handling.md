@@ -154,6 +154,17 @@ the accessors:
 (bad thing (1 2))
 ```
 
+A condition the runtime raises on its own, such as a wrong-type operand or an
+out-of-range index, is an error object in the same sense, so the same clause
+catches it and reads its message:
+
+```scheme
+(display (guard (e ((error-object? e) (error-object-message e))) (car 5))) (newline)
+```
+```
+car: argument is not a pair
+```
+
 > **Engine differences.** The bytecode VM prints a caught error object as
 > `<error-object>` rather than `#<exception>`, and its
 > `error-object-irritants` currently answers `()` where native answers

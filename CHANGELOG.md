@@ -14,6 +14,21 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **A condition the native runtime raised on its own was not an error object.**
+  `car` of a non-pair, an arithmetic type error, bignum and rational division
+  by zero, i128 overflow and a forward-referenced stub were built by a
+  header-less exception constructor, while `raise` hands every exception to a
+  handler as a heap object classified by its header. A `guard` clause therefore
+  saw garbage: `(guard (e (#t (error-object? e))) (car 5))` answered `#f` and
+  `e` displayed as a list of addresses, where the bytecode VM answered `#t`.
+  Every exception object now carries its header, built in one place.
+- **`apply` spreading too many elements into a fixed-arity procedure raised a
+  type error.** The refusal said `Type error in apply: expected fixed-arity
+  procedure, got procedure`. It is now an arity error rendered by the shared
+  formatter, `Arity mismatch: <procedure> expects 1 argument but got 3`.
+  Runtime error messages raised with no recorded source location also no longer
+  begin with stray bytes from an uninitialized location-prefix buffer.
+
 - Preserve browser VM output without a trailing newline, including UTF-8 text.
   Learn and Examples no longer lose their last displayed result or carry it
   into a later evaluation. The Pages gate executes all 41 runnable site examples

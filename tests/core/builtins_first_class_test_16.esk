@@ -48,7 +48,7 @@
 (check "%::calls" (equal? (% 3 5) (h2 % 3 5)))
 (check "/rational::calls" (equal? (/rational 1 2) (h2 /rational 1 2)))
 (check "angle::calls" (equal? (angle 3) (h1 angle 3)))
-(check "apply::calls" (equal? (apply (lambda (x) x) (list 1 2 3)) (h2 apply (lambda (x) x) (list 1 2 3))))
+(check "apply::calls" (equal? (apply (lambda (x y z) (list z y x)) (list 1 2 3)) (h2 apply (lambda (x y z) (list z y x)) (list 1 2 3))))
 (check "arithmetic-shift::calls" (equal? (arithmetic-shift 3 5) (h2 arithmetic-shift 3 5)))
 (check "binary-port?::calls" (equal? (binary-port? 3) (h1 binary-port? 3)))
 (check "bit-count::calls" (equal? (bit-count 3) (h1 bit-count 3)))

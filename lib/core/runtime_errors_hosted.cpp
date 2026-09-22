@@ -11,6 +11,7 @@
  */
 
 #include <eshkol/core/runtime.h>
+#include <eshkol/core/arity_contract.h>
 #include <eshkol/eshkol.h>
 #include <eshkol/logger.h>
 #include <eshkol/exhaustive_dispatch.h>
@@ -83,9 +84,17 @@ void eshkol_clear_error_location(void) {
 
 /* Render the current "file:line:col: " prefix into `buf`. Returns the number
  * of bytes written (0 if no location is set). The trailing space is included
- * so callers can concatenate the message directly. */
+ * so callers can concatenate the message directly. `buf` is always a valid
+ * C string on return: callers format it with "%s" unconditionally, so the
+ * no-location path must leave it empty rather than uninitialized (it used to
+ * return without writing, and a message raised with no recorded location
+ * began with whatever bytes the caller's stack buffer held). */
 static size_t eshkol_format_error_location_prefix(char* buf, size_t buflen) {
-    if (g_error_loc_line == 0 || buflen == 0) {
+    if (buflen == 0) {
+        return 0;
+    }
+    buf[0] = '\0';
+    if (g_error_loc_line == 0) {
         return 0;
     }
     int n;
@@ -356,6 +365,17 @@ void eshkol_type_error_with_operand(const char* proc_name,
     }
     eshkol_type_error_with_value(proc_name, expected_type,
                                  eshkol_format_value_type_tag(val));
+}
+
+/* Runtime arity-contract violation. The one formatter in
+ * <eshkol/core/arity_contract.h> renders the message, so it begins with the
+ * shared class marker and never with a location prefix, and the condition is
+ * raised as an arity error for `guard` to classify. */
+void eshkol_arity_mismatch_error(const char* proc_name, int64_t expected, int64_t got) {
+    char rendered[512];
+    eshkol_format_arity_mismatch(rendered, sizeof(rendered), proc_name,
+                                 (int)expected, (long long)got);
+    eshkol_runtime_fatal(ESHKOL_EXCEPTION_ARITY_ERROR, "%s", rendered);
 }
 
 /* Wrong-type argument at an `extern` pointer parameter (ESH-0363).
