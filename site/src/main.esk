@@ -449,7 +449,7 @@
           (web-add-class sub "hero-sub"))
 
         ;; Generated surface and ledger counts; runtime behavior is measured by release gates.
-        (let ((proof (create-text "p" "1,115 declared language constructs   ·   8 differential operators   ·   zero GC   ·   961 parity rows" left)))
+        (let ((proof (create-text "p" "1,116 declared language constructs   ·   8 differential operators   ·   zero GC   ·   962 parity rows" left)))
           (style! proof "color" "#a78bfa")
           (style! proof "fontSize" "0.82rem")
           (style! proof "fontFamily" "JetBrains Mono,monospace")
@@ -700,7 +700,7 @@
 
       (render-feature-card grid
         "Declared language surface"
-        "The generated language-surface manifest declares 1,115 constructs. Every one earned its row by running: execution-backed coverage is 1,115/1,115 declared constructs on the exact release commit.")
+        "The generated language-surface manifest declares 1,116 constructs. Every one earned its row by running: execution-backed coverage is 1,116/1,116 declared constructs on the exact release commit.")
 
       (render-feature-card grid
         "Portable release packages"
@@ -713,7 +713,7 @@
 
       (render-feature-card grid2
         "Verified VM subset"
-        "961 parity rows: 604 vm-supported, 46 native-only-justified, 311 gap. The VM parity differential runs 340/340, and differential gates compare each release with its reference engines.")
+        "962 parity rows: 606 vm-supported, 46 native-only-justified, 310 gap. The VM parity differential runs 340/340, and differential gates compare each release with its reference engines.")
 
       (render-feature-card grid2
         "Heterogeneous dispatch"
@@ -1425,7 +1425,7 @@
     (let ((stats (create-grid-4 page)))
       (let ((s1 (create-card stats)))
         (web-add-class s1 "text-center")
-        (let ((v (create-text "div" "287KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "295KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "Site WASM" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-card stats)))
