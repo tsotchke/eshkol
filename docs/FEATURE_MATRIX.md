@@ -636,10 +636,12 @@ from the manifest again.
 | Reduce operations | Yes | CUDA | Custom kernels |
 | Softmax | Yes | CUDA | Numerically stable |
 | Transpose | Yes | CUDA | cuBLAS transpose |
-| **WebGPU (Emscripten/wasm)** |
-| Ordinary GPU dispatch seam | Partial | WebGPU/WGSL | Browser adapter selected at runtime; CPU fallback when unavailable; headless gate evidence required before COMPLETE |
-| Matmul, algebraic elementwise, and reductions | Partial | WebGPU/WGSL | `high` has df32 kernels but currently refuses dispatch until the adapter meets `GPU_GATE_TOL=1e-9`; unsupported work uses CPU |
-| Exact IEEE f64 / Ozaki path | Unsupported | CPU fallback | WGSL has no f64; no exact WebGPU claim is made |
+| **WebGPU (browser)** |
+| Ordinary GPU dispatch seam | COMPLETE | WebGPU/WGSL | Same `eshkol_matmul_dispatch`/`eshkol_gpu_*` seam as Metal and CUDA; selected at runtime; explicit CPU fallback with a reason when WebGPU, JSPI or an adapter is absent |
+| Matmul, elementwise add/sub/mul/div/neg/abs/relu/reciprocal, sum/prod/min/max/mean | COMPLETE | sf64 WGSL | Default `exact` tier: IEEE f64 on integer words; matmul and elementwise bit-identical to CPU, reductions within `GPU_GATE_TOL=1e-9`; live Chrome gate |
+| Transcendental elementwise, batched matmul, transpose, softmax, norms, backward | CPU fallback | JS CPU reference | No sf64 kernel; refused explicitly and counted in `fallbackCount` |
+| f32 `fast` tier | Opt-in | f32 WGSL | Requires `precision: "fast"` and `gateTolerance >= 1e-6` |
+| Compiled `--wasm` tensor programs through the lite JS glue | Partial | `site/static/eshkol-runtime.js` | The glue provides the dispatch and shape imports, but its tensor operand/allocation helpers are still stubs, so a compiled program that builds tensors cannot yet run end to end in the browser |
 | **Dispatch** |
 | Automatic CPU/GPU selection | Yes | Runtime | Cost model based |
 | Threshold-based dispatch | Yes | Runtime | XLA → cBLAS → SIMD → scalar |

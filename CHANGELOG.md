@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **WebGPU GPU dispatch in the browser.** The ordinary GPU dispatch that
+  selects Metal or CUDA now selects WebGPU in the browser: `eshkol_matmul_dispatch`
+  and the `eshkol_gpu_*` entry points are served by `web/eshkol-webgpu.js`
+  (mirrored to `site/static/`), which both WASM loaders install, and by
+  `gpu_memory_webgpu.cpp` in Emscripten builds. The f64 kernels are sf64 --
+  IEEE binary64 on integer words, like Metal's `metal_softfloat.h` -- so the
+  default `exact` tier gives matmul and elementwise results bit-identical to
+  the CPU path, and reductions within `1e-9`. Without WebGPU, JSPI or an
+  adapter, `initWebGPU()` reports why and the program runs on the CPU; with a
+  device, every call the GPU does not serve is counted and explained in the
+  backend's diagnostics. `scripts/lib/webgpu_diff_runner.mjs` gates every kernel
+  against the CPU in Chrome, including random f64 bit patterns and edge values,
+  and proves itself red on five kernel corruptions. See
+  `docs/breakdown/GPU_ACCELERATION.md`, "Enabling WebGPU in a page".
+
 ### Fixed
+
+- The browser WASM glue now implements `eshkol_tensor_shape_total`,
+  `eshkol_matmul_shape_valid` and `eshkol_unwrap_list_index` with their native
+  contracts, returns the caller's arena from `eshkol_ad_home_arena` (the glue
+  never records a tape) and treats `eshkol_enforce_tensor_elements` as the
+  native no-limit path, instead of throwing. `web/eshkol-repl.js` gains the real
+  tagged i128 predicate the site runtime already had. `check_wasm_imports.py`
+  compiles a reshape/matmul surface so these imports stay covered.
 
 - Preserve browser VM output without a trailing newline, including UTF-8 text.
   Learn and Examples no longer lose their last displayed result or carry it
