@@ -1426,6 +1426,15 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **Continuation escapes from parallel callbacks and `map` arity.** Native
+  code invoking, inside a `parallel-map`, `-filter`, `-for-each`,
+  `-execute` or future callback, a continuation captured outside it crashed
+  with SIGBUS; the escape now resumes the continuation in its owning scope
+  after the join, as on the VM. `(map (lambda (x y) x) '(1 2))` failed to
+  compile natively; a procedure that does not take one argument per list now
+  goes through the call protocol and raises the catchable arity error.
+  (SW-205, SW-226)
+
 - **One call protocol for procedure values.** A procedure reached through a
   variable, a parameter or a closure is entered only with an argument count
   its declaration accepts; native used to pad a short call with null and drop

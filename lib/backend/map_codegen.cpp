@@ -214,6 +214,37 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
         }
     }
 
+    // SW-226: the static fast path calls the procedure's LLVM function with
+    // one argument per list. It is sound only when the procedure is known to
+    // take exactly that many; otherwise the call goes through the runtime
+    // closure dispatcher, whose call protocol refuses a wrong count with the
+    // catchable arity error (as on the VM) instead of miscompiling.
+    auto mapThroughClosure = [&]() -> Value* {
+        if (!codegen_ast_callback_) return nullptr;
+        Value* closure_val = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+        if (!closure_val) return nullptr;
+        if (closure_val->getType()->isPointerTy() && !isa<Function>(closure_val)) {
+            closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), closure_val, "map_proc_value");
+        }
+        std::vector<Value*> lists;
+        for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
+            Value* list = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+            if (!list) return nullptr;
+            lists.push_back(list);
+        }
+        return lists.empty() ? nullptr : mapWithClosureN(closure_val, lists);
+    };
+    {
+        const eshkol_ast_t& proc_ast = op->call_op.variables[0];
+        if (proc_ast.type == ESHKOL_OP && proc_ast.operation.op == ESHKOL_LAMBDA_OP &&
+            (proc_ast.operation.lambda_op.is_variadic ||
+             proc_ast.operation.lambda_op.num_params != num_lists)) {
+            Value* result = mapThroughClosure();
+            if (pop_function_context_) pop_function_context_(callback_context_);
+            return result;
+        }
+    }
+
     // Resolve the procedure function
     Value* proc = nullptr;
     Function* proc_func = nullptr;
@@ -325,6 +356,24 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
         eshkol_error("map procedure must be a function");
         if (pop_function_context_) pop_function_context_(callback_context_);
         return nullptr;
+    }
+
+    // SW-226, named procedures: count the parameters the procedure declares
+    // (its LLVM parameters minus capture pointers and the indirect-call slot).
+    if (op->call_op.variables[0].type == ESHKOL_VAR &&
+        !proc_func->getName().starts_with("indirect_call_")) {
+        size_t declared = 0;
+        for (const Argument& arg : proc_func->args()) {
+            StringRef n = arg.getName();
+            if (n.starts_with("captured_") || n.ends_with("_cap")) continue;
+            if (arg.getType() != ctx_.taggedValueType()) continue;
+            declared++;
+        }
+        if (declared != num_lists) {
+            Value* result = mapThroughClosure();
+            if (pop_function_context_) pop_function_context_(callback_context_);
+            return result;
+        }
     }
 
     // A NAMED procedure that closes over variables: its captures are the

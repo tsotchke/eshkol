@@ -7064,6 +7064,19 @@ private:
                 invoke_value = packPtrToTaggedValue(mv_ptr, ESHKOL_VALUE_HEAP_PTR);
             }
             builder->CreateStore(invoke_value, value_slot);
+            // SW-205: inside a parallel callback, a continuation owned by
+            // another thread (or by the caller) is recorded at the callback's
+            // unwind boundary and resumed by the caller after the join. This
+            // call does not return in that case; otherwise it is a no-op.
+            {
+                Function* transfer_check = module->getFunction("eshkol_continuation_transfer_check");
+                if (!transfer_check) {
+                    transfer_check = Function::Create(
+                        FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false),
+                        Function::ExternalLinkage, "eshkol_continuation_transfer_check", module.get());
+                }
+                builder->CreateCall(transfer_check, {state_ptr});
+            }
 
             // Unwind dynamic-wind stack before longjmp
             // Load the dynamic-wind and promise marks from the same public

@@ -455,6 +455,14 @@ original object. An asynchronous future records the condition in the same way
 and re-raises it from `force`, leaving the future unforced. A refused pool
 submission runs that element on the calling thread instead of dropping it.
 
+Continuation escapes follow the same rule. Every native continuation
+invocation first calls `eshkol_continuation_transfer_check`. Inside a boundary,
+a continuation whose capture point is not in the callback's own live extent on
+that thread (it belongs to the caller or to another thread) is not resumed
+there: the callback's dynamic state is unwound to the boundary and the transfer
+is recorded, and the calling thread performs it after the join, in element
+order with any recorded raise.
+
 The bytecode VM applies the same rule differently: an isolated worker VM never
 transfers control. A failed worker run is re-evaluated on the calling
 interpreter after the join (`vm_parmap_settle_failed` and friends in

@@ -56,6 +56,7 @@
   "eshkol_continuation_capture_handlers",
   "eshkol_continuation_restore_handlers",
   "eshkol_continuation_resume",
+  "eshkol_continuation_transfer_check",
   "eshkol_current_arena",
   "eshkol_decrement_recursion_depth",
   "eshkol_deep_equal",

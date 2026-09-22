@@ -251,9 +251,20 @@ struct eshkol_parallel_execute_task {
 namespace {
 struct ParallelRaise {
     bool pending;
-    eshkol_tagged_value_t value;
+    eshkol_tagged_value_t value;     // raised object, or the continuation's value
     eshkol_exception_t* exception;
+    void* continuation;              // SW-205: non-null for a deferred continuation transfer
 };
+
+// One entry per active run_in_boundary() on this thread (innermost first).
+struct ParallelBoundaryFrame {
+    std::jmp_buf* landing;
+    uintptr_t frame_addr;            // the boundary's frame: older frames are above it
+    int64_t handler_depth;           // handler-chain depth including the boundary's handler
+    ParallelRaise* out;
+    ParallelBoundaryFrame* prev;
+};
+thread_local ParallelBoundaryFrame* t_parallel_boundary = nullptr;
 
 struct ParallelBoundaryTask {
     parallel_worker_fn worker;
@@ -267,6 +278,13 @@ eshkol_exception_t* eshkol_get_current_exception(void);
 void eshkol_clear_current_exception(void);
 void eshkol_get_raised_value(eshkol_tagged_value_t* out);
 void eshkol_set_raised_value(const eshkol_tagged_value_t* value);
+void eshkol_exception_unwind_state_to_depth(int64_t depth, eshkol_tagged_value_t* inflight);
+void eshkol_reroot_dynamic_wind(void* target);
+void eshkol_promise_eval_unwind_to(void* mark);
+void eshkol_region_unwind_for_continuation(void* state);
+void eshkol_continuation_restore_handlers(void* state);
+void eshkol_continuation_resume(void* state);
+void eshkol_continuation_transfer_check(void* state);
 }
 
 // Kept out of line: setjmp needs a frame with no live C++ objects.
@@ -275,19 +293,50 @@ static void run_in_boundary(parallel_worker_fn worker, void* task,
                             ParallelRaise* out) {
     out->pending = false;
     out->exception = nullptr;
+    out->continuation = nullptr;
     std::jmp_buf landing;
     const int64_t depth = eshkol_exception_handler_depth();
     eshkol_push_exception_handler(&landing);
-    if (setjmp(landing) == 0) {
+    ParallelBoundaryFrame frame{&landing,
+                                (uintptr_t)__builtin_frame_address(0),
+                                depth + 1, out, t_parallel_boundary};
+    t_parallel_boundary = &frame;
+    const int landed = setjmp(landing);
+    if (landed == 0) {
         worker(task);
+        t_parallel_boundary = frame.prev;
         eshkol_exception_handlers_unwind_to(depth);
         return;
     }
+    t_parallel_boundary = frame.prev;
     eshkol_exception_handlers_unwind_to(depth);
     out->pending = true;
+    if (landed == 2) return;   // continuation recorded by the transfer check
     eshkol_get_raised_value(&out->value);
     out->exception = eshkol_get_current_exception();
     eshkol_clear_current_exception();
+}
+
+// SW-205: called by every native continuation invocation after the value is
+// stored and before any thread-local state is touched. Inside a parallel
+// callback, a continuation whose capture point is not in this callback's own
+// live extent on this thread (it was captured by the caller, or on another
+// thread) cannot be resumed here: its jmp_buf and marks belong to another
+// stack. The callback's extent is unwound to the boundary on this thread and
+// the transfer is recorded; the caller resumes it on its own thread after the
+// join, in element order, exactly like a recorded raise.
+extern "C" void eshkol_continuation_transfer_check(void* state_void) {
+    ParallelBoundaryFrame* b = t_parallel_boundary;
+    auto* state = static_cast<eshkol_continuation_state_t*>(state_void);
+    if (!b || !state) return;
+    const uintptr_t here = (uintptr_t)__builtin_frame_address(0);
+    const uintptr_t capture = (uintptr_t)state->jmp_buf_ptr;
+    if (capture > here && capture < b->frame_addr) return;   // captured in this callback
+    eshkol_tagged_value_t value = state->value;
+    eshkol_exception_unwind_state_to_depth(b->handler_depth, &value);
+    b->out->value = value;
+    b->out->continuation = state;
+    std::longjmp(*b->landing, 2);
 }
 
 static void* parallel_boundary_worker(void* arg) {
@@ -307,6 +356,20 @@ static ParallelRaise first_parallel_raise(const std::vector<ParallelBoundaryTask
 // extern "C" entry shell whose implementation frame has already returned.
 static void reraise_on_caller(ParallelRaise raised) {
     if (!raised.pending) return;
+    if (raised.continuation) {
+        // The same sequence a codegen'd continuation invocation performs, now
+        // on the owning side of the boundary (which may itself be a callback
+        // of an enclosing parallel form: the check defers it again).
+        auto* state = static_cast<eshkol_continuation_state_t*>(raised.continuation);
+        state->value = raised.value;
+        eshkol_continuation_transfer_check(state);
+        eshkol_reroot_dynamic_wind(state->wind_mark);
+        eshkol_promise_eval_unwind_to(state->promise_mark);
+        eshkol_region_unwind_for_continuation(state);
+        eshkol_continuation_restore_handlers(state);
+        eshkol_continuation_resume(state);
+        return;
+    }
     eshkol_set_raised_value(&raised.value);
     eshkol_raise(raised.exception);
 }

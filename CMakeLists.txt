@@ -11499,7 +11499,9 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-vm-standalone-test)
         "vm_parity/corpus/parallel_ad_carrier_lifetime|parallel AD carrier lifetime PASS"
         "vm_parity/corpus/parallel_callback_raise|parallel callback raise PASS"
         "vm/parallel_worker_settle_regression|parallel worker settle PASS"
-        "vm/closure_arity_catchable_regression|closure arity catchable PASS")
+        "vm/closure_arity_catchable_regression|closure arity catchable PASS"
+        "vm_parity/corpus/parallel_continuation_escape|parallel continuation escape PASS"
+        "vm_parity/corpus/map_arity_protocol|map arity protocol PASS")
     set(_eshkol_vm_parallel_files "")
     foreach(_case IN LISTS _eshkol_vm_parallel_cases)
         string(REPLACE "|" ";" _parts "${_case}")
@@ -11558,4 +11560,33 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run)
         TIMEOUT 180 LABELS "regression"
         PASS_REGULAR_EXPRESSION "procedure call protocol PASS"
         FAIL_REGULAR_EXPRESSION "Unhandled exception|fatal signal")
+endif()
+
+# SW-205 / SW-226 on native: continuation escapes from parallel callbacks (JIT
+# once, AOT 50 times) and map arity through the call protocol (JIT and AOT).
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run)
+    set(_eshkol_par_cont "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/parallel_continuation_escape.esk")
+    set(_eshkol_map_arity "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/map_arity_protocol.esk")
+    add_test(NAME native_parallel_continuation_escape_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> -r "${_eshkol_par_cont}")
+    add_test(NAME native_parallel_continuation_escape_aot_repeat50
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/parallel_continuation_escape_aot' '${_eshkol_par_cont}' -L'${CMAKE_CURRENT_BINARY_DIR}' || exit 1; i=0; while [ $i -lt 50 ]; do out=$('${CMAKE_CURRENT_BINARY_DIR}/parallel_continuation_escape_aot' 2>/dev/null) || { echo \"FAIL: run $i exit\"; exit 1; }; case \"$out\" in *'parallel continuation escape PASS'*) ;; *) echo \"FAIL: run $i\"; echo \"$out\"; exit 1;; esac; i=$((i+1)); done; echo 'PASS: 50 native continuation escape runs'")
+    add_test(NAME native_map_arity_protocol_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> -r "${_eshkol_map_arity}")
+    add_test(NAME native_map_arity_protocol_aot
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/map_arity_protocol_aot' '${_eshkol_map_arity}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/map_arity_protocol_aot'")
+    set_tests_properties(native_parallel_continuation_escape_jit PROPERTIES
+        TIMEOUT 180 LABELS "parallel;regression"
+        PASS_REGULAR_EXPRESSION "parallel continuation escape PASS"
+        FAIL_REGULAR_EXPRESSION "Unhandled exception|fatal signal")
+    set_tests_properties(native_parallel_continuation_escape_aot_repeat50 PROPERTIES
+        TIMEOUT 600 LABELS "parallel;regression"
+        PASS_REGULAR_EXPRESSION "PASS: 50 native continuation escape runs"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+    set_tests_properties(native_map_arity_protocol_jit native_map_arity_protocol_aot PROPERTIES
+        TIMEOUT 180 LABELS "regression"
+        PASS_REGULAR_EXPRESSION "map arity protocol PASS"
+        FAIL_REGULAR_EXPRESSION "Unhandled exception|fatal signal|verification failed")
 endif()

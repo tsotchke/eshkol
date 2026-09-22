@@ -87,6 +87,12 @@ both engines:
 ;; => (3)
 ```
 
+An escape from a callback to a continuation captured outside it, such as
+`(call/cc (lambda (k) (parallel-map (lambda (x) (if (= x 4) (k 'done) x)) xs)))`,
+resumes that continuation in its owning scope after every element has finished,
+unwinding the callback's `dynamic-wind` extents on the way out. A continuation
+captured inside the callback stays local to that callback.
+
 No control transfer ever crosses threads. Native runs every callback under an
 unwind boundary on the thread that runs it and re-raises the recorded
 condition on the calling thread after the join. The VM never lets a worker
