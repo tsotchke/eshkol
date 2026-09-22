@@ -1481,6 +1481,19 @@ the source changes; the verification record for the tagged commit is the
   special-case ride, carry and hyper-dual lanes are gone. `atan`, `asin`,
   `acos` and two-argument `atan` carry every order, and a derivative of a
   vector-, list- or complex-valued function is read element by element.
+- **Every AD operator nests on the VM, and the VM agrees with native at
+  poles (ADR-0027 section 3, SW-218, SW-219, SW-220, SW-224).** `jacobian`
+  returns the matrix native returns and nests; the vector-point `hessian`,
+  `divergence`, `curl`, `laplacian` and `directional-derivative` run as
+  level passes inside a live pass. `asinh`, `acosh`, `atanh`, `log2`,
+  `log10`, `exp2`, `cbrt`, `square`, `inexact` and `atan2` are first-class
+  VM values. Higher derivatives of the inverse trigonometric and hyperbolic
+  functions are no longer the first derivative. Exact division by exact
+  zero inside a derivative raises instead of answering an infinity. A zero
+  perturbation coefficient contributes nothing even against an infinity,
+  division takes the series step, and a zero base follows the power step's
+  pole rule, so a derivative through a pole is the closed form's IEEE value
+  and never surfaces as a carrier.
 - **Complex values on the VM keep exact parts and every derivative order
   (SW-199, SW-200, SW-203).** `(make-rectangular 1/2 1/3)` printed `+0i`;
   `real-part` and `imag-part` of a complex carrying a Taylor tower returned

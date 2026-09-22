@@ -74,6 +74,18 @@ static int dual_is_exact(const VmDual* d) {
     return d && d->eprimal && d->etangent;
 }
 
+/* SW-222 pole rule (the native tower's zfma): a PERTURBATION coefficient that
+ * is exactly zero is structurally absent and contributes nothing to a
+ * product, even against an infinite factor; a zero primal is a value and
+ * keeps IEEE 0 * inf = NaN. zfma(p, x, c) = c + p x with p the perturbation
+ * factor; zmul_ij is the product of coefficients i and j (index 0 = primal). */
+static inline double zfma(double p, double x, double c) {
+    return p == 0.0 ? c : c + p * x;
+}
+static inline double zmul_ij(double a, uint32_t i, double b, uint32_t j) {
+    return ((i > 0 && a == 0.0) || (j > 0 && b == 0.0)) ? 0.0 : a * b;
+}
+
 /** @brief Allocate a dual from exact halves, deriving the doubles so that
  *         every existing `d->primal` / `d->tangent` reader keeps seeing a
  *         correct (correctly-rounded) value. Falls back to @p fp / @p ft and
@@ -239,7 +251,7 @@ static void taylor_exp_coeffs(double* out, const VmDual* a, uint32_t n) {
     for (uint32_t k = 1; k < n; k++) {
         double sum = 0.0;
         for (uint32_t i = 1; i <= k; i++)
-            sum += (double)i * taylor_coeff_as_double(a, i) * out[k - i];
+            sum = zfma((double)i * taylor_coeff_as_double(a, i), out[k - i], sum);
         out[k] = sum / (double)k;
     }
 }
@@ -249,7 +261,7 @@ static void taylor_div_coeffs(double* out, const double* numerator,
     for (uint32_t k = 0; k < n; k++) {
         double sum = numerator[k];
         for (uint32_t i = 1; i <= k; i++)
-            sum -= denominator[i] * out[k - i];
+            sum = zfma(-denominator[i], out[k - i], sum);
         out[k] = sum / denominator[0];
     }
 }
@@ -308,13 +320,14 @@ static VmDual* taylor_binary(VmRegionStack* rs, const VmDual* a,
         else if (op == '-') r->coeff[k] = taylor_coeff_as_double(a, k) - taylor_coeff_as_double(b, k);
         else if (op == '*') {
             double sum = 0.0;
-            for (uint32_t i = 0; i <= k; i++)
-                sum += taylor_coeff_as_double(a, i) * taylor_coeff_as_double(b, k - i);
+            if (k == 0) sum = taylor_coeff_as_double(a, 0) * taylor_coeff_as_double(b, 0);
+            else for (uint32_t i = 0; i <= k; i++)
+                sum += zmul_ij(taylor_coeff_as_double(a, i), i, taylor_coeff_as_double(b, k - i), k - i);
             r->coeff[k] = sum;
         } else {
             double sum = taylor_coeff_as_double(a, k);
             for (uint32_t i = 1; i <= k; i++)
-                sum -= taylor_coeff_as_double(b, i) * r->coeff[k - i];
+                sum = zfma(-taylor_coeff_as_double(b, i), r->coeff[k - i], sum);
             r->coeff[k] = sum / taylor_coeff_as_double(b, 0);
         }
         if (r->exact_coeff) {
@@ -376,8 +389,8 @@ static VmDual* taylor_unary(VmRegionStack* rs, const VmDual* a, int op) {
         for (uint32_t k=1;k<=n;k++) {
             double sum=0.0, osum=0.0;
             for (uint32_t i=1;i<=k;i++) {
-                sum += i*taylor_coeff_as_double(a,i)*other[k-i];
-                osum += i*taylor_coeff_as_double(a,i)*r->coeff[k-i];
+                sum = zfma(i*taylor_coeff_as_double(a,i), other[k-i], sum);
+                osum = zfma(i*taylor_coeff_as_double(a,i), r->coeff[k-i], osum);
             }
             /* For sin, r'=other and other'=-r.  For cos the roles are
              * reversed: r'=-other and other'=r. */
@@ -391,7 +404,7 @@ static VmDual* taylor_unary(VmRegionStack* rs, const VmDual* a, int op) {
         q[0] = 0.0;
         for (uint32_t k=1;k<=n;k++) {
             double num = k*taylor_coeff_as_double(a,k);
-            for (uint32_t i=1;i<k;i++) num -= taylor_coeff_as_double(a,i)*q[k-i];
+            for (uint32_t i=1;i<k;i++) num = zfma(-taylor_coeff_as_double(a,i), q[k-i], num);
             q[k] = num/taylor_coeff_as_double(a,0);
             r->coeff[k] = q[k]/k;
         }
@@ -416,14 +429,14 @@ static VmDual* taylor_unary(VmRegionStack* rs, const VmDual* a, int op) {
         other[0]=op==10?sinh(u0):cosh(u0);
         for (uint32_t k=1;k<=n;k++) {
             double sum=0.0, osum=0.0;
-            for (uint32_t i=1;i<=k;i++) { sum+=i*taylor_coeff_as_double(a,i)*other[k-i]; osum+=i*taylor_coeff_as_double(a,i)*r->coeff[k-i]; }
+            for (uint32_t i=1;i<=k;i++) { sum=zfma(i*taylor_coeff_as_double(a,i), other[k-i], sum); osum=zfma(i*taylor_coeff_as_double(a,i), r->coeff[k-i], osum); }
             r->coeff[k]=sum/k; other[k]=osum/k;
         }
     } else { /* sqrt */
         r->coeff[0] = sqrt(u0);
         for (uint32_t k=1;k<=n;k++) {
             double sum=taylor_coeff_as_double(a,k);
-            for (uint32_t i=1;i<k;i++) sum -= r->coeff[i]*r->coeff[k-i];
+            for (uint32_t i=1;i<k;i++) sum -= zmul_ij(r->coeff[i], i, r->coeff[k-i], k-i);
             r->coeff[k] = sum/(2.0*r->coeff[0]);
         }
     }
@@ -625,6 +638,18 @@ static VmDual* lv_sub(VmRegionStack* rs, VmDual* x, VmDual* y) {
 static VmDual* lv_mul(VmRegionStack* rs, VmDual* x, VmDual* y) {
     return x && y ? vm_dual_mul(rs, x, y) : NULL;
 }
+
+/* A coefficient that is a plain zero (the pole rule's structural zero when
+ * it is a perturbation coefficient, index >= 1). */
+static int lv_is_zero(const VmDual* d) {
+    return !d || (d->kind == VM_DUAL_KIND_SCALAR && d->primal == 0.0 &&
+                  d->tangent == 0.0 && !isnan(d->primal));
+}
+/* The product of perturbation-indexed coefficients under the pole rule. */
+static VmDual* lv_mul_ij(VmRegionStack* rs, VmDual* x, uint32_t i, VmDual* y, uint32_t j) {
+    if ((i > 0 && lv_is_zero(x)) || (j > 0 && lv_is_zero(y))) return NULL;
+    return lv_mul(rs, x, y);
+}
 static VmDual* lv_scale(VmRegionStack* rs, VmDual* x, int64_t num, int64_t den) {
     if (!x) return NULL;
     VmDual* q = lv_ratio(rs, num, den);
@@ -668,14 +693,15 @@ static VmDual* lv_binary(VmRegionStack* rs, const VmDual* a0, const VmDual* b0,
         else if (op == '-')
             out = lv_sub(rs, lv_coeff(rs, a, epoch, k), lv_coeff(rs, b, epoch, k));
         else if (op == '*') {
-            for (uint32_t i = 0; i <= k; ++i)
-                out = lv_add(rs, out, lv_mul(rs, lv_coeff(rs, a, epoch, i),
-                                             lv_coeff(rs, b, epoch, k - i)));
+            if (k == 0) out = lv_mul(rs, lv_coeff(rs, a, epoch, 0), lv_coeff(rs, b, epoch, 0));
+            else for (uint32_t i = 0; i <= k; ++i)
+                out = lv_add(rs, out, lv_mul_ij(rs, lv_coeff(rs, a, epoch, i), i,
+                                                lv_coeff(rs, b, epoch, k - i), k - i));
         } else {
             out = lv_coeff(rs, a, epoch, k);
             for (uint32_t i = 1; i <= k; ++i)
-                out = lv_sub(rs, out, lv_mul(rs, lv_coeff(rs, b, epoch, i),
-                                             r->lcoeff[k - i]));
+                out = lv_sub(rs, out, lv_mul_ij(rs, lv_coeff(rs, b, epoch, i), i,
+                                                r->lcoeff[k - i], 0));
             if (!out) out = lv_int(rs, 0, hint);
             out = vm_dual_div(rs, out, b_0 ? b_0 : lv_int(rs, 0, hint));
             if (!out) return NULL;
@@ -710,7 +736,7 @@ static VmDual* lv_unary_base(VmRegionStack* rs, VmDual* u0, int op) {
 static VmDual* lv_dconv(VmRegionStack* rs, VmDual** u, VmDual** v, uint32_t k) {
     VmDual* s = NULL;
     for (uint32_t i = 1; i <= k; ++i) {
-        VmDual* t = lv_mul(rs, u[i], v[k - i]);
+        VmDual* t = lv_mul_ij(rs, u[i], i, v[k - i], 0);
         if (t && i > 1) t = vm_dual_mul(rs, lv_int(rs, (int64_t)i, 1), t);
         s = lv_add(rs, s, t);
     }
@@ -764,7 +790,7 @@ static VmDual* lv_unary(VmRegionStack* rs, const VmDual* a0, int op) {
         for (uint32_t k = 1; k <= n; ++k) {
             VmDual* s = NULL;
             for (uint32_t i = 1; i < k; ++i) {
-                VmDual* t = lv_mul(rs, y[i], u[k - i]);
+                VmDual* t = lv_mul_ij(rs, y[i], i, u[k - i], 0);
                 if (t && i > 1) t = vm_dual_mul(rs, lv_int(rs, (int64_t)i, 1), t);
                 s = lv_add(rs, s, t);
             }
@@ -775,7 +801,7 @@ static VmDual* lv_unary(VmRegionStack* rs, const VmDual* a0, int op) {
         VmDual* two_y0 = vm_dual_mul(rs, lv_int(rs, 2, 1), y[0]);
         for (uint32_t k = 1; k <= n; ++k) {
             VmDual* s = NULL;
-            for (uint32_t i = 1; i < k; ++i) s = lv_add(rs, s, lv_mul(rs, y[i], y[k - i]));
+            for (uint32_t i = 1; i < k; ++i) s = lv_add(rs, s, lv_mul_ij(rs, y[i], i, y[k - i], k - i));
             VmDual* num = lv_sub(rs, u[k], s);
             y[k] = num ? vm_dual_div(rs, num, two_y0) : NULL;
         }
@@ -786,7 +812,7 @@ static VmDual* lv_unary(VmRegionStack* rs, const VmDual* a0, int op) {
         for (uint32_t k = 0; k <= n; ++k) {
             if (k > 0) y[k] = lv_scale(rs, lv_dconv(rs, u, w, k), 1, k);
             VmDual* sq = NULL;
-            for (uint32_t i = 0; i <= k; ++i) sq = lv_add(rs, sq, lv_mul(rs, y[i], y[k - i]));
+            for (uint32_t i = 0; i <= k; ++i) sq = lv_add(rs, sq, lv_mul_ij(rs, y[i], i, y[k - i], k - i));
             if (op == LV_SIGMOID) w[k] = lv_sub(rs, y[k], sq);
             else w[k] = k == 0 ? lv_sub(rs, lv_int(rs, 1, 0), sq) : lv_sub(rs, NULL, sq);
         }
@@ -798,9 +824,14 @@ static VmDual* lv_unary(VmRegionStack* rs, const VmDual* a0, int op) {
 
 /* u^p for a constant real p: u y' = p y u', so
  * k u0 y_k = sum_{i=1..k} (p i - (k - i)) u_i y_{k-i}. */
+static VmDual* lv_pow_at_zero(VmRegionStack* rs, VmDual* u, double r);
 static VmDual* lv_pow_real(VmRegionStack* rs, const VmDual* a0, double p) {
     VmDual* a = lv_own(rs, a0);
     if (!a) return NULL;
+    if (a->order > 0 && lv_primal(a->lcoeff[0]) == 0.0) {
+        VmDual* z = lv_pow_at_zero(rs, a, p);
+        if (z) return z;
+    }
     uint32_t n = a->order;
     VmDual* r = lv_alloc(rs, a->epoch, n);
     if (!r) return NULL;
@@ -811,7 +842,7 @@ static VmDual* lv_pow_real(VmRegionStack* rs, const VmDual* a0, double p) {
     for (uint32_t k = 1; k <= n; ++k) {
         VmDual* s = NULL;
         for (uint32_t i = 1; i <= k; ++i) {
-            VmDual* t = lv_mul(rs, u[i], y[k - i]);
+            VmDual* t = lv_mul_ij(rs, u[i], i, y[k - i], 0);
             if (t) t = vm_dual_mul(rs, vm_dual_new(rs, p * (double)i - (double)(k - i), 0.0), t);
             s = lv_add(rs, s, t);
         }
@@ -988,8 +1019,40 @@ VmDual* vm_dual_inverse_trig(VmRegionStack* rs, const VmDual* a, int which) {
 /* u^(num/den) for a series u, with y0 = the value at c[0]:
  * k u0 y_k = sum_{i=1..k} ((num/den) i - (k - i)) u_i y_{k-i}, the factors
  * exact rationals, so an exact point with an exact y0 stays exact. */
+/* SW-225: u^r at a zero base, where the recurrence is 0/0 and the closed
+ * form has a definite IEEE value. Applies when every coefficient is a plain
+ * constant (the native double kernel's tr_pow_at_zero): with m the first
+ * index of a nonzero u_m, s_k = 0 for k < m r; for m = 1 the k-th derivative
+ * is an infinity of the sign of r (r-1) ... (r-k+1) u_1^k; for m > 1 it is
+ * NaN (0 * inf in the chain rule). The result is inexact. */
+static VmDual* lv_pow_at_zero(VmRegionStack* rs, VmDual* u, double r) {
+    for (uint32_t k = 0; k <= u->order; ++k)
+        if (u->lcoeff[k]->kind != VM_DUAL_KIND_SCALAR || lv_scalar_has_tangent(u->lcoeff[k]))
+            return NULL;
+    VmDual* out = lv_alloc(rs, u->epoch, u->order);
+    if (!out) return NULL;
+    uint32_t m = 0;
+    for (uint32_t j = 1; j <= u->order; ++j) if (u->lcoeff[j]->primal != 0.0) { m = j; break; }
+    double u1 = u->order >= 1 ? u->lcoeff[1]->primal : 0.0;
+    out->lcoeff[0] = vm_dual_new(rs, pow(u->lcoeff[0]->primal, r), 0.0);
+    double falling = 1.0;
+    for (uint32_t k = 1; k <= u->order; ++k) {
+        falling *= (r - (double)(k - 1)) < 0.0 ? -1.0 : 1.0;
+        double v;
+        if (m == 0 || (double)k < (double)m * r) v = 0.0;
+        else if (m > 1 || isnan(u1)) v = NAN;
+        else v = ((u1 < 0.0 && (k & 1)) ? -falling : falling) * INFINITY;
+        out->lcoeff[k] = vm_dual_new(rs, v, 0.0);
+    }
+    return lv_finish(rs, out, 0);
+}
+
 static VmDual* lv_pow_rational(VmRegionStack* rs, VmDual* u, int64_t num,
                                int64_t den, VmDual* y0) {
+    if (u && u->lcoeff[0] && lv_primal(u->lcoeff[0]) == 0.0 && u->order > 0) {
+        VmDual* z = lv_pow_at_zero(rs, u, (double)num / (double)den);
+        if (z) return z;
+    }
     VmDual* r = u && y0 ? lv_alloc(rs, u->epoch, u->order) : NULL;
     if (!r) return NULL;
     VmDual** y = r->lcoeff;
@@ -997,7 +1060,7 @@ static VmDual* lv_pow_rational(VmRegionStack* rs, VmDual* u, int64_t num,
     for (uint32_t k = 1; k <= u->order; ++k) {
         VmDual* acc = NULL;
         for (uint32_t i = 1; i <= k; ++i) {
-            VmDual* t = lv_mul(rs, u->lcoeff[i], y[k - i]);
+            VmDual* t = lv_mul_ij(rs, u->lcoeff[i], i, y[k - i], 0);
             if (t) t = vm_dual_mul(rs, lv_ratio(rs, num * (int64_t)i - den * (int64_t)(k - i), den), t);
             acc = lv_add(rs, acc, t);
         }
@@ -1027,13 +1090,27 @@ VmDual* vm_dual_cbrt(VmRegionStack* rs, const VmDual* a) {
         VmRational* e = lv_exact_cbrt(rs, a->eprimal);
         VmDual* y0 = vm_dual_constant(rs, cbrt(a->primal), e);
         if (!lv_scalar_has_tangent(a) || !y0) return y0;
-        /* y = y0 + (u - u0) / (3 y0^2) */
-        VmDual* du = vm_dual_sub(rs, a, vm_dual_constant(rs, a->primal, a->eprimal));
-        VmDual* den = vm_dual_mul(rs, lv_int(rs, 3, 1), vm_dual_mul(rs, y0, y0));
-        return vm_dual_add(rs, y0, vm_dual_div(rs, du, den));
+        /* y = y0 + t / (3 y0^2): the pole of the closed form at 0 is +inf. */
+        double d0 = 1.0 / (3.0 * y0->primal * y0->primal);
+        if (e && a->etangent && !vm_rational_is_zero(e)) {
+            VmRational* three = vm_rational_from_int(vm_active_arena(rs), 3);
+            VmRational* den = vm_rational_op_exact(rs, three, vm_rational_op_exact(rs, e, e, '*'), '*');
+            VmRational* et = den ? vm_rational_op_exact(rs, a->etangent, den, '/') : NULL;
+            if (et) return vm_dual_new_exact(rs, e, et, y0->primal, a->tangent * d0);
+        }
+        return vm_dual_new(rs, y0->primal, a->tangent == 0.0 ? 0.0 : a->tangent * d0);
     }
+    /* d = (1/3) u^(-2/3) from d_0 = 1/(3 y_0^2) by the power recurrence,
+     * then y is its integral (the native cbrt step, SW-222). */
     VmDual* u = lv_as_level(rs, a);
-    return u ? lv_pow_rational(rs, u, 1, 3, vm_dual_cbrt(rs, u->lcoeff[0])) : NULL;
+    if (!u) return NULL;
+    VmDual* y0 = vm_dual_cbrt(rs, u->lcoeff[0]);
+    if (!y0) return NULL;
+    VmDual* d0 = lv_primal(y0) == 0.0
+        ? vm_dual_new(rs, INFINITY, 0.0)
+        : vm_dual_div(rs, lv_int(rs, 1, 1), vm_dual_mul(rs, lv_int(rs, 3, 1), vm_dual_mul(rs, y0, y0)));
+    VmDual* d = lv_pow_rational(rs, u, -2, 3, d0);
+    return d ? lv_integrate(rs, u, d, y0) : NULL;
 }
 
 /* atan2(y, x): the angle of (x, y); its derivative is that of atan(y/x). */
@@ -1110,7 +1187,7 @@ VmDual* vm_dual_mul(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
     }
     return vm_dual_new(rs,
         a->primal * b->primal,
-        a->tangent * b->primal + a->primal * b->tangent);
+        zfma(a->tangent, b->primal, zfma(b->tangent, a->primal, 0.0)));
 }
 
 /** @brief Native call 376: dual division (quotient rule), (a+a'e)/(b+b'e) =
@@ -1138,9 +1215,11 @@ VmDual* vm_dual_div(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
                         a->primal / b->primal,
                         (a->tangent * b->primal - a->primal * b->tangent) / b2);
     }
-    return vm_dual_new(rs,
-        a->primal / b->primal,
-        (a->tangent * b->primal - a->primal * b->tangent) / b2);
+    /* The series division step (SW-222): r0 = a0/b0, r1 = (a1 - b1 r0)/b0,
+     * so a simple pole is the closed form's infinity, not 0 * inf. */
+    (void)b2;
+    double r0 = a->primal / b->primal;
+    return vm_dual_new(rs, r0, zfma(-b->tangent, r0, a->tangent) / b->primal);
 }
 
 /** @brief Native call 377: dual sin, sin(a+a'e) = sin(a) + a'*cos(a)*e. */
@@ -1179,8 +1258,19 @@ VmDual* vm_dual_log(VmRegionStack* rs, const VmDual* a) {
 /** @brief Native call 381: dual sqrt, sqrt(a+a'e) = sqrt(a) +
  *         a'/(2*sqrt(a))*e. */
 VmDual* vm_dual_sqrt(VmRegionStack* rs, const VmDual* a) {
+    if (vm_dual_is_level(a) && lv_primal(a) == 0.0 && a->order > 0) {
+        /* SW-225: the square root at a zero base is the power step's pole. */
+        VmDual* z = lv_pow_at_zero(rs, lv_own(rs, a), 0.5);
+        if (z) return z;
+    }
     if (vm_dual_is_level(a)) return lv_unary(rs, a, LV_SQRT);
+    if (vm_dual_is_taylor(a) && a->coeff[0] == 0.0 && a->order > 0) {
+        VmDual* z = lv_pow_at_zero(rs, lv_as_level(rs, a), 0.5);
+        if (z) return z;
+    }
     if (vm_dual_is_taylor(a)) return taylor_unary(rs, a, 7);
+    if (a->primal == 0.0 && a->tangent != 0.0)
+        return vm_dual_new(rs, sqrt(a->primal), a->tangent < 0.0 ? -INFINITY : INFINITY);
     double sa = sqrt(a->primal);
     return vm_dual_new(rs, sa, a->tangent / (2.0 * sa));
 }
@@ -1210,6 +1300,10 @@ VmDual* vm_dual_pow(VmRegionStack* rs, const VmDual* a, double n) {
     if (vm_dual_is_taylor(a)) {
         if (isfinite(n) && n == floor(n))
             return taylor_pow_integer(rs, a, (int64_t)n);
+        /* A non-integer constant power is the power recurrence (and its
+         * zero-base pole rule), read on the tower as a level of its epoch. */
+        VmDual* u = lv_as_level(rs, a);
+        if (u) return lv_pow_real(rs, u, n);
         VmDual* ln = taylor_unary(rs, a, 6);
         VmDual scale = {0}; scale.primal = n;
         VmDual* product = ln ? taylor_binary(rs, &scale, ln, '*') : NULL;

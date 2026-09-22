@@ -6270,6 +6270,19 @@ static int vm_ad_runs_as_level(VM* vm, Value point) {
  *         other carrier stays a VAL_DUAL for the enclosing pass. */
 static Value vm_ad_coeff_value(VM* vm, VmDual* c) {
     if (!c) { vm->error = 1; return NIL_VAL; }
+    /* SW-224: with no forward pass live, no perturbation remains that a
+     * carrier could belong to, so whatever a coefficient still carries (a
+     * NaN or infinite tangent a pole left behind, a tower of a finished
+     * pass) is not user-visible: the value is its primal. This is the one
+     * exit every extraction takes, so no result ever surfaces as a dual. */
+    if (vm->ad_live_passes == 0 && !vm_dual_is_constant(c)) {
+        VmRational* e = vm_dual_exact_value(c);
+        if (e) {
+            Value v = vm_exact_rational_val(vm, e);
+            if (v.type != VAL_NIL) return v;
+        }
+        return FLOAT_VAL(c->kind == VM_DUAL_KIND_TAYLOR && c->coeff ? c->coeff[0] : c->primal);
+    }
     if (vm_dual_is_constant(c)) {
         if (c->eprimal) {
             Value v = vm_exact_rational_val(vm, c->eprimal);
