@@ -14813,3 +14813,138 @@ entries:
       tests/ad/vm_no_leaked_carrier_test.esk (ctest vm_no_leaked_carrier_vm/_browser_vm); tests/ad/division_pole_test.esk on the VM.
     caught_by: [v135f-coordinator-review]
     missed_by: [run_vm_parity]
+  - id: SW-227
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/unary-route-coverage
+    status: fixed
+    closed_at: "7c9ceca04"
+    title: "(derivative (lambda (x) (inexact x)) 1/3) answered 0 natively (VM 1)"
+    repro: >-
+      (derivative (lambda (x) (inexact x)) 1/3), and the same through a passed,
+      stored, mapped or applied inexact / exact->inexact.
+    observed: >-
+      0 natively, as the VM Taylor lane measured it; exact->inexact read a
+      derivative carrier as a double and dropped the derivative.
+    correct: >-
+      1.0 on every path.
+    root_cause: >-
+      The carrier rule for inexact/exact->inexact was missing: a jet or a tower,
+      exact-point towers included, went to extractAsDouble.
+    fix: >-
+      edf532399 (SW-214) gives inexact of a carrier or a complex its product with
+      an inexact 1, so each carrier applies its own contagion. The first-class
+      wrappers re-enter the same call-position lowering, and 7c9ceca04 makes every value
+      route (passed, stored, mapped, applied) go through that wrapper; on the
+      integration head 1e468f279 every path measured 1.0 on JIT and AOT.
+    evidence: >-
+      tests/ad/unary_numeric_builtin_carriers_test.esk section SW-227/SW-228:
+      inexact and exact->inexact at the exact point 1/3 in call position,
+      passed, stored, mapped, applied, at order 2 and for exactness of the
+      result; ctest unary_numeric_builtin_carriers_jit and _aot pass (42 checks).
+    caught_by: [vm-taylor-lane-mirror]
+    missed_by: [value_position_axis_sweep]
+  - id: SW-228
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: builtins/first-class-parity
+    status: fixed
+    closed_at: "7c9ceca04"
+    title: "native square printed pointer bits for complex and rational arguments on value paths"
+    repro: >-
+      (map square (list 1/2 (make-rectangular 1.0 2.0))); (apply square (list
+      1/3)); ((lambda (f) (f 2/3)) square); square in AOT.
+    observed: >-
+      Pointer bits such as 4657922831851813440 for a rational and
+      2379617646309622784 for a complex, as the VM Taylor lane measured it.
+    correct: >-
+      1/4, -3+4i, 1/9, 4/9.
+    root_cause: >-
+      square multiplied payload bits inline on a flonum or fixnum arm, in the one
+      lowering every route shares.
+    fix: >-
+      edf532399 (SW-214) makes square the polymorphic product at that one
+      lowering; the first-class wrappers are generated from it, and 7c9ceca04 routes
+      every value position through the generic wrapper. On 1e468f279 every path
+      measured correct on JIT and AOT.
+    evidence: >-
+      tests/ad/unary_numeric_builtin_carriers_test.esk section SW-227/SW-228:
+      square passed, stored, applied, mapped and vector-mapped over rationals and
+      complex numbers, and under derivative and a complex carrier; JIT and AOT;
+      tests/ad/first_class_math_builtins_test.esk covers square among every math
+      builtin.
+    caught_by: [vm-taylor-lane-mirror]
+    missed_by: [value_position_axis_sweep]
+  - id: SW-229
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: autodiff/dynamic-state-unwind
+    status: fixed
+    closed_at: "7c9ceca04"
+    title: "a raise or escape out of a derivative left the forward pass level raised: later derivatives lost exactness and exact division by 0 answered -inf.0"
+    repro: >-
+      (guard (e (#t 'raised)) (derivative (lambda (b) (/ 1 b)) 0)) followed by
+      (guard (e (#t 'raised)) (let ((r (derivative (lambda (b) (/ 1 b)) 0))) r))
+      and (derivative (lambda (b) (* b b)) 3).
+    observed: >-
+      raised, then -inf.0 (no raise), then 6 inexact. Which form raised depended
+      only on whether an earlier derivative had been exited by a raise.
+    correct: >-
+      raised, raised, exact 6.
+    root_cause: >-
+      A derivative/derivative-n pass raises __ad_pert_level (and the Taylor
+      context __ad_tower_active/__ad_tower_order) on entry and lowers it on its
+      normal exit; a longjmp from a raise or an escaping continuation skipped the
+      exit. The runtime unwinder's eshkol_ad_state_restore cannot reach them:
+      they are module globals, internal to an AOT module. Every later pass
+      believed it was nested, declined the exact tier and used the inexact jet.
+    fix: >-
+      lib/backend/llvm_codegen.cpp: snapshotAdForwardState/restoreAdForwardStateAt;
+      guard, with-exception-handler and call/cc (every setjmp site) save the three
+      globals before setjmp and store them back first on the landing block.
+    evidence: >-
+      tests/ad/ad_state_after_raise_test.esk (12 checks: guard, a let under guard,
+      with-exception-handler, escaping continuations from a derivative and a
+      Taylor pass, exactness afterwards) passes on JIT and AOT;
+      tests/ad/vm_exact_division_by_zero_test.esk is registered natively as
+      vm_exact_division_by_zero_jit and _aot and passes.
+    caught_by: [vm-taylor-lane-mirror]
+    missed_by: [vm_exact_division_by_zero_vm]
+  - id: SW-230
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: builtins/first-class-parity
+    status: fixed
+    closed_at: "7c9ceca04"
+    title: "atan2 was not a first-class value natively (raw libm function); first-class atan and round dropped a second argument"
+    repro: >-
+      (define f atan2) (f 1.0 2.0); (apply atan2 (list 1.0 2.0));
+      ((lambda (f) (f 1.0 2.0)) atan); (map atan ys xs)
+    observed: >-
+      SIGSEGV (the raw double(double,double) C function called through the
+      tagged closure ABI); invalid IR under apply; atan(1.0) = 0.785 instead of
+      atan2(1, 2) = 0.4636. value_position_axis_sweep: builtins/atan2::passed|
+      stored|returned::jit.
+    correct: >-
+      0.4636476090008061 on every path.
+    root_cause: >-
+      Two hand-kept name sets decided which math builtins got a first-class
+      wrapper; atan2 was in neither and fell to the function_table's raw libm
+      declaration, and apply called any same-named module function. atan and
+      round materialised at a fixed arity 1.
+    fix: >-
+      isFirstClassMathBuiltin (the math dispatch's Taylor table plus a first-class
+      table row) replaces both sets in codegenVariable and resolveLambdaFunction;
+      the table gains the math rows, with atan and round as VariadicRest::ByCount
+      (a variadic closure dispatching on the argument count to the wrapper at that
+      arity, an arity error otherwise). apply evaluates a name whose module
+      function is a raw C declaration as a value. The type checker types the
+      same names as procedures.
+    evidence: >-
+      tests/ad/first_class_math_builtins_test.esk (133 checks, every math builtin
+      passed, mapped, applied and differentiated through a value; atan2 passed,
+      stored, returned, mapped, applied; atan and round with two arguments; the
+      arity error) passes on JIT and AOT; value_position_axis_sweep passes with
+      its baseline untouched.
+    caught_by: [value_position_axis_sweep, vm-taylor-lane-mirror]
+    missed_by: [builtins_first_class_audit]
