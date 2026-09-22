@@ -1,0 +1,23 @@
+;; SW-204 / SW-216 / SW-217: a procedure value is entered only with an argument
+;; count its declaration accepts, and only a procedure is entered at all. A
+;; violation is a catchable error on every engine -- never a padded or dropped
+;; argument, never a fabricated result, never a fatal exit.
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(define (mk v) (lambda (a) (v a)))
+(define (try thunk) (guard (e (#t 'caught)) (thunk)))
+
+;; Surplus and missing arguments through a procedure value.
+(display (try (lambda () (h2 (lambda (x) x) 1 2)))) (newline)
+(display (try (lambda () (h1 (lambda (x y) x) 1)))) (newline)
+;; A variadic procedure still takes any count at or above its fixed part.
+(display (h2 (lambda args args) 1 2)) (newline)
+(display (h1 (lambda (a . rest) (list a rest)) 1)) (newline)
+(display (try (lambda () (h1 (lambda (a b . rest) a) 1)))) (newline)
+;; A non-procedure reached through a captured local.
+(display (try (lambda () ((mk 5) 1)))) (newline)
+(display (try (lambda () ((mk "s") 1)))) (newline)
+;; Correct calls are untouched.
+(display (h2 (lambda (x y) (+ x y)) 1 2)) (newline)
+(display ((mk (lambda (z) (* z 10))) 4)) (newline)
+(display "procedure call protocol PASS") (newline)

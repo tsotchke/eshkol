@@ -4027,7 +4027,8 @@ private:
      */
     Value* emitFunctionAsCallableValue(Function* func, uint64_t num_params,
                                        bool is_variadic = false,
-                                       uint64_t fixed_params = 0) {
+                                       uint64_t fixed_params = 0,
+                                       uint8_t return_category = CLOSURE_RETURN_UNKNOWN) {
         if (!func) return nullptr;
 
         Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
@@ -4043,7 +4044,7 @@ private:
 
         Value* sexpr_ptr = intPtrConst(0);
         // Pack: bits 0-7 = return_type, bits 8-15 = input_arity
-        uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (arity_field << 8);
+        uint64_t return_type_info_val = (uint64_t)return_category | (arity_field << 8);
         Value* return_type_info = intPtrConst(return_type_info_val);
         Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
@@ -6871,6 +6872,19 @@ private:
 
     // Runtime closure call dispatcher - supports variadic closures with up to 16 captures
     // This is essential for N-dimensional lambda calculus and AD operations
+    // void eshkol_procedure_call_error(const eshkol_tagged_value_t* callee,
+    //     int64_t expected, int64_t got, int64_t variadic)  -- never returns.
+    Function* getProcedureCallErrorFunc() {
+        Function* fn = module->getFunction("eshkol_procedure_call_error");
+        if (!fn) {
+            fn = Function::Create(FunctionType::get(builder->getVoidTy(),
+                    {builder->getPtrTy(), int64_type, int64_type, int64_type}, false),
+                Function::ExternalLinkage, "eshkol_procedure_call_error", module.get());
+            fn->setDoesNotReturn();
+        }
+        return fn;
+    }
+
     Value* codegenClosureCall(Value* func_result, const std::vector<Value*>& call_args,
                               const char* caller_info = "unknown",
                               bool parameter_dispatch = true,
@@ -7373,9 +7387,33 @@ private:
         // Small closures retain the bounded over-provisioned pointer ABI.
         const int MAX_CLOSURE_DISPATCH_CAPTURES = 64;
 
-        // VARIADIC CLOSURE FIX: Check if this is a variadic closure
+        // THE CALL PROTOCOL (SW-216): a procedure is entered only with an
+        // argument count its declaration accepts -- exactly fixed_params, or
+        // at least fixed_params for a variadic one. Anything else raises one
+        // catchable R7RS error with the canonical "Arity mismatch: " wording
+        // (eshkol_procedure_call_error). This used to pad a short call with
+        // null and silently drop a surplus argument, and a fixed-arity apply
+        // had a separate overflow-only refusal; this check replaces both.
         Value* is_variadic_cond = builder->CreateICmpNE(is_variadic,
             ConstantInt::get(int64_type, 0));
+        {
+            Value* supplied = spread
+                ? (full_spread_count ? full_spread_count : spread_count)
+                : ConstantInt::get(int64_type, call_args.size());
+            Value* bad_count = builder->CreateSelect(is_variadic_cond,
+                builder->CreateICmpULT(supplied, fixed_params),
+                builder->CreateICmpNE(supplied, fixed_params), "call_arity_bad");
+            BasicBlock* arity_bad_bb = BasicBlock::Create(*context, "call_arity_bad", current_func);
+            BasicBlock* arity_ok_bb = BasicBlock::Create(*context, "call_arity_ok", current_func);
+            builder->CreateCondBr(bad_count, arity_bad_bb, arity_ok_bb);
+            builder->SetInsertPoint(arity_bad_bb);
+            Value* callee_slot = builder->CreateAlloca(tagged_value_type, nullptr, "call_arity_callee");
+            builder->CreateStore(func_result, callee_slot);
+            builder->CreateCall(getProcedureCallErrorFunc(),
+                {callee_slot, fixed_params, supplied, is_variadic});
+            builder->CreateUnreachable();
+            builder->SetInsertPoint(arity_ok_bb);
+        }
         BasicBlock* variadic_bb = BasicBlock::Create(*context, "variadic_closure", current_func);
         BasicBlock* non_variadic_bb = BasicBlock::Create(*context, "non_variadic_closure", current_func);
         builder->CreateCondBr(is_variadic_cond, variadic_bb, non_variadic_bb);
@@ -7600,32 +7638,7 @@ private:
         // the variadic/non-variadic split above.)
         builder->SetInsertPoint(non_variadic_bb);
 
-        // List-aware apply knows the complete runtime count.  A fixed-arity
-        // callable must reject surplus elements instead of clamping to the
-        // staging window (which would silently drop arguments).
-        BasicBlock* nonvar_overflow = nullptr;
-        BasicBlock* nonvar_checked = nullptr;
-        if (spread && spread->full_count) {
-            nonvar_overflow = BasicBlock::Create(*context, "apply_fixed_overflow", current_func);
-            nonvar_checked = BasicBlock::Create(*context, "apply_fixed_checked", current_func);
-            builder->CreateCondBr(builder->CreateICmpUGT(spread->full_count, fixed_params),
-                                  nonvar_overflow, nonvar_checked);
-            builder->SetInsertPoint(nonvar_overflow);
-            Function* arity_err = module->getFunction("eshkol_type_error_with_operand");
-            if (!arity_err) {
-                arity_err = Function::Create(FunctionType::get(builder->getVoidTy(),
-                    {builder->getPtrTy(), builder->getPtrTy(), builder->getPtrTy()}, false),
-                    Function::ExternalLinkage, "eshkol_type_error_with_operand", module.get());
-                arity_err->setDoesNotReturn();
-            }
-            Value* proc_name = builder->CreateGlobalString("apply", "apply_fixed_proc");
-            Value* expected = builder->CreateGlobalString("fixed-arity procedure", "apply_fixed_expected");
-            Value* operand_slot = builder->CreateAlloca(tagged_value_type, nullptr, "apply_fixed_operand");
-            builder->CreateStore(func_result, operand_slot);
-            builder->CreateCall(arity_err, {proc_name, expected, operand_slot});
-            builder->CreateUnreachable();
-            builder->SetInsertPoint(nonvar_checked);
-        }
+        // Argument count already validated by the call protocol check above.
 
         // ARITY MISMATCH FIX (x86_64 crash prevention):
         // When call_args.size() < fixed_params, we need to pad with undefined values.
@@ -7800,21 +7813,28 @@ private:
         // NON-CALLABLE FIX: Check if this is actually a callable type
         // Only INT64 (function pointer) and LAMBDA_SEXPR should be called directly
         // CONS_PTR, STRING_PTR, NULL, BOOL, DOUBLE etc. should be returned as-is
-        Value* is_lambda_sexpr = builder->CreateICmpEQ(base_type,
+        // A number is never a procedure: an integer operand used to be called
+        // as a raw function pointer and fault at its own value (SW-204).
+        Value* is_callable = builder->CreateICmpEQ(base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* is_int64 = builder->CreateICmpEQ(base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
-        Value* is_callable = builder->CreateOr(is_lambda_sexpr, is_int64);
 
         BasicBlock* do_direct_call = BasicBlock::Create(*context, "do_direct_call", current_func);
         BasicBlock* return_as_is = BasicBlock::Create(*context, "return_as_is", current_func);
         builder->CreateCondBr(is_callable, do_direct_call, return_as_is);
 
-        // Return non-callable value as-is (e.g., cons pair from Y combinator)
+        // A value that is not a procedure is never "called" into a result
+        // (SW-204): applying it is a catchable R7RS error.
         builder->SetInsertPoint(return_as_is);
-        Value* as_is_result = func_result;
-        builder->CreateBr(merge_bb);
-        BasicBlock* as_is_exit_bb = builder->GetInsertBlock();
+        {
+            Value* callee_slot = builder->CreateAlloca(tagged_value_type, nullptr, "call_nonproc_callee");
+            builder->CreateStore(func_result, callee_slot);
+            builder->CreateCall(getProcedureCallErrorFunc(),
+                {callee_slot, ConstantInt::get(int64_type, -1),
+                 spread ? (full_spread_count ? full_spread_count : spread_count)
+                        : ConstantInt::get(int64_type, call_args.size()),
+                 ConstantInt::get(int64_type, 0)});
+            builder->CreateUnreachable();
+        }
 
         // Actually call the function pointer
         builder->SetInsertPoint(do_direct_call);
@@ -7860,7 +7880,7 @@ private:
         builder->SetInsertPoint(merge_bb);
         PHINode* phi = builder->CreatePHI(tagged_value_type,
                                           results.size() + direct_results.size()
-                                              + (parameter_dispatch ? 2 : 1),
+                                              + (parameter_dispatch ? 1 : 0),
                                           "call_result");
         for (auto& [bb, val] : results) {
             phi->addIncoming(val, bb);
@@ -7868,7 +7888,6 @@ private:
         for (auto& [bb, val] : direct_results) {
             phi->addIncoming(val, bb);
         }
-        phi->addIncoming(as_is_result, as_is_exit_bb);
         if (parameter_dispatch) {
             phi->addIncoming(ensureTaggedValue(parameter_result), parameter_exit_bb);
         }
@@ -9818,18 +9837,11 @@ private:
             // (tagged_value -> tagged_value) that internally unpacks, calls C function, repacks
             Function* wrapper_func = createBuiltinUnaryMathFunction(var_name);
             if (wrapper_func) {
-                // Create closure for the wrapper function
-                Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, intptr_type);
-                Value* arena_ptr = getArenaPtr();
-                Value* packed_info = ConstantInt::get(int64_type, 0);  // No captures
-                Value* sexpr_ptr = intPtrConst(0);
-                Value* return_type_info = intPtrConst(CLOSURE_RETURN_SCALAR);  // Math builtins return scalars
-                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
-                // Use with_header allocator for consolidated CALLABLE type
-                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info, sexpr_ptr, return_type_info, closure_name});
-                // Pack as CALLABLE (subtype CLOSURE is in header)
-                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+                // One facility for function-as-value: it records the arity the
+                // call protocol checks (SW-216). The hand-packed closure here
+                // recorded arity 0 for a one-argument procedure.
+                return emitFunctionAsCallableValue(wrapper_func, wrapper_func->arg_size(),
+                                                   false, 0, CLOSURE_RETURN_SCALAR);
             }
         }
 
@@ -9841,15 +9853,7 @@ private:
         if (var_name == "display" || var_name == "write" || var_name == "newline") {
             Function* wrapper_func = createBuiltinIOFunction(var_name);
             if (wrapper_func) {
-                Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, intptr_type);
-                Value* arena_ptr = getArenaPtr();
-                Value* packed_info = ConstantInt::get(int64_type, 0);
-                Value* sexpr_ptr = intPtrConst(0);
-                Value* return_type_info = intPtrConst(CLOSURE_RETURN_UNKNOWN);
-                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
-                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info, sexpr_ptr, return_type_info, closure_name});
-                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+                return emitFunctionAsCallableValue(wrapper_func, wrapper_func->arg_size());
             }
         }
 
@@ -43905,7 +43909,7 @@ private:
             {"char-lower-case?", {1}}, {"digit-value", {1}},
             // Vectors
             {"vector-ref", {2}}, {"vector-set!", {3}}, {"vector-length", {1}},
-            {"vector-fill!", {2}}, {"make-vector", {1}},
+            {"vector-fill!", {2}}, {"make-vector", {2}},  // as make-string: the value form takes the fill (SW-216)
             {"vector->list", {1}}, {"list->vector", {1}},
             // Numerics
             {"expt", {2}}, {"pow", {2}},

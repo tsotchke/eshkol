@@ -445,6 +445,7 @@ class EshkolRepl {
                 eshkol_tensor_result_dtype_binary: (r) => r,
                 eshkol_tensor_result_dtype_unary: (r) => r,
                 eshkol_type_error_with_operand: () => { throw new Error('Eshkol type error (WASM stub)'); },
+                eshkol_procedure_call_error: () => { throw new Error('Eshkol call error: not a procedure or arity mismatch'); },
                 eshkol_ad_mixed_record: () => 0,
                 eshkol_ad_seed_flag: () => 0,
                 eshkol_tensor_operand_checked: () => 0,

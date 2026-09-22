@@ -6339,7 +6339,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
              * and the missing operands are this call site's to supply. Nothing
              * else can: emit_builtin_preamble() compiles the body as `arity`
              * unconditional OP_GET_LOCAL loads and the closure's runtime arity
-             * check (vm_validate_closure_arity) wants exactly that many, so a
+             * check (vm_check_closure_arity) wants exactly that many, so a
              * short call either arrives complete or reads a slot no caller
              * wrote. Padding here keeps BOTH checks exact and leaves the
              * DEFAULT to the one place that knows it — the native op, which

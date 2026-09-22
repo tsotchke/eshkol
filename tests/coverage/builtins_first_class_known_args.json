@@ -214,7 +214,7 @@
     },
     "apply": {
       "args": [
-        "(lambda (x) x)",
+        "(lambda (x y z) (list z y x))",
         "(list 1 2 3)"
       ],
       "arity": 2

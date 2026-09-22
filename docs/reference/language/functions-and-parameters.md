@@ -13,6 +13,29 @@ covers parameter list features and application.
 7
 ```
 
+## Wrong argument counts and non-procedures
+
+Every call enters a procedure only with an argument count its declaration
+accepts: exactly its parameter count, or at least its fixed parameters for a
+rest-parameter procedure. Anything else raises a catchable error on both
+engines, whether the procedure is called by name or reached as a value through
+a variable, a parameter or a closure. Applying a value that is not a procedure
+raises too. Nothing is padded, dropped or answered in its place.
+
+```scheme
+(define (h f a b) (f a b))
+(display (guard (e (#t 'refused)) (h (lambda (x) x) 1 2))) (newline)
+(display (guard (e (#t 'refused)) (let ((f #f)) ((lambda () (f 1 2)))))) (newline)
+```
+```
+refused
+refused
+```
+
+The message carries the shared class marker, for example
+`Arity mismatch: <procedure> expects 1 argument but got 2`, or
+`expects at least 2 arguments` for a rest-parameter procedure.
+
 ## Variadic (rest) parameters
 
 A dotted tail parameter collects any extra arguments into a list.
@@ -73,13 +96,8 @@ exactly once and every call site agrees with it by construction. A name that is
 genuinely undefined fails compilation with a real diagnostic; it never
 silently answers `()`.
 
-> **Engine difference — apply's leading-args form is native-only.** The
-> bytecode VM supports the plain `(apply proc arg-list)` form. It does **not**
-> support leading arguments before the list, for any operator: under the VM,
-> `(apply + 1 2 (list 3 4 5))` raises `arity mismatch: expected 2 arguments,
-> got 4` rather than answering `15`. This is argument-list construction, a
-> different code path from operator resolution. Write `(apply + (append (list
-> 1 2) (list 3 4 5)))` for a form that runs on both engines.
+`apply` also takes leading arguments before the list on both engines:
+`(apply + 1 2 (list 3 4 5))` answers `15`.
 
 ## Builtins are first-class values
 

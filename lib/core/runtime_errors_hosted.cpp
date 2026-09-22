@@ -10,6 +10,7 @@
  * is hosted until the freestanding panic/error hook ABI is introduced.
  */
 
+#include <eshkol/core/arity_contract.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/eshkol.h>
 #include <eshkol/logger.h>
@@ -438,3 +439,34 @@ void eshkol_ffi_pointer_arg_type_error(const char* extern_name,
 }
 
 }  // extern "C"
+
+/* The closure call protocol's one refusal (SW-204, SW-216).
+ *
+ * Emitted by codegenClosureCall at the call boundary when the callee is not a
+ * procedure (expected < 0) or when the argument count is not one the callee's
+ * declaration accepts: exactly `expected`, or at least `expected` for a
+ * variadic procedure. Raised through eshkol_runtime_fatal(), so `guard` and
+ * `with-exception-handler` catch it and an uncaught one exits nonzero. The
+ * wording is the shared arity contract (<eshkol/core/arity_contract.h>). */
+extern "C" void eshkol_procedure_call_error(const eshkol_tagged_value_t* callee,
+                                            int64_t expected, int64_t got,
+                                            int64_t variadic) {
+    if (expected < 0) {
+        eshkol_type_error_with_operand("apply", "procedure", callee);
+        std::exit(1);
+    }
+    /* The VM's closures carry no name, so both engines render the same
+     * "<procedure>" and a program printing the message sees one answer. */
+    const char* name = "<procedure>";
+    char msg[512];
+    if (variadic) {
+        std::snprintf(msg, sizeof(msg),
+                      ESHKOL_ARITY_MISMATCH_PREFIX
+                      "%s expects at least %lld argument%s but got %lld",
+                      name, (long long)expected, expected == 1 ? "" : "s",
+                      (long long)got);
+    } else {
+        eshkol_format_arity_mismatch(msg, sizeof(msg), name, (int)expected, got);
+    }
+    eshkol_runtime_fatal(ESHKOL_EXCEPTION_ARITY_ERROR, "%s", msg);
+}

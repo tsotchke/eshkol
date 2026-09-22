@@ -116,6 +116,7 @@
   "eshkol_parameter_set_converter_ptr",
   "eshkol_parameter_set_ptr",
   "eshkol_pop_exception_handler",
+  "eshkol_procedure_call_error",
   "eshkol_promise_eval_begin",
   "eshkol_promise_eval_commit_one",
   "eshkol_promise_eval_commit_to",

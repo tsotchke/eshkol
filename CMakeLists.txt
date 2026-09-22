@@ -11358,7 +11358,8 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-vm-standalone-test)
         "vm_parity/corpus/error_irritants_lifetime|error irritants lifetime PASS"
         "vm_parity/corpus/parallel_ad_carrier_lifetime|parallel AD carrier lifetime PASS"
         "vm_parity/corpus/parallel_callback_raise|parallel callback raise PASS"
-        "vm/parallel_worker_settle_regression|parallel worker settle PASS")
+        "vm/parallel_worker_settle_regression|parallel worker settle PASS"
+        "vm/closure_arity_catchable_regression|closure arity catchable PASS")
     set(_eshkol_vm_parallel_files "")
     foreach(_case IN LISTS _eshkol_vm_parallel_cases)
         string(REPLACE "|" ";" _parts "${_case}")
@@ -11402,4 +11403,19 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run)
         TIMEOUT 600 LABELS "parallel;regression"
         PASS_REGULAR_EXPRESSION "PASS: 50 native parallel callback runs"
         FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+# The closure call protocol (SW-204, SW-216, SW-217): JIT and AOT refuse a
+# wrong argument count or a non-procedure with a catchable error.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run)
+    set(_eshkol_call_protocol "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/procedure_call_protocol.esk")
+    add_test(NAME native_procedure_call_protocol_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> -r "${_eshkol_call_protocol}")
+    add_test(NAME native_procedure_call_protocol_aot
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/procedure_call_protocol_aot' '${_eshkol_call_protocol}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/procedure_call_protocol_aot'")
+    set_tests_properties(native_procedure_call_protocol_jit native_procedure_call_protocol_aot PROPERTIES
+        TIMEOUT 180 LABELS "regression"
+        PASS_REGULAR_EXPRESSION "procedure call protocol PASS"
+        FAIL_REGULAR_EXPRESSION "Unhandled exception|fatal signal")
 endif()

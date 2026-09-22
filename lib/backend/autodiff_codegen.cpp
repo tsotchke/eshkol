@@ -3624,7 +3624,9 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
     Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
     Value* arena_ptr = ctx_.currentArena();
 
-    uint64_t packed_info = 1;  // 1 capture (the function)
+    // 1 capture (the function), 1 fixed parameter (x): the call protocol
+    // checks the recorded arity (SW-216).
+    uint64_t packed_info = 1 | (1ULL << 32);
     Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
     Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
     // Derivative function returns a scalar

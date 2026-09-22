@@ -1396,6 +1396,16 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **One call protocol for procedure values.** A procedure reached through a
+  variable, a parameter or a closure is entered only with an argument count
+  its declaration accepts; native used to pad a short call with null and drop
+  surplus arguments, and called a captured non-procedure into a fabricated
+  result (or a fault for an integer). Both engines now raise a catchable
+  error with the shared `Arity mismatch: ` wording, including the minimum of
+  a rest-parameter procedure; the VM's arity and non-procedure refusals, which
+  were fatal, are catchable. First-class math, I/O and `make-vector` values
+  record their real arity. (SW-204, SW-216, SW-217)
+
 - **Raises inside parallel callbacks reach the caller's handler.** A callback
   of `parallel-map`, `parallel-filter`, `parallel-for-each`,
   `parallel-execute` or a future that raises now delivers its own raised

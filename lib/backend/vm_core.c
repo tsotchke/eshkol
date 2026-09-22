@@ -1095,17 +1095,6 @@ static void vm_close_open_upvalues_from(VM* vm, int first_dead_slot) {
  * would leave the exact bug this contract covers: `(car)` and `(car 1 2)`
  * would still enter a one-argument builtin body and silently discard stack
  * values. Unknown and variadic closures deliberately remain unchecked. */
-static int vm_validate_closure_arity(VM* vm, const HeapObject* closure,
-                                     int argc) {
-    if (!closure || closure->type != HEAP_CLOSURE) return 0;
-    const int expected = closure->closure.arity;
-    if (expected < 0 || expected == 255 || expected == argc) return 1;
-    fprintf(stderr,
-            "ERROR: Arity mismatch: expected %d arguments but got %d\n",
-            expected, argc);
-    if (vm) vm->error = 1;
-    return 0;
-}
 
 /* Command-line arguments (set in main, read by native 602) */
 static int g_vm_argc = 0;
@@ -1701,13 +1690,22 @@ static void vm_op_arith(VM* vm, char op);
 /* Validate fixed-arity closures at the call boundary, before their body can
  * read argument locals. Unknown metadata remains permissive for legacy
  * anonymous closures; 255 is the compiler's variadic sentinel. */
+static void vm_raise_error_msg(VM* vm, const char* msg);   /* vm_native.c */
+
+/* The one closure admission rule for argument count (SW-217): a closure is
+ * entered only with exactly its declared arity (255 = variadic, checked by its
+ * own rest-packing prologue). A mismatch raises a catchable condition with the
+ * shared "Arity mismatch: " wording (arity_contract.h), the same one native
+ * raises at its closure call boundary; with no handler it is fatal as before.
+ * Returns 0 on a mismatch: the caller does not enter the closure, and resumes
+ * dispatch at the handler when one took the condition (vm->error stays 0). */
 static int vm_check_closure_arity(VM* vm, const HeapObject* cl, int argc) {
     if (!cl || cl->type != HEAP_CLOSURE) return 0;
     const int expected = cl->closure.arity;
     if (expected >= 0 && expected != 255 && expected != argc) {
-        fprintf(stderr, "ERROR: arity mismatch: expected %d argument%s, got %d\n",
-                expected, expected == 1 ? "" : "s", argc);
-        if (vm) vm->error = 1;
+        char msg[192];
+        eshkol_format_arity_mismatch(msg, sizeof(msg), "<procedure>", expected, argc);
+        if (vm) vm_raise_error_msg(vm, msg);
         return 0;
     }
     return 1;
@@ -1727,7 +1725,13 @@ static int vm_check_closure_arity(VM* vm, const HeapObject* cl, int argc) {
 /* One closure admission contract for bytecode OP_CALL and higher-order natives.
  * Builtin references are compiler-created closures and use this same path. */
 static HeapObject* vm_callable_closure(VM* vm, Value callable, int argc) {
-    if (callable.type != VAL_CLOSURE || callable.as.ptr < 0 ||
+    if (callable.type != VAL_CLOSURE) {
+        /* Applying a non-procedure is a catchable error, as native raises it
+         * at its closure call boundary (SW-204). */
+        vm_raise_error_msg(vm, "Type error in apply: expected procedure");
+        return NULL;
+    }
+    if (callable.as.ptr < 0 ||
         callable.as.ptr >= vm->heap.capacity || !vm->heap.objects[callable.as.ptr]) {
         fprintf(stderr, "ERROR: calling non-function at pc=%d argc=%d type=%d\n",
                 vm->pc - 1, argc, (int)callable.type);
@@ -1735,8 +1739,7 @@ static HeapObject* vm_callable_closure(VM* vm, Value callable, int argc) {
         return NULL;
     }
     HeapObject* closure = vm->heap.objects[callable.as.ptr];
-    if (!vm_check_closure_arity(vm, closure, argc) ||
-        !vm_validate_closure_arity(vm, closure, argc)) return NULL;
+    if (!vm_check_closure_arity(vm, closure, argc)) return NULL;
     return closure;
 }
 
