@@ -2761,6 +2761,7 @@ add_library(eshkol-workspace STATIC
   lib/frontend/source_paths.cpp
   lib/frontend/node_identity.cpp
   lib/frontend/semantic_identity.cpp
+  lib/frontend/syntax_datum.cpp
   lib/frontend/diagnostic.cpp
   lib/frontend/library_registry.cpp
   lib/frontend/workspace.cpp
@@ -3372,6 +3373,18 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/ast
     add_test(NAME ast_strings_test COMMAND ast_strings_test)
     set_tests_properties(ast_strings_test PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: AST string owner")
+endif()
+
+# ADR-0026: the one syntax-rules engine, compiled as plain C exactly as the
+# bytecode VM compiles it, against hand-computed expansions.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(syntax_rules_core_test tests/frontend/syntax_rules_core_test.c)
+    set_target_properties(syntax_rules_core_test PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_include_directories(syntax_rules_core_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME syntax_rules_core_test COMMAND syntax_rules_core_test)
+    set_tests_properties(syntax_rules_core_test PROPERTIES
+        LABELS "macros;regression"
+        PASS_REGULAR_EXPRESSION "syntax-rules core: PASS")
 endif()
 
 # ADR-0021: a recorded source path is never the absolute host path.
@@ -11282,6 +11295,16 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE
     set_tests_properties(macro_definition_scope PROPERTIES
         TIMEOUT 360 LABELS "macros;parity;regression"
         PASS_REGULAR_EXPRESSION "PASS: 14 macro scope values")
+    # ADR-0026 / SW-192: one syntax-rules engine and one renaming rule; the
+    # hand-computed hygiene matrix must hold on native JIT, AOT and the VM.
+    add_test(NAME macro_hygiene_matrix
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/macros/macro_hygiene_matrix_test.py
+            --native $<TARGET_FILE:eshkol-run>
+            --vm $<TARGET_FILE:eshkol-vm-standalone-test>)
+    set_tests_properties(macro_hygiene_matrix PROPERTIES
+        TIMEOUT 600 LABELS "macros;parity;regression"
+        PASS_REGULAR_EXPRESSION "PASS: [0-9]+ hygiene checks agree")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-repl)
