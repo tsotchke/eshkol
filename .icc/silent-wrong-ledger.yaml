@@ -14716,7 +14716,7 @@ entries:
       the seed tangent uses u^(r-1) by the same step; the level tier routes a
       plain-number zero base to it.
     evidence: >-
-      tests/ad/taylor_integral_family_test.esk section SW-225: 42 checks through
+      tests/ad/taylor_integral_family_test.esk section SW-225: 32 checks through
       the bare procedure (runtime tower) and a lambda (compile-time-K tier), plus
       under an enclosing jet and in the Taylor list; ctest taylor_integral_family
       _jit and _aot pass. The same expressions on the pre-change build printed
