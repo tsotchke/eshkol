@@ -7137,6 +7137,24 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     add_test(NAME runtime_closure_alloc_test COMMAND runtime_closure_alloc_test)
 endif()
 
+# #713: region promotion is all-or-nothing. Injects allocation failure at every
+# copy prefix of a shared/cyclic graph, in the range barrier, and on the
+# ordinary backing-block path, and checks that nothing is published, a
+# catchable allocation error is raised, and the destination is rewound. Runs
+# under ASan in the sanitizer build (the test sets allocator_may_return_null).
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/region_promotion_failure_test.cpp")
+    # Links only the generated-program runtime, which is the code under test.
+    find_package(Threads REQUIRED)
+    add_executable(region_promotion_failure_test tests/core/region_promotion_failure_test.cpp)
+    target_compile_features(region_promotion_failure_test PRIVATE cxx_std_17)
+    target_include_directories(region_promotion_failure_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(region_promotion_failure_test PRIVATE eshkol-runtime ${ESHKOL_EXTRA_LINK_LIBS} Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME region_promotion_failure_test COMMAND region_promotion_failure_test)
+    set_tests_properties(region_promotion_failure_test PROPERTIES
+        ENVIRONMENT "ESHKOL_ARENA_POISON=1"
+        PASS_REGULAR_EXPRESSION "PASS: region promotion is all-or-nothing")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_regions_test.cpp")
     add_executable(runtime_regions_test tests/core/runtime_regions_test.cpp)
     target_compile_features(runtime_regions_test PRIVATE cxx_std_17)
