@@ -7,6 +7,7 @@
  */
 
 #include "arena_memory.h"
+#include "runtime_region_promotion_internal.h"
 
 #include <cstdint>
 #include <cstring>
@@ -65,6 +66,14 @@ bool tagged_numeric_to_double(const eshkol_tagged_value_t& value, double* out) {
     return false;
 }
 
+void copy_tagged(void* owner, eshkol_tagged_value_t* dst,
+                 const eshkol_tagged_value_t* src, uint64_t count) {
+    const int32_t status = eshkol_region_copy_tagged_checked(dst, owner, src, count);
+    // The engine stages the whole range and frees all native scratch before
+    // returning, so an emergency transfer cannot strand caller-owned buffers.
+    if (status != 0) eshkol_runtime_emergency_raise_v1(status);
+}
+
 }  // namespace
 
 extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
@@ -92,9 +101,7 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
     if (dst_subtype == HEAP_SUBTYPE_VECTOR && src_subtype == HEAP_SUBTYPE_VECTOR) {
         auto* dst_values = vector_elements(dst) + at;
         const auto* src_values = vector_elements(src) + start;
-        std::memmove(dst_values, src_values,
-                     static_cast<size_t>(count) * sizeof(eshkol_tagged_value_t));
-        eshkol_region_write_barrier_range(dst, dst_values, static_cast<uint64_t>(count));
+        copy_tagged(dst, dst_values, src_values, static_cast<uint64_t>(count));
         return ESHKOL_VECTOR_COPY_OK;
     }
 
@@ -108,10 +115,7 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
             auto* dst_values = reinterpret_cast<eshkol_tagged_value_t*>(dst_tensor->elements) + at;
             const auto* src_values =
                 reinterpret_cast<const eshkol_tagged_value_t*>(src_tensor->elements) + start;
-            std::memmove(dst_values, src_values,
-                         static_cast<size_t>(count) * sizeof(eshkol_tagged_value_t));
-            eshkol_region_write_barrier_range(
-                dst, dst_values, static_cast<uint64_t>(count));
+            copy_tagged(dst, dst_values, src_values, static_cast<uint64_t>(count));
             return ESHKOL_VECTOR_COPY_OK;
         }
         if (dst_tensor->dtype == src_tensor->dtype) {
@@ -134,15 +138,13 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
         if (src_tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
             const auto* src_values =
                 reinterpret_cast<const eshkol_tagged_value_t*>(src_tensor->elements) + start;
-            std::memcpy(dst_values, src_values,
-                        static_cast<size_t>(count) * sizeof(eshkol_tagged_value_t));
+            copy_tagged(dst, dst_values, src_values, static_cast<uint64_t>(count));
         } else {
             const auto* src_values = reinterpret_cast<const double*>(src_tensor->elements);
             for (int64_t i = 0; i < count; ++i) {
                 dst_values[i] = tagged_double(src_values[start + i]);
             }
         }
-        eshkol_region_write_barrier_range(dst, dst_values, static_cast<uint64_t>(count));
         return ESHKOL_VECTOR_COPY_OK;
     }
 
@@ -150,10 +152,7 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
     const auto* src_values = vector_elements(src) + start;
     if (dst_tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
         auto* dst_values = reinterpret_cast<eshkol_tagged_value_t*>(dst_tensor->elements) + at;
-        std::memcpy(dst_values, src_values,
-                    static_cast<size_t>(count) * sizeof(eshkol_tagged_value_t));
-        eshkol_region_write_barrier_range(
-            dst, dst_values, static_cast<uint64_t>(count));
+        copy_tagged(dst, dst_values, src_values, static_cast<uint64_t>(count));
         return ESHKOL_VECTOR_COPY_OK;
     }
     // Validate the complete source range before mutating the destination so a

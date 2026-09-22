@@ -25,6 +25,7 @@
  */
 
 #include <stddef.h>
+#include "runtime_region_leaf_layouts.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +52,8 @@ typedef struct {
     double* mem;     /* N*W row-major */
     double* usage;   /* N */
 } DncHandle;
+
+size_t eshkol_dnc_promotion_size(void) { return sizeof(DncHandle); }
 
 /* Tensor layout mirroring #(...) literals (see workspace.cpp / inference.cpp). */
 typedef struct dnc_tensor_layout {

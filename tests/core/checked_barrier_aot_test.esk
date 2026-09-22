@@ -1,0 +1,58 @@
+;; Actual code-generated vector-set! checked publication. Both guards precede
+;; injection; handler cleanup and explicit raise run while the failure is armed.
+(extern i64 probe-arm :real checked_barrier_test_arm)
+(extern i64 probe-caught i64 :real checked_barrier_test_caught)
+(extern i64 probe-unsupported-graph ptr :real checked_barrier_test_unsupported_graph)
+(extern i64 probe-unsupported-caught i64 :real checked_barrier_test_unsupported_caught)
+(extern i64 probe-unsupported-survived ptr :real checked_barrier_test_unsupported_survived)
+(extern i64 probe-finish :real checked_barrier_test_finish)
+(define holder (vector #f))
+(with-region ('checked-publication 4096)
+  (let* ((leaf (vector 71 72))
+         (record (vector leaf leaf))
+         (graph (cons record '())))
+    (guard (outer (else (probe-caught 2)))
+      (guard (inner (else
+                      (probe-caught 1)
+                      (if (vector-ref holder 0) (exit 11))
+                      (raise inner)))
+        (probe-arm)
+        (vector-set! holder 0 graph)
+        (exit 12)))
+    (if (vector-ref holder 0) (exit 13))
+    ;; Same live graph succeeds after failure injection is removed.
+    (vector-set! holder 0 graph)
+    0))
+(define canonical (car (vector-ref holder 0)))
+(if (not (eq? (vector-ref canonical 0) (vector-ref canonical 1))) (exit 14))
+(if (not (= (vector-ref (vector-ref canonical 0) 1) 72)) (exit 15))
+
+;; Generic runtime restoration only: this is not an E3 frame or P1 guard.
+(define unsupported-holder (vector #f))
+(define state-marker (vector 41))
+(with-region ('unsupported-publication 4096)
+  (let ((graph (vector #f #f)))
+    (probe-unsupported-graph graph)
+    (guard (outer (else
+                    (if (not (= (vector-ref state-marker 0) 41)) (exit 21))
+                    (if (vector-ref unsupported-holder 0) (exit 22))
+                    (probe-unsupported-caught 2)))
+      (guard (inner (else
+                      (probe-unsupported-caught 1)
+                      (if (vector-ref unsupported-holder 0) (exit 23))
+                      (if (not (= (vector-ref state-marker 0) 99)) (exit 24))
+                      (vector-set! state-marker 0 41)
+                      (raise inner)))
+        (vector-set! state-marker 0 99)
+        (vector-set! unsupported-holder 0 graph)
+        (exit 25)))
+    (if (not (= (vector-ref state-marker 0) 41)) (exit 26))
+    ;; Reverse traversal order to the admitted full-span-first case, retry the
+    ;; same live tensor graph, then read its canonical buffers after poisoning.
+    (let ((full (vector-ref graph 0)) (small (vector-ref graph 1)))
+      (vector-set! graph 0 small)
+      (vector-set! graph 1 full))
+    (vector-set! unsupported-holder 0 graph)
+    0))
+(probe-unsupported-survived (vector-ref unsupported-holder 0))
+(probe-finish)

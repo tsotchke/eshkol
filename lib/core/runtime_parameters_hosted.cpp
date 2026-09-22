@@ -10,7 +10,7 @@
  * grows through malloc/realloc and logs hosted warnings on growth failure.
  */
 
-#include <eshkol/eshkol.h>
+#include "runtime_region_promotion_internal.h"
 #include <eshkol/logger.h>
 
 #include <cstdint>
@@ -25,21 +25,6 @@
 // by giving HEAP_SUBTYPE_PARAMETER its own id (24) in the canonical table.
 
 extern "C" {
-
-extern void* arena_allocate_with_header(void* arena, uint64_t data_size,
-                                        uint8_t subtype, uint8_t flags);
-
-// Region write barrier (ESH-0214c, lib/core/runtime_regions.cpp): promotes a
-// tagged value's in-region subgraph out of any active region strictly inner
-// than the region owning `dst` before it is stored there. The fast path (no
-// active region) is a single thread-local load + branch, so this is safe to
-// call unconditionally on every store -- the same convention codegen uses at
-// every other mutation channel (set-car!/set-cdr!, vector-set!,
-// hash-table-set!, global set!). Immediate (non-heap) tagged values pass
-// through untouched; only HEAP_PTR/CALLABLE/port-tagged values are evacuated.
-extern void eshkol_region_write_barrier_into(eshkol_tagged_value_t* out,
-                                             const void* dst,
-                                             const eshkol_tagged_value_t* value);
 
 typedef struct {
     eshkol_tagged_value_t* stack;
@@ -75,24 +60,21 @@ static eshkol_tagged_value_t eshkol_parameter_null_value() {
  */
 void* eshkol_make_parameter(void* arena, eshkol_tagged_value_t default_val) {
     eshkol_param_t* param = (eshkol_param_t*)arena_allocate_with_header(
-        arena, sizeof(eshkol_param_t), HEAP_SUBTYPE_PARAMETER, 0);
+        static_cast<arena_t*>(arena), sizeof(eshkol_param_t), HEAP_SUBTYPE_PARAMETER, 0);
     if (!param) {
         return nullptr;
     }
 
     param->converter = eshkol_parameter_null_value();
+    param->stack = nullptr;
+    param->top = -1;
+    param->capacity = 0;
 
     const int initial_capacity = 8;
-    param->stack = (eshkol_tagged_value_t*)std::malloc(
+    auto* stack = (eshkol_tagged_value_t*)std::malloc(
         initial_capacity * sizeof(eshkol_tagged_value_t));
-    if (!param->stack) {
-        param->top = -1;
-        param->capacity = 0;
-        return (void*)param;
-    }
+    if (!stack) return (void*)param;
 
-    param->capacity = initial_capacity;
-    param->top = 0;
     // The value stack is a plain malloc'd buffer that lives independently of
     // any region arena (it is never itself region-allocated and outlives any
     // region that may be active when the value is bound). If `default_val` is
@@ -101,10 +83,22 @@ void* eshkol_make_parameter(void* arena, eshkol_tagged_value_t default_val) {
     // once that region pops. Route it through the region write barrier
     // (ESH-0214c) so its reachable subgraph is evacuated out to the global
     // arena first -- the same treatment every other cross-region store
-    // (global set!, vector-set!, ...) already gets. `dst` is the actual
-    // storage slot; it is never inside a region arena, so the barrier always
+    // (global set!, vector-set!, ...) already gets. `dst` is the malloc
+    // storage owner; it is never inside a region arena, so the barrier
     // promotes all the way out, exactly as intended.
-    eshkol_region_write_barrier_into(&param->stack[0], &param->stack[0], &default_val);
+    eshkol_tagged_value_t promoted;
+    const int32_t status = eshkol_region_write_barrier_checked_v1(
+        &promoted, stack, &default_val);
+    if (status != 0) {
+        // The arena control stays inert; no malloc storage survives a failed
+        // unpublished construction, including the emergency longjmp.
+        std::free(stack);
+        eshkol_runtime_emergency_raise_v1(status);
+    }
+    stack[0] = promoted;
+    param->stack = stack;
+    param->capacity = initial_capacity;
+    param->top = 0;
     return (void*)param;
 }
 
@@ -124,6 +118,14 @@ void eshkol_parameter_push(void* param_ptr, eshkol_tagged_value_t val) {
     if (!param_ptr) return;
     eshkol_param_t* param = (eshkol_param_t*)param_ptr;
 
+    // Stage before realloc or top publication. A promotion failure leaves the
+    // existing stack pointer, capacity, top and bindings unchanged. The stack
+    // is malloc-owned, so a null or existing stack pointer denotes root lifetime.
+    eshkol_tagged_value_t promoted;
+    const int32_t status = eshkol_region_write_barrier_checked_v1(
+        &promoted, param->stack, &val);
+    if (status != 0) eshkol_runtime_emergency_raise_v1(status);
+
     if (param->top + 1 >= param->capacity) {
         int new_capacity = param->capacity * 2;
         if (new_capacity < 8) new_capacity = 8;
@@ -139,14 +141,8 @@ void eshkol_parameter_push(void* param_ptr, eshkol_tagged_value_t val) {
         param->capacity = new_capacity;
     }
 
+    param->stack[param->top + 1] = promoted;
     param->top++;
-    // Same region write barrier treatment as the constructor default (see
-    // eshkol_make_parameter above): `val` may point into a region that is
-    // still active on entry to this `parameterize` binding but pops before
-    // the binding is popped/read again, so it must be promoted out of any
-    // active region before landing in the malloc'd (never region-owned)
-    // value stack.
-    eshkol_region_write_barrier_into(&param->stack[param->top], &param->stack[param->top], &val);
 }
 
 /**
@@ -178,8 +174,11 @@ void eshkol_parameter_set(void* param_ptr, eshkol_tagged_value_t val) {
     if (!param_ptr) return;
     eshkol_param_t* param = (eshkol_param_t*)param_ptr;
     if (param->top < 0 || !param->stack) return;
-    eshkol_region_write_barrier_into(&param->stack[param->top],
-                                     &param->stack[param->top], &val);
+    eshkol_tagged_value_t promoted;
+    const int32_t status = eshkol_region_write_barrier_checked_v1(
+        &promoted, param->stack, &val);
+    if (status != 0) eshkol_runtime_emergency_raise_v1(status);
+    param->stack[param->top] = promoted;
 }
 
 /** Store the optional Scheme converter associated with a parameter object. */
@@ -187,8 +186,14 @@ void eshkol_parameter_set_converter(void* param_ptr,
                                     eshkol_tagged_value_t converter) {
     if (!param_ptr) return;
     eshkol_param_t* param = (eshkol_param_t*)param_ptr;
-    eshkol_region_write_barrier_into(&param->converter, &param->converter,
-                                     &converter);
+    eshkol_tagged_value_t promoted;
+    // Parameter controls are leaf-copied during escape. Like their malloc
+    // value stacks, converters must therefore outlive every region even when
+    // the control itself currently belongs to a region.
+    const int32_t status = eshkol_region_write_barrier_checked_v1(
+        &promoted, nullptr, &converter);
+    if (status != 0) eshkol_runtime_emergency_raise_v1(status);
+    param->converter = promoted;
 }
 
 /** Return the optional Scheme converter, or #<null> when none was supplied. */
@@ -259,3 +264,8 @@ void eshkol_parameter_converter_ref_ptr(void* param,
 }
 
 }  // extern "C"
+
+// Runtime-private layout query; keeps evacuation validation with the owner.
+size_t eshkol_parameter_promotion_size() noexcept {
+    return sizeof(eshkol_param_t);
+}

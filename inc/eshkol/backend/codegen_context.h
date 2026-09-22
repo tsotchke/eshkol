@@ -202,10 +202,11 @@ public:
      * global set!). Returns the (possibly deep-promoted) tagged value to store.
      *
      * The value is spilled to an entry-block alloca and routed through the
-     * runtime helper eshkol_region_write_barrier_into, whose fast path (no
-     * active region) is a single thread-local load + branch. If a region is
-     * active and @p tagged_value points into a region strictly inner than the
-     * one owning @p dst_ptr, its reachable in-region subgraph is evacuated into
+     * versioned checked runtime helper. A nonzero status transfers a fixed
+     * emergency before the output load or caller's destination store. The
+     * no-promotion runtime path allocates no transaction storage. If a region
+     * is active and @p tagged_value points into a region strictly inner than
+     * the one owning @p dst_ptr, its reachable in-region subgraph is evacuated into
      * the surviving arena so it does not dangle after region_pop.
      *
      * @param dst_ptr      Address of the container/slot being written (used only
@@ -267,6 +268,9 @@ public:
      *               types (i64 for %lld, i32 for %d, ptr for %s).
      */
     void emitRaiseFmt(const char* format, llvm::ArrayRef<llvm::Value*> args);
+
+    // Fixed condition 5 on null, before any constructor initialization store.
+    void emitConstructorAllocationCheck(llvm::Value* pointer);
 
     // === Global Variables (Arena, AD State) ===
 

@@ -1,0 +1,51 @@
+;; No stdlib required. Link constructor_emergency_shim.cpp using its three
+;; --wrap symbols. Run the handler-allocation case first, before a free handler
+;; frame exists: failure must reach the already established outer handler.
+(extern i64 test-arm i64 i64 :real constructor_test_arm)
+(extern i64 test-step i64 :real constructor_test_step)
+(extern i64 test-caught :real constructor_test_caught)
+(extern i64 test-reused-list :real constructor_test_reused_list)
+(extern i64 test-finish :real constructor_test_finish)
+
+(guard (outer (else (test-caught)))
+  (test-arm 3 0)
+  (guard (inner (else (test-step 999))) (test-step 999)))
+
+(guard (condition (else (test-caught)))
+  (test-arm 1 0)
+  (vector (test-step 1) (test-step 2)))
+
+(guard (condition (else (test-caught)))
+  (test-arm 1 1)
+  (make-vector (test-step 2) (test-step 7)))
+
+(guard (condition (else (test-caught)))
+  (test-arm 2 2)
+  (cons (test-step 1) (test-step 2)))
+
+;; Both legacy tagged-header builder helpers remain live alongside `cons`.
+(guard (condition (else (test-caught)))
+  (test-arm 2 2)
+  (acons (test-step 1) (test-step 2) '()))
+
+(guard (condition (else (test-caught)))
+  (test-arm 2 2)
+  (list* (test-step 1) (test-step 2)))
+
+;; Hold a closure in a vector to force runtime variadic dispatch. Its rest-list
+;; cells are built before entering the callee. In contrast, ordinary apply
+;; reuses its existing list: check that it leaves allocation failure armed.
+;; The AD gradient spread helper is a separate lowering, covered statically.
+(define variadic-box (vector (lambda args (test-step 999))))
+(define apply-args (list 1 2))
+(guard (condition (else (test-caught)))
+  (test-arm 2 2)
+  ((vector-ref variadic-box 0) (test-step 1) (test-step 2)))
+
+(guard (condition (else (test-caught)))
+  (test-arm 2 0)
+  (let ((result (apply (vector-ref variadic-box 0) apply-args)))
+    (if (not (= result 999)) (exit 17))
+    (test-reused-list)))
+
+(test-finish)

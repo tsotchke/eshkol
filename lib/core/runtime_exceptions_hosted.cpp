@@ -7,6 +7,9 @@
  */
 
 #include "arena_memory.h"
+#ifdef ESHKOL_PROMOTION_TESTING
+#include "runtime_region_promotion_internal.h"
+#endif
 #include "../../inc/eshkol/logger.h"
 #include "../../inc/eshkol/eshkol.h"
 
@@ -18,6 +21,7 @@
 #include <fstream>
 #include <setjmp.h>
 #include <cstdint>
+#include <cstddef>
 #include <string>
 #include <string.h>
 
@@ -31,6 +35,70 @@ eshkol_exception_handler_t* g_exception_handler_stack = nullptr;
 // R7RS: stores the original raised tagged_value for with-exception-handler
 eshkol_tagged_value_t g_raised_tagged_value = {0, 0, 0, {0}};
 static bool g_raised_value_set_by_user = false;
+
+#ifdef ESHKOL_PROMOTION_TESTING
+static thread_local uint64_t emergency_transfer_count = 0;
+void eshkol_promotion_test_emergency_reset() noexcept { emergency_transfer_count = 0; }
+uint64_t eshkol_promotion_test_emergency_transfers() noexcept { return emergency_transfer_count; }
+#endif
+
+namespace {
+// Header-bearing static conditions survive every arena and need no allocator.
+// The object and diagnostic bytes are immutable; native metadata mutators below
+// recognize their exact addresses before touching them.
+struct alignas(eshkol_exception_t) RuntimeEmergency {
+    eshkol_object_header_t header;
+    eshkol_exception_t exception;
+};
+static_assert(offsetof(RuntimeEmergency, exception) == sizeof(eshkol_object_header_t),
+              "emergency exception header must immediately precede its payload");
+static_assert(alignof(RuntimeEmergency) >= alignof(eshkol_exception_t),
+              "emergency exception payload must be aligned");
+
+#define ESHKOL_EMERGENCY(message) \
+    {{HEAP_SUBTYPE_EXCEPTION, 0, 0, sizeof(eshkol_exception_t)}, \
+     {ESHKOL_EXCEPTION_ERROR, const_cast<char*>(message), nullptr, 0, 0, 0, nullptr}}
+static const RuntimeEmergency runtime_emergencies[] = {
+    ESHKOL_EMERGENCY("region promotion allocation failed"),
+    ESHKOL_EMERGENCY("region promotion layout is unsupported"),
+    ESHKOL_EMERGENCY("region promotion size overflow"),
+    ESHKOL_EMERGENCY("region promotion runtime state is invalid"),
+    ESHKOL_EMERGENCY("object or exception-handler allocation failed")
+};
+#undef ESHKOL_EMERGENCY
+
+static bool runtime_emergency_identity(const eshkol_exception_t* exception) {
+    for (const RuntimeEmergency& item : runtime_emergencies) {
+        if (exception == &item.exception) return true;
+    }
+    return false;
+}
+
+static eshkol_tagged_value_t runtime_emergency_value(eshkol_exception_t* exception) {
+    eshkol_tagged_value_t value{};
+    value.type = ESHKOL_VALUE_HEAP_PTR;
+    value.data.ptr_val = reinterpret_cast<uintptr_t>(exception);
+    return value;
+}
+} // namespace
+
+extern "C" [[noreturn]] void eshkol_runtime_emergency_raise_v1(int32_t condition) {
+    if (condition < 1 || condition > 5) condition = 4;
+    eshkol_raise(const_cast<eshkol_exception_t*>(
+        &runtime_emergencies[condition - 1].exception));
+    std::abort(); // eshkol_raise cannot return; retain a defined defect path.
+}
+
+extern "C" void eshkol_runtime_emergency_rethrow_if_v1(
+    const eshkol_tagged_value_t* value) {
+    if (!value || value->type != ESHKOL_VALUE_HEAP_PTR ||
+        value->flags != 0 || value->reserved != 0) return;
+    auto* exception = reinterpret_cast<eshkol_exception_t*>(
+        static_cast<uintptr_t>(value->data.ptr_val));
+    if (!runtime_emergency_identity(exception)) return;
+    eshkol_raise(exception);
+    std::abort();
+}
 
 // Promise evaluation is an intrusive, thread-local chain. While a promise is
 // being evaluated its cached-value slot temporarily stores the previous chain
@@ -241,7 +309,7 @@ extern "C" eshkol_exception_t* eshkol_make_exception(eshkol_exception_type_t typ
 
 // Add an irritant to an exception
 extern "C" void eshkol_exception_add_irritant(eshkol_exception_t* exc, eshkol_tagged_value_t irritant) {
-    if (!exc) return;
+    if (!exc || runtime_emergency_identity(exc)) return;
 
     // Grow irritants array
     uint32_t new_count = exc->num_irritants + 1;
@@ -271,7 +339,7 @@ extern "C" void eshkol_exception_add_irritant(eshkol_exception_t* exc, eshkol_ta
 // (avoids passing a 16-byte tagged value by register/coercion).
 extern "C" void eshkol_exception_add_irritant_ptr(eshkol_exception_t* exc,
                                                   const eshkol_tagged_value_t* irritant) {
-    if (!exc || !irritant) return;
+    if (!exc || !irritant || runtime_emergency_identity(exc)) return;
     eshkol_exception_add_irritant(exc, *irritant);
 }
 
@@ -379,7 +447,7 @@ extern "C" void eshkol_error_object_irritants(const eshkol_tagged_value_t* obj,
 
 // Set source location on exception
 extern "C" void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t line, uint32_t column, const char* filename) {
-    if (!exc) return;
+    if (!exc || runtime_emergency_identity(exc)) return;
 
     exc->line = line;
     exc->column = column;
@@ -785,6 +853,15 @@ static char* eshkol_find_provider_file(const char* name) {
 }
 
 extern "C" void eshkol_raise(eshkol_exception_t* exception) {
+    // Direct existing-exception and guard-fallthrough rethrows must preserve
+    // reserved identity even if an earlier handler changed raised-value state.
+    if (runtime_emergency_identity(exception)) {
+#ifdef ESHKOL_PROMOTION_TESTING
+        ++emergency_transfer_count;
+#endif
+        g_raised_tagged_value = runtime_emergency_value(exception);
+        g_raised_value_set_by_user = true;
+    }
     g_current_exception = exception;
 
     // If user didn't set a raised value via eshkol_set_raised_value,
@@ -897,8 +974,8 @@ extern "C" void eshkol_push_exception_handler(void* jmp_buf_ptr) {
     }
 
     if (!handler) {
-        eshkol_error("Failed to allocate exception handler");
-        return;
+        // Nothing has been published: transfer to the previously active frame.
+        eshkol_runtime_emergency_raise_v1(5);
     }
 
     handler->jmp_buf_ptr = jmp_buf_ptr;

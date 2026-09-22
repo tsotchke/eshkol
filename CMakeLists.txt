@@ -160,6 +160,7 @@ set(CMAKE_CXX_STANDARD 20)
 
 # Options
 option(ESHKOL_BUILD_TESTS "Build tests" ON)
+option(ESHKOL_PROMOTION_TESTING "Build deterministic checked-promotion failure gates (Linux LP64)" OFF)
 option(ESHKOL_BUILD_EXAMPLES "Build examples" OFF)
 option(ESHKOL_BUILD_INTEGRATION_TESTS "Build integration tests" OFF)
 # OALR object/layout ABI v2 (ADR-0001 SS3, ADR-0000 Stage 4). MUST stay OFF by
@@ -4515,6 +4516,8 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/paramet
     target_link_libraries(parameter_region_barrier_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME parameter_region_barrier_test COMMAND parameter_region_barrier_test)
 endif()
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckedPromotionTests.cmake)
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_deep_equal_test.cpp")
     add_executable(runtime_deep_equal_test tests/core/runtime_deep_equal_test.cpp)

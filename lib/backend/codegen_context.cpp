@@ -44,12 +44,12 @@ llvm::Value* CodegenContext::emitRegionWriteBarrier(llvm::Value* dst_ptr,
 
     builder_.CreateStore(tagged_value, val_slot);
 
-    llvm::Function* wb = module_.getFunction("eshkol_region_write_barrier_into");
+    llvm::Function* wb = module_.getFunction("eshkol_region_write_barrier_checked_v1");
     if (!wb) {
         llvm::FunctionType* wb_ty = llvm::FunctionType::get(
-            voidType(), {ptr_ty, ptr_ty, ptr_ty}, false);
+            int32Type(), {ptr_ty, ptr_ty, ptr_ty}, false);
         wb = llvm::Function::Create(wb_ty, llvm::GlobalValue::ExternalLinkage,
-                                    "eshkol_region_write_barrier_into", &module_);
+                                    "eshkol_region_write_barrier_checked_v1", &module_);
     }
 
     llvm::Value* dst_cast = dst_ptr;
@@ -59,8 +59,39 @@ llvm::Value* CodegenContext::emitRegionWriteBarrier(llvm::Value* dst_ptr,
         dst_cast = llvm::ConstantPointerNull::get(ptr_ty);
     }
 
-    builder_.CreateCall(wb, {out_slot, dst_cast, val_slot});
+    llvm::Value* status = builder_.CreateCall(wb, {out_slot, dst_cast, val_slot}, "wb_status");
+    llvm::BasicBlock* success = llvm::BasicBlock::Create(context_, "wb_success", fn);
+    llvm::BasicBlock* failure = llvm::BasicBlock::Create(context_, "wb_failure", fn);
+    builder_.CreateCondBr(builder_.CreateICmpEQ(status,
+        llvm::ConstantInt::get(int32Type(), 0)), success, failure);
+    builder_.SetInsertPoint(failure);
+    llvm::Function* emergency = module_.getFunction("eshkol_runtime_emergency_raise_v1");
+    if (!emergency) {
+        emergency = llvm::Function::Create(
+            llvm::FunctionType::get(voidType(), {int32Type()}, false),
+            llvm::GlobalValue::ExternalLinkage, "eshkol_runtime_emergency_raise_v1", &module_);
+    }
+    emergency->setDoesNotReturn();
+    builder_.CreateCall(emergency, {status});
+    builder_.CreateUnreachable();
+    // Never load uninitialized staging output, or reach the caller's store,
+    // after a failed transaction. Runtime transaction temporaries are gone.
+    builder_.SetInsertPoint(success);
     return builder_.CreateLoad(tv_ty, out_slot, "wb_result");
+}
+
+void CodegenContext::emitConstructorAllocationCheck(llvm::Value* pointer) {
+    llvm::Function* fn = builder_.GetInsertBlock()->getParent();
+    auto* success = llvm::BasicBlock::Create(context_, "constructor_allocated", fn);
+    auto* failure = llvm::BasicBlock::Create(context_, "constructor_failed", fn);
+    builder_.CreateCondBr(builder_.CreateIsNotNull(pointer), success, failure);
+    builder_.SetInsertPoint(failure);
+    auto emergency = module_.getOrInsertFunction("eshkol_runtime_emergency_raise_v1",
+        llvm::FunctionType::get(voidType(), {int32Type()}, false));
+    auto* call = builder_.CreateCall(emergency, {llvm::ConstantInt::get(int32Type(), 5)});
+    call->setDoesNotReturn();
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(success);
 }
 
 // === Runtime Guard Failure ===

@@ -325,6 +325,10 @@ arena_t* get_global_arena(void);
  *  that will be returned to the main thread). */
 arena_t* get_global_arena_shared(void);
 
+// Compiler-private immutable process-root owner for escaping continuations.
+// Uses the existing once initializer; never returns a region-routed slot.
+arena_t* eshkol_root_arena_v1(void);
+
 // ===== OALR Phase A: thread memory context (ADR-0001, migration Phase A) =====
 //
 // A per-thread memory context makes "which arena do my allocations target right
@@ -670,16 +674,16 @@ void eshkol_iter_nursery_recycle(eshkol_region_t* region,
 
 // Region write barrier (ESH-0214c): promote a value's in-region subgraph when it
 // is stored (by set-car!/set-cdr!/vector-set!/hash-table-set!/global set!) into a
-// destination that outlives the value's region. Fast path (no active region) is a
-// single thread-local load + branch. See runtime_regions.cpp for full semantics.
+// destination that outlives the value's region. The no-promotion path uses no
+// transaction allocation. See runtime_regions.cpp for full semantics.
 void eshkol_region_write_barrier_into(eshkol_tagged_value_t* out,
                                       const void* dst,
                                       const eshkol_tagged_value_t* value);
-// Range form for bulk copies (vector-copy!): promotes each copied slot in
-// place. Fast path (no region) is a single thread-local load + branch.
-void eshkol_region_write_barrier_range(const void* dst,
-                                       eshkol_tagged_value_t* slots,
-                                       uint64_t n);
+// Checked compiler/runtime ABI v1: status0 publishes only to private staging;
+// status1 allocation,2 unsupported layout,3 overflow,4 invalid runtime/call state.
+// On error output and all committed graph/map state are unchanged.
+int32_t eshkol_region_write_barrier_checked_v1(eshkol_tagged_value_t* out,
+    const void* dst, const eshkol_tagged_value_t* value);
 
 // Representation-aware vector mutation. Eshkol exposes both Scheme vectors
 // (inline tagged slots) and numeric tensor-backed #(...) literals through the

@@ -31,6 +31,7 @@
  */
 
 #include <stddef.h>
+#include "runtime_region_leaf_layouts.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,6 +59,8 @@ typedef struct {
     int          np;
     float        pe[256][SDNC_D];
 } SdncHandle;
+
+size_t eshkol_sdnc_promotion_size(void) { return sizeof(SdncHandle); }
 
 /* Tensor layout mirroring #(...) literals. */
 typedef struct sdnc_tensor_layout {

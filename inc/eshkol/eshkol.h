@@ -1447,6 +1447,23 @@ void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t line, uint3
  * @param exception Exception to raise.
  */
 void eshkol_raise(eshkol_exception_t* exception);
+/**
+ * @brief Transfer a fixed runtime-owned emergency without constructing an error.
+ * Conditions 1..4 are checked promotion failures; 5 is separately admitted
+ * ordinary constructor/handler allocation failure. Any other selector maps
+ * to invalid-runtime-state condition 4. Existing unwind semantics still apply.
+ */
+#ifdef __cplusplus
+[[noreturn]]
+#else
+_Noreturn
+#endif
+void eshkol_runtime_emergency_raise_v1(int32_t condition);
+/**
+ * @brief Rethrow only an exact canonical runtime emergency tagged identity.
+ * Returns normally for null, ordinary, copied, or noncanonical tagged values.
+ */
+void eshkol_runtime_emergency_rethrow_if_v1(const eshkol_tagged_value_t* value);
 // R7RS error-object accessors (implemented in runtime_exceptions_hosted.cpp)
 /**
  * @brief R7RS `error-object?` predicate.

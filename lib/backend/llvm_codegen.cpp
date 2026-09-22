@@ -7725,6 +7725,7 @@ private:
         
         // Allocate cons cell using arena
         Value* cons_ptr = builder->CreateCall(getArenaAllocateConsCellFunc(), {arena_ptr});
+        ctx_->emitConstructorAllocationCheck(cons_ptr);
         
         // Store car value - arena_cons_cell_t has car at offset 0
         Value* car_ptr = builder->CreateStructGEP(
@@ -7753,6 +7754,7 @@ private:
         
         // Allocate tagged cons cell with object header (consolidated pointer format)
         Value* cons_ptr = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
+        ctx_->emitConstructorAllocationCheck(cons_ptr);
         
         // Convert TypedValue to tagged_value
         Value* car_tagged = typedValueToTaggedValue(car_val);
@@ -7801,6 +7803,7 @@ private:
         
         // Allocate tagged cons cell with object header (consolidated pointer format)
         Value* cons_ptr = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
+        ctx_->emitConstructorAllocationCheck(cons_ptr);
 
         // Extract type from car_tagged
         Value* car_type = getTaggedValueType(car_tagged);
@@ -8745,6 +8748,7 @@ private:
             builder->SetInsertPoint(rest_body);
             Value* rest_arena = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
             Value* rest_cons = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {rest_arena});
+            ctx_->emitConstructorAllocationCheck(rest_cons);
             Value* rest_elem = builder->CreateLoad(tagged_value_type,
                 builder->CreateGEP(spread_args_type, spread->args_ptr,
                     {ConstantInt::get(int64_type, 0), rest_i}));
@@ -8797,6 +8801,7 @@ private:
                 for (int64_t i = (int64_t)call_args.size() - 1; i >= fixed_count; i--) {
                     Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
                     Value* cons_cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
+                    ctx_->emitConstructorAllocationCheck(cons_cell);
 
                     builder->CreateStore(call_args[(size_t)i], arg_ptrs[(size_t)i]);
                     builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
@@ -22940,6 +22945,16 @@ private:
                     raise_func = Function::Create(raise_type, Function::ExternalLinkage, "eshkol_raise", module.get());
                     raise_func->setDoesNotReturn();
                 }
+                // A clause predicate may catch another error and clear global
+                // exception state. Preserve a reserved emergency using this
+                // guard's original tagged value before the ordinary fallback.
+                Function* emergency_rethrow = module->getFunction("eshkol_runtime_emergency_rethrow_if_v1");
+                if (!emergency_rethrow) {
+                    emergency_rethrow = Function::Create(
+                        FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false),
+                        Function::ExternalLinkage, "eshkol_runtime_emergency_rethrow_if_v1", module.get());
+                }
+                builder->CreateCall(emergency_rethrow, {raised_alloca});
                 // Re-get exception pointer and re-raise it
                 Value* fallthrough_exc = builder->CreateCall(get_exception_func, {}, "fallthrough_exception");
                 builder->CreateCall(raise_func, {fallthrough_exc});
@@ -22993,7 +23008,8 @@ private:
 
     // Exception handling: raise expression
     // Syntax: (raise exception)
-    // Simplified: Always create a new exception from the given value
+    // Ordinary values receive the existing wrapper; exact fixed runtime
+    // emergencies rethrow before wrapper/message allocation.
     Value* codegenRaise(const eshkol_operations_t* op) {
         // Get or declare eshkol_raise function
         Function* raise_func = module->getFunction("eshkol_raise");
@@ -23024,6 +23040,12 @@ private:
         IRBuilder<> entry_builder(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
         AllocaInst* raised_alloca = entry_builder.CreateAlloca(tagged_value_type, nullptr, "raise_val_store");
 
+        Function* emergency_rethrow = module->getFunction("eshkol_runtime_emergency_rethrow_if_v1");
+        if (!emergency_rethrow) {
+            emergency_rethrow = Function::Create(
+                FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false),
+                Function::ExternalLinkage, "eshkol_runtime_emergency_rethrow_if_v1", module.get());
+        }
         Value* error_msg = nullptr;
         if (op->raise_op.exception) {
             if (op->raise_op.exception->type == ESHKOL_STRING) {
@@ -23032,6 +23054,7 @@ private:
                 error_msg = ctx_->internStringWithHeader(op->raise_op.exception->str_val.ptr, HEAP_SUBTYPE_STRING);
                 Value* tagged = packPtrToTaggedValue(error_msg, ESHKOL_VALUE_HEAP_PTR);
                 builder->CreateStore(tagged, raised_alloca);
+                builder->CreateCall(emergency_rethrow, {raised_alloca});
                 builder->CreateCall(set_raised_func, {raised_alloca});
             } else {
                 // Non-string: evaluate expression as typed, convert to tagged value
@@ -23046,6 +23069,7 @@ private:
                 Value* raised_tagged = typedValueToTaggedValue(raised_typed);
                 if (raised_tagged) {
                     builder->CreateStore(raised_tagged, raised_alloca);
+                    builder->CreateCall(emergency_rethrow, {raised_alloca});
                     builder->CreateCall(set_raised_func, {raised_alloca});
                 }
                 error_msg = codegenString("user exception");
@@ -23152,28 +23176,20 @@ private:
         // Get arena pointer
         Value* arena_ptr = getArenaPtr();
 
-        // A continuation that may outlive its frame may also outlive the
-        // region it was captured in. `with-region` redirects
-        // eshkol_current_arena(), and region exit FREES that arena — native
-        // regions reclaim by escape-promoting values that leave, not by
-        // pinning. Putting the continuation's state, closure or stack image
-        // there would leave the resume path reading freed memory; it happens
-        // to survive only while the freed blocks are not yet reused, which is
-        // the dangling-reference failure in its purest form. Allocate from the
-        // process-wide shared arena instead, which outlives every region: the
-        // failure direction becomes a leak, never a dangle, matching the
-        // anchor rule in ADR-0011 section 6.2 and what the bytecode VM already
-        // does by pinning the region. Escape-only captures keep the current
-        // arena — such a continuation cannot outlive the region body that
-        // created it, so its state is correctly reclaimed with the region.
+        // Escaping continuation state, closure and stack snapshot need a
+        // stable process-root owner, not the mutable shared allocation slot
+        // that with-region redirects. The state producer separately pins all
+        // open region frames, retaining regional references in the captured
+        // stack. Local-only continuations keep the current-arena route;
+        // existing producer pinning still applies to their open frames.
         Value* cont_arena = arena_ptr;
         if (!stays_local) {
-            Function* shared_arena_func = module->getFunction("get_global_arena_shared");
+            Function* shared_arena_func = module->getFunction("eshkol_root_arena_v1");
             if (!shared_arena_func) {
                 FunctionType* shared_arena_type =
                     FunctionType::get(builder->getPtrTy(), {}, false);
                 shared_arena_func = Function::Create(shared_arena_type,
-                    Function::ExternalLinkage, "get_global_arena_shared", module.get());
+                    Function::ExternalLinkage, "eshkol_root_arena_v1", module.get());
             }
             cont_arena = builder->CreateCall(shared_arena_func, {}, "cont_arena");
         }
@@ -25622,6 +25638,7 @@ private:
         Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
         Value* vec_ptr = builder->CreateCall(mem->getArenaAllocateVectorWithHeader(),
             {arena_ptr, ConstantInt::get(int64_type, num_elems)});
+        ctx_->emitConstructorAllocationCheck(vec_ptr);
 
         // Store length at beginning (vec_ptr points to length field)
         Value* len_ptr = builder->CreateBitCast(vec_ptr, PointerType::getUnqual(*context));
