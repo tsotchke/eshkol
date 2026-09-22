@@ -1,0 +1,37 @@
+id: SW-213
+bucket: SILENT-WRONG
+subtag: autodiff
+family: runtime-taylor/perturbation-nesting
+status: fixed
+closed_at: "0a4782007"
+title: "divergence, laplacian, curl, directional-derivative and the vector-point hessian nested inside a live pass answered 0"
+repro: >-
+  (derivative (lambda (t) (divergence (lambda (v) (vector (* t (vector-ref v 0)
+  (vector-ref v 0)) (* t (vector-ref v 1)))) (vector 2.0 5.0))) 1.0)
+observed: >-
+  0 (JIT and AOT), and likewise for laplacian, curl, directional-derivative and
+  a vector-point hessian under an enclosing pass.
+correct: >-
+  5 (divergence 5t). laplacian of t(x^2+y^2) gives 4, the curl z component of (t
+  v1, 0, 0) gives -1, the directional derivative of t x^2 at 3 gives 6, and H00
+  of t x^2 y at (1,2) gives 4.
+root_cause: >-
+  The composed operators read their Jacobian, Hessian or gradient as raw
+  doubles, and the vector-point hessian seeded e1/e2 itself, which an enclosing
+  pass owns.
+fix: >-
+  lib/backend/autodiff_codegen.cpp: the vector-point hessian nested in a live
+  pass is nested forward passes through the one protocol (emitNestedHessian);
+  divergence, laplacian, curl and directional-derivative finish in the runtime's
+  generic arithmetic when the sub-result holds carriers
+  (emitCarrierCombinatorFork -> eshkol_ad_generic_trace / _curl / _dot in
+  lib/core/runtime_taylor.c). ADR-0027 section 3.
+evidence: >-
+  tests/ad/nested_operator_levels_test.esk section SW-213
+  (nested_operator_levels_runtime_smoke and _aot_smoke) passes on JIT and AOT at
+  0a4782007.
+caught_by: [v135f-taylor lane follow-up to the SW-206..209 review, 2026-09-22]
+missed_by: [tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk]
+notes: >-
+  Native (JIT and AOT). The VM carries the same operators; that half belongs to
+  the v135f VM lane.

@@ -235,8 +235,9 @@ to miss.
   parameter, and curried — byte-identical to native codegen across the `native`,
   `vm-src`, and `vm-eskb` axes (`corpus/32_gradient_reverse.esk`,
   `gradient_callable_arity_test.esk` 25/25 on the VM). `op:GRADIENT` and
-  `op:DERIVATIVE` move from `gap` to `vm-supported`; higher-order nesting
-  (gradient-of-derivative / Taylor tower, `op:DERIVATIVE_N`) stays native-only.
+  `op:DERIVATIVE` move from `gap` to `vm-supported`. Nesting (gradient-of-
+  derivative, Taylor towers, `op:DERIVATIVE_N`) runs on the level carrier of
+  ADR-0027.
   The public low-level AD tape surface (`ad-pow`, `ad-gradient-of`,
   `ad-value-of`, `ad-tape-length`) is also complete on JIT and AOT.
 - **A derivative through a tensor or a complex value on the VM (SW-186, SW-180).**

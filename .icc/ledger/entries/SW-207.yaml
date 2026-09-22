@@ -1,0 +1,33 @@
+id: SW-207
+bucket: SILENT-WRONG
+subtag: autodiff
+family: runtime-taylor/perturbation-nesting
+status: fixed
+closed_at: "0a4782007"
+title: "`hessian` nested inside a live differentiation pass answered 0"
+repro: >-
+  (derivative (lambda (q) (hessian (lambda (t) (* q t t t)) 2.0)) 3.0)
+observed: >-
+  0 (JIT and AOT); the same inside `derivative-n` and at exact points.
+correct: >-
+  12: hessian_t (q t^3) at 2 is 12 q.
+root_cause: >-
+  hessianJetPath never reached eshkol_ad_nested_seed, and the exact tier, which
+  does, declined at run time whenever a pass was live and at compile time
+  whenever an enclosing tower-API call's mode leaked into the operator's
+  emission.
+fix: >-
+  lib/backend/autodiff_codegen.cpp: every AD operator clears the enclosing
+  pass's tower mode for its own emission (PassModeScope), and a scalar hessian
+  met while a forward pass is live, or at a carrier point, runs as the order-2
+  tower pass (tryExactTowerRoute route_nested), which is a level of the
+  enclosing passes.
+evidence: >-
+  tests/ad/nested_operator_levels_test.esk (nested_operator_levels_runtime_smoke
+  and _aot_smoke): the review probes as regression cells, 36 checks, pass on JIT
+  and AOT at 0a4782007.
+caught_by: [independent review of fix/v135f-taylor (Fable), 2026-09-22]
+missed_by: [tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk]
+notes: >-
+  Native (JIT and AOT). ADR-0027: docs/design/adr/0027-recursive-taylor-level-
+  carrier.md.

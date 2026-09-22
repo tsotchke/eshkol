@@ -122,9 +122,23 @@ At the seed site the engine decides:
   forward pass is live — the forward perturbation level is above 0 or a tower
   pass is open — or when its point is already a carrier;
 - a first-order `derivative` pass runs as an order-1 level when a tower or
-  level pass is open, or its point is a tower or level carrier. Otherwise it
-  keeps the 8-jet on native and the scalar dual on the VM, which is also what
-  nests `derivative` inside `derivative`.
+  level pass is open, its point is a tower or level carrier, or two jet levels
+  are already live. Otherwise it keeps the 8-jet on native and the scalar dual
+  on the VM, which is also what nests `derivative` inside `derivative`. The
+  8-jet holds two forward directions (`e1`, `e2`) and the reverse-seed slot
+  `ep`; a third live jet level has no slot of its own, so it is a level.
+
+Every other operator reaches the same protocol:
+
+- `gradient` and `hessian` at a scalar point are the order-1 and order-2 tower
+  passes whenever the point is exact or a pass is live; nested, they are levels.
+- `jacobian` met while a pass is live, or at a point carrying a carrier,
+  computes each column as a forward pass of its own (seed one coordinate,
+  extract the derivative of every output) and assembles a tensor of tagged
+  numbers; the reverse tape, which carries one raw double per node, is used
+  only when nothing encloses it.
+- Each operator is its own pass: the tower mode of an enclosing pass, set while
+  its differentiand is emitted, is cleared for the operator's own emission.
 
 An un-nested pass seeds exactly as before: the classic F64 or exact tower on
 native, the jet, or the VM scalar dual. The fast paths are unchanged.
