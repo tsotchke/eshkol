@@ -16735,6 +16735,7 @@ private:
             TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
             if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
+            tagged_->requireContainer(arg, eshkol::TaggedValueCodegen::containerBit(HEAP_SUBTYPE_BYTEVECTOR), "bytevector-length", "bytevector");  // SW-221
             Value* ptr = builder->CreateIntToPtr(
                 builder->CreateExtractValue(arg, {4}), PointerType::getUnqual(*context));
             Value* len = builder->CreateLoad(int64_type, ptr, "bv_len");
@@ -16746,6 +16747,7 @@ private:
             TypedValue idx_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
             if (!bv_tv.llvm_value || !idx_tv.llvm_value) co_return nullptr;
             Value* bv = typedValueToTaggedValue(bv_tv);
+            tagged_->requireContainer(bv, eshkol::TaggedValueCodegen::containerBit(HEAP_SUBTYPE_BYTEVECTOR), "bytevector-u8-ref", "bytevector");  // SW-221
             Value* idx = typedValueToTaggedValue(idx_tv);
             Value* ptr = builder->CreateIntToPtr(
                 builder->CreateExtractValue(bv, {4}), PointerType::getUnqual(*context));
@@ -16772,6 +16774,7 @@ private:
             TypedValue val_tv = (co_await codegenTypedASTTask(&op->call_op.variables[2]));
             if (!bv_tv.llvm_value || !idx_tv.llvm_value || !val_tv.llvm_value) co_return nullptr;
             Value* bv = typedValueToTaggedValue(bv_tv);
+            tagged_->requireContainer(bv, eshkol::TaggedValueCodegen::containerBit(HEAP_SUBTYPE_BYTEVECTOR), "bytevector-u8-set!", "bytevector");  // SW-221
             Value* idx = typedValueToTaggedValue(idx_tv);
             Value* val = typedValueToTaggedValue(val_tv);
             Value* ptr = builder->CreateIntToPtr(
@@ -17200,6 +17203,7 @@ private:
                 Value* va = (co_await codegenASTTask(&op->call_op.variables[a + 1]));
                 if (!va) co_return nullptr;
                 va = ensureTaggedValue(va);
+                va = tagged_->resolveSequenceOperand(va, "vector-for-each");  // SW-221
                 Value* vpi = unpackInt64FromTaggedValue(va);
                 Value* vp = builder->CreateIntToPtr(vpi, PointerType::getUnqual(*context));
                 Value* hdr = builder->CreateGEP(int8_type, vp, ConstantInt::get(int64_type, -8));
@@ -17295,6 +17299,7 @@ private:
                 Value* va = (co_await codegenASTTask(&op->call_op.variables[a + 1]));
                 if (!va) co_return nullptr;
                 va = ensureTaggedValue(va);
+                va = tagged_->resolveSequenceOperand(va, "vector-map");  // SW-221
                 Value* vpi = unpackInt64FromTaggedValue(va);
                 Value* vp = builder->CreateIntToPtr(vpi, PointerType::getUnqual(*context));
                 Value* hdr = builder->CreateGEP(int8_type, vp, ConstantInt::get(int64_type, -8));
@@ -34868,8 +34873,6 @@ private:
 
         Value* is_callable = builder->CreateICmpEQ(input_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* is_heap_ptr = builder->CreateICmpEQ(input_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* is_double = builder->CreateICmpEQ(input_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
         Value* is_int64 = builder->CreateICmpEQ(input_base_type,
@@ -34901,8 +34904,15 @@ private:
         BasicBlock* check_heap_ptr = BasicBlock::Create(*context, "vref_check_heap_ptr", current_func);
         builder->CreateCondBr(is_callable, ad_node_input, check_heap_ptr);
 
+        // Anything that is not a scalar or an AD node must be a Scheme vector
+        // or a tensor (SW-221): a list, string or other heap object used to
+        // fall through to the tensor path and fault reading a tensor header.
         builder->SetInsertPoint(check_heap_ptr);
-        builder->CreateCondBr(is_heap_ptr, heap_ptr_dispatch, tensor_input);
+        tagged_->requireContainer(vector_val,
+            eshkol::TaggedValueCodegen::containerBit(HEAP_SUBTYPE_VECTOR) |
+                eshkol::TaggedValueCodegen::containerBit(HEAP_SUBTYPE_TENSOR),
+            "tensor-ref", "tensor or vector");
+        builder->CreateBr(heap_ptr_dispatch);
 
         // HEAP_PTR dispatch: Read header subtype to distinguish vector vs tensor
         builder->SetInsertPoint(heap_ptr_dispatch);

@@ -1,0 +1,76 @@
+; SW-221: a container accessor applied to the wrong kind of container must raise
+; a catchable error on every engine. Before the fix, native answered
+; (vector-ref (list 1 2 3) 0) => 8 and (vector-length (list 1 2 3)) => 4097 by
+; reading a cons cell as a vector, and faulted on (string-ref 5 0); the VM
+; answered (), 0 and the NUL character. The accessors now share one container
+; check per engine (TaggedValueCodegen::requireContainer natively,
+; vm_require_container in the VM).
+
+(define failures 0)
+(define (report name ok)
+  (if (not ok)
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+
+; #t when the thunk raises an error object, #f when it returns a value.
+(define (rejects? thunk)
+  (guard (e (#t (error-object? e)))
+    (thunk)
+    #f))
+
+(define a-list (list 1 2 3))
+(define a-string "abc")
+(define a-vector (vector 1 2 3))
+(define a-bytevector (make-bytevector 3 7))
+(bytevector-u8-set! a-bytevector 1 8)
+(define five 5)
+
+; Wrong-type containers are refused.
+(report "vector-ref list" (rejects? (lambda () (vector-ref a-list 0))))
+(report "vector-ref string" (rejects? (lambda () (vector-ref a-string 0))))
+(report "vector-ref integer" (rejects? (lambda () (vector-ref five 0))))
+(report "vector-length list" (rejects? (lambda () (vector-length a-list))))
+(report "vector-set! list" (rejects? (lambda () (vector-set! a-list 0 9))))
+(report "vector->list list" (rejects? (lambda () (vector->list a-list))))
+(report "vector-copy list" (rejects? (lambda () (vector-copy a-list))))
+(report "string-ref list" (rejects? (lambda () (string-ref a-list 0))))
+(report "string-ref vector" (rejects? (lambda () (string-ref a-vector 0))))
+(report "string-ref integer" (rejects? (lambda () (string-ref five 0))))
+(report "string-length list" (rejects? (lambda () (string-length a-list))))
+(report "bytevector-u8-ref list" (rejects? (lambda () (bytevector-u8-ref a-list 0))))
+(report "bytevector-u8-ref vector" (rejects? (lambda () (bytevector-u8-ref a-vector 0))))
+(report "bytevector-length vector" (rejects? (lambda () (bytevector-length a-vector))))
+(report "bytevector-u8-set! list" (rejects? (lambda () (bytevector-u8-set! a-list 0 1))))
+(report "tensor-ref list" (rejects? (lambda () (tensor-ref a-list 0))))
+(report "tensor-ref string" (rejects? (lambda () (tensor-ref a-string 0))))
+
+; The accessors as first-class values run the same check.
+(define (h1 f a) (f a))
+(define (h2 f a b) (f a b))
+(report "vector-ref as value" (rejects? (lambda () (h2 vector-ref a-list 0))))
+(report "vector-length as value" (rejects? (lambda () (h1 vector-length a-list))))
+(report "string-ref as value" (rejects? (lambda () (h2 string-ref a-list 0))))
+(report "string-length as value" (rejects? (lambda () (h1 string-length a-list))))
+(report "bytevector-u8-ref as value" (rejects? (lambda () (h2 bytevector-u8-ref a-list 0))))
+(report "tensor-ref as value" (rejects? (lambda () (h2 tensor-ref a-list 0))))
+
+; The same accessors keep answering for the containers they accept.
+(report "vector-ref vector" (equal? (vector-ref a-vector 1) 2))
+(report "vector-ref literal" (= (vector-ref #(1.5 2.5) 1) 2.5))
+(report "vector-length vector" (= (vector-length a-vector) 3))
+(report "vector->list vector" (equal? (vector->list a-vector) '(1 2 3)))
+(report "string-ref string" (char=? (string-ref a-string 1) #\b))
+(report "string-length string" (= (string-length a-string) 3))
+(report "bytevector-u8-ref bytevector" (= (bytevector-u8-ref a-bytevector 1) 8))
+(report "bytevector-length bytevector" (= (bytevector-length a-bytevector) 3))
+(report "tensor-ref literal" (= (tensor-ref #(1.5 2.5) 1) 2.5))
+
+; A record is a vector-backed object; its accessors are unaffected.
+(define-record-type point (make-point x y) point? (x point-x) (y point-y set-point-y!))
+(define p (make-point 1 2))
+(set-point-y! p 5)
+(report "record accessors" (equal? (list (point-x p) (point-y p)) '(1 5)))
+
+(if (= failures 0)
+    (display "PASS: SW-221 container type boundary\n")
+    (display "FAIL: SW-221 container type boundary\n"))

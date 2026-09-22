@@ -8282,6 +8282,42 @@ static void vm_raise_error_msg(VM* vm, const char* msg) {
     vm_raise_error_msg_with_irritants(vm, msg, NIL_VAL);
 }
 
+/* Container boundary for the accessor family (SW-221), the VM twin of
+ * TaggedValueCodegen::requireContainer. An accessor reads its operand by the
+ * container's layout, so it must first establish that the operand IS that
+ * container. The accessors used to test for their own type and answer a
+ * fabricated value for anything else: (vector-ref (list 1 2 3) 0) answered
+ * (), (vector-length (list 1 2 3)) 0, (string-ref (list 1 2) 0) the NUL
+ * character. Returns 1 when @p v is one of the @p accepted kinds; otherwise
+ * raises a catchable error "<who>: expected <expected>" and returns 0, and the
+ * caller must return WITHOUT pushing (the raise restored the handler's stack). */
+enum {
+    VM_CONTAINER_VECTOR     = 1u << 0,
+    VM_CONTAINER_TENSOR     = 1u << 1,
+    VM_CONTAINER_STRING     = 1u << 2,
+    VM_CONTAINER_BYTEVECTOR = 1u << 3,
+};
+static int vm_require_container(VM* vm, Value v, unsigned accepted,
+                                const char* who, const char* expected) {
+    int ok = 0;
+    if ((accepted & VM_CONTAINER_VECTOR) && v.type == VAL_VECTOR) ok = 1;
+    if ((accepted & VM_CONTAINER_TENSOR) && v.type == VAL_TENSOR) ok = 1;
+    if ((accepted & VM_CONTAINER_STRING) && v.type == VAL_STRING) ok = 1;
+    if ((accepted & VM_CONTAINER_BYTEVECTOR) && is_heap_type(vm, v, HEAP_BYTEVECTOR)) ok = 1;
+    if (ok) return 1;
+    char msg[160];
+    snprintf(msg, sizeof(msg), "%s: expected %s", who, expected);
+    vm_raise_error_msg(vm, msg);
+    return 0;
+}
+
+/* The accessor implementations shared with the inline opcodes (vm_ops.c). */
+static void vm_exec_vec_ref(VM* vm);
+static void vm_exec_vec_set(VM* vm);
+static void vm_exec_vec_len(VM* vm);
+static void vm_exec_str_ref(VM* vm);
+static void vm_exec_str_len(VM* vm);
+
 /*
  * Shared int64 bit twiddling for arithmetic-shift / bit-shift-left /
  * bit-shift-right.  The shift amount is clamped to [0, 63] exactly like the
@@ -9439,11 +9475,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 140: { /* vector->list: preserve element order */
         Value vec_val = vm_pop(vm);
-        if (vec_val.type != VAL_VECTOR ||
-            !is_valid_heap_ptr(vm, vec_val.as.ptr) ||
+        if (!vm_require_container(vm, vec_val, VM_CONTAINER_VECTOR, "vector->list", "a vector")) break;
+        if (!is_valid_heap_ptr(vm, vec_val.as.ptr) ||
             vm->heap.objects[vec_val.as.ptr]->type != HEAP_VECTOR) {
-            fprintf(stderr, "ERROR: vector->list expects a vector\n");
-            vm->error = 1;
+            vm_raise_error_msg(vm, "vector->list: expected a vector");
             break;
         }
         VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
@@ -12005,33 +12040,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * String Operations (550-570) — real VmString dispatch
      * ══════════════════════════════════════════════════════════════════════ */
-    case 550: { /* string-length */
-        Value s_val = vm_pop(vm);
-        if (s_val.type == VAL_STRING && vm->heap.objects[s_val.as.ptr]->opaque.ptr) {
-            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            vm_push(vm, INT_VAL(vm_string_length(s)));
-        } else vm_push(vm, INT_VAL(0));
-        break;
-    }
-    case 551: { /* string-ref(str, idx) */
-        Value idx = vm_pop(vm), s_val = vm_pop(vm);
-        if (s_val.type == VAL_STRING && vm->heap.objects[s_val.as.ptr]->opaque.ptr) {
-            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            int k = (int)as_number(idx);
-            /* R7RS 6.7 + parity contract: out of range is a catchable error
-             * (the native codegen has always raised here; the VM used to
-             * fabricate codepoint 0). */
-            if (!s || k < 0 || k >= s->char_len) {
-                vm_raise_error_msg(vm, "string-ref: index out of bounds");
-                break;
-            }
-            int cp = vm_string_ref(s, k);
-            vm_push(vm, (Value){.type = VAL_CHAR, .as.i = cp >= 0 ? cp : 0});
-        } else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
-        break;
-    }
+    case 550: vm_exec_str_len(vm); break; /* string-length */
+    case 551: vm_exec_str_ref(vm); break; /* string-ref(str, idx) */
     case 552: { /* string-set!(str, idx, char) → new string */
         Value ch = vm_pop(vm), idx = vm_pop(vm), s_val = vm_pop(vm);
+        if (!vm_require_container(vm, s_val, VM_CONTAINER_STRING, "string-set!", "a string")) break;
         if (s_val.type == VAL_STRING && vm->heap.objects[s_val.as.ptr]->opaque.ptr) {
             VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
             VmString* result = vm_string_set(&vm->heap.regions, s, (int)as_number(idx), (int)as_number(ch));
@@ -15125,6 +15138,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 681: { /* bytevector-length */
         Value bv_val = vm_pop(vm);
+        if (!vm_require_container(vm, bv_val, VM_CONTAINER_BYTEVECTOR, "bytevector-length", "a bytevector")) break;
         if (is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
             VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
             vm_push(vm, INT_VAL(vm_bv_length(bv)));
@@ -15133,6 +15147,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 682: { /* bytevector-u8-ref(bv, k) */
         Value k = vm_pop(vm), bv_val = vm_pop(vm);
+        if (!vm_require_container(vm, bv_val, VM_CONTAINER_BYTEVECTOR, "bytevector-u8-ref", "a bytevector")) break;
         if (is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
             VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
             int idx = (int)as_number(k);
@@ -15147,6 +15162,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 683: { /* bytevector-u8-set!(bv, k, byte) */
         Value byte = vm_pop(vm), k = vm_pop(vm), bv_val = vm_pop(vm);
+        if (!vm_require_container(vm, bv_val, VM_CONTAINER_BYTEVECTOR, "bytevector-u8-set!", "a bytevector")) break;
         if (is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
             VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
             int idx = (int)as_number(k);
@@ -16361,47 +16377,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         for (int i = 0; i < sz; i++) v->items[i] = fill;
         vm->heap.objects[p]->opaque.ptr = v;
         vm_push(vm, (Value){VAL_VECTOR, {.ptr = p}}); break; }
-    case 219: { /* vector-ref */
-        Value idx_v = vm_pop(vm), vec_v = vm_pop(vm);
-        if (vec_v.type == VAL_VECTOR) {
-            VmVector* v = (VmVector*)vm->heap.objects[vec_v.as.ptr]->opaque.ptr;
-            int idx = (int)as_number(idx_v);
-            /* R7RS 6.8 + parity contract: out of range is a catchable error
-             * (the native codegen has always raised here; the VM used to
-             * fabricate '()). */
-            if (!v || idx < 0 || idx >= v->len) {
-                vm_raise_error_msg(vm, "vector-ref: index out of bounds");
-                break;
-            }
-            vm_push(vm, v->items[idx]);
-        } else if (vec_v.type == VAL_TENSOR) {
-            /* SW-26: e.g. (vector-ref (fg-marginal fg 0) 0). */
-            vm_vecref_tensor_path(vm, vec_v, idx_v);
-        } else vm_push(vm, NIL_VAL); break; }
-    case 220: { /* vector-set! */
-        Value val = vm_pop(vm), idx_v = vm_pop(vm), vec_v = vm_pop(vm);
-        if (vec_v.type == VAL_VECTOR) {
-            VmVector* v = (VmVector*)vm->heap.objects[vec_v.as.ptr]->opaque.ptr;
-            int idx = (int)as_number(idx_v);
-            if (!v || idx < 0 || idx >= v->len) {
-                vm_raise_error_msg(vm, "vector-set!: index out of bounds");
-                break;
-            }
-            v->items[idx] = val;
-        } else if (vec_v.type == VAL_TENSOR) {
-            /* SW-26 sibling gap. */
-            if (!vm_vecset_tensor_path(vm, vec_v, idx_v, val)) break;
-        }
-        vm_push(vm, NIL_VAL); break; }
-    case 221: { /* vector-length */
-        Value v = vm_pop(vm);
-        if (v.type == VAL_VECTOR) {
-            VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
-            vm_push(vm, INT_VAL(vec ? vec->len : 0));
-        } else if (v.type == VAL_TENSOR) {
-            /* SW-26 sibling gap. */
-            vm_push(vm, INT_VAL(vm_veclen_tensor_path(vm, v)));
-        } else vm_push(vm, INT_VAL(0)); break; }
+    /* vector-ref / vector-set! / vector-length as first-class natives run the
+     * same implementation as the inline opcodes, container boundary included. */
+    case 219: vm_exec_vec_ref(vm); break; /* vector-ref */
+    case 220: vm_exec_vec_set(vm); break; /* vector-set! */
+    case 221: vm_exec_vec_len(vm); break; /* vector-length */
     case 222: { /* string->list */
         Value s_val = vm_pop(vm);
         Value result = NIL_VAL;

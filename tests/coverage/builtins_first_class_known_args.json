@@ -281,13 +281,13 @@
     },
     "bytevector-length": {
       "args": [
-        "(vector 1 2 3)"
+        "(bytevector 1 2 3)"
       ],
       "arity": 1
     },
     "bytevector-u8-ref": {
       "args": [
-        "(vector 1 2 3)",
+        "(bytevector 1 2 3)",
         "1"
       ],
       "arity": 2
@@ -745,7 +745,7 @@
     "vector-for-each": {
       "args": [
         "(lambda (x) x)",
-        "(list 1 2 3)"
+        "(vector 1 2 3)"
       ],
       "arity": 2
     },

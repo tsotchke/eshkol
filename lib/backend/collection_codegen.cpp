@@ -1470,7 +1470,7 @@ llvm::Value* CollectionCodegen::vectorLength(const eshkol_operations_t* op) {
 
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!vec_arg) return nullptr;
-    vec_arg = tagged_.resolveDenseTensorNode(vec_arg);  // ADR-0023
+    vec_arg = tagged_.resolveSequenceOperand(vec_arg, "vector-length");  // ADR-0023, SW-221
 
     llvm::Value* length = nullptr;
 
@@ -1571,7 +1571,7 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     void* idx_typed = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
     if (!vec_arg || !idx_typed) return nullptr;
-    vec_arg = tagged_.resolveDenseTensorNode(vec_arg);  // ADR-0023
+    vec_arg = tagged_.resolveSequenceOperand(vec_arg, "vector-ref");  // ADR-0023, SW-221
 
     llvm::Value* idx_tagged = typed_to_tagged_callback_(idx_typed, callback_context_);
     if (!idx_tagged) return nullptr;
@@ -2193,6 +2193,7 @@ llvm::Value* CollectionCodegen::vectorCopyNew(const eshkol_operations_t* op) {
 
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!vec_arg) return nullptr;
+    vec_arg = tagged_.resolveSequenceOperand(vec_arg, "vector-copy");  // SW-221
     llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
 
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
@@ -2438,6 +2439,7 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
     for (uint64_t i = 0; i < num_vecs; i++) {
         llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
         if (!vec_arg) return nullptr;
+        vec_arg = tagged_.resolveSequenceOperand(vec_arg, "vector-append");  // SW-221
 
         llvm::Value* ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
         llvm::Value* header_ptr = ctx_.builder().CreateGEP(
@@ -2706,7 +2708,7 @@ llvm::Value* CollectionCodegen::vectorToList(const eshkol_operations_t* op) {
     // Get vector
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!vec_arg) return nullptr;
-    vec_arg = tagged_.resolveDenseTensorNode(vec_arg);  // ADR-0023
+    vec_arg = tagged_.resolveSequenceOperand(vec_arg, "vector->list");  // ADR-0023, SW-221
 
     // Vector literals may be represented either as Scheme vectors
     // ([length][tagged elements...]) or as tensor-backed numeric vectors.

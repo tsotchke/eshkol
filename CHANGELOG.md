@@ -14,6 +14,17 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **A container accessor read the wrong kind of container as its own
+  (SW-221).** `(vector-ref (list 1 2 3) 0)` answered `8` natively and `()` on
+  the bytecode VM; `(vector-length (list 1 2 3))` answered `4097` and `0`;
+  `string-ref` of a list answered a control character natively and NUL on the
+  VM; `(string-ref 5 0)` and `(tensor-ref (list 1 2) 0)` faulted natively. The
+  vector, string, bytevector and `tensor-ref` accessors now pass their operand
+  through one container check per engine (`TaggedValueCodegen::requireContainer`
+  natively, `vm_require_container` in the VM) and raise a catchable error for
+  any other kind. The VM's inline string opcodes and its first-class string
+  natives now share one implementation; the threaded copy indexed bytes, so
+  `(string-ref "héllo" 1)` answered a byte of `é` rather than the character.
 - **A condition the native runtime raised on its own was not an error object.**
   `car` of a non-pair, an arithmetic type error, bignum and rational division
   by zero, i128 overflow and a forward-referenced stub were built by a

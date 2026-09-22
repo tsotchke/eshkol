@@ -165,6 +165,22 @@ catches it and reads its message:
 car: argument is not a pair
 ```
 
+A container accessor applied to the wrong kind of container is one of those
+conditions. `vector-ref`, `vector-set!`, `vector-length`, `vector->list`,
+`vector-copy`, `vector-append`, `vector-map` and `vector-for-each` accept a
+vector or a tensor; `string-ref`, `string-set!` and `string-length` a string;
+the `bytevector-` accessors a bytevector; `tensor-ref` a tensor, a vector, or a
+scalar. Anything else raises instead of answering:
+
+```scheme
+(display (guard (e ((error-object? e) 'refused)) (vector-ref (list 1 2 3) 0))) (newline)
+(display (guard (e ((error-object? e) 'refused)) (string-ref (vector #\a) 0))) (newline)
+```
+```
+refused
+refused
+```
+
 > **Engine differences.** The bytecode VM prints a caught error object as
 > `<error-object>` rather than `#<exception>`, and its
 > `error-object-irritants` currently answers `()` where native answers

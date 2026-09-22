@@ -78,7 +78,7 @@
 (check "vector->tensor::calls" (equal? (vector->tensor (vector 1 2 3)) (h1 vector->tensor (vector 1 2 3))))
 (check "vector-append::calls" (equal? (vector-append (vector 1 2) (vector 3 4)) (h2 vector-append (vector 1 2) (vector 3 4))))
 (check "vector-copy::calls" (equal? (vector-copy (vector 1 2 3)) (h1 vector-copy (vector 1 2 3))))
-(check "vector-for-each::calls" (equal? (vector-for-each (lambda (x) x) (list 1 2 3)) (h2 vector-for-each (lambda (x) x) (list 1 2 3))))
+(check "vector-for-each::calls" (equal? (vector-for-each (lambda (x) x) (vector 1 2 3)) (h2 vector-for-each (lambda (x) x) (vector 1 2 3))))
 (check "vref::calls" (equal? (vref (vector 1 2 3) 1) (h2 vref (vector 1 2 3) 1)))
 
 (display "checked=") (display checked) (newline)
