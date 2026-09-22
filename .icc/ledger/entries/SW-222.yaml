@@ -45,3 +45,6 @@ missed_by: [vm_parity]
 notes: >-
   The VM's (derivative-n (lambda (x) (/ 1.0 x)) 0.0 2) prints <dual>; reported
   to the VM lane.
+vm_evidence: >-
+  VM mirror at 4689ba7e2a739d825c8c83a1038ea3ebe39417e4 (branch fix/v135f-vmtaylor2): tests/ad/division_pole_test.esk and
+  tests/ad/taylor_integral_family_test.esk pass on eshkol-vm-standalone-test and the browser VM.

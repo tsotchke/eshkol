@@ -1,0 +1,20 @@
+id: SW-218
+bucket: SILENT-WRONG
+subtag: autodiff
+family: vm/integral-family
+status: fixed
+closed_at: 'ea25399476bb56bb0c7ac42e7530b3f771234250'
+title: "VM higher-order inverse trig answered the first derivative"
+repro: >-
+  (derivative-n asin 0.3 2), acos, (derivative-n atan 0.7 2) on eshkol-vm-standalone-test.
+observed_before: >-
+  1.048 for asin where the second derivative is 0.3456; acos likewise; atan returned its first derivative.
+observed_after: >-
+  0.3455884077105225, -0.3455884077105225 and -0.6306022251249943 (= -2x/(1+x^2)^2 at 0.7) on the VM and the browser VM; every order and nesting; atan d3 at exact 0 is exact -2.
+root_cause: >-
+  asin/acos/atan read a carrier through a first-order (value, tangent) rule.
+fixed_by: "each is the integral of g(u) u' in the carrier arithmetic, s_k = (1/k) sum j u_j g_{k-j}, with an exact unit (lib/backend/vm_dual.c vm_dual_inverse_trig), mirroring native tr_ext_unary"
+evidence: >-
+  tests/ad/vm_inverse_trig_orders_test.esk (ctest vm_inverse_trig_orders_vm/_browser_vm); tests/ad/taylor_integral_family_test.esk 347/347 on the VM and the browser VM.
+caught_by: [v135f-coordinator-review]
+missed_by: [run_vm_parity]
