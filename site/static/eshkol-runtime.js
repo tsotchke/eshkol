@@ -591,7 +591,12 @@ class EshkolRuntime {
                 eshkol_is_i128_tagged: (v) => {
                     // Match lib/core/i128_runtime.cpp: a HEAP_PTR (8) with
                     // HEAP_SUBTYPE_I128 (25) in its eight-byte object header.
-                    // Generic arithmetic asks this of ordinary values too.
+                    // Generic arithmetic asks this of ordinary values too, so
+                    // unlike the two operators above (only ever reached once
+                    // this predicate has already said "yes"), this one MUST
+                    // answer for real rather than throw: a throwing stub here
+                    // would abort ordinary generic arithmetic on any heap
+                    // operand, not just genuine i128 values.
                     const dv = this.memory ? new DataView(this.memory.buffer) : null;
                     if (!dv || !v) return 0;
                     if ((dv.getUint8(Number(v)) & 0x0F) !== 8) return 0;
