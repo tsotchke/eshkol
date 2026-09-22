@@ -21618,6 +21618,8 @@ private:
         BasicBlock* taylor_path = BasicBlock::Create(*context, "abs_taylor", current_func);
         BasicBlock* check_dual = BasicBlock::Create(*context, "abs_check_dual", current_func);
         BasicBlock* dual_path = BasicBlock::Create(*context, "abs_dual", current_func);
+        BasicBlock* check_taylor = BasicBlock::Create(*context, "abs_check_taylor", current_func);
+        BasicBlock* taylor_path = BasicBlock::Create(*context, "abs_taylor", current_func);
         BasicBlock* numeric_path = BasicBlock::Create(*context, "abs_numeric", current_func);
         BasicBlock* merge = BasicBlock::Create(*context, "abs_merge", current_func);
 
@@ -21654,7 +21656,7 @@ private:
 
         // Check for dual number
         builder->SetInsertPoint(check_dual);
-        builder->CreateCondBr(arg_is_dual, dual_path, numeric_path);
+        builder->CreateCondBr(arg_is_dual, dual_path, check_taylor);
 
         // DUAL PATH
         builder->SetInsertPoint(dual_path);
@@ -21663,6 +21665,26 @@ private:
         Value* tagged_dual_result = packDualToTaggedValue(dual_result);
         builder->CreateBr(merge);
         BasicBlock* dual_exit = builder->GetInsertBlock();
+
+        // SW-158: `abs` is the R7RS entry point and used to be a SEPARATE
+        // dispatch from `fabs` (which already special-cases Taylor towers in
+        // codegenMathFunction's twr_uop table below). Without this check, a
+        // tower operand fell straight through to ArithmeticCodegen::abs's
+        // numeric_path, whose `is_heap` branch assumes every HEAP_PTR is a
+        // bignum and called the bignum compare/negate runtime on a tower's
+        // raw struct bits. Route it through the same
+        // eshkol_taylor_unary_tagged kernel `fabs` uses (op code 7), which
+        // propagates the |x| kink (d|x|/dx = sign(x)) through every
+        // coefficient.
+        builder->SetInsertPoint(check_taylor);
+        Value* arg_is_taylor = isHeapSubtype(arg_tagged, HEAP_SUBTYPE_TAYLOR);
+        builder->CreateCondBr(arg_is_taylor, taylor_path, numeric_path);
+
+        // TAYLOR TOWER PATH
+        builder->SetInsertPoint(taylor_path);
+        Value* taylor_result = arith_->emitTaylorUnaryCall(arg_tagged, 7 /*fabs*/);
+        builder->CreateBr(merge);
+        BasicBlock* taylor_exit = builder->GetInsertBlock();
 
         // NUMERIC PATH: delegate to ArithmeticCodegen::abs (handles int, double, bignum)
         builder->SetInsertPoint(numeric_path);

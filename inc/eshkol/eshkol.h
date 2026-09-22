@@ -322,7 +322,7 @@ typedef struct esh_taylor {
     uint32_t flags;     // packed: COEFF_MASK[0..7] | RESERVED0[8..15] | EPOCH_TAG[16..31]
     uint32_t tangent_epoch; // epoch of the orthogonal tangent, or 0 when absent
     uint32_t tangent2_epoch; // second orthogonal epoch for a hyperdual tower
-    uint32_t carry_epoch;   // enclosing level the companion series rides (ESH-0412, see below)
+    uint32_t carry_epoch;   // legacy ESH-0412 companion epoch; zero for ESH-0413 carrier coefficients
     uint32_t reserved1;     // pad: keeps `exact_c`/`c` 8-byte aligned for COEFF_RATIONAL
     eshkol_tagged_value_t* exact_c; // optional exact value-coefficient sidecar
     double   c[];       // coefficient storage c[0..order_k] (COEFF_F64)
@@ -350,6 +350,21 @@ typedef struct esh_taylor {
  * tagged values on the `c[]` storage and points esh_taylor_t::exact_c at it.
  */
 #define ESH_TAYLOR_COEFF_RATIONAL 1u
+// ESH-0413 (nested towers, design section 5c): CARRIER-COEFFICIENT towers. The
+// `c[]` storage is reinterpreted as `eshkol_tagged_value_t c[order_k+1]`
+// exactly as COEFF_RATIONAL does, but the entries are not restricted to exact
+// numbers: each coefficient is ANY tagged number, INCLUDING another Taylor
+// tower whose EPOCH_TAG names a strictly ENCLOSING differentiation level. That
+// is the representation of "a jet over a jet": a carrier at level L of order K
+// is the truncated series in L's perturbation whose coefficients are
+// themselves carriers of the enclosing levels. Arbitrary nesting depth and
+// arbitrary per-level order follow by construction, and perturbation confusion
+// is impossible because a foreign level never loses its own EPOCH_TAG -- it is
+// a COEFFICIENT of this level, never a constant of it and never an error.
+// Unlike COEFF_RATIONAL (whose coefficients are all exact or all demoted), a
+// CARRIER tower's coefficients are individually tagged: c[0] may be an
+// enclosing tower while c[1] is an exact 1.
+#define ESH_TAYLOR_COEFF_CARRIER 2u
 // P5 (ESH-0190) reverse-over-Taylor: a tower may carry a parallel first-order
 // "seed tangent" series alongside its value series. When ESH_TAYLOR_TANGENT_FLAG
 // is set the coefficient storage holds 2*(K+1) doubles: c[0..K] values followed
@@ -397,16 +412,14 @@ typedef struct esh_taylor {
 #define ESH_TAYLOR_HAS_TANGENT2(fl) (((fl) & ESH_TAYLOR_TANGENT2_FLAG) != 0u)
 /** @brief True when flags word @p fl has ESH_TAYLOR_TANGENT2_EXACT_FLAG set. */
 #define ESH_TAYLOR_TANGENT2_IS_EXACT(fl) (((fl) & ESH_TAYLOR_TANGENT2_EXACT_FLAG) != 0u)
-// ESH-0412 nested capture: `esh_taylor_t.carry_epoch` names the ENCLOSING
-// differentiation level whose perturbation this tower's first-order companion
-// series (ESH_TAYLOR_TANGENT_FLAG, above) is tracking, or 0 when the companion
-// tracks an 8-jet / reverse seed rather than another tower. A non-zero value
-// says "when this pass is extracted, restate the answer as an order-1 tower of
-// epoch carry_epoch" -- which is what lets a `derivative-n`/`taylor` pass NEST
-// inside another one when the outer variable reaches it through a CAPTURED
-// variable instead of through the evaluation point. Set where a foreign-epoch
-// tower is lifted (see "operand normalisation + epoch" in
-// lib/core/runtime_taylor.c) and read by eshkol_ad_tower_carry_result().
+// ESH-0413 retires ESH-0412's `carry_epoch` as the representation of nesting.
+// It named the single
+// ENCLOSING level a tower's first-order companion series was riding. That was
+// the whole nesting budget -- one enclosing level, at first order -- and it is
+// retired: an enclosing level is now a COEFFICIENT of this one
+// (ESH_TAYLOR_COEFF_CARRIER, above), which has no such ceiling and needs no
+// nesting bookkeeping. The field remains for ABI/layout compatibility and for
+// legacy tangent-sidecar values; new carrier-coefficient towers leave it zero.
 /** @brief Bit position (16) of the epoch tag inside esh_taylor_t::flags. */
 #define ESH_TAYLOR_EPOCH_SHIFT   16u
 /**
@@ -480,21 +493,18 @@ int32_t eshkol_taylor_project_forward_tangent(
     arena_t* arena, const eshkol_tagged_value_t* tower,
     eshkol_tagged_value_t* out);
 
-// ESH-0402: nested-AD carrier composition route codes. Returned by
-// eshkol_ad_nested_seed() at a differentiation whose evaluation point is
-// already an ENCLOSING pass's carrier, and threaded (packed with the outer
-// tower's epoch in bits 8..23) to the matching eshkol_ad_nested_extract().
+// ESH-0402/ESH-0413: nested-differentiation route codes. Returned by
+// eshkol_ad_nested_seed() and threaded to the matching
+// eshkol_ad_nested_extract(). Since ESH-0413 a tower pass opens its own LEVEL
+// inside eshkol_taylor_seed_tagged, so the only route left is the one for a
+// pass that would have seeded an 8-jet but met a tower level: it runs as an
+// order-1 level instead, and its extraction reads 1!*c[1].
 // See the block comment above eshkol_ad_nested_seed in lib/core/runtime_taylor.c.
-/** @brief Route 0: the evaluation point is an ordinary value; the caller seeds its pass as for a non-nested differentiation. */
-#define ESH_AD_NEST_NONE         0   // not nested: caller seeds exactly as before
-/** @brief Route 1: the outer pass is an 8-jet, which rides this tower's tangent series. */
-#define ESH_AD_NEST_CARRY_JET    1   // outer 8-jet rides this tower's tangent
-/** @brief Route 2: this pass is first order (or order zero) and rides the outer tower's tangent dimension. */
-#define ESH_AD_NEST_RIDE         2   // this first-order pass rides the outer tower's tangent
-/** @brief Route 3: the outer pass is an order-1 tower, which rides this tower's tangent series. */
-#define ESH_AD_NEST_CARRY_TWR    3   // outer order-1 tower rides this tower's tangent
-/** @brief Route -1: neither pass is first order, so no composition exists; the caller raises an error. */
-#define ESH_AD_NEST_UNSUPPORTED (-1) // neither pass is first order: caller raises
+#define ESH_AD_NEST_NONE         0   // not nested here: caller seeds exactly as before
+#define ESH_AD_NEST_CARRY_JET    1   // ONE enclosing 8-jet direction rides this tower's companion
+#define ESH_AD_NEST_LEVEL        2   // this pass owns a fresh LEVEL over the enclosing carrier
+#define ESH_AD_NEST_LEVEL_JET    3   // ... and the enclosing carrier was an 8-jet, restated on extract
+#define ESH_AD_NEST_UNSUPPORTED (-1) // the point is not a scalar carrier: caller raises
 
 /**
  * @brief Complex number for signal processing, FFT, and complex analysis.
