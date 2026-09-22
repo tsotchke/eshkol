@@ -589,10 +589,14 @@ class EshkolRuntime {
                 eshkol_i128_binary_tagged: () => { throw new Error('i128 arithmetic unsupported in WASM glue'); },
                 eshkol_i128_compare_tagged: () => { throw new Error('i128 comparison unsupported in WASM glue'); },
                 eshkol_is_i128_tagged: (v) => {
-                    // Exact, as in lib/core/i128_runtime.cpp tagged_is_i128: a
-                    // HEAP_PTR (8) whose object header (8 bytes before the
-                    // payload) carries HEAP_SUBTYPE_I128 (25). Generic
-                    // arithmetic asks this of every heap operand.
+                    // Match lib/core/i128_runtime.cpp: a HEAP_PTR (8) with
+                    // HEAP_SUBTYPE_I128 (25) in its eight-byte object header.
+                    // Generic arithmetic asks this of ordinary values too, so
+                    // unlike the two operators above (only ever reached once
+                    // this predicate has already said "yes"), this one MUST
+                    // answer for real rather than throw: a throwing stub here
+                    // would abort ordinary generic arithmetic on any heap
+                    // operand, not just genuine i128 values.
                     const dv = this.memory ? new DataView(this.memory.buffer) : null;
                     if (!dv || !v) return 0;
                     if ((dv.getUint8(Number(v)) & 0x0F) !== 8) return 0;
@@ -980,9 +984,9 @@ class EshkolRuntime {
                 eshkol_taylor_extract_tangent:  () => 0.0,
                 eshkol_taylor_lift_ad_node:     () => {},
                 eshkol_taylor_project_forward_tangent: () => 0,
-                // ESH-0402 nested-AD carrier composition (runtime_taylor.c):
-                //   i32  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, i32, tagged*)
-                //   void eshkol_ad_nested_extract(arena*, tagged*, i32, i32, tagged*)
+                // ADR-0027 nested levels (runtime_taylor.c):
+                //   i32  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, i64, tagged*)
+                //   void eshkol_ad_nested_extract(arena*, tagged*, i32, i32, i32, tagged*)
                 //   void eshkol_ad_nested_unsupported(i32)
                 //   void eshkol_ad_curried_gradient_unsupported()
                 // ESH_AD_NEST_NONE (0) keeps the lite lane on the unchanged
@@ -1000,6 +1004,9 @@ class EshkolRuntime {
                 },
                 eshkol_ad_tower_enter: () => {},
                 eshkol_ad_tower_leave: () => {},
+                // A jet pass's extraction guard (ADR-0027). The lite lane has no Taylor
+                // carrier, so no carrier can reach it.
+                eshkol_ad_jet_result_check: () => {},
                 // END GENERATED FLAT-AD IMPORTS
                 eshkol_ad_nested_extract:       () => {},
                 eshkol_ad_nested_unsupported:   () => {},

@@ -320,9 +320,7 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 8 * sizeof(double),
 typedef struct esh_taylor {
     uint32_t order_k;   // highest coefficient index K (series has K+1 entries)
     uint32_t flags;     // packed: COEFF_MASK[0..7] | RESERVED0[8..15] | EPOCH_TAG[16..31]
-    uint32_t tangent_epoch; // epoch of the orthogonal tangent, or 0 when absent
-    uint32_t tangent2_epoch; // second orthogonal epoch for a hyperdual tower
-    uint32_t carry_epoch;   // enclosing level the companion series rides (ESH-0412, see below)
+    uint32_t reserved_epochs[3]; // zero; the companion lanes' epoch tags, retired by ADR-0027
     uint32_t reserved1;     // pad: keeps `exact_c`/`c` 8-byte aligned for COEFF_RATIONAL
     eshkol_tagged_value_t* exact_c; // optional exact value-coefficient sidecar
     double   c[];       // coefficient storage c[0..order_k] (COEFF_F64)
@@ -330,7 +328,7 @@ typedef struct esh_taylor {
 
 // esh_taylor_t.flags bitfield accessors (§4 of the design).
 /** @brief Mask of the coefficient-representation field, bits 0..7 of esh_taylor_t::flags. */
-#define ESH_TAYLOR_COEFF_MASK    0x000000FFu  // coefficient type: 0=F64, 1=RATIONAL (P7 adds TENSOR)
+#define ESH_TAYLOR_COEFF_MASK    0x000000FFu  // coefficient type: 0=F64, 1=RATIONAL, 2=CARRIER (level, ADR-0027)
 /** @brief Coefficient representation 0: the series is stored as raw doubles in esh_taylor_t::c. */
 #define ESH_TAYLOR_COEFF_F64     0u
 // P6 (ESH-0191): exact-coefficient towers. When COEFF_RATIONAL is set, the
@@ -338,7 +336,7 @@ typedef struct esh_taylor {
 // `eshkol_tagged_value_t c[order_k+1]` (each entry an exact int64/bignum/
 // rational tagged value, produced by Eshkol's existing exact numeric tower)
 // instead of raw doubles. This is safe because `c`'s offset (right after
-// order_k/flags/tangent_epoch/tangent2_epoch/carry_epoch/reserved1/exact_c,
+// order_k/flags/reserved_epochs/reserved1/exact_c,
 // 32 bytes in) is 8-byte aligned, matching
 // alignof(eshkol_tagged_value_t); accessors in lib/core/runtime_taylor.c
 // never raw-index across coefficient types (design section 4/12).
@@ -350,6 +348,16 @@ typedef struct esh_taylor {
  * tagged values on the `c[]` storage and points esh_taylor_t::exact_c at it.
  */
 #define ESH_TAYLOR_COEFF_RATIONAL 1u
+/**
+ * @brief Coefficient representation 2: a LEVEL carrier (ADR-0027).
+ *
+ * `c[]` holds order_k+1 eshkol_tagged_value_t, each ANY number: an exact or
+ * inexact scalar, an 8-jet, or a Taylor carrier of a strictly enclosing level
+ * (a smaller epoch). esh_taylor_t::exact_c points at the same storage. A level
+ * carrier has no companion lanes. See
+ * docs/design/adr/0027-recursive-taylor-level-carrier.md.
+ */
+#define ESH_TAYLOR_COEFF_CARRIER 2u
 // P5 (ESH-0190) reverse-over-Taylor: a tower may carry a parallel first-order
 // "seed tangent" series alongside its value series. When ESH_TAYLOR_TANGENT_FLAG
 // is set the coefficient storage holds 2*(K+1) doubles: c[0..K] values followed
@@ -380,33 +388,14 @@ typedef struct esh_taylor {
  * coefficients.
  */
 #define ESH_TAYLOR_TANGENT_EXACT_FLAG 0x00000800u
-/**
- * @brief Bit 12: hyperdual tower with a second tangent series.
- *
- * Storage holds four double lanes of K+1 entries: value, tangent, second
- * tangent and the mixed tangent*tangent2 term.
- */
-#define ESH_TAYLOR_TANGENT2_FLAG 0x00001000u
-/** @brief Bit 13: the second-tangent and mixed lanes also have exact copies in the esh_taylor_t::exact_c sidecar. */
-#define ESH_TAYLOR_TANGENT2_EXACT_FLAG 0x00002000u
 /** @brief True when flags word @p fl has ESH_TAYLOR_TANGENT_FLAG set. */
 #define ESH_TAYLOR_HAS_TANGENT(fl) (((fl) & ESH_TAYLOR_TANGENT_FLAG) != 0u)
 /** @brief True when flags word @p fl has ESH_TAYLOR_TANGENT_EXACT_FLAG set. */
 #define ESH_TAYLOR_TANGENT_IS_EXACT(fl) (((fl) & ESH_TAYLOR_TANGENT_EXACT_FLAG) != 0u)
-/** @brief True when flags word @p fl has ESH_TAYLOR_TANGENT2_FLAG set. */
-#define ESH_TAYLOR_HAS_TANGENT2(fl) (((fl) & ESH_TAYLOR_TANGENT2_FLAG) != 0u)
-/** @brief True when flags word @p fl has ESH_TAYLOR_TANGENT2_EXACT_FLAG set. */
-#define ESH_TAYLOR_TANGENT2_IS_EXACT(fl) (((fl) & ESH_TAYLOR_TANGENT2_EXACT_FLAG) != 0u)
-// ESH-0412 nested capture: `esh_taylor_t.carry_epoch` names the ENCLOSING
-// differentiation level whose perturbation this tower's first-order companion
-// series (ESH_TAYLOR_TANGENT_FLAG, above) is tracking, or 0 when the companion
-// tracks an 8-jet / reverse seed rather than another tower. A non-zero value
-// says "when this pass is extracted, restate the answer as an order-1 tower of
-// epoch carry_epoch" -- which is what lets a `derivative-n`/`taylor` pass NEST
-// inside another one when the outer variable reaches it through a CAPTURED
-// variable instead of through the evaluation point. Set where a foreign-epoch
-// tower is lifted (see "operand normalisation + epoch" in
-// lib/core/runtime_taylor.c) and read by eshkol_ad_tower_carry_result().
+// The first-order companion series (ESH_TAYLOR_TANGENT_FLAG) carries exactly
+// one thing: the reverse-seed tangent of reverse-over-Taylor (design section 8).
+// Nesting between forward passes is carried by level carriers
+// (ESH_TAYLOR_COEFF_CARRIER, ADR-0027), never by a companion lane.
 /** @brief Bit position (16) of the epoch tag inside esh_taylor_t::flags. */
 #define ESH_TAYLOR_EPOCH_SHIFT   16u
 /**
@@ -448,53 +437,17 @@ int32_t eshkol_taylor_order_tagged(
     void* arena, const eshkol_tagged_value_t* left,
     const eshkol_tagged_value_t* right, int op);
 
-/**
- * @brief Restate an inner Taylor derivative in the enclosing Taylor carrier.
- *
- * Projects the series owned by the tower's own value epoch. The result's
- * c[0] is the selected inner derivative and c[1] is the attached outer-epoch
- * perturbation, kept exact when both payloads are exact.
- *
- * @param arena Arena for the result.
- * @param tower Tagged Taylor tower produced by the inner pass.
- * @param n     Derivative order to select.
- * @param out   Receives the projected value.
- */
-void eshkol_taylor_project_tangent_outer(
-    arena_t* arena, const eshkol_tagged_value_t* tower, uint32_t n,
-    eshkol_tagged_value_t* out);
-
-/**
- * @brief Project a first-order forward pass out of a Taylor result.
- *
- * Selects the tower's tangent epoch (esh_taylor_t::tangent_epoch) at order 1
- * and writes the tangent to @p out while preserving the carrier's foreign
- * value epoch.
- *
- * @param arena Arena for the result.
- * @param tower Tagged value to project.
- * @param out   Receives the projection; untouched when 0 is returned.
- * @return 1 when @p tower is a Taylor carrier, 0 when it is not.
- */
-int32_t eshkol_taylor_project_forward_tangent(
-    arena_t* arena, const eshkol_tagged_value_t* tower,
-    eshkol_tagged_value_t* out);
-
-// ESH-0402: nested-AD carrier composition route codes. Returned by
-// eshkol_ad_nested_seed() at a differentiation whose evaluation point is
-// already an ENCLOSING pass's carrier, and threaded (packed with the outer
-// tower's epoch in bits 8..23) to the matching eshkol_ad_nested_extract().
-// See the block comment above eshkol_ad_nested_seed in lib/core/runtime_taylor.c.
-/** @brief Route 0: the evaluation point is an ordinary value; the caller seeds its pass as for a non-nested differentiation. */
-#define ESH_AD_NEST_NONE         0   // not nested: caller seeds exactly as before
-/** @brief Route 1: the outer pass is an 8-jet, which rides this tower's tangent series. */
-#define ESH_AD_NEST_CARRY_JET    1   // outer 8-jet rides this tower's tangent
-/** @brief Route 2: this pass is first order (or order zero) and rides the outer tower's tangent dimension. */
-#define ESH_AD_NEST_RIDE         2   // this first-order pass rides the outer tower's tangent
-/** @brief Route 3: the outer pass is an order-1 tower, which rides this tower's tangent series. */
-#define ESH_AD_NEST_CARRY_TWR    3   // outer order-1 tower rides this tower's tangent
-/** @brief Route -1: neither pass is first order, so no composition exists; the caller raises an error. */
-#define ESH_AD_NEST_UNSUPPORTED (-1) // neither pass is first order: caller raises
+// ADR-0027: nested-pass route codes. eshkol_ad_nested_seed() returns
+// ESH_AD_NEST_NONE for an un-nested pass, or ESH_AD_NEST_LEVEL packed with the
+// level's epoch in bits 8..23 and, in bit 24, whether the seed unit is inexact;
+// codegen threads that i32 to the matching eshkol_ad_nested_extract().
+// See docs/design/adr/0027-recursive-taylor-level-carrier.md.
+/** @brief Route 0: the pass is not nested; the caller seeds it as usual. */
+#define ESH_AD_NEST_NONE         0
+/** @brief Route 2: the pass runs as a level whose coefficients are numbers of the enclosing levels (ADR-0027). */
+#define ESH_AD_NEST_LEVEL        2
+/** @brief Route -1: the level carrier could not be allocated; the caller raises. */
+#define ESH_AD_NEST_UNSUPPORTED (-1)
 
 /**
  * @brief Complex number for signal processing, FFT, and complex analysis.

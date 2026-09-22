@@ -151,15 +151,24 @@ struct VmRational {
  * exact halves; every transcendental leaves them NULL, which is exactly the
  * demotion native's COEFF_F64 tower performs.
  *
- * Taylor carriers additionally carry a value perturbation epoch. Nested Taylor
- * operations combine coefficients only when epochs match; a foreign epoch is
- * lifted as a constant. While a nested pass is active, the optional
- * tangent_coeff array carries the orthogonal outer first-order perturbation.
+ * A classic Taylor tower (the un-nested derivative-n/taylor pass) carries
+ * its perturbation epoch; a pass nested inside another runs as a LEVEL
+ * carrier instead (below), so no tower carries a second perturbation.
  *
  * NOTE for the region evacuator: a dual carrying exact halves owns INTERIOR
  * arena pointers, so it is no longer a leaf — see vm_region_evac.c. */
 #define VM_DUAL_KIND_SCALAR  0u
 #define VM_DUAL_KIND_TAYLOR  1u
+/* ADR-0027: a LEVEL carrier is the truncated series
+ *     lcoeff[0] + lcoeff[1] t_E + ... + lcoeff[order] t_E^order
+ * in its own perturbation t_E (E = `epoch`), whose coefficients are VmDuals
+ * of ANY kind: a scalar constant (zero tangent, exact value in `eprimal`), an
+ * enclosing pass's scalar dual or classic tower, or a level of a strictly
+ * smaller epoch. `primal`/`eprimal` hold the recursive primal, so every
+ * reader of a dual's value (comparisons, as_number_vm) sees the right one.
+ * A pass nested inside another live pass runs as a level; see
+ * docs/design/adr/0027-recursive-taylor-level-carrier.md. */
+#define VM_DUAL_KIND_LEVEL   2u
 
 struct VmDual {
     double primal;
@@ -171,17 +180,10 @@ struct VmDual {
     uint32_t kind;         /* VM_DUAL_KIND_SCALAR or VM_DUAL_KIND_TAYLOR */
     uint32_t order;        /* highest coefficient index for a Taylor tower */
     uint32_t epoch;        /* perturbation epoch; 0 for scalar duals */
-    uint32_t tangent_epoch; /* epoch of the orthogonal tangent, or 0 */
-    uint32_t tangent2_epoch; /* second orthogonal epoch for hyperdual Taylor */
     int32_t primal_sign;   /* exact sign hint when the double primal underflows */
     double* coeff;         /* c[0..order], present for VM_DUAL_KIND_TAYLOR */
     VmRational** exact_coeff; /* optional exact c[0..order] parallel array */
-    double* tangent_coeff; /* optional d(c[k])/d(seed), for nested Taylor */
-    VmRational** exact_tangent_coeff; /* exact orthogonal tangent, when available */
-    double* tangent2_coeff;
-    VmRational** exact_tangent2_coeff;
-    double* mixed_coeff;
-    VmRational** exact_mixed_coeff;
+    VmDual** lcoeff;       /* c[0..order], present for VM_DUAL_KIND_LEVEL */
 };
 
 VmDual* vm_dual_make(VmRegionStack*, double, double);
@@ -194,7 +196,6 @@ VmDual* vm_dual_cos(VmRegionStack*, const VmDual*);
 VmDual* vm_dual_exp(VmRegionStack*, const VmDual*);
 VmDual* vm_dual_sinh(VmRegionStack*, const VmDual*);
 VmDual* vm_dual_cosh(VmRegionStack*, const VmDual*);
-VmDual* vm_dual_taylor_clone(VmRegionStack*, const VmDual*);
 VmDual* vm_dual_scale(VmRegionStack*, double, const VmDual*);
 
 /* ── Exact-arithmetic surface shared by the rational tower and the AD dual ──
@@ -223,39 +224,46 @@ int         vm_rational_compare_exact_values(VmRegionStack *rs,
 VmDual*     vm_dual_make_exact_seed(VmRegionStack* rs, VmRational* point);
 VmRational* vm_dual_exact_tangent(const VmDual* d);
 VmRational* vm_dual_exact_primal(const VmDual* d);
-VmDual*     vm_dual_make_exact_pair(VmRegionStack* rs,
-                                    VmRational* primal, VmRational* tangent);
-VmDual*     vm_dual_make_taylor_scalar_seed(VmRegionStack* rs,
-                                            const VmDual* outer);
-VmDual*     vm_dual_make_taylor_scalar_seed_order(VmRegionStack* rs,
-                                                  const VmDual* outer,
-                                                  uint32_t order);
 VmDual*     vm_dual_make_taylor_seed(VmRegionStack* rs, VmRational* point,
                                      double point_value, uint32_t order,
                                      int exact, uint32_t epoch);
 uint32_t    vm_dual_next_taylor_epoch(void);
-VmDual*     vm_dual_make_taylor_ride_seed(VmRegionStack* rs,
-                                           const VmDual* outer);
-VmDual*     vm_dual_make_taylor_carry_seed(VmRegionStack* rs,
-                                            const VmDual* outer,
-                                            uint32_t order);
-VmDual*     vm_dual_taylor_promote_tangent(VmRegionStack* rs,
-                                           const VmDual* result);
-VmDual*     vm_dual_taylor_derivative_series(VmRegionStack* rs,
-                                              const VmDual* result);
-VmDual*     vm_dual_taylor_carry_result(VmRegionStack* rs,
-                                         const VmDual* result,
-                                         uint32_t order,
-                                         uint32_t outer_epoch);
-VmDual*     vm_dual_taylor_project_epoch(VmRegionStack* rs,
-                                          const VmDual* result,
-                                          uint32_t selected_epoch,
-                                          uint32_t order);
-VmDual*     vm_dual_taylor_project_coefficient(VmRegionStack* rs,
-                                                const VmDual* result,
-                                                uint32_t selected_epoch,
-                                                uint32_t order);
 int         vm_dual_is_taylor(const VmDual* d);
+
+/* ── Recursive level carrier (ADR-0027) ──
+ * vm_dual_constant: a plain number as a scalar VmDual with zero tangent
+ *   (exact when @p exact is non-NULL).
+ * vm_dual_level_seed: the seed (p, 1, 0, ..., 0) of a level of @p order at
+ *   @p point (any VmDual); the unit is exact when the primal of p is.
+ * vm_dual_carrier_epoch: the perturbation a carrier is a series in (0 for a
+ *   scalar dual or constant).
+ * vm_dual_level_coefficient: coefficient @p k of @p r read as a series in
+ *   @p epoch, or NULL when r is not a carrier of that epoch.
+ * vm_dual_level_derivative: k! * that coefficient.
+ * vm_dual_is_constant: a scalar with zero tangent (a plain number).
+ * vm_dual_exact_value: the recursive exact primal, or NULL. */
+VmDual*     vm_dual_constant(VmRegionStack* rs, double value, VmRational* exact);
+VmDual*     vm_dual_level_seed(VmRegionStack* rs, const VmDual* point,
+                               uint32_t order, uint32_t epoch);
+uint32_t    vm_dual_carrier_epoch(const VmDual* d);
+VmDual*     vm_dual_level_coefficient(VmRegionStack* rs, const VmDual* r,
+                                      uint32_t epoch, uint32_t k);
+VmDual*     vm_dual_level_derivative(VmRegionStack* rs, const VmDual* r,
+                                     uint32_t epoch, uint32_t k);
+int         vm_dual_is_level(const VmDual* d);
+int         vm_dual_is_constant(const VmDual* d);
+VmRational* vm_dual_exact_value(const VmDual* d);
+uint32_t    vm_dual_nilpotent_degree(const VmDual* d);
+VmDual*     vm_dual_log(VmRegionStack* rs, const VmDual* a);
+VmDual*     vm_dual_sqrt(VmRegionStack* rs, const VmDual* a);
+VmDual*     vm_dual_neg(VmRegionStack* rs, const VmDual* a);
+VmDual*     vm_dual_abs(VmRegionStack* rs, const VmDual* a);
+VmDual*     vm_dual_pow(VmRegionStack* rs, const VmDual* a, double n);
+VmDual*     vm_dual_relu(VmRegionStack* rs, const VmDual* a);
+VmDual*     vm_dual_sigmoid(VmRegionStack* rs, const VmDual* a);
+VmDual*     vm_dual_tanh(VmRegionStack* rs, const VmDual* a);
+VmDual*     vm_dual_inverse_trig(VmRegionStack* rs, const VmDual* a, int which);
+VmDual*     vm_dual_atan2(VmRegionStack* rs, const VmDual* y, const VmDual* x);
 int         vm_dual_taylor_is_exact(const VmDual* d);
 double      vm_dual_taylor_coeff(const VmDual* d, uint32_t n);
 VmRational* vm_dual_taylor_exact_coeff(const VmDual* d, uint32_t n);

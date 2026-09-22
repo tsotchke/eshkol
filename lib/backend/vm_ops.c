@@ -355,3 +355,27 @@ static void vm_exec_vec_len(VM* vm) {
         vm_push(vm, INT_VAL(vm_veclen_tensor_path(vm, vec_val)));
     } else vm_push(vm, INT_VAL(0));
 }
+
+/* Unary negate / abs on a boxed numeric carrier, shared by the threaded
+ * lbl_NEG/lbl_ABS handlers and their switch-dispatch twins in vm_run.c so the
+ * two loops cannot drift apart again (SW-40). Returns 1 when @p a was handled
+ * (its result pushed, or an error raised).
+ *
+ * A complex number used to fall through to the double path, which reads the
+ * heap pointer as 0.0: (- 1+2i) answered -0.0 and (abs 3+4i) answered 0. The
+ * negation is the complex one, carriers and all; abs is defined on the reals
+ * only and raises, as native does. */
+static int vm_unary_sign_carrier(VM* vm, Value a, int is_abs) {
+    if (a.type == VAL_COMPLEX) {
+        if (is_abs) {
+            vm_raise_error_msg(vm, "abs: argument is a complex number and abs is defined on the reals only (use magnitude for |z|)");
+            return 1;
+        }
+        vm_push(vm, INT_VAL(0)); vm_push(vm, a); vm_dispatch_native(vm, 308);
+        return 1;
+    }
+    if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, is_abs ? 1916 : 1909); return 1; }
+    if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, is_abs ? 383 : 384); return 1; }
+    if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, is_abs ? 336 : 335); return 1; }
+    return 0;
+}

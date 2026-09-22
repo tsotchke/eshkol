@@ -3,7 +3,6 @@
 <hr />
 <h2 id="program-1-a-function-that-learns-itself">Program 1: A Function That Learns Itself</h2>
 <p>This program starts with a bad approximation of <code>sin(x)</code> and uses autodiff to teach itself to be accurate. The parameters are part of the program — gradient descent literally rewrites them.</p>
-<!-- doc-example: known-defect SW-183: the loss falls from 13.16 to 0.0112; under `eshkol-run -r` the gradient through the mapped point-error closure is 0 and the coefficients never change -->
 <pre class="scheme"><code>;; ═══════════════════════════════════════════════════════
 ;; Self-Improving Function Approximator
 ;;

@@ -52,6 +52,7 @@ documentation hub lists the same records in
 | [0022](0022-ad-value-boundaries.md) | One boundary for each place a value crosses a representation | Accepted — implemented (#706) | 2026-09-18 | v1.3.5 |
 | [0024](0024-unspecified-value.md) | One unspecified value | Accepted — implemented (#709) | 2026-09-18 | v1.3.5 |
 | [0026](0026-syntax-rules-one-engine-one-renaming-rule.md) | One `syntax-rules` engine and one renaming rule | Accepted — implemented (SW-192) | 2026-09-22 | v1.3.5 |
+| [0027](0027-recursive-taylor-level-carrier.md) | Nested differentiation uses one recursive Taylor level carrier | Accepted — implemented on native JIT and AOT | 2026-09-22 | v1.3.5 |
 
 ## Numbering
 

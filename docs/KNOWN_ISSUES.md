@@ -115,8 +115,8 @@
 - **`gradient` was native-only on the bytecode VM.** Forward/reverse-mode
   `gradient` — direct, through a callable parameter, and curried — now runs on
   the VM byte-identically to native codegen (#337). `op:GRADIENT` and
-  `op:DERIVATIVE` are `vm-supported`; higher-order nesting (gradient-of-derivative
-  / Taylor tower) remains native-only.
+  `op:DERIVATIVE` are `vm-supported`; nesting (gradient-of-derivative / Taylor
+  tower) runs on the level carrier of ADR-0027.
 - **`hessian`/`laplacian` crashed at a tensor-literal or variable-bound point.**
   The differentiation point was classified from the AST node kind, so a variable
   bound to a vector (or a `#(...)` / `(tensor ...)` literal, or a `(the ...)`
@@ -459,12 +459,11 @@ block ordinary use.
   `(derivative-n (lambda (y) (derivative f y)) x k)`,
   `(derivative-n (lambda (y) (derivative-n f y j)) x k)`,
   `(derivative-n (derivative f) x k)` and the `taylor` forms of the same now
-  answer exactly. **Remaining limit, and it is loud:** a composition in which
-  *both* passes are order ≥ 2 exceeds what one value series plus one first-order
-  companion series can represent, and raises `unsupported nested
-  differentiation` rather than answering. Rewrite one of the two passes as a
-  first-order `derivative`, or ask for the combined order with a single
-  `(derivative-n f x k)`.
+  answer exactly, and so do the shapes one companion series could not hold
+  (fixed, SW-154): both passes of order ≥ 2, and two enclosing levels over a
+  pass of order ≥ 2. A nested pass runs as a level whose coefficients are
+  numbers of the enclosing levels (ADR-0027), so nesting has no depth or order
+  limit on native JIT and AOT.
 - **Generic arithmetic and comparison over `i128` use the i128 domain.** On
   both native and VM, `+ - * / modulo`, unary `-`, `abs`, and `= < > <= >=`
   dispatch to the shared fixed-width implementation whenever either operand
@@ -485,19 +484,13 @@ block ordinary use.
   stack. `ESHKOL_MAX_STACK` remains a separate optional software depth ceiling.
 
 **Residual mechanization**
-- **The singular-order scan raises on a similarity ansatz without matching V/Pi
-  under the v1.3.5 exact-coefficient carrier.** `core.pde.ns-residual`'s
-  tau-series for an ansatz whose V and Pi profiles do not match reaches a term
-  whose exact divisor is zero, and the library raises rational division by zero
-  where the earlier carrier propagated a floating NaN through the same term.
-  The raise is honest — an exact divisor of zero has no exact quotient — but it
-  is a change of outcome, not the intended answer, and while it was uncaught it
-  ended `tests/stdlib/ns_residual_test.esk` before the file's remaining checks
-  ran. That check now pins the raise, so the rest of the file runs and the
-  jet-over-jet carrier rewrite will make the change visible when it lands. A
-  matched ansatz is unaffected, and every other check in the residual library
-  passes. Same family as SW-154: the exact path is restored by the v1.4 carrier
-  rewrite.
+- **The singular-order scan finishes on a similarity ansatz without matching
+  V/Pi, and the tau-series takes any order (fixed, SW-154 family).** The scan
+  reports order 0 for the unmatched ansatz, whose residual is singular at the
+  similarity time, instead of raising rational division by zero, and
+  `ns-residual-tau-series` / `ns-force-smoothness-probe` accept any `order`
+  now that an outer `taylor` pass nests around the residual's own order-2
+  Laplacian. Pinned by `tests/stdlib/ns_residual_test.esk`.
 
 **Automatic differentiation**
 - **Differentiating a first-class `gradient` closure again with an enclosing
