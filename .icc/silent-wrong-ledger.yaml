@@ -14840,10 +14840,11 @@ entries:
       native_parallel_callback_raise_aot_repeat50 (50 consecutive AOT runs) pass.
     caught_by: [v135f-vmrt-parity-probe]
     missed_by: [vm_parity]
-  - id: SW-218
+  - id: SW-205
     bucket: LOUD-ERROR
     family: native/parallel-callback-control
-    status: open
+    status: fixed
+    closed_at: "747b6964d"
     needs_decision: false
     title: "native continuation escape from a parallel-map worker crashes the process"
     repro: >-
@@ -14868,6 +14869,22 @@ entries:
       Needs the invoke sequence in llvm_codegen (continuation_invoke_bb) to
       detect a continuation captured on another thread before it touches
       thread-local state; beyond the VM runtime lane's scope.
+    fix: >-
+      Every native continuation invocation calls eshkol_continuation_transfer_check
+      (lib/backend/parallel_codegen.cpp) after storing its value. Inside a parallel
+      callback's unwind boundary, a continuation whose capture point is not in the
+      callback's own live extent on that thread is not resumed there: the
+      callback's dynamic-wind, promise, region and AD state is unwound to the
+      boundary through the facility eshkol_raise uses
+      (eshkol_restore_state_for_handler, now shared), and the transfer is
+      recorded. The caller performs it after the join, in element order with any
+      recorded raise, on its own thread; an enclosing boundary defers it again.
+    remeasured: >-
+      At 747b6964d (fix/v135f-vmrt): the repro prints escaped and the program
+      continues, on native JIT and AOT. tests/vm_parity/corpus/parallel_continuation_escape.esk
+      (worker and calling-thread elements, parallel-execute, parallel-filter,
+      local continuations, dynamic-wind after-thunk) is byte-identical on native
+      and VM; native_parallel_continuation_escape_aot_repeat50 passes.
   - id: SW-216
     bucket: SILENT-WRONG
     family: native/closure-call-arity
@@ -14935,4 +14952,34 @@ entries:
       minimum, tail position, non-procedure); vm_first_class_builtin_arity_smoke
       (updated to the canonical marker) passes; run_vm_parity.sh clean.
     caught_by: [v135f-coordinator-audit]
+    missed_by: [vm_parity]
+  - id: SW-226
+    bucket: LOUD-ERROR
+    family: native/map-arity
+    status: fixed
+    closed_at: "747b6964d"
+    title: "native (map (lambda (x y) x) '(1 2)) fails to compile with a module verification error"
+    repro: >-
+      (display (guard (e (#t 'caught)) (map (lambda (x y) x) '(1 2))))
+    observed_before: >-
+      eshkol-run -r: "Map: capture 'y' not found ... using null pointer" and
+      "LLVM module verification failed: Call parameter type does not match
+      function signature". The same for a named two-parameter procedure and for a
+      one-parameter procedure over two lists. The VM raises the catchable arity
+      error.
+    correct: >-
+      caught: the program compiles and the call raises "Arity mismatch:
+      <procedure> expects 2 arguments but got 1" at run time.
+    fix: >-
+      map's static fast path (lib/backend/map_codegen.cpp) is used only when the
+      procedure is known to take exactly one argument per list (an inline
+      non-variadic lambda with that many parameters, or a named procedure whose
+      declared parameters number that many). Every other procedure goes through
+      the runtime closure dispatcher, where the call protocol of SW-216 applies.
+    remeasured: >-
+      At 747b6964d (fix/v135f-vmrt): tests/vm_parity/corpus/map_arity_protocol.esk
+      (inline, named, surplus-list and for-each mismatches; unaffected exact and
+      rest-parameter maps) is byte-identical on native and VM;
+      native_map_arity_protocol_jit and _aot pass.
+    caught_by: [v135f-vmrt-probe]
     missed_by: [vm_parity]
