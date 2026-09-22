@@ -27,6 +27,13 @@ the source changes; the verification record for the tagged commit is the
   derivative a complex value carries.** `(derivative (lambda (w) (expt w 3))
   1+1i)` was 0 and `(derivative-n log 1+1i 1)` lost its imaginary part (SW-211).
   Every procedure with a plain complex kernel now has a carrier formula.
+- **A derivative through a simple pole is the closed form's infinity on every
+  engine.** `(derivative (lambda (x) (/ 1.0 x)) 0.0)` answered `+nan.0`
+  natively and `-inf.0` on the VM; it is `-inf.0` everywhere, the second
+  derivative `+inf.0`, and `(derivative-n cbrt 0 1)` is `+inf.0`. Jet division
+  runs the series division recurrence, and a zero perturbation coefficient no
+  longer turns an infinity into NaN; an indeterminate `x * (1/x)` or a double
+  pole stays NaN (SW-222).
 - **`square`, `inexact` and `magnitude` of a real carrier keep the
   derivative.** They answered 0 on a jet or a tower, and `square` of a
   rational or a complex number printed pointer bits (SW-214).

@@ -112,6 +112,33 @@ mixed_exact = sp.diff(sp.diff(sp.atan(a * x), x, 2), a).subs({a: sp.Rational(3, 
 emit(f'(check-exact "level keeps the exact tail" (derivative (lambda (a) (derivative-n (lambda (x) (atan (* a x))) 1/2 2)) 3/2) {mixed_exact})')
 
 emit("")
+emit(";; SW-222: poles. A simple pole reaches the closed form's IEEE infinity at")
+emit(";; every order; a pole of higher order than the seed stays NaN.")
+emit("(define (check-ieee name got want)")
+emit("  (set! checks (+ checks 1))")
+emit("  (if (and (number? got) (if (nan? want) (nan? got) (= got want)))")
+emit("      #t")
+emit("      (begin (set! failures (+ failures 1))")
+emit("             (display \"FAIL: \") (display name) (display \" got \")")
+emit("             (write got) (display \" want \") (write want) (newline))))")
+emit("(define +inf (/ 1.0 0.0))")
+emit("(define -inf (/ -1.0 0.0))")
+emit("(define nan (- +inf +inf))")
+for label, expr, want in [
+    ("1/x d2 at 0", "(derivative-n (lambda (x) (/ 1.0 x)) 0.0 2)", "+inf"),
+    ("1/x d3 at 0", "(derivative-n (lambda (x) (/ 1.0 x)) 0.0 3)", "-inf"),
+    ("1/x d2 at -0.0", "(derivative-n (lambda (x) (/ 1.0 x)) -0.0 2)", "-inf"),
+    ("1/x nested jets at 0", "(derivative (lambda (x) (derivative (lambda (y) (/ 1.0 y)) x)) 0.0)", "+inf"),
+    ("1/x^2 jet at 0 (double pole)", "(derivative (lambda (x) (/ 1.0 (* x x))) 0.0)", "nan"),
+    ("1/x^2 d1 at 0 (double pole)", "(derivative-n (lambda (x) (/ 1.0 (* x x))) 0.0 1)", "nan"),
+    ("cbrt d1 at exact 0", "(derivative-n cbrt 0 1)", "+inf"),
+    ("cbrt d1 at 0.0", "(derivative-n cbrt 0.0 1)", "+inf"),
+    ("cbrt d2 at 0.0", "(derivative-n cbrt 0.0 2)", "-inf"),
+    ("cbrt jet at 0.0", "(derivative cbrt 0.0)", "+inf"),
+]:
+    emit(f'(check-ieee "{label}" {expr} {want})')
+
+emit("")
 emit(";; The rounding functions are constant between their jumps.")
 for name in ["floor", "ceiling", "truncate", "round"]:
     for k in (1, 2, 3):

@@ -327,6 +327,29 @@
 (check-exact "log2 d0 at 8" (derivative-n log2 8 0) 3)
 (check-exact "level keeps the exact tail" (derivative (lambda (a) (derivative-n (lambda (x) (atan (* a x))) 1/2 2)) 3/2) -22464/15625)
 
+;; SW-222: poles. A simple pole reaches the closed form's IEEE infinity at
+;; every order; a pole of higher order than the seed stays NaN.
+(define (check-ieee name got want)
+  (set! checks (+ checks 1))
+  (if (and (number? got) (if (nan? want) (nan? got) (= got want)))
+      #t
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (display " got ")
+             (write got) (display " want ") (write want) (newline))))
+(define +inf (/ 1.0 0.0))
+(define -inf (/ -1.0 0.0))
+(define nan (- +inf +inf))
+(check-ieee "1/x d2 at 0" (derivative-n (lambda (x) (/ 1.0 x)) 0.0 2) +inf)
+(check-ieee "1/x d3 at 0" (derivative-n (lambda (x) (/ 1.0 x)) 0.0 3) -inf)
+(check-ieee "1/x d2 at -0.0" (derivative-n (lambda (x) (/ 1.0 x)) -0.0 2) -inf)
+(check-ieee "1/x nested jets at 0" (derivative (lambda (x) (derivative (lambda (y) (/ 1.0 y)) x)) 0.0) +inf)
+(check-ieee "1/x^2 jet at 0 (double pole)" (derivative (lambda (x) (/ 1.0 (* x x))) 0.0) nan)
+(check-ieee "1/x^2 d1 at 0 (double pole)" (derivative-n (lambda (x) (/ 1.0 (* x x))) 0.0 1) nan)
+(check-ieee "cbrt d1 at exact 0" (derivative-n cbrt 0 1) +inf)
+(check-ieee "cbrt d1 at 0.0" (derivative-n cbrt 0.0 1) +inf)
+(check-ieee "cbrt d2 at 0.0" (derivative-n cbrt 0.0 2) -inf)
+(check-ieee "cbrt jet at 0.0" (derivative cbrt 0.0) +inf)
+
 ;; The rounding functions are constant between their jumps.
 (check "floor d1 at 1.3" (derivative-n floor 1.3 1) 0.0)
 (check "floor d2 at 1.3" (derivative-n floor 1.3 2) 0.0)

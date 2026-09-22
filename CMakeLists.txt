@@ -4459,11 +4459,14 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     # functions, atan2) on a Taylor tower or level answered its primal.
     # SW-211: complex expt/log/angle and the inverse functions lost the
     # derivative a complex value carries. SW-214: square, inexact and
-    # magnitude of a real carrier did the same. JIT and AOT.
+    # magnitude of a real carrier did the same. SW-222: a derivative through a
+    # simple pole of a quotient was NaN natively (division_pole also runs on
+    # both VMs, in the ADR-0027 table). JIT and AOT.
     foreach(_carrier_test
             taylor_integral_family:tests/ad/taylor_integral_family_test.esk
             complex_carrier_math:tests/ad/complex_carrier_math_test.esk
-            unary_numeric_builtin_carriers:tests/ad/unary_numeric_builtin_carriers_test.esk)
+            unary_numeric_builtin_carriers:tests/ad/unary_numeric_builtin_carriers_test.esk
+            division_pole:tests/ad/division_pole_test.esk)
         string(REPLACE ":" ";" _carrier_parts "${_carrier_test}")
         list(GET _carrier_parts 0 _carrier_name)
         list(GET _carrier_parts 1 _carrier_src)
@@ -6391,7 +6394,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             "vm_complex_intermediate_taylor|tests/ad/vm_complex_intermediate_taylor_test.esk|PASS: complex intermediate Taylor|vm"
             "tensor_full_reduction|tests/tensor/tensor_full_reduction_test.esk|PASS: tensor full reductions|all"
             "complex_negate_abs|tests/complex/complex_negate_abs_test.esk|PASS: complex negate and abs|all"
-            "vm_region_evac_level_carrier|tests/memory/vm_region_evac_level_carrier_test.esk|PASS: VM region-evac level carrier|vm")
+            "vm_region_evac_level_carrier|tests/memory/vm_region_evac_level_carrier_test.esk|PASS: VM region-evac level carrier|vm"
+            "division_pole|tests/ad/division_pole_test.esk|PASS: division_pole|vm")
         foreach(_esh_spec IN LISTS _esh_vm_carrier_tests)
             string(REPLACE "|" ";" _esh_parts "${_esh_spec}")
             list(GET _esh_parts 0 _esh_name)

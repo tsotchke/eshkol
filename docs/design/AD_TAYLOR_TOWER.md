@@ -141,6 +141,20 @@ atan2(y, x)          : σ·atan(q) + c with q = y/x (σ = 1) when |x_0| ≥ |y_0
 floor ceiling truncate round : s_0 = f(u_0), every higher coefficient 0
 ```
 
+**Poles (SW-222).** A perturbation coefficient that is exactly zero is
+structurally absent and contributes nothing to a product, even against an
+infinite factor (`zfma` in the kernel, `pertMul` in the code generator's jets,
+`fma3` in the compile-time-K emitter); a zero primal is a value and keeps IEEE
+semantics. Poles enter only through the division recurrence, over a series and
+over a jet alike (`dualDiv` and `jet_div_raw` solve
+`q_S = (a_S − Σ b_T q_{S∖T}) / b_0` instead of multiplying by a reciprocal
+jet). So a simple pole is the closed form's IEEE value at every order —
+`d/dx (1/x)` at `0.0` is `-inf.0`, the second derivative `+inf.0` — and a pole
+of higher order than the seed (`1/x²` at `0`) or an indeterminate `x·(1/x)`
+ends in `0/0` and stays NaN. `cbrt` carries `d = (1/3)u^(−2/3)` by the power
+recurrence from `d_0 = 1/(3 cbrt(u_0)²)`, so its derivatives at `0` are the
+pole's infinities rather than `0/0`.
+
 The integral family is one recurrence: `f(u)` solves `ds/dt = f'(u)·du/dt`,
 and for the inverse functions `f'` is algebraic in `u`, so `d` comes from the
 mul/div/pow recurrences. It runs over doubles (`tr_ext_unary`), with the reverse

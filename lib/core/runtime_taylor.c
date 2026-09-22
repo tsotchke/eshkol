@@ -751,6 +751,26 @@ double eshkol_ad_point_to_double(const eshkol_tagged_value_t* v, const char* wha
 /* recurrences (operate on raw coefficient arrays, n = K+1 entries)         */
 /* ----------------------------------------------------------------------- */
 
+/* SW-222: a perturbation coefficient that is exactly zero is structurally
+ * absent and contributes nothing to a product, even against an infinite
+ * factor. IEEE 0 * inf = NaN would otherwise poison the whole series of a
+ * carrier that meets a pole: the series of 1/x at 0 is (inf, -inf, inf, ...)
+ * and came back (inf, -inf, NaN, ...). Only a PERTURBATION coefficient (a
+ * tower's c_k with k >= 1, a jet's non-primal component, a seed tangent)
+ * annihilates; a primal that is zero is a value, so 0 * inf there stays NaN
+ * -- the derivative of x * (1/x) at 0 is indeterminate and says so.
+ * zfma(p, x, c) = c + p x, where `p` is the perturbation factor. The code
+ * generator's jets (pertMul) and the compile-time-K emitter (fma3) apply the
+ * same rule. */
+static inline double zfma(double p, double x, double c) {
+    return p == 0.0 ? c : fma(p, x, c);
+}
+/* The same for a product whose two factors are coefficients i and j of their
+ * series: index 0 is the primal. */
+static inline double zfma_ij(double a, int i, double b, int j, double c) {
+    return ((i > 0 && a == 0.0) || (j > 0 && b == 0.0)) ? c : fma(a, b, c);
+}
+
 /** @brief s = u + w, elementwise over n Taylor coefficients. */
 static void tr_add(double* s, const double* u, const double* w, int n) {
     for (int k = 0; k < n; k++) s[k] = u[k] + w[k];
@@ -767,8 +787,9 @@ static void tr_neg(double* s, const double* u, int n) {
 /* s = u * w : s_k = sum_{j=0..k} u_j * w_{k-j}   (Cauchy convolution, fma). */
 static void tr_mul(double* s, const double* u, const double* w, int n) {
     for (int k = 0; k < n; k++) {
+        if (k == 0) { s[0] = u[0] * w[0]; continue; }   /* the primal: IEEE */
         double acc = 0.0;
-        for (int j = 0; j <= k; j++) acc = fma(u[j], w[k - j], acc);
+        for (int j = 0; j <= k; j++) acc = zfma_ij(u[j], j, w[k - j], k - j, acc);
         s[k] = acc;
     }
 }
@@ -777,7 +798,7 @@ static void tr_mul(double* s, const double* u, const double* w, int n) {
 static void tr_div(double* s, const double* u, const double* w, int n) {
     for (int k = 0; k < n; k++) {
         double acc = u[k];
-        for (int j = 1; j <= k; j++) acc = fma(-w[j], s[k - j], acc);
+        for (int j = 1; j <= k; j++) acc = zfma(-w[j], s[k - j], acc);
         s[k] = acc / w[0];
     }
 }
@@ -789,7 +810,7 @@ static void tr_exp_seeded(double* s, double s0, const double* u, int n) {
     s[0] = s0;
     for (int k = 1; k < n; k++) {
         double acc = 0.0;
-        for (int j = 1; j <= k; j++) acc = fma((double)j * u[j], s[k - j], acc);
+        for (int j = 1; j <= k; j++) acc = zfma((double)j * u[j], s[k - j], acc);
         s[k] = acc / (double)k;
     }
 }
@@ -803,7 +824,7 @@ static void tr_log(double* s, const double* u, int n) {
     s[0] = log(u[0]);
     for (int k = 1; k < n; k++) {
         double acc = 0.0;
-        for (int j = 1; j <= k - 1; j++) acc = fma((double)j * s[j], u[k - j], acc);
+        for (int j = 1; j <= k - 1; j++) acc = zfma((double)j * s[j], u[k - j], acc);
         s[k] = (u[k] - acc / (double)k) / u[0];
     }
 }
@@ -818,8 +839,8 @@ static void tr_sincos(double* so, double* co, const double* u, int n) {
         double as = 0.0, ac = 0.0;
         for (int j = 1; j <= k; j++) {
             double ju = (double)j * u[j];
-            as = fma(ju, co[k - j], as);
-            ac = fma(ju, so[k - j], ac);
+            as = zfma(ju, co[k - j], as);
+            ac = zfma(ju, so[k - j], ac);
         }
         so[k] =  as / (double)k;
         co[k] = -ac / (double)k;
@@ -835,7 +856,7 @@ static void tr_pow_seeded(double* s, double s0, const double* u, double r, int n
     for (int k = 1; k < n; k++) {
         double acc = 0.0;
         for (int j = 1; j <= k; j++)
-            acc = fma(((double)j * r - (double)(k - j)) * u[j], s[k - j], acc);
+            acc = zfma(((double)j * r - (double)(k - j)) * u[j], s[k - j], acc);
         s[k] = acc / ((double)k * u[0]);
     }
 }
@@ -844,7 +865,7 @@ static void tr_pow_const(double* s, const double* u, double r, int n) {
     for (int k = 1; k < n; k++) {
         double acc = 0.0;
         for (int j = 1; j <= k; j++)
-            acc = fma(((double)j * r - (double)(k - j)) * u[j], s[k - j], acc);
+            acc = zfma(((double)j * r - (double)(k - j)) * u[j], s[k - j], acc);
         s[k] = acc / ((double)k * u[0]);
     }
 }
@@ -873,7 +894,7 @@ static void tr_sigmoid(double* s, const double* u, int n, arena_t* arena) {
         s[0] = 1.0 / den[0];
         for (int k = 1; k < n; k++) {
             double acc = 0.0;
-            for (int j = 1; j <= k; j++) acc = fma(-den[j], s[k-j], acc);
+            for (int j = 1; j <= k; j++) acc = zfma(-den[j], s[k-j], acc);
             s[k] = acc / den[0];
         }
     } else {
@@ -931,12 +952,6 @@ static int tr_is_ext_uop(int op) {
     }
 }
 
-/** @brief True iff `op` is one of the piecewise-constant rounding functions. */
-static int tr_is_step_uop(int op) {
-    return op == ESH_TAYLOR_UOP_floor || op == ESH_TAYLOR_UOP_ceiling ||
-           op == ESH_TAYLOR_UOP_truncate || op == ESH_TAYLOR_UOP_round;
-}
-
 /** @brief The libm primal f(v) of an integral-family op. `round` is R7RS
  *  round-half-to-even, which nearbyint gives in the default rounding mode. */
 static double tr_ext_primal(int op, double v) {
@@ -964,7 +979,7 @@ static double tr_ext_primal(int op, double v) {
 static void tr_integrate(double* s, const double* u, const double* d, int n) {
     for (int k = 1; k < n; k++) {
         double acc = 0.0;
-        for (int j = 1; j <= k; j++) acc = fma((double)j * u[j], d[k - j], acc);
+        for (int j = 1; j <= k; j++) acc = zfma((double)j * u[j], d[k - j], acc);
         s[k] = acc / (double)k;
     }
 }
@@ -973,7 +988,7 @@ static void tr_integrate(double* s, const double* u, const double* d, int n) {
 static void tr_recip(double* d, double c, const double* u, int n) {
     for (int k = 0; k < n; k++) {
         double acc = k == 0 ? c : 0.0;
-        for (int j = 1; j <= k; j++) acc = fma(-u[j], d[k - j], acc);
+        for (int j = 1; j <= k; j++) acc = zfma(-u[j], d[k - j], acc);
         d[k] = acc / u[0];
     }
 }
@@ -1023,11 +1038,17 @@ static int tr_ext_unary(int op, double* s, double* d, const double* u, int n, ar
             tr_exp_seeded(s, exp2(u[0]), q, n);
             for (int k = 0; k < n; k++) d[k] = M_LN2 * s[k];
             return 1;
-        case ESH_TAYLOR_UOP_cbrt:
-            tr_pow_seeded(s, cbrt(u[0]), u, 1.0 / 3.0, n);
-            for (int k = 0; k < n; k++) q[k] = s[k] / 3.0;
-            tr_div(d, q, u, n);                     /* d = s / (3u) */
+        case ESH_TAYLOR_UOP_cbrt: {
+            /* d = (1/3) u^(-2/3) by the power recurrence from d_0 =
+             * 1/(3 cbrt(u_0)^2), then the integral. The power recurrence on s
+             * itself divides s_k by u_0 and is 0/0 at u_0 = 0; on d it is
+             * inf/0, the pole the closed form has (SW-222). */
+            double c0 = cbrt(u[0]);
+            tr_pow_seeded(d, 1.0 / (3.0 * c0 * c0), u, -2.0 / 3.0, n);
+            s[0] = c0;
+            tr_integrate(s, u, d, n);
             return 1;
+        }
         default:                                    /* the rounding functions */
             s[0] = tr_ext_primal(op, u[0]);
             d[0] = 0.0;
@@ -1077,7 +1098,7 @@ static void tr_atan2(double* s, const double* y, const double* x, int n, arena_t
 static void tr_conv(double* s, const double* a, const double* b, int n) {
     for (int k = 0; k < n; k++) {
         double acc = 0.0;
-        for (int j = 0; j <= k; j++) acc = fma(a[j], b[k - j], acc);
+        for (int j = 0; j <= k; j++) acc = zfma(b[k - j], a[j], acc);   /* b is the tangent */
         s[k] = acc;
     }
 }
@@ -1119,8 +1140,8 @@ static void trd_mul(double* st, const double* uv, const double* ut,
     for (int k = 0; k < n; k++) {
         double acc = 0.0;
         for (int j = 0; j <= k; j++) {
-            acc = fma(ut[j], wv[k - j], acc);
-            acc = fma(uv[j], wt[k - j], acc);
+            acc = zfma(ut[j], wv[k - j], acc);
+            acc = zfma(wt[k - j], uv[j], acc);
         }
         st[k] = acc;
     }
@@ -1133,10 +1154,10 @@ static void trd_div(double* st, const double* sv,
     for (int k = 0; k < n; k++) {
         double acc = ut[k];
         for (int j = 1; j <= k; j++) {
-            acc = fma(-wt[j], sv[k - j], acc);
-            acc = fma(-wv[j], st[k - j], acc);
+            acc = zfma(-wt[j], sv[k - j], acc);
+            acc = zfma(-wv[j], st[k - j], acc);
         }
-        acc = fma(-sv[k], wt[0], acc);
+        acc = zfma(-wt[0], sv[k], acc);
         st[k] = acc / wv[0];
     }
 }
@@ -1792,11 +1813,25 @@ static eshkol_tagged_value_t jet_tagged(arena_t* ar, const level_jet_t* j) {
     return r;
 }
 static void jet_mul_raw(double* r, const double* x, const double* y) {
-    for (int s = 0; s < 8; s++) {
+    r[0] = x[0] * y[0];                          /* the primal: IEEE */
+    for (int s = 1; s < 8; s++) {
         double acc = 0.0;
         for (int a = 0; a < 8; a++)
-            if ((a & s) == a) acc += x[a] * y[s ^ a];
+            if ((a & s) == a) acc = zfma_ij(x[a], a, y[s ^ a], s ^ a, acc);   /* SW-222 */
         r[s] = acc;
+    }
+}
+/* r = x / y by the division recurrence over the jet (SW-222), the recurrence
+ * tr_div runs over a series: r_S = (x_S - sum_{T nonempty subset of S}
+ * y_T r_{S\T}) / y_0, with a zero coefficient of y contributing nothing. At a
+ * simple pole this is the closed form (d/dx 1/x at 0 is -inf); at a pole of
+ * higher order it ends in 0/0. */
+static void jet_div_raw(double* r, const double* x, const double* y) {
+    for (int s = 0; s < 8; s++) {
+        double acc = x[s];
+        for (int t = 1; t < 8; t++)
+            if ((t & s) == t) acc = zfma_ij(-y[t], t, r[s ^ t], s ^ t, acc);
+        r[s] = acc / y[0];
     }
 }
 /* r = g0 + g1 n + g2 n^2 + g3 n^3 with n = x - x[0]. */
@@ -1806,8 +1841,11 @@ static void jet_compose(double* r, const double* x, const double* g) {
     n[0] = 0.0;
     jet_mul_raw(n2, n, n);
     jet_mul_raw(n3, n2, n);
+    /* IEEE products: g_k is a precomputed number, and an infinite one times a
+     * zero coefficient is indeterminate here; poles enter soundly only
+     * through the division recurrence (jet_div_raw). */
     for (int s = 0; s < 8; s++) r[s] = g[1] * n[s] + g[2] * n2[s] + g[3] * n3[s];
-    r[0] += g[0];
+    r[0] = g[0];                                 /* n[0] = 0: the primal is g_0 */
 }
 /* g[k] = f^(k)(x0)/k!, k = 0..3, for the unary op `uop` (or x^r when uop < 0). */
 static void jet_unary_coeffs(arena_t* ar, int uop, double x0, double r, double* g) {
@@ -1910,14 +1948,7 @@ static eshkol_tagged_value_t num_binary(arena_t* ar, eshkol_tagged_value_t a,
             case ESH_TAYLOR_OP_add: for (int s = 0; s < 8; s++) r.v[s] = x.v[s] + y.v[s]; break;
             case ESH_TAYLOR_OP_sub: for (int s = 0; s < 8; s++) r.v[s] = x.v[s] - y.v[s]; break;
             case ESH_TAYLOR_OP_mul: jet_mul_raw(r.v, x.v, y.v); break;
-            case ESH_TAYLOR_OP_div: {
-                double g[4], inv[8];
-                g[0] = 1.0 / y.v[0];
-                for (int k = 1; k < 4; k++) g[k] = -g[k - 1] / y.v[0];
-                jet_compose(inv, y.v, g);
-                jet_mul_raw(r.v, x.v, inv);
-                break;
-            }
+            case ESH_TAYLOR_OP_div: jet_div_raw(r.v, x.v, y.v); break;
             default: {   /* pow */
                 int y_const = 1;
                 for (int s = 1; s < 8; s++) if (y.v[s] != 0.0) { y_const = 0; break; }
@@ -2264,8 +2295,13 @@ static int level_ext_unary(arena_t* ar, int op, eshkol_tagged_value_t* s,
             level_ser_integrate(ar, s, q, s, n);
             return 1;
         case ESH_TAYLOR_UOP_cbrt:
+            /* d = (1/3) u^(-2/3) from d_0 = 1/(3 s_0^2), then the integral:
+             * exact at a perfect cube, the pole of the closed form at 0. */
             s[0] = num_unary(ar, u[0], op);
-            level_ser_pow_tail(ar, s, u, exact_div(ar, num_exact_int(1), num_exact_int(3)), n);
+            d[0] = num_div(ar, num_exact_int(1),
+                           num_mul(ar, num_exact_int(3), num_mul(ar, s[0], s[0])));
+            level_ser_pow_tail(ar, d, u, exact_div(ar, num_exact_int(-2), num_exact_int(3)), n);
+            level_ser_integrate(ar, s, u, d, n);
             return 1;
         default:                                    /* the rounding functions */
             s[0] = num_unary(ar, u[0], op);
