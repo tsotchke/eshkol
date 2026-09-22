@@ -132,6 +132,14 @@ public:
                                             const std::function<llvm::Value*()>& body);
 
     /**
+     * The component formula of complex `expt` on carriers (SW-211): installed
+     * by the code generator, which owns the value-level math functions that
+     * exp(b log a) needs. withComplexCarrierDispatch() calls it for op '^'.
+     */
+    using ComplexCarrierPowFn = std::function<llvm::Value*(llvm::Value*, llvm::Value*)>;
+    void setComplexCarrierPow(ComplexCarrierPowFn fn) { complex_carrier_pow_ = std::move(fn); }
+
+    /**
      * Polymorphic absolute value: |a|
      * @param operand Operand (tagged_value)
      * @return Result as tagged_value
@@ -461,6 +469,8 @@ public:
     llvm::Value* convertToDual(llvm::Value* operand, llvm::Value* is_dual, llvm::Value* is_double);
 
 private:
+    ComplexCarrierPowFn complex_carrier_pow_;
+
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
     TensorCodegen& tensor_;

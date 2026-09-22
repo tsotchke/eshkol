@@ -62,6 +62,14 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
+
+#ifndef M_LN2
+#define M_LN2 0.69314718055994530942
+#endif
+#ifndef M_LN10
+#define M_LN10 2.30258509299404568402
+#endif
 
 #ifdef __cplusplus
 #include <atomic>
@@ -744,6 +752,26 @@ double eshkol_ad_point_to_double(const eshkol_tagged_value_t* v, const char* wha
 /* recurrences (operate on raw coefficient arrays, n = K+1 entries)         */
 /* ----------------------------------------------------------------------- */
 
+/* SW-222: a perturbation coefficient that is exactly zero is structurally
+ * absent and contributes nothing to a product, even against an infinite
+ * factor. IEEE 0 * inf = NaN would otherwise poison the whole series of a
+ * carrier that meets a pole: the series of 1/x at 0 is (inf, -inf, inf, ...)
+ * and came back (inf, -inf, NaN, ...). Only a PERTURBATION coefficient (a
+ * tower's c_k with k >= 1, a jet's non-primal component, a seed tangent)
+ * annihilates; a primal that is zero is a value, so 0 * inf there stays NaN
+ * -- the derivative of x * (1/x) at 0 is indeterminate and says so.
+ * zfma(p, x, c) = c + p x, where `p` is the perturbation factor. The code
+ * generator's jets (pertMul) and the compile-time-K emitter (fma3) apply the
+ * same rule. */
+static inline double zfma(double p, double x, double c) {
+    return p == 0.0 ? c : fma(p, x, c);
+}
+/* The same for a product whose two factors are coefficients i and j of their
+ * series: index 0 is the primal. */
+static inline double zfma_ij(double a, int i, double b, int j, double c) {
+    return ((i > 0 && a == 0.0) || (j > 0 && b == 0.0)) ? c : fma(a, b, c);
+}
+
 /** @brief s = u + w, elementwise over n Taylor coefficients. */
 static void tr_add(double* s, const double* u, const double* w, int n) {
     for (int k = 0; k < n; k++) s[k] = u[k] + w[k];
@@ -760,8 +788,9 @@ static void tr_neg(double* s, const double* u, int n) {
 /* s = u * w : s_k = sum_{j=0..k} u_j * w_{k-j}   (Cauchy convolution, fma). */
 static void tr_mul(double* s, const double* u, const double* w, int n) {
     for (int k = 0; k < n; k++) {
+        if (k == 0) { s[0] = u[0] * w[0]; continue; }   /* the primal: IEEE */
         double acc = 0.0;
-        for (int j = 0; j <= k; j++) acc = fma(u[j], w[k - j], acc);
+        for (int j = 0; j <= k; j++) acc = zfma_ij(u[j], j, w[k - j], k - j, acc);
         s[k] = acc;
     }
 }
@@ -770,19 +799,24 @@ static void tr_mul(double* s, const double* u, const double* w, int n) {
 static void tr_div(double* s, const double* u, const double* w, int n) {
     for (int k = 0; k < n; k++) {
         double acc = u[k];
-        for (int j = 1; j <= k; j++) acc = fma(-w[j], s[k - j], acc);
+        for (int j = 1; j <= k; j++) acc = zfma(-w[j], s[k - j], acc);
         s[k] = acc / w[0];
     }
 }
 
 /* s = exp(u) : s_0 = exp(u_0); s_k = (1/k) sum_{j=1..k} j*u_j*s_{k-j}. */
-static void tr_exp(double* s, const double* u, int n) {
-    s[0] = exp(u[0]);
+/* The same recurrence from a given s_0 = exp(u_0): exp2 passes u ln 2 and
+ * libm's exp2(u_0) so its primal is the one the plain builtin returns. */
+static void tr_exp_seeded(double* s, double s0, const double* u, int n) {
+    s[0] = s0;
     for (int k = 1; k < n; k++) {
         double acc = 0.0;
-        for (int j = 1; j <= k; j++) acc = fma((double)j * u[j], s[k - j], acc);
+        for (int j = 1; j <= k; j++) acc = zfma((double)j * u[j], s[k - j], acc);
         s[k] = acc / (double)k;
     }
+}
+static void tr_exp(double* s, const double* u, int n) {
+    tr_exp_seeded(s, exp(u[0]), u, n);
 }
 
 /* s = log(u) : s_0 = log(u_0);
@@ -791,7 +825,7 @@ static void tr_log(double* s, const double* u, int n) {
     s[0] = log(u[0]);
     for (int k = 1; k < n; k++) {
         double acc = 0.0;
-        for (int j = 1; j <= k - 1; j++) acc = fma((double)j * s[j], u[k - j], acc);
+        for (int j = 1; j <= k - 1; j++) acc = zfma((double)j * s[j], u[k - j], acc);
         s[k] = (u[k] - acc / (double)k) / u[0];
     }
 }
@@ -806,8 +840,8 @@ static void tr_sincos(double* so, double* co, const double* u, int n) {
         double as = 0.0, ac = 0.0;
         for (int j = 1; j <= k; j++) {
             double ju = (double)j * u[j];
-            as = fma(ju, co[k - j], as);
-            ac = fma(ju, so[k - j], ac);
+            as = zfma(ju, co[k - j], as);
+            ac = zfma(ju, so[k - j], ac);
         }
         so[k] =  as / (double)k;
         co[k] = -ac / (double)k;
@@ -816,17 +850,88 @@ static void tr_sincos(double* so, double* co, const double* u, int n) {
 
 /* s = u^r (constant real exponent r):
  * s_0 = u_0^r; s_k = (1/(k*u_0)) sum_{j=1..k} (j*r - (k-j))*u_j*s_{k-j}. */
+/* The same recurrence from a given s_0 = u_0^r: cbrt passes libm's cbrt(u_0),
+ * which (unlike pow(u_0, 1/3)) is defined for a negative u_0. */
+static void tr_pow_seeded(double* s, double s0, const double* u, double r, int n) {
+    s[0] = s0;
+    for (int k = 1; k < n; k++) {
+        double acc = 0.0;
+        for (int j = 1; j <= k; j++)
+            acc = zfma(((double)j * r - (double)(k - j)) * u[j], s[k - j], acc);
+        s[k] = acc / ((double)k * u[0]);
+    }
+}
+#define ESH_TAYLOR_STACKN 64
+
+/* SW-225: u^r when u_0 is zero. The recurrence below divides by u_0 and is
+ * 0/0 there, where the closed form has a definite IEEE value. This applies
+ * the SW-222 pole rule to the power step, for every caller (sqrt, expt with
+ * a constant exponent, the inverse functions' derivative series, the jets):
+ *
+ *  - an integer r is exact algebra: u^p by repeated Cauchy products, and for
+ *    p < 0 the division recurrence 1/u^|p|, whose poles are those of SW-222
+ *    (a simple pole is the closed form, a higher-order one ends in 0/0);
+ *  - any other r, the IEEE value of the closed form's k-th derivative:
+ *    with m the first index of a nonzero u_m, u^r vanishes to order m r, so
+ *    s_k = 0 for k < m r. For m = 1 the k-th derivative r (r-1) ... (r-k+1)
+ *    u^(r-k) u_1^k is an infinity of that sign for k > r. For m > 1 the chain
+ *    rule meets 0 * inf and the closed form is NaN, as the SW-222 double pole
+ *    is (sqrt of x^2 = |x| has no derivative at 0). A series that is zero to
+ *    its truncation order is taken as the zero it shows.
+ *
+ * `scratch` holds 3 n doubles for the integer case. */
+static void tr_pow_at_zero(double* s, const double* u, double r, int n, double* scratch) {
+    if (r == floor(r) && fabs(r) <= 1073741824.0) {
+        int64_t p = (int64_t)r;
+        uint64_t e = p < 0 ? (uint64_t)(-p) : (uint64_t)p;
+        double* acc = scratch;
+        double* base = scratch + n;
+        double* tmp = scratch + 2 * n;
+        for (int k = 0; k < n; k++) { acc[k] = k == 0 ? 1.0 : 0.0; base[k] = u[k]; }
+        while (e) {
+            if (e & 1u) { tr_mul(tmp, acc, base, n); memcpy(acc, tmp, (size_t)n * sizeof(double)); }
+            e >>= 1;
+            if (e) { tr_mul(tmp, base, base, n); memcpy(base, tmp, (size_t)n * sizeof(double)); }
+        }
+        if (p < 0) {
+            for (int k = 0; k < n; k++) base[k] = k == 0 ? 1.0 : 0.0;
+            tr_div(s, base, acc, n);
+        } else {
+            memcpy(s, acc, (size_t)n * sizeof(double));
+        }
+        return;
+    }
+    int m = 0;
+    for (int j = 1; j < n; j++) if (u[j] != 0.0) { m = j; break; }
+    s[0] = pow(u[0], r);
+    double falling = 1.0;               /* sign of r (r-1) ... (r-k+1) */
+    for (int k = 1; k < n; k++) {
+        falling *= (r - (double)(k - 1)) < 0.0 ? -1.0 : 1.0;
+        if (m == 0) s[k] = 0.0;                          /* u is 0 to this order */
+        else if ((double)k < (double)m * r) s[k] = 0.0;
+        else if (m > 1 || isnan(u[1])) s[k] = NAN;
+        else s[k] = ((u[1] < 0.0 && (k & 1)) ? -falling : falling) * INFINITY;
+    }
+}
+
 static void tr_pow_const(double* s, const double* u, double r, int n) {
+    if (u[0] == 0.0 && n > 1) {
+        double sb[3 * ESH_TAYLOR_STACKN];
+        double* scratch = n > ESH_TAYLOR_STACKN ? (double*)malloc((size_t)(3 * n) * sizeof(double)) : sb;
+        if (!scratch) { for (int k = 0; k < n; k++) s[k] = NAN; return; }
+        tr_pow_at_zero(s, u, r, n, scratch);
+        if (scratch != sb) free(scratch);
+        return;
+    }
     s[0] = pow(u[0], r);
     for (int k = 1; k < n; k++) {
         double acc = 0.0;
         for (int j = 1; j <= k; j++)
-            acc = fma(((double)j * r - (double)(k - j)) * u[j], s[k - j], acc);
+            acc = zfma(((double)j * r - (double)(k - j)) * u[j], s[k - j], acc);
         s[k] = acc / ((double)k * u[0]);
     }
 }
 
-#define ESH_TAYLOR_STACKN 64
 
 static void tr_relu(double* s, const double* u, int n) {
     double sign = u[0] > 0.0 ? 1.0 : 0.0;
@@ -850,7 +955,7 @@ static void tr_sigmoid(double* s, const double* u, int n, arena_t* arena) {
         s[0] = 1.0 / den[0];
         for (int k = 1; k < n; k++) {
             double acc = 0.0;
-            for (int j = 1; j <= k; j++) acc = fma(-den[j], s[k-j], acc);
+            for (int j = 1; j <= k; j++) acc = zfma(-den[j], s[k-j], acc);
             s[k] = acc / den[0];
         }
     } else {
@@ -878,6 +983,166 @@ static void tr_tanh(double* s, const double* u, int n, arena_t* arena) {
 }
 
 /* ----------------------------------------------------------------------- */
+/* the integral family (SW-210): asin acos atan asinh acosh atanh log2      */
+/* log10 exp2 cbrt, and the piecewise-constant floor ceiling truncate round */
+/* ----------------------------------------------------------------------- */
+/* One recurrence carries every smooth member. With d = f'(u) as a series,
+ * s = f(u) solves ds/dt = d du/dt, so
+ *
+ *     s_0 = f(u_0),     s_k = (1/k) sum_{j=1..k} j u_j d_{k-j}.
+ *
+ * For the inverse functions f' is algebraic in u (1/(1+u^2), (1-u^2)^(-1/2),
+ * ...), so d comes from the mul/div/power recurrences; for log_b it is
+ * 1/(u ln b). exp2 and cbrt have d in terms of s itself (ln 2 s, s/(3u)) and
+ * use the exp and power recurrences seeded with the libm primal. The rounding
+ * functions are constant between their jumps: s_0 = f(u_0), the rest 0.
+ * The same algebra runs over tagged coefficients in level_ext_unary(), so an
+ * exact input keeps every coefficient that is rational exact. */
+
+/** @brief True iff `op` is a member of the integral family above. */
+static int tr_is_ext_uop(int op) {
+    switch (op) {
+        case ESH_TAYLOR_UOP_asin: case ESH_TAYLOR_UOP_acos: case ESH_TAYLOR_UOP_atan:
+        case ESH_TAYLOR_UOP_asinh: case ESH_TAYLOR_UOP_acosh: case ESH_TAYLOR_UOP_atanh:
+        case ESH_TAYLOR_UOP_log2: case ESH_TAYLOR_UOP_log10: case ESH_TAYLOR_UOP_exp2:
+        case ESH_TAYLOR_UOP_cbrt: case ESH_TAYLOR_UOP_floor: case ESH_TAYLOR_UOP_ceiling:
+        case ESH_TAYLOR_UOP_truncate: case ESH_TAYLOR_UOP_round:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/** @brief The libm primal f(v) of an integral-family op. `round` is R7RS
+ *  round-half-to-even, which nearbyint gives in the default rounding mode. */
+static double tr_ext_primal(int op, double v) {
+    switch (op) {
+        case ESH_TAYLOR_UOP_asin:     return asin(v);
+        case ESH_TAYLOR_UOP_acos:     return acos(v);
+        case ESH_TAYLOR_UOP_atan:     return atan(v);
+        case ESH_TAYLOR_UOP_asinh:    return asinh(v);
+        case ESH_TAYLOR_UOP_acosh:    return acosh(v);
+        case ESH_TAYLOR_UOP_atanh:    return atanh(v);
+        case ESH_TAYLOR_UOP_log2:     return log2(v);
+        case ESH_TAYLOR_UOP_log10:    return log10(v);
+        case ESH_TAYLOR_UOP_exp2:     return exp2(v);
+        case ESH_TAYLOR_UOP_cbrt:     return cbrt(v);
+        case ESH_TAYLOR_UOP_floor:    return floor(v);
+        case ESH_TAYLOR_UOP_ceiling:  return ceil(v);
+        case ESH_TAYLOR_UOP_truncate: return trunc(v);
+        case ESH_TAYLOR_UOP_round:    return nearbyint(v);
+        default:                      return NAN;
+    }
+}
+
+/* s_k = (1/k) sum_{j=1..k} j u_j d_{k-j}, k >= 1 (s_0 is the caller's). `d`
+ * may alias `s`: step k reads only d_0..d_{k-1}. */
+static void tr_integrate(double* s, const double* u, const double* d, int n) {
+    for (int k = 1; k < n; k++) {
+        double acc = 0.0;
+        for (int j = 1; j <= k; j++) acc = zfma((double)j * u[j], d[k - j], acc);
+        s[k] = acc / (double)k;
+    }
+}
+
+/* d = c / u: d_k = (c [k = 0] - sum_{j=1..k} u_j d_{k-j}) / u_0. */
+static void tr_recip(double* d, double c, const double* u, int n) {
+    for (int k = 0; k < n; k++) {
+        double acc = k == 0 ? c : 0.0;
+        for (int j = 1; j <= k; j++) acc = zfma(-u[j], d[k - j], acc);
+        d[k] = acc / u[0];
+    }
+}
+
+/**
+ * @brief s = f(u) and d = f'(u) for an integral-family op, over n doubles.
+ *
+ * `d` is the series of the derivative, which the value recurrence consumes
+ * and the seed-tangent tier reuses (tangent = d * u'). Scratch beyond
+ * ESH_TAYLOR_STACKN comes from `ar`. Returns 0 when `op` is not in the family.
+ */
+static int tr_ext_unary(int op, double* s, double* d, const double* u, int n, arena_t* ar) {
+    if (!tr_is_ext_uop(op)) return 0;
+    double qb[ESH_TAYLOR_STACKN];
+    double* q = qb;
+    if (n > ESH_TAYLOR_STACKN) {
+        q = (double*)arena_allocate(ar, (size_t)n * sizeof(double));
+        if (!q) return 0;
+    }
+    switch (op) {
+        case ESH_TAYLOR_UOP_atan: case ESH_TAYLOR_UOP_atanh:
+        case ESH_TAYLOR_UOP_asin: case ESH_TAYLOR_UOP_acos:
+        case ESH_TAYLOR_UOP_asinh: case ESH_TAYLOR_UOP_acosh: {
+            /* q = 1 + u^2 (atan, asinh), 1 - u^2 (atanh, asin, acos), u^2 - 1 (acosh) */
+            int minus = op == ESH_TAYLOR_UOP_atanh || op == ESH_TAYLOR_UOP_asin ||
+                        op == ESH_TAYLOR_UOP_acos;
+            tr_mul(q, u, u, n);
+            if (minus) for (int k = 0; k < n; k++) q[k] = -q[k];
+            q[0] += op == ESH_TAYLOR_UOP_acosh ? -1.0 : 1.0;
+            if (op == ESH_TAYLOR_UOP_atan || op == ESH_TAYLOR_UOP_atanh) {
+                tr_recip(d, 1.0, q, n);
+            } else {
+                tr_pow_const(d, q, -0.5, n);
+                if (op == ESH_TAYLOR_UOP_acos) for (int k = 0; k < n; k++) d[k] = -d[k];
+            }
+            s[0] = tr_ext_primal(op, u[0]);
+            tr_integrate(s, u, d, n);
+            return 1;
+        }
+        case ESH_TAYLOR_UOP_log2: case ESH_TAYLOR_UOP_log10:
+            tr_recip(d, op == ESH_TAYLOR_UOP_log2 ? 1.0 / M_LN2 : 1.0 / M_LN10, u, n);
+            s[0] = tr_ext_primal(op, u[0]);
+            tr_integrate(s, u, d, n);
+            return 1;
+        case ESH_TAYLOR_UOP_exp2:
+            for (int k = 0; k < n; k++) q[k] = M_LN2 * u[k];
+            tr_exp_seeded(s, exp2(u[0]), q, n);
+            for (int k = 0; k < n; k++) d[k] = M_LN2 * s[k];
+            return 1;
+        case ESH_TAYLOR_UOP_cbrt: {
+            /* d = (1/3) u^(-2/3) by the power recurrence from d_0 =
+             * 1/(3 cbrt(u_0)^2), then the integral. The power recurrence on s
+             * itself divides s_k by u_0 and is 0/0 at u_0 = 0; on d it is
+             * inf/0, the pole the closed form has (SW-222). */
+            double c0 = cbrt(u[0]);
+            tr_pow_seeded(d, 1.0 / (3.0 * c0 * c0), u, -2.0 / 3.0, n);
+            s[0] = c0;
+            tr_integrate(s, u, d, n);
+            return 1;
+        }
+        default:                                    /* the rounding functions */
+            s[0] = tr_ext_primal(op, u[0]);
+            d[0] = 0.0;
+            for (int k = 1; k < n; k++) { s[k] = 0.0; d[k] = 0.0; }
+            return 1;
+    }
+}
+
+/**
+ * @brief s = atan2(y, x) over n doubles.
+ *
+ * atan2(y, x) = atan(y/x) + c when |x_0| >= |y_0|, and -atan(x/y) + c
+ * otherwise, with c constant (0, +-pi/2 or +-pi) near the point. The constant
+ * moves only s_0, which is taken from libm's atan2, so the series is the atan
+ * recurrence on the better-conditioned quotient. At the origin the quotient
+ * is 0/0 and the series is NaN: atan2 has no derivative there.
+ */
+static void tr_atan2(double* s, const double* y, const double* x, int n, arena_t* ar) {
+    double rb[ESH_TAYLOR_STACKN], db[ESH_TAYLOR_STACKN];
+    double *r = rb, *d = db;
+    if (n > ESH_TAYLOR_STACKN) {
+        r = (double*)arena_allocate(ar, (size_t)n * sizeof(double));
+        d = (double*)arena_allocate(ar, (size_t)n * sizeof(double));
+        if (!r || !d) return;
+    }
+    int by_x = fabs(x[0]) >= fabs(y[0]);
+    tr_div(r, by_x ? y : x, by_x ? x : y, n);
+    tr_ext_unary(ESH_TAYLOR_UOP_atan, s, d, r, n, ar);
+    if (!by_x) for (int k = 0; k < n; k++) s[k] = -s[k];
+    s[0] = atan2(y[0], x[0]);
+}
+
+/* ----------------------------------------------------------------------- */
 /* dual recurrences: value + first-order seed tangent (P5, ESH-0190)        */
 /* ----------------------------------------------------------------------- */
 /* A "dual tower" carries, alongside its value series u, a tangent series
@@ -894,7 +1159,7 @@ static void tr_tanh(double* s, const double* u, int n, arena_t* arena) {
 static void tr_conv(double* s, const double* a, const double* b, int n) {
     for (int k = 0; k < n; k++) {
         double acc = 0.0;
-        for (int j = 0; j <= k; j++) acc = fma(a[j], b[k - j], acc);
+        for (int j = 0; j <= k; j++) acc = zfma(b[k - j], a[j], acc);   /* b is the tangent */
         s[k] = acc;
     }
 }
@@ -936,8 +1201,8 @@ static void trd_mul(double* st, const double* uv, const double* ut,
     for (int k = 0; k < n; k++) {
         double acc = 0.0;
         for (int j = 0; j <= k; j++) {
-            acc = fma(ut[j], wv[k - j], acc);
-            acc = fma(uv[j], wt[k - j], acc);
+            acc = zfma(ut[j], wv[k - j], acc);
+            acc = zfma(wt[k - j], uv[j], acc);
         }
         st[k] = acc;
     }
@@ -950,10 +1215,10 @@ static void trd_div(double* st, const double* sv,
     for (int k = 0; k < n; k++) {
         double acc = ut[k];
         for (int j = 1; j <= k; j++) {
-            acc = fma(-wt[j], sv[k - j], acc);
-            acc = fma(-wv[j], st[k - j], acc);
+            acc = zfma(-wt[j], sv[k - j], acc);
+            acc = zfma(-wv[j], st[k - j], acc);
         }
-        acc = fma(-sv[k], wt[0], acc);
+        acc = zfma(-wt[0], sv[k], acc);
         st[k] = acc / wv[0];
     }
 }
@@ -997,7 +1262,8 @@ static void ddual_pow_const(double* sv, double* st, const double* uv, const doub
     double qb[ESH_TAYLOR_STACKN];
     double* q = qb; double* hq = NULL;
     if (n > ESH_TAYLOR_STACKN) { hq = (double*)arena_allocate(arena, (size_t)n*sizeof(double)); q = hq; }
-    tr_div(q, sv, uv, n);                   /* q = u^r / u = u^{r-1} */
+    if (uv[0] == 0.0) tr_pow_const(q, uv, r - 1.0, n);   /* SW-225: u^{r-1} at the pole */
+    else tr_div(q, sv, uv, n);              /* q = u^r / u = u^{r-1} */
     tr_conv(st, q, ut, n);
     for (int k = 0; k < n; k++) st[k] = r * st[k];
 }
@@ -1061,6 +1327,39 @@ static void ddual_tanh(double* sv, double* st, const double* uv, const double* u
     ddual_sigmoid(sig, sigt, twice, twicet, n, arena);
     sv[0] = 2.0 * sig[0] - 1.0; st[0] = 2.0 * sigt[0];
     for (int k = 1; k < n; k++) { sv[k] = 2.0 * sig[k]; st[k] = 2.0 * sigt[k]; }
+}
+
+/* Dual integral-family op: the value by tr_ext_unary(), the tangent by the
+ * chain rule f'(u) u' = d * u'. Returns 0 when `op` is not in the family. */
+static int ddual_ext(int op, double* sv, double* st, const double* uv, const double* ut,
+                     int n, arena_t* arena) {
+    double db[ESH_TAYLOR_STACKN];
+    double* d = db;
+    if (n > ESH_TAYLOR_STACKN) {
+        d = (double*)arena_allocate(arena, (size_t)n * sizeof(double));
+        if (!d) return 0;
+    }
+    if (!tr_ext_unary(op, sv, d, uv, n, arena)) return 0;
+    tr_conv(st, d, ut, n);
+    return 1;
+}
+
+/* Dual atan2(y, x): the composition of tr_atan2() carried with tangents. */
+static void ddual_atan2(double* sv, double* st, const double* yv, const double* yt,
+                        const double* xv, const double* xt, int n, arena_t* arena) {
+    double rb[ESH_TAYLOR_STACKN], rtb[ESH_TAYLOR_STACKN];
+    double *r = rb, *rt = rtb;
+    if (n > ESH_TAYLOR_STACKN) {
+        r = (double*)arena_allocate(arena, (size_t)n * sizeof(double));
+        rt = (double*)arena_allocate(arena, (size_t)n * sizeof(double));
+        if (!r || !rt) return;
+    }
+    int by_x = fabs(xv[0]) >= fabs(yv[0]);
+    if (by_x) ddual_div(r, rt, yv, yt, xv, xt, n);
+    else      ddual_div(r, rt, xv, xt, yv, yt, n);
+    ddual_ext(ESH_TAYLOR_UOP_atan, sv, st, r, rt, n, arena);
+    if (!by_x) for (int k = 0; k < n; k++) { sv[k] = -sv[k]; st[k] = -st[k]; }
+    sv[0] = atan2(yv[0], xv[0]);
 }
 
 /* s = u / w : s_k = ( u_k - sum_{j=1..k} w_j * s_{k-j} ) / w_0. */
@@ -1576,11 +1875,25 @@ static eshkol_tagged_value_t jet_tagged(arena_t* ar, const level_jet_t* j) {
     return r;
 }
 static void jet_mul_raw(double* r, const double* x, const double* y) {
-    for (int s = 0; s < 8; s++) {
+    r[0] = x[0] * y[0];                          /* the primal: IEEE */
+    for (int s = 1; s < 8; s++) {
         double acc = 0.0;
         for (int a = 0; a < 8; a++)
-            if ((a & s) == a) acc += x[a] * y[s ^ a];
+            if ((a & s) == a) acc = zfma_ij(x[a], a, y[s ^ a], s ^ a, acc);   /* SW-222 */
         r[s] = acc;
+    }
+}
+/* r = x / y by the division recurrence over the jet (SW-222), the recurrence
+ * tr_div runs over a series: r_S = (x_S - sum_{T nonempty subset of S}
+ * y_T r_{S\T}) / y_0, with a zero coefficient of y contributing nothing. At a
+ * simple pole this is the closed form (d/dx 1/x at 0 is -inf); at a pole of
+ * higher order it ends in 0/0. */
+static void jet_div_raw(double* r, const double* x, const double* y) {
+    for (int s = 0; s < 8; s++) {
+        double acc = x[s];
+        for (int t = 1; t < 8; t++)
+            if ((t & s) == t) acc = zfma_ij(-y[t], t, r[s ^ t], s ^ t, acc);
+        r[s] = acc / y[0];
     }
 }
 /* r = g0 + g1 n + g2 n^2 + g3 n^3 with n = x - x[0]. */
@@ -1590,8 +1903,11 @@ static void jet_compose(double* r, const double* x, const double* g) {
     n[0] = 0.0;
     jet_mul_raw(n2, n, n);
     jet_mul_raw(n3, n2, n);
+    /* IEEE products: g_k is a precomputed number, and an infinite one times a
+     * zero coefficient is indeterminate here; poles enter soundly only
+     * through the division recurrence (jet_div_raw). */
     for (int s = 0; s < 8; s++) r[s] = g[1] * n[s] + g[2] * n2[s] + g[3] * n3[s];
-    r[0] += g[0];
+    r[0] = g[0];                                 /* n[0] = 0: the primal is g_0 */
 }
 /* g[k] = f^(k)(x0)/k!, k = 0..3, for the unary op `uop` (or x^r when uop < 0). */
 static void jet_unary_coeffs(arena_t* ar, int uop, double x0, double r, double* g) {
@@ -1619,7 +1935,14 @@ static void jet_unary_coeffs(arena_t* ar, int uop, double x0, double r, double* 
                 g[k] = 0.5 * (uop == ESH_TAYLOR_UOP_sinh ? a[k] - b[k] : a[k] + b[k]);
             return;
         }
-        default: tr_pow_const(g, u, r, 4); return;   /* uop < 0: x^r */
+        default: {
+            double d[4];
+            if (uop < 0) { tr_pow_const(g, u, r, 4); return; }   /* x^r */
+            if (tr_ext_unary(uop, g, d, u, 4, ar)) return;
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                "internal: Taylor unary op %d has no recurrence", uop);
+            return;
+        }
     }
 }
 static eshkol_tagged_value_t jet_unary(arena_t* ar, const eshkol_tagged_value_t* x, int uop, double r) {
@@ -1665,20 +1988,29 @@ static eshkol_tagged_value_t num_binary(arena_t* ar, eshkol_tagged_value_t a,
         eshkol_taylor_binary_tagged(ar, &a, &b, op, &r);
         return r;
     }
+    if (op == ESH_TAYLOR_OP_atan2) {
+        /* sigma*atan(quotient) + const, as tr_atan2() does for a series. */
+        eshkol_tagged_value_t pa = tagged_primal(&a), pb = tagged_primal(&b);
+        double y0 = tagged_any_to_double(&pa), x0 = tagged_any_to_double(&pb);
+        if (!num_is_jet(&a) && !num_is_jet(&b)) return eshkol_make_double(atan2(y0, x0));
+        int by_x = fabs(x0) >= fabs(y0);
+        eshkol_tagged_value_t q = by_x ? num_binary(ar, a, b, ESH_TAYLOR_OP_div)
+                                       : num_binary(ar, b, a, ESH_TAYLOR_OP_div);
+        level_jet_t j = jet_of(&q), out;
+        double g[4];
+        jet_unary_coeffs(ar, ESH_TAYLOR_UOP_atan, j.v[0], 0.0, g);
+        jet_compose(out.v, j.v, g);
+        if (!by_x) for (int i = 0; i < 8; i++) out.v[i] = -out.v[i];
+        out.v[0] = atan2(y0, x0);
+        return jet_tagged(ar, &out);
+    }
     if (num_is_jet(&a) || num_is_jet(&b)) {
         level_jet_t x = jet_of(&a), y = jet_of(&b), r;
         switch (op) {
             case ESH_TAYLOR_OP_add: for (int s = 0; s < 8; s++) r.v[s] = x.v[s] + y.v[s]; break;
             case ESH_TAYLOR_OP_sub: for (int s = 0; s < 8; s++) r.v[s] = x.v[s] - y.v[s]; break;
             case ESH_TAYLOR_OP_mul: jet_mul_raw(r.v, x.v, y.v); break;
-            case ESH_TAYLOR_OP_div: {
-                double g[4], inv[8];
-                g[0] = 1.0 / y.v[0];
-                for (int k = 1; k < 4; k++) g[k] = -g[k - 1] / y.v[0];
-                jet_compose(inv, y.v, g);
-                jet_mul_raw(r.v, x.v, inv);
-                break;
-            }
+            case ESH_TAYLOR_OP_div: jet_div_raw(r.v, x.v, y.v); break;
             default: {   /* pow */
                 int y_const = 1;
                 for (int s = 1; s < 8; s++) if (y.v[s] != 0.0) { y_const = 0; break; }
@@ -1746,6 +2078,52 @@ static eshkol_tagged_value_t num_unary(arena_t* ar, eshkol_tagged_value_t x, int
             case ESH_TAYLOR_UOP_neg: return exact_mul(ar, num_exact_int(-1), x);
             case ESH_TAYLOR_UOP_abs: return s < 0 ? exact_mul(ar, num_exact_int(-1), x) : x;
             case ESH_TAYLOR_UOP_relu: return s > 0 ? x : num_exact_int(0);
+            case ESH_TAYLOR_UOP_floor: case ESH_TAYLOR_UOP_ceiling:
+            case ESH_TAYLOR_UOP_truncate: case ESH_TAYLOR_UOP_round: {
+                /* an exact integer is its own rounding; a rational rounds exactly */
+                if (!tagged_is_rational(&x)) return x;
+                eshkol_tagged_value_t r;
+                void* rp = (void*)(uintptr_t)x.data.ptr_val;
+                if (uop == ESH_TAYLOR_UOP_floor)        eshkol_rational_floor_tagged(ar, rp, &r);
+                else if (uop == ESH_TAYLOR_UOP_ceiling) eshkol_rational_ceil_tagged(ar, rp, &r);
+                else if (uop == ESH_TAYLOR_UOP_truncate) eshkol_rational_truncate_tagged(ar, rp, &r);
+                else                                    eshkol_rational_round_tagged(ar, rp, &r);
+                return r;
+            }
+            case ESH_TAYLOR_UOP_asin: case ESH_TAYLOR_UOP_atan:
+            case ESH_TAYLOR_UOP_asinh: case ESH_TAYLOR_UOP_atanh:
+                if (s == 0) return num_exact_int(0);          /* odd, f(0) = 0 */
+                break;
+            case ESH_TAYLOR_UOP_acos: case ESH_TAYLOR_UOP_acosh:
+            case ESH_TAYLOR_UOP_log2: case ESH_TAYLOR_UOP_log10:
+                if ((uint8_t)(x.type & 0x0F) == ESHKOL_VALUE_INT64) {
+                    int64_t v = x.data.int_val;
+                    if (v == 1) return num_exact_int(0);       /* f(1) = 0 */
+                    int64_t b = uop == ESH_TAYLOR_UOP_log2 ? 2 : uop == ESH_TAYLOR_UOP_log10 ? 10 : 0;
+                    if (b && v > 1) {                          /* log_b of an exact power of b */
+                        int64_t e = 0;
+                        while (v % b == 0) { v /= b; e++; }
+                        if (v == 1) return num_exact_int(e);
+                    }
+                }
+                break;
+            case ESH_TAYLOR_UOP_exp2:
+                if ((uint8_t)(x.type & 0x0F) == ESHKOL_VALUE_INT64 &&
+                    x.data.int_val > -63 && x.data.int_val < 63) {
+                    int64_t e = x.data.int_val;
+                    eshkol_tagged_value_t p = num_exact_int((int64_t)1 << (e < 0 ? -e : e));
+                    return e < 0 ? exact_div(ar, num_exact_int(1), p) : p;
+                }
+                break;
+            case ESH_TAYLOR_UOP_cbrt:
+                /* the cube root of a perfect int64 cube is exact */
+                if ((uint8_t)(x.type & 0x0F) == ESHKOL_VALUE_INT64) {
+                    int64_t v = x.data.int_val;
+                    int64_t c = (int64_t)llround(cbrt((double)v));
+                    for (int64_t t = c - 1; t <= c + 1; t++)
+                        if (t > -2097152 && t < 2097152 && t * t * t == v) return num_exact_int(t);
+                }
+                break;
             default: break;
         }
     }
@@ -1764,7 +2142,13 @@ static eshkol_tagged_value_t num_unary(arena_t* ar, eshkol_tagged_value_t x, int
         case ESH_TAYLOR_UOP_tanh: r = tanh(v); break;
         case ESH_TAYLOR_UOP_relu: r = v > 0.0 ? v : 0.0; break;
         case ESH_TAYLOR_UOP_sigmoid: r = 1.0 / (1.0 + exp(-v)); break;
-        default: r = v; break;
+        default:
+            if (!tr_is_ext_uop(uop)) {
+                eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                    "internal: Taylor unary op %d has no scalar rule", uop);
+            }
+            r = tr_ext_primal(uop, v);
+            break;
     }
     return eshkol_make_double(r);
 }
@@ -1836,6 +2220,22 @@ static void level_ser_sincos(arena_t* ar, eshkol_tagged_value_t* sn, eshkol_tagg
         cs[k] = num_div(ar, num_unary(ar, ac, ESH_TAYLOR_UOP_neg), num_exact_int(k));
     }
 }
+/* s_k = (1/(k u_0)) sum_{j=1..k} (r j - (k-j)) u_j s_{k-j} for k >= 1: the
+ * power recurrence from a given s_0 (cbrt seeds it with the real cube root). */
+static void level_ser_pow_tail(arena_t* ar, eshkol_tagged_value_t* s,
+                               const eshkol_tagged_value_t* u,
+                               eshkol_tagged_value_t r, int n) {
+    for (int k = 1; k < n; k++) {
+        eshkol_tagged_value_t acc = num_exact_int(0);
+        for (int j = 1; j <= k; j++) {
+            eshkol_tagged_value_t f = num_sub(ar, num_mul(ar, r, num_exact_int(j)),
+                                              num_exact_int(k - j));
+            acc = num_add(ar, acc, num_mul(ar, num_mul(ar, f, u[j]), s[k - j]));
+        }
+        s[k] = num_div(ar, acc, num_mul(ar, num_exact_int(k), u[0]));
+    }
+}
+
 /* s = u^r for a constant r (any number of an enclosing level). An exact
  * integer r is repeated multiplication: exact, and defined at a zero base.
  * Otherwise s_0 = u_0^r, s_k = (1/(k u_0)) sum_{j=1..k} (r j - (k-j)) u_j s_{k-j}. */
@@ -1866,15 +2266,127 @@ static void level_ser_pow_const(arena_t* ar, eshkol_tagged_value_t* s,
         }
         return;
     }
+    /* SW-225: at a zero base the recurrence is 0/0; when every coefficient is
+     * a plain number the double kernel's pole rule (tr_pow_at_zero) answers.
+     * The result is inexact, as u^r of a non-integer r is. */
+    if (n > 1 && !tagged_as_taylor(&u[0]) && !num_is_jet(&u[0]) && !num_is_ad_node(&u[0]) &&
+        !tagged_as_taylor(&r) && !num_is_jet(&r) && tagged_any_to_double(&u[0]) == 0.0) {
+        int plain = 1;
+        for (int k = 1; k < n && plain; k++)
+            plain = !tagged_as_taylor(&u[k]) && !num_is_jet(&u[k]) && !num_is_ad_node(&u[k]);
+        if (plain) {
+            double* ud = (double*)arena_allocate(ar, (size_t)n * sizeof(double));
+            double* sd = (double*)arena_allocate(ar, (size_t)n * sizeof(double));
+            if (ud && sd) {
+                for (int k = 0; k < n; k++) ud[k] = tagged_any_to_double(&u[k]);
+                tr_pow_const(sd, ud, tagged_any_to_double(&r), n);
+                for (int k = 0; k < n; k++) s[k] = eshkol_make_double(sd[k]);
+                return;
+            }
+        }
+    }
     s[0] = num_binary(ar, u[0], r, ESH_TAYLOR_OP_pow);
+    level_ser_pow_tail(ar, s, u, r, n);
+}
+
+/* s_k = (1/k) sum_{j=1..k} j u_j d_{k-j} for k >= 1 over the scalar ring:
+ * the integral-family recurrence of tr_integrate(). `d` may alias `s`. */
+static void level_ser_integrate(arena_t* ar, eshkol_tagged_value_t* s,
+                                const eshkol_tagged_value_t* u,
+                                const eshkol_tagged_value_t* d, int n) {
     for (int k = 1; k < n; k++) {
         eshkol_tagged_value_t acc = num_exact_int(0);
-        for (int j = 1; j <= k; j++) {
-            eshkol_tagged_value_t f = num_sub(ar, num_mul(ar, r, num_exact_int(j)),
-                                              num_exact_int(k - j));
-            acc = num_add(ar, acc, num_mul(ar, num_mul(ar, f, u[j]), s[k - j]));
+        for (int j = 1; j <= k; j++)
+            acc = num_add(ar, acc, num_mul(ar, num_mul(ar, num_exact_int(j), u[j]), d[k - j]));
+        s[k] = num_div(ar, acc, num_exact_int(k));
+    }
+}
+
+/**
+ * @brief The integral family (tr_ext_unary()) over the scalar ring.
+ *
+ * Every coefficient operation dispatches through num_binary()/num_unary(), so
+ * the coefficients may be any numbers, and an exact input keeps each
+ * coefficient that is rational exact: at an exact point the series of atan
+ * and atanh are exact past s_0 (their derivatives are rational functions),
+ * and so is every coefficient of cbrt at a perfect cube. Returns 0 when `op`
+ * is not in the family.
+ */
+static int level_ext_unary(arena_t* ar, int op, eshkol_tagged_value_t* s,
+                           const eshkol_tagged_value_t* u, int n) {
+    if (!tr_is_ext_uop(op)) return 0;
+    eshkol_tagged_value_t* q = level_series_alloc(ar, n);
+    eshkol_tagged_value_t* d = level_series_alloc(ar, n);
+    if (!q || !d) return 0;
+    /* At an exact point where f' is unbounded (atanh/asin/acos at +-1, acosh
+     * at 1, cbrt/log2/log10 at 0) the recurrence would divide an exact number
+     * by exact 0 and raise. The derivative there is infinite, as the inexact
+     * kernel answers: read the point as inexact. */
+    if (tagged_is_exact_number(&u[0])) {
+        int sgn = tagged_exact_sign(&u[0]);
+        eshkol_tagged_value_t a = sgn < 0 ? exact_mul(ar, num_exact_int(-1), u[0]) : u[0];
+        int at_one = (uint8_t)(a.type & 0x0F) == ESHKOL_VALUE_INT64 && a.data.int_val == 1;
+        int singular =
+            ((op == ESH_TAYLOR_UOP_atanh || op == ESH_TAYLOR_UOP_asin ||
+              op == ESH_TAYLOR_UOP_acos) && at_one) ||
+            (op == ESH_TAYLOR_UOP_acosh && at_one && sgn > 0) ||
+            ((op == ESH_TAYLOR_UOP_cbrt || op == ESH_TAYLOR_UOP_log2 ||
+              op == ESH_TAYLOR_UOP_log10) && sgn == 0);
+        if (singular) {
+            eshkol_tagged_value_t* v = level_series_alloc(ar, n);
+            if (!v) return 0;
+            for (int k = 0; k < n; k++) v[k] = u[k];
+            v[0] = eshkol_make_double(tagged_any_to_double(&u[0]));
+            u = v;
         }
-        s[k] = num_div(ar, acc, num_mul(ar, num_exact_int(k), u[0]));
+    }
+    for (int k = 0; k < n; k++) s[k] = num_exact_int(0);
+    switch (op) {
+        case ESH_TAYLOR_UOP_atan: case ESH_TAYLOR_UOP_atanh:
+        case ESH_TAYLOR_UOP_asin: case ESH_TAYLOR_UOP_acos:
+        case ESH_TAYLOR_UOP_asinh: case ESH_TAYLOR_UOP_acosh: {
+            int minus = op == ESH_TAYLOR_UOP_atanh || op == ESH_TAYLOR_UOP_asin ||
+                        op == ESH_TAYLOR_UOP_acos;
+            level_ser_mul(ar, q, u, u, n);
+            if (minus) for (int k = 0; k < n; k++) q[k] = num_unary(ar, q[k], ESH_TAYLOR_UOP_neg);
+            q[0] = num_add(ar, q[0], num_exact_int(op == ESH_TAYLOR_UOP_acosh ? -1 : 1));
+            if (op == ESH_TAYLOR_UOP_atan || op == ESH_TAYLOR_UOP_atanh) {
+                eshkol_tagged_value_t* one = level_series_alloc(ar, n);
+                if (!one) return 0;
+                one[0] = num_exact_int(1);
+                level_ser_div(ar, d, one, q, n);
+            } else {
+                level_ser_pow_const(ar, d, q, exact_div(ar, num_exact_int(-1), num_exact_int(2)), n);
+                if (op == ESH_TAYLOR_UOP_acos)
+                    for (int k = 0; k < n; k++) d[k] = num_unary(ar, d[k], ESH_TAYLOR_UOP_neg);
+            }
+            s[0] = num_unary(ar, u[0], op);
+            level_ser_integrate(ar, s, u, d, n);
+            return 1;
+        }
+        case ESH_TAYLOR_UOP_log2: case ESH_TAYLOR_UOP_log10:
+            q[0] = eshkol_make_double(op == ESH_TAYLOR_UOP_log2 ? 1.0 / M_LN2 : 1.0 / M_LN10);
+            level_ser_div(ar, d, q, u, n);
+            s[0] = num_unary(ar, u[0], op);
+            level_ser_integrate(ar, s, u, d, n);
+            return 1;
+        case ESH_TAYLOR_UOP_exp2:
+            for (int k = 0; k < n; k++) q[k] = num_mul(ar, eshkol_make_double(M_LN2), u[k]);
+            s[0] = num_unary(ar, u[0], op);
+            level_ser_integrate(ar, s, q, s, n);
+            return 1;
+        case ESH_TAYLOR_UOP_cbrt:
+            /* d = (1/3) u^(-2/3) from d_0 = 1/(3 s_0^2), then the integral:
+             * exact at a perfect cube, the pole of the closed form at 0. */
+            s[0] = num_unary(ar, u[0], op);
+            d[0] = num_div(ar, num_exact_int(1),
+                           num_mul(ar, num_exact_int(3), num_mul(ar, s[0], s[0])));
+            level_ser_pow_tail(ar, d, u, exact_div(ar, num_exact_int(-2), num_exact_int(3)), n);
+            level_ser_integrate(ar, s, u, d, n);
+            return 1;
+        default:                                    /* the rounding functions */
+            s[0] = num_unary(ar, u[0], op);
+            return 1;
     }
 }
 
@@ -1965,6 +2477,21 @@ static void level_binary(arena_t* ar, const eshkol_tagged_value_t* left,
             if (!w_active) for (int k = 0; k < n; k++) s[k] = num_div(ar, u[k], *right);
             else level_ser_div(ar, s, u, w, n);
             break;
+        case ESH_TAYLOR_OP_atan2: {
+            /* sigma*atan(quotient) + const, as tr_atan2() does for doubles;
+             * s_0 recurses to the coefficients' own atan2. */
+            eshkol_tagged_value_t py = tagged_primal(&u[0]), px = tagged_primal(&w[0]);
+            double y0 = tagged_any_to_double(&py), x0 = tagged_any_to_double(&px);
+            int by_x = fabs(x0) >= fabs(y0);
+            eshkol_tagged_value_t* r = level_series_alloc(ar, n);
+            if (!r) break;
+            if (by_x) level_ser_div(ar, r, u, w, n);
+            else      level_ser_div(ar, r, w, u, n);
+            level_ext_unary(ar, ESH_TAYLOR_UOP_atan, s, r, n);
+            if (!by_x) for (int k = 0; k < n; k++) s[k] = num_unary(ar, s[k], ESH_TAYLOR_UOP_neg);
+            s[0] = num_binary(ar, u[0], w[0], ESH_TAYLOR_OP_atan2);
+            break;
+        }
         default: {   /* pow */
             if (!w_active) {
                 level_ser_pow_const(ar, s, u, *right, n);
@@ -2050,7 +2577,9 @@ static void level_unary(arena_t* ar, const eshkol_tagged_value_t* in, int op,
             break;
         }
         default:
-            for (int k = 0; k < n; k++) s[k] = u[k];
+            if (!level_ext_unary(ar, op, s, u, n))
+                eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                    "internal: Taylor unary op %d has no recurrence", op);
             break;
     }
     *result = level_make(ar, epoch, order_k, s);
@@ -2088,6 +2617,13 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
     const eshkol_tagged_value_t* left, const eshkol_tagged_value_t* right,
     int op, eshkol_tagged_value_t* result) {
     if (!arena) arena = get_global_arena();
+
+    /* No tower among the operands (atan2 of forward jets, SW-210): the
+     * carrier ring's own rule, in the full 8-jet algebra. */
+    if (!tagged_as_taylor(left) && !tagged_as_taylor(right)) {
+        *result = num_binary(arena, *left, *right, op);
+        return;
+    }
 
     /* ADR-0027: nested levels take the level path. */
     if (level_route_binary(left, right)) {
@@ -2162,7 +2698,11 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
                 }
                 break;
             }
-            default: tr_add(ov, uv, wv, n); tr_add(ot, ut, wt, n); break;
+            case ESH_TAYLOR_OP_atan2: ddual_atan2(ov, ot, uv, ut, wv, wt, n, arena); break;
+            default:
+                eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                    "internal: Taylor binary op %d has no recurrence", op);
+                break;
         }
         if (exact_tangent && !exact_tangent_binary(arena, left, right, op,
                                                    order_k, epoch, out)) {
@@ -2244,7 +2784,11 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
             }
             break;
         }
-        default: tr_add(out->c, u, w, n); break;
+        case ESH_TAYLOR_OP_atan2: tr_atan2(out->c, u, w, n, arena); break;
+        default:
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                "internal: Taylor binary op %d has no recurrence", op);
+            break;
     }
     *result = taylor_to_tagged(out);
 }
@@ -2280,6 +2824,12 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
     if (!arena) arena = get_global_arena();
 
     esh_taylor_t* t = tagged_as_taylor(in);
+    /* A forward jet with no tower (abs of a jet, SW-212): the carrier ring's
+     * own rule, in the full 8-jet algebra. */
+    if (!t && num_is_jet(in)) {
+        *result = num_unary(arena, *in, op);
+        return;
+    }
     /* ADR-0027: a level carrier takes the level path. */
     if (taylor_is_level(t)) {
         level_unary(arena, in, op, result);
@@ -2386,7 +2936,11 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
             }
             case ESH_TAYLOR_UOP_relu: ddual_relu(ov, ot, uv, ut, n); break;
             case ESH_TAYLOR_UOP_sigmoid: ddual_sigmoid(ov, ot, uv, ut, n, arena); break;
-            default: memcpy(ov, uv, (size_t)n*sizeof(double)); memcpy(ot, ut, (size_t)n*sizeof(double)); break;
+            default:
+                if (!ddual_ext(op, ov, ot, uv, ut, n, arena))
+                    eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                        "internal: Taylor unary op %d has no recurrence", op);
+                break;
         }
         if (exact_linear) {
             eshkol_tagged_value_t* eu = alloc_exact_series(arena, n);
@@ -2427,6 +2981,23 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
      * exp(1) is irrational) -- those fall through to the unchanged F64
      * kernel below, which is the documented graceful promotion (design
      * section 9); normalise_operand demotes the exact input correctly. */
+    /* SW-210: the integral family of an exact tower runs its recurrence over
+     * the exact coefficients (level_ext_unary), and the tower stays exact
+     * when every coefficient came out exact -- a rounding function anywhere,
+     * atan/asin/asinh/atanh at 0, acos/acosh/log2/log10 where the primal is
+     * exact, cbrt at a perfect cube. Otherwise the whole tower demotes (its
+     * coefficients are never mixed-tagged; a level carrier keeps an exact
+     * tail past an irrational s_0). */
+    if (t && taylor_is_exact(t) && tr_is_ext_uop(op)) {
+        eshkol_tagged_value_t* u = alloc_exact_series(arena, n);
+        eshkol_tagged_value_t* s = alloc_exact_series(arena, n);
+        if (!u || !s) { *result = eshkol_make_double(0.0); return; }
+        normalise_operand_exact(in, epoch, u, n);
+        if (level_ext_unary(arena, op, s, u, n)) {
+            taylor_materialize_exact_or_demote(arena, s, n, order_k, epoch, result);
+            return;
+        }
+    }
     if (t && taylor_is_exact(t) && (op == ESH_TAYLOR_UOP_neg ||
                                     op == ESH_TAYLOR_UOP_abs ||
                                     op == ESH_TAYLOR_UOP_relu)) {
@@ -2528,7 +3099,15 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
             break;
         }
         case ESH_TAYLOR_UOP_tanh: tr_tanh(out->c, u, n, arena); break;
-        default: memcpy(out->c, u, (size_t)n * sizeof(double)); break;
+        default: {
+            double db[ESH_TAYLOR_STACKN];
+            double* d = n > ESH_TAYLOR_STACKN
+                ? (double*)arena_allocate(arena, (size_t)n * sizeof(double)) : db;
+            if (!d || !tr_ext_unary(op, out->c, d, u, n, arena))
+                eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                    "internal: Taylor unary op %d has no recurrence", op);
+            break;
+        }
     }
     *result = taylor_to_tagged(out);
 }

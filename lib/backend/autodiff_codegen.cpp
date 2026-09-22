@@ -11,6 +11,8 @@
  */
 
 #include <eshkol/core/ast_routing.h>
+#include <cmath>
+#include <limits>
 #include <eshkol/backend/autodiff_codegen.h>
 #include <eshkol/backend/llvm_compat.h>
 #include <eshkol/backend/libm_codegen.h>
@@ -217,19 +219,48 @@ inline llvm::Value* makeDual4(CodegenContext& ctx,
     return makeDual8(ctx, f0, f1, f2, f3, zero, zero, zero, zero);
 }
 
+// SW-222: a product in which `a` is a perturbation coefficient (a
+// non-primal jet component): an exactly zero `a` is structurally absent and
+// contributes nothing, even against an infinite factor. IEEE 0 * inf = NaN
+// would otherwise poison every component of a carrier that meets a pole, and
+// d/dx (1/x) at 0 came back NaN instead of the closed form's -inf. A zero
+// PRIMAL is a value and keeps IEEE semantics, so the derivative of x * (1/x)
+// at 0 stays NaN. `b_pert` marks `b` as a perturbation coefficient too. The
+// runtime kernel applies the same rule (zfma in runtime_taylor.c).
+inline llvm::Value* pertMul(CodegenContext& ctx, llvm::Value* a, bool a_pert,
+                            llvm::Value* b, bool b_pert) {
+    auto& bld = ctx.builder();
+    llvm::Value* zero = llvm::ConstantFP::get(ctx.doubleType(), 0.0);
+    llvm::Value* product = bld.CreateFMul(a, b);
+    if (!a_pert && !b_pert) return product;
+    llvm::Value* absent = nullptr;
+    if (a_pert) absent = bld.CreateFCmpOEQ(a, zero);
+    if (b_pert) {
+        llvm::Value* bz = bld.CreateFCmpOEQ(b, zero);
+        absent = absent ? bld.CreateOr(absent, bz) : bz;
+    }
+    return bld.CreateSelect(absent, zero, product);
+}
+
 // Bilinear product of two 4-jets {j0,j1,j2,j3} (monomials 1,e1,e2,e1e2),
 // keeping the mixed e1e2 cross term. Shared by dualMul and the ep-derivative
-// propagation of dualUnaryChain.
+// propagation of dualUnaryChain. Components 1..3 are perturbation
+// coefficients; component 0 is one too when its jet is an ep-derivative jet
+// (`a0_pert`, `b0_pert`), and a primal otherwise.
 inline std::array<llvm::Value*, 4> jet4Mul(CodegenContext& ctx,
         llvm::Value* a0, llvm::Value* a1, llvm::Value* a2, llvm::Value* a3,
-        llvm::Value* b0, llvm::Value* b1, llvm::Value* b2, llvm::Value* b3) {
+        llvm::Value* b0, llvm::Value* b1, llvm::Value* b2, llvm::Value* b3,
+        bool a0_pert, bool b0_pert) {
     auto& b = ctx.builder();
-    llvm::Value* r0 = b.CreateFMul(a0, b0);
-    llvm::Value* r1 = b.CreateFAdd(b.CreateFMul(a1, b0), b.CreateFMul(a0, b1));
-    llvm::Value* r2 = b.CreateFAdd(b.CreateFMul(a2, b0), b.CreateFMul(a0, b2));
+    auto m = [&](llvm::Value* x, bool xp, llvm::Value* y, bool yp) {
+        return pertMul(ctx, x, xp, y, yp);
+    };
+    llvm::Value* r0 = m(a0, a0_pert, b0, b0_pert);
+    llvm::Value* r1 = b.CreateFAdd(m(a1, true, b0, b0_pert), m(a0, a0_pert, b1, true));
+    llvm::Value* r2 = b.CreateFAdd(m(a2, true, b0, b0_pert), m(a0, a0_pert, b2, true));
     llvm::Value* r3 = b.CreateFAdd(
-        b.CreateFAdd(b.CreateFMul(a3, b0), b.CreateFMul(a1, b2)),
-        b.CreateFAdd(b.CreateFMul(a2, b1), b.CreateFMul(a0, b3)));
+        b.CreateFAdd(m(a3, true, b0, b0_pert), m(a1, true, b2, true)),
+        b.CreateFAdd(m(a2, true, b1, true), m(a0, a0_pert, b3, true)));
     return {r0, r1, r2, r3};
 }
 
@@ -255,25 +286,29 @@ inline llvm::Value* dualUnaryChain(CodegenContext& ctx, llvm::Value* dual,
     llvm::Value* d1 = b.CreateExtractValue(dual, {1});
     llvm::Value* d2 = b.CreateExtractValue(dual, {2});
     llvm::Value* d12 = b.CreateExtractValue(dual, {3});
-    llvm::Value* d1d2 = b.CreateFMul(d1, d2);
+    // IEEE products throughout: g^(k)(a) is a precomputed number, and an
+    // infinite one times a zero coefficient is genuinely indeterminate here
+    // (a pole of higher order than the seed), so it must stay NaN. Poles are
+    // introduced soundly only by the division recurrence (dualDiv, SW-222).
+    auto m = [&](llvm::Value* x, llvm::Value* y) { return b.CreateFMul(x, y); };
+    llvm::Value* d1d2 = m(d1, d2);
     // value 4-jet: chain with (g, g', g'')
-    llvm::Value* o1 = b.CreateFMul(fpa, d1);
-    llvm::Value* o2 = b.CreateFMul(fpa, d2);
-    llvm::Value* o3 = b.CreateFAdd(b.CreateFMul(fpa, d12),
-                                   b.CreateFMul(fppa, d1d2));
+    llvm::Value* o1 = m(fpa, d1);
+    llvm::Value* o2 = m(fpa, d2);
+    llvm::Value* o3 = b.CreateFAdd(m(fpa, d12), m(fppa, d1d2));
     // g'(F) 4-jet: chain with (g', g'', g''')
     if (!fpppa) fpppa = llvm::ConstantFP::get(ctx.doubleType(), 0.0);
     llvm::Value* g0 = fpa;
-    llvm::Value* g1 = b.CreateFMul(fppa, d1);
-    llvm::Value* g2 = b.CreateFMul(fppa, d2);
-    llvm::Value* g3 = b.CreateFAdd(b.CreateFMul(fppa, d12),
-                                   b.CreateFMul(fpppa, d1d2));
+    llvm::Value* g1 = m(fppa, d1);
+    llvm::Value* g2 = m(fppa, d2);
+    llvm::Value* g3 = b.CreateFAdd(m(fppa, d12), m(fpppa, d1d2));
     // ep-derivative: g'(F) ⊗ Fp  (Fp = incoming fields 4-7)
     llvm::Value* p0 = b.CreateExtractValue(dual, {4});
     llvm::Value* p1 = b.CreateExtractValue(dual, {5});
     llvm::Value* p2 = b.CreateExtractValue(dual, {6});
     llvm::Value* p3 = b.CreateExtractValue(dual, {7});
-    std::array<llvm::Value*, 4> pr = jet4Mul(ctx, g0, g1, g2, g3, p0, p1, p2, p3);
+    std::array<llvm::Value*, 4> pr = jet4Mul(ctx, g0, g1, g2, g3, p0, p1, p2, p3,
+                                             /*a0_pert=*/false, /*b0_pert=*/true);
     return makeDual8(ctx, fa, o1, o2, o3, pr[0], pr[1], pr[2], pr[3]);
 }
 
@@ -1680,19 +1715,27 @@ llvm::Value* AutodiffCodegen::dualMul(llvm::Value* dual_a, llvm::Value* dual_b) 
     llvm::Value* bp0 = dualField(ctx_, dual_b, 4), *bp1 = dualField(ctx_, dual_b, 5),
                 *bp2 = dualField(ctx_, dual_b, 6), *bp3 = dualField(ctx_, dual_b, 7);
     // value = a ⊗ b
-    std::array<llvm::Value*, 4> v = jet4Mul(ctx_, a0, a1, a2, a3, b0, b1, b2, b3);
+    std::array<llvm::Value*, 4> v = jet4Mul(ctx_, a0, a1, a2, a3, b0, b1, b2, b3, false, false);
     // ESH-0117: d/dep (a·b) = a' ⊗ b + a ⊗ b'  (both 4-jet products)
-    std::array<llvm::Value*, 4> t1 = jet4Mul(ctx_, ap0, ap1, ap2, ap3, b0, b1, b2, b3);
-    std::array<llvm::Value*, 4> t2 = jet4Mul(ctx_, a0, a1, a2, a3, bp0, bp1, bp2, bp3);
+    std::array<llvm::Value*, 4> t1 = jet4Mul(ctx_, ap0, ap1, ap2, ap3, b0, b1, b2, b3, true, false);
+    std::array<llvm::Value*, 4> t2 = jet4Mul(ctx_, a0, a1, a2, a3, bp0, bp1, bp2, bp3, false, true);
     llvm::Value* p[4];
     for (int i = 0; i < 4; ++i) p[i] = b.CreateFAdd(t1[i], t2[i]);
     return makeDual8(ctx_, v[0], v[1], v[2], v[3], p[0], p[1], p[2], p[3]);
 }
 
-// (a / b) = a * (1/b). Reciprocal is the unary jet of g(x)=1/x with
-//   g(b0)=1/b0, g'=-1/b0^2, g''=2/b0^3 — exact second order.
+// (a / b) by the division recurrence over the jet, the same recurrence the
+// Taylor kernel's tr_div runs over a series (SW-222):
+//     q_S = (a_S - sum_{T nonempty, T subset of S} b_T q_{S\T}) / b_0,
+// with S running over the monomials 1, e1, e2, e1e2 in order, and the
+// ep-derivative jet q' = (a' - q b') / b by the same recurrence. A zero
+// perturbation coefficient of b contributes nothing (pertMul), so at a simple
+// pole the jet is the closed form's: d/dx (1/x) at 0 is -inf, where the
+// former a * (1/b) chain multiplied an infinite g'(0) by a zero coefficient
+// and answered NaN. At a pole of higher order than the seed the recurrence
+// ends in 0/0 and stays NaN; it never invents a finite value.
 /**
- * @brief Dual division (a / b) computed as a * (1/b), where the reciprocal is the exact unary jet of g(x)=1/x (g'=-1/x^2, g''=2/x^3, g'''=-6/x^4).
+ * @brief Dual division (a / b) by the jet division recurrence.
  *
  * @param dual_a numerator jet.
  * @param dual_b denominator jet.
@@ -1701,18 +1744,35 @@ llvm::Value* AutodiffCodegen::dualMul(llvm::Value* dual_a, llvm::Value* dual_b) 
 llvm::Value* AutodiffCodegen::dualDiv(llvm::Value* dual_a, llvm::Value* dual_b) {
     if (!dual_a || !dual_b) return nullptr;
     auto& bld = ctx_.builder();
-    llvm::Value* b0 = dualField(ctx_, dual_b, 0);
-    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* inv = bld.CreateFDiv(one, b0);
-    llvm::Value* inv2 = bld.CreateFMul(inv, inv);
-    llvm::Value* fpa = bld.CreateFNeg(inv2);                       // -1/b0^2
-    llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
-    llvm::Value* fppa = bld.CreateFMul(two, bld.CreateFMul(inv2, inv)); // 2/b0^3
-    // g'''(x)=-6/x^4 for the ESH-0117 ep-derivative triple term.
-    llvm::Value* six = llvm::ConstantFP::get(ctx_.doubleType(), 6.0);
-    llvm::Value* fpppa = bld.CreateFNeg(bld.CreateFMul(six, bld.CreateFMul(inv2, inv2)));
-    llvm::Value* recip = dualUnaryChain(ctx_, dual_b, inv, fpa, fppa, fpppa);
-    return dualMul(dual_a, recip);
+    llvm::Value* a[8];
+    llvm::Value* bv[8];
+    for (unsigned i = 0; i < 8; ++i) {
+        a[i] = dualField(ctx_, dual_a, i);
+        bv[i] = dualField(ctx_, dual_b, i);
+    }
+    // n[0..3] / d[0..3], where n0 is a perturbation coefficient when
+    // `n0_pert` (an ep-derivative jet) and a primal otherwise.
+    auto div4 = [&](llvm::Value* const* n, llvm::Value* const* d, bool n0_pert) {
+        std::array<llvm::Value*, 4> q;
+        auto m = [&](llvm::Value* x, llvm::Value* y, bool y_pert) {
+            return pertMul(ctx_, x, true, y, y_pert);
+        };
+        q[0] = bld.CreateFDiv(n[0], d[0]);
+        q[1] = bld.CreateFDiv(bld.CreateFSub(n[1], m(d[1], q[0], n0_pert)), d[0]);
+        q[2] = bld.CreateFDiv(bld.CreateFSub(n[2], m(d[2], q[0], n0_pert)), d[0]);
+        llvm::Value* sum = bld.CreateFAdd(bld.CreateFAdd(m(d[1], q[2], true), m(d[2], q[1], true)),
+                                          m(d[3], q[0], n0_pert));
+        q[3] = bld.CreateFDiv(bld.CreateFSub(n[3], sum), d[0]);
+        return q;
+    };
+    std::array<llvm::Value*, 4> q = div4(a, bv, false);
+    // q' = (a' - q b') / b
+    std::array<llvm::Value*, 4> qb = jet4Mul(ctx_, q[0], q[1], q[2], q[3],
+                                             bv[4], bv[5], bv[6], bv[7], false, true);
+    llvm::Value* num[4];
+    for (int i = 0; i < 4; ++i) num[i] = bld.CreateFSub(a[4 + i], qb[i]);
+    std::array<llvm::Value*, 4> p = div4(num, bv, true);
+    return makeDual8(ctx_, q[0], q[1], q[2], q[3], p[0], p[1], p[2], p[3]);
 }
 
 // ===== DUAL NUMBER MATH OPERATIONS =====
@@ -9345,8 +9405,24 @@ private:
      *  reductions in the recurrence emitters so the unrolled IR matches
      *  runtime_taylor.c's kernels bit-for-bit. */
     llvm::Value* fma3(llvm::Value* a, llvm::Value* bb, llvm::Value* c) {
+        // SW-222: zfma of runtime_taylor.c -- `a` is the perturbation
+        // factor, and an exactly zero one contributes nothing, even against
+        // an infinite `bb`.
         llvm::Function* f = ESHKOL_GET_INTRINSIC(&ctx_.module(), llvm::Intrinsic::fma, {dty()});
-        return b().CreateCall(f, {a, bb, c});
+        return b().CreateSelect(b().CreateFCmpOEQ(a, cst(0.0)), c, b().CreateCall(f, {a, bb, c}));
+    }
+    /** @brief zfma_ij of runtime_taylor.c: a Cauchy-product term u_i w_j, where
+     *  a coefficient of index 0 is a primal and keeps IEEE semantics. */
+    llvm::Value* fmaIJ(llvm::Value* a, int i, llvm::Value* bb, int j, llvm::Value* c) {
+        llvm::Function* f = ESHKOL_GET_INTRINSIC(&ctx_.module(), llvm::Intrinsic::fma, {dty()});
+        llvm::Value* absent = nullptr;
+        if (i > 0) absent = b().CreateFCmpOEQ(a, cst(0.0));
+        if (j > 0) {
+            llvm::Value* bz = b().CreateFCmpOEQ(bb, cst(0.0));
+            absent = absent ? b().CreateOr(absent, bz) : bz;
+        }
+        llvm::Value* r = b().CreateCall(f, {a, bb, c});
+        return absent ? b().CreateSelect(absent, c, r) : r;
     }
     /** @brief Call (declaring if needed) a unary double libm function `name(x)`,
      *  e.g. "exp"/"log"/"sin"/"cos"/"fabs". */
@@ -9377,8 +9453,9 @@ private:
     V e_mul(const V& u, const V& w) {
         V s(n_);
         for (int k = 0; k < n_; k++) {
+            if (k == 0) { s[0] = b().CreateFMul(u[0], w[0]); continue; }   // the primal: IEEE
             llvm::Value* acc = cst(0.0);
-            for (int j = 0; j <= k; j++) acc = fma3(u[j], w[k - j], acc);
+            for (int j = 0; j <= k; j++) acc = fmaIJ(u[j], j, w[k - j], k - j, acc);
             s[k] = acc;
         }
         return s;
@@ -9448,7 +9525,60 @@ private:
             co[k] = b().CreateFDiv(b().CreateFNeg(ac), cst((double)k));
         }
     }
+    // SW-225: tr_pow_at_zero of runtime_taylor.c, operation for operation, as
+    // straight-line SSA selected when u_0 == 0 (the recurrence is 0/0 there).
+    V e_pow_at_zero(const V& u, double r) {
+        if (r == std::floor(r) && std::fabs(r) <= 1073741824.0) {
+            int64_t p = (int64_t)r;
+            uint64_t e = p < 0 ? (uint64_t)(-p) : (uint64_t)p;
+            V acc = zeros();
+            acc[0] = cst(1.0);
+            V base = u;
+            while (e) {
+                if (e & 1u) acc = e_mul(acc, base);
+                e >>= 1;
+                if (e) base = e_mul(base, base);
+            }
+            if (p >= 0) return acc;
+            V one = zeros();
+            one[0] = cst(1.0);
+            return e_div(one, acc);
+        }
+        V s(n_);
+        s[0] = libm2("pow", u[0], cst(r));
+        for (int k = 1; k < n_; k++) s[k] = cst(0.0);   // u is 0 to this order
+        double nan = std::numeric_limits<double>::quiet_NaN();
+        double inf = std::numeric_limits<double>::infinity();
+        for (int m = n_ - 1; m >= 1; m--) {            // the first nonzero u_m wins
+            llvm::Value* nonzero = b().CreateFCmpUNE(u[m], cst(0.0));
+            llvm::Value* u1_neg = b().CreateFCmpOLT(u[1], cst(0.0));
+            llvm::Value* u1_nan = b().CreateFCmpUNO(u[1], u[1]);
+            double falling = 1.0;
+            for (int k = 1; k < n_; k++) {
+                falling *= (r - (double)(k - 1)) < 0.0 ? -1.0 : 1.0;
+                llvm::Value* v;
+                if ((double)k < (double)m * r) v = cst(0.0);
+                else if (m > 1) v = cst(nan);
+                else {
+                    llvm::Value* signed_inf = (k & 1)
+                        ? b().CreateSelect(u1_neg, cst(-falling * inf), cst(falling * inf))
+                        : cst(falling * inf);
+                    v = b().CreateSelect(u1_nan, cst(nan), signed_inf);
+                }
+                s[k] = b().CreateSelect(nonzero, v, s[k]);
+            }
+        }
+        return s;
+    }
     V e_pow_const(const V& u, double r) {
+        V rec = e_pow_recurrence(u, r);
+        if (n_ < 2) return rec;
+        V z = e_pow_at_zero(u, r);
+        llvm::Value* at_zero = b().CreateFCmpOEQ(u[0], cst(0.0));
+        for (int k = 0; k < n_; k++) rec[k] = b().CreateSelect(at_zero, z[k], rec[k]);
+        return rec;
+    }
+    V e_pow_recurrence(const V& u, double r) {
         V s(n_);
         s[0] = libm2("pow", u[0], cst(r));
         for (int k = 1; k < n_; k++) {
