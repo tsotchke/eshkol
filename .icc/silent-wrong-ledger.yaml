@@ -14208,7 +14208,7 @@ entries:
       is registered as complex_nested_carrier_runtime_smoke and _aot_smoke and
       passes; the repro prints 6+6i. The VM and browser half is owned by the v135f
       VM lane, which closes this entry.
-  - id: SW-199
+  - id: SW-202
     bucket: SILENT-WRONG
     family: vm/tensor-reduction-shape
     status: open
@@ -14239,4 +14239,6 @@ entries:
       tests/vm_parity/corpus/36_tensor_axis_reduce.esk pins to a one-element tensor
       on both engines. The fix needs a distinct no-axis sentinel in the prelude
       (and a regenerated prelude cache), not a change to the axis path. The
-      corpus file already notes the 1-argument form as a known divergence.
+      corpus file already notes the 1-argument form as a known divergence. The
+      integrator reports the fix is on the VM Taylor lane's branch
+      (fix/v135f-taylor); close this entry against that commit when it lands.
