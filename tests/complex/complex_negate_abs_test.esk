@@ -1,0 +1,34 @@
+;; tests/complex/complex_negate_abs_test.esk
+;; Ledger SW-203: on the VM, unary (- z) of a complex number answered -0.0 and
+;; (abs z) answered 0: both fell through to the double path, which reads the
+;; heap pointer of a complex as 0.0. Negation is the complex negation; abs is
+;; defined on the reals only and raises, as on native.
+
+(define failures 0)
+(define (fail name got want)
+  (set! failures (+ failures 1))
+  (display "FAIL: ") (display name)
+  (display " got=") (display got) (display " want=") (display want) (newline))
+(define (check name got want)
+  (if (and (number? got) (< (magnitude (- got want)) 1e-12))
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+
+(define z (make-rectangular 1.0 2.0))
+(check "(- z)" (- z) (make-rectangular -1.0 -2.0))
+(check "(- (- z))" (- (- z)) z)
+(check "negation through a first-class -" ((lambda (f) (f z)) -) (make-rectangular -1.0 -2.0))
+(check "derivative through a complex negation"
+       (derivative (lambda (w) (- (* w w))) z) (* -2 z))
+(check "abs of a real carrier still works" (derivative (lambda (x) (abs x)) -2.0) -1.0)
+(define raised
+  (call-with-current-continuation
+    (lambda (k) (with-exception-handler (lambda (e) (k 'raised)) (lambda () (abs z))))))
+(if (eq? raised 'raised)
+    (begin (display "  ok   (abs z) raises") (newline))
+    (fail "(abs z) raises" raised 'raised))
+
+(newline)
+(if (= failures 0)
+    (begin (display "PASS: complex negate and abs") (newline) (exit 0))
+    (begin (display "FAIL: complex negate and abs") (newline) (exit 1)))

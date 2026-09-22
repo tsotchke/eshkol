@@ -1396,6 +1396,29 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **`syntax-rules` is hygienic in both directions, identically on every engine
+  (ADR-0026, SW-192, SW-42).** The native compiler and the bytecode VM now run
+  one `syntax-rules` engine (`inc/eshkol/frontend/syntax_rules_core.h`, C, so
+  the browser and freestanding VM builds share it) and one renaming rule
+  (`inc/eshkol/frontend/syntax_color.h`): every identifier a template
+  introduces is colored per expansion, so a template's binders can neither
+  capture nor be captured by caller code, and a template's free identifiers
+  resolve in the macro's definition environment. Before, a caller's local
+  binding of a name the template used freely (`helper`, `car`, `else`, `if`,
+  another macro keyword) silently replaced it; a template-introduced `do`,
+  `let-values`, `guard` or internal-`define` binder captured caller code or
+  lost its operand on native; a macro-defining macro lost its pattern
+  variables; a library procedure's formal did not shadow a macro keyword of
+  the same spelling; continuation-passing macros were rejected as circular;
+  the VM expanded operands before their scope was known, matched no dotted
+  tails or repeated structured patterns, and did not see a macro used above
+  its definition. The native expander now matches reader syntax recorded by
+  the parser instead of lowered ASTs, and hands expansions back to the parser.
+  A use no rule matches is a syntax error on both engines (a bare `()` no
+  longer matches the pattern `(x)`). New: `tests/vm_parity/corpus/93_macro_hygiene_matrix.esk`
+  (ctest `macro_hygiene_matrix`, JIT, AOT and VM), `syntax_rules_core_test`,
+  and the reference page `docs/reference/language/macros.md`.
+
 - **Differentiation passes nest at any depth and any order (ledger SW-154,
   ADR-0027).** Two enclosing levels over an order-2 pass answered 0 with exit
   status 0, and two passes both of order 2 or higher raised, because a nested
@@ -1409,6 +1432,33 @@ the source changes; the verification record for the tagged commit is the
   compose with `derivative-n` and `taylor` the same way (SW-193). The companion
   lanes that carried one or two enclosing levels are retired.
   `ns-residual-tau-series` and `ns-force-smoothness-probe` accept any order.
+  The operators with routes of their own reach the same levels (SW-206..209):
+  a fourth nested `derivative`, `hessian` and `jacobian` inside a live pass,
+  and `gradient` at an exact point under an enclosing `derivative` answered 0,
+  and a `jacobian` under `derivative-n` crashed; each now answers exactly, and
+  so do `divergence`, `laplacian`, `curl`, `directional-derivative` and the
+  vector-point `hessian` inside a live pass (SW-213).
+
+- **Nested differentiation on the bytecode VM and the browser VM (ADR-0027,
+  SW-154, SW-193, SW-194).** A pass nested inside another live pass runs as a
+  level carrier (`VM_DUAL_KIND_LEVEL`): a truncated series in its own
+  perturbation whose coefficients are carriers of the enclosing passes, at
+  any depth and any order. `derivative`, `derivative-n`, `taylor`,
+  `gradient` and `hessian` nest in every combination, through a captured
+  variable or through the evaluation point, and at complex points; the
+  answers agree with native, including exactness. Before, nesting on the VM
+  raised, or answered 0 for two enclosing levels over an order-2 pass. The
+  special-case ride, carry and hyper-dual lanes are gone. `atan`, `asin`,
+  `acos` and two-argument `atan` carry every order, and a derivative of a
+  vector-, list- or complex-valued function is read element by element.
+- **Complex values on the VM keep exact parts and every derivative order
+  (SW-199, SW-200, SW-203).** `(make-rectangular 1/2 1/3)` printed `+0i`;
+  `real-part` and `imag-part` of a complex carrying a Taylor tower returned
+  only the first order; unary `-` of a complex answered `-0.0` and `abs`
+  answered 0 instead of raising.
+- **VM full tensor reductions return a number (SW-202).** With no axis,
+  `tensor-sum`, `tensor-mean`, `tensor-max` and `tensor-min` answered a
+  1-element tensor for a vector and a row of partial results for a matrix.
 
 - **A derivative passes through a tensor on every engine, exactly at an exact
   point (ledger SW-197, ADR-0020 amendment 2).** Through `(tensor ...)`, the

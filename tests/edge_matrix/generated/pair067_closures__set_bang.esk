@@ -14,7 +14,7 @@
 (edge-check-g631)
 
 ;; check closures_single_capture__in__set_bang_lambda_store
-(define (edge-check-g632) (edge-chk "closures_single_capture__in__set_bang_lambda_store" (let ((swg632 #f)) ((lambda () (set! swg632 (let ((cn 10)) ((lambda (cx) (+ cx cn)) 5))))) swg632) 15))
+(define (edge-check-g632) (edge-chk "closures_single_capture__in__set_bang_lambda_store" (let ((slg632 #f)) ((lambda () (set! slg632 (let ((cn 10)) ((lambda (cx) (+ cx cn)) 5))))) slg632) 15))
 (edge-check-g632)
 
 ;; check closures_single_capture__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g634)
 
 ;; check closures_sibling_set__in__set_bang_lambda_store
-(define (edge-check-g635) (edge-chk "closures_sibling_set__in__set_bang_lambda_store" (let ((swg635 #f)) ((lambda () (set! swg635 (let ((sn 0)) (let ((inc (lambda () (set! sn (+ sn 1)))) (get (lambda () sn))) (inc) (inc) (get)))))) swg635) 2))
+(define (edge-check-g635) (edge-chk "closures_sibling_set__in__set_bang_lambda_store" (let ((slg635 #f)) ((lambda () (set! slg635 (let ((sn 0)) (let ((inc (lambda () (set! sn (+ sn 1)))) (get (lambda () sn))) (inc) (inc) (get)))))) slg635) 2))
 (edge-check-g635)
 
 ;; check closures_sibling_set__in__set_bang_set_twice
@@ -44,7 +44,7 @@
 (define (mkcg638) (let ((mn 0)) (lambda () (set! mn (+ mn 1)) mn)))
 (define cag638 (mkcg638))
 (define cbg638 (mkcg638))
-(define (edge-check-g638) (edge-chk "closures_multi_instance__in__set_bang_lambda_store" (let ((swg638 #f)) ((lambda () (set! swg638 (begin (cag638) (cag638) (+ (cag638) (cbg638)))))) swg638) 4))
+(define (edge-check-g638) (edge-chk "closures_multi_instance__in__set_bang_lambda_store" (let ((slg638 #f)) ((lambda () (set! slg638 (begin (cag638) (cag638) (+ (cag638) (cbg638)))))) slg638) 4))
 (edge-check-g638)
 
 ;; check closures_multi_instance__in__set_bang_set_twice
@@ -61,7 +61,7 @@
 
 ;; check closures_counter_once__in__set_bang_lambda_store
 (define ctrg641 (let ((qn 0)) (lambda () (set! qn (+ qn 1)) qn)))
-(define (edge-check-g641) (edge-chk "closures_counter_once__in__set_bang_lambda_store" (let ((swg641 #f)) ((lambda () (set! swg641 (ctrg641)))) swg641) 1))
+(define (edge-check-g641) (edge-chk "closures_counter_once__in__set_bang_lambda_store" (let ((slg641 #f)) ((lambda () (set! slg641 (ctrg641)))) slg641) 1))
 (edge-check-g641)
 
 ;; check closures_counter_once__in__set_bang_set_twice

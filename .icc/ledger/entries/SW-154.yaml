@@ -2,7 +2,9 @@ id: SW-154
 bucket: SILENT-WRONG
 subtag: autodiff
 family: runtime-taylor/perturbation-nesting
-status: open
+status: fixed
+closed_at: '1dad8eff61d0257dd04e6d8fde00efa9ce0dea8b'
+vm_closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
 title: "Two enclosing differentiation levels over an order-2 inner pass answered 0 silently, and both-passes-order->=2 raised, because the carrier had room for exactly one first-order companion"
 repro: >-
   .scratch/nested_ad_repro2.esk, and the full sweep in
@@ -70,8 +72,10 @@ evidence: >-
 caught_by: [examples/mathematics_navier_stokes_* authoring, 2026-09-09]
 missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
 notes: >-
-  Native half fixed (JIT and AOT). The bytecode VM and the browser VM (the same
-  VM compiled to WebAssembly) implement the same level carrier per ADR-0027
-  section 6; that half is owned by the v135f VM lane, which closes this entry
-  after `ESHKOL_VM_NO_DISASM=1 build/eshkol-vm-standalone-test
-  tests/ad/nested_towers_matrix_test.esk` passes. Direct successor of SW-150.
+  Closed on every engine. Native (JIT and AOT) at 1dad8eff6 on
+  fix/v135f-taylor; the bytecode VM and the browser VM at 7c036631 on
+  fix/v135f-vmtaylor, where tests/ad/nested_towers_matrix_test.esk and
+  tests/ad/nested_operator_matrix_test.esk pass with zero silent zeros on
+  eshkol-vm-standalone-test and the browser VM (ctest nested_towers_matrix_vm,
+  nested_towers_matrix_browser_vm, nested_operator_matrix_vm,
+  nested_operator_matrix_browser_vm). Direct successor of SW-150.

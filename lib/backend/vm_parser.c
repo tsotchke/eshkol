@@ -826,6 +826,7 @@ typedef struct {
     int slot;
     int depth;
     int boxed;    /* 1 = variable is heap-boxed (stored in 1-element vector) */
+    unsigned serial; /* creation order among all bindings (g_vm_binding_serial) */
 } Local;
 
 typedef struct {
@@ -945,7 +946,11 @@ static int chunk_ensure_upvalue_cap(FuncChunk* c, int needed) {
 }
 
 /** @brief Check whether Node @p n is a symbol equal to string @p s. */
-static int is_sym(Node* n, const char* s) { return n && n->type == N_SYMBOL && strcmp(n->symbol, s) == 0; }
+/* Keyword grammar recognises a spelling: an identifier a macro template
+ * introduced carries a syntax color (ADR-0026) and still names the keyword. */
+static int is_sym(Node* n, const char* s) {
+    return n && n->type == N_SYMBOL && eshkol_syntax_base_is(n->symbol, s);
+}
 
 /** @brief Grow chunk @p c's code array (doubling) until it can hold
  *         @p needed more instructions. */
@@ -1073,6 +1078,7 @@ static int add_local(FuncChunk* c, const char* name) {
     c->locals[c->n_locals].slot = slot;
     c->locals[c->n_locals].depth = c->scope_depth;
     c->locals[c->n_locals].boxed = 0;
+    c->locals[c->n_locals].serial = ++g_vm_binding_serial;
     c->n_locals++;
     return slot;
 }
@@ -1152,14 +1158,14 @@ static int scan_for_set_scoped(Node* node, const char* name, int shadowed) {
     if (!node) return 0;
     if (node->type == N_LIST && node->n_children >= 3) {
         Node* head = node->children[0];
-        if (head->type == N_SYMBOL && strcmp(head->symbol, "set!") == 0
+        if (head->type == N_SYMBOL && eshkol_syntax_base_is(head->symbol, "set!")
             && node->children[1]->type == N_SYMBOL
             && !shadowed && strcmp(node->children[1]->symbol, name) == 0)
             return 1;
     }
     if (node->type == N_LIST) {
         Node* head = node->n_children ? node->children[0] : NULL;
-        if (head && head->type == N_SYMBOL && strcmp(head->symbol, "lambda") == 0
+        if (head && head->type == N_SYMBOL && eshkol_syntax_base_is(head->symbol, "lambda")
             && node->n_children >= 3 && node->children[1]->type == N_LIST) {
             int inner_shadowed = shadowed;
             for (int i = 0; i < node->children[1]->n_children; i++)
@@ -1170,7 +1176,7 @@ static int scan_for_set_scoped(Node* node, const char* name, int shadowed) {
                 if (scan_for_set_scoped(node->children[i], name, inner_shadowed)) return 1;
             return 0;
         }
-        if (head && head->type == N_SYMBOL && strcmp(head->symbol, "define") == 0
+        if (head && head->type == N_SYMBOL && eshkol_syntax_base_is(head->symbol, "define")
             && node->n_children >= 3 && node->children[1]->type == N_LIST) {
             Node* sig = node->children[1];
             int inner_shadowed = shadowed;
@@ -1182,7 +1188,7 @@ static int scan_for_set_scoped(Node* node, const char* name, int shadowed) {
                 if (scan_for_set_scoped(node->children[i], name, inner_shadowed)) return 1;
             return 0;
         }
-        if (head && head->type == N_SYMBOL && strcmp(head->symbol, "let") == 0
+        if (head && head->type == N_SYMBOL && eshkol_syntax_base_is(head->symbol, "let")
             && node->n_children >= 4 && node->children[1]->type == N_SYMBOL
             && node->children[2]->type == N_LIST) {
             Node* bindings = node->children[2];
@@ -1200,16 +1206,16 @@ static int scan_for_set_scoped(Node* node, const char* name, int shadowed) {
             return 0;
         }
         if (head && head->type == N_SYMBOL &&
-            (strcmp(head->symbol, "let") == 0 || strcmp(head->symbol, "let*") == 0 ||
-             strcmp(head->symbol, "letrec") == 0 || strcmp(head->symbol, "letrec*") == 0) &&
+            (eshkol_syntax_base_is(head->symbol, "let") || eshkol_syntax_base_is(head->symbol, "let*") ||
+             eshkol_syntax_base_is(head->symbol, "letrec") || eshkol_syntax_base_is(head->symbol, "letrec*")) &&
             node->n_children >= 3 && node->children[1]->type == N_LIST) {
             Node* bindings = node->children[1];
             int body_shadowed = shadowed;
             for (int i = 0; i < bindings->n_children; i++) {
                 Node* b = bindings->children[i];
                 if (b->type != N_LIST || b->n_children < 1) continue;
-                int value_shadowed = (strcmp(head->symbol, "letrec") == 0 ||
-                                      strcmp(head->symbol, "letrec*") == 0)
+                int value_shadowed = (eshkol_syntax_base_is(head->symbol, "letrec") ||
+                                      eshkol_syntax_base_is(head->symbol, "letrec*"))
                     ? body_shadowed : shadowed;
                 if (b->n_children >= 2 &&
                     scan_for_set_scoped(b->children[1], name, value_shadowed)) return 1;
@@ -1220,7 +1226,7 @@ static int scan_for_set_scoped(Node* node, const char* name, int shadowed) {
                 if (scan_for_set_scoped(node->children[i], name, body_shadowed)) return 1;
             return 0;
         }
-        if (head && head->type == N_SYMBOL && strcmp(head->symbol, "guard") == 0 &&
+        if (head && head->type == N_SYMBOL && eshkol_syntax_base_is(head->symbol, "guard") &&
             node->n_children >= 3) {
             int handler_shadowed = shadowed;
             Node* spec = node->children[1];
@@ -1233,15 +1239,15 @@ static int scan_for_set_scoped(Node* node, const char* name, int shadowed) {
             return 0;
         }
         if (head && head->type == N_SYMBOL &&
-            (strcmp(head->symbol, "let-values") == 0 ||
-             strcmp(head->symbol, "let*-values") == 0) &&
+            (eshkol_syntax_base_is(head->symbol, "let-values") ||
+             eshkol_syntax_base_is(head->symbol, "let*-values")) &&
             node->n_children >= 3 && node->children[1]->type == N_LIST) {
             int current_shadowed = shadowed;
             for (int i = 0; i < node->children[1]->n_children; i++) {
                 Node* b = node->children[1]->children[i];
                 if (b->type == N_LIST && b->n_children >= 2 &&
                     scan_for_set_scoped(b->children[1], name, current_shadowed)) return 1;
-                if (strcmp(head->symbol, "let*-values") == 0 &&
+                if (eshkol_syntax_base_is(head->symbol, "let*-values") &&
                     b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_LIST) {
                     for (int j = 0; j < b->children[0]->n_children; j++)
                         if (b->children[0]->children[j]->type == N_SYMBOL &&
@@ -1249,7 +1255,7 @@ static int scan_for_set_scoped(Node* node, const char* name, int shadowed) {
                 }
             }
             int body_shadowed = current_shadowed;
-            if (strcmp(head->symbol, "let-values") == 0) {
+            if (eshkol_syntax_base_is(head->symbol, "let-values")) {
                 for (int i = 0; i < node->children[1]->n_children; i++) {
                     Node* b = node->children[1]->children[i];
                     if (b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_LIST)
@@ -1271,7 +1277,7 @@ static int scan_for_set_scoped(Node* node, const char* name, int shadowed) {
 static int node_contains_set(Node* node) {
     if (!node || node->type != N_LIST) return 0;
     if (node->n_children >= 1 && node->children[0]->type == N_SYMBOL &&
-        strcmp(node->children[0]->symbol, "set!") == 0) return 1;
+        eshkol_syntax_base_is(node->children[0]->symbol, "set!")) return 1;
     for (int i = 0; i < node->n_children; ++i)
         if (node_contains_set(node->children[i])) return 1;
     return 0;
@@ -1289,11 +1295,11 @@ static int scan_for_callcc(Node* node) {
     if (!node) return 0;
     if (node->type != N_LIST) return 0;
     if (node->n_children > 0 && node->children[0]->type == N_SYMBOL &&
-        strcmp(node->children[0]->symbol, "quote") == 0)
+        eshkol_syntax_base_is(node->children[0]->symbol, "quote"))
         return 0;
     if (node->n_children > 0 && node->children[0]->type == N_SYMBOL &&
-        (strcmp(node->children[0]->symbol, "call/cc") == 0 ||
-         strcmp(node->children[0]->symbol, "call-with-current-continuation") == 0))
+        (eshkol_syntax_base_is(node->children[0]->symbol, "call/cc") ||
+         eshkol_syntax_base_is(node->children[0]->symbol, "call-with-current-continuation")))
         return 1;
     for (int i = 0; i < node->n_children; i++)
         if (scan_for_callcc(node->children[i])) return 1;
@@ -1311,10 +1317,10 @@ static int scan_for_reference_scoped(Node* node, const char* name, int shadowed)
         return !shadowed && strcmp(node->symbol, name) == 0;
     if (node->type != N_LIST) return 0;
     if (node->n_children > 0 && node->children[0]->type == N_SYMBOL &&
-        strcmp(node->children[0]->symbol, "quote") == 0) return 0;
+        eshkol_syntax_base_is(node->children[0]->symbol, "quote")) return 0;
 
     Node* head = node->n_children ? node->children[0] : NULL;
-    if (head && head->type == N_SYMBOL && strcmp(head->symbol, "lambda") == 0 &&
+    if (head && head->type == N_SYMBOL && eshkol_syntax_base_is(head->symbol, "lambda") &&
         node->n_children >= 3 && node->children[1]->type == N_LIST) {
         int inner = shadowed;
         for (int i = 0; i < node->children[1]->n_children; i++)
@@ -1324,7 +1330,7 @@ static int scan_for_reference_scoped(Node* node, const char* name, int shadowed)
             if (scan_for_reference_scoped(node->children[i], name, inner)) return 1;
         return 0;
     }
-    if (head && head->type == N_SYMBOL && strcmp(head->symbol, "define") == 0 &&
+    if (head && head->type == N_SYMBOL && eshkol_syntax_base_is(head->symbol, "define") &&
         node->n_children >= 3) {
         int inner = shadowed;
         if (node->children[1]->type == N_SYMBOL &&
@@ -1338,7 +1344,7 @@ static int scan_for_reference_scoped(Node* node, const char* name, int shadowed)
             if (scan_for_reference_scoped(node->children[i], name, inner)) return 1;
         return 0;
     }
-    if (head && head->type == N_SYMBOL && strcmp(head->symbol, "let") == 0 &&
+    if (head && head->type == N_SYMBOL && eshkol_syntax_base_is(head->symbol, "let") &&
         node->n_children >= 4 && node->children[1]->type == N_SYMBOL &&
         node->children[2]->type == N_LIST) {
         int body_inner = shadowed || strcmp(node->children[1]->symbol, name) == 0;
@@ -1354,13 +1360,13 @@ static int scan_for_reference_scoped(Node* node, const char* name, int shadowed)
         return 0;
     }
     if (head && head->type == N_SYMBOL &&
-        (strcmp(head->symbol, "let*") == 0 || strcmp(head->symbol, "letrec") == 0 ||
-         strcmp(head->symbol, "letrec*") == 0) && node->n_children >= 3 &&
+        (eshkol_syntax_base_is(head->symbol, "let*") || eshkol_syntax_base_is(head->symbol, "letrec") ||
+         eshkol_syntax_base_is(head->symbol, "letrec*")) && node->n_children >= 3 &&
         node->children[1]->type == N_LIST) {
         int current = shadowed;
         int all_shadow = shadowed;
-        if (strcmp(head->symbol, "letrec") == 0 ||
-            strcmp(head->symbol, "letrec*") == 0) {
+        if (eshkol_syntax_base_is(head->symbol, "letrec") ||
+            eshkol_syntax_base_is(head->symbol, "letrec*")) {
             for (int i = 0; i < node->children[1]->n_children; i++) {
                 Node* b = node->children[1]->children[i];
                 if (b->type == N_LIST && b->n_children >= 1 &&
@@ -1371,8 +1377,8 @@ static int scan_for_reference_scoped(Node* node, const char* name, int shadowed)
         for (int i = 0; i < node->children[1]->n_children; i++) {
             Node* b = node->children[1]->children[i];
             int value_shadow = current;
-            if ((strcmp(head->symbol, "letrec") == 0 ||
-                 strcmp(head->symbol, "letrec*") == 0)) value_shadow = all_shadow;
+            if ((eshkol_syntax_base_is(head->symbol, "letrec") ||
+                 eshkol_syntax_base_is(head->symbol, "letrec*"))) value_shadow = all_shadow;
             if (b->type == N_LIST && b->n_children >= 2 &&
                 scan_for_reference_scoped(b->children[1], name, value_shadow)) return 1;
             if (b->type == N_LIST && b->n_children >= 1 && b->children[0]->type == N_SYMBOL &&
@@ -1385,7 +1391,7 @@ static int scan_for_reference_scoped(Node* node, const char* name, int shadowed)
             if (scan_for_reference_scoped(node->children[i], name, current || all_shadow)) return 1;
         return 0;
     }
-    if (head && head->type == N_SYMBOL && strcmp(head->symbol, "guard") == 0 &&
+    if (head && head->type == N_SYMBOL && eshkol_syntax_base_is(head->symbol, "guard") &&
         node->n_children >= 3) {
         int handler_inner = shadowed;
         Node* spec = node->children[1];
@@ -1540,7 +1546,7 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
     if (node->type == N_LIST && node->n_children >= 1) {
         Node* head = node->children[0];
         /* (define (name ...) body) is an implicit lambda — check params and scan body */
-        if (head->type == N_SYMBOL && strcmp(head->symbol, "define") == 0
+        if (head->type == N_SYMBOL && eshkol_syntax_base_is(head->symbol, "define")
             && node->n_children >= 3 && node->children[1]->type == N_LIST) {
             Node* sig = node->children[1];
             for (int i = 1; i < sig->n_children; i++)
@@ -1551,7 +1557,7 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
             return 0;
         }
         /* Check if this lambda/let rebinds the variable — if so, it's not a capture */
-        if (head->type == N_SYMBOL && strcmp(head->symbol, "lambda") == 0 && node->n_children >= 3) {
+        if (head->type == N_SYMBOL && eshkol_syntax_base_is(head->symbol, "lambda") && node->n_children >= 3) {
             /* Check if name is a parameter of this lambda */
             Node* params = node->children[1];
             if (params->type == N_LIST) {
@@ -1575,7 +1581,7 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
          * as un-captured — leaving it unboxed, so the loop closure mutated a
          * private by-value copy that was discarded when the loop returned
          * (tests/vm_parity/corpus/36_set_from_named_let.esk). */
-        if (head->type == N_SYMBOL && strcmp(head->symbol, "let") == 0
+        if (head->type == N_SYMBOL && eshkol_syntax_base_is(head->symbol, "let")
             && node->n_children >= 4 && node->children[1]->type == N_SYMBOL
             && node->children[2]->type == N_LIST) {
             Node* bindings = node->children[2];
@@ -1596,9 +1602,9 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
                 if (scan_for_capture(node->children[i], name, 1)) return 1;
             return 0;
         }
-        if (head->type == N_SYMBOL && (strcmp(head->symbol, "let") == 0 ||
-            strcmp(head->symbol, "let*") == 0 || strcmp(head->symbol, "letrec") == 0 ||
-            strcmp(head->symbol, "letrec*") == 0)) {
+        if (head->type == N_SYMBOL && (eshkol_syntax_base_is(head->symbol, "let") ||
+            eshkol_syntax_base_is(head->symbol, "let*") || eshkol_syntax_base_is(head->symbol, "letrec") ||
+            eshkol_syntax_base_is(head->symbol, "letrec*"))) {
             /* Check if name is rebound in this let's bindings */
             if (node->n_children >= 3 && node->children[1]->type == N_LIST) {
                 Node* bindings = node->children[1];
@@ -1612,7 +1618,7 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
         }
         /* Recurse into children */
         int new_lambda = in_lambda;
-        if (head->type == N_SYMBOL && strcmp(head->symbol, "lambda") == 0)
+        if (head->type == N_SYMBOL && eshkol_syntax_base_is(head->symbol, "lambda"))
             new_lambda = 1;
         for (int i = 0; i < node->n_children; i++)
             if (scan_for_capture(node->children[i], name, new_lambda)) return 1;
@@ -1737,8 +1743,9 @@ static void compile_quote(FuncChunk* c, Node* datum) {
         return;
     }
     if (datum->type == N_SYMBOL) {
-        /* Quoted symbol → preserve its distinct Scheme symbol tag. */
-        int len = (int)strlen(datum->symbol);
+        /* Quoted symbol → preserve its distinct Scheme symbol tag. A symbol
+         * in data never carries a syntax color (ADR-0026). */
+        int len = (int)eshkol_syntax_base_length(datum->symbol);
         int n_packs = (len + 7) / 8;
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(len)));
         for (int p = 0; p < n_packs; p++) {
@@ -1753,7 +1760,7 @@ static void compile_quote(FuncChunk* c, Node* datum) {
     }
     if (datum->type == N_LIST && !datum->is_vector && datum->n_children == 3 &&
         datum->children[0]->type == N_SYMBOL &&
-        strcmp(datum->children[0]->symbol, "exact-rational") == 0 &&
+        eshkol_syntax_base_is(datum->children[0]->symbol, "exact-rational") &&
         datum->children[1]->type == N_NUMBER &&
         datum->children[2]->type == N_NUMBER) {
         /* Rational literal 1/3 desugars to the list node (exact-rational
@@ -1836,7 +1843,7 @@ static void compile_quote(FuncChunk* c, Node* datum) {
         int dotted = (n >= 3 &&
                       datum->children[n - 2]->type == N_SYMBOL &&
                       !datum->children[n - 2]->is_verbatim &&
-                      strcmp(datum->children[n - 2]->symbol, ".") == 0);
+                      eshkol_syntax_base_is(datum->children[n - 2]->symbol, "."));
         if (dotted) {
             compile_quote(c, datum->children[n - 1]);
             n -= 2;                       /* drop the tail AND the dot */

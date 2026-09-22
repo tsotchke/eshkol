@@ -115,8 +115,8 @@
 - **`gradient` was native-only on the bytecode VM.** Forward/reverse-mode
   `gradient` — direct, through a callable parameter, and curried — now runs on
   the VM byte-identically to native codegen (#337). `op:GRADIENT` and
-  `op:DERIVATIVE` are `vm-supported`; higher-order nesting (gradient-of-derivative
-  / Taylor tower) remains native-only.
+  `op:DERIVATIVE` are `vm-supported`; nesting (gradient-of-derivative / Taylor
+  tower) runs on the level carrier of ADR-0027.
 - **`hessian`/`laplacian` crashed at a tensor-literal or variable-bound point.**
   The differentiation point was classified from the AST node kind, so a variable
   bound to a vector (or a `#(...)` / `(tensor ...)` literal, or a `(the ...)`
@@ -473,32 +473,6 @@ block ordinary use.
   `remainder`/`truncate-remainder` truncate toward zero, and
   `modulo`/`floor-remainder` use divisor-sign floor semantics. The regression
   is `tests/types/i128_test.esk`.
-- **`syntax-rules` templates have no referential transparency: a free
-  identifier resolves at the USE site, not the macro-definition site.**
-  Minimal reproducer:
-  ```scheme
-  (define (helper x) (* x 10))
-  (define-syntax usehelp (syntax-rules () ((_ a) (helper a))))
-  (display (let ((helper (lambda (x) (- x)))) (usehelp 5)))
-  ```
-  Both engines print `-5`. R7RS 4.3.2 requires `50`: a free identifier in a
-  template refers to the binding it had in the macro's *definition*
-  environment, so `helper` must be the top-level one regardless of what the
-  use site binds. The mis-binding only fires when the use site actually
-  shadows a name the template also uses (`+`, `if`, `list`, every builtin and
-  every user helper are all free identifiers in *some* template, so a loud
-  "unsupported hygiene case" diagnostic at every free reference was built,
-  measured, and rejected — it would fire on nearly every macro in the
-  language, including 42 of this repo's own `.esk` files). Closing this
-  needs syntax objects (or marks / scope sets): every identifier carrying the
-  environment it was written in, threaded through the reader, both expanders,
-  and both name-resolution paths — native resolves at LLVM codegen, the VM at
-  compile time against a flat local table, and neither currently has anywhere
-  to put that information. Workaround: do not shadow, at a macro's use site,
-  any free identifier the macro's template refers to. Ruled a documented
-  v1.4 limitation rather than a v1.3.4 fix (maintainer ruling 2026-08-13);
-  tracked as SW-42 in `.icc/silent-wrong-ledger.yaml`, bucket
-  DOCUMENTED-LIMITATION.
 - **Very deep non-tail recursion through a top-level `define`d function used
   to bypass the early native-stack guard and die with a silent SIGILL.**
   Closed by ESH-0101: every generated native user-function entry now performs

@@ -14,7 +14,7 @@
 (edge-check-g703)
 
 ;; check cond_case_cond_else__in__set_bang_lambda_store
-(define (edge-check-g704) (edge-chk "cond_case_cond_else__in__set_bang_lambda_store" (let ((swg704 #f)) ((lambda () (set! swg704 (cond ((= 1 2) 'a) (else 'b))))) swg704) (string->symbol "b")))
+(define (edge-check-g704) (edge-chk "cond_case_cond_else__in__set_bang_lambda_store" (let ((slg704 #f)) ((lambda () (set! slg704 (cond ((= 1 2) 'a) (else 'b))))) slg704) (string->symbol "b")))
 (edge-check-g704)
 
 ;; check cond_case_cond_else__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g706)
 
 ;; check cond_case_case_hit__in__set_bang_lambda_store
-(define (edge-check-g707) (edge-chk "cond_case_case_hit__in__set_bang_lambda_store" (let ((swg707 #f)) ((lambda () (set! swg707 (case 2 ((1) 'one) ((2) 'two) (else 'other))))) swg707) (string->symbol "two")))
+(define (edge-check-g707) (edge-chk "cond_case_case_hit__in__set_bang_lambda_store" (let ((slg707 #f)) ((lambda () (set! slg707 (case 2 ((1) 'one) ((2) 'two) (else 'other))))) slg707) (string->symbol "two")))
 (edge-check-g707)
 
 ;; check cond_case_case_hit__in__set_bang_set_twice

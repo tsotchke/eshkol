@@ -16,7 +16,7 @@
 
 ;; check macros_my_if__in__set_bang_lambda_store
 (define-syntax mig1224 (syntax-rules () ((_ c a b) (if c a b))))
-(define (edge-check-g1224) (edge-chk "macros_my_if__in__set_bang_lambda_store" (let ((swg1224 #f)) ((lambda () (set! swg1224 (mig1224 #t 1 2)))) swg1224) 1))
+(define (edge-check-g1224) (edge-chk "macros_my_if__in__set_bang_lambda_store" (let ((slg1224 #f)) ((lambda () (set! slg1224 (mig1224 #t 1 2)))) slg1224) 1))
 (edge-check-g1224)
 
 ;; check macros_my_if__in__set_bang_set_twice
@@ -31,7 +31,7 @@
 
 ;; check macros_swap__in__set_bang_lambda_store
 (define-syntax swg1227 (syntax-rules () ((_ a b) (list b a))))
-(define (edge-check-g1227) (edge-chk "macros_swap__in__set_bang_lambda_store" (let ((swg1227 #f)) ((lambda () (set! swg1227 (swg1227 1 2)))) swg1227) (list 2 1)))
+(define (edge-check-g1227) (edge-chk "macros_swap__in__set_bang_lambda_store" (let ((slg1227 #f)) ((lambda () (set! slg1227 (swg1227 1 2)))) slg1227) (list 2 1)))
 (edge-check-g1227)
 
 ;; check macros_swap__in__set_bang_set_twice

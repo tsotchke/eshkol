@@ -1,0 +1,51 @@
+;; tests/ad/vm_nested_holomorphic_test.esk
+;; Ledger SW-193 (VM side): nested holomorphic complex derivatives.
+;;
+;; A complex value stays the outermost structure and its real and imaginary
+;; parts are carriers (ADR-0025). A derivative nested inside another live pass
+;; runs as a level carrier (ADR-0027), so the enclosing complex perturbation is
+;; a COEFFICIENT of the inner level instead of being discarded: before, the
+;; inner seed dropped it and d/dz d/dw w^3 answered 0+0i. Every expected value
+;; is analytic. The same file runs on the VM, the browser VM and native.
+
+(define failures 0)
+(define (fail name got want)
+  (set! failures (+ failures 1))
+  (display "FAIL: ") (display name)
+  (display " got=") (display got) (display " want=") (display want) (newline))
+(define (close? a b) (< (magnitude (- a b)) 1e-9))
+(define (check name got want)
+  (if (close? got want)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+
+(define z0 (make-rectangular 1.0 1.0))
+(define (cube w) (* w w w))
+
+;; d^2/dz^2 z^3 = 6z
+(check "d/dz d/dw w^3" (derivative (lambda (z) (derivative cube z)) z0) (* 6 z0))
+;; d^3/dz^3 z^4 = 24z
+(check "three nested derivatives of z^4"
+       (derivative (lambda (z) (derivative (lambda (w) (derivative (lambda (v) (* v v v v)) w)) z)) z0)
+       (* 24 z0))
+;; exp is its own derivative at every level
+(define z1 (make-rectangular 0.5 1.0))
+(check "d/dz d/dw exp(w)" (derivative (lambda (z) (derivative exp z)) z1) (exp z1))
+(check "nested sin" (derivative (lambda (z) (derivative sin z)) z1) (- (sin z1)))
+;; derivative-n and taylor at a complex point, un-nested and nested
+(check "derivative-n z^3 order 2" (derivative-n cube z0 2) (* 6 z0))
+(check "d/dz of derivative-n order 2" (derivative (lambda (z) (derivative-n cube z 2)) z0) 6)
+(check "real outer over complex inner"
+       (derivative (lambda (x) (derivative-n (lambda (z) (* x z z z)) z0 2)) 2.0)
+       (* 6 z0))
+(let ((c (taylor (lambda (z) (* z z)) z0 2)))
+  (check "taylor c0" (car c) (* z0 z0))
+  (check "taylor c1" (cadr c) (* 2 z0))
+  (check "taylor c2" (caddr c) 1))
+;; a nested pass that does not depend on the outer point is a constant
+(check "independent inner" (derivative (lambda (z) (+ (* z z) (derivative cube z1))) z0) (* 2 z0))
+
+(newline)
+(if (= failures 0)
+    (begin (display "PASS: VM nested holomorphic derivatives") (newline) (exit 0))
+    (begin (display "FAIL: VM nested holomorphic derivatives") (newline) (exit 1)))

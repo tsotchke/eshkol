@@ -1,7 +1,8 @@
 id: SW-202
 bucket: SILENT-WRONG
 family: vm/tensor-reduction-shape
-status: open
+status: fixed
+closed_at: "7c036631d"
 needs_decision: false
 title: "VM tensor-sum without an axis returns a one-element tensor instead of a number"
 repro: >-
@@ -17,18 +18,12 @@ correct: >-
   A full reduction (no axis) returns the scalar on every engine, as native and
   the VM's own dual-carrier branch of the same native (case 457) already do.
 evidence: >-
-  Found while building the SW-197 regression matrix; the forward-derivative
-  path through tensor-sum returns a scalar on the VM because it takes the
-  dual-carrier branch, which is why the AD parity corpus did not see it.
+  Found while building the SW-197 regression matrix. Fixed by the VM Taylor
+  lane in 7c036631d: the prelude passes #f for "no axis", so a full reduction
+  returns the scalar on the VM as it does natively. Gate:
+  tests/tensor/tensor_full_reduction_test.esk.
 caught_by: [sw197-exact-collection-matrix]
 missed_by: [vm_parity]
 notes: >-
-  Filed by the v1.3.5 exact-derivative lane; not fixed there. Cause: the VM
-  prelude lowers the 1-argument (tensor-sum t) to (_tensor-reduce-sum t -1),
-  and native 457 cannot tell that from an explicit axis -1, which
-  tests/vm_parity/corpus/36_tensor_axis_reduce.esk pins to a one-element tensor
-  on both engines. The fix needs a distinct no-axis sentinel in the prelude
-  (and a regenerated prelude cache), not a change to the axis path. The
-  corpus file already notes the 1-argument form as a known divergence. The
-  integrator reports the fix is on the VM Taylor lane's branch
-  (fix/v135f-taylor); close this entry against that commit when it lands.
+  Filed by the v1.3.5 exact-derivative lane; fixed on the integration branch by
+  the VM Taylor lane (7c036631d).

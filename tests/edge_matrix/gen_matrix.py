@@ -121,7 +121,7 @@ axis("set_bang", "set! mutation of locals and captured variables", producers=[
 ], contexts=[
     Context("store_read", "(let ((sv{ID} #f)) (set! sv{ID} {X}) sv{ID})"),
     Context("lambda_store",
-            "(let ((sw{ID} #f)) ((lambda () (set! sw{ID} {X}))) sw{ID})",
+            "(let ((sl{ID} #f)) ((lambda () (set! sl{ID} {X}))) sl{ID})",
             note="hole value escapes via set! from inside a closure"),
     Context("set_twice",
             "(let ((sz{ID} 0)) (set! sz{ID} {X}) (set! sz{ID} sz{ID}) sz{ID})"),

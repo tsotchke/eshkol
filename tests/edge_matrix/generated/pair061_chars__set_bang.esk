@@ -14,7 +14,7 @@
 (edge-check-g567)
 
 ;; check chars_char_lit__in__set_bang_lambda_store
-(define (edge-check-g568) (edge-chk "chars_char_lit__in__set_bang_lambda_store" (let ((swg568 #f)) ((lambda () (set! swg568 #\a))) swg568) (string-ref "a" 0)))
+(define (edge-check-g568) (edge-chk "chars_char_lit__in__set_bang_lambda_store" (let ((slg568 #f)) ((lambda () (set! slg568 #\a))) slg568) (string-ref "a" 0)))
 (edge-check-g568)
 
 ;; check chars_char_lit__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g570)
 
 ;; check chars_upcase__in__set_bang_lambda_store
-(define (edge-check-g571) (edge-chk "chars_upcase__in__set_bang_lambda_store" (let ((swg571 #f)) ((lambda () (set! swg571 (char-upcase #\b)))) swg571) #\B))
+(define (edge-check-g571) (edge-chk "chars_upcase__in__set_bang_lambda_store" (let ((slg571 #f)) ((lambda () (set! slg571 (char-upcase #\b)))) slg571) #\B))
 (edge-check-g571)
 
 ;; check chars_upcase__in__set_bang_set_twice
@@ -38,7 +38,7 @@
 (edge-check-g573)
 
 ;; check chars_int_to_char__in__set_bang_lambda_store
-(define (edge-check-g574) (edge-chk "chars_int_to_char__in__set_bang_lambda_store" (let ((swg574 #f)) ((lambda () (set! swg574 (integer->char 65)))) swg574) #\A))
+(define (edge-check-g574) (edge-chk "chars_int_to_char__in__set_bang_lambda_store" (let ((slg574 #f)) ((lambda () (set! slg574 (integer->char 65)))) slg574) #\A))
 (edge-check-g574)
 
 ;; check chars_int_to_char__in__set_bang_set_twice
