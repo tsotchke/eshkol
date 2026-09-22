@@ -14618,6 +14618,45 @@ entries:
       check_taylor_unary_routes.py fails when a complex kernel has no formula.
     caught_by: [independent-review]
     missed_by: [complex_value_derivative]
+  - id: SW-212
+    bucket: SILENT-WRONG
+    family: ad/native-exact-tier
+    status: fixed
+    closed_at: "a9747c2bb"
+    needs_decision: false
+    title: "a Taylor carrier stored in a (tensor ...) literal under a tower or level pass answers 0"
+    repro: >-
+      (derivative (lambda (a) (derivative-n (lambda (b) (tensor-ref (tensor (* a b b)
+      5.0) 0)) 1.0 2)) 2.0), and the same body with tensor-sum in place of
+      tensor-ref.
+    observed: >-
+      0 with exit status 0 on the native JIT and AOT: the literal lowering read the
+      inner pass's Taylor carrier (a level carrier under ADR-0027) as a number, and
+      a jet tensor's tensor-sum read tower slots as doubles. The jet path refused a
+      dual in the same shape.
+    correct: >-
+      2. A forward-mode carrier of any kind -- dual jet, classic tower or nested
+      level carrier -- is kept whole by the tensor slot store boundary (ADR-0020
+      amendment 2), read back whole by tensor-ref, and summed as itself by
+      tensor-sum.
+    evidence: >-
+      d3d088e0a routes every tensor construction path through the slot store
+      boundary; a9747c2bb folds a jet tensor's tensor-sum with the generic Taylor
+      entry (eshkol_jet_tensor_sum). Re-measured at a9747c2bb on the ADR-0027 base
+      (fix/v135f-exact-level): tests/ad/nested_level_through_tensor_test.esk passes
+      on JIT and AOT (d1 of dn2, dn2 of dn2, d1 of d1 of dn2, tensor-sum under a
+      level, the tensor-from-list form, exact at an exact point), and
+      tests/ad/exact_collection_intermediates_test.esk passes on JIT, AOT, VM source
+      and VM ESKB.
+    caught_by: [integrator-release-review]
+    missed_by: [exact_point_ad_test, vm_parity]
+    notes: >-
+      Re-measured after merging integration 74ab39152 (VM level carrier from
+      fix/v135f-vmtaylor): nested_level_through_tensor passes on the native JIT,
+      AOT, the VM from source and the VM from ESKB (CTest
+      nested_level_through_tensor_{runtime,aot,vm,vm_eskb}_smoke). The VM
+      tensor-kernel guard treats every non-scalar VmDual kind, LEVEL included, as a
+      derivative.
   - id: SW-214
     bucket: SILENT-WRONG
     subtag: autodiff
@@ -14698,6 +14737,9 @@ entries:
     notes: >-
       The VM's (derivative-n (lambda (x) (/ 1.0 x)) 0.0 2) prints <dual>; reported
       to the VM lane.
+    vm_evidence: >-
+      VM mirror at 4689ba7e2a739d825c8c83a1038ea3ebe39417e4 (branch fix/v135f-vmtaylor2): tests/ad/division_pole_test.esk and
+      tests/ad/taylor_integral_family_test.esk pass on eshkol-vm-standalone-test and the browser VM.
   - id: SW-225
     bucket: SILENT-WRONG
     subtag: autodiff
@@ -14741,6 +14783,89 @@ entries:
     notes: >-
       The VM does not agree yet: derivative-n of sqrt at 0.0 beyond order 1 prints
       <dual>, and (expt x 1.5) gives NaN; reported to the VM lane, so no VM test.
+    vm_evidence: >-
+      VM mirror at 4689ba7e2a739d825c8c83a1038ea3ebe39417e4 (branch fix/v135f-vmtaylor2): tests/ad/division_pole_test.esk and
+      tests/ad/taylor_integral_family_test.esk pass on eshkol-vm-standalone-test and the browser VM.
+  - id: SW-218
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: vm/integral-family
+    status: fixed
+    closed_at: 'ea25399476bb56bb0c7ac42e7530b3f771234250'
+    title: "VM higher-order inverse trig answered the first derivative"
+    repro: >-
+      (derivative-n asin 0.3 2), acos, (derivative-n atan 0.7 2) on eshkol-vm-standalone-test.
+    observed_before: >-
+      1.048 for asin where the second derivative is 0.3456; acos likewise; atan returned its first derivative.
+    observed_after: >-
+      0.3455884077105225, -0.3455884077105225 and -0.6306022251249943 (= -2x/(1+x^2)^2 at 0.7) on the VM and the browser VM; every order and nesting; atan d3 at exact 0 is exact -2.
+    root_cause: >-
+      asin/acos/atan read a carrier through a first-order (value, tangent) rule.
+    fixed_by: "each is the integral of g(u) u' in the carrier arithmetic, s_k = (1/k) sum j u_j g_{k-j}, with an exact unit (lib/backend/vm_dual.c vm_dual_inverse_trig), mirroring native tr_ext_unary"
+    evidence: >-
+      tests/ad/vm_inverse_trig_orders_test.esk (ctest vm_inverse_trig_orders_vm/_browser_vm); tests/ad/taylor_integral_family_test.esk 347/347 on the VM and the browser VM.
+    caught_by: [v135f-coordinator-review]
+    missed_by: [run_vm_parity]
+  - id: SW-219
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: vm/exact-division
+    status: fixed
+    closed_at: 'ea25399476bb56bb0c7ac42e7530b3f771234250'
+    title: "VM exact division by exact zero inside a derivative answered an infinity instead of raising"
+    repro: >-
+      (derivative-n (lambda (b) (/ 1 b)) 0 1); the nested cell of tests/ad/nested_towers_matrix_test.esk.
+    observed_before: >-
+      -inf.0 and +nan.0 with exit status 0; native raises rational division by zero.
+    observed_after: >-
+      raises "rational division by zero" at any depth, on the VM and the browser VM; an inexact operand keeps IEEE semantics.
+    root_cause: >-
+      the exact arm of the dual/tower division fell through to the double arm on an exact zero divisor.
+    fixed_by: "the carrier records vm_dual_error and the dual native dispatcher raises it (lib/backend/vm_dual.c, vm_native.c)"
+    evidence: >-
+      tests/ad/vm_exact_division_by_zero_test.esk (ctest vm_exact_division_by_zero_vm/_browser_vm); nested_towers_matrix_vm.
+    caught_by: [v135f-coordinator-review]
+    missed_by: [run_vm_parity]
+  - id: SW-220
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: vm/operator-levels
+    status: fixed
+    closed_at: 'ea25399476bb56bb0c7ac42e7530b3f771234250'
+    title: "VM AD operators outside the level protocol: jacobian, vector hessian, divergence, curl, laplacian, directional-derivative nested in a live pass; missing first-class math builtins"
+    repro: >-
+      tests/ad/nested_operator_levels_test.esk on eshkol-vm-standalone-test; (asinh 0.5) on the VM.
+    observed_before: >-
+      "*: expected numeric operands" at the first jacobian cell; un-nested jacobian of a vector field answered #(0 0); asinh, acosh, atanh, log2, log10, exp2, cbrt, square, inexact and atan2 were undefined.
+    observed_after: >-
+      nested_operator_levels 36/36 on the VM and the browser VM; jacobian returns the matrix native returns; the ten names are first-class VM builtins on every number kind.
+    root_cause: >-
+      the operators seeded flat scalar duals or hyper-duals regardless of an enclosing pass, and jacobian read only tensor results.
+    fixed_by: "ADR-0027 section 3 on the VM: forward level passes per column/axis finished in the generic carrier arithmetic (lib/backend/vm_native.c vm_ad_level_*)"
+    evidence: >-
+      tests/ad/nested_operator_levels_test.esk, tests/ad/vm_math_first_class_test.esk (ctest *_vm and *_browser_vm); scripts/run_vm_parity.sh 372/0.
+    caught_by: [v135f-coordinator-review]
+    missed_by: [run_vm_parity]
+  - id: SW-224
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: vm/carrier-leak
+    status: fixed
+    closed_at: '4689ba7e2a739d825c8c83a1038ea3ebe39417e4'
+    title: "VM derivative through a pole printed a carrier (<dual>) instead of the IEEE value"
+    repro: >-
+      (derivative-n (lambda (x) (/ 1.0 x)) 0.0 2) on eshkol-vm-standalone-test.
+    observed_before: >-
+      printed #<value:13> (a dual) instead of +inf.0.
+    observed_after: >-
+      +inf.0; no extraction result is a carrier anywhere in the nested matrices' shapes or at poles.
+    root_cause: >-
+      0 * inf in the extracted coefficient's tangent left a non-constant scalar dual, returned as a VAL_DUAL with no pass live.
+    fixed_by: "the SW-222 pole rule on every VM kernel, and vm_ad_coeff_value, the one extraction exit, answers the primal when no forward pass is live"
+    evidence: >-
+      tests/ad/vm_no_leaked_carrier_test.esk (ctest vm_no_leaked_carrier_vm/_browser_vm); tests/ad/division_pole_test.esk on the VM.
+    caught_by: [v135f-coordinator-review]
+    missed_by: [run_vm_parity]
   - id: SW-202
     bucket: SILENT-WRONG
     family: vm/tensor-reduction-shape
@@ -14770,42 +14895,3 @@ entries:
     notes: >-
       Filed by the v1.3.5 exact-derivative lane; fixed on the integration branch by
       the VM Taylor lane (7c036631d).
-  - id: SW-212
-    bucket: SILENT-WRONG
-    family: ad/native-exact-tier
-    status: fixed
-    closed_at: "a9747c2bb"
-    needs_decision: false
-    title: "a Taylor carrier stored in a (tensor ...) literal under a tower or level pass answers 0"
-    repro: >-
-      (derivative (lambda (a) (derivative-n (lambda (b) (tensor-ref (tensor (* a b b)
-      5.0) 0)) 1.0 2)) 2.0), and the same body with tensor-sum in place of
-      tensor-ref.
-    observed: >-
-      0 with exit status 0 on the native JIT and AOT: the literal lowering read the
-      inner pass's Taylor carrier (a level carrier under ADR-0027) as a number, and
-      a jet tensor's tensor-sum read tower slots as doubles. The jet path refused a
-      dual in the same shape.
-    correct: >-
-      2. A forward-mode carrier of any kind -- dual jet, classic tower or nested
-      level carrier -- is kept whole by the tensor slot store boundary (ADR-0020
-      amendment 2), read back whole by tensor-ref, and summed as itself by
-      tensor-sum.
-    evidence: >-
-      d3d088e0a routes every tensor construction path through the slot store
-      boundary; a9747c2bb folds a jet tensor's tensor-sum with the generic Taylor
-      entry (eshkol_jet_tensor_sum). Re-measured at a9747c2bb on the ADR-0027 base
-      (fix/v135f-exact-level): tests/ad/nested_level_through_tensor_test.esk passes
-      on JIT and AOT (d1 of dn2, dn2 of dn2, d1 of d1 of dn2, tensor-sum under a
-      level, the tensor-from-list form, exact at an exact point), and
-      tests/ad/exact_collection_intermediates_test.esk passes on JIT, AOT, VM source
-      and VM ESKB.
-    caught_by: [integrator-release-review]
-    missed_by: [exact_point_ad_test, vm_parity]
-    notes: >-
-      Re-measured after merging integration 74ab39152 (VM level carrier from
-      fix/v135f-vmtaylor): nested_level_through_tensor passes on the native JIT,
-      AOT, the VM from source and the VM from ESKB (CTest
-      nested_level_through_tensor_{runtime,aot,vm,vm_eskb}_smoke). The VM
-      tensor-kernel guard treats every non-scalar VmDual kind, LEVEL included, as a
-      derivative.

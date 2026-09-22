@@ -242,6 +242,7 @@ int         vm_dual_is_taylor(const VmDual* d);
  * vm_dual_level_derivative: k! * that coefficient.
  * vm_dual_is_constant: a scalar with zero tangent (a plain number).
  * vm_dual_exact_value: the recursive exact primal, or NULL. */
+extern const char* vm_dual_error;   /* pending diagnostic (SW-219), or NULL */
 VmDual*     vm_dual_constant(VmRegionStack* rs, double value, VmRational* exact);
 VmDual*     vm_dual_level_seed(VmRegionStack* rs, const VmDual* point,
                                uint32_t order, uint32_t epoch);
@@ -251,6 +252,7 @@ VmDual*     vm_dual_level_coefficient(VmRegionStack* rs, const VmDual* r,
 VmDual*     vm_dual_level_derivative(VmRegionStack* rs, const VmDual* r,
                                      uint32_t epoch, uint32_t k);
 int         vm_dual_is_level(const VmDual* d);
+int         vm_dual_is_series(const VmDual* d);   /* a tower or a level */
 int         vm_dual_is_constant(const VmDual* d);
 VmRational* vm_dual_exact_value(const VmDual* d);
 uint32_t    vm_dual_nilpotent_degree(const VmDual* d);
@@ -263,6 +265,7 @@ VmDual*     vm_dual_relu(VmRegionStack* rs, const VmDual* a);
 VmDual*     vm_dual_sigmoid(VmRegionStack* rs, const VmDual* a);
 VmDual*     vm_dual_tanh(VmRegionStack* rs, const VmDual* a);
 VmDual*     vm_dual_inverse_trig(VmRegionStack* rs, const VmDual* a, int which);
+VmDual*     vm_dual_cbrt(VmRegionStack* rs, const VmDual* a);
 VmDual*     vm_dual_atan2(VmRegionStack* rs, const VmDual* y, const VmDual* x);
 int         vm_dual_taylor_is_exact(const VmDual* d);
 double      vm_dual_taylor_coeff(const VmDual* d, uint32_t n);

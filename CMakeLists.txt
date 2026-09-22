@@ -6451,7 +6451,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         # (site/static/eshkol-vm.js, the same sources compiled to WebAssembly,
         # driven by node); the ones whose native answers are already in force
         # also run on the native JIT. Ledger: SW-154 (the two matrices),
-        # SW-193, SW-194, SW-199, SW-200, SW-202, SW-203.
+        # SW-193, SW-194, SW-199, SW-200, SW-202, SW-203, SW-218, SW-219, SW-220,
+        # SW-222, SW-224, SW-225.
         find_program(ESHKOL_VM_CARRIER_NODE node)
         set(_esh_vm_carrier_tests
             "nested_towers_matrix|tests/ad/nested_towers_matrix_test.esk|PASS: nested towers matrix|vm"
@@ -6463,7 +6464,15 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             "tensor_full_reduction|tests/tensor/tensor_full_reduction_test.esk|PASS: tensor full reductions|all"
             "complex_negate_abs|tests/complex/complex_negate_abs_test.esk|PASS: complex negate and abs|all"
             "vm_region_evac_level_carrier|tests/memory/vm_region_evac_level_carrier_test.esk|PASS: VM region-evac level carrier|vm"
-            "division_pole|tests/ad/division_pole_test.esk|PASS: division_pole|vm")
+            "nested_operator_levels|tests/ad/nested_operator_levels_test.esk|PASS: nested operator levels|vm"
+            "vm_inverse_trig_orders|tests/ad/vm_inverse_trig_orders_test.esk|PASS: inverse trig orders|vm"
+            "vm_exact_division_by_zero|tests/ad/vm_exact_division_by_zero_test.esk|PASS: exact division by zero raises|vm"
+            "vm_math_first_class|tests/ad/vm_math_first_class_test.esk|PASS: VM first-class math|vm"
+            "division_pole|tests/ad/division_pole_test.esk|PASS: division_pole|vm"
+            "vm_no_leaked_carrier|tests/ad/vm_no_leaked_carrier_test.esk|PASS: no leaked carrier|vm"
+            "taylor_integral_family|tests/ad/taylor_integral_family_test.esk|PASS: taylor_integral_family|vm"
+            "complex_carrier_math|tests/ad/complex_carrier_math_test.esk|PASS: complex_carrier_math|vm"
+            "unary_numeric_builtin_carriers|tests/ad/unary_numeric_builtin_carriers_test.esk|PASS: unary_numeric_builtin_carriers|vm")
         foreach(_esh_spec IN LISTS _esh_vm_carrier_tests)
             string(REPLACE "|" ";" _esh_parts "${_esh_spec}")
             list(GET _esh_parts 0 _esh_name)

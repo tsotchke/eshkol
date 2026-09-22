@@ -17,9 +17,9 @@
   "counts": {
     "builtins_total": 1053,
     "builtins_in_native_closure_table": 435,
-    "builtins_in_vm_table": 741,
+    "builtins_in_vm_table": 751,
     "builtins_in_llvm_aot_dispatch": 797,
-    "builtins_aot_only": 272,
+    "builtins_aot_only": 263,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 113,
@@ -641,10 +641,13 @@
     },
     {
       "name": "acosh",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        732
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -1309,10 +1312,13 @@
     },
     {
       "name": "asinh",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        731
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -1358,20 +1364,26 @@
     },
     {
       "name": "atan2",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        250
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
     },
     {
       "name": "atanh",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        733
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -2047,10 +2059,13 @@
     },
     {
       "name": "cbrt",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        737
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -4210,10 +4225,13 @@
     },
     {
       "name": "exp2",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        736
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -6122,12 +6140,14 @@
     {
       "name": "inexact",
       "ids": [
-        192
+        192,
+        213
       ],
       "arity": 1,
       "min_arity": 1,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -6845,20 +6865,26 @@
     },
     {
       "name": "log10",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        735
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
     },
     {
       "name": "log2",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        734
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -10135,10 +10161,13 @@
     },
     {
       "name": "square",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        738
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
