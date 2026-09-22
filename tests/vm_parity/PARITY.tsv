@@ -32,7 +32,7 @@ _region-open	vm-supported
 abs	vm-supported	stays in the operand's domain: (abs 1/3) is the exact 1/3 (it used to read the rational's heap pointer as 0) and (abs -2.0) stays inexact (corpus/52_numeric_tag_dispatch.esk)
 acons	gap	no VM name binding
 acos	vm-supported	a complex operand routes to the shared complex core (principal branch) rather than collapsing to acos(0) (corpus/54_complex_transcendentals.esk)
-acosh	gap	no VM name binding
+acosh	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
 ad-abs	vm-supported	
 ad-add	vm-supported	
 ad-backward	vm-supported	
@@ -72,15 +72,15 @@ apply-window	gap	signal faculty has no VM fid coverage
 arange	vm-supported	#322: 1/2/3-arg (arange stop | start stop | start stop step) via a VM-compiler special form; native handler pops (start,stop,step)
 arithmetic-shift	vm-supported	
 asin	vm-supported	a complex operand routes to the shared complex core (principal branch) rather than collapsing to asin(0) (corpus/54_complex_transcendentals.esk)
-asinh	gap	no VM name binding
+asinh	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
 assq	gap	R7RS 6.4: native resolves it from the Scheme stdlib (lib/core/list/search.esk); the VM's prelude does not define it and the VM has no builtin, so `(assq 'a '((a 1)))` prints WARNING: undefined variable and then aborts with 'calling non-function'. Found by scripts/run_surface_parity.py, which probes name resolution on BOTH engines -- vm_parity_audit.py could not see it because its surface is the C++ codegen dispatch table and assq is a Scheme-level define
 assv	gap	R7RS 6.4: same shape as assq -- stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
 memv	gap	R7RS 6.4: same shape as assq -- stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
 partition	gap	SRFI-1: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
 string-contains	gap	SRFI-13: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
 atan	vm-supported	
-atan2	gap	no VM name binding
-atanh	gap	no VM name binding
+atan2	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
+atanh	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
 atomic-compare-exchange!	native-only-justified	low-level memory/FFI primitive tied to native codegen
 atomic-exchange!	native-only-justified	low-level memory/FFI primitive tied to native codegen
 atomic-fetch-add!	native-only-justified	low-level memory/FFI primitive tied to native codegen
@@ -132,7 +132,7 @@ call-with-output-file	gap	port/file IO surface missing in VM
 call-with-port	gap	port/file IO surface missing in VM
 car	vm-supported	the operation is verified; a user top-level (define (car x) ...) shadowing it is IGNORED because compile_form() claims the spelling for OP_CAR before local resolution, where native routes to the user's define (audit Bug G) — R7RS 5.3.1 shadowing gap, needs the user-scope check ahead of the whole VM dispatch chain (resolved/builtin_shadow_ignored_by_opcode_dispatch.esk)
 causal-mask	gap	ml faculty has no VM fid coverage
-cbrt	gap	no VM name binding
+cbrt	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
 cdaar	vm-supported	
 cdadr	vm-supported	
 cdar	vm-supported	
@@ -256,7 +256,7 @@ executable-path	vm-supported
 execv	vm-supported	
 exit	vm-supported	native LLVM noreturn lowering and VM builtin 2097 share the documented exit(code) status semantics
 exp	vm-supported	
-exp2	gap	no VM name binding
+exp2	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
 expected-free-energy	vm-supported	
 exponential-decay-lr	gap	ml faculty has no VM fid coverage
 expt	vm-supported	exact integer^nonneg-integer stays exact (int, promoting to bignum on overflow); a complex base OR exponent promotes both and takes the principal exp(b log a), matching native — (expt i i) is 0.20787957635076193 on both engines (corpus/54_complex_transcendentals.esk)
@@ -391,7 +391,7 @@ imag-part	vm-supported
 image-read	vm-supported	
 image-to-grayscale	vm-supported	
 image-write	vm-supported	
-inexact	gap	no VM name binding
+inexact	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
 inexact->exact	vm-supported	returns the operand's EXACT value via the same mantissa*2^exp decomposition as the native runtime, including bignum integers and bignum-backed rationals for values outside int64 and subnormal denominators; corpus/55_inexact_exact_exactness.esk covers ordinary, large, and subnormal round trips
 inexact?	vm-supported	
 infinite?	vm-supported	
@@ -402,7 +402,7 @@ input-port?	vm-supported
 integer->char	vm-supported	VAL_CHAR immediate type; #\ literals and char ops carry char-ness so display renders the glyph
 integer?	vm-supported	
 interaction-environment	gap	eval/environment reflection has no VM binding
-jacobian	gap	silently wrong values (found/ad_gradient_wrong.esk)
+jacobian	vm-supported	ADR-0027: every column is a forward level pass, returned as the m x n matrix native returns; nests inside and around every other pass (tests/ad/nested_operator_levels_test.esk, resolved/ad_gradient_wrong.esk)
 jiffies-per-second	gap	time surface has no VM binding
 kaiming-normal!	gap	ml faculty has no VM fid coverage
 kaiming-uniform!	gap	ml faculty has no VM fid coverage
@@ -441,8 +441,8 @@ list-set!	gap	no VM name binding
 list?	vm-supported	
 local-timezone-offset	vm-supported	
 log	vm-supported	a complex operand takes the principal complex logarithm from the shared core, and a NEGATIVE EXACT real promotes to log|x| + pi i, matching native; an inexact negative keeps IEEE NaN (corpus/54_complex_transcendentals.esk)
-log10	gap	no VM name binding
-log2	gap	no VM name binding
+log10	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
+log2	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
 logic-var?	vm-supported	task #100: see op:LOGIC_VAR
 lru-clear!	vm-supported	
 lru-delete!	vm-supported	
@@ -556,11 +556,11 @@ op:FREE_ENERGY	vm-supported	BUILTINS fid 525
 
 op:GRADIENT	vm-supported	forward-mode dual gradient, arity-resolved (scalar / N-arg spread / arity-1 whole-vector) plus curried form; scalar exact integer/bignum/rational points now return exact gradients through the SW-85 hybrid carrier and inexact/transcendental paths retain their prior behavior. Exact vector points remain inexact because neither substrate has an exact vector carrier.
 op:GUARD	vm-supported	guard/raise verified 2026-07
-op:HESSIAN	gap	returns 0 (found/ad_gradient_wrong.esk)
+op:HESSIAN	vm-supported	scalar points are the order-2 tower pass; vector points use hyper-duals un-nested and two nested levels per entry inside a live pass (ADR-0027; resolved/ad_gradient_wrong.esk)
 op:IF	vm-supported	vm_compiler special-form dispatch
 op:IMPORT	vm-supported	R7RS (import <import-set> …): the VM compiler resolves each set against the libraries this compilation unit defines with define-library BEFORE the module search path, the same order the native front end uses; only/except need no code because the VM has one global top level and therefore no visibility boundary, while rename/prefix lower to plain define aliases (corpus/53_define_library_same_unit.esk)
 op:INCLUDE	native-only-justified	parse-time form handled by the native front-end
-op:JACOBIAN	gap	returns tensor handle, wrong values (found/ad_gradient_wrong.esk)
+op:JACOBIAN	vm-supported	forward level pass per column, matrix result matching native (ADR-0027; resolved/ad_gradient_wrong.esk)
 op:KB_ASSERT	vm-supported	BUILTINS fid 511
 op:KB_PRED	vm-supported	BUILTINS fid 510
 op:KB_QUERY	vm-supported	BUILTINS fid 512
@@ -763,7 +763,7 @@ softplus	gap	ml faculty has no VM fid coverage
 split	gap	tensor linalg/manipulation fid missing in VM
 split-at	gap	no VM name binding
 sqrt	vm-supported	a complex operand takes the principal complex square root from the shared core <eshkol/core/complex_math.h> that the native back end also calls, and a NEGATIVE EXACT real promotes into the complex domain per docs/reference/language/numeric-tower.md ((sqrt -1) is +i on both engines); an inexact negative keeps IEEE NaN. as_number() used to answer 0 for a complex, so the VM silently computed sqrt(0) (corpus/54_complex_transcendentals.esk)
-square	gap	no VM name binding
+square	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
 squeeze	gap	tensor linalg/manipulation fid missing in VM
 stack	gap	tensor linalg/manipulation fid missing in VM
 step-decay-lr	gap	ml faculty has no VM fid coverage

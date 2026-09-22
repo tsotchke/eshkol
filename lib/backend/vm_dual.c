@@ -17,6 +17,12 @@
 
 static uint32_t vm_taylor_epoch_counter;
 
+/* SW-219: an operation with no value -- exact division by exact zero --
+ * records its diagnostic here and the native dispatcher raises it, as the
+ * exact numeric tower does un-nested. It is never an infinity. */
+const char* vm_dual_error = NULL;
+static const char* const VM_DUAL_EXACT_DIV_ZERO = "rational division by zero";
+
 uint32_t vm_dual_next_taylor_epoch(void) {
     vm_taylor_epoch_counter++;
     if (vm_taylor_epoch_counter == 0) vm_taylor_epoch_counter = 1;
@@ -287,7 +293,11 @@ static VmDual* taylor_binary(VmRegionStack* rs, const VmDual* a,
      * round to 0.0, so a double comparison would silently drop exactness. */
     if (op == '/' && exact) {
         VmRational* denominator = taylor_coeff_as_exact(b, 0);
-        if (!denominator || vm_rational_is_zero(denominator)) exact = 0;
+        if (denominator && vm_rational_is_zero(denominator)) {
+            vm_dual_error = VM_DUAL_EXACT_DIV_ZERO;
+            return NULL;
+        }
+        if (!denominator) exact = 0;
     }
     VmDual* r = taylor_alloc(rs, n, exact);
     if (!r) return NULL;
@@ -492,6 +502,10 @@ static VmDual* taylor_pow_integer(VmRegionStack* rs, const VmDual* a, int64_t ex
  * so the recursion bottoms out in the scalar dual, the classic tower or the
  * exact rational arithmetic, and exactness follows the numeric tower.
  * ══════════════════════════════════════════════════════════════════════════ */
+
+int vm_dual_is_series(const VmDual* d) {
+    return d && d->kind != VM_DUAL_KIND_SCALAR;
+}
 
 int vm_dual_is_level(const VmDual* d) {
     return d && d->kind == VM_DUAL_KIND_LEVEL;
@@ -923,24 +937,103 @@ static VmDual* lv_integrate(VmRegionStack* rs, VmDual* u, const VmDual* g0,
     return lv_finish(rs, r, 0);
 }
 
-/* which: 0 asin, 1 acos, 2 atan */
+/* which: 0 asin, 1 acos, 2 atan, 3 atanh, 4 asinh, 5 acosh. Each is the
+ * integral of g(u) u' with g = 1/sqrt(1-u^2), -1/sqrt(1-u^2), 1/(1+u^2),
+ * 1/(1-u^2), 1/sqrt(1+u^2), 1/sqrt(u^2-1). g is built in the carrier
+ * arithmetic with an exact unit, so a rational g (atan, atanh) keeps every
+ * coefficient above c[0] exact at an exact point. */
+static double lv_inverse_fn(double p, int which) {
+    switch (which) {
+        case 0: return asin(p);  case 1: return acos(p);  case 2: return atan(p);
+        case 3: return atanh(p); case 4: return asinh(p); default: return acosh(p);
+    }
+}
+
+static VmDual* lv_inverse_g(VmRegionStack* rs, const VmDual* u, int which) {
+    VmDual* one = lv_int(rs, 1, 1);
+    VmDual* sq = vm_dual_mul(rs, u, u);
+    VmDual* g = NULL;
+    switch (which) {
+        case 0: case 1: g = vm_dual_div(rs, one, vm_dual_sqrt(rs, vm_dual_sub(rs, one, sq))); break;
+        case 2: g = vm_dual_div(rs, one, vm_dual_add(rs, one, sq)); break;
+        case 3: g = vm_dual_div(rs, one, vm_dual_sub(rs, one, sq)); break;
+        case 4: g = vm_dual_div(rs, one, vm_dual_sqrt(rs, vm_dual_add(rs, one, sq))); break;
+        default: g = vm_dual_div(rs, one, vm_dual_sqrt(rs, vm_dual_sub(rs, sq, one))); break;
+    }
+    return g && which == 1 ? vm_dual_neg(rs, g) : g;
+}
+
 VmDual* vm_dual_inverse_trig(VmRegionStack* rs, const VmDual* a, int which) {
     if (!a) return NULL;
     if (a->kind == VM_DUAL_KIND_SCALAR) {
-        double p = a->primal, t = a->tangent;
-        if (which == 2) return vm_dual_new(rs, atan(p), t / (1.0 + p * p));
-        double s = t == 0.0 ? 0.0 : t / sqrt(1.0 - p * p);
-        return vm_dual_new(rs, which == 0 ? asin(p) : acos(p), which == 0 ? s : -s);
+        VmDual* y0 = vm_dual_new(rs, lv_inverse_fn(a->primal, which), 0.0);
+        if (!lv_scalar_has_tangent(a)) return y0;
+        /* y = y0 + g(u0) (u - u0): the tangent half keeps its exactness
+         * when g is rational, the value half is the libm value. */
+        VmDual* u0 = vm_dual_constant(rs, a->primal, a->eprimal);
+        VmDual* g = u0 ? lv_inverse_g(rs, u0, which) : NULL;
+        if (!g) return NULL;
+        VmRational* et = a->etangent && g->eprimal
+            ? vm_rational_op_exact(rs, g->eprimal, a->etangent, '*') : NULL;
+        VmDual* r = vm_dual_new(rs, y0->primal, g->primal * a->tangent);
+        if (r && et) r->etangent = et;   /* primal stays inexact: not dual_is_exact */
+        return r;
     }
     VmDual* u = lv_as_level(rs, a);
     if (!u) return NULL;
-    VmDual* one = vm_dual_new(rs, 1.0, 0.0);
-    VmDual* sq = vm_dual_mul(rs, u, u);
-    VmDual* g = which == 2
-        ? vm_dual_div(rs, one, vm_dual_add(rs, one, sq))
-        : vm_dual_div(rs, one, vm_dual_sqrt(rs, vm_dual_sub(rs, one, sq)));
-    if (g && which == 1) g = vm_dual_neg(rs, g);
-    return lv_integrate(rs, u, g, vm_dual_inverse_trig(rs, u->lcoeff[0], which));
+    return lv_integrate(rs, u, lv_inverse_g(rs, u, which),
+                        vm_dual_inverse_trig(rs, u->lcoeff[0], which));
+}
+
+/* u^(num/den) for a series u, with y0 = the value at c[0]:
+ * k u0 y_k = sum_{i=1..k} ((num/den) i - (k - i)) u_i y_{k-i}, the factors
+ * exact rationals, so an exact point with an exact y0 stays exact. */
+static VmDual* lv_pow_rational(VmRegionStack* rs, VmDual* u, int64_t num,
+                               int64_t den, VmDual* y0) {
+    VmDual* r = u && y0 ? lv_alloc(rs, u->epoch, u->order) : NULL;
+    if (!r) return NULL;
+    VmDual** y = r->lcoeff;
+    y[0] = y0;
+    for (uint32_t k = 1; k <= u->order; ++k) {
+        VmDual* acc = NULL;
+        for (uint32_t i = 1; i <= k; ++i) {
+            VmDual* t = lv_mul(rs, u->lcoeff[i], y[k - i]);
+            if (t) t = vm_dual_mul(rs, lv_ratio(rs, num * (int64_t)i - den * (int64_t)(k - i), den), t);
+            acc = lv_add(rs, acc, t);
+        }
+        y[k] = acc ? vm_dual_div(rs, acc, vm_dual_mul(rs, lv_int(rs, (int64_t)k, 1), u->lcoeff[0])) : NULL;
+    }
+    return lv_finish(rs, r, 0);
+}
+
+/* The exact cube root of an exact rational, or NULL when it is not one. */
+static int64_t lv_icbrt(int64_t n, int* ok) {
+    int64_t r = (int64_t)llround(cbrt((double)n));
+    *ok = r * r * r == n;
+    return r;
+}
+static VmRational* lv_exact_cbrt(VmRegionStack* rs, const VmRational* q) {
+    if (!q || q->is_big) return NULL;
+    int okn = 0, okd = 0;
+    int64_t n = lv_icbrt(q->num, &okn), d = lv_icbrt(q->denom, &okd);
+    return okn && okd ? vm_rational_make(vm_active_arena(rs), n, d) : NULL;
+}
+
+/* cbrt, the real cube root: exact at a perfect-cube exact point, and every
+ * order through the rational-power recurrence. */
+VmDual* vm_dual_cbrt(VmRegionStack* rs, const VmDual* a) {
+    if (!a) return NULL;
+    if (a->kind == VM_DUAL_KIND_SCALAR) {
+        VmRational* e = lv_exact_cbrt(rs, a->eprimal);
+        VmDual* y0 = vm_dual_constant(rs, cbrt(a->primal), e);
+        if (!lv_scalar_has_tangent(a) || !y0) return y0;
+        /* y = y0 + (u - u0) / (3 y0^2) */
+        VmDual* du = vm_dual_sub(rs, a, vm_dual_constant(rs, a->primal, a->eprimal));
+        VmDual* den = vm_dual_mul(rs, lv_int(rs, 3, 1), vm_dual_mul(rs, y0, y0));
+        return vm_dual_add(rs, y0, vm_dual_div(rs, du, den));
+    }
+    VmDual* u = lv_as_level(rs, a);
+    return u ? lv_pow_rational(rs, u, 1, 3, vm_dual_cbrt(rs, u->lcoeff[0])) : NULL;
 }
 
 /* atan2(y, x): the angle of (x, y); its derivative is that of atan(y/x). */
@@ -955,8 +1048,7 @@ VmDual* vm_dual_atan2(VmRegionStack* rs, const VmDual* y, const VmDual* x) {
     VmDual* w = vm_dual_div(rs, y, x);
     VmDual* u = w && w->kind != VM_DUAL_KIND_SCALAR ? lv_as_level(rs, w) : NULL;
     if (!u) return NULL;
-    VmDual* one = vm_dual_new(rs, 1.0, 0.0);
-    VmDual* g = vm_dual_div(rs, one, vm_dual_add(rs, one, vm_dual_mul(rs, u, u)));
+    VmDual* g = lv_inverse_g(rs, u, 2);
     VmDual* ya = lv_own(rs, y);
     VmDual* xa = lv_own(rs, x);
     VmDual* y0 = ya ? lv_coeff(rs, ya, u->epoch, 0) : NULL;
@@ -1025,6 +1117,11 @@ VmDual* vm_dual_mul(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
  *         a/b + (a'b-ab')/b^2 e. */
 VmDual* vm_dual_div(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
     if (lv_route(a, b)) return lv_binary(rs, a, b, '/');
+    if (b->kind == VM_DUAL_KIND_SCALAR && a->kind == VM_DUAL_KIND_SCALAR &&
+        a->eprimal && b->eprimal && vm_rational_is_zero(b->eprimal)) {
+        vm_dual_error = VM_DUAL_EXACT_DIV_ZERO;
+        return NULL;
+    }
     if (vm_dual_is_taylor(a) || vm_dual_is_taylor(b)) return taylor_binary(rs, a, b, '/');
     double b2 = b->primal * b->primal;
     if (dual_is_exact(a) && dual_is_exact(b)) {
