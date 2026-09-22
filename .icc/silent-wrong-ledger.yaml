@@ -14194,3 +14194,172 @@ entries:
       is registered as complex_nested_carrier_runtime_smoke and _aot_smoke and
       passes; the repro prints 6+6i. The VM and browser half is owned by the v135f
       VM lane, which closes this entry.
+  - id: SW-206
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/perturbation-nesting
+    status: fixed
+    closed_at: "0a4782007"
+    title: "A fourth nested `derivative` answered 0: the 8-jet has two forward slots and the reverse-seed slot, and the third live jet level aliased onto it"
+    repro: >-
+      (derivative (lambda (a) (derivative (lambda (b) (derivative (lambda (c)
+      (derivative (lambda (dd) (* a b c dd)) 1.0)) 1.0)) 1.0)) 1.0)
+    observed: >-
+      0, with exit status 0, on the JIT and AOT lanes (independent review of
+      fix/v135f-taylor at 1dad8eff6).
+    correct: >-
+      1.
+    root_cause: >-
+      eshkol_ad_nested_seed ran a first-order `derivative` pass as a level only when
+      a tower was open or the point was a tower. A jet pass seeded slot e1 at
+      forward level 0, e2 at level 1 and the reverse-seed slot ep at level 2 and
+      above, so the fourth level shared ep with the third.
+    fix: >-
+      lib/core/runtime_taylor.c eshkol_ad_nested_seed: a jet pass also runs as a
+      level when two jet levels are already live (pert_level >= 2), so the 8-jet
+      only ever holds e1 and e2 and ep stays the reverse seed. ADR-0027 section 3.
+    evidence: >-
+      tests/ad/nested_operator_levels_test.esk (nested_operator_levels_runtime_smoke
+      and _aot_smoke): the review probes as regression cells, 36 checks, pass on JIT
+      and AOT at 0a4782007.
+    caught_by: [independent review of fix/v135f-taylor (Fable), 2026-09-22]
+    missed_by: [tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk]
+    notes: >-
+      Native (JIT and AOT). ADR-0027: docs/design/adr/0027-recursive-taylor-level-
+      carrier.md.
+  - id: SW-207
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/perturbation-nesting
+    status: fixed
+    closed_at: "0a4782007"
+    title: "`hessian` nested inside a live differentiation pass answered 0"
+    repro: >-
+      (derivative (lambda (q) (hessian (lambda (t) (* q t t t)) 2.0)) 3.0)
+    observed: >-
+      0 (JIT and AOT); the same inside `derivative-n` and at exact points.
+    correct: >-
+      12: hessian_t (q t^3) at 2 is 12 q.
+    root_cause: >-
+      hessianJetPath never reached eshkol_ad_nested_seed, and the exact tier, which
+      does, declined at run time whenever a pass was live and at compile time
+      whenever an enclosing tower-API call's mode leaked into the operator's
+      emission.
+    fix: >-
+      lib/backend/autodiff_codegen.cpp: every AD operator clears the enclosing
+      pass's tower mode for its own emission (PassModeScope), and a scalar hessian
+      met while a forward pass is live, or at a carrier point, runs as the order-2
+      tower pass (tryExactTowerRoute route_nested), which is a level of the
+      enclosing passes.
+    evidence: >-
+      tests/ad/nested_operator_levels_test.esk (nested_operator_levels_runtime_smoke
+      and _aot_smoke): the review probes as regression cells, 36 checks, pass on JIT
+      and AOT at 0a4782007.
+    caught_by: [independent review of fix/v135f-taylor (Fable), 2026-09-22]
+    missed_by: [tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk]
+    notes: >-
+      Native (JIT and AOT). ADR-0027: docs/design/adr/0027-recursive-taylor-level-
+      carrier.md.
+  - id: SW-208
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/perturbation-nesting
+    status: fixed
+    closed_at: "0a4782007"
+    title: "`jacobian` nested inside a live differentiation pass answered 0, and crashed under `derivative-n`"
+    repro: >-
+      (derivative (lambda (t) (vector-ref (vector-ref (jacobian (lambda (v) (vector
+      (* t (vector-ref v 0) (vector-ref v 0)))) (vector 2.0)) 0) 0)) 1.0)
+    observed: >-
+      0 under `derivative`; SIGSEGV under `derivative-n` (a tagged 4.0 dereferenced
+      as a pointer).
+    correct: >-
+      4: J00 = 4t.
+    root_cause: >-
+      jacobian is a reverse-tape operator whose nodes carry one raw double, so an
+      enclosing perturbation reaching the field had nowhere to live, and its f64
+      result tensor could not hold a carrier. Separately, a row view of a tagged-
+      element tensor was built with 8-byte slots and dtype 0.
+    fix: >-
+      lib/backend/autodiff_codegen.cpp: while a forward pass is live, or when the
+      point carries a carrier, jacobian computes each column as a forward pass of
+      its own through the one seed/extract protocol and assembles a tagged-element
+      (dual) tensor (lib/core/runtime_taylor.c eshkol_ad_point_* and
+      eshkol_ad_jacobian_store_column). lib/backend/collection_codegen.cpp: a row
+      view of a tagged tensor uses 16-byte slots and keeps the dtype.
+    evidence: >-
+      tests/ad/nested_operator_levels_test.esk (nested_operator_levels_runtime_smoke
+      and _aot_smoke): the review probes as regression cells, 36 checks, pass on JIT
+      and AOT at 0a4782007.
+    caught_by: [independent review of fix/v135f-taylor (Fable), 2026-09-22]
+    missed_by: [tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk]
+    notes: >-
+      Native (JIT and AOT). ADR-0027: docs/design/adr/0027-recursive-taylor-level-
+      carrier.md.
+  - id: SW-209
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/perturbation-nesting
+    status: fixed
+    closed_at: "0a4782007"
+    title: "`gradient` at an exact scalar point under an enclosing `derivative` answered 0"
+    repro: >-
+      (derivative (lambda (t) (* t (gradient (lambda (u) (* u u)) 3))) 2.0)
+    observed: >-
+      0 (JIT and AOT).
+    correct: >-
+      6.
+    root_cause: >-
+      gradientJetPath admitted its forward arm for an exact scalar only when a tower
+      or a tape was live; with only a jet live the point went to the reverse tape,
+      whose raw double drops the enclosing jet.
+    fix: >-
+      lib/backend/autodiff_codegen.cpp: an exact scalar point always takes the
+      order-1 tower pass through the one seed/extract protocol, exact when un-nested
+      and a level of the enclosing passes when nested.
+    evidence: >-
+      tests/ad/nested_operator_levels_test.esk (nested_operator_levels_runtime_smoke
+      and _aot_smoke): the review probes as regression cells, 36 checks, pass on JIT
+      and AOT at 0a4782007.
+    caught_by: [independent review of fix/v135f-taylor (Fable), 2026-09-22]
+    missed_by: [tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk]
+    notes: >-
+      Native (JIT and AOT). ADR-0027: docs/design/adr/0027-recursive-taylor-level-
+      carrier.md.
+  - id: SW-213
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/perturbation-nesting
+    status: fixed
+    closed_at: "0a4782007"
+    title: "divergence, laplacian, curl, directional-derivative and the vector-point hessian nested inside a live pass answered 0"
+    repro: >-
+      (derivative (lambda (t) (divergence (lambda (v) (vector (* t (vector-ref v 0)
+      (vector-ref v 0)) (* t (vector-ref v 1)))) (vector 2.0 5.0))) 1.0)
+    observed: >-
+      0 (JIT and AOT), and likewise for laplacian, curl, directional-derivative and
+      a vector-point hessian under an enclosing pass.
+    correct: >-
+      5 (divergence 5t). laplacian of t(x^2+y^2) gives 4, the curl z component of (t
+      v1, 0, 0) gives -1, the directional derivative of t x^2 at 3 gives 6, and H00
+      of t x^2 y at (1,2) gives 4.
+    root_cause: >-
+      The composed operators read their Jacobian, Hessian or gradient as raw
+      doubles, and the vector-point hessian seeded e1/e2 itself, which an enclosing
+      pass owns.
+    fix: >-
+      lib/backend/autodiff_codegen.cpp: the vector-point hessian nested in a live
+      pass is nested forward passes through the one protocol (emitNestedHessian);
+      divergence, laplacian, curl and directional-derivative finish in the runtime's
+      generic arithmetic when the sub-result holds carriers
+      (emitCarrierCombinatorFork -> eshkol_ad_generic_trace / _curl / _dot in
+      lib/core/runtime_taylor.c). ADR-0027 section 3.
+    evidence: >-
+      tests/ad/nested_operator_levels_test.esk section SW-213
+      (nested_operator_levels_runtime_smoke and _aot_smoke) passes on JIT and AOT at
+      0a4782007.
+    caught_by: [v135f-taylor lane follow-up to the SW-206..209 review, 2026-09-22]
+    missed_by: [tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk]
+    notes: >-
+      Native (JIT and AOT). The VM carries the same operators; that half belongs to
+      the v135f VM lane.
