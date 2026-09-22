@@ -422,24 +422,26 @@ extern "C" int32_t eshkol_sequence_slot_store(const eshkol_tagged_value_t* seque
     return ESHKOL_SLOT_STORE_OK;
 }
 
-// Construction: store values[0..n) into slots 0..n) of a fresh tensor object,
-// in order, through the one encoder. Each value may widen the tensor (a
-// forward-mode carrier makes it a jet tensor); a value that is not a number is
-// refused, naming no slot. Used by the `(tensor ...)` literal lowering, which
-// evaluates its elements into one buffer and hands them over in one call.
-extern "C" int32_t eshkol_tensor_store_values(void* tensor_object,
-                                              const eshkol_tagged_value_t* values,
-                                              int64_t n) {
-    if (!tensor_object || (!values && n > 0)) return ESHKOL_SLOT_STORE_NULL;
+// Construction: store values[k] into slot indices[k] of a tensor object for
+// k in [0, n), in order, through the one encoder. Each value may widen the
+// tensor (a forward-mode carrier makes it a jet tensor, carrying the numbers
+// already stored over); a value that is not a number is refused. Used by the
+// `(tensor ...)` literal lowering for the elements whose type is decided at
+// run time; the rest it stores inline as doubles before this call.
+extern "C" int32_t eshkol_tensor_store_indexed(void* tensor_object,
+                                               const int64_t* indices,
+                                               const eshkol_tagged_value_t* values,
+                                               int64_t n) {
+    if (!tensor_object || ((!values || !indices) && n > 0)) return ESHKOL_SLOT_STORE_NULL;
     if (subtype_of(tensor_object) != HEAP_SUBTYPE_TENSOR) return ESHKOL_SLOT_STORE_CONTAINER;
     auto* tensor = reinterpret_cast<eshkol_tensor_t*>(tensor_object);
     const int64_t length = sequence_length(tensor_object, HEAP_SUBTYPE_TENSOR);
-    if (n < 0 || n > length) return ESHKOL_SLOT_STORE_BOUNDS;
-    for (int64_t i = 0; i < n; ++i) {
-        if (!widen_tensor_for(tensor, values[i], /*allow_boxed=*/false)) {
+    for (int64_t k = 0; k < n; ++k) {
+        if (indices[k] < 0 || indices[k] >= length) return ESHKOL_SLOT_STORE_BOUNDS;
+        if (!widen_tensor_for(tensor, values[k], /*allow_boxed=*/false)) {
             return ESHKOL_SLOT_STORE_VALUE;
         }
-        encode_tensor_slot(tensor, i, values[i]);
+        encode_tensor_slot(tensor, indices[k], values[k]);
     }
     return ESHKOL_SLOT_STORE_OK;
 }

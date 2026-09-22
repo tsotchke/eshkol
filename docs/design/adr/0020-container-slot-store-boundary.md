@@ -236,9 +236,10 @@ element with its own rule, and none knew a derivative carrier:
 **Decision.**
 
 - Every construction path stores each element through the boundary: the
-  literal evaluates its elements and, when any is a tagged value, hands them
-  to `eshkol_tensor_store_values` in one call (an all-numeric literal keeps its
-  straight-line double stores); `eshkol_tensor_slot_store` serves the
+  literal stores every element whose type is known at compile time (every
+  numeric constant) inline as a double, and hands the elements whose type is
+  decided at run time, with their indices, to `eshkol_tensor_store_indexed` in
+  one call; `eshkol_tensor_slot_store` serves the
   collection walker and the operand coercion; `emitTensorFill` /
   `eshkol_tensor_fill_slots` for `make-tensor`, and `vm_tensor_store_value` on
   the VM.

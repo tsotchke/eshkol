@@ -557,10 +557,56 @@ llvm::Value* TensorCodegen::tensorOperation(const eshkol_operations_t* op) {
     llvm::Value* elements_ptr = builder.CreateCall(arena_alloc_func, {arena_ptr, elements_size}, "elems_ptr");
     llvm::Value* typed_elements_ptr = builder.CreatePointerCast(elements_ptr, builder.getPtrTy());
 
-    // The descriptor is complete before any element is stored: every element
-    // is stored through the container slot store boundary (ADR-0020), which
-    // bounds-checks against total_elements and may re-point `elements` (a
-    // forward-mode carrier widens the tensor to a jet tensor).
+    // Each element is evaluated in order. An element whose representation is
+    // known at compile time -- a raw machine number, or a tagged value whose
+    // type byte folds to a constant DOUBLE or INT64 (every numeric literal) --
+    // is stored inline as its double. Only elements whose type is decided at
+    // run time go to the slot store boundary, together with their indices, in
+    // ONE call after all inline stores (ADR-0020 amendment 2): a real of any
+    // exactness becomes the f64 `inexact` gives it; a reverse-mode node keeps
+    // its in-tensor pointer encoding; a forward-mode carrier -- a dual jet, or
+    // a Taylor tower on the exact tier, under derivative-n and in a nested
+    // level -- widens the tensor to a jet tensor (carrying the inline numbers
+    // over) and is kept whole (SW-197, SW-212); anything else is refused. A
+    // large constant literal therefore emits no per-element tagged traffic.
+    const uint64_t n_elems = op->tensor_op.total_elements;
+    std::vector<std::pair<uint64_t, llvm::Value*>> runtime_elems;
+    auto storeInline = [&](uint64_t i, llvm::Value* d) {
+        llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_elements_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), i));
+        ctx_.builder().CreateStore(ctx_.builder().CreateBitCast(d, ctx_.int64Type()), elem_ptr);
+    };
+    for (uint64_t i = 0; i < n_elems; i++) {
+        llvm::Value* v = codegenAST(&op->tensor_op.elements[i]);
+        if (!v) { storeInline(i, llvm::ConstantFP::get(ctx_.doubleType(), 0.0)); continue; }
+        if (v->getType() == ctx_.taggedValueType()) {
+            auto* type_c = llvm::dyn_cast<llvm::ConstantInt>(
+                ctx_.builder().CreateExtractValue(v, {0}));
+            llvm::Value* payload = ctx_.builder().CreateExtractValue(v, {4});
+            if (type_c && type_c->getZExtValue() == ESHKOL_VALUE_DOUBLE) {
+                storeInline(i, ctx_.builder().CreateBitCast(payload, ctx_.doubleType()));
+            } else if (type_c && type_c->getZExtValue() == ESHKOL_VALUE_INT64) {
+                storeInline(i, ctx_.builder().CreateSIToFP(payload, ctx_.doubleType()));
+            } else {
+                runtime_elems.emplace_back(i, v);
+            }
+        } else if (v->getType()->isIntegerTy()) {
+            storeInline(i, ctx_.builder().CreateSIToFP(v, ctx_.doubleType()));
+        } else if (v->getType()->isFloatingPointTy()) {
+            storeInline(i, v->getType() != ctx_.doubleType()
+                ? ctx_.builder().CreateFPExt(v, ctx_.doubleType()) : v);
+        } else {
+            eshkol_error("tensor: element %llu has no numeric representation",
+                         (unsigned long long)i);
+            return nullptr;
+        }
+    }
+
+    // The descriptor is completed after the inline element stores and before
+    // the boundary call, which bounds-checks against total_elements and may
+    // re-point `elements`. (Storing it first put descriptor stores ahead of a
+    // large literal's element stores, and the backend's store combining went
+    // quadratic on them: corpus 44 took 60 s to compile instead of 1.5 s.)
     llvm::Value* dims_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 0);
     ctx_.builder().CreateStore(typed_dims_ptr, dims_field_ptr);
 
@@ -573,64 +619,25 @@ llvm::Value* TensorCodegen::tensorOperation(const eshkol_operations_t* op) {
     llvm::Value* total_elements_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 3);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), op->tensor_op.total_elements), total_elements_field_ptr);
 
-    // Evaluate every element first, in order. A literal whose elements are all
-    // raw machine numbers (the common numeric literal, possibly thousands of
-    // constants) keeps its straight-line double stores. A literal with any
-    // tagged element hands all of them to the slot store boundary in ONE call
-    // (ADR-0020 and its amendment 2): a real of any exactness becomes the f64
-    // `inexact` gives it; a reverse-mode node keeps its in-tensor pointer
-    // encoding; a forward-mode carrier -- a dual jet, or a Taylor tower on the
-    // exact tier, under derivative-n and in a nested level -- widens the tensor
-    // to a jet tensor and is kept whole, so a derivative that passes through a
-    // tensor literal is neither refused nor read as 0 (SW-197); anything else
-    // is refused with a catchable error.
-    const uint64_t n_elems = op->tensor_op.total_elements;
-    std::vector<llvm::Value*> element_vals(n_elems, nullptr);
-    bool any_tagged = false;
-    for (uint64_t i = 0; i < n_elems; i++) {
-        llvm::Value* v = codegenAST(&op->tensor_op.elements[i]);
-        if (!v) continue;
-        if (v->getType() == ctx_.taggedValueType()) {
-            any_tagged = true;
-        } else if (v->getType()->isIntegerTy()) {
-            v = ctx_.builder().CreateSIToFP(v, ctx_.doubleType());
-        } else if (v->getType()->isFloatingPointTy()) {
-            if (v->getType() != ctx_.doubleType())
-                v = ctx_.builder().CreateFPExt(v, ctx_.doubleType());
-        } else {
-            eshkol_error("tensor: element %llu has no numeric representation",
-                         (unsigned long long)i);
-            return nullptr;
-        }
-        element_vals[i] = v;
-    }
-
-    if (!any_tagged) {
-        for (uint64_t i = 0; i < n_elems; i++) {
-            llvm::Value* v = element_vals[i] ? element_vals[i]
-                                             : llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
-            llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_elements_ptr,
-                llvm::ConstantInt::get(ctx_.int64Type(), i));
-            ctx_.builder().CreateStore(ctx_.builder().CreateBitCast(v, ctx_.int64Type()), elem_ptr);
-        }
-    } else {
-        llvm::Value* values_bytes = llvm::ConstantInt::get(ctx_.sizeType(),
-            n_elems * 16);
+    if (!runtime_elems.empty()) {
+        const uint64_t n_rt = runtime_elems.size();
         llvm::Value* values_buf = builder.CreateCall(arena_alloc_func,
-            {arena_ptr, values_bytes}, "tlit_values");
-        for (uint64_t i = 0; i < n_elems; i++) {
-            llvm::Value* v = element_vals[i];
-            llvm::Value* tagged = !v ? tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0))
-                : (v->getType() == ctx_.taggedValueType() ? v : tagged_.packDouble(v));
-            ctx_.builder().CreateStore(tagged, ctx_.builder().CreateGEP(ctx_.taggedValueType(),
-                values_buf, llvm::ConstantInt::get(ctx_.int64Type(), i)));
+            {arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), n_rt * 16)}, "tlit_values");
+        llvm::Value* index_buf = builder.CreateCall(arena_alloc_func,
+            {arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), n_rt * 8)}, "tlit_indices");
+        for (uint64_t k = 0; k < n_rt; k++) {
+            llvm::Value* kk = llvm::ConstantInt::get(ctx_.int64Type(), k);
+            ctx_.builder().CreateStore(runtime_elems[k].second,
+                ctx_.builder().CreateGEP(ctx_.taggedValueType(), values_buf, kk));
+            ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), runtime_elems[k].first),
+                ctx_.builder().CreateGEP(ctx_.int64Type(), index_buf, kk));
         }
         llvm::FunctionCallee store_values = ctx_.module().getOrInsertFunction(
-            "eshkol_tensor_store_values",
+            "eshkol_tensor_store_indexed",
             llvm::FunctionType::get(ctx_.int32Type(),
-                {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false));
+                {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false));
         llvm::Value* status = ctx_.builder().CreateCall(store_values,
-            {typed_tensor_ptr, values_buf, llvm::ConstantInt::get(ctx_.int64Type(), n_elems)},
+            {typed_tensor_ptr, index_buf, values_buf, llvm::ConstantInt::get(ctx_.int64Type(), n_rt)},
             "tlit_store_status");
         ctx_.emitSlotStoreStatusCheck(status, "tensor");
     }
