@@ -10943,7 +10943,7 @@ entries:
       ns-residual any-order tau-series).
     evidence: >-
       Native JIT and AOT, re-measured on fix/v135f-taylor at 592cf7f9f:
-      tests/ad/nested_towers_matrix_test.esk 164/164 checks
+      tests/ad/nested_towers_matrix_test.esk 165/165 checks
       (nested_towers_matrix_runtime_smoke, nested_towers_matrix_aot_smoke, now
       registered), tests/ad/nested_operator_matrix_test.esk including the
       both-passes-order->=2 cells (nested_operator_matrix_runtime_smoke/_aot_smoke).

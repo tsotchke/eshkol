@@ -1714,11 +1714,7 @@ static eshkol_tagged_value_t num_binary(arena_t* ar, eshkol_tagged_value_t a,
         }
         return eshkol_make_double(pow(tagged_any_to_double(&a), tagged_any_to_double(&b)));
     }
-    if (exact) {
-        if (op == ESH_TAYLOR_OP_div && num_is_exact_zero(&b))
-            return eshkol_make_double(tagged_any_to_double(&a) / 0.0);
-        return exact_binary(ar, a, b, op);
-    }
+    if (exact) return exact_binary(ar, a, b, op);   /* exact / exact 0 raises, as R7RS requires */
     double x = tagged_any_to_double(&a), y = tagged_any_to_double(&b);
     switch (op) {
         case ESH_TAYLOR_OP_add: return eshkol_make_double(x + y);
