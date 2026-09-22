@@ -578,7 +578,8 @@ CLOSURE_RETURN_VOID (7)</code></pre>
     uint64_t  num_dimensions; // Rank (8 bytes)
     int64_t*  elements;       // Elements as int64 bit patterns (8 bytes)
     uint64_t  total_elements; // Product of dimensions (8 bytes)
-} eshkol_tensor_t;           // Total: 32 bytes (cache-aligned)</code></pre>
+    uint64_t  dtype;          // Tensor dtype tag (8 bytes)
+} eshkol_tensor_t;           // Total: 40 bytes (8-byte aligned)</code></pre>
 <p><strong>Storage Convention</strong>: Elements stored as <code>int64_t</code> containing <strong>bit patterns</strong> of doubles.</p>
 <p><strong>CRITICAL</strong>: Always use <code>bitcast</code>, never <code>fptosi</code>:</p>
 <pre class="c"><code>// CORRECT: bitcast preserves bit pattern
@@ -944,7 +945,7 @@ eshkol&gt; (cube 3)
 │   │   └── *.esk            # Stdlib modules (33 files)
 │   │
 │   ├── frontend/
-│   │   ├── parser.cpp       # S-expr parser (11,116 lines)
+│   │   ├── parser.cpp       # S-expr parser (11,115 lines)
 │   │   └── macro_expander.cpp # Macro system (1,658 lines)
 │   │
 │   ├── types/

@@ -1,5 +1,5 @@
 <h1 id="eshkol-quick-reference-card">Eshkol Quick Reference Card</h1>
-<p><strong>v1.3.5</strong> – 1,052 built-in functions</p>
+<p><strong>v1.3.5</strong> – 1,053 built-in functions</p>
 <h2 id="basics">Basics</h2>
 <pre class="scheme"><code>;; Variables
 (define x 42)
@@ -336,8 +336,10 @@
 
 ;; Knowledge bases
 (define kb (make-kb))
-(kb-assert! kb (make-fact &#39;parent (list &#39;alice &#39;bob)))
-(kb-query kb &#39;parent)          ;; -&gt; list of matching facts
+(kb-assert! kb (make-fact &#39;parent &#39;alice &#39;bob))
+(kb-query kb (make-fact &#39;parent &#39;alice ?child))
+                               ;; -&gt; ({?child -&gt; bob}): one substitution per matching fact
+(walk ?child (car (kb-query kb &#39;(parent alice ?child))))  ;; -&gt; bob
 (kb? kb)                       ;; -&gt; #t
 (fact? f)                      ;; -&gt; #t
 

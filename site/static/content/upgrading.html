@@ -21,9 +21,10 @@
   (when flag
     (area &quot;wide&quot; 3)))
 
-(display (report #f))
+(report #f)
+(display &quot;still runs&quot;)
 (newline)</code></pre>
-<pre class="text"><code>#f</code></pre>
+<pre class="text"><code>still runs</code></pre>
 <pre class="console"><code>[WARN] Type warning: argument 1 of &#39;area&#39;: expected Number, got String (line 5:11)
    WARNING: HoTT: 1 type warnings detected (gradual typing continues)</code></pre>
 <p><strong>What to do.</strong> A warning does not stop compilation or change what the program computes. Under <code>--strict-types</code> every such diagnostic is an error and no code is generated, so a strict build that passed on v1.3.4 can stop on v1.3.5 at a mistake it did not see before. Fix the call, narrow the value with a type predicate, or ascribe it with <code>(the type expr)</code> where you know more than the checker. The rules, and how to read a diagnostic, are in <a href="/docs#page=guide_gradual_typing" data-url="/content/guide_gradual_typing.html">the gradual typing guide</a>.</p>

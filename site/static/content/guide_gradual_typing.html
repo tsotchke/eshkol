@@ -40,9 +40,10 @@
   (when flag
     (area &quot;wide&quot; 3)))
 
-(display (report #f))
+(report #f)
+(display &quot;still runs&quot;)
 (newline)</code></pre>
-<pre class="text"><code>#f</code></pre>
+<pre class="text"><code>still runs</code></pre>
 <p>The compiler writes this on standard error:</p>
 <pre class="console"><code>[WARN] Type warning: argument 1 of &#39;area&#39;: expected Number, got String (line 5:11)
    WARNING: HoTT: 1 type warnings detected (gradual typing continues)</code></pre>
