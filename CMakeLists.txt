@@ -4441,6 +4441,58 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: complex_value_derivative"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Numeric builtins on derivative carriers. SW-210: the integral family
+    # (asin acos atan asinh acosh atanh log2 log10 exp2 cbrt, the rounding
+    # functions, atan2) on a Taylor tower or level answered its primal.
+    # SW-211: complex expt/log/angle and the inverse functions lost the
+    # derivative a complex value carries. SW-214: square, inexact and
+    # magnitude of a real carrier did the same. JIT and AOT.
+    foreach(_carrier_test
+            taylor_integral_family:tests/ad/taylor_integral_family_test.esk
+            complex_carrier_math:tests/ad/complex_carrier_math_test.esk
+            unary_numeric_builtin_carriers:tests/ad/unary_numeric_builtin_carriers_test.esk)
+        string(REPLACE ":" ";" _carrier_parts "${_carrier_test}")
+        list(GET _carrier_parts 0 _carrier_name)
+        list(GET _carrier_parts 1 _carrier_src)
+        add_test(
+            NAME ${_carrier_name}_jit
+            COMMAND $<TARGET_FILE:eshkol-run>
+                    -r "${CMAKE_CURRENT_SOURCE_DIR}/${_carrier_src}"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(${_carrier_name}_jit
+            PROPERTIES
+                TIMEOUT 600
+                ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+                PASS_REGULAR_EXPRESSION "PASS: ${_carrier_name}"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Unhandled exception")
+        add_test(
+            NAME ${_carrier_name}_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_carrier_name}_aot' '${CMAKE_CURRENT_SOURCE_DIR}/${_carrier_src}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/${_carrier_name}_aot'"
+        )
+        set_tests_properties(${_carrier_name}_aot
+            PROPERTIES
+                TIMEOUT 900
+                PASS_REGULAR_EXPRESSION "PASS: ${_carrier_name}"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Unhandled exception")
+    endforeach()
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        # Every builtin the math dispatch lowers has a Taylor recurrence, and
+        # every complex kernel a carrier formula; the selftest proves the gate
+        # goes red on each shape it guards.
+        add_test(NAME taylor_unary_route_guard
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_taylor_unary_routes.py
+                         check --repo ${CMAKE_CURRENT_SOURCE_DIR})
+        add_test(NAME taylor_unary_route_guard_selftest
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_taylor_unary_routes.py
+                         selftest --repo ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(taylor_unary_route_guard taylor_unary_route_guard_selftest
+            PROPERTIES PASS_REGULAR_EXPRESSION "PASS: taylor unary route guard")
+    endif()
     add_test(
         NAME complex_evaluation_point_cached
         COMMAND $<TARGET_FILE:eshkol-run>
