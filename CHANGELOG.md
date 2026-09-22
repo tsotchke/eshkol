@@ -14,6 +14,20 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **Number syntax is one grammar, complex numbers included (SW-223).** The
+  source parser split `1+1i` into `1` and `+1i`, the bytecode VM read it as a
+  call, `(string->number "1+1i")` answered `#f` while `read` returned a symbol,
+  `#i42` was exact and `#e1.5` was not a number. Every reader -- program
+  literals, `read` and `string->number`, on the native compiler and the VM --
+  now asks one recognizer for the full R7RS grammar: `a+bi`, `a-bi`, `+i`,
+  `-i`, `+bi`, polar `m@a`, `#e`/`#i` and `#b`/`#o`/`#d`/`#x` prefixes,
+  rational and infinite or NaN parts (ADR-0028). `1+0i` is the exact integer
+  1. `#e` on a non-real complex number, an infinity or a zero denominator is a
+  compile error in a program, a read error for `read`, and `#f` from
+  `string->number`. `string->number` accepts the R7RS radices 2, 8, 10 and 16
+  (it had accepted up to 36). A native
+  `read` of an integer past int64 had clamped to `INT64_MAX`; it is now the
+  exact bignum. A symbol spelled like a number is written with bars (`|+i|`).
 - **A container accessor read the wrong kind of container as its own
   (SW-221).** `(vector-ref (list 1 2 3) 0)` answered `8` natively and `()` on
   the bytecode VM; `(vector-length (list 1 2 3))` answered `4097` and `0`;

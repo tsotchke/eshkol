@@ -37288,6 +37288,11 @@ private:
                 if (isQuotedRationalLiteralDesugar(op)) {
                     return codegenQuotedRationalLiteral(op);
                 }
+                // Likewise a complex literal (`1+2i` -> `(make-rectangular
+                // 1.0 2.0)`, parser.cpp): quoted, it is the complex number.
+                if (isQuotedComplexLiteralDesugar(op)) {
+                    return codegenMakeRectangular(op);
+                }
                 // Build list: (op arg1 arg2 ...) and wrap as tagged_value
                 Value* list_ptr = codegenQuotedList(op);
                 if (list_ptr == ConstantInt::get(int64_type, 0)) {
@@ -37654,6 +37659,20 @@ private:
             if (t != ESHKOL_INT64 && t != ESHKOL_BIGNUM_LITERAL) return false;
         }
         return true;
+    }
+
+    // True when `op` is exactly the complex-literal desugar the parser
+    // synthesizes (parser.cpp, parse_atom's TOKEN_NUMBER branch): a call to
+    // "make-rectangular" with two DOUBLE literal operands. A complex literal's
+    // parts are always inexact, so a variable or exact operand is a genuine
+    // call and stays list data under quote.
+    static bool isQuotedComplexLiteralDesugar(const eshkol_operations_t* op) {
+        if (!op || op->op != ESHKOL_CALL_OP) return false;
+        const auto& call = op->call_op;
+        if (!call.func || call.func->type != ESHKOL_VAR || !call.func->variable.id) return false;
+        if (std::string(call.func->variable.id) != "make-rectangular") return false;
+        if (call.num_vars != 2 || !call.variables) return false;
+        return call.variables[0].type == ESHKOL_DOUBLE && call.variables[1].type == ESHKOL_DOUBLE;
     }
 
     // Construct the actual rational VALUE for a quoted `n/d` literal

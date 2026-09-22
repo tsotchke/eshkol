@@ -5,6 +5,7 @@
 
 #include "eshkol/backend/vm_limits.h"
 #include "../../inc/eshkol/core/string_escape.h"
+#include "../../inc/eshkol/core/number_syntax.h"
 #include "eshkol/backend/mutation_observation.h"
 
 /*******************************************************************************
@@ -486,6 +487,74 @@ static Node* make_int_or_bignum_node(const char* digits, int len) {
     return n;
 }
 
+/* A number token ends where an identifier would. */
+static int vm_number_token_delimiter(char c) {
+    return c == 0 || isspace((unsigned char)c) || c == '(' || c == ')' || c == '"' ||
+           c == ';' || c == '\'' || c == '`' || c == ',' || c == '|';
+}
+
+/* An N_NUMBER leaf holding an inexact double. */
+static Node* make_inexact_number_node(double v) {
+    Node* n = make_node(N_NUMBER);
+    if (!n) return NULL;
+    n->numval = v;
+    n->is_inexact = 1;
+    return n;
+}
+
+/* The double an inexact canonical part (DECIMAL or INFNAN) spells. */
+static double vm_numsyn_inexact_value(const eshkol_numsyn_part_t* p) {
+    if (p->kind == ESHKOL_NUMSYN_INFNAN) {
+        double v = p->text[1] == 'i' ? INFINITY : NAN;
+        return p->text[0] == '-' ? -v : v;
+    }
+    return strtod(p->text, NULL);
+}
+
+/* A two-element call node (head a b). */
+static Node* make_call2_node(const char* head, Node* a, Node* b) {
+    Node* call = make_node(N_LIST);
+    Node* op = make_node(N_SYMBOL);
+    if (!call || !op || !a || !b) {
+        free_node(call); free_node(op); free_node(a); free_node(b);
+        return NULL;
+    }
+    strncpy(op->symbol, head, 127);
+    op->symbol[127] = 0;
+    add_child(call, op); add_child(call, a); add_child(call, b);
+    return call;
+}
+
+/* Build the node for a number the shared recognizer accepted: an exact
+ * integer (int64 or bignum), the (exact-rational n d) desugar, an inexact
+ * double, or for a complex number the (make-rectangular x y) desugar with
+ * inexact parts -- the same shapes the native parser produces. */
+static Node* vm_number_node(const eshkol_numsyn_t* syn) {
+    const eshkol_numsyn_part_t* p = &syn->part[0];
+    if (syn->form == ESHKOL_NUMSYN_REAL) {
+        if (p->kind == ESHKOL_NUMSYN_INTEGER)
+            return make_int_or_bignum_node(p->text, (int)strlen(p->text));
+        if (p->kind == ESHKOL_NUMSYN_RATIONAL) {
+            const char* slash = strchr(p->text, '/');
+            return make_call2_node("exact-rational",
+                make_int_or_bignum_node(p->text, (int)(slash - p->text)),
+                make_int_or_bignum_node(slash + 1, (int)strlen(slash + 1)));
+        }
+        return make_inexact_number_node(vm_numsyn_inexact_value(p));
+    }
+    {
+        double x = vm_numsyn_inexact_value(&syn->part[0]);
+        double y = vm_numsyn_inexact_value(&syn->part[1]);
+        if (syn->form == ESHKOL_NUMSYN_POLAR) {
+            double m = x, a = y;
+            x = m * cos(a);
+            y = m * sin(a);
+        }
+        return make_call2_node("make-rectangular",
+                               make_inexact_number_node(x), make_inexact_number_node(y));
+    }
+}
+
 /**
  * @brief Recursive-descent S-expression reader: parses one datum from the
  *        compiler context's src_ptr cursor — lists, quote/quasiquote/
@@ -591,6 +660,32 @@ static Node* parse_sexp(void) {
             while (1) { skip_ws(); if (!*src_ptr || *src_ptr == ')') break; Node* el = parse_sexp(); if (!el) break; add_child(vec, el); }
             if (*src_ptr == ')') src_ptr++;
             return vec;
+        }
+    }
+    /* R7RS 7.1.1 numbers -- every real and complex spelling, with radix and
+     * exactness prefixes -- decided by the recognizer every Eshkol reader
+     * shares (inc/eshkol/core/number_syntax.h). A token it rejects is left
+     * for the identifier and legacy paths below. */
+    if (isdigit((unsigned char)*src_ptr) || *src_ptr == '+' || *src_ptr == '-' ||
+        *src_ptr == '.' || *src_ptr == '#') {
+        const char* end = src_ptr;
+        while (!vm_number_token_delimiter(*end)) end++;
+        if (end > src_ptr) {
+            eshkol_numsyn_t syn;
+            eshkol_numsyn_status_t st =
+                eshkol_number_syntax_parse(src_ptr, (size_t)(end - src_ptr), 10, &syn);
+            if (st == ESHKOL_NUMSYN_OK) {
+                Node* n = vm_number_node(&syn);
+                eshkol_number_syntax_free(&syn);
+                src_ptr = end;
+                return n;
+            }
+            if (st != ESHKOL_NUMSYN_NOT_A_NUMBER) {
+                fprintf(stderr, "ERROR: invalid numeric literal %.*s: %s\n",
+                        (int)(end - src_ptr), src_ptr, eshkol_number_syntax_status_message(st));
+                src_ptr = end;
+                return NULL;
+            }
         }
     }
     /* R7RS special float literals: +nan.0, +inf.0, -inf.0 */
@@ -1783,6 +1878,20 @@ static void compile_quote(FuncChunk* c, Node* datum) {
         compile_quote(c, datum->children[1]);
         compile_quote(c, datum->children[2]);
         chunk_emit(c, OP_NATIVE_CALL, 330);
+        return;
+    }
+    if (datum->type == N_LIST && !datum->is_vector && datum->n_children == 3 &&
+        datum->children[0]->type == N_SYMBOL &&
+        eshkol_syntax_base_is(datum->children[0]->symbol, "make-rectangular") &&
+        datum->children[1]->type == N_NUMBER && datum->children[1]->is_inexact &&
+        datum->children[2]->type == N_NUMBER && datum->children[2]->is_inexact) {
+        /* The complex-literal desugar (1+2i -> (make-rectangular 1.0 2.0),
+         * vm_number_node above): quoted, it is the complex number, built by
+         * make-rectangular (native 300) exactly as the evaluated literal is.
+         * Only the reader's own shape -- two inexact literal parts -- counts. */
+        compile_quote(c, datum->children[1]);
+        compile_quote(c, datum->children[2]);
+        chunk_emit(c, OP_NATIVE_CALL, 300);
         return;
     }
     if (datum->type == N_LIST && datum->is_vector) {

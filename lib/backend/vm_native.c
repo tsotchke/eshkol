@@ -1,3 +1,4 @@
+#include "../../inc/eshkol/core/number_syntax.h"
 #include "../core/model_io_atomic.h"
 #include "../core/tensor_observation.h"
 
@@ -7497,6 +7498,94 @@ static void vm_write_value_port(VM* vm, Value value, VmPort* port,
 #define VM_READER_MAX_TOKEN ESHKOL_VM_PACKED_STRING_MAX_BYTES
 
 static Value vm_reader_datum(VM* vm, VmPort* port, int depth, int* ok, int* eof);
+static void vm_dispatch_native(VM* vm, int fid);
+
+/* Number text -> VM value, for every VM reader of number text: the
+ * string->number natives and `read` (the source parser, vm_parser.c, builds
+ * the same shapes as literal nodes). The grammar is the shared R7RS
+ * recognizer (inc/eshkol/core/number_syntax.h); the value is built by the
+ * VM's own constructors -- a reduced exact rational by native 330, a complex
+ * number by make-rectangular (native 300) -- so a read or converted number is
+ * the value the same literal evaluates to. On ESHKOL_NUMSYN_OK the number is
+ * pushed; any other status pushes nothing. */
+static eshkol_numsyn_status_t vm_push_number_from_text(VM* vm, const char* text, size_t len,
+                                                       int radix) {
+    eshkol_numsyn_t syn;
+    eshkol_numsyn_status_t st = eshkol_number_syntax_parse(text, len, radix, &syn);
+    if (st != ESHKOL_NUMSYN_OK) return st;
+    for (int p = 0; p < (syn.form == ESHKOL_NUMSYN_REAL ? 1 : 2); ++p) {
+        const eshkol_numsyn_part_t* part = &syn.part[p];
+        if (part->kind == ESHKOL_NUMSYN_INTEGER || part->kind == ESHKOL_NUMSYN_RATIONAL) {
+            const char* slash = strchr(part->text, '/');
+            for (int half = 0; half < (slash ? 2 : 1); ++half) {
+                char digits[512];
+                const char* at = half ? slash + 1 : part->text;
+                size_t n = half ? strlen(at) : (slash ? (size_t)(slash - part->text) : strlen(at));
+                char* heap_digits = n < sizeof(digits) ? digits : (char*)malloc(n + 1);
+                if (!heap_digits) { eshkol_number_syntax_free(&syn); return ESHKOL_NUMSYN_NO_MEMORY; }
+                memcpy(heap_digits, at, n);
+                heap_digits[n] = 0;
+                errno = 0;
+                char* end = NULL;
+                long long v = strtoll(heap_digits, &end, 10);
+                if (errno != ERANGE && end && *end == 0) {
+                    vm_push(vm, INT_VAL((int64_t)v));
+                } else {
+                    VmBignum* bn = bignum_from_string(&vm->heap.regions, heap_digits);
+                    int32_t ptr = bn ? heap_alloc(&vm->heap) : -1;
+                    if (ptr < 0) {
+                        if (heap_digits != digits) free(heap_digits);
+                        eshkol_number_syntax_free(&syn);
+                        return ESHKOL_NUMSYN_NO_MEMORY;
+                    }
+                    vm->heap.objects[ptr]->type = HEAP_BIGNUM;
+                    vm->heap.objects[ptr]->opaque.ptr = bn;
+                    vm_push(vm, (Value){.type = VAL_BIGNUM, .as.ptr = ptr});
+                }
+                if (heap_digits != digits) free(heap_digits);
+            }
+            if (slash) vm_dispatch_native(vm, 330);   /* exact-rational */
+        } else {
+            double v;
+            if (part->kind == ESHKOL_NUMSYN_INFNAN) {
+                v = part->text[1] == 'i' ? HUGE_VAL : (double)NAN;
+                if (part->text[0] == '-') v = -v;
+            } else {
+                v = strtod(part->text, NULL);
+            }
+            vm_push(vm, FLOAT_VAL(v));
+        }
+    }
+    if (syn.form != ESHKOL_NUMSYN_REAL) {
+        if (syn.form == ESHKOL_NUMSYN_POLAR) {
+            Value angle = vm_pop(vm), mag = vm_pop(vm);
+            double m = as_number(mag), a = as_number(angle);
+            vm_push(vm, FLOAT_VAL(m * cos(a)));
+            vm_push(vm, FLOAT_VAL(m * sin(a)));
+        }
+        vm_dispatch_native(vm, 300);                  /* make-rectangular */
+    }
+    eshkol_number_syntax_free(&syn);
+    return ESHKOL_NUMSYN_OK;
+}
+
+/* (string->number s [radix]) on the VM: the number, or #f for text that is
+ * not a number or number syntax without a value. Surrounding blanks are
+ * ignored, as natively (bignum.cpp). */
+static void vm_string_to_number_value(VM* vm, Value s_val, int radix) {
+    VmString* s = (s_val.type == VAL_STRING)
+        ? (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr : NULL;
+    if (!s || !s->data || (radix != 2 && radix != 8 && radix != 10 && radix != 16)) {
+        vm_push(vm, BOOL_VAL(0));
+        return;
+    }
+    const char* text = s->data;
+    size_t len = (size_t)s->byte_len;
+    while (len > 0 && (*text == ' ' || *text == '\t')) { text++; len--; }
+    while (len > 0 && (text[len - 1] == ' ' || text[len - 1] == '\t')) len--;
+    if (vm_push_number_from_text(vm, text, len, radix) != ESHKOL_NUMSYN_OK)
+        vm_push(vm, BOOL_VAL(0));
+}
 static Value vm_reader_token(VM* vm, VmPort* port, int first, int* ok);
 
 static int vm_reader_delimiter(int ch) {
@@ -7867,73 +7956,20 @@ static Value vm_reader_token(VM* vm, VmPort* port, int first, int* ok) {
         return (Value){.type = VAL_CHAR, .as.i = cp};
     }
 
-    char* end = NULL;
-    errno = 0;
-    long long integer = strtoll(token, &end, 10);
-    if (end && *end == '\0' && end != token && errno != ERANGE) {
-        free(token); return INT_VAL((int64_t)integer);
-    }
-    /* Preserve exactness beyond int64 instead of silently turning a decimal
-     * integer into a symbol.  bignum_from_string is arena-backed and accepts
-     * the same optional leading sign as strtoll. */
-    int decimal_integer = token[0] != '\0';
-    size_t digit_index = (token[0] == '+' || token[0] == '-') ? 1u : 0u;
-    if (token[digit_index] == '\0') decimal_integer = 0;
-    for (size_t i = digit_index; decimal_integer && token[i] != '\0'; ++i)
-        if (!isdigit((unsigned char)token[i])) decimal_integer = 0;
-    if (decimal_integer && errno == ERANGE) {
-        VmBignum* bignum = bignum_from_string(&vm->heap.regions, token);
-        int32_t ptr = bignum ? heap_alloc(&vm->heap) : -1;
-        if (!bignum || ptr < 0) {
-            free(token); *ok = 0; vm->error = 1; return NIL_VAL;
-        }
-        vm->heap.objects[ptr]->type = HEAP_BIGNUM;
-        vm->heap.objects[ptr]->opaque.ptr = bignum;
-        free(token);
-        return (Value){.type = VAL_BIGNUM, .as.ptr = ptr};
-    }
-    /* Exact rationals are normalized by the production numeric tower and
-     * collapse to an integer when the reduced denominator is one. */
-    char* slash = strchr(token, '/');
-    if (slash && slash != token && slash[1] != '\0' && !strchr(slash + 1, '/')) {
-        *slash = '\0';
-        char *num_end = NULL, *den_end = NULL;
-        errno = 0;
-        long long numerator = strtoll(token, &num_end, 10);
-        int numerator_ok = errno != ERANGE && num_end && *num_end == '\0';
-        errno = 0;
-        long long denominator = strtoll(slash + 1, &den_end, 10);
-        int denominator_ok = errno != ERANGE && den_end && *den_end == '\0' &&
-                             denominator != 0;
-        *slash = '/';
-        if (numerator_ok && denominator_ok) {
-            VmRational* rational = vm_rational_make(
-                vm_active_arena(&vm->heap.regions),
-                (int64_t)numerator, (int64_t)denominator);
-            if (!rational) {
-                free(token); *ok = 0; vm->error = 1; return NIL_VAL;
-            }
-            if (rational->denom == 1) {
-                int64_t value = rational->num;
-                free(token);
-                return INT_VAL(value);
-            }
-            int32_t ptr = heap_alloc(&vm->heap);
-            if (ptr < 0) {
-                free(token); *ok = 0; vm->error = 1; return NIL_VAL;
-            }
-            vm->heap.objects[ptr]->type = HEAP_RATIONAL;
-            vm->heap.objects[ptr]->opaque.ptr = rational;
+    /* A number exactly when the shared R7RS recognizer says so; number
+     * syntax with no value (1/0, #e+inf.0) is a read error, not a symbol. */
+    {
+        eshkol_numsyn_status_t st = vm_push_number_from_text(vm, token, len, 10);
+        if (st == ESHKOL_NUMSYN_OK) { free(token); return vm_pop(vm); }
+        if (st != ESHKOL_NUMSYN_NOT_A_NUMBER) {
+            char msg[160];
+            snprintf(msg, sizeof(msg), "read: %.64s: %s", token,
+                     eshkol_number_syntax_status_message(st));
             free(token);
-            return (Value){.type = VAL_RATIONAL, .as.ptr = ptr};
+            vm_raise_error_msg(vm, msg);
+            *ok = 0;
+            return NIL_VAL;
         }
-    }
-    errno = 0;
-    end = NULL;
-    double real = strtod(token, &end);
-    if (end && *end == '\0' && end != token && errno != ERANGE &&
-        (strchr(token, '.') || strchr(token, 'e') || strchr(token, 'E'))) {
-        free(token); return FLOAT_VAL(real);
     }
     Value result = vm_reader_string_value(vm, token, len, 1);
     free(token);
@@ -12136,11 +12172,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 563: case 564: { /* string->number / number->string */
         if (fid == 563) { /* string->number */
-            Value s_val = vm_pop(vm);
-            VmString* s = (s_val.type == VAL_STRING) ? (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr : NULL;
-            double d = vm_string_to_number(s);
-            if (isnan(d)) vm_push(vm, BOOL_VAL(0)); /* #f on parse failure */
-            else vm_push(vm, number_val(d));
+            vm_string_to_number_value(vm, vm_pop(vm), 10);
         } else { /* number->string */
             Value n = vm_pop(vm);
             VmString* r = vm_number_value_to_string(vm, n);
@@ -12203,11 +12235,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
     case 568: { /* string->number (alt ID) */
-        Value s_val = vm_pop(vm);
-        VmString* s = (s_val.type == VAL_STRING) ? (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr : NULL;
-        double d = vm_string_to_number(s);
-        if (isnan(d)) vm_push(vm, BOOL_VAL(0));
-        else vm_push(vm, number_val(d));
+        vm_string_to_number_value(vm, vm_pop(vm), 10);
         break;
     }
     case 569: { /* number->string (alt ID) */
@@ -16256,104 +16284,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push_rational_norm(vm, i2e_r);
         }
         break; }
-    case 215: { /* string->number — handles #x/#b/#o/#d prefixes */
-        Value a = vm_pop(vm);
-        if (a.type != VAL_STRING) { vm_push(vm, BOOL_VAL(0)); break; }
-        VmString* s215 = (VmString*)vm->heap.objects[a.as.ptr]->opaque.ptr;
-        if (!s215 || !s215->data || s215->data[0] == '\0') { vm_push(vm, BOOL_VAL(0)); break; }
-        const char* p215 = s215->data;
-        int radix215 = 10;
-        if (p215[0] == '#') {
-            char pfx = (char)(p215[1] | 32); /* lowercase */
-            if      (pfx == 'x') { radix215 = 16; p215 += 2; }
-            else if (pfx == 'b') { radix215 = 2;  p215 += 2; }
-            else if (pfx == 'o') { radix215 = 8;  p215 += 2; }
-            else if (pfx == 'd') { radix215 = 10; p215 += 2; }
-            else { vm_push(vm, BOOL_VAL(0)); break; }
-        }
-        /* R7RS 7.1.1 <infnan>: exactly +inf.0 / -inf.0 / +nan.0 / -nan.0, in
-         * every radix.  Must be matched explicitly — strtod() below also
-         * accepts "inf", "infinity" and "nan", none of which are Scheme
-         * numeric literals, and it stops before the mandatory ".0" so the real
-         * spellings were REJECTED while the bogus ones were accepted.  Kept
-         * byte-identical with eshkol_s2n_infnan() in lib/core/bignum.cpp so a
-         * printed infinity reads back the same on both substrates. */
-        {
-            double infnan215 = 0.0; int matched215 = 0;
-            if (p215[0] == '+' || p215[0] == '-') {
-                double mag215 = 0.0; int have215 = 0;
-                if      (strncmp(p215 + 1, "inf.0", 5) == 0) { mag215 = HUGE_VAL; have215 = 1; }
-                else if (strncmp(p215 + 1, "nan.0", 5) == 0) { mag215 = (double)NAN; have215 = 1; }
-                if (have215) {
-                    const char* rest215 = p215 + 6;
-                    while (*rest215 == ' ' || *rest215 == '\t') rest215++;
-                    if (*rest215 == '\0') {
-                        infnan215 = (p215[0] == '-') ? -mag215 : mag215;
-                        matched215 = 1;
-                    }
-                }
-            }
-            if (matched215) { vm_push(vm, FLOAT_VAL(infnan215)); break; }
-        }
-        char* end215 = NULL;
-        if (radix215 == 10) {
-            /* A decimal number must begin with a digit or '.' after an
-             * optional sign (mirrors eshkol_s2n_decimal()'s guard).  Without
-             * it strtod() accepted the C-only spellings "inf" / "infinity" /
-             * "nan", which native correctly rejects. */
-            {
-                const char* d215 = p215;
-                while (*d215 == ' ' || *d215 == '\t') d215++;
-                if (*d215 == '+' || *d215 == '-') d215++;
-                if (!(*d215 >= '0' && *d215 <= '9') && *d215 != '.') {
-                    vm_push(vm, BOOL_VAL(0)); break;
-                }
-            }
-            /* Exact rational "num/denom" (R7RS 7.1.1 <ratio>), as native's
-             * eshkol_s2n_decimal() reads it.  The VM had no rational branch, so
-             * (number->string 1/2) printed "1/2" and string->number then
-             * answered #f — the same failure to read back a printed value as
-             * the <infnan> case above. */
-            {
-                const char* slash215 = strchr(p215, '/');
-                if (slash215 && !strpbrk(p215, ".eE")) {
-                    char* nend215 = NULL;
-                    errno = 0;
-                    long long num215 = strtoll(p215, &nend215, 10);
-                    if (nend215 == slash215 && errno != ERANGE) {
-                        char* dend215 = NULL;
-                        errno = 0;
-                        long long den215 = strtoll(slash215 + 1, &dend215, 10);
-                        if (*dend215 == '\0' && dend215 != slash215 + 1
-                            && errno != ERANGE && den215 != 0) {
-                            VmRational* rat215 = vm_rational_make(
-                                vm_active_arena(&vm->heap.regions),
-                                (int64_t)num215, (int64_t)den215);
-                            if (rat215) {
-                                if (rat215->denom == 1) {
-                                    vm_push(vm, INT_VAL(rat215->num));
-                                } else {
-                                    VM_PUSH_HEAP_OPAQUE(vm, HEAP_RATIONAL,
-                                                        VAL_RATIONAL, rat215);
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (slash215) { vm_push(vm, BOOL_VAL(0)); break; }
-            }
-            /* Try integer first; fall back to float */
-            long long iv = strtoll(p215, &end215, 10);
-            if (*end215 == '\0' && end215 != p215) { vm_push(vm, INT_VAL((int64_t)iv)); break; }
-            double dv = strtod(p215, &end215);
-            if (*end215 == '\0' && end215 != p215) { vm_push(vm, FLOAT_VAL(dv)); break; }
-            vm_push(vm, BOOL_VAL(0));
-        } else {
-            long long iv = strtoll(p215, &end215, radix215);
-            if (*end215 == '\0' && end215 != p215) { vm_push(vm, INT_VAL((int64_t)iv)); break; }
-            vm_push(vm, BOOL_VAL(0));
-        }
+    case 215: { /* string->number */
+        vm_string_to_number_value(vm, vm_pop(vm), 10);
         break; }
     case 216: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number(a))); break; } /* char->integer */
     case 217: { Value a = vm_pop(vm); vm_push(vm, (Value){.type = VAL_CHAR, .as.i = (int64_t)as_number(a)}); break; } /* integer->char */
