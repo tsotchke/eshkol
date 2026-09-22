@@ -3,7 +3,7 @@
 ;;; of the enclosing levels; a tensor literal keeps it whole in a jet tensor
 ;;; (ADR-0020 amendment 2), tensor-ref reads it back whole, and tensor-sum folds
 ;;; it with the language's own `+`. Before, the tensor literal stored it as 0.
-;;; Native JIT and AOT; the VM half of the level carrier is ADR-0027 section 6.
+;;; Runs on the native JIT, an AOT binary, the VM and the VM from ESKB.
 
 (define failures 0)
 (define (check label got want)

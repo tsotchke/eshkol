@@ -5739,8 +5739,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: exact derivative through collection intermediates"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
     # SW-212: a nested differentiation level's carrier (ADR-0027) survives a
-    # tensor literal, tensor-ref and tensor-sum (ADR-0020 amendment 2). Native
-    # JIT and AOT; the VM half of the level carrier is ADR-0027 section 6.
+    # tensor literal, tensor-ref and tensor-sum (ADR-0020 amendment 2), on the
+    # native JIT, AOT, the VM from source and the VM from ESKB.
     add_test(
         NAME nested_level_through_tensor_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
@@ -5752,9 +5752,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         COMMAND sh -c
             "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor_aot'"
     )
+    add_test(
+        NAME nested_level_through_tensor_vm_smoke
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk"
+    )
+    add_test(
+        NAME nested_level_through_tensor_vm_eskb_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor.eskb'"
+    )
     set_tests_properties(
         nested_level_through_tensor_runtime_smoke
         nested_level_through_tensor_aot_smoke
+        nested_level_through_tensor_vm_smoke
+        nested_level_through_tensor_vm_eskb_smoke
         PROPERTIES
             TIMEOUT 900
             PASS_REGULAR_EXPRESSION "PASS: nested level carrier through tensors"

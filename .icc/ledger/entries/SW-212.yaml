@@ -31,8 +31,9 @@ evidence: >-
 caught_by: [integrator-release-review]
 missed_by: [exact_point_ad_test, vm_parity]
 notes: >-
-  The VM half rides the ADR-0027 VM level carrier (fix/v135f-vmtaylor): on this
-  branch the VM answers 0 for nested levels with or without a tensor, and loses
-  exactness in d1-of-dn with or without one, so the nested cases are gated on the
-  native engines only until that carrier lands. The VM tensor-kernel guard
-  already treats a non-scalar carrier kind as a derivative.
+  Re-measured after merging integration 74ab39152 (VM level carrier from
+  fix/v135f-vmtaylor): nested_level_through_tensor passes on the native JIT,
+  AOT, the VM from source and the VM from ESKB (CTest
+  nested_level_through_tensor_{runtime,aot,vm,vm_eskb}_smoke). The VM
+  tensor-kernel guard treats every non-scalar VmDual kind, LEVEL included, as a
+  derivative.
