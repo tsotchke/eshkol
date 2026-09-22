@@ -350,6 +350,7 @@ typedef struct esh_taylor {
  * tagged values on the `c[]` storage and points esh_taylor_t::exact_c at it.
  */
 #define ESH_TAYLOR_COEFF_RATIONAL 1u
+#define ESH_TAYLOR_COEFF_CARRIER  2u
 // P5 (ESH-0190) reverse-over-Taylor: a tower may carry a parallel first-order
 // "seed tangent" series alongside its value series. When ESH_TAYLOR_TANGENT_FLAG
 // is set the coefficient storage holds 2*(K+1) doubles: c[0..K] values followed
@@ -493,6 +494,8 @@ int32_t eshkol_taylor_project_forward_tangent(
 #define ESH_AD_NEST_RIDE         2   // this first-order pass rides the outer tower's tangent
 /** @brief Route 3: the outer pass is an order-1 tower, which rides this tower's tangent series. */
 #define ESH_AD_NEST_CARRY_TWR    3   // outer order-1 tower rides this tower's tangent
+#define ESH_AD_NEST_LEVEL         ESH_AD_NEST_RIDE
+#define ESH_AD_NEST_LEVEL_JET     ESH_AD_NEST_CARRY_TWR
 /** @brief Route -1: neither pass is first order, so no composition exists; the caller raises an error. */
 #define ESH_AD_NEST_UNSUPPORTED (-1) // neither pass is first order: caller raises
 

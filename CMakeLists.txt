@@ -4787,15 +4787,31 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: exactness is decided by the carrier at run time"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
-    # ESH-0413 (ledger SW-154) is NOT in force on this branch: the candidate's
-    # Taylor carrier (the hyperdual companion pair plus the exact sidecar) is
-    # the model that ships, and the carrier-coefficient rewrite that lifts the
-    # nesting ceiling is not compatible with it. tests/ad/nested_towers_matrix_
-    # test.esk is kept in the tree as the pinned reproduction of that ceiling
-    # (both-passes-order->=2 raises; two enclosing levels answer 0) and is
-    # deliberately NOT registered here, because it cannot pass until that
-    # rewrite lands. The nesting shapes that DO hold are gated by
-    # nested_operator_matrix_* and ad_carrier_nesting_* above.
+    # ESH-0413 (ledger SW-154): differentiation passes nest at any depth and any
+    # order. A foreign level is represented as a coefficient of the active one,
+    # preserving every enclosing level instead of flattening or refusing it.
+    add_test(
+        NAME nested_towers_matrix_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_towers_matrix_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(nested_towers_matrix_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: nested towers matrix"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME nested_towers_matrix_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_towers_matrix_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_towers_matrix_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_towers_matrix_aot'"
+    )
+    set_tests_properties(nested_towers_matrix_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: nested towers matrix"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
     # ESH-0096 (ledger SW-05): differentiating a first-class `gradient` closure
     # again with an enclosing REVERSE pass. `(jacobian (gradient f) point)`
     # answered `#((0))` — silently — where `(hessian f point)` answers `#((12))`

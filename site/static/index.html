@@ -210,7 +210,18 @@
         window._vmOutput = '';
         window._vmStderr = '';
         if (typeof EshkolVM !== 'undefined') {
+          // Emscripten's print callbacks buffer until a newline. Scheme display
+          // deliberately does not add one: capture UTF-8 bytes instead so the
+          // final output is visible and cannot leak into the next evaluation.
+          const stdoutDecoder = new TextDecoder();
+          const stderrDecoder = new TextDecoder();
           EshkolVM({
+            stdout: (byte) => {
+              if (byte != null) window._vmOutput += stdoutDecoder.decode(Uint8Array.of(byte), {stream: true});
+            },
+            stderr: (byte) => {
+              if (byte != null) window._vmStderr += stderrDecoder.decode(Uint8Array.of(byte), {stream: true});
+            },
             print: (text) => { window._vmOutput += text + '\n'; },
             printErr: (text) => {
               window._vmStderr += text + '\n';
