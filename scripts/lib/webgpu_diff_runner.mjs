@@ -49,24 +49,20 @@ const FAST_REGRESSION_TOL = 1e-4;
  * than syntax errors, so the gate is shown to catch WRONG RESULTS and not
  * merely a shader that fails to compile. */
 const CORRUPTIONS = {
-    /* GEMM f32/df32 share this indexing line; swapping B's stride transposes
-     * the second operand. */
+    /* GEMM f32/sf64 index lines; swapping B's stride transposes the second
+     * operand. */
     gemm: [
-        /acc = acc \+ A\[row \* d\.K \+ k\] \* B\[k \* d\.N \+ col\];/,
-        'acc = acc + A[row * d.K + k] * B[col * d.K + k];',
-    ],
-    gemm_df32: [
-        /acc = df_add\(acc, df_mul\(A\[row \* d\.K \+ k\], B\[k \* d\.N \+ col\], slot\), slot\);/,
-        'acc = df_add(acc, df_mul(A[row * d.K + k], B[col * d.K + k], slot), slot);',
+        /acc = f64_add\(acc, f64_mul\(A\[row \* d\.K \+ k\], B\[k \* d\.N \+ col\]\)\);/,
+        'acc = f64_add(acc, f64_mul(A[row * d.K + k], B[col * d.K + k]));',
     ],
     /* Elementwise: make ADD compute a - b. */
-    elem: [/case 0u:  \{ r = a \+ b; \}/, 'case 0u:  { r = a - b; }'],
-    elem_df32: [/case 0u: \{ r = df_add\(a, b, i\); \}/, 'case 0u: { r = df_add(a, df_neg(b), i); }'],
-    /* Reduction: make every partial block empty, producing a wrong identity. */
-    reduce: [/var hi = block_start \+ p\.per_group;/, 'var hi = block_start;'],
-    /* Double-float core: break two_prod's error term, which silently degrades
-     * df32 to f32 -- the subtlest realistic corruption of the set. */
-    two_prod: [/let e = opaque_f32\(fma\(aa, bb, -p\), slot\);/, 'let e = opaque_f32(0.0, slot);'],
+    elem: [/case 0u:  \{ r = f64_add\(a, b\); \}/, 'case 0u:  { r = f64_add(a, f64_neg(b)); }'],
+    /* Reduction: make every block empty, producing the identity. */
+    reduce: [/let end = min\(start \+ p\.per_block, p\.n\);/, 'let end = start;'],
+    /* Rounding: drop ties-to-even, so exact halfway cases round away. */
+    round: [/if \(round_bits == 0x200u\) \{ sig\.x = sig\.x & 0xFFFFFFFEu; \}/, ''],
+    /* Sticky bit: forget bits shifted out during alignment. */
+    sticky: [/let lost = back\.x != a\.x \|\| back\.y != a\.y;/, 'let lost = false;'],
 };
 
 function loadModuleSource() {
@@ -98,7 +94,7 @@ async function runInPage(page, cases) {
         if (!navigator.gpu) return { skip: 'navigator.gpu unavailable' };
 
         const created = await G.create({
-            precision: regression ? 'fast' : 'high',
+            precision: regression ? 'fast' : 'exact',
             gateTolerance,
             threshold: 1
         });
@@ -111,7 +107,7 @@ async function runInPage(page, cases) {
         if (!be.supportsOperation('matmul')) {
             return { unsupported: regression
                 ? 'UNSUPPORTED: WebGPU fast matmul opt-in is not available at gateTolerance=' + gateTolerance
-                : 'UNSUPPORTED: WebGPU df32 matmul is not certified at GPU_GATE_TOL=1e-9' };
+                : 'UNSUPPORTED: WebGPU exact matmul is unavailable' };
         }
 
         /* 16 MB of linear memory: enough for every small shape below, and the
@@ -150,9 +146,36 @@ async function runInPage(page, cases) {
                     const aP = alloc(n), bP = alloc(n), gP = alloc(n), cP = alloc(n);
                     const A = new Float64Array(memory.buffer, aP, n);
                     const B = new Float64Array(memory.buffer, bP, n);
-                    for (let i = 0; i < n; i++) A[i] = r() * 4 - 2;
-                    /* keep the divisor away from zero so DIV is well conditioned */
-                    for (let i = 0; i < n; i++) B[i] = (r() * 2 - 1) + (r() > 0.5 ? 1.5 : -1.5);
+                    if (c.values === 'bits') {
+                        /* Uniform random bit patterns: every exponent,
+                         * subnormals, infinities and NaNs. */
+                        const w = new Uint32Array(memory.buffer, aP, n * 2);
+                        const v = new Uint32Array(memory.buffer, bP, n * 2);
+                        for (let i = 0; i < n * 2; i++) {
+                            w[i] = Math.floor(r() * 4294967296);
+                            v[i] = Math.floor(r() * 4294967296);
+                        }
+                        /* Pull half of the B exponents near A's so add/sub
+                         * exercise alignment, cancellation and ties. */
+                        for (let i = 0; i < n; i += 2) {
+                            v[i * 2 + 1] = (v[i * 2 + 1] & 0x800fffff) |
+                                (((w[i * 2 + 1] >>> 20) & 0x7ff) + (i % 7) - 3 & 0x7ff) << 20;
+                        }
+                    } else if (c.values === 'edge') {
+                        const E = [0, -0, 1, -1, 2, 0.5, 3, 1 / 3, Infinity, -Infinity, NaN,
+                                   5e-324, -5e-324, 2.2250738585072014e-308, 2.225073858507201e-308,
+                                   1.7976931348623157e308, -1.7976931348623157e308,
+                                   1 + 2 ** -52, 1 - 2 ** -53, 2 ** -1022, 2 ** 1023, 1e-300, 1e300,
+                                   9007199254740993, 4503599627370497.5, 0.1, 0.2, 0.30000000000000004];
+                        for (let i = 0; i < n; i++) {
+                            A[i] = E[i % E.length];
+                            B[i] = E[Math.floor(i / E.length) % E.length];
+                        }
+                    } else {
+                        for (let i = 0; i < n; i++) A[i] = r() * 4 - 2;
+                        /* keep the divisor away from zero so DIV is well conditioned */
+                        for (let i = 0; i < n; i++) B[i] = (r() * 2 - 1) + (r() > 0.5 ? 1.5 : -1.5);
+                    }
                     await be.elementwiseF64(aP, bP, gP, n, c.op);
                     G.cpu.elementwise(fakeMem, aP, bP, cP, n, c.op);
                     entry.gpu = Array.from(new Float64Array(memory.buffer, gP, n));
@@ -170,6 +193,18 @@ async function runInPage(page, cases) {
                     entry.cpu = Array.from(new Float64Array(memory.buffer, cP, 1));
                 }
                 entry.dispatched = be.dispatchCount - before;
+                /* Bitwise agreement (NaN payloads aside): the exact tier's
+                 * GEMM and elementwise results must be bit-identical. */
+                const gb = new BigUint64Array(new Float64Array(entry.gpu).buffer);
+                const cb = new BigUint64Array(new Float64Array(entry.cpu).buffer);
+                entry.bitDiff = -1;
+                for (let i = 0; i < gb.length; i++) {
+                    if (gb[i] !== cb[i] && !(Number.isNaN(entry.gpu[i]) && Number.isNaN(entry.cpu[i]))) {
+                        entry.bitDiff = i;
+                        entry.bitDiffHex = [gb[i].toString(16), cb[i].toString(16)];
+                        break;
+                    }
+                }
             } catch (e) {
                 entry.error = String(e);
             }
@@ -180,7 +215,6 @@ async function runInPage(page, cases) {
             results,
             dispatchCount: be.dispatchCount,
             fallbackCount: be.fallbackCount,
-            fmaFused: be.fmaFused,
             diagnostics: be.diagnostics,
             adapter: created.adapter && created.adapter.info
                 ? `${created.adapter.info.vendor}/${created.adapter.info.architecture}`
@@ -200,7 +234,7 @@ if (!Number.isFinite(GPU_GATE_TOL) || GPU_GATE_TOL <= 0) {
     console.error('webgpu_diff_runner: invalid GPU_GATE_TOL=' + process.env.GPU_GATE_TOL);
     process.exit(2);
 }
-const TOL = { high: GPU_GATE_TOL, fast: FAST_REGRESSION_TOL };
+const TOL = { exact: GPU_GATE_TOL, fast: FAST_REGRESSION_TOL };
 
 function compare(entry) {
     if (entry.error) return { ok: false, why: 'threw: ' + entry.error };
@@ -209,6 +243,10 @@ function compare(entry) {
         return { ok: false, why: `expected exactly 1 GPU dispatch, saw ${entry.dispatched} ` +
                                  '(a case served by the CPU proves nothing)' };
     }
+    if (entry.tier === 'exact' && entry.kind !== 'reduce' && entry.bitDiff >= 0) {
+        return { ok: false, worst: NaN, at: entry.bitDiff, tol: 0,
+                 why: `exact tier is not bit-identical at [${entry.bitDiff}]: gpu=0x${entry.bitDiffHex[0]} cpu=0x${entry.bitDiffHex[1]}` };
+    }
     let worst = 0, at = -1;
     let scale = 0;
     for (let i = 0; i < entry.cpu.length; i++) scale = Math.max(scale, Math.abs(entry.cpu[i]));
@@ -216,7 +254,7 @@ function compare(entry) {
     for (let i = 0; i < entry.cpu.length; i++) {
         const g = entry.gpu[i], c = entry.cpu[i];
         if (!Number.isFinite(g) || !Number.isFinite(c)) {
-            if (g !== c) return { ok: false, why: `non-finite mismatch at ${i}: ${g} vs ${c}` };
+            if (g !== c && !(Number.isNaN(g) && Number.isNaN(c))) return { ok: false, why: `non-finite mismatch at ${i}: ${g} vs ${c}` };
             continue;
         }
         const e = Math.abs(g - c) / denom;
@@ -234,7 +272,7 @@ function compare(entry) {
 /* ---- case matrix (small shapes only: this runs in a browser under the RSS
  * discipline, and correctness of the kernel does not need large N) ---- */
 const CASES = [];
-for (const tier of REGRESSIONS ? ['fast'] : ['high']) {
+for (const tier of REGRESSIONS ? ['fast'] : ['exact']) {
     /* Shapes deliberately include non-multiples of the 8x8 workgroup tile so
      * the bounds guards in the kernel are exercised. */
     for (const [M, K, N] of [[8, 8, 8], [16, 32, 16], [33, 17, 9], [1, 64, 1]]) {
@@ -245,8 +283,14 @@ for (const tier of REGRESSIONS ? ['fast'] : ['high']) {
                         M: 8, K: 8, N: 8, values: 'ones', seed: 1 });
     }
     if (!REGRESSIONS) {
-        for (const [op, nm] of [[0, 'add'], [1, 'sub'], [2, 'mul'], [3, 'div'], [4, 'neg'], [5, 'abs']]) {
+        const ELEM_OPS = [[0, 'add'], [1, 'sub'], [2, 'mul'], [3, 'div'], [4, 'neg'], [5, 'abs'],
+                          [11, 'relu'], [14, 'reciprocal']];
+        for (const [op, nm] of ELEM_OPS) {
             CASES.push({ name: `elem_${nm}`, kind: 'elementwise', tier, n: 1000, op, seed: 900 + op });
+            CASES.push({ name: `elem_${nm}_bits`, kind: 'elementwise', tier, n: 4096, op,
+                         values: 'bits', seed: 1900 + op });
+            CASES.push({ name: `elem_${nm}_edge`, kind: 'elementwise', tier, n: 28 * 28, op,
+                         values: 'edge', seed: 1 });
         }
         for (const [op, nm] of [[0, 'sum'], [1, 'prod'], [2, 'min'], [3, 'max'], [4, 'mean']]) {
             CASES.push({ name: `reduce_${nm}`, kind: 'reduce', tier, n: 4096, op, seed: 700 + op });
@@ -345,9 +389,6 @@ if (out.dispatchCount === 0) {
 } else {
     console.log(`PASSED webgpu_diff/non_vacuity (${out.dispatchCount} GPU dispatches, ` +
                 `${out.fallbackCount} CPU fallbacks)`);
-}
-if (!out.fmaFused) {
-    console.log('NOTE webgpu_diff/fma - fma() is not fused on this adapter; df32 tier was downgraded');
 }
 for (const d of out.diagnostics || []) console.log('NOTE ' + d);
 if (out.pageErrors) for (const e of out.pageErrors) console.log('NOTE page error: ' + e);

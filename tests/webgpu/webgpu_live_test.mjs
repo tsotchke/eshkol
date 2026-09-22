@@ -51,10 +51,12 @@ try {
         assert(G, 'EshkolWebGPU did not load');
         assert(navigator.gpu, 'navigator.gpu is unavailable');
 
-        const created = await G.create({ precision: 'fast', gateTolerance: 1e-4,
-                                         threshold: 1 });
+        /* Default tier: exact (sf64), the same default as native backends. */
+        const created = await G.create({ threshold: 1 });
         assert(created.ok, created.reason || 'WebGPU initialization failed');
         const backend = created.backend;
+        assert.equal(backend.precision, 'exact');
+        assert(backend.hasFp64(), 'exact tier must report an f64 path');
         const limit = backend.maxComputeWorkgroupsPerDimension;
         assert(Number.isSafeInteger(limit) && limit > 0,
                'device workgroup limit was not captured');
@@ -90,8 +92,9 @@ try {
         }
 
         const small = await gemm(8, 8, 8, () => 1, () => 1);
-        const nonsquare = await gemm(3, 5, 7, (i) => (i % 5) - 2,
-                                     (i) => (i % 7) - 3);
+        /* Non-integer operands: only a true f64 path is bit-identical. */
+        const nonsquare = await gemm(3, 5, 7, (i) => ((i % 5) - 2) / 3,
+                                     (i) => ((i % 7) - 3) / 7 + 1e-9);
 
         async function boundary(N) {
             bump = 64;
@@ -139,7 +142,7 @@ try {
 
         return {
             limit,
-            fmaFused: backend.fmaFused,
+            tier: backend.precision,
             smallDispatches: small.length,
             nonsquareDispatches: nonsquare.length,
             boundaryDispatches: `${atLimit.length}/${overLimit.length}`,
@@ -148,10 +151,10 @@ try {
             diagnostics: backend.diagnostics
         };
     });
-    console.log('LIVE WebGPU initialization complete fmaFused=' + result.fmaFused +
+    console.log('LIVE WebGPU initialization complete tier=' + result.tier +
                 ' maxComputeWorkgroupsPerDimension=' + result.limit);
     console.log('LIVE GEMM 8x8 exact CPU reference dispatches=' + result.smallDispatches);
-    console.log('LIVE GEMM 3x5*5x7 exact CPU reference dispatches=' + result.nonsquareDispatches);
+    console.log('LIVE GEMM 3x5*5x7 fractional, bit-identical to CPU reference dispatches=' + result.nonsquareDispatches);
     console.log('LIVE dispatch boundary 65535/65536 workgroups=' + result.boundaryDispatches);
     console.log('LIVE JSPI table callback suspension result=' + result.callback);
     console.log('PASS WebGPU live Chrome contracts dispatchCount=' + result.dispatchCount);

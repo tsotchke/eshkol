@@ -27,17 +27,31 @@ function installMockJSPI() {
 function testPrecisionContracts() {
     const device = {};
     const logs = [];
-    const high = new G.EshkolWebGPU(device, { threshold: 1, log: (msg) => logs.push(msg) });
-    assert.equal(high.shouldUse(1), false);
-    assert.equal(high.supportsOperation('matmul'), false);
-    assert.equal(high.supportsOperation('elementwise', G.ELEM.ADD), false);
-    assert.equal(high.supportsOperation('elementwise', G.ELEM.EXP), false);
-    assert.equal(high.supportsOperation('reduce', G.REDUCE.SUM), false);
-    assert.equal(high.supportsOperation('reduce', G.REDUCE.PROD), false);
-
-    const exact = new G.EshkolWebGPU(device, { precision: 'exact', threshold: 1 });
-    assert.equal(exact.shouldUse(1), false);
-    assert.equal(exact.supportsOperation('matmul'), false);
+    /* The default tier is exact, as on the native backends, and it is
+     * served by the sf64 kernels. `high` is served by the same kernels. */
+    const dflt = new G.EshkolWebGPU(device, { threshold: 1, log: (msg) => logs.push(msg) });
+    assert.equal(dflt.precision, 'exact');
+    for (const tier of [dflt, new G.EshkolWebGPU(device, { precision: 'high', threshold: 1 })]) {
+        assert.equal(tier.shouldUse(1), true);
+        assert.equal(tier.shouldUse(0), false);
+        assert.equal(tier.hasFp64(), true);
+        assert.equal(tier.supportsF64(), false);
+        assert.equal(tier.supportsOperation('matmul'), true);
+        for (const op of [G.ELEM.ADD, G.ELEM.SUB, G.ELEM.MUL, G.ELEM.DIV, G.ELEM.NEG,
+                          G.ELEM.ABS, G.ELEM.RELU, G.ELEM.RECIPROCAL]) {
+            assert.equal(tier.supportsOperation('elementwise', op), true, 'sf64 op ' + op);
+        }
+        for (const op of [G.ELEM.EXP, G.ELEM.LOG, G.ELEM.SIN, G.ELEM.COS, G.ELEM.TANH,
+                          G.ELEM.SIGMOID, G.ELEM.SQRT]) {
+            assert.equal(tier.supportsOperation('elementwise', op), false, 'no sf64 kernel ' + op);
+        }
+        for (const op of Object.values(G.REDUCE)) {
+            assert.equal(tier.supportsOperation('reduce', op), true);
+        }
+    }
+    const lost = new G.EshkolWebGPU(null, { threshold: 1 });
+    assert.equal(lost.shouldUse(1), false);
+    assert.equal(lost.hasFp64(), false);
 
     const fast = new G.EshkolWebGPU(device, { precision: 'fast', threshold: 1 });
     assert.equal(fast.shouldUse(1), false);
@@ -106,7 +120,7 @@ async function testExecutionMarkerAndCPUFallback() {
             threshold: 1,
             diagnostics: [],
             fallbackCount: 0,
-            precision: 'high',
+            precision: 'exact',
             shouldUse: () => true,
             supportsOperation: () => true,
             setMemory: () => {},
@@ -175,7 +189,8 @@ function testIntegrationContracts() {
     assert.match(webgpu, /pushErrorScope\('validation'\)/);
     assert.match(webgpu, /webgpuValidation/);
     assert.match(webgpu, /@workgroup_size\(\$\{ELEM_WORKGROUP\}, 1, 1\)/);
-    assert.match(webgpu, /await this\._submitDispatch\(enc, pass, Math\.ceil\(n \/ ELEM_WORKGROUP\), 1, 1/);
+    assert.match(webgpu, /const groups = Math\.ceil\(n \/ ELEM_WORKGROUP\);/);
+    assert.match(webgpu, /await this\._submitDispatch\(enc, pass, groups, 1, 1/);
     assert.match(webgpu, /executionMarker/);
     assert.match(webgpu, /lastExecutionMarker/);
     assert.match(repl, /eshkol_batch_matmul_dispatch: gpu\.eshkol_batch_matmul_dispatch/);
@@ -186,7 +201,8 @@ function testIntegrationContracts() {
     assert.match(runtime, /promisingEntry\(fn\)/);
     assert.doesNotMatch(repl, /__indirect_function_table\.get\(callbackFuncPtr\)\(/);
     assert.doesNotMatch(runtime, /__indirect_function_table\.get\(callbackFuncPtr\)\(/);
-    assert.match(workflow, /GPU_GATE_TOL: '1e-9'/);
+    /* The browser gate runs at the runner's 1e-9 default; nothing loosens it. */
+    assert.doesNotMatch(workflow, /GPU_GATE_TOL: '(?!1e-9')/);
     assert.match(workflow, /node scripts\/lib\/webgpu_diff_runner\.mjs/);
 }
 

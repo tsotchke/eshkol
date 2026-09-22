@@ -8,24 +8,21 @@
  * predicate (eshkol_gpu_should_use: active backend + element-count
  * threshold), not through a browser-special path.
  *
- * PRECISION. WGSL has no f64 of any kind — not native, not an extension — so
- * the f64 entry points cannot be served natively. The backend slots into the
- * existing ESHKOL_GPU_PRECISION tier vocabulary (see
- * docs/breakdown/RUNTIME_CONFIGURATION.md) as implemented by
- * web/eshkol-webgpu.js:
+ * PRECISION. WGSL has no f64 type, so the f64 entry points are served by
+ * sf64 kernels in web/eshkol-webgpu.js: IEEE 754 binary64 arithmetic on the
+ * integer bit pattern, the WGSL sibling of this directory's metal_softfloat.h.
+ * The backend uses the ESHKOL_GPU_PRECISION tier vocabulary (see
+ * docs/breakdown/RUNTIME_CONFIGURATION.md):
  *
- *   exact : IEEE f64, correct to ULP. NOT AVAILABLE on WebGPU. The JS backend
- *           declines every dispatch in this tier and this file takes the CPU
- *           path. (An sf64/Ozaki-II WGSL port is a named follow-up.)
- *   high  : df32 — each f64 carried as an unevaluated (hi, lo) pair of f32
- *           with Dekker/Knuth double-float arithmetic. About 48 bits of
- *           mantissa against f64's 53. THIS IS THE WebGPU DEFAULT.
- *   fast  : plain f32, about 24 bits.
+ *   exact : sf64, correctly rounded add/sub/mul/div. THE DEFAULT, as on the
+ *           native backends. GEMM and elementwise results are bit-identical
+ *           to the CPU path.
+ *   high  : served by the same sf64 kernels.
+ *   fast  : plain f32, admitted only with an explicit tolerance >= 1e-6.
  *
- * Because no tier here is correct-to-ULP, eshkol_gpu_has_fp64() returns 0 —
- * unlike Metal, where sf64/Ozaki-II emulation makes it return 1. That is a
- * deliberate honesty constraint: df32 is close, not exact, and a caller that
- * needs exactness must be able to detect the difference.
+ * eshkol_gpu_has_fp64() therefore reports 1 while an f64 tier is active, as on
+ * Metal, whose f64 is also emulated. Operations with no sf64 kernel (the
+ * transcendentals) are refused by the JS backend and take the CPU fallback.
  *
  * ASYNC. WebGPU readback is unavoidably asynchronous (GPUBuffer.mapAsync).
  * Eshkol's runtime is synchronous C compiled to wasm32. The bridge is
@@ -115,7 +112,7 @@ enum {
 enum {
     ESHKOL_WEBGPU_OK        = 0,
     ESHKOL_WEBGPU_NO_DEVICE = 1,  /* no backend object, or its device is gone */
-    ESHKOL_WEBGPU_DECLINED  = 2,  /* backend.shouldUse() false (tier `exact`) */
+    ESHKOL_WEBGPU_DECLINED  = 2,  /* backend refused: below threshold or no kernel for the op/tier */
     ESHKOL_WEBGPU_THREW     = 3   /* kernel or readback raised */
 };
 
@@ -149,8 +146,7 @@ EM_JS(void, eshkol_webgpu_js_set_threshold, (double threshold), {
 });
 
 /** @brief Mirror the JS operation-eligibility predicate. The C side cannot
- *         infer the selected precision tier or an adapter's fused-fma result;
- *         consulting the same backend object prevents C from reporting a GPU
+ *         infer the selected precision tier; consulting the same backend object prevents C from reporting a GPU
  *         dispatch that the browser glue will immediately refuse. */
 EM_JS(int, eshkol_webgpu_js_should_use, (double num_elements), {
     var be = (typeof Module !== "undefined" && Module["eshkolWebGPUBackend"]) ||
@@ -311,13 +307,21 @@ int eshkol_gpu_supports_f64(void) {
     return 0;
 }
 
-/** @brief Any correct-to-ULP f64 path, native or emulated: always 0. The
- *         df32 tier carries about 48 mantissa bits against f64's 53, so it
- *         is close but NOT exact; reporting 1 here would mislead callers that
- *         specifically need IEEE f64 results. Those callers get the CPU
- *         path. */
+/** @brief Report whether the page's backend runs an f64 tier (sf64). */
+EM_JS(int, eshkol_webgpu_js_has_fp64, (void), {
+    var be = (typeof Module !== "undefined" && Module["eshkolWebGPUBackend"]) ||
+             globalThis.eshkolWebGPUBackend ||
+             (globalThis.EshkolWebGPU && globalThis.EshkolWebGPU.backend);
+    return (be && typeof be.hasFp64 === "function" && be.hasFp64()) ? 1 : 0;
+});
+
+/** @brief Any correct f64 path, native or emulated: 1 while the WebGPU
+ *         backend is active on the exact/high tier, whose sf64 kernels are
+ *         correctly rounded IEEE f64 (the same meaning as on Metal). 0 on the
+ *         f32 `fast` tier or without a device. */
 int eshkol_gpu_has_fp64(void) {
-    return 0;
+    if (g_active_backend != ESHKOL_GPU_WEBGPU) return 0;
+    return eshkol_webgpu_js_has_fp64();
 }
 
 // ============================================================================
@@ -474,10 +478,8 @@ size_t eshkol_gpu_get_threshold(void) {
 
 /** @brief Decide whether an operation of `num_elements` elements should go to
  *         the GPU: an active backend plus at-or-above the threshold. The JS
- *         side applies the precision-tier certification test as well;
- *         unverified `high` and `exact` tiers decline everything, which
- *         surfaces here as a bridge fallback rather than a different answer
- *         from this predicate.
+ *         side applies the precision-tier admission test as well (the `fast`
+ *         tier without an explicit tolerance declines everything).
  *  @return 1 to use the GPU, 0 for CPU. */
 int eshkol_gpu_should_use(size_t num_elements) {
     if (g_active_backend == ESHKOL_GPU_NONE || num_elements < g_gpu_threshold) return 0;
@@ -489,7 +491,7 @@ int eshkol_gpu_should_use(size_t num_elements) {
 // ============================================================================
 
 /** @brief GPU matrix multiplication C = A * B over f64 buffers. Attempts the
- *         WGSL GEMM kernel (df32 or f32 tier) when the dispatch predicate
+ *         WGSL GEMM kernel (sf64 or f32 tier) when the dispatch predicate
  *         says the work is large enough; on any refusal or kernel error falls
  *         back to the CPU BLAS/SIMD eshkol_matmul_f64(), which is the same
  *         arithmetic the stub backend performs.
@@ -508,7 +510,7 @@ int eshkol_gpu_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B,
             const_cast<double*>(a), const_cast<double*>(b), c,
             static_cast<double>(M), static_cast<double>(K), static_cast<double>(N));
         if (rc == ESHKOL_WEBGPU_OK) return 0;
-        /* rc != 0: no device, tier `exact`, or a kernel error — CPU fallback. */
+        /* rc != 0: no device, refused tier, or a kernel error — CPU fallback. */
     }
 
     /* Refuse explicitly. The ordinary matmul dispatcher owns the CPU
@@ -547,9 +549,9 @@ int eshkol_gpu_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B,
 // ============================================================================
 
 /** @brief GPU elementwise op over f64 arrays. Attempts the WGSL elementwise
- *         kernel when the dispatch predicate allows it (the JS side routes
- *         transcendentals to the f32 kernel, since df32 has no closed form
- *         for them, and records that precision cliff in its diagnostics); on
+ *         kernel when the dispatch predicate allows it (the JS side refuses
+ *         the transcendentals, which have no sf64 kernel, and records the
+ *         CPU fallback in its diagnostics); on
  *         refusal or error falls back to the stub backend's CPU scalar loop,
  *         including its missing-`b` identity convention (0 for add/sub,
  *         1 for mul/div).
@@ -574,9 +576,9 @@ int eshkol_gpu_elementwise_f64(EshkolGPUBuffer* a, EshkolGPUBuffer* b,
     return -1;  /* ordinary callers own the CPU fallback */
 }
 
-/** @brief GPU full reduction over an f64 array. Attempts the WGSL df32
- *         reduction (whose in-workgroup tree combine makes GPU and CPU agree
- *         to tolerance, not bitwise — as on Metal and CUDA); on refusal or
+/** @brief GPU full reduction over an f64 array. Attempts the WGSL sf64
+ *         reduction (whose block-wise combine makes GPU and CPU agree to
+ *         tolerance, not bitwise — as on Metal and CUDA); on refusal or
  *         error falls back to the stub backend's sequential CPU accumulation.
  *  @return 0 on success, -1 on invalid arguments. */
 int eshkol_gpu_reduce_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
@@ -682,7 +684,7 @@ void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
     }
 
     /* CPU fallback. Do not re-enter eshkol_matmul_f64(): the ordinary
-     * dispatcher may select WebGPU again for a very large exact-tier call. */
+     * dispatcher may select WebGPU again for the same call. */
     webgpu_cpu_matmul(A, B, C, M, K, N);
 }
 
