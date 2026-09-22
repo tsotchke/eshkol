@@ -14105,7 +14105,7 @@ entries:
     bucket: SILENT-WRONG
     family: ad/native-exact-tier
     status: fixed
-    closed_at: "cc978a57a"
+    closed_at: "d3d088e0a"
     needs_decision: false
     title: "native derivative loses exactness when a scalar body uses collection intermediates"
     repro: >-
@@ -14131,13 +14131,13 @@ entries:
     missed_by: [vm_parity, exact_rational_derivative_runtime_smoke]
     notes: >-
       The list/vector/map/fold/parallel-map half closed with the value-producing
-      eligibility scan (9d47e16a4). Re-measured at cc978a57a on the native JIT, an
+      eligibility scan (9d47e16a4). Re-measured at d3d088e0a (cherry-pick of cc978a57a onto the ADR-0027 base) on the native JIT, an
       AOT binary, the VM from source and the VM from ESKB: every list, vector and
       map/fold case is exact (d/dx fold-left(+, 0, map(sq, [x x x x])) at 1/3 is
       8/3; the 2^-2000 rational agrees exactly). The residual was TENSOR
       intermediates: the native exact tier stored its Taylor tower in a tensor
       literal as 0, the jet tier refused a dual, and the VM kept only the primal.
-      cc978a57a routes every tensor construction path through the ADR-0020 slot
+      d3d088e0a routes every tensor construction path through the ADR-0020 slot
       store boundary (amendment 2): a forward carrier widens the tensor to a jet
       tensor and tensor-ref reads it back whole, so d/dx tensor-ref(tensor(x, x*x), 1)
       at 1/3 is exact 2/3 on all four routes. A body that applies a tensor kernel
@@ -14242,3 +14242,41 @@ entries:
       corpus file already notes the 1-argument form as a known divergence. The
       integrator reports the fix is on the VM Taylor lane's branch
       (fix/v135f-taylor); close this entry against that commit when it lands.
+  - id: SW-212
+    bucket: SILENT-WRONG
+    family: ad/native-exact-tier
+    status: fixed
+    closed_at: "a9747c2bb"
+    needs_decision: false
+    title: "a Taylor carrier stored in a (tensor ...) literal under a tower or level pass answers 0"
+    repro: >-
+      (derivative (lambda (a) (derivative-n (lambda (b) (tensor-ref (tensor (* a b b)
+      5.0) 0)) 1.0 2)) 2.0), and the same body with tensor-sum in place of
+      tensor-ref.
+    observed: >-
+      0 with exit status 0 on the native JIT and AOT: the literal lowering read the
+      inner pass's Taylor carrier (a level carrier under ADR-0027) as a number, and
+      a jet tensor's tensor-sum read tower slots as doubles. The jet path refused a
+      dual in the same shape.
+    correct: >-
+      2. A forward-mode carrier of any kind -- dual jet, classic tower or nested
+      level carrier -- is kept whole by the tensor slot store boundary (ADR-0020
+      amendment 2), read back whole by tensor-ref, and summed as itself by
+      tensor-sum.
+    evidence: >-
+      d3d088e0a routes every tensor construction path through the slot store
+      boundary; a9747c2bb folds a jet tensor's tensor-sum with the generic Taylor
+      entry (eshkol_jet_tensor_sum). Re-measured at a9747c2bb on the ADR-0027 base
+      (fix/v135f-exact-level): tests/ad/nested_level_through_tensor_test.esk passes
+      on JIT and AOT (d1 of dn2, dn2 of dn2, d1 of d1 of dn2, tensor-sum under a
+      level, the tensor-from-list form, exact at an exact point), and
+      tests/ad/exact_collection_intermediates_test.esk passes on JIT, AOT, VM source
+      and VM ESKB.
+    caught_by: [integrator-release-review]
+    missed_by: [exact_point_ad_test, vm_parity]
+    notes: >-
+      The VM half rides the ADR-0027 VM level carrier (fix/v135f-vmtaylor): on this
+      branch the VM answers 0 for nested levels with or without a tensor, and loses
+      exactness in d1-of-dn with or without one, so the nested cases are gated on the
+      native engines only until that carrier lands. The VM tensor-kernel guard
+      already treats a non-scalar carrier kind as a derivative.
