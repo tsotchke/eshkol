@@ -1,7 +1,7 @@
 id: SW-194
 bucket: SILENT-WRONG
 family: ad/scalar-hessian
-status: open
+status: fixed
 needs_decision: false
 title: "browser VM scalar Hessian drops the second derivative of expt"
 repro: >-
@@ -21,3 +21,11 @@ missed_by: [site_smoke, doc_audit]
 notes: >-
   Not yet committed to the release cut or deployed. Final artifact and
   release qualification remain required; a refusal is not a resolution.
+closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+fixed_by: "ADR-0027 level carrier, VM half; site/static/eshkol-vm.{js,wasm} rebuilt with scripts/build-wasm-repl.sh"
+observed_after: >-
+  (hessian (lambda (x) (expt x 4)) 1/3) is exact 4/3 on the rebuilt browser VM
+  bundle, the bytecode VM, JIT and AOT.
+evidence: >-
+  tests/ad/site_scalar_hessian_test.esk (ctest site_scalar_hessian_browser_vm,
+  site_scalar_hessian_vm, site_scalar_hessian_jit, site_scalar_hessian_aot).

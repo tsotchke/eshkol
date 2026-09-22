@@ -1,0 +1,58 @@
+;; tests/ad/vm_complex_intermediate_taylor_test.esk
+;; Ledger SW-200: derivative-n and hessian through a COMPLEX intermediate
+;; returned the wrong order on the VM. real-part and imag-part read only the
+;; part's first-order tangent, so a Taylor tower carried inside a complex
+;; number lost every coefficient above the first:
+;;   (derivative-n (lambda (x) (real-part (* x x x (make-rectangular 1 2)))) 1/3 2)
+;; answered 0.333 (the first derivative, x^2 * 3 at 1/3) where the answer is 2,
+;; and the Hessian of imag-part(x^2 (1+2i)) answered 12 where it is 4.
+;; A complex part is a carrier of any kind (ADR-0025, ADR-0027) and is now
+;; returned whole. Every expected value is analytic.
+
+(define failures 0)
+(define (fail name got want)
+  (set! failures (+ failures 1))
+  (display "FAIL: ") (display name)
+  (display " got=") (display got) (display " want=") (display want) (newline))
+(define (check name got want)
+  (if (< (abs (- got want)) 1e-9)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+
+(define w (make-rectangular 1 2))
+;; real-part(x^3 w) = x^3, imag-part = 2x^3
+(check "SW-200 d2 real-part x^3(1+2i) at 1/3"
+       (derivative-n (lambda (x) (real-part (* x x x w))) 1/3 2) 2)
+(check "d3 real-part x^3(1+2i)"
+       (derivative-n (lambda (x) (real-part (* x x x w))) 1/3 3) 6)
+(check "d2 imag-part x^3(1+2i) at 2"
+       (derivative-n (lambda (x) (imag-part (* x x x w))) 2.0 2) 24)
+(check "SW-200 hessian imag-part x^2(1+2i) at 1.0"
+       (hessian (lambda (x) (imag-part (* x x w))) 1.0) 4)
+(check "hessian imag-part x^2(1+2i) at 1/3"
+       (hessian (lambda (x) (imag-part (* x x w))) 1/3) 4)
+(let ((c (taylor (lambda (x) (imag-part (* x x x w))) 1/3 3)))
+  (check "taylor c0" (list-ref c 0) (/ 2.0 27.0))
+  (check "taylor c1" (list-ref c 1) (/ 2.0 3.0))
+  (check "taylor c2" (list-ref c 2) 2)
+  (check "taylor c3" (list-ref c 3) 2))
+;; a complex built from a carrier with make-rectangular / make-polar
+(check "d2 real-part (make-rectangular x^2 x)"
+       (derivative-n (lambda (x) (real-part (make-rectangular (* x x x) x))) 2.0 2) 12)
+(check "d2 imag-part (make-polar 1 x) = -sin"
+       (derivative-n (lambda (x) (imag-part (make-polar 1.0 x))) 0.5 2) (- (sin 0.5)))
+;; magnitude and angle of a complex intermediate
+(check "d1 magnitude x(3+4i)"
+       (derivative-n (lambda (x) (magnitude (* x (make-rectangular 3 4)))) 2.0 1) 5)
+(check "d2 magnitude x(3+4i)"
+       (derivative-n (lambda (x) (magnitude (* x (make-rectangular 3 4)))) 2.0 2) 0)
+(check "d2 angle (x + i) = 2x/(1+x^2)^2"
+       (derivative-n (lambda (x) (angle (make-rectangular x 1.0))) 1.0 2) 0.5)
+;; nested: the enclosing level rides through the complex intermediate
+(check "d/da d2/dx2 real-part a x^2 (1+2i)"
+       (derivative (lambda (a) (derivative-n (lambda (x) (real-part (* a x x w))) 1.0 2)) 3.0) 2)
+
+(newline)
+(if (= failures 0)
+    (begin (display "PASS: complex intermediate Taylor") (newline) (exit 0))
+    (begin (display "FAIL: complex intermediate Taylor") (newline) (exit 1)))

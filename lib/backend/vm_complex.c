@@ -42,8 +42,8 @@ static const char* vm_complex_d_error = NULL;
 
 static int vm_complex_has_tangent(const VmComplex* z) {
     return z && (z->dreal != 0.0 || z->dimag != 0.0 ||
-                 (z->creal && (z->creal->tangent != 0.0 || z->creal->kind == VM_DUAL_KIND_TAYLOR)) ||
-                 (z->cimag && (z->cimag->tangent != 0.0 || z->cimag->kind == VM_DUAL_KIND_TAYLOR)));
+                 (z->creal && (z->creal->tangent != 0.0 || z->creal->kind != VM_DUAL_KIND_SCALAR)) ||
+                 (z->cimag && (z->cimag->tangent != 0.0 || z->cimag->kind != VM_DUAL_KIND_SCALAR)));
 }
 
 static eshkol_cpx vm_cpx_tangent(const VmComplex* z) {
@@ -62,6 +62,13 @@ static VmComplex* vm_complex_new_d(VmRegionStack* rs, double real, double imag,
         }
     }
     return z;
+}
+
+/* A part that is a tower or level: its perturbations are coefficients, not
+ * the (dreal, dimag) pair, so the part-wise carrier rules must be used. */
+static int vm_complex_has_level_parts(const VmComplex* z) {
+    return z && ((z->creal && z->creal->kind != VM_DUAL_KIND_SCALAR) ||
+                 (z->cimag && z->cimag->kind != VM_DUAL_KIND_SCALAR));
 }
 
 static int vm_complex_has_carrier(const VmComplex* z) {
@@ -97,9 +104,22 @@ static int vm_cpx_set_carriers(VmRegionStack* rs, VmComplex* z,
     z->creal = re; z->cimag = im;
     z->real = re->kind == VM_DUAL_KIND_TAYLOR ? re->coeff[0] : re->primal;
     z->imag = im->kind == VM_DUAL_KIND_TAYLOR ? im->coeff[0] : im->primal;
-    z->dreal = re ? re->tangent : 0.0;
-    z->dimag = im ? im->tangent : 0.0;
+    /* dreal/dimag are the scalar dual's first-order tangent; a tower or level
+     * carries its perturbations in its coefficients instead. */
+    z->dreal = re->kind == VM_DUAL_KIND_SCALAR ? re->tangent : 0.0;
+    z->dimag = im->kind == VM_DUAL_KIND_SCALAR ? im->tangent : 0.0;
     return 1;
+}
+
+/* ADR-0027: a complex whose parts are carriers of any kind (the result of
+ * reading a nested pass's coefficient). Constant parts give a plain complex. */
+static VmComplex* vm_complex_from_parts(VmRegionStack* rs, VmDual* re, VmDual* im) {
+    if (!re || !im) return NULL;
+    if (vm_dual_is_constant(re) && vm_dual_is_constant(im))
+        return vm_complex_new(rs, re->primal, im->primal);
+    VmComplex* z = vm_complex_new(rs, 0.0, 0.0);
+    if (!z || !vm_cpx_set_carriers(rs, z, re, im)) return NULL;
+    return z;
 }
 
 enum VmComplexUnary { VM_CPX_EXP, VM_CPX_LOG, VM_CPX_SQRT, VM_CPX_SIN,
@@ -318,13 +338,12 @@ static VmComplex* vm_cpx_lift_unary(VmRegionStack* rs, const VmComplex* z,
         return vm_cpx_set_carriers(rs, out, re, im) ? out : NULL;
     }
 
-    uint32_t degree = 1;
-    const VmDual* components[2] = {a, b};
-    for (int j = 0; j < 2; ++j) if (components[j]->kind == VM_DUAL_KIND_TAYLOR) {
-        uint32_t n = components[j]->order + (components[j]->tangent_coeff ? 1u : 0u)
-                     + (components[j]->tangent2_coeff ? 1u : 0u);
-        if (n > degree) degree = n;
-    }
+    /* The increment z - p is nilpotent of the combined degree of every
+     * perturbation its parts carry (ADR-0027: nested levels add up), so the
+     * finite expansion below is exact to that degree. */
+    uint32_t degree = vm_dual_nilpotent_degree(a);
+    if (vm_dual_nilpotent_degree(b) > degree) degree = vm_dual_nilpotent_degree(b);
+    if (degree < 1) degree = 1;
     eshkol_cpx* c = (eshkol_cpx*)vm_alloc(rs, ((size_t)degree + 1) * sizeof(*c));
     if (!c) return NULL;
     eshkol_cpx p = vm_cpx_in(z), one = eshkol_cpx_make(1.0, 0.0);
@@ -366,9 +385,11 @@ static VmComplex* vm_cpx_lift_unary(VmRegionStack* rs, const VmComplex* z,
         if (!out) return NULL;
     }
     out->real = value.re; out->imag = value.im;
-    if (out->creal) { out->creal->primal = value.re;
+    /* Pin the primal to the shared core's correctly-rounded value. A level
+     * carrier's primal is its c[0]'s, recursively, so it is left as computed. */
+    if (out->creal && out->creal->kind != VM_DUAL_KIND_LEVEL) { out->creal->primal = value.re;
         if (out->creal->kind == VM_DUAL_KIND_TAYLOR) out->creal->coeff[0] = value.re; }
-    if (out->cimag) { out->cimag->primal = value.im;
+    if (out->cimag && out->cimag->kind != VM_DUAL_KIND_LEVEL) { out->cimag->primal = value.im;
         if (out->cimag->kind == VM_DUAL_KIND_TAYLOR) out->cimag->coeff[0] = value.im; }
     return out;
 }

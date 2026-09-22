@@ -6309,6 +6309,61 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 TIMEOUT 300
                 PASS_REGULAR_EXPRESSION "hessian_capture_scalar:.*PASS"
                 FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+        # ADR-0027 (docs/design/adr/0027-recursive-taylor-level-carrier.md):
+        # the VM level carrier and the real/complex/tensor boundary it rides
+        # through. Each program runs on the bytecode VM and on the browser VM
+        # (site/static/eshkol-vm.js, the same sources compiled to WebAssembly,
+        # driven by node); the ones whose native answers are already in force
+        # also run on the native JIT. Ledger: SW-154 (the two matrices),
+        # SW-193, SW-194, SW-199, SW-200, SW-202, SW-203.
+        find_program(ESHKOL_VM_CARRIER_NODE node)
+        set(_esh_vm_carrier_tests
+            "nested_towers_matrix|tests/ad/nested_towers_matrix_test.esk|PASS: nested towers matrix|vm"
+            "nested_operator_matrix|tests/ad/nested_operator_matrix_test.esk|PASS: nested operator matrix|vm"
+            "vm_nested_holomorphic|tests/ad/vm_nested_holomorphic_test.esk|PASS: VM nested holomorphic derivatives|all"
+            "site_scalar_hessian|tests/ad/site_scalar_hessian_test.esk|site scalar Hessian PASS|browser"
+            "complex_exact_parts|tests/complex/complex_exact_parts_test.esk|PASS: complex exact parts|all"
+            "vm_complex_intermediate_taylor|tests/ad/vm_complex_intermediate_taylor_test.esk|PASS: complex intermediate Taylor|vm"
+            "tensor_full_reduction|tests/tensor/tensor_full_reduction_test.esk|PASS: tensor full reductions|all"
+            "complex_negate_abs|tests/complex/complex_negate_abs_test.esk|PASS: complex negate and abs|all"
+            "vm_region_evac_level_carrier|tests/memory/vm_region_evac_level_carrier_test.esk|PASS: VM region-evac level carrier|vm")
+        foreach(_esh_spec IN LISTS _esh_vm_carrier_tests)
+            string(REPLACE "|" ";" _esh_parts "${_esh_spec}")
+            list(GET _esh_parts 0 _esh_name)
+            list(GET _esh_parts 1 _esh_file)
+            list(GET _esh_parts 2 _esh_pass)
+            list(GET _esh_parts 3 _esh_engines)
+            set(_esh_fail "FAIL:|TOTAL FAILURES|ERROR: VM terminated|WASM-RUNNER-EXCEPTION|fatal signal")
+            set(_esh_names "")
+            if(NOT _esh_engines STREQUAL "browser")
+                add_test(NAME ${_esh_name}_vm
+                    COMMAND ${CMAKE_COMMAND} -E env ESHKOL_VM_NO_DISASM=1 ESHKOL_ARENA_POISON=1
+                        $<TARGET_FILE:eshkol-vm-standalone-test>
+                        "${CMAKE_CURRENT_SOURCE_DIR}/${_esh_file}")
+                list(APPEND _esh_names ${_esh_name}_vm)
+            endif()
+            if(ESHKOL_VM_CARRIER_NODE)
+                add_test(NAME ${_esh_name}_browser_vm
+                    COMMAND ${ESHKOL_VM_CARRIER_NODE}
+                        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/lib/wasm_diff_runner.js"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/site/static/eshkol-vm.js"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/${_esh_file}")
+                list(APPEND _esh_names ${_esh_name}_browser_vm)
+            endif()
+            if(_esh_engines STREQUAL "all")
+                add_test(NAME ${_esh_name}_jit
+                    COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+                        $<TARGET_FILE:eshkol-run> -r
+                        "${CMAKE_CURRENT_SOURCE_DIR}/${_esh_file}"
+                        -L "${CMAKE_CURRENT_BINARY_DIR}")
+                list(APPEND _esh_names ${_esh_name}_jit)
+            endif()
+            set_tests_properties(${_esh_names}
+                PROPERTIES
+                    TIMEOUT 600
+                    PASS_REGULAR_EXPRESSION "${_esh_pass}"
+                    FAIL_REGULAR_EXPRESSION "${_esh_fail}")
+        endforeach()
     endif()
     add_test(
         NAME i128_generic_runtime_smoke

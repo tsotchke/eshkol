@@ -92,12 +92,14 @@ void vm_run(VM* vm) {
     escape.frame_generation = escape.frame_floor > 0 ?
         vm->frames[escape.frame_floor - 1].generation : 0;
     escape.native_depth = vm->native_call_depth;
+    escape.ad_live_passes = vm->ad_live_passes;
     vm->native_escape_context = &escape;
     if (setjmp(escape.destination) != 0) {
         /* A handled raise or continuation crossed one or more native C
          * helper frames. Resume the nearest still-owning interpreter loop
          * from the restored VM state, preserving its native callback depth. */
         vm->native_call_depth = escape.native_depth;
+        vm->ad_live_passes = escape.ad_live_passes;
         vm->halted = 0;
         vm->error = 0;
     }
@@ -284,11 +286,9 @@ void vm_run(VM* vm) {
             vm_push_i128(vm, eshkol_i128_neg(vm_unbox_i128(vm, a))); /* i128-neg */
             DISPATCH();
         }
-        if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 1909); }
-        else if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 384); }
-        /* A rational must negate in the rational domain: falling through to the
-         * double path read the heap pointer as 0.0, so (- 1/3) answered -0. */
-        else if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 335); }
+        /* Complex, dual, hyper-dual and rational: one shared arm (a rational
+         * read by the double path was 0.0, so (- 1/3) answered -0). */
+        if (vm_unary_sign_carrier(vm, a, 0)) { }
         else if (a.type == VAL_BIGNUM) { vm->ad_node_map[vm->sp] = -1; vm_push_bignum_norm(vm, bignum_neg(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); }
         else if (a.type == VAL_INT) { VM_AD_UNARY(vm, a_sp, ad_neg);
             if (a.as.i == INT64_MIN) vm_push_bignum_norm(vm, bignum_neg(&vm->heap.regions, bignum_from_int64(&vm->heap.regions, a.as.i)));
@@ -301,10 +301,8 @@ void vm_run(VM* vm) {
             vm_push_i128(vm, av < 0 ? eshkol_i128_neg(av) : av);
             DISPATCH();
         }
-        if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 1916); }
-        else if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 383); }
         /* See lbl_NEG: (abs 1/3) answered 0 through the double path. */
-        else if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 336); }
+        if (vm_unary_sign_carrier(vm, a, 1)) { }
         else if (a.type == VAL_BIGNUM) { vm->ad_node_map[vm->sp] = -1; vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); }
         else if (a.type == VAL_INT) { VM_AD_UNARY(vm, a_sp, ad_abs);
             if (a.as.i == INT64_MIN) vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, bignum_from_int64(&vm->heap.regions, a.as.i)));
@@ -728,9 +726,8 @@ vm_exit:
                 vm_push_i128(vm, eshkol_i128_neg(vm_unbox_i128(vm, a))); /* i128-neg */
                 break;
             }
-            /* See the threaded lbl_NEG: a rational needs the rational domain;
-             * the double path below reads its heap pointer as 0.0. */
-            if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 335); break; }
+            /* See the threaded lbl_NEG: one shared carrier arm. */
+            if (vm_unary_sign_carrier(vm, a, 0)) break;
             if (a.type == VAL_BIGNUM) { vm_push_bignum_norm(vm, bignum_neg(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); break; }
             if (a.type == VAL_INT && a.as.i != INT64_MIN) { vm_push(vm, INT_VAL(-a.as.i)); break; }
             if (a.type == VAL_INT) { vm_push_bignum_norm(vm, bignum_neg(&vm->heap.regions, bignum_from_int64(&vm->heap.regions, a.as.i))); break; }
@@ -748,9 +745,7 @@ vm_exit:
              * MSVC lane) a derivative through `abs` fell to the double path,
              * which discards the tangent and answers 0. The computed-goto loop
              * has had these two lines all along; the twin simply drifted. */
-            if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 1916); break; }
-            if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 383); break; }
-            if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 336); break; }
+            if (vm_unary_sign_carrier(vm, a, 1)) break;
             if (a.type == VAL_BIGNUM) { vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); break; }
             if (a.type == VAL_INT && a.as.i != INT64_MIN) { vm_push(vm, INT_VAL(a.as.i < 0 ? -a.as.i : a.as.i)); break; }
             if (a.type == VAL_INT) { vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, bignum_from_int64(&vm->heap.regions, a.as.i))); break; }
