@@ -3,7 +3,7 @@ bucket: SILENT-WRONG
 subtag: autodiff
 family: runtime-taylor/pole-propagation
 status: fixed
-closed_at: "PENDING"
+closed_at: "6adb2890f"
 title: "a derivative through a simple pole of a quotient answered NaN natively (VM -inf); cbrt at 0 answered NaN"
 repro: >-
   (derivative (lambda (x) (/ 1.0 x)) 0.0); (derivative-n (lambda (x) (/ 1.0 x))
