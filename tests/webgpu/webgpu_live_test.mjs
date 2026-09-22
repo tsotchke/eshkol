@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SOURCE = fs.readFileSync(path.join(ROOT, 'web', 'eshkol-webgpu.js'), 'utf8');
+const RUNTIME = fs.readFileSync(path.join(ROOT, 'site', 'static', 'eshkol-runtime.js'), 'utf8');
 let chromium;
 try {
     ({ chromium } = await import('playwright'));
@@ -24,13 +25,14 @@ try {
 }
 
 const server = http.createServer((req, res) => {
-    if (req.url === '/eshkol-webgpu.js') {
+    if (req.url === '/eshkol-webgpu.js' || req.url === '/eshkol-runtime.js') {
         res.writeHead(200, { 'Content-Type': 'text/javascript' });
-        res.end(SOURCE);
+        res.end(req.url === '/eshkol-webgpu.js' ? SOURCE : RUNTIME);
         return;
     }
     res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end('<!doctype html><script src="/eshkol-webgpu.js"></script>');
+    res.end('<!doctype html><body><script src="/eshkol-webgpu.js"></script>' +
+            '<script src="/eshkol-runtime.js"></script></body>');
 });
 
 await new Promise((resolve) => server.listen(0, 'localhost', resolve));
@@ -157,6 +159,43 @@ try {
     console.log('LIVE GEMM 3x5*5x7 fractional, bit-identical to CPU reference dispatches=' + result.nonsquareDispatches);
     console.log('LIVE dispatch boundary 65535/65536 workgroups=' + result.boundaryDispatches);
     console.log('LIVE JSPI table callback suspension result=' + result.callback);
+
+    /* The same Chrome with WebGPU hidden: the runtime must say why it is on
+     * the CPU, report ESHKOL_GPU_NONE, and still compute the right answer. */
+    const cpuPage = await browser.newPage();
+    await cpuPage.addInitScript(() => {
+        Object.defineProperty(Navigator.prototype, 'gpu', { get: () => undefined, configurable: true });
+    });
+    await cpuPage.goto(`http://localhost:${port}/`);
+    const cpu = await cpuPage.evaluate(async () => {
+        const rt = new EshkolRuntime();
+        const status = await rt.initWebGPU({ threshold: 1 });
+        const env = rt.createImports().env;
+        const memory = new WebAssembly.Memory({ initial: 1 });
+        rt.memory = memory;
+        const A = new Float64Array(memory.buffer, 0, 4);
+        const B = new Float64Array(memory.buffer, 32, 4);
+        A.set([1.5, -2, 0.25, 3]);
+        B.set([2, 0.5, -1, 4]);
+        await env.eshkol_matmul_dispatch(0, 32, 64, 2, 2, 2, 0);
+        return { ok: status.ok, reason: status.reason,
+                 backend: env.eshkol_gpu_get_backend(),
+                 shouldUse: env.eshkol_gpu_should_use(1000000),
+                 C: Array.from(new Float64Array(memory.buffer, 64, 4)),
+                 backendObject: rt.webgpuBackend };
+    });
+    if (cpu.ok !== false || !/navigator\.gpu unavailable/.test(cpu.reason)) {
+        throw new Error('no-WebGPU status is not explicit: ' + JSON.stringify(cpu));
+    }
+    if (cpu.backend !== 0 || cpu.shouldUse !== 0 || cpu.backendObject !== null) {
+        throw new Error('no-WebGPU run still reports a GPU backend: ' + JSON.stringify(cpu));
+    }
+    const want = [1.5 * 2 + -2 * -1, 1.5 * 0.5 + -2 * 4, 0.25 * 2 + 3 * -1, 0.25 * 0.5 + 3 * 4];
+    if (JSON.stringify(cpu.C) !== JSON.stringify(want)) {
+        throw new Error('no-WebGPU CPU matmul is wrong: ' + JSON.stringify(cpu.C));
+    }
+    console.log('LIVE no-WebGPU fallback status="' + cpu.reason + '" backend=' + cpu.backend +
+                ' cpu matmul=' + JSON.stringify(cpu.C));
     console.log('PASS WebGPU live Chrome contracts dispatchCount=' + result.dispatchCount);
 } finally {
     if (browser) await browser.close();
