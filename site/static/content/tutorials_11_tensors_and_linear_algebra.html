@@ -86,7 +86,6 @@
 <hr />
 <h2 id="integration-with-autodiff">Integration with Autodiff</h2>
 <p>Tensor operations are differentiable:</p>
-<!-- doc-example: known-defect SW-181: the gradient is #(2 4 6); the native engines raise a type error in tensor-dot -->
 <pre class="scheme"><code>;; Gradient of a function that uses tensors
 (define (quadratic-form x)
   (tensor-dot x (matmul (eye 3) x)))
