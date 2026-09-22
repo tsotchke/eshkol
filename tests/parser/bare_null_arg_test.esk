@@ -47,20 +47,17 @@
 ;; ESH-0217 regression: bare () as a macro-call argument must
 ;; pattern-match a list pattern exactly like an explicit (list) does.
 ;; ============================================================
-;; flatten2 destructures a single-element list-shaped argument. Both an
-;; explicit (list) and a bare () lower to the same CALL_OP invoking "list"
-;; with zero arguments, so both are (structurally) a 1-"element" call whose
-;; sole element is the "list" callee symbol itself — this is a pre-existing
-;; quirk of how this parser represents unquoted list literals as syntax
-;; data (unrelated to ESH-0217), but it means the two spellings must match
-;; identically.
+;; flatten2 destructures its operand as reader syntax (R7RS 4.3.2; macro
+;; transformers match the datum the reader produced, ADR-0026). `(list)` is
+;; a one-element list whose element is the identifier `list`; a bare `()` is
+;; the empty list and matches only the empty-list pattern.
 (define-syntax flatten2
   (syntax-rules ()
+    ((_ ()) 'empty)
     ((_ (x)) (list 'got x))))
 
-;; An explicit (list) already produced a CALL_OP the pattern matcher could
-;; see — this was never broken, and pins down the reference behavior: the
-;; match succeeds and binds x to a real (procedure) value.
+;; `(list)` matches `(x)` with x bound to the identifier `list`, which the
+;; template evaluates to the list procedure.
 (define flatten2-list-result (flatten2 (list)))
 (test-case "flatten2 with explicit (list) matches and binds a procedure"
            #t
@@ -68,20 +65,12 @@
                 (eq? (car flatten2-list-result) 'got)
                 (procedure? (cadr flatten2-list-result))))
 
-;; This is the actual ESH-0217 regression: before the fix, this bare ()
-;; lowered to ESHKOL_INVALID_OP (a foreign shape the structural pattern
-;; matcher never recognized) and flatten2 failed with "no matching pattern
-;; for macro 'flatten2'" instead of matching, even though (list) in the
-;; same position matched fine. After the fix, bare () lowers to the exact
-;; same CALL_OP shape as (list), so the two calls must succeed identically
-;; (each closure reference gets its own identity, so compare structure/
-;; success rather than eq?/equal? on the bound procedure value itself).
+;; ESH-0217: a bare () operand reaches the transformer as the empty list --
+;; not as a foreign invalid node, and not disguised as `(list)`.
 (define flatten2-bare-result (flatten2 ()))
-(test-case "flatten2 with bare () matches (does not error like ESHKOL_INVALID_OP did)"
-           #t
-           (and (pair? flatten2-bare-result)
-                (eq? (car flatten2-bare-result) 'got)
-                (procedure? (cadr flatten2-bare-result))))
+(test-case "flatten2 with bare () matches the empty-list pattern"
+           'empty
+           flatten2-bare-result)
 
 ;; ============================================================
 ;; () used as a call head does not crash the parser or codegen. This

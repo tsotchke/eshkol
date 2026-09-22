@@ -1,0 +1,38 @@
+id: SW-211
+bucket: SILENT-WRONG
+subtag: autodiff
+family: complex/carrier-formulas
+status: fixed
+closed_at: "edf532399"
+title: "complex expt, log, angle and the inverse functions lost the derivative a complex value carries"
+repro: >-
+  (derivative (lambda (w) (expt w 3)) (make-rectangular 1 1));
+  (derivative-n log (make-rectangular 1 1) 1)
+observed: >-
+  0 and 0.5 (the imaginary part missing) on native JIT and AOT; exp2, log2,
+  log10, the hyperbolic functions and the inverse functions of a carrier
+  complex raised "no derivative rule".
+correct: >-
+  +6i and 0.5-0.5i.
+root_cause: >-
+  ArithmeticCodegen::pow sent every complex operand to eshkol_complex_pow,
+  which computes exp(b log a) on the primal doubles. The angle in complex log
+  is atan2 of the components, and atan2 of a Taylor carrier had no route
+  (SW-210). complexCarrierMath had formulas for six procedures only.
+fix: >-
+  pow is wrapped by withComplexCarrierDispatch, whose '^' formula (installed
+  by the code generator) raises to an exact integer power by repeated complex
+  multiplication and otherwise computes exp(b log a) on the components.
+  complexCarrierMath is rewritten over component pairs and covers every
+  procedure with a plain complex kernel, formula for formula with
+  <eshkol/core/complex_math.h>. angle reaches the tower atan2 of SW-210.
+evidence: >-
+  tests/ad/complex_carrier_math_test.esk: 118 checks against sympy closed
+  forms for exp, exp2, log, log2, log10, sqrt, the circular and hyperbolic
+  functions and their inverses at orders 1-3, as a jet and as nested jets, and
+  expt with integer, negative, zero, real and complex exponents and a real
+  base. ctest complex_carrier_math_jit and complex_carrier_math_aot pass; the
+  pre-fix binary raises on the first procedure without a formula.
+  check_taylor_unary_routes.py fails when a complex kernel has no formula.
+caught_by: [independent-review]
+missed_by: [complex_value_derivative]

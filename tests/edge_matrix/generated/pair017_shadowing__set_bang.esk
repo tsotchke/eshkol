@@ -14,7 +14,7 @@
 (edge-check-g250)
 
 ;; check shadowing_shadow_libc_local__in__set_bang_lambda_store
-(define (edge-check-g251) (edge-chk "shadowing_shadow_libc_local__in__set_bang_lambda_store" (let ((swg251 #f)) ((lambda () (set! swg251 (let ((pow 3)) (+ pow 1))))) swg251) 4))
+(define (edge-check-g251) (edge-chk "shadowing_shadow_libc_local__in__set_bang_lambda_store" (let ((slg251 #f)) ((lambda () (set! slg251 (let ((pow 3)) (+ pow 1))))) slg251) 4))
 (edge-check-g251)
 
 ;; check shadowing_shadow_libc_local__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g253)
 
 ;; check shadowing_shadow_builtin_rebind__in__set_bang_lambda_store
-(define (edge-check-g254) (edge-chk "shadowing_shadow_builtin_rebind__in__set_bang_lambda_store" (let ((swg254 #f)) ((lambda () (set! swg254 (let ((car cdr)) (car (list 1 2 3)))))) swg254) (list 2 3)))
+(define (edge-check-g254) (edge-chk "shadowing_shadow_builtin_rebind__in__set_bang_lambda_store" (let ((slg254 #f)) ((lambda () (set! slg254 (let ((car cdr)) (car (list 1 2 3)))))) slg254) (list 2 3)))
 (edge-check-g254)
 
 ;; check shadowing_shadow_builtin_rebind__in__set_bang_set_twice
@@ -38,7 +38,7 @@
 (edge-check-g256)
 
 ;; check shadowing_shadow_param__in__set_bang_lambda_store
-(define (edge-check-g257) (edge-chk "shadowing_shadow_param__in__set_bang_lambda_store" (let ((swg257 #f)) ((lambda () (set! swg257 ((lambda (ps) (let ((ps 5)) ps)) 1)))) swg257) 5))
+(define (edge-check-g257) (edge-chk "shadowing_shadow_param__in__set_bang_lambda_store" (let ((slg257 #f)) ((lambda () (set! slg257 ((lambda (ps) (let ((ps 5)) ps)) 1)))) slg257) 5))
 (edge-check-g257)
 
 ;; check shadowing_shadow_param__in__set_bang_set_twice

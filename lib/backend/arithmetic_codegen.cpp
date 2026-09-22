@@ -13,6 +13,7 @@
  */
 
 #include <eshkol/backend/arithmetic_codegen.h>
+#include "../core/taylor_opcodes.h"
 #include <eshkol/backend/llvm_compat.h>
 #include <eshkol/backend/libm_codegen.h>
 #include <eshkol/eshkol.h>
@@ -543,6 +544,26 @@ llvm::Value* ArithmeticCodegen::withComplexCarrierDispatch(
 
     // (a + bi) op (c + di), each of a, b, c, d an ordinary numeric-tower value.
     b.SetInsertPoint(carrier_bb);
+    if (op == '^') {
+        // expt: the code generator's formula (exact integer powers by repeated
+        // multiplication, otherwise exp(b log a)); see setComplexCarrierPow().
+        if (!complex_carrier_pow_) {
+            eshkol_error("arithmetic: complex carrier expt has no formula installed");
+            return nullptr;
+        }
+        llvm::Value* pow_result = complex_carrier_pow_(left, right);
+        llvm::BasicBlock* pow_exit = b.GetInsertBlock();
+        b.CreateBr(join_bb);
+        b.SetInsertPoint(normal_bb);
+        llvm::Value* normal_result = body();
+        llvm::BasicBlock* normal_exit = b.GetInsertBlock();
+        b.CreateBr(join_bb);
+        b.SetInsertPoint(join_bb);
+        llvm::PHINode* out = b.CreatePHI(ctx_.taggedValueType(), 2, "cplx_carrier_pow");
+        out->addIncoming(pow_result, pow_exit);
+        out->addIncoming(normal_result, normal_exit);
+        return out;
+    }
     llvm::Value* a = complexComponent(left, false);
     llvm::Value* bi = complexComponent(left, true);
     llvm::Value* c = complexComponent(right, false);
@@ -1711,7 +1732,7 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().SetInsertPoint(check_taylor);
         ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), add_taylor_path, add_after_taylor);
         ctx_.builder().SetInsertPoint(add_taylor_path);
-        llvm::Value* add_twr = emitTaylorBinaryCall(left, right, 0);
+        llvm::Value* add_twr = emitTaylorBinaryCall(left, right, eshkol_taylor_binary_opcode("+"));
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* add_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(add_after_taylor);
@@ -1938,7 +1959,7 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().SetInsertPoint(check_taylor);
         ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), sub_taylor_path, sub_after_taylor);
         ctx_.builder().SetInsertPoint(sub_taylor_path);
-        llvm::Value* sub_twr = emitTaylorBinaryCall(left, right, 1);
+        llvm::Value* sub_twr = emitTaylorBinaryCall(left, right, eshkol_taylor_binary_opcode("-"));
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* sub_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(sub_after_taylor);
@@ -2165,7 +2186,7 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().SetInsertPoint(check_taylor);
         ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), mul_taylor_path, mul_after_taylor);
         ctx_.builder().SetInsertPoint(mul_taylor_path);
-        llvm::Value* mul_twr = emitTaylorBinaryCall(left, right, 2);
+        llvm::Value* mul_twr = emitTaylorBinaryCall(left, right, eshkol_taylor_binary_opcode("*"));
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* mul_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(mul_after_taylor);
@@ -2396,7 +2417,7 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().SetInsertPoint(check_taylor);
         ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), div_taylor_path, div_after_taylor);
         ctx_.builder().SetInsertPoint(div_taylor_path);
-        llvm::Value* div_twr = emitTaylorBinaryCall(left, right, 3);
+        llvm::Value* div_twr = emitTaylorBinaryCall(left, right, eshkol_taylor_binary_opcode("/"));
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* div_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(div_after_taylor);
@@ -2858,6 +2879,24 @@ llvm::Value* ArithmeticCodegen::abs(llvm::Value* operand) {
     // forward-mode AD.
     operand = autodiff_.maybeJetLiftTapeOperand(operand);
     return withADUnaryDispatch(operand, 42 /*AD_NODE_ABS*/, [&]() -> llvm::Value* {
+      // SW-212: a forward jet or a Taylor carrier takes the kernel's abs rule
+      // (|x| with sign(x) on every higher coefficient). The arms below read a
+      // number's payload: a jet fell to the int64 arm and a tower to the
+      // bignum arm, so `magnitude` of a real carrier answered 0.
+      llvm::Function* abs_fn = ctx_.builder().GetInsertBlock()->getParent();
+      llvm::BasicBlock* abs_carrier = llvm::BasicBlock::Create(ctx_.context(), "abs_carrier", abs_fn);
+      llvm::BasicBlock* abs_number = llvm::BasicBlock::Create(ctx_.context(), "abs_number", abs_fn);
+      llvm::BasicBlock* abs_join = llvm::BasicBlock::Create(ctx_.context(), "abs_join", abs_fn);
+      llvm::Value* abs_is_jet = ctx_.builder().CreateICmpEQ(tagged_.getBaseType(tagged_.getType(operand)),
+          llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+      ctx_.builder().CreateCondBr(ctx_.builder().CreateOr(abs_is_jet, emitIsTaylorSingle(operand)),
+                                  abs_carrier, abs_number);
+      ctx_.builder().SetInsertPoint(abs_carrier);
+      llvm::Value* abs_carrier_result = emitTaylorUnaryCall(operand, eshkol_taylor_unary_opcode("abs"));
+      llvm::BasicBlock* abs_carrier_exit = ctx_.builder().GetInsertBlock();
+      ctx_.builder().CreateBr(abs_join);
+      ctx_.builder().SetInsertPoint(abs_number);
+      llvm::Value* abs_number_result = [&]() -> llvm::Value* {
         llvm::Value* type_tag = tagged_.getType(operand);
         llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
@@ -3004,6 +3043,14 @@ llvm::Value* ArithmeticCodegen::abs(llvm::Value* operand) {
         phi->addIncoming(int_phi, int_exit);
 
         return phi;
+      }();
+      llvm::BasicBlock* abs_number_exit = ctx_.builder().GetInsertBlock();
+      ctx_.builder().CreateBr(abs_join);
+      ctx_.builder().SetInsertPoint(abs_join);
+      llvm::PHINode* abs_out = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "abs_value");
+      abs_out->addIncoming(abs_carrier_result, abs_carrier_exit);
+      abs_out->addIncoming(abs_number_result, abs_number_exit);
+      return abs_out;
     });
 }
 
@@ -3580,6 +3627,10 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
     base = autodiff_.maybeJetLiftTapeOperand(base);
     exponent = autodiff_.maybeJetLiftTapeOperand(exponent);
     return withADBinaryDispatch(base, exponent, 10 /*AD_NODE_POW*/, [&]() -> llvm::Value* {
+      // SW-211: a complex operand with a derivative in play takes the complex
+      // carrier formula, the same facility complex + - * / use; the plain
+      // kernel below reads the primals and would drop the derivative.
+      return withComplexCarrierDispatch(base, exponent, '^', [&]() -> llvm::Value* {
         // Re-extract types inside lambda
         llvm::Value* base_type = tagged_.getType(base);
         llvm::Value* exp_type = tagged_.getType(exponent);
@@ -3598,7 +3649,7 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         llvm::BasicBlock* pow_after_taylor = llvm::BasicBlock::Create(ctx_.context(), "pow_after_taylor", func);
         ctx_.builder().CreateCondBr(emitIsTaylorCheck(base, exponent), pow_taylor, pow_after_taylor);
         ctx_.builder().SetInsertPoint(pow_taylor);
-        llvm::Value* pow_twr = emitTaylorBinaryCall(base, exponent, 4);
+        llvm::Value* pow_twr = emitTaylorBinaryCall(base, exponent, eshkol_taylor_binary_opcode("pow"));
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* pow_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(pow_after_taylor);
@@ -3772,6 +3823,7 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         phi->addIncoming(regular_tagged, regular_exit);
 
         return phi;
+      });
     });
 }
 

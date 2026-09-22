@@ -1,0 +1,194 @@
+;; R7RS 4.3.2 hygiene matrix (ADR-0026, SW-192). Every expected value is
+;; written by hand from the report, never taken from an engine. A template
+;; binder can neither capture nor be captured by caller code; a template's
+;; free identifier (special form, builtin, global, definition-site local,
+;; macro keyword, auxiliary keyword) means what it meant where the macro was
+;; defined, whatever the caller binds with the same spelling.
+(define (hyg label expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS hygiene: ") (display label) (newline))
+      (begin (display "FAIL hygiene: ") (display label)
+             (display " expected ") (write expected)
+             (display " got ") (write actual) (newline))))
+
+;; ── template binders do not capture caller code ────────────────────────
+(define-syntax my-or
+  (syntax-rules ()
+    ((_) #f)
+    ((_ e) e)
+    ((_ e r ...) (let ((t e)) (if t t (my-or r ...))))))
+(hyg "let binder vs caller t" 5 (let ((t 5)) (my-or #f t)))
+(hyg "nested expansions keep binders apart" 3 (let ((t 3)) (my-or #f (my-or #f t))))
+(define-syntax swap!
+  (syntax-rules () ((_ a b) (let ((tmp a)) (set! a b) (set! b tmp)))))
+(hyg "swap! with a caller tmp" '(2 1)
+     (let ((tmp 1) (other 2)) (swap! tmp other) (list tmp other)))
+(define-syntax lstar
+  (syntax-rules () ((_ e) (let* ((a 1) (b (+ a e))) b))))
+(hyg "let* binder vs caller a" 11 (let ((a 10)) (lstar a)))
+(define-syntax count-down
+  (syntax-rules ()
+    ((_ n) (letrec ((go (lambda (k) (if (= k 0) 'done (go (- k 1)))))) (go n)))))
+(hyg "letrec binder vs caller go" 'done (let ((go 5)) (count-down go)))
+(define-syntax repeat
+  (syntax-rules ()
+    ((_ n body) (let loop ((i 0)) (if (< i n) (begin body (loop (+ i 1))) 'done)))))
+(hyg "named-let binders vs caller i and loop" 3
+     (let ((i 0) (loop 0)) (repeat 3 (set! i (+ i 1))) i))
+(define-syntax sum-below
+  (syntax-rules ()
+    ((_ n) (do ((i 0 (+ i 1)) (s 0 (+ s i))) ((= i n) s)))))
+(hyg "do binders vs caller i and s" 10 (let ((i 100) (s 200)) (sum-below 5)))
+(define-syntax sum-pair
+  (syntax-rules () ((_ p) (let-values (((q r) p)) (+ q r)))))
+(hyg "let-values binders vs caller q" 7 (let ((q 100)) (sum-pair (values 3 4))))
+(define-syntax safely
+  (syntax-rules () ((_ body) (guard (e (#t 'caught)) body))))
+(hyg "guard binder vs caller e" 'caught (let ((e 9)) (safely (raise e))))
+(define-syntax thunk (syntax-rules () ((_ e) (lambda () e))))
+(hyg "lambda formal-free thunk" 7 ((thunk 7)))
+(define-syntax with-body-define
+  (syntax-rules () ((_ e) (let () (define helper 40) (+ helper e)))))
+(hyg "internal define binder vs caller helper" 42
+     (let ((helper 2)) (with-body-define helper)))
+(define-syntax make-counter
+  (syntax-rules () ((_) (let ((n 0)) (lambda () (set! n (+ n 1)) n)))))
+(hyg "each expansion binds its own n" '(1 2 1)
+     (let ((c1 (make-counter)) (c2 (make-counter)))
+       (let* ((a (c1)) (b (c1)) (c (c2))) (list a b c))))
+
+;; ── free template identifiers keep their definition meaning ──────────────
+(define-syntax my-if (syntax-rules () ((_ c a b) (if c a b))))
+(hyg "special form if under a caller if" 1
+     (let ((if (lambda (x y z) 'caller))) (my-if #t 1 2)))
+(define-syntax with-one (syntax-rules () ((_ v body) (let ((v 1)) body))))
+(hyg "special form let under a caller let" 1 (let ((let 5)) (with-one q q)))
+(hyg "special form lambda under a caller lambda" 8 (let ((lambda 3)) ((thunk 8))))
+(define-syntax inc!
+  (syntax-rules () ((_ v) (begin (set! v (+ v 1)) v))))
+(hyg "begin and + under caller bindings" 4 (let ((begin list) (z 3)) (inc! z)))
+(define-syntax sign
+  (syntax-rules ()
+    ((_ x) (cond ((< x 0) 'negative) ((> x 0) 'positive) (else 'zero)))))
+(hyg "cond and else under caller bindings" 'positive
+     (let ((cond 1) (else #f)) (sign 3)))
+(define-syntax classify
+  (syntax-rules () ((_ x) (case x ((1) 'one) (else 'other)))))
+(hyg "case and else under caller bindings" 'other
+     (let ((else 1) (case 2)) (classify 5)))
+(define-syntax pair-up (syntax-rules () ((_ a b) (list a b))))
+(hyg "builtin list under a caller list" '(1 2) (let ((list vector)) (pair-up 1 2)))
+(define-syntax first-of (syntax-rules () ((_ l) (car l))))
+(hyg "builtin car under a caller car" 1 (let ((car cdr)) (first-of '(1 2))))
+(define-syntax both (syntax-rules () ((_ a b) (and a b))))
+(hyg "and under a caller and" 2 (let ((and list)) (both 1 2)))
+(define-syntax add1 (syntax-rules () ((_ x) (+ x 1))))
+(hyg "builtin + under a caller +" 6 (let ((+ (lambda (a b) 99))) (add1 5)))
+(define (scale x) (* x 10))
+(define-syntax call-scale (syntax-rules () ((_ x) (scale x))))
+(hyg "global procedure under a caller local" 30
+     (let ((scale (lambda (x) 0))) (call-scale 3)))
+(hyg "global procedure under a caller formal" 50
+     ((lambda (scale) (call-scale 5)) 'junk))
+(define (scale-inside) (define scale 0) (call-scale 4))
+(hyg "global procedure under a caller internal define" 40 (scale-inside))
+;; SW-42's reproducer, verbatim: R7RS requires 50.
+(define (helper x) (* x 10))
+(define-syntax usehelp (syntax-rules () ((_ a) (helper a))))
+(hyg "SW-42 free template identifier" 50 (let ((helper (lambda (x) (- x)))) (usehelp 5)))
+(define gx 100)
+(define-syntax get-gx (syntax-rules () ((_) gx)))
+(define-syntax set-gx! (syntax-rules () ((_ v) (set! gx v))))
+(hyg "global variable under a caller local" 100 (let ((gx 1)) (get-gx)))
+(hyg "global assignment under a caller local" '(1 5)
+     (let* ((inner (let ((gx 1)) (set-gx! 5) gx))) (list inner gx)))
+(let ((x 11))
+  (let-syntax ((get-x (syntax-rules () ((_) x)))
+               (put-x! (syntax-rules () ((_ v) (set! x v)))))
+    (let ((x 22))
+      (hyg "definition-site local" 11 (get-x))
+      (put-x! 33)
+      (hyg "definition-site assignment" 33 (get-x))
+      (hyg "caller local untouched" 22 x))))
+
+;; ── macro keywords resolve in the definition environment ───────────────
+(define-syntax either (syntax-rules () ((_ a b) (my-or a b))))
+(hyg "template macro under a caller variable of that name" 3
+     (let ((my-or (lambda args 'caller))) (either #f 3)))
+(hyg "caller variable shadows a macro keyword" 'caller
+     (let ((my-or (lambda args 'caller))) (my-or 1 2)))
+(define-syntax my-when (syntax-rules () ((_ c e) (when c e))))
+(hyg "special form when under a caller when" 9 (let ((when 0)) (my-when #t 9)))
+(hyg "nested let-syntax shadowing" 2
+     (let-syntax ((m (syntax-rules () ((_) 1))))
+       (let-syntax ((m (syntax-rules () ((_) 2)))) (m))))
+(hyg "let-syntax template sees its definition environment" 1
+     (let-syntax ((m (syntax-rules () ((_) 1))))
+       (let-syntax ((n (syntax-rules () ((_) (m)))))
+         (let-syntax ((m (syntax-rules () ((_) 2)))) (n)))))
+(define-syntax def-const
+  (syntax-rules () ((_ name v) (define-syntax name (syntax-rules () ((_) v))))))
+(def-const seven 7)
+(hyg "macro-defining macro" 7 (seven))
+;; Definitions a template introduces at top level define the names as written.
+(define-syntax def-point
+  (syntax-rules ()
+    ((_) (define-record-type point (make-point x y) point? (x point-x) (y point-y)))))
+(def-point)
+(hyg "record type a template defines" 3 (point-y (make-point 2 3)))
+(define-syntax def-two (syntax-rules () ((_) (define-values (lo hi) (values 1 9)))))
+(def-two)
+(hyg "define-values a template introduces" '(1 9) (list lo hi))
+(define-syntax def-counter (syntax-rules () ((_) (define counter 0))))
+(def-counter)
+(hyg "define a template introduces" 0 counter)
+(define (use-later) (later-macro 4))
+(define-syntax later-macro (syntax-rules () ((_ x) (* x 3))))
+(hyg "use before the top-level definition" 12 (use-later))
+
+;; ── the pattern language over reader syntax ─────────────────────────────
+(define-syntax rev-list
+  (syntax-rules ()
+    ((_ () acc) 'acc)
+    ((_ (x . xs) acc) (rev-list xs (x . acc)))))
+(hyg "dotted pattern, self-recursive keyword" '(3 2 1) (rev-list (1 2 3) ()))
+(define-syntax my-let*
+  (syntax-rules ()
+    ((_ () body ...) (let () body ...))
+    ((_ ((n v) rest ...) body ...) (let ((n v)) (my-let* (rest ...) body ...)))))
+(hyg "structured repetition" 6 (my-let* ((a 1) (b (+ a 1)) (c (+ b 1))) (+ a b c)))
+(define-syntax flat
+  (syntax-rules () ((_ (a ...) ...) '(a ... ...))))
+(hyg "nested ellipsis flattening" '(1 2 3 4) (flat (1 2) (3 4)))
+(define-syntax last-of
+  (syntax-rules () ((_ x ... y) 'y)))
+(hyg "ellipsis followed by a pattern" 'c (last-of a b c))
+(define-syntax vec-second
+  (syntax-rules () ((_ #(a b c)) 'b)))
+(hyg "vector pattern" 'q (vec-second #(p q r)))
+(define-syntax arrow
+  (syntax-rules (=>) ((_ a => b) (list a b)) ((_ a b) 'no-arrow)))
+(hyg "literal matches" '(1 2) (arrow 1 => 2))
+(hyg "literal does not bind" 'no-arrow (arrow 1 2))
+(define-syntax my-list-of
+  (syntax-rules etc () ((_ x etc) (list x etc))))
+(hyg "custom ellipsis" '(1 2 3) (my-list-of 1 2 3))
+(define-syntax literal-ellipsis
+  (syntax-rules () ((_ x) '(x (... ...)))))
+(hyg "escaped ellipsis" '(5 ...) (literal-ellipsis 5))
+(define-syntax quoted-tmp
+  (syntax-rules () ((_) (let ((tmp 5)) (list 'tmp tmp)))))
+(hyg "quoted template symbol keeps its name" '(tmp 5) (quoted-tmp))
+(define-syntax quote-arg (syntax-rules () ((_ x) 'x)))
+(define-syntax quote-through (syntax-rules () ((_) (quote-arg inner))))
+(hyg "symbol quoted through two expansions" 'inner (quote-through))
+(define-syntax qq-pair
+  (syntax-rules () ((_ x) `(x ,x))))
+(hyg "quasiquote template" '(x 4) (let ((x 4)) (qq-pair x)))
+(define-syntax exact-half (syntax-rules () ((_) 1/2)))
+(hyg "exact literal survives expansion" #t (exact? (exact-half)))
+(define-syntax greet (syntax-rules () ((_) "hi\tthere")))
+(hyg "string literal survives expansion" 8 (string-length (greet)))
+(define-syntax empty-or
+  (syntax-rules () ((_ ()) 'empty) ((_ (x)) 'one)))
+(hyg "empty list operand" 'empty (empty-or ()))

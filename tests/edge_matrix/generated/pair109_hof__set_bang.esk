@@ -14,7 +14,7 @@
 (edge-check-g987)
 
 ;; check hof_fold_left__in__set_bang_lambda_store
-(define (edge-check-g988) (edge-chk "hof_fold_left__in__set_bang_lambda_store" (let ((swg988 #f)) ((lambda () (set! swg988 (fold-left + 0 (list 1 2 3))))) swg988) 6))
+(define (edge-check-g988) (edge-chk "hof_fold_left__in__set_bang_lambda_store" (let ((slg988 #f)) ((lambda () (set! slg988 (fold-left + 0 (list 1 2 3))))) slg988) 6))
 (edge-check-g988)
 
 ;; check hof_fold_left__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g990)
 
 ;; check hof_reduce__in__set_bang_lambda_store
-(define (edge-check-g991) (edge-chk "hof_reduce__in__set_bang_lambda_store" (let ((swg991 #f)) ((lambda () (set! swg991 (reduce + 0 (list 1 2 3))))) swg991) 6))
+(define (edge-check-g991) (edge-chk "hof_reduce__in__set_bang_lambda_store" (let ((slg991 #f)) ((lambda () (set! slg991 (reduce + 0 (list 1 2 3))))) slg991) 6))
 (edge-check-g991)
 
 ;; check hof_reduce__in__set_bang_set_twice
@@ -38,7 +38,7 @@
 (edge-check-g993)
 
 ;; check hof_for_each_acc__in__set_bang_lambda_store
-(define (edge-check-g994) (edge-chk "hof_for_each_acc__in__set_bang_lambda_store" (let ((swg994 #f)) ((lambda () (set! swg994 (let ((fs 0)) (for-each (lambda (fx) (set! fs (+ fs fx))) (list 1 2 3)) fs)))) swg994) 6))
+(define (edge-check-g994) (edge-chk "hof_for_each_acc__in__set_bang_lambda_store" (let ((slg994 #f)) ((lambda () (set! slg994 (let ((fs 0)) (for-each (lambda (fx) (set! fs (+ fs fx))) (list 1 2 3)) fs)))) slg994) 6))
 (edge-check-g994)
 
 ;; check hof_for_each_acc__in__set_bang_set_twice

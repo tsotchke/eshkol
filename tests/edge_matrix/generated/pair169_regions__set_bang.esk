@@ -14,7 +14,7 @@
 (edge-check-g1479)
 
 ;; check regions_region_value__in__set_bang_lambda_store
-(define (edge-check-g1480) (edge-chk "regions_region_value__in__set_bang_lambda_store" (let ((swg1480 #f)) ((lambda () (set! swg1480 (with-region 'rgp (+ 40 2))))) swg1480) 42))
+(define (edge-check-g1480) (edge-chk "regions_region_value__in__set_bang_lambda_store" (let ((slg1480 #f)) ((lambda () (set! slg1480 (with-region 'rgp (+ 40 2))))) slg1480) 42))
 (edge-check-g1480)
 
 ;; check regions_region_value__in__set_bang_set_twice

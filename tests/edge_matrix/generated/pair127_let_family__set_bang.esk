@@ -14,7 +14,7 @@
 (edge-check-g1111)
 
 ;; check let_family_let_sum__in__set_bang_lambda_store
-(define (edge-check-g1112) (edge-chk "let_family_let_sum__in__set_bang_lambda_store" (let ((swg1112 #f)) ((lambda () (set! swg1112 (let ((la 2) (lb 3)) (+ la lb))))) swg1112) 5))
+(define (edge-check-g1112) (edge-chk "let_family_let_sum__in__set_bang_lambda_store" (let ((slg1112 #f)) ((lambda () (set! slg1112 (let ((la 2) (lb 3)) (+ la lb))))) slg1112) 5))
 (edge-check-g1112)
 
 ;; check let_family_let_sum__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g1114)
 
 ;; check let_family_letstar_chain__in__set_bang_lambda_store
-(define (edge-check-g1115) (edge-chk "let_family_letstar_chain__in__set_bang_lambda_store" (let ((swg1115 #f)) ((lambda () (set! swg1115 (let* ((lc 2) (ld (* lc lc))) ld)))) swg1115) 4))
+(define (edge-check-g1115) (edge-chk "let_family_letstar_chain__in__set_bang_lambda_store" (let ((slg1115 #f)) ((lambda () (set! slg1115 (let* ((lc 2) (ld (* lc lc))) ld)))) slg1115) 4))
 (edge-check-g1115)
 
 ;; check let_family_letstar_chain__in__set_bang_set_twice
@@ -38,7 +38,7 @@
 (edge-check-g1117)
 
 ;; check let_family_letrec_mutual__in__set_bang_lambda_store
-(define (edge-check-g1118) (edge-chk "let_family_letrec_mutual__in__set_bang_lambda_store" (let ((swg1118 #f)) ((lambda () (set! swg1118 (letrec ((ev? (lambda (n) (if (= n 0) #t (od? (- n 1))))) (od? (lambda (n) (if (= n 0) #f (ev? (- n 1)))))) (ev? 10))))) swg1118) #t))
+(define (edge-check-g1118) (edge-chk "let_family_letrec_mutual__in__set_bang_lambda_store" (let ((slg1118 #f)) ((lambda () (set! slg1118 (letrec ((ev? (lambda (n) (if (= n 0) #t (od? (- n 1))))) (od? (lambda (n) (if (= n 0) #f (ev? (- n 1)))))) (ev? 10))))) slg1118) #t))
 (edge-check-g1118)
 
 ;; check let_family_letrec_mutual__in__set_bang_set_twice
@@ -50,7 +50,7 @@
 (edge-check-g1120)
 
 ;; check let_family_named_let_sum__in__set_bang_lambda_store
-(define (edge-check-g1121) (edge-chk "let_family_named_let_sum__in__set_bang_lambda_store" (let ((swg1121 #f)) ((lambda () (set! swg1121 (let nsum ((i 0) (s 0)) (if (= i 5) s (nsum (+ i 1) (+ s i))))))) swg1121) 10))
+(define (edge-check-g1121) (edge-chk "let_family_named_let_sum__in__set_bang_lambda_store" (let ((slg1121 #f)) ((lambda () (set! slg1121 (let nsum ((i 0) (s 0)) (if (= i 5) s (nsum (+ i 1) (+ s i))))))) slg1121) 10))
 (edge-check-g1121)
 
 ;; check let_family_named_let_sum__in__set_bang_set_twice

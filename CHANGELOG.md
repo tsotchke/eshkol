@@ -14,6 +14,36 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **Every unary numeric builtin keeps a Taylor derivative.** `asin`, `acos`,
+  `atan`, `asinh`, `acosh`, `atanh`, `log2`, `log10`, `exp2`, `cbrt`, `atan2`
+  and the rounding functions returned their primal on a Taylor tower or level,
+  so `(derivative-n atan 1.0 2)` was 0 and a first-order `derivative` nested in
+  a `derivative-n` of `atan` was 0 (SW-210). They are now one recurrence,
+  `s_k = (1/k) Σ j u_j d_{k-j}` with `d = f'(u)`, in every carrier tier; exact
+  inputs keep every rational coefficient (`(derivative-n atan 0 3)` is `-2`).
+  The code generator reads its tower routes from `taylor_recurrences.def`, and
+  `taylor_unary_route_guard` fails when a builtin has no route.
+- **Complex `expt`, `log`, `angle` and the inverse functions keep the
+  derivative a complex value carries.** `(derivative (lambda (w) (expt w 3))
+  1+1i)` was 0 and `(derivative-n log 1+1i 1)` lost its imaginary part (SW-211).
+  Every procedure with a plain complex kernel now has a carrier formula.
+- **Powers at a zero base have the closed form's derivatives.** On a Taylor
+  tower `sqrt`, `expt` with a constant exponent and the inverse functions'
+  derivative series answered NaN at `0.0`, because the power recurrence divides
+  by the base. `(derivative-n sqrt 0.0 2)` is now `-inf.0`, `(derivative-n
+  (lambda (x) (expt x 2.0)) 0.0 2)` is `2`, and `|x|` written as `sqrt(x*x)`
+  stays NaN (SW-225).
+- **A derivative through a simple pole is the closed form's infinity on every
+  engine.** `(derivative (lambda (x) (/ 1.0 x)) 0.0)` answered `+nan.0`
+  natively and `-inf.0` on the VM; it is `-inf.0` everywhere, the second
+  derivative `+inf.0`, and `(derivative-n cbrt 0 1)` is `+inf.0`. Jet division
+  runs the series division recurrence, and a zero perturbation coefficient no
+  longer turns an infinity into NaN; an indeterminate `x * (1/x)` or a double
+  pole stays NaN (SW-222).
+- **`square`, `inexact` and `magnitude` of a real carrier keep the
+  derivative.** They answered 0 on a jet or a tower, and `square` of a
+  rational or a complex number printed pointer bits (SW-214).
+
 - Preserve browser VM output without a trailing newline, including UTF-8 text.
   Learn and Examples no longer lose their last displayed result or carry it
   into a later evaluation. The Pages gate executes all 41 runnable site examples
@@ -1395,6 +1425,29 @@ the source changes; the verification record for the tagged commit is the
   which is OALR's semantics and is equally true natively.
 
 ### Fixed
+
+- **`syntax-rules` is hygienic in both directions, identically on every engine
+  (ADR-0026, SW-192, SW-42).** The native compiler and the bytecode VM now run
+  one `syntax-rules` engine (`inc/eshkol/frontend/syntax_rules_core.h`, C, so
+  the browser and freestanding VM builds share it) and one renaming rule
+  (`inc/eshkol/frontend/syntax_color.h`): every identifier a template
+  introduces is colored per expansion, so a template's binders can neither
+  capture nor be captured by caller code, and a template's free identifiers
+  resolve in the macro's definition environment. Before, a caller's local
+  binding of a name the template used freely (`helper`, `car`, `else`, `if`,
+  another macro keyword) silently replaced it; a template-introduced `do`,
+  `let-values`, `guard` or internal-`define` binder captured caller code or
+  lost its operand on native; a macro-defining macro lost its pattern
+  variables; a library procedure's formal did not shadow a macro keyword of
+  the same spelling; continuation-passing macros were rejected as circular;
+  the VM expanded operands before their scope was known, matched no dotted
+  tails or repeated structured patterns, and did not see a macro used above
+  its definition. The native expander now matches reader syntax recorded by
+  the parser instead of lowered ASTs, and hands expansions back to the parser.
+  A use no rule matches is a syntax error on both engines (a bare `()` no
+  longer matches the pattern `(x)`). New: `tests/vm_parity/corpus/93_macro_hygiene_matrix.esk`
+  (ctest `macro_hygiene_matrix`, JIT, AOT and VM), `syntax_rules_core_test`,
+  and the reference page `docs/reference/language/macros.md`.
 
 - **Differentiation passes nest at any depth and any order (ledger SW-154,
   ADR-0027).** Two enclosing levels over an order-2 pass answered 0 with exit

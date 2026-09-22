@@ -14,7 +14,7 @@
 (edge-check-g887)
 
 ;; check guard_raise_catch_sym__in__set_bang_lambda_store
-(define (edge-check-g888) (edge-chk "guard_raise_catch_sym__in__set_bang_lambda_store" (let ((swg888 #f)) ((lambda () (set! swg888 (guard (ge (#t 'caught)) (raise 'boom))))) swg888) (string->symbol "caught")))
+(define (edge-check-g888) (edge-chk "guard_raise_catch_sym__in__set_bang_lambda_store" (let ((slg888 #f)) ((lambda () (set! slg888 (guard (ge (#t 'caught)) (raise 'boom))))) slg888) (string->symbol "caught")))
 (edge-check-g888)
 
 ;; check guard_raise_catch_sym__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g890)
 
 ;; check guard_raise_pass_value__in__set_bang_lambda_store
-(define (edge-check-g891) (edge-chk "guard_raise_pass_value__in__set_bang_lambda_store" (let ((swg891 #f)) ((lambda () (set! swg891 (guard (gv (#t gv)) (raise 42))))) swg891) 42))
+(define (edge-check-g891) (edge-chk "guard_raise_pass_value__in__set_bang_lambda_store" (let ((slg891 #f)) ((lambda () (set! slg891 (guard (gv (#t gv)) (raise 42))))) slg891) 42))
 (edge-check-g891)
 
 ;; check guard_raise_pass_value__in__set_bang_set_twice
@@ -38,7 +38,7 @@
 (edge-check-g893)
 
 ;; check guard_raise_cond_dispatch__in__set_bang_lambda_store
-(define (edge-check-g894) (edge-chk "guard_raise_cond_dispatch__in__set_bang_lambda_store" (let ((swg894 #f)) ((lambda () (set! swg894 (guard (gw ((symbol? gw) 'was-sym) (#t 'other)) (raise 'zap))))) swg894) (string->symbol "was-sym")))
+(define (edge-check-g894) (edge-chk "guard_raise_cond_dispatch__in__set_bang_lambda_store" (let ((slg894 #f)) ((lambda () (set! slg894 (guard (gw ((symbol? gw) 'was-sym) (#t 'other)) (raise 'zap))))) slg894) (string->symbol "was-sym")))
 (edge-check-g894)
 
 ;; check guard_raise_cond_dispatch__in__set_bang_set_twice

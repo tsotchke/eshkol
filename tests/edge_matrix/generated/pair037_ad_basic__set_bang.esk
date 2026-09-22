@@ -14,7 +14,7 @@
 (edge-check-g383)
 
 ;; check ad_basic_deriv_square__in__set_bang_lambda_store
-(define (edge-check-g384) (edge-chk "ad_basic_deriv_square__in__set_bang_lambda_store" (let ((swg384 #f)) ((lambda () (set! swg384 (derivative (lambda (adx) (* adx adx)) 3.0)))) swg384) 6.0))
+(define (edge-check-g384) (edge-chk "ad_basic_deriv_square__in__set_bang_lambda_store" (let ((slg384 #f)) ((lambda () (set! slg384 (derivative (lambda (adx) (* adx adx)) 3.0)))) slg384) 6.0))
 (edge-check-g384)
 
 ;; check ad_basic_deriv_square__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g386)
 
 ;; check ad_basic_grad_ref__in__set_bang_lambda_store
-(define (edge-check-g387) (edge-chk "ad_basic_grad_ref__in__set_bang_lambda_store" (let ((swg387 #f)) ((lambda () (set! swg387 (vector-ref (gradient (lambda (agv) (* (vector-ref agv 0) (vector-ref agv 1))) (vector 2.0 3.0)) 0)))) swg387) 3.0))
+(define (edge-check-g387) (edge-chk "ad_basic_grad_ref__in__set_bang_lambda_store" (let ((slg387 #f)) ((lambda () (set! slg387 (vector-ref (gradient (lambda (agv) (* (vector-ref agv 0) (vector-ref agv 1))) (vector 2.0 3.0)) 0)))) slg387) 3.0))
 (edge-check-g387)
 
 ;; check ad_basic_grad_ref__in__set_bang_set_twice

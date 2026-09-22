@@ -1,0 +1,50 @@
+id: SW-210
+bucket: SILENT-WRONG
+subtag: autodiff
+family: runtime-taylor/unary-route-coverage
+status: fixed
+closed_at: "edf532399"
+title: "asin, acos, atan, asinh, acosh, atanh, log2, log10, exp2, cbrt, atan2 and the rounding functions returned the primal on a Taylor tower or level"
+repro: >-
+  (derivative-n atan 1.0 2); (derivative-n (lambda (x) (atan x)) 0.5 3);
+  (derivative-n (lambda (a) (* a (derivative atan 1.0))) 2.0 1);
+  (derivative (lambda (a) (derivative-n (lambda (x) (atan (* a x))) 0.5 2)) 1.5)
+observed: >-
+  0, 0, 0 and 0 on native JIT and AOT (the VM gave -0.256 for the second).
+  The third regressed when a nested first-order derivative began to run as an
+  order-1 level. Nested jets through atan2 answered 0 as well:
+  (derivative (lambda (a) (derivative (lambda (x) (atan x a)) 0.5)) 1.5).
+correct: >-
+  -0.5, -0.256, 0.5, -1.437696 (exactly -22464/15625 at the exact point 1/2,
+  3/2), and -0.32 for the atan2 case.
+root_cause: >-
+  The tower route table in codegenMathFunctionOnTagged listed ten builtins by
+  hand; the rest skipped it, and the scalar path read the tower as its primal.
+  lib/core/runtime_taylor.c had no recurrence for them, its unary dispatchers
+  copied the input on an unknown op-code, and its binary dispatchers treated
+  an unknown op-code as addition. The first-order dual branch of atan2 read one
+  tangent of an 8-jet.
+fix: >-
+  lib/core/taylor_recurrences.def gains the fourteen unary rows, atan2 and
+  TAYLOR_ALIAS lowering spellings; lib/core/taylor_opcodes.h maps a spelling to
+  its op-code and the code generator routes every math builtin through it.
+  runtime_taylor.c carries the integral family as one recurrence, s_0 = f(u_0),
+  s_k = (1/k) sum j u_j d_{k-j} with d = f'(u), in the double (tr_ext_unary),
+  seed-tangent (ddual_ext), tagged-coefficient (level_ext_unary, also for exact
+  towers, which stay exact when every coefficient is rational) and 8-jet tiers,
+  and atan2 as sigma*atan(quotient) + const; unknown op-codes are a fatal
+  error. Forward jets meeting atan2 take the kernel's 8-jet rule.
+evidence: >-
+  tests/ad/taylor_integral_family_test.esk: 305 checks against sympy closed
+  forms, orders 1-5 of every function through the classic tower, the level
+  under and around a first-order derivative, the Taylor list, atan2 in both
+  arguments and both quotient routes, the review's four cases, exactness at
+  exact points and the rounding functions. ctest taylor_integral_family_jit and
+  taylor_integral_family_aot pass; the pre-fix binary fails 278 of 305.
+  scripts/check_taylor_unary_routes.py (ctest taylor_unary_route_guard and its
+  selftest) reports 28 missing routes on the pre-fix tree and none now.
+caught_by: [independent-review]
+missed_by: [taylor-tower-self-test, vm_parity]
+notes: >-
+  The VM's derivative-n of asin, acos and atan returns the first derivative at
+  every order; reported to the VM Taylor lane on the ICC bus.

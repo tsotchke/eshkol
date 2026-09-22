@@ -14,7 +14,7 @@
 (edge-check-g296)
 
 ;; check tail_position_loop_tail_result__in__set_bang_lambda_store
-(define (edge-check-g297) (edge-chk "tail_position_loop_tail_result__in__set_bang_lambda_store" (let ((swg297 #f)) ((lambda () (set! swg297 (let tpl ((i 0)) (if (= i 100) 'end (tpl (+ i 1))))))) swg297) (string->symbol "end")))
+(define (edge-check-g297) (edge-chk "tail_position_loop_tail_result__in__set_bang_lambda_store" (let ((slg297 #f)) ((lambda () (set! slg297 (let tpl ((i 0)) (if (= i 100) 'end (tpl (+ i 1))))))) slg297) (string->symbol "end")))
 (edge-check-g297)
 
 ;; check tail_position_loop_tail_result__in__set_bang_set_twice

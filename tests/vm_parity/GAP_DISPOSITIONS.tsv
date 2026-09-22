@@ -160,7 +160,6 @@ null-environment	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	eval
 onnx-export-tensor	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 op:CASE_LAMBDA	behavioral-divergence	tests/vm_parity/found/case_lambda_wrong_clause.esk	wrong clause selected (found/case_lambda_wrong_clause.esk)
 op:COMPOSE	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	compose undefined in VM
-op:DEFINE_SYNTAX	behavioral-divergence	tests/vm_parity/resolved/recursive_macro_zero.esk	simple rewrite macros work; recursive and set!-mutating macros diverge (resolved/recursive_macro_zero.esk, resolved/macro_set_top_level.esk)
 op:DIFF	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	AD surface diverges in VM
 op:DIRECTIONAL_DERIV	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	AD surface diverges in VM
 op:DNC_ALLOC_WEIGHTS	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.dnc has no VM fids
