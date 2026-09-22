@@ -589,10 +589,9 @@ class EshkolRuntime {
                 eshkol_i128_binary_tagged: () => { throw new Error('i128 arithmetic unsupported in WASM glue'); },
                 eshkol_i128_compare_tagged: () => { throw new Error('i128 comparison unsupported in WASM glue'); },
                 eshkol_is_i128_tagged: (v) => {
-                    // Exact, as in lib/core/i128_runtime.cpp tagged_is_i128: a
-                    // HEAP_PTR (8) whose object header (8 bytes before the
-                    // payload) carries HEAP_SUBTYPE_I128 (25). Generic
-                    // arithmetic asks this of every heap operand.
+                    // Match lib/core/i128_runtime.cpp: a HEAP_PTR (8) with
+                    // HEAP_SUBTYPE_I128 (25) in its eight-byte object header.
+                    // Generic arithmetic asks this of ordinary values too.
                     const dv = this.memory ? new DataView(this.memory.buffer) : null;
                     if (!dv || !v) return 0;
                     if ((dv.getUint8(Number(v)) & 0x0F) !== 8) return 0;
