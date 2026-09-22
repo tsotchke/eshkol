@@ -1338,6 +1338,20 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **Differentiation passes nest at any depth and any order (ledger SW-154,
+  ADR-0027).** Two enclosing levels over an order-2 pass answered 0 with exit
+  status 0, and two passes both of order 2 or higher raised, because a nested
+  pass rode on one value series plus one first-order companion. A pass opened
+  inside another live pass now runs as a level whose Taylor coefficients are
+  numbers of the enclosing levels, so
+  `(derivative (lambda (a) (derivative (lambda (b) (derivative-n (lambda (c) (* a b c c)) 1.0 2)) 1.0)) 1.0)`
+  answers 2 and `(derivative-n (lambda (a) (derivative-n (lambda (b) (* a a a b b b)) 3.0 2)) 2.0 2)`
+  answers 216, on the JIT and AOT lanes, through the evaluation point or a
+  captured variable, exact at an exact point. Nested holomorphic derivatives
+  compose with `derivative-n` and `taylor` the same way (SW-193). The companion
+  lanes that carried one or two enclosing levels are retired.
+  `ns-residual-tau-series` and `ns-force-smoothness-probe` accept any order.
+
 - ESKM v1 scalar and empty tensor checkpoints retain their shapes and values
   across native and VM producers and consumers. Scalar observation is admitted
   narrowly without relaxing arithmetic tensor metadata checks. (#698)
@@ -2152,11 +2166,7 @@ the source changes; the verification record for the tagged commit is the
   from `derivative`, `derivative-n` and `taylor`; and passing a call expression
   directly as the differentiand failed to compile. The tier is now decided from
   the carrier's runtime exactness, so `(derivative f 1/3)` is exact whenever the
-  arithmetic it performs is. Two enclosing differentiation levels over an
-  order-2 inner pass remain **guarded rather than supported** (ledger SW-154):
-  the carrier has room for exactly one first-order companion, so that shape
-  raises a diagnostic instead of answering, and the carrier rewrite that lifts
-  the restriction is v1.4 work.
+  arithmetic it performs is.
 
 - **Self tail recursion in a `guard` body runs in constant stack (ledger
   SW-58).** A self-recursive tail call inside a `guard` body is constant-stack

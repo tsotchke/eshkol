@@ -53,32 +53,15 @@ non-integer rationals (e.g. `1/2 + h`); `expt` at a non-integer exponent is
 rational nth root in general), so fields built by `ns-similarity-field` are
 exact only up to that unavoidable point.
 
-## AD-nesting limit (read before raising `order` above 1)
+## Nesting
 
-`ns-residual` already performs an order-2 `derivative-n` pass internally
-for the Laplacian. Wrapping *that* in a second order-2-or-higher
-differentiation pass — `taylor`/`derivative-n f x k` with `k >= 2` as an
-outer pass over a call to `ns-residual` — fails outright:
-
-```
-ERROR: unsupported nested differentiation: an order-2 `derivative-n`/
-`taylor` pass inside another differentiation of order 2 or higher.
-```
-
-even on the nested-AD-and-exact-rational-seed fix this module is built on
-and otherwise relies on throughout. Nor does repeating the outer pass as
-several separately-nested order-1 calls recover it: that specific shape
-returns `0` silently instead of raising an error — worse than the loud
-failure. A **single** order-1 outer pass directly around the
-order-2-internal residual body, however, is exact and verified correct.
-Minimal repros for all three cases live under `.scratch/` in the branch
-that added this module (not committed to the library — a compiler
-front-end limitation to route around, not a defect in this file).
-Consequently `ns-residual-tau-series` and `ns-force-smoothness-probe`
-accept `order` **0 or 1 only** and raise `(error ...)` for anything higher.
-`ns-residual`/`ns-residual-cartesian`/`ns-divergence`/`ns-divergence-cartesian`
-themselves are unaffected — they perform exactly one level of AD internally
-and support arbitrary flows.
+`ns-residual` performs an order-2 `derivative-n` pass internally for the
+Laplacian, and the tau-series wraps it in an outer `taylor` pass of the
+requested order. Differentiation passes nest at any depth and order (the inner
+pass runs as a level of the outer one,
+[ADR-0027](../../design/adr/0027-recursive-taylor-level-carrier.md)), so
+`ns-residual-tau-series` and `ns-force-smoothness-probe` accept any
+non-negative `order`.
 
 ## Engine support
 
@@ -224,16 +207,26 @@ a defect in this constructor.
 
 ### `(ns-residual-tau-series flow r z order)`
 `(vector cs-r cs-theta cs-z)`, each a list of the Taylor coefficients
-`c[0..order]` (`order` 0 or 1 — see the AD-nesting limit above) of the
-corresponding residual component as a function of `tau = 1 - t`, expanded
-about `tau = 0` (i.e. about `t = 1`), at the fixed point `(r,z)`. `c[0]` is
-exact whenever `flow`'s procedures and `(r,z)` are; `c[1]` goes through one
-AD pass and inherits its exactness contract.
+`c[0..order]` of the corresponding residual component as a function of
+`tau = 1 - t`, expanded about `tau = 0` (i.e. about `t = 1`), at the fixed
+point `(r,z)`. Every coefficient is exact whenever `flow`'s procedures and
+`(r,z)` are.
+
+```scheme
+(require stdlib)
+(define zero3 (lambda (r z t) 0))
+;; u_r = r^2 t, nu = 1/2: R_r(r=1) = 3/2 - 5/2 tau + 2 tau^2
+(define flow (ns-flow (lambda (r z t) (* r r t)) zero3 zero3 zero3 1/2))
+(display (vector-ref (ns-residual-tau-series flow 1 0 2) 0)) (newline)
+```
+```
+(3/2 -5/2 2)
+```
 
 ### `(ns-singular-orders flow r z order)`
 `(vector kr ktheta kz)`, the lowest tau-exponent at which each residual
-component is nonzero at `(r,z)` — `0`, `1`, or `#f` (vanishes to at least
-first order, i.e. every probed coefficient is zero). This is the
+component is nonzero at `(r,z)` — an index `0..order`, or `#f` when every
+probed coefficient is zero. This is the
 mechanical signal an ansatz search uses to reject a candidate: order `0`
 means the candidate does not even instantaneously solve Navier-Stokes at
 that point.
@@ -241,11 +234,10 @@ that point.
 ### `(ns-force-smoothness-probe flow force r z order)`
 `force` is a `(vector fr ftheta fz)` of procedures `(lambda (r z t) ...)`,
 a proposed external force/cutoff. Returns `#t` iff every Taylor
-coefficient up to `order` (0 or 1) of every component of the forced
+coefficient up to `order` of every component of the forced
 residual `(R - force)` stays finite (no NaN, no +-infinity) at the fixed
 positive radius `r`. The finite-difference-free AD analogue of a
-smoothness check: no stepping, no truncation error, just the tower — to
-the order the tower supports on this compiler (see the AD-nesting limit).
+smoothness check: no stepping, no truncation error, just the tower.
 
 ```scheme
 (require stdlib)

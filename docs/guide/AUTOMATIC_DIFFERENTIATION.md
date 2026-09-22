@@ -767,84 +767,51 @@ outer or the inner pass. All nine pairings agree:
 ;; => 1, 1, 1
 ```
 
-Two passes compose by putting the enclosing one on a **first-order companion
-series** that rides alongside the inner pass's value series, so exactly one
-enclosing level can be carried at a time. That is the v1.3.5 ceiling, and it is
-a property of the carrier rather than of the mathematics.
-
-**Below the ceiling** — any depth of first-order passes, and one pass of order
-≥ 2 with one enclosing first-order pass in either position — nesting is exact:
+Nesting has no ceiling. A pass opened inside another live pass runs as a
+**level**: a truncated Taylor series in its own perturbation whose coefficients
+are numbers of the enclosing levels, so every enclosing perturbation is kept,
+at any depth and any order, through the evaluation point or a captured variable
+([ADR-0027](../design/adr/0027-recursive-taylor-level-carrier.md)):
 
 ```scheme
 ;; depth 3, all first order: d/dx d/dy d/dz (x^2 y^2 z^2) at (2,3,4)
 (display (derivative (lambda (x) (derivative (lambda (y) (derivative (lambda (z) (* x x y y z z)) 4.0)) 3.0)) 2.0)) (newline)
-;; one order-2 pass under one first-order pass: d/da [d2/db2 (a^2 b^3)] at b=1/2, a=1/3
-(display (derivative (lambda (a) (derivative-n (lambda (b) (* a a b b b)) 1/2 2)) 1/3)) (newline)
+;; both passes of order 2: d2/da2 d2/db2 (a^3 b^3) at a=2, b=3
+(display (derivative-n (lambda (a) (derivative-n (lambda (b) (* a a a b b b)) 3.0 2)) 2.0 2)) (newline)
+;; two enclosing levels over an order-2 pass: d/da d/db d2/dc2 (a b c^2)
+(display (derivative (lambda (a)
+           (derivative (lambda (b)
+             (derivative-n (lambda (c) (* a b c c)) 1.0 2)) 1.0)) 1.0)) (newline)
+;; nesting through the point: g(t) = d2/dr2 [r^4] at r = 1+t = 12 (1+t)^2
+(define (h r) (* r r r r))
+(display (taylor (lambda (t) (* t (derivative-n h (+ 1 t) 2))) 0 2)) (newline)
 ```
 ```
 192
+216
 2
+(0 12 24)
 ```
 
-**At the ceiling**, two passes both of order ≥ 2 **raise** rather than
-answering a number:
-
-```
-unsupported nested differentiation: an order-2 `derivative-n`/`taylor` pass
-inside another differentiation of order 2 or higher
-```
-
-and an enclosing level with second- or higher-order dependence reaching an
-inner pass through a **capture** raises its own diagnostic:
-
-```
-unsupported nested differentiation: an enclosing differentiation reaches this
-pass through a CAPTURED variable and carries second- or higher-order dependence
-```
-
-Rewrite the outer pass as a first-order `derivative`, or take the higher-order
-term with a single `(derivative-n f x k)`.
-
-> **Known limitation (ledger SW-154): two enclosing levels over a pass of
-> order ≥ 2 is not supported in v1.3.5.** On the **exact** tier that shape
-> raises (`unsupported inexact/non-rational Taylor hyperdual operation`). On
-> the **inexact** tier it currently answers `0` rather than raising, so it is a
-> silent wrong answer — do not rely on it:
->
-> ```scheme
-> ;; the analytic answer is 2
-> (display (derivative (lambda (a)
->            (derivative (lambda (b)
->              (derivative-n (lambda (c) (* a b c c)) 1.0 2)) 1.0)) 1.0)) (newline)
-> ```
-> ```
-> 0
-> ```
->
-> The shape is pinned, unregistered, in
-> `tests/ad/nested_towers_matrix_test.esk`. Lifting the ceiling is the ESH-0413
-> carrier rewrite, which replaces the carrier this release's exact-coefficient
-> tier is built on — the two cannot both be in force — and is **v1.4** work.
-
-Exactness through a nested pass depends on which carrier the composition lands
-on: the first-order companion series carries doubles, so a first-order pass
-over a first-order pass returns an inexact value even from an exact seed, while
-a first-order pass over `derivative-n` stays on the exact tier and returns an
-exact one.
+Exactness follows the numeric tower through every level: an exact point gives
+an exact answer while every operation is exactness-preserving.
 
 ```scheme
 (display (derivative (lambda (x) (derivative   (lambda (y) (* x x y y))   1/2))   1/3)) (newline)
 (display (derivative (lambda (a) (derivative-n (lambda (b) (* a a b b b)) 1/2 2)) 1/3)) (newline)
 ```
 ```
-0.6666666666666666
+2/3
 2
 ```
 
-Gated by `tests/ad/nested_operator_matrix_test.esk` (the captured-variable
-matrix, JIT + AOT) and `tests/ad/ad_carrier_nesting_test.esk` (the point
-matrix). The full table, with the verified output of every row, is in
-[the AD support matrix](../reference/ad/support-matrix.md#nesting-ceiling-sw-154).
+Gated by `tests/ad/nested_towers_matrix_test.esk` (every operator and order
+pairing, the depth-3 order sweep, nesting through the point, exact seeds, and
+the perturbation-confusion controls), `tests/ad/nested_operator_matrix_test.esk`
+(the captured-variable matrix) and `tests/ad/ad_carrier_nesting_test.esk`, on
+the JIT and AOT lanes. The table, with the verified output of every row, is in
+[the AD support matrix](../reference/ad/support-matrix.md#nesting).
+
 
 ### How it works (in one paragraph)
 

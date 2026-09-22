@@ -189,7 +189,7 @@ the same program, in either order.
   disturb it. See
   [the AD capture rules](reference/ad/operators.md#where-a-capture-is-resolved).
 
-The complete AD support matrix, including the nesting ceiling, is
+The complete AD support matrix, including nesting, is
 [reference/ad/support-matrix.md](reference/ad/support-matrix.md).
 
 ## 5. Library behaviour
