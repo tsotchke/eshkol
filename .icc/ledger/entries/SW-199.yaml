@@ -1,0 +1,32 @@
+id: SW-199
+bucket: SILENT-WRONG
+family: vm/tensor-reduction-shape
+status: open
+needs_decision: false
+title: "VM tensor-sum without an axis returns a one-element tensor instead of a number"
+repro: >-
+  (display (tensor-sum (tensor 0.5 0.25))) and
+  (display (number? (tensor-sum (tensor 0.5 0.25)))) on the bytecode VM
+  (eshkol-vm-standalone-test), against the native JIT.
+observed: >-
+  The VM prints #(0.75) and #f; native prints 0.75 and #t. Arithmetic on the VM
+  result, (+ 1 (tensor-sum (tensor 0.5 0.25))), is a fatal runtime error. A
+  vector operand behaves the same, and a list operand raises "tensor-reduce:
+  expected a tensor or numeric vector operand" where native coerces it.
+correct: >-
+  A full reduction (no axis) returns the scalar on every engine, as native and
+  the VM's own dual-carrier branch of the same native (case 457) already do.
+evidence: >-
+  Found while building the SW-197 regression matrix; the forward-derivative
+  path through tensor-sum returns a scalar on the VM because it takes the
+  dual-carrier branch, which is why the AD parity corpus did not see it.
+caught_by: [sw197-exact-collection-matrix]
+missed_by: [vm_parity]
+notes: >-
+  Filed by the v1.3.5 exact-derivative lane; not fixed there. Cause: the VM
+  prelude lowers the 1-argument (tensor-sum t) to (_tensor-reduce-sum t -1),
+  and native 457 cannot tell that from an explicit axis -1, which
+  tests/vm_parity/corpus/36_tensor_axis_reduce.esk pins to a one-element tensor
+  on both engines. The fix needs a distinct no-axis sentinel in the prelude
+  (and a regenerated prelude cache), not a change to the axis path. The
+  corpus file already notes the 1-argument form as a known divergence.
