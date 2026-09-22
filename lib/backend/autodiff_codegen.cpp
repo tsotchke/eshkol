@@ -484,23 +484,23 @@ llvm::Function* getTaylorProjectSelectedFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_project_selected_epoch", &ctx.module());
 }
-/** @brief Get or declare `eshkol_ad_nested_seed` (arena*, point tagged*, order i32, level i64, tower_pass i32, out tagged*) -> i32 route (ESH-0402). */
+/** @brief Get or declare `eshkol_ad_nested_seed` (arena*, point tagged*, order i32, level i64, tower_pass i32, tower_depth i64, out tagged*) -> i32 route (ADR-0027). */
 llvm::Function* getAdNestedSeedFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_ad_nested_seed")) return f;
     llvm::Type* p = ctx.ptrType();
     auto* ft = llvm::FunctionType::get(ctx.int32Type(),
         {p /*arena*/, p /*point*/, ctx.int32Type() /*order*/, ctx.int64Type() /*level*/,
-         ctx.int32Type() /*tower_pass*/, p /*out*/}, false);
+         ctx.int32Type() /*tower_pass*/, ctx.int64Type() /*tower_depth*/, p /*out*/}, false);
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_ad_nested_seed", &ctx.module());
 }
-/** @brief Get or declare `eshkol_ad_nested_extract` (arena*, result tagged*, route i32, order i32, out tagged*) -> void (ESH-0402). */
+/** @brief Get or declare `eshkol_ad_nested_extract` (arena*, result tagged*, route i32, order i32, want_list i32, out tagged*) -> void (ADR-0027). */
 llvm::Function* getAdNestedExtractFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_ad_nested_extract")) return f;
     llvm::Type* p = ctx.ptrType();
     auto* ft = llvm::FunctionType::get(ctx.voidType(),
         {p /*arena*/, p /*result*/, ctx.int32Type() /*route*/, ctx.int32Type() /*order*/,
-         p /*out*/}, false);
+         ctx.int32Type() /*want_list*/, p /*out*/}, false);
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_ad_nested_extract", &ctx.module());
 }
@@ -580,6 +580,7 @@ llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
     b.CreateBr(done);
     b.SetInsertPoint(done);
     nestedRouteSlot_ = route;
+    nestedRouteByLevel_[level] = route;
     return b.CreateLoad(ctx_.taggedValueType(), result);
 }
 
@@ -620,9 +621,14 @@ llvm::Value* AutodiffCodegen::seedForwardAndPushPlain(llvm::Value* point_tagged,
     const bool tower_pass = (adTowerMode_ != TowerMode::NONE && adTowerOrder_);
     llvm::Value* nest_order = tower_pass
         ? adTowerOrder_ : llvm::ConstantInt::get(ctx_.int32Type(), 1);
+    // ADR-0027: the runtime decides whether this pass runs as a LEVEL from the
+    // forward level, the open tower/level depth and the point itself.
+    llvm::Value* tower_depth = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    if (llvm::GlobalVariable* ga = ctx_.adTowerActive())
+        tower_depth = b.CreateLoad(ctx_.int64Type(), ga, "nest_tower_depth");
     llvm::Value* route = b.CreateCall(getAdNestedSeedFunc(ctx_),
         {getArenaPtr(), np_slot, nest_order, level,
-         llvm::ConstantInt::get(ctx_.int32Type(), tower_pass ? 1 : 0), nout_slot});
+         llvm::ConstantInt::get(ctx_.int32Type(), tower_pass ? 1 : 0), tower_depth, nout_slot});
     b.CreateStore(route, nroute_slot);
     nestedRouteSlot_ = nroute_slot;
 
@@ -644,11 +650,13 @@ llvm::Value* AutodiffCodegen::seedForwardAndPushPlain(llvm::Value* point_tagged,
     b.CreateCondBr(b.CreateICmpNE(route, llvm::ConstantInt::get(ctx_.int32Type(), 0)),
                    nest_bb, plain_bb);
 
-    // Nested: the runtime already built the composed carrier. Keep the tower
-    // differentiation context balanced with the pop in popAndExtractForward.
+    // Nested: the runtime already seeded this pass's LEVEL. The tower context
+    // is pushed for EVERY level pass, jet arm included, so a pass nested
+    // inside this one sees a live level (ADR-0027 section 3). Balanced with
+    // the pop in popAndExtractForwardPlain.
     b.SetInsertPoint(nest_bb);
     b.CreateStore(b.CreateLoad(ctx_.taggedValueType(), nout_slot), nseed_slot);
-    if (tower_pass) towerCtxPush(adTowerOrder_);
+    towerCtxPush(tower_pass ? adTowerOrder_ : llvm::ConstantInt::get(ctx_.int32Type(), 1));
     b.CreateBr(seed_done);
 
     // Not nested: the pass seeds exactly as it always has.
@@ -768,6 +776,11 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
     auto& b = ctx_.builder();
     auto* fn = b.GetInsertBlock()->getParent();
     auto* route = nestedRouteSlot_;
+    if (auto it = nestedRouteByLevel_.find(level);
+        it != nestedRouteByLevel_.end() && it->second &&
+        it->second->getFunction() == fn &&
+        !llvm::isa<llvm::Constant>(level))
+        route = it->second;
     llvm::IRBuilder<> entry(&fn->getEntryBlock(), fn->getEntryBlock().begin());
     auto* result = entry.CreateAlloca(ctx_.taggedValueType(), nullptr, "complex_extract_result");
     auto* complex_bb = llvm::BasicBlock::Create(ctx_.context(), "extract_complex", fn);
@@ -837,7 +850,7 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardPlain(llvm::Value* result_tagg
         llvm::Value* route = b.CreateLoad(ctx_.int32Type(), route_slot, "nest_route_ld");
         llvm::Value* route_lo = b.CreateAnd(route, llvm::ConstantInt::get(ctx_.int32Type(), 0xFF));
         llvm::Value* needs_nested = b.CreateICmpSGE(route_lo,
-            llvm::ConstantInt::get(ctx_.int32Type(), ESH_AD_NEST_RIDE));
+            llvm::ConstantInt::get(ctx_.int32Type(), ESH_AD_NEST_LEVEL));
 
         llvm::BasicBlock* xnest_bb = llvm::BasicBlock::Create(ctx_.context(), "nest_extract", xfn);
         llvm::BasicBlock* xcore_bb = llvm::BasicBlock::Create(ctx_.context(), "nest_ex_core", xfn);
@@ -846,12 +859,14 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardPlain(llvm::Value* result_tagg
 
         b.SetInsertPoint(xnest_bb);
         adPertLevelStore(level);
-        if (pop_context && adTowerMode_ != TowerMode::NONE && adTowerOrder_) towerCtxPop();
+        if (pop_context) towerCtxPop();   // paired with the push in seedForwardAndPushPlain
         b.CreateStore(result_tagged, xin_slot);
         llvm::Value* x_order = (adTowerMode_ != TowerMode::NONE && adTowerOrder_)
             ? adTowerOrder_ : llvm::ConstantInt::get(ctx_.int32Type(), 1);
+        llvm::Value* want_list = llvm::ConstantInt::get(ctx_.int32Type(),
+            (adTowerMode_ == TowerMode::COEFFS && adTowerOrder_) ? 1 : 0);
         b.CreateCall(getAdNestedExtractFunc(ctx_),
-            {getArenaPtr(), xin_slot, route, x_order, xout_slot});
+            {getArenaPtr(), xin_slot, route, x_order, want_list, xout_slot});
         b.CreateStore(b.CreateLoad(ctx_.taggedValueType(), xout_slot), xres_slot);
         b.CreateBr(xdone_bb);
 
@@ -6261,38 +6276,25 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
                                         grad_fwd_exact, grad_fwd_plain);
 
             ctx_.builder().SetInsertPoint(grad_fwd_exact);
-            Value* exact_point_slot = ctx_.builder().CreateAlloca(
-                ctx_.taggedValueType(), nullptr, "grad_exact_point");
-            Value* exact_seed_slot = ctx_.builder().CreateAlloca(
-                ctx_.taggedValueType(), nullptr, "grad_exact_seed");
-            Value* exact_result_slot = ctx_.builder().CreateAlloca(
-                ctx_.taggedValueType(), nullptr, "grad_exact_result");
-            Value* exact_projected_slot = ctx_.builder().CreateAlloca(
-                ctx_.taggedValueType(), nullptr, "grad_exact_projected");
-            ctx_.builder().CreateStore(vector_val, exact_point_slot);
-            ctx_.builder().CreateCall(getTaylorSeedFunc(ctx_),
-                {getArenaPtr(), exact_point_slot,
-                 ConstantInt::get(ctx_.int32Type(), 1), exact_seed_slot});
-            Value* exact_seed = ctx_.builder().CreateLoad(
-                ctx_.taggedValueType(), exact_seed_slot);
-            Value* exact_epoch = ctx_.builder().CreateCall(
-                getTaylorEpochFunc(ctx_), {exact_seed_slot});
-            towerCtxPush(ConstantInt::get(ctx_.int32Type(), 1));
-            std::vector<Value*> exact_args = {exact_seed};
-            resolveGradientCaptures(func_ptr, exact_args, "fwd-exact-tower", op->gradient_op.function);
-            Value* exact_call = ctx_.builder().CreateCall(func_ptr, exact_args);
-            towerCtxPop();
-            ctx_.builder().CreateStore(exact_call, exact_result_slot);
-            Value* exact_tape = ConstantPointerNull::get(ctx_.ptrType());
-            if (ctx_.currentAdTape())
-                exact_tape = ctx_.builder().CreateLoad(
-                    ctx_.ptrType(), ctx_.currentAdTape());
-            ctx_.builder().CreateCall(getTaylorProjectSelectedFunc(ctx_),
-                {getArenaPtr(), exact_result_slot, exact_epoch,
-                 ConstantInt::get(ctx_.int32Type(), 1), exact_tape,
-                 exact_projected_slot});
-            ctx_.builder().CreateStore(ctx_.builder().CreateLoad(
-                ctx_.taggedValueType(), exact_projected_slot), grad_result_slot);
+            {
+                // The exact scalar gradient is an order-1 tower pass: seed and
+                // extract through the one forward-pass protocol, so it runs as
+                // a level when it is nested (ADR-0027) and as the classic exact
+                // tower otherwise.
+                TowerMode saved_mode = adTowerMode_;
+                llvm::Value* saved_order = adTowerOrder_;
+                adTowerMode_ = TowerMode::DERIV_N;
+                adTowerOrder_ = ConstantInt::get(ctx_.int32Type(), 1);
+                Value* exact_level = nullptr;
+                Value* exact_seed = seedForwardAndPush(vector_val, &exact_level);
+                std::vector<Value*> exact_args = {exact_seed};
+                resolveGradientCaptures(func_ptr, exact_args, "fwd-exact-tower", op->gradient_op.function);
+                Value* exact_call = ctx_.builder().CreateCall(func_ptr, exact_args);
+                Value* exact_res = popAndExtractForward(exact_call, exact_level);
+                adTowerMode_ = saved_mode;
+                adTowerOrder_ = saved_order;
+                ctx_.builder().CreateStore(exact_res, grad_result_slot);
+            }
             ctx_.builder().CreateBr(grad_unified_exit);
 
             ctx_.builder().SetInsertPoint(grad_fwd_plain);

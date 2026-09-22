@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <unordered_map>
 #include <utility>
@@ -274,6 +275,12 @@ public:
     // site. Set by seedForwardAndPush, consumed (and cleared) by
     // popAndExtractForward; null means "this pass did not probe" (no nesting).
     llvm::AllocaInst* nestedRouteSlot_ = nullptr;
+    // ADR-0027: the route slot of each seed site, keyed by the level value that
+    // seedForwardAndPush hands its caller and the caller hands back to
+    // popAndExtractForward. The differentiated body is emitted BETWEEN the two
+    // calls and may contain passes of its own, so the single member slot above
+    // cannot carry the outer pass's route across it.
+    std::unordered_map<llvm::Value*, llvm::AllocaInst*> nestedRouteByLevel_;
 
     // ESH-0093: if `operand_tagged` is a reverse-tape AD node AND a forward-
     // mode perturbation is live (__ad_pert_level > 0), freeze it to a dual

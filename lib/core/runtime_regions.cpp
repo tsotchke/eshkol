@@ -1973,7 +1973,11 @@ static void evac_drain(EvacState& st) {
                         ? 4u : 2u;
                     for (size_t i = 0; i < arrays * ncoeff; ++i)
                         t->exact_c[i] = evac_value(st, t->exact_c[i]);
-                } else if ((t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_RATIONAL) {
+                } else if ((t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_RATIONAL ||
+                           (t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_CARRIER) {
+                    /* A level carrier (ADR-0027) stores tagged coefficients
+                     * the same way; each may itself be a jet, a bignum or
+                     * rational, or an enclosing level's carrier. */
                     t->exact_c = (eshkol_tagged_value_t*)(void*)t->c;
                     auto* c = t->exact_c;
                     for (size_t i = 0; i < ncoeff; ++i) c[i] = evac_value(st, c[i]);
