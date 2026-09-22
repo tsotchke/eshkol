@@ -32,6 +32,19 @@
 (check-z "Taylor c1" (list-ref coefficients 1) 0.0 6.0)
 (check-z "Taylor c2" (list-ref coefficients 2) 3.0 3.0)
 (check-z "Taylor c3" (list-ref coefficients 3) 1.0 0.0)
+;; ADR-0027: the same holomorphic passes nest with `derivative-n` and `taylor`
+;; levels and through a captured complex variable.
+(check-z "derivative over derivative-n"
+  (derivative (lambda (z) (derivative-n cube z 2)) p) 6.0 0.0)
+(check-z "derivative-n over derivative"
+  (derivative-n (lambda (z) (derivative cube z)) p 2) 6.0 0.0)
+(check-z "captured complex variable"
+  (derivative (lambda (z) (derivative (lambda (w) (* w (* z z))) p)) p) 2.0 2.0)
+(check-z "taylor over derivative"
+  (list-ref (taylor (lambda (z) (derivative cube z)) p 2) 2) 3.0 0.0)
+(check-z "depth three mixed"
+  (derivative (lambda (a) (derivative-n (lambda (b) (derivative fourth b)) a 2)) p)
+  24.0 0.0)
 (if (= failures 0)
     (begin (display "PASS: complex_nested_carrier ") (display checks) (newline))
     (exit 1))

@@ -16,7 +16,7 @@
 
 ;; check tco_deep_rec__in__set_bang_lambda_store
 (define (drg1584 n) (if (= n 0) 'deep-done (drg1584 (- n 1))))
-(define (edge-check-g1584) (edge-chk "tco_deep_rec__in__set_bang_lambda_store" (let ((swg1584 #f)) ((lambda () (set! swg1584 (drg1584 200000)))) swg1584) (string->symbol "deep-done")))
+(define (edge-check-g1584) (edge-chk "tco_deep_rec__in__set_bang_lambda_store" (let ((slg1584 #f)) ((lambda () (set! slg1584 (drg1584 200000)))) slg1584) (string->symbol "deep-done")))
 (edge-check-g1584)
 
 ;; check tco_deep_rec__in__set_bang_set_twice
@@ -29,7 +29,7 @@
 (edge-check-g1586)
 
 ;; check tco_named_loop_count__in__set_bang_lambda_store
-(define (edge-check-g1587) (edge-chk "tco_named_loop_count__in__set_bang_lambda_store" (let ((swg1587 #f)) ((lambda () (set! swg1587 (let tls ((i 0) (s 0)) (if (= i 100000) s (tls (+ i 1) (+ s 1))))))) swg1587) 100000))
+(define (edge-check-g1587) (edge-chk "tco_named_loop_count__in__set_bang_lambda_store" (let ((slg1587 #f)) ((lambda () (set! slg1587 (let tls ((i 0) (s 0)) (if (= i 100000) s (tls (+ i 1) (+ s 1))))))) slg1587) 100000))
 (edge-check-g1587)
 
 ;; check tco_named_loop_count__in__set_bang_set_twice

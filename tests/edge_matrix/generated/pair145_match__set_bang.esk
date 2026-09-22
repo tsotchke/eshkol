@@ -14,7 +14,7 @@
 (edge-check-g1263)
 
 ;; check match_list_pat__in__set_bang_lambda_store
-(define (edge-check-g1264) (edge-chk "match_list_pat__in__set_bang_lambda_store" (let ((swg1264 #f)) ((lambda () (set! swg1264 (match (list 1 2) ((list ma mb) (+ ma mb)) (_ 'no))))) swg1264) 3))
+(define (edge-check-g1264) (edge-chk "match_list_pat__in__set_bang_lambda_store" (let ((slg1264 #f)) ((lambda () (set! slg1264 (match (list 1 2) ((list ma mb) (+ ma mb)) (_ 'no))))) slg1264) 3))
 (edge-check-g1264)
 
 ;; check match_list_pat__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g1266)
 
 ;; check match_literal_pat__in__set_bang_lambda_store
-(define (edge-check-g1267) (edge-chk "match_literal_pat__in__set_bang_lambda_store" (let ((swg1267 #f)) ((lambda () (set! swg1267 (match 5 (5 'five) (_ 'no))))) swg1267) (string->symbol "five")))
+(define (edge-check-g1267) (edge-chk "match_literal_pat__in__set_bang_lambda_store" (let ((slg1267 #f)) ((lambda () (set! slg1267 (match 5 (5 'five) (_ 'no))))) slg1267) (string->symbol "five")))
 (edge-check-g1267)
 
 ;; check match_literal_pat__in__set_bang_set_twice

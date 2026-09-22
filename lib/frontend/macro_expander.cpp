@@ -9,6 +9,9 @@
 #include <eshkol/core/ast_routing.h>
 #include <eshkol/frontend/ast_strings.h>
 #include <eshkol/frontend/macro_expander.h>
+#include <eshkol/frontend/syntax_color.h>
+#include <eshkol/frontend/syntax_datum.h>
+#include <eshkol/frontend/syntax_rules.h>
 #include <eshkol/logger.h>
 #include <cstring>
 #include <algorithm>
@@ -248,7 +251,11 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
         return ast;
     }
     eshkol_ast_t current = ast;
-    std::set<std::string> expansion_chain; // macros seen in this chain
+    // A transformer may legitimately rewrite a use into another use of
+    // itself (continuation-passing macros do so once per element); only a
+    // chain that never reaches a non-macro form is an error.
+    static constexpr unsigned kMaxExpansionSteps = 100000;
+    unsigned expansion_steps = 0;
 
     // Iterative macro re-expansion loop
     for (;;) {
@@ -308,15 +315,24 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
             if (call->func && call->func->type == ESHKOL_VAR && call->func->variable.id) {
                 std::string func_name = call->func->variable.id;
                 if (isMacro(func_name)) {
-                    // Cycle detection: if we've seen this macro in this chain, it's circular
-                    if (expansion_chain.count(func_name)) {
-                        eshkol_error("Circular macro expansion detected: '%s' expands back to itself", func_name.c_str());
+                    if (++expansion_steps > kMaxExpansionSteps) {
+                        eshkol_error("macro expansion of '%s' did not terminate after %u steps",
+                                     func_name.c_str(), kMaxExpansionSteps);
                         return current;
                     }
-                    expansion_chain.insert(func_name);
-                    current = tryExpandMacroCall(current);
+                    eshkol_ast_t expanded = tryExpandMacroCall(current);
+                    if (expanded.node_id == current.node_id && expanded.type == current.type &&
+                        expanded.type == ESHKOL_OP && expanded.operation.op == ESHKOL_CALL_OP &&
+                        expanded.operation.call_op.func == current.operation.call_op.func)
+                        return current;          // no rule matched; already reported
+                    current = expanded;
                     continue; // Re-expand iteratively
                 }
+                // The parser read this use as macro syntax, but here the
+                // keyword is shadowed by a value binding (or was never
+                // bound): it is an ordinary call.
+                if (eshkol::syntax_use_unparsed(current.node_id))
+                    current = reparseAsCall(current);
             }
 
         }
@@ -329,18 +345,10 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
     if (current.type == ESHKOL_OP && current.operation.op == ESHKOL_QUASIQUOTE_OP)
         return expandQuasiquoted(current, 0);
     if (current.type == ESHKOL_VAR && current.variable.id) {
-        if (definition_identifiers_.count(current.variable.id)) return copyAst(current);
-        auto template_name = active_template_value_env_.find(current.variable.id);
-        if (template_name != active_template_value_env_.end() &&
-            active_template_pattern_names_.count(current.variable.id) == 0) {
-            eshkol_ast_t protected_name = copyAst(current);
-            protected_name.variable.id = eshkol_ast_string_copy(template_name->second);
-            return protected_name;
-        }
-        auto value_name = value_renames_.find(current.variable.id);
-        if (value_name != value_renames_.end()) {
+        const std::string resolved = resolveValue(current.variable.id);
+        if (resolved != current.variable.id) {
             eshkol_ast_t renamed = copyAst(current);
-            renamed.variable.id = eshkol_ast_string_copy(value_name->second);
+            renamed.variable.id = eshkol_ast_string_copy(resolved);
             return renamed;
         }
     }
@@ -366,7 +374,19 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
             enum class AstRoute {
                 Call, Sequence, Define, Lambda, Let, Match,
                 Cond, Set, Guard, Raise, Values, CallCc,
-                DynamicWind, The, OtherOperations
+                DynamicWind, The, Compose, Tensor, Diff, Derivative, Gradient,
+                Jacobian, Hessian, Divergence, Curl, Laplacian, DirectionalDeriv,
+                Taylor, WithRegion, Owned, Move, Shared, WeakRef, Borrow,
+                CallWithValues, LetValues, CaseLambda, Parameterize, CallPayload, Leaf
+            };
+            auto expand_ptr = [&](eshkol_ast_t*& child) {
+                if (child) child = new eshkol_ast_t(expandNode(*child));
+            };
+            auto expand_array = [&](eshkol_ast_t*& items, uint64_t count) {
+                if (!items) return;
+                auto* fresh = new eshkol_ast_t[count];
+                for (uint64_t i = 0; i < count; ++i) fresh[i] = expandNode(items[i]);
+                items = fresh;
             };
             switch (eshkol::routeAstOperation(op->op,
                 eshkol::AstRouteGroup<AstRoute::Call,
@@ -392,29 +412,73 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 eshkol::AstRouteGroup<AstRoute::CallCc, ESHKOL_CALL_CC_OP>{},
                 eshkol::AstRouteGroup<AstRoute::DynamicWind, ESHKOL_DYNAMIC_WIND_OP>{},
                 eshkol::AstRouteGroup<AstRoute::The, ESHKOL_THE_OP>{},
-                eshkol::AstRouteGroup<AstRoute::OtherOperations,
-                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP,
+                eshkol::AstRouteGroup<AstRoute::Compose, ESHKOL_COMPOSE_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Tensor, ESHKOL_TENSOR_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Diff, ESHKOL_DIFF_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Derivative, ESHKOL_DERIVATIVE_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Gradient, ESHKOL_GRADIENT_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Jacobian, ESHKOL_JACOBIAN_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Hessian, ESHKOL_HESSIAN_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Divergence, ESHKOL_DIVERGENCE_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Curl, ESHKOL_CURL_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Laplacian, ESHKOL_LAPLACIAN_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::DirectionalDeriv, ESHKOL_DIRECTIONAL_DERIV_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Taylor, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::WithRegion, ESHKOL_WITH_REGION_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Owned, ESHKOL_OWNED_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Move, ESHKOL_MOVE_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Shared, ESHKOL_SHARED_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::WeakRef, ESHKOL_WEAK_REF_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Borrow, ESHKOL_BORROW_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::CallWithValues, ESHKOL_CALL_WITH_VALUES_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::LetValues, ESHKOL_LET_VALUES_OP,
+                    ESHKOL_LET_STAR_VALUES_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::CaseLambda, ESHKOL_CASE_LAMBDA_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Parameterize, ESHKOL_PARAMETERIZE_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::CallPayload, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP,
+                    ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP,
+                    ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP,
+                    ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP,
+                    ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP,
+                    ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP,
+                    ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP,
+                    ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_KB_QUERY_PREFIX_OP,
+                    ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP,
+                    ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP,
+                    ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP,
+                    ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP,
+                    ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP
+                >{},
+                eshkol::AstRouteGroup<AstRoute::Leaf, ESHKOL_INVALID_OP, ESHKOL_ADD_OP,
                     ESHKOL_SUB_OP, ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP,
                     ESHKOL_EXTERN_VAR_OP, ESHKOL_QUOTE_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
-                    ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
-                    ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
-                    ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
-                    ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP,
-                    ESHKOL_LAPLACIAN_OP, ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP,
-                    ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP,
-                    ESHKOL_CALL_WITH_VALUES_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP,
-                    ESHKOL_LOGIC_VAR_OP, ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP,
-                    ESHKOL_MAKE_FACT_OP, ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP,
-                    ESHKOL_MAKE_FACTOR_GRAPH_OP, ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP,
-                    ESHKOL_EXPECTED_FREE_ENERGY_OP, ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP,
-                    ESHKOL_FG_UPDATE_CPT_OP, ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP,
-                    ESHKOL_KB_PRED_OP, ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP,
-                    ESHKOL_CASE_LAMBDA_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP,
-                    ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP,
-                    ESHKOL_DNC_MAKE_OP, ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP,
-                    ESHKOL_DNC_WRITE_OP, ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP,
-                    ESHKOL_SDNC_PROGRAM_OP, ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP,
-                    ESHKOL_SDNC_SET_PARAMS_OP, ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP
+                    ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_TYPE_ANNOTATION_OP,
+                    ESHKOL_FORALL_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP,
+                    ESHKOL_LETREC_SYNTAX_OP, ESHKOL_LOGIC_VAR_OP, ESHKOL_DEFINE_RECORD_TYPE_OP,
+                    ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP,
+                    ESHKOL_SYNTAX_ERROR_OP
                 >{}
             )) {
             case AstRoute::Call:
@@ -452,13 +516,55 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case AstRoute::Define:
+            case AstRoute::Define: {
+                // A definition the parser did not lower into a body's
+                // letrec* is a top-level definition: a colored name that a
+                // template introduced defines the uncolored name
+                // (ADR-0026), as definitions from templates always did.
+                if (op->define_op.name) {
+                    auto bound = value_renames_.find(op->define_op.name);
+                    if (bound != value_renames_.end())
+                        op->define_op.name = eshkol_ast_string_copy(bound->second);
+                    else if (eshkol_syntax_is_colored(op->define_op.name))
+                        op->define_op.name = eshkol_ast_string_copy(std::string(
+                            op->define_op.name, eshkol_syntax_base_length(op->define_op.name)));
+                }
+                // (define (f x ...) body): the formals bind in the body. A
+                // formal a template introduced gets a fresh name; a source
+                // formal keeps its name and shadows any enclosing binding --
+                // value or macro keyword -- of its spelling.
+                const auto saved = value_renames_;
+                if (op->define_op.is_function) {
+                    auto bind_formal = [&](char* name) -> char* {
+                        if (!name) return name;
+                        if (eshkol_syntax_is_colored(name)) {
+                            const std::string fresh = freshValueName(name);
+                            value_renames_[name] = fresh;
+                            return eshkol_ast_string_copy(fresh);
+                        }
+                        value_renames_[name] = name;   // shadows macros and outer bindings
+                        return name;
+                    };
+                    if (op->define_op.num_params > 0 && op->define_op.parameters) {
+                        auto* parameters = new eshkol_ast_t[op->define_op.num_params];
+                        for (uint64_t i = 0; i < op->define_op.num_params; ++i) {
+                            parameters[i] = copyAst(op->define_op.parameters[i]);
+                            if (parameters[i].type == ESHKOL_VAR && parameters[i].variable.id)
+                                parameters[i].variable.id = bind_formal(parameters[i].variable.id);
+                        }
+                        op->define_op.parameters = parameters;
+                    }
+                    if (op->define_op.rest_param)
+                        op->define_op.rest_param = bind_formal(op->define_op.rest_param);
+                }
                 if (op->define_op.value) {
                     eshkol_ast_t* new_val = new eshkol_ast_t;
                     *new_val = expandNode(*op->define_op.value);
                     op->define_op.value = new_val;
                 }
+                value_renames_ = saved;
                 break;
+            }
 
             case AstRoute::Lambda: {
                 const auto saved = value_renames_;
@@ -469,7 +575,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                     parameters[i] = copyAst(op->lambda_op.parameters[i]);
                     if (parameters[i].type == ESHKOL_VAR && parameters[i].variable.id) {
                         const std::string name = parameters[i].variable.id;
-                        const std::string fresh = "_v" + std::to_string(rename_counter_++) + "." + name;
+                        const std::string fresh = freshValueName(name);
                         value_renames_[name] = fresh;
                         parameters[i].variable.id = eshkol_ast_string_copy(fresh);
                     }
@@ -477,7 +583,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 op->lambda_op.parameters = parameters;
                 if (op->lambda_op.rest_param) {
                     const std::string name = op->lambda_op.rest_param;
-                    const std::string fresh = "_v" + std::to_string(rename_counter_++) + "." + name;
+                    const std::string fresh = freshValueName(name);
                     value_renames_[name] = fresh;
                     op->lambda_op.rest_param = eshkol_ast_string_copy(fresh);
                 }
@@ -497,7 +603,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 auto body_env = saved;
                 if (op->let_op.name) {
                     const std::string old_name = op->let_op.name;
-                    const std::string fresh = "_v" + std::to_string(rename_counter_++) + "." + old_name;
+                    const std::string fresh = freshValueName(old_name);
                     body_env[old_name] = fresh;
                     op->let_op.name = eshkol_ast_string_copy(fresh);
                 }
@@ -510,7 +616,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                     if (binding.type == ESHKOL_CONS && binding.cons_cell.car &&
                         binding.cons_cell.car->type == ESHKOL_VAR && binding.cons_cell.car->variable.id) {
                         names[i].first = binding.cons_cell.car->variable.id;
-                        names[i].second = "_v" + std::to_string(rename_counter_++) + "." + names[i].first;
+                        names[i].second = freshValueName(names[i].first);
                         auto* variable = new eshkol_ast_t(copyAst(*binding.cons_cell.car));
                         variable->variable.id = eshkol_ast_string_copy(names[i].second);
                         binding.cons_cell.car = variable;
@@ -551,7 +657,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                         std::map<std::string, std::string> pattern_names;
                         auto bind_name = [&](const char* name) {
                             auto& fresh = pattern_names[name];
-                            if (fresh.empty()) fresh = "_v" + std::to_string(rename_counter_++) + "." + name;
+                            if (fresh.empty()) fresh = freshValueName(name);
                             value_renames_[name] = fresh;
                             return eshkol_ast_string_copy(fresh);
                         };
@@ -592,6 +698,26 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
 
             // Ops that reuse call_op struct layout
             case AstRoute::Cond:
+                if (op->op == ESHKOL_CASE_OP) {
+                    // A clause is (datums . body): the datums are quoted data
+                    // and `else` is the parser's clause marker, not a
+                    // reference, so only the key and the bodies are code.
+                    if (op->call_op.func)
+                        op->call_op.func = new eshkol_ast_t(expandNode(*op->call_op.func));
+                    if (op->call_op.num_vars > 0 && op->call_op.variables) {
+                        auto* clauses = new eshkol_ast_t[op->call_op.num_vars];
+                        for (uint64_t i = 0; i < op->call_op.num_vars; ++i) {
+                            clauses[i] = op->call_op.variables[i];
+                            if (clauses[i].type == ESHKOL_CONS && clauses[i].cons_cell.cdr)
+                                clauses[i].cons_cell.cdr =
+                                    new eshkol_ast_t(expandNode(*clauses[i].cons_cell.cdr));
+                            else if (clauses[i].type != ESHKOL_CONS)
+                                clauses[i] = expandNode(clauses[i]);
+                        }
+                        op->call_op.variables = clauses;
+                    }
+                    break;
+                }
                 if (op->op == ESHKOL_DO_OP && op->call_op.func &&
                     op->call_op.func->type == ESHKOL_CONS &&
                     op->call_op.func->cons_cell.car &&
@@ -618,7 +744,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                             old_binding.cons_cell.car->type != ESHKOL_VAR ||
                             !old_binding.cons_cell.car->variable.id) continue;
                         names[i].first = old_binding.cons_cell.car->variable.id;
-                        names[i].second = "_v" + std::to_string(rename_counter_++) + "." + names[i].first;
+                        names[i].second = freshValueName(names[i].first);
                         auto* var = new eshkol_ast_t(copyAst(*old_binding.cons_cell.car));
                         var->variable.id = eshkol_ast_string_copy(names[i].second);
                         new_bindings[i].cons_cell.car = var;
@@ -678,10 +804,10 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 break;
 
             case AstRoute::Set:
-                if (op->set_op.name && !definition_identifiers_.count(op->set_op.name)) {
-                    auto target_name = value_renames_.find(op->set_op.name);
-                    if (target_name != value_renames_.end())
-                        op->set_op.name = eshkol_ast_string_copy(target_name->second);
+                if (op->set_op.name) {
+                    const std::string target = resolveValue(op->set_op.name);
+                    if (target != op->set_op.name)
+                        op->set_op.name = eshkol_ast_string_copy(target);
                 }
                 if (op->set_op.value) {
                     eshkol_ast_t* new_val = new eshkol_ast_t;
@@ -694,7 +820,7 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 const auto saved = value_renames_;
                 if (op->guard_op.var_name) {
                     const std::string name = op->guard_op.var_name;
-                    const std::string fresh = "_v" + std::to_string(rename_counter_++) + "." + name;
+                    const std::string fresh = freshValueName(name);
                     value_renames_[name] = fresh;
                     op->guard_op.var_name = eshkol_ast_string_copy(fresh);
                 }
@@ -770,109 +896,91 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
-            case AstRoute::OtherOperations:
-                // The route table intentionally groups many payload shapes
-                // here, but they are not leaves: all AST-bearing operands
-                // still need macro expansion and value alpha-renaming.
-                {
-                auto expand_ptr = [&](eshkol_ast_t*& child) {
-                    if (child) child = new eshkol_ast_t(expandNode(*child));
-                };
-                auto expand_array = [&](eshkol_ast_t*& items, uint64_t count) {
-                    if (!items) return;
-                    auto* fresh = new eshkol_ast_t[count];
-                    for (uint64_t i = 0; i < count; ++i) fresh[i] = expandNode(items[i]);
-                    items = fresh;
-                };
-                switch (op->op) {
-                    case ESHKOL_COMPOSE_OP:
-                        expand_ptr(op->compose_op.func_a); expand_ptr(op->compose_op.func_b); break;
-                    case ESHKOL_TENSOR_OP:
-                        expand_array(op->tensor_op.elements, op->tensor_op.total_elements); break;
-                    case ESHKOL_DIFF_OP:
-                        if (op->diff_op.variable) {
-                            auto it = value_renames_.find(op->diff_op.variable);
-                            if (it != value_renames_.end())
-                                op->diff_op.variable = eshkol_ast_string_copy(it->second);
-                        }
-                        expand_ptr(op->diff_op.expression); break;
-                    case ESHKOL_DERIVATIVE_OP:
-                        expand_ptr(op->derivative_op.function); expand_ptr(op->derivative_op.point); break;
-                    case ESHKOL_GRADIENT_OP:
-                        expand_ptr(op->gradient_op.function); expand_ptr(op->gradient_op.point); break;
-                    case ESHKOL_JACOBIAN_OP:
-                        expand_ptr(op->jacobian_op.function); expand_ptr(op->jacobian_op.point); break;
-                    case ESHKOL_HESSIAN_OP:
-                        expand_ptr(op->hessian_op.function); expand_ptr(op->hessian_op.point); break;
-                    case ESHKOL_DIVERGENCE_OP:
-                        expand_ptr(op->divergence_op.function); expand_ptr(op->divergence_op.point); break;
-                    case ESHKOL_CURL_OP:
-                        expand_ptr(op->curl_op.function); expand_ptr(op->curl_op.point); break;
-                    case ESHKOL_LAPLACIAN_OP:
-                        expand_ptr(op->laplacian_op.function); expand_ptr(op->laplacian_op.point); break;
-                    case ESHKOL_DIRECTIONAL_DERIV_OP:
-                        expand_ptr(op->directional_deriv_op.function);
-                        expand_ptr(op->directional_deriv_op.point);
-                        expand_ptr(op->directional_deriv_op.direction); break;
-                    case ESHKOL_TAYLOR_OP:
-                    case ESHKOL_DERIVATIVE_N_OP:
-                        expand_ptr(op->taylor_op.function); expand_ptr(op->taylor_op.point);
-                        expand_ptr(op->taylor_op.order); break;
-                    case ESHKOL_WITH_REGION_OP:
-                        expand_array(op->with_region_op.body, op->with_region_op.num_body_exprs); break;
-                    case ESHKOL_OWNED_OP: expand_ptr(op->owned_op.value); break;
-                    case ESHKOL_MOVE_OP: expand_ptr(op->move_op.value); break;
-                    case ESHKOL_SHARED_OP: expand_ptr(op->shared_op.value); break;
-                    case ESHKOL_WEAK_REF_OP: expand_ptr(op->weak_ref_op.value); break;
-                    case ESHKOL_BORROW_OP:
-                        expand_ptr(op->borrow_op.value);
-                        expand_array(op->borrow_op.body, op->borrow_op.num_body_exprs); break;
-                    case ESHKOL_CALL_WITH_VALUES_OP:
-                        expand_ptr(op->call_with_values_op.producer);
-                        expand_ptr(op->call_with_values_op.consumer); break;
-                    case ESHKOL_LET_VALUES_OP:
-                    case ESHKOL_LET_STAR_VALUES_OP: {
-                        const auto saved = value_renames_;
-                        auto body_env = saved;
-                        const bool sequential = op->op == ESHKOL_LET_STAR_VALUES_OP;
-                        auto* producers = op->let_values_op.num_bindings ?
-                            new eshkol_ast_t[op->let_values_op.num_bindings] : nullptr;
-                        auto*** variables = op->let_values_op.num_bindings ?
-                            new char**[op->let_values_op.num_bindings] : nullptr;
-                        for (uint64_t i = 0; i < op->let_values_op.num_bindings; ++i) {
-                            value_renames_ = sequential ? body_env : saved;
-                            producers[i] = expandNode(op->let_values_op.producers[i]);
-                            variables[i] = new char*[op->let_values_op.binding_var_counts[i]];
-                            for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; ++j) {
-                                const char* old = op->let_values_op.binding_vars[i][j];
-                                const std::string fresh = "_v" + std::to_string(rename_counter_++) + "." + old;
-                                variables[i][j] = eshkol_ast_string_copy(fresh);
-                                body_env[old] = fresh;
-                            }
-                        }
-                        op->let_values_op.producers = producers;
-                        op->let_values_op.binding_vars = variables;
-                        value_renames_ = body_env;
-                        op->let_values_op.body = op->let_values_op.body ?
-                            new eshkol_ast_t(expandNode(*op->let_values_op.body)) : nullptr;
-                        value_renames_ = saved;
-                        break;
+            case AstRoute::Compose:
+                expand_ptr(op->compose_op.func_a); expand_ptr(op->compose_op.func_b); break;
+            case AstRoute::Tensor:
+                expand_array(op->tensor_op.elements, op->tensor_op.total_elements); break;
+            case AstRoute::Diff:
+                if (op->diff_op.variable) {
+                    const std::string variable = resolveValue(op->diff_op.variable);
+                    if (variable != op->diff_op.variable)
+                        op->diff_op.variable = eshkol_ast_string_copy(variable);
+                }
+                expand_ptr(op->diff_op.expression); break;
+            case AstRoute::Derivative:
+                expand_ptr(op->derivative_op.function); expand_ptr(op->derivative_op.point); break;
+            case AstRoute::Gradient:
+                expand_ptr(op->gradient_op.function); expand_ptr(op->gradient_op.point); break;
+            case AstRoute::Jacobian:
+                expand_ptr(op->jacobian_op.function); expand_ptr(op->jacobian_op.point); break;
+            case AstRoute::Hessian:
+                expand_ptr(op->hessian_op.function); expand_ptr(op->hessian_op.point); break;
+            case AstRoute::Divergence:
+                expand_ptr(op->divergence_op.function); expand_ptr(op->divergence_op.point); break;
+            case AstRoute::Curl:
+                expand_ptr(op->curl_op.function); expand_ptr(op->curl_op.point); break;
+            case AstRoute::Laplacian:
+                expand_ptr(op->laplacian_op.function); expand_ptr(op->laplacian_op.point); break;
+            case AstRoute::DirectionalDeriv:
+                expand_ptr(op->directional_deriv_op.function);
+                expand_ptr(op->directional_deriv_op.point);
+                expand_ptr(op->directional_deriv_op.direction); break;
+            case AstRoute::Taylor:
+                expand_ptr(op->taylor_op.function); expand_ptr(op->taylor_op.point);
+                expand_ptr(op->taylor_op.order); break;
+            case AstRoute::WithRegion:
+                expand_array(op->with_region_op.body, op->with_region_op.num_body_exprs); break;
+            case AstRoute::Owned: expand_ptr(op->owned_op.value); break;
+            case AstRoute::Move: expand_ptr(op->move_op.value); break;
+            case AstRoute::Shared: expand_ptr(op->shared_op.value); break;
+            case AstRoute::WeakRef: expand_ptr(op->weak_ref_op.value); break;
+            case AstRoute::Borrow:
+                expand_ptr(op->borrow_op.value);
+                expand_array(op->borrow_op.body, op->borrow_op.num_body_exprs); break;
+            case AstRoute::CallWithValues:
+                expand_ptr(op->call_with_values_op.producer);
+                expand_ptr(op->call_with_values_op.consumer); break;
+            case AstRoute::LetValues: {
+                const auto saved = value_renames_;
+                auto body_env = saved;
+                const bool sequential = op->op == ESHKOL_LET_STAR_VALUES_OP;
+                auto* producers = op->let_values_op.num_bindings ?
+                    new eshkol_ast_t[op->let_values_op.num_bindings] : nullptr;
+                auto*** variables = op->let_values_op.num_bindings ?
+                    new char**[op->let_values_op.num_bindings] : nullptr;
+                for (uint64_t i = 0; i < op->let_values_op.num_bindings; ++i) {
+                    value_renames_ = sequential ? body_env : saved;
+                    producers[i] = expandNode(op->let_values_op.producers[i]);
+                    variables[i] = new char*[op->let_values_op.binding_var_counts[i]];
+                    for (uint64_t j = 0; j < op->let_values_op.binding_var_counts[i]; ++j) {
+                        const char* old = op->let_values_op.binding_vars[i][j];
+                        const std::string fresh = freshValueName(old);
+                        variables[i][j] = eshkol_ast_string_copy(fresh);
+                        body_env[old] = fresh;
                     }
-                    case ESHKOL_CASE_LAMBDA_OP:
-                        expand_array(op->case_lambda_op.clauses, op->case_lambda_op.num_clauses); break;
-                    case ESHKOL_PARAMETERIZE_OP:
-                        expand_array(op->parameterize_op.params, op->parameterize_op.num_bindings);
-                        expand_array(op->parameterize_op.values, op->parameterize_op.num_bindings);
-                        expand_ptr(op->parameterize_op.body); break;
-                    default: break;
                 }
-                // Neuro-symbolic operations all carry their arguments in the
-                // generic call_op payload, despite having distinct op tags.
-                if ((op->op >= ESHKOL_UNIFY_OP && op->op <= ESHKOL_WORKSPACE_PRED_OP) ||
-                    op->op == ESHKOL_KB_QUERY_PREFIX_OP ||
-                    (op->op >= ESHKOL_DNC_MAKE_OP && op->op <= ESHKOL_SDNC_PRED_OP))
-                    expand_array(op->call_op.variables, op->call_op.num_vars);
-                }
+                op->let_values_op.producers = producers;
+                op->let_values_op.binding_vars = variables;
+                value_renames_ = body_env;
+                op->let_values_op.body = op->let_values_op.body ?
+                    new eshkol_ast_t(expandNode(*op->let_values_op.body)) : nullptr;
+                value_renames_ = saved;
+                break;
+            }
+            case AstRoute::CaseLambda:
+                expand_array(op->case_lambda_op.clauses, op->case_lambda_op.num_clauses); break;
+            case AstRoute::Parameterize:
+                expand_array(op->parameterize_op.params, op->parameterize_op.num_bindings);
+                expand_array(op->parameterize_op.values, op->parameterize_op.num_bindings);
+                expand_ptr(op->parameterize_op.body); break;
+            case AstRoute::CallPayload:
+                // Neuro-symbolic, DNC and SDNC operations carry their operands
+                // in the generic call_op payload despite their distinct tags.
+                expand_array(op->call_op.variables, op->call_op.num_vars); break;
+            case AstRoute::Leaf:
+                // No macro-expandable operand: literal data (quote), syntax
+                // definitions (already registered), declarations and
+                // directives, and forms whose operands are not expressions.
                 break;
         }
         }
@@ -881,1094 +989,129 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
     return result;
 }
 
+/** A fresh unique spelling for a binder written @p name (colors dropped). */
+std::string MacroExpander::freshValueName(const std::string& name) {
+    return "_v" + std::to_string(rename_counter_++) + "." +
+           name.substr(0, eshkol_syntax_base_length(name.c_str()));
+}
+
 /**
- * @brief Attempts to expand one macro call by trying each `syntax-rules` rule
- * of the called macro in order until one matches.
+ * @brief What a value reference spelled @p name denotes at this point.
  *
- * Looks up the macro named by @p call's callee, builds its literals list, and
- * for each rule tries matchPatternSeq() against the call's arguments
- * (skipping the macro-name pattern element itself). The first rule whose
- * pattern matches has its template instantiated via instantiateTemplate().
+ * A binder in scope wins. A colored identifier no binder of its expansion
+ * binds is free in its template and denotes what its spelling denoted where
+ * the macro was defined (ADR-0026).
+ */
+std::string MacroExpander::resolveValue(const std::string& name) const {
+    auto bound = value_renames_.find(name);
+    if (bound != value_renames_.end()) return bound->second;
+    if (eshkol_syntax_is_colored(name.c_str())) return resolveFree(name);
+    return name;
+}
+
+std::string MacroExpander::resolveFree(const std::string& name) const {
+    size_t prefix_length = 0;
+    const unsigned color = eshkol_syntax_last_color(name.c_str(), &prefix_length);
+    const std::string spelled(name, 0, prefix_length);
+    auto producer = color_macro_.find(color);
+    if (producer != color_macro_.end()) {
+        auto definition = definition_bindings_.find(producer->second);
+        if (definition != definition_bindings_.end()) {
+            auto local = definition->second.value_env.find(spelled);
+            if (local != definition->second.value_env.end()) return local->second;
+        }
+    }
+    // Not bound where the macro was defined either: peel the next color
+    // (a macro-defining macro), or it is the top-level binding.
+    if (eshkol_syntax_is_colored(spelled.c_str())) return resolveFree(spelled);
+    return spelled;
+}
+
+std::string MacroExpander::keywordAlias(const MacroBinding* binding, const std::string& name) {
+    if (!binding) return {};
+    if (binding->value_env.count(name)) return {};     // a value binding shadows it
+    for (auto scope = binding->macro_env.rbegin(); scope != binding->macro_env.rend(); ++scope) {
+        auto found = scope->find(name);
+        if (found == scope->end()) continue;
+        auto& alias = macro_alias_names_[found->second];
+        if (alias.empty()) {
+            alias = "__eshkol_macro_binding_" + std::to_string(rename_counter_++);
+            macro_aliases_[alias] = found->second;
+        }
+        return alias;
+    }
+    return {};
+}
+
+std::set<std::string> MacroExpander::visibleMacroNames() const {
+    std::set<std::string> names;
+    for (const auto& scope : scope_stack_)
+        for (const auto& item : scope) names.insert(item.first);
+    for (const auto& alias : macro_aliases_) names.insert(alias.first);
+    return names;
+}
+
+/**
+ * @brief Expands one macro use (ADR-0026).
  *
- * @return The instantiated template AST on a matching rule; if the macro
- * name is not actually registered, or no rule's pattern matches (a syntax
- * error, reported via eshkol_error()), returns @p call unchanged.
+ * The use's reader syntax (recorded by the parser) is matched against the
+ * transformer's rules; the first matching template is instantiated with a
+ * fresh color and parsed as ordinary Eshkol syntax. Macro keywords the
+ * template names are resolved in the definition environment and emitted as
+ * aliases the parser recognises.
+ *
+ * @return The parsed expansion, or @p call unchanged when no rule matches or
+ * the template is malformed (both reported as errors).
  */
 eshkol_ast_t MacroExpander::tryExpandMacroCall(const eshkol_ast_t& call) {
-    const auto* call_op = &call.operation.call_op;
-    std::string macro_name = call_op->func->variable.id;
-
+    const std::string macro_name = call.operation.call_op.func->variable.id;
     eshkol_macro_def_t* macro = lookupMacro(macro_name);
-    if (!macro) {
+    if (!macro) return call;
+    auto transformer = eshkol::syntax_macro(macro);
+    auto use = eshkol::syntax_use(call.node_id);
+    if (!transformer || !use) {
+        eshkol_error("macro '%s' is used where its syntax was not recorded",
+                     macro_name.c_str());
         return call;
     }
 
-    // Build literals list for pattern matching
-    std::vector<std::string> literals;
-    for (uint64_t i = 0; i < macro->num_literals; i++) {
-        if (macro->literals[i]) {
-            literals.push_back(macro->literals[i]);
-        }
+    const auto definition = definition_bindings_.find(macro);
+    const MacroBinding* binding =
+        definition == definition_bindings_.end() ? nullptr : &definition->second;
+    const unsigned color = ++color_counter_;
+    color_macro_[color] = macro;
+
+    SyntaxDatum expansion;
+    std::string error;
+    const auto outcome = eshkol::syntax_rules_apply(
+        *transformer, *use, color,
+        [&](const std::string& name) { return keywordAlias(binding, name); },
+        expansion, error);
+    if (outcome == eshkol::SyntaxRulesOutcome::NoMatch) {
+        eshkol_error("syntax error: no matching pattern for macro '%s'", macro_name.c_str());
+        return call;
     }
-
-    // Try each rule in order
-    for (uint64_t rule_idx = 0; rule_idx < macro->num_rules; rule_idx++) {
-        eshkol_macro_rule_t* rule = &macro->rules[rule_idx];
-        if (!rule->pattern || !rule->template_) continue;
-
-        Bindings bindings;
-
-        // Pattern is (macro-name arg1 arg2 ...)
-        // Skip the first element (macro name), match remaining against arguments
-        if (rule->pattern->type != MACRO_PAT_LIST) continue;
-
-        auto* pat_list = &rule->pattern->list;
-
-        // Match the macro-call arguments against the pattern elements
-        // (skipping the macro-name element at index 0). This shares the
-        // exact same sequence-matching engine used for nested list
-        // sub-patterns, so ellipsis — including nested ellipsis like
-        // ((r ...) ...) — is handled uniformly everywhere it can occur.
-        bool matched = matchPatternSeq(pat_list->elements, /*pat_start=*/1, pat_list->num_elements,
-                                        call_op->variables, call_op->num_vars, literals, bindings);
-
-        if (matched) {
-            // Rule matched! Instantiate under the transformer's definition
-            // environment. Pattern substitutions remain caller ASTs.
-            const auto definition = definition_bindings_.find(macro);
-            const auto* binding = definition == definition_bindings_.end() ? nullptr : &definition->second;
-            const auto saved_value_env = active_template_value_env_;
-            const auto saved_macro_env = active_template_macro_env_;
-            const auto saved_pattern_names = active_template_pattern_names_;
-            if (binding) active_template_value_env_ = binding->value_env;
-            if (binding) active_template_macro_env_ = binding->macro_env;
-            active_template_pattern_names_.clear();
-            for (const auto& item : bindings) active_template_pattern_names_.insert(item.first);
-            eshkol_ast_t expanded = instantiateTemplate(rule->template_, bindings);
-            active_template_value_env_ = saved_value_env;
-            active_template_macro_env_ = saved_macro_env;
-            active_template_pattern_names_ = saved_pattern_names;
-            return expanded;
-        }
+    if (outcome == eshkol::SyntaxRulesOutcome::Error) {
+        eshkol_error("macro '%s': %s", macro_name.c_str(), error.c_str());
+        return call;
     }
-
-    // No rule matched — this is a syntax error, not a warning
-    eshkol_error("syntax error: no matching pattern for macro '%s'", macro_name.c_str());
-    return call;
+    eshkol_ast_t parsed = eshkol::parse_syntax_datum(expansion, visibleMacroNames());
+    if (parsed.type == ESHKOL_INVALID) {
+        eshkol_error("macro '%s' expanded to syntax that does not parse", macro_name.c_str());
+        return call;
+    }
+    return parsed;
 }
 
-/**
- * @brief Instantiates a matched macro rule's template into a concrete AST
- * node, dispatching on the template's shape.
- *
- * A @c MACRO_TPL_LITERAL template is literal AST data with pattern variables
- * substituted via substituteBindings(); a @c MACRO_TPL_VARIABLE template
- * looks up its name in @p bindings and copies the bound value (falling back
- * to a bare symbol reference if unbound); a @c MACRO_TPL_LIST template
- * recursively instantiates each element and rebuilds them as a call
- * expression (first element is the callee, the rest are arguments).
- *
- * @return The instantiated AST. Returns a null AST for a null @p tmpl, an
- * unbound/absent variable template, or an empty list template.
- */
-eshkol_ast_t MacroExpander::instantiateTemplate(const eshkol_macro_template_t* tmpl,
-                                                  const Bindings& bindings) {
-    if (!tmpl) {
-        eshkol_ast_t null_ast;
-        eshkol_ast_make_null(&null_ast);
-        return null_ast;
-    }
-
-    // Each instantiation starts from an empty rename scope: renames are local
-    // to one expansion of one template. The counter is NOT reset, so names
-    // stay unique across the whole run.
-    active_renames_.clear();
-
-    switch (tmpl->type) {
-        case MACRO_TPL_LITERAL:
-            // The template is stored as a literal AST
-            if (tmpl->literal) {
-                return substituteBindings(*tmpl->literal, bindings);
-            }
-            break;
-
-        case MACRO_TPL_VARIABLE: {
-            // Look up variable in bindings
-            if (!tmpl->variable_name) {
-                eshkol_ast_t null_ast;
-                eshkol_ast_make_null(&null_ast);
-                return null_ast;
-            }
-            auto it = bindings.find(tmpl->variable_name);
-            if (it != bindings.end() && matchTreeHasValue(it->second.tree)) {
-                return copyAst(matchTreeFirstScalar(it->second.tree));
-            }
-            // Variable not found - return as symbol reference
-            eshkol_ast_t var_ast;
-            var_ast.type = ESHKOL_VAR;
-            var_ast.variable.id = eshkol_ast_strdup(tmpl->variable_name);
-            return var_ast;
-        }
-
-        case MACRO_TPL_LIST: {
-            // Build expression from list elements
-            if (tmpl->list.num_elements == 0) {
-                eshkol_ast_t null_ast;
-                eshkol_ast_make_null(&null_ast);
-                return null_ast;
-            }
-
-            std::vector<eshkol_ast_t> expanded;
-            for (uint64_t i = 0; i < tmpl->list.num_elements; i++) {
-                eshkol_ast_t elem = instantiateTemplate(tmpl->list.elements[i], bindings);
-                expanded.push_back(elem);
-            }
-
-            // Build call expression
-            if (expanded.size() > 0) {
-                eshkol_ast_t result;
-                result.type = ESHKOL_OP;
-                result.operation.op = ESHKOL_CALL_OP;
-
-                result.operation.call_op.func = new eshkol_ast_t;
-                *result.operation.call_op.func = expanded[0];
-
-                result.operation.call_op.num_vars = expanded.size() - 1;
-                if (result.operation.call_op.num_vars > 0) {
-                    result.operation.call_op.variables = new eshkol_ast_t[result.operation.call_op.num_vars];
-                    for (size_t i = 1; i < expanded.size(); i++) {
-                        result.operation.call_op.variables[i - 1] = expanded[i];
-                    }
-                } else {
-                    result.operation.call_op.variables = nullptr;
-                }
-
-                return result;
-            }
-            break;
-        }
-
-        default:
-            break;
-    }
-
-    eshkol_ast_t null_ast;
-    eshkol_ast_make_null(&null_ast);
-    return null_ast;
+eshkol_ast_t MacroExpander::reparseAsCall(const eshkol_ast_t& call) {
+    auto use = eshkol::syntax_use(call.node_id);
+    if (!use) return call;
+    std::set<std::string> names = visibleMacroNames();
+    names.erase(call.operation.call_op.func->variable.id);
+    eshkol_ast_t parsed = eshkol::parse_syntax_datum(*use, names);
+    return parsed.type == ESHKOL_INVALID ? call : parsed;
 }
 
-/**
- * @brief Reports whether @p ast is the literal ellipsis symbol `...` used to
- * mark repeated pattern/template elements in `syntax-rules`.
- */
-bool MacroExpander::isEllipsisSymbol(const eshkol_ast_t& ast) const {
-    return ast.type == ESHKOL_VAR && ast.variable.id &&
-           std::string(ast.variable.id) == "...";
-}
-
-/**
- * @brief Reports whether a MatchTree holds at least one concrete matched
- * value.
- *
- * A depth-0 (scalar) tree always has a value; a repeated (depth >= 1) tree
- * has a value only if it matched at least one repetition.
- */
-bool MacroExpander::matchTreeHasValue(const MatchTree& tree) {
-    if (tree.depth == 0) return true;
-    return !tree.elements.empty();
-}
-
-/**
- * @brief Descends into a MatchTree's first repetition at each level until
- * reaching a scalar (depth-0) leaf, and returns that matched AST.
- *
- * Used to obtain a representative concrete value for a pattern variable
- * without needing to know its full repetition structure.
- */
-const eshkol_ast_t& MacroExpander::matchTreeFirstScalar(const MatchTree& tree) {
-    if (tree.depth == 0) return tree.scalar;
-    return matchTreeFirstScalar(tree.elements.front());
-}
-
-/**
- * @brief Produces the bindings map for one repetition of an ellipsis
- * expansion by "peeling" every repeated binding down one MatchTree level.
- *
- * For each entry in @p bindings: a non-repeated (depth-0) binding is shared
- * unchanged across every repetition; a repeated binding with at least one
- * matched element selects the sub-tree at @p index (clamped to the last
- * available element, matching how R7RS treats unequal-length repeated
- * bindings under one ellipsis); a repeated binding that matched zero
- * repetitions peels to an empty tree one level shallower.
- *
- * @return A new Bindings map holding the binding values applicable to
- * repetition @p index.
- */
-MacroExpander::Bindings MacroExpander::peelBindingsAtIndex(const Bindings& bindings, size_t index) const {
-    Bindings result;
-    for (const auto& kv : bindings) {
-        Binding nb;
-        nb.name = kv.first;
-        const MatchTree& tree = kv.second.tree;
-        if (tree.depth == 0) {
-            // Not repeated at this level — shared unchanged across every repetition.
-            nb.tree = tree;
-        } else if (!tree.elements.empty()) {
-            size_t idx = std::min(index, tree.elements.size() - 1);
-            nb.tree = tree.elements[idx];
-        } else {
-            // Matched zero repetitions — peel to an empty tree one level shallower.
-            nb.tree.depth = tree.depth - 1;
-        }
-        result[kv.first] = nb;
-    }
-    return result;
-}
-
-/**
- * @brief Searches a template subtree for a pattern variable bound at
- * ellipsis depth >= 1, to use as the "driver" that determines how many
- * repetitions an adjacent `...` should expand to.
- *
- * Recurses through variable references, cons cells, and every recognized
- * operation kind's sub-expressions (mirroring the same traversal shape used
- * by expandNode()/substituteBindings()), stopping as soon as any qualifying
- * variable is found.
- *
- * @param binding_name Out-parameter set to the name of the first
- * depth->=1 pattern variable found; left unmodified if none is found.
- * @return true if a driver variable was found (and @p binding_name set),
- * false otherwise (e.g. the template element has no repeated pattern
- * variable at all — a misplaced-ellipsis error case handled by the caller).
- */
-bool MacroExpander::findEllipsisDriver(const eshkol_ast_t& ast,
-                                        const Bindings& bindings,
-                                        std::string& binding_name) const {
-    if (ast.type == ESHKOL_VAR && ast.variable.id) {
-        std::string name = ast.variable.id;
-        auto it = bindings.find(name);
-        if (it != bindings.end() && it->second.tree.depth >= 1) {
-            binding_name = name;
-            return true;
-        }
-        return false;
-    }
-
-    if (ast.type == ESHKOL_CONS) {
-        return (ast.cons_cell.car &&
-                findEllipsisDriver(*ast.cons_cell.car, bindings, binding_name)) ||
-               (ast.cons_cell.cdr &&
-                findEllipsisDriver(*ast.cons_cell.cdr, bindings, binding_name));
-    }
-
-    if (ast.type != ESHKOL_OP) {
-        return false;
-    }
-
-    const auto* op = &ast.operation;
-    {
-        enum class AstRoute {
-            Call, Sequence, Define, Lambda, Let, Match,
-            Set, Guard, Raise, Values, CallCc, DynamicWind,
-            OtherOperations
-        };
-        switch (eshkol::routeAstOperation(op->op,
-            eshkol::AstRouteGroup<AstRoute::Call,
-                ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_COND_OP, ESHKOL_CASE_OP, ESHKOL_WHEN_OP,
-                ESHKOL_UNLESS_OP, ESHKOL_DO_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
-                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_QUOTE_OP
-            >{},
-            eshkol::AstRouteGroup<AstRoute::Sequence,
-                ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
-            >{},
-            eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
-            eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
-            eshkol::AstRouteGroup<AstRoute::Let,
-                ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
-            >{},
-            eshkol::AstRouteGroup<AstRoute::Match, ESHKOL_MATCH_OP>{},
-            eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
-            eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
-            eshkol::AstRouteGroup<AstRoute::Raise, ESHKOL_RAISE_OP>{},
-            eshkol::AstRouteGroup<AstRoute::Values, ESHKOL_VALUES_OP>{},
-            eshkol::AstRouteGroup<AstRoute::CallCc, ESHKOL_CALL_CC_OP>{},
-            eshkol::AstRouteGroup<AstRoute::DynamicWind, ESHKOL_DYNAMIC_WIND_OP>{},
-            eshkol::AstRouteGroup<AstRoute::OtherOperations,
-                ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP,
-                ESHKOL_SUB_OP, ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP,
-                ESHKOL_EXTERN_VAR_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
-                ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
-                ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
-                ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
-                ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP,
-                ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP,
-                ESHKOL_FORALL_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
-                ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_LOGIC_VAR_OP,
-                ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP,
-                ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP,
-                ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP,
-                ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP,
-                ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP,
-                ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP,
-                ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP,
-                ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP,
-                ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP,
-                ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP,
-                ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP,
-                ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
-            >{}
-        )) {
-        case AstRoute::Call:
-        // Same call_op layout for the quote family — an ellipsis-repeated
-        // template element may reference its driving pattern variable from
-        // inside (quasi)quoted data (parallels the quote-family recursion in
-        // substituteBindings).
-
-
-
-
-            if (op->call_op.func &&
-                findEllipsisDriver(*op->call_op.func, bindings, binding_name)) {
-                return true;
-            }
-            for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                if (findEllipsisDriver(op->call_op.variables[i], bindings, binding_name)) {
-                    return true;
-                }
-            }
-            return false;
-
-        case AstRoute::Sequence:
-            for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-                if (findEllipsisDriver(op->sequence_op.expressions[i], bindings, binding_name)) {
-                    return true;
-                }
-            }
-            return false;
-
-        case AstRoute::Define:
-            return op->define_op.value &&
-                   findEllipsisDriver(*op->define_op.value, bindings, binding_name);
-
-        case AstRoute::Lambda:
-            return op->lambda_op.body &&
-                   findEllipsisDriver(*op->lambda_op.body, bindings, binding_name);
-
-        case AstRoute::Let:
-            for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                if (findEllipsisDriver(op->let_op.bindings[i], bindings, binding_name)) {
-                    return true;
-                }
-            }
-            return op->let_op.body &&
-                   findEllipsisDriver(*op->let_op.body, bindings, binding_name);
-
-        case AstRoute::Match:
-            if (op->match_op.expr &&
-                findEllipsisDriver(*op->match_op.expr, bindings, binding_name)) {
-                return true;
-            }
-            for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
-                if (op->match_op.clauses[i].body &&
-                    findEllipsisDriver(*op->match_op.clauses[i].body, bindings, binding_name)) {
-                    return true;
-                }
-            }
-            return false;
-
-        case AstRoute::Set:
-            return op->set_op.value &&
-                   findEllipsisDriver(*op->set_op.value, bindings, binding_name);
-
-        case AstRoute::Guard:
-            for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
-                if (findEllipsisDriver(op->guard_op.clauses[i], bindings, binding_name)) {
-                    return true;
-                }
-            }
-            for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
-                if (findEllipsisDriver(op->guard_op.body[i], bindings, binding_name)) {
-                    return true;
-                }
-            }
-            return false;
-
-        case AstRoute::Raise:
-            return op->raise_op.exception &&
-                   findEllipsisDriver(*op->raise_op.exception, bindings, binding_name);
-
-        case AstRoute::Values:
-            for (uint64_t i = 0; i < op->values_op.num_values; i++) {
-                if (findEllipsisDriver(op->values_op.expressions[i], bindings, binding_name)) {
-                    return true;
-                }
-            }
-            return false;
-
-        case AstRoute::CallCc:
-            return op->call_cc_op.proc &&
-                   findEllipsisDriver(*op->call_cc_op.proc, bindings, binding_name);
-
-        case AstRoute::DynamicWind:
-            return (op->dynamic_wind_op.before &&
-                    findEllipsisDriver(*op->dynamic_wind_op.before, bindings, binding_name)) ||
-                   (op->dynamic_wind_op.thunk &&
-                    findEllipsisDriver(*op->dynamic_wind_op.thunk, bindings, binding_name)) ||
-                   (op->dynamic_wind_op.after &&
-                    findEllipsisDriver(*op->dynamic_wind_op.after, bindings, binding_name));
-
-        case AstRoute::OtherOperations:
-            return false;
-    }
-    }
-}
-
-/**
- * @brief Expands a single template element followed by one or more
- * consecutive `...` markers into the list of AST nodes it produces.
- *
- * Finds the repetition count via findEllipsisDriver() (the number of matched
- * repetitions of the driving pattern variable), then for each repetition
- * index peels @p bindings down to that repetition's values
- * (peelBindingsAtIndex()) and substitutes @p ast against them. When
- * @p ellipsis_count is greater than 1 (R7RS nested-ellipsis flattening, e.g.
- * `row ... ...`), each repetition's result is itself recursively expanded one
- * ellipsis shallower and the results are concatenated (spliced) rather than
- * nested.
- *
- * @param ellipsis_count Number of consecutive `...` markers following
- * @p ast in the template.
- * @return The flattened list of expanded AST nodes, one per repetition (or
- * more, if further nested ellipsis splice additional elements in). If no
- * driver variable can be found, reports a misplaced-ellipsis error and
- * returns a single-element vector holding @p ast substituted as-is.
- */
-std::vector<eshkol_ast_t> MacroExpander::expandEllipsisElementN(const eshkol_ast_t& ast,
-                                                                  const Bindings& bindings,
-                                                                  int ellipsis_count) {
-    std::vector<eshkol_ast_t> expanded;
-
-    std::string drive;
-    if (!findEllipsisDriver(ast, bindings, drive)) {
-        eshkol_error("misplaced ellipsis in macro template");
-        expanded.push_back(substituteBindings(ast, bindings));
-        return expanded;
-    }
-
-    size_t n = bindings.at(drive).tree.elements.size();
-    expanded.reserve(n);
-    for (size_t i = 0; i < n; i++) {
-        Bindings peeled = peelBindingsAtIndex(bindings, i);
-        if (ellipsis_count <= 1) {
-            // One ellipsis consumed and none left: substitute this repetition
-            // as a single template result (may itself contain further,
-            // independent ellipses — substituteBindings handles those).
-            expanded.push_back(substituteBindings(ast, peeled));
-        } else {
-            // Another consecutive ellipsis follows in the template: this
-            // repetition's result is itself flattened (spliced) rather than
-            // nested, so recurse one ellipsis shallower and concatenate.
-            std::vector<eshkol_ast_t> sub = expandEllipsisElementN(ast, peeled, ellipsis_count - 1);
-            expanded.insert(expanded.end(), sub.begin(), sub.end());
-        }
-    }
-    return expanded;
-}
-
-/**
- * @brief Substitutes template bindings across a flat array of template
- * elements, expanding and flattening any element followed by one or more
- * `...` markers.
- *
- * Walks @p items left to right; for each element it counts how many
- * consecutive ellipsis-symbol items follow it (R7RS nested ellipsis, e.g.
- * `row ... ...`, flattens one extra level per additional consecutive `...`),
- * and if at least one follows, delegates to expandEllipsisElementN() and
- * inlines its results. A bare `...` with no preceding element to repeat is a
- * misplaced-ellipsis error and is skipped. Elements with no following
- * ellipsis are substituted individually via substituteBindings().
- *
- * @return The fully substituted and ellipsis-flattened list of AST nodes.
- */
-std::vector<eshkol_ast_t> MacroExpander::substituteBindingsInList(const eshkol_ast_t* items,
-                                                                   uint64_t count,
-                                                                   const Bindings& bindings) {
-    std::vector<eshkol_ast_t> result;
-    result.reserve(count);
-
-    for (uint64_t i = 0; i < count; ) {
-        // Count consecutive ellipsis markers following items[i] — R7RS
-        // nested ellipsis ("row ... ...") flattens one extra level per
-        // additional consecutive ellipsis.
-        uint64_t j = i + 1;
-        int ellipsis_count = 0;
-        while (j < count && isEllipsisSymbol(items[j])) {
-            ellipsis_count++;
-            j++;
-        }
-
-        if (ellipsis_count > 0) {
-            std::vector<eshkol_ast_t> expanded = expandEllipsisElementN(items[i], bindings, ellipsis_count);
-            result.insert(result.end(), expanded.begin(), expanded.end());
-            i = j;
-            continue;
-        }
-
-        if (isEllipsisSymbol(items[i])) {
-            eshkol_error("misplaced ellipsis in macro template");
-            i++;
-            continue;
-        }
-
-        result.push_back(substituteBindings(items[i], bindings));
-        i++;
-    }
-
-    return result;
-}
-
-/**
- * @brief Recursively substitutes matched pattern-variable bindings into a
- * macro template subtree, producing the (non-ellipsis-flattened) expanded
- * AST for @p ast.
- *
- * A variable reference bound in @p bindings is replaced by a copy of its
- * matched value (via matchTreeFirstScalar()); an unbound variable is copied
- * as-is. Cons cells recurse into car/cdr. Operation nodes recurse into their
- * relevant sub-expressions per operation kind (calls, sequences,
- * define/lambda/let-family bindings and bodies, cond/case/when/unless/do,
- * set!, guard, raise, values, call/cc, dynamic-wind, and
- * quote/quasiquote/unquote/unquote-splicing operands — quoted data is
- * recursed into here, unlike expandNode(), because pattern variables inside
- * quoted template data must still be substituted per R7RS 4.3.2). List-typed
- * sub-expression arrays are substituted via substituteBindingsInList() so
- * ellipsis elements within them are expanded/flattened. Any other AST type is
- * simply deep-copied via copyAst().
- *
- * @return The substituted AST subtree.
- */
-/**
- * @brief Allocate a fresh name for a template-introduced binder and bind it in
- * the active rename scope (R7RS 4.3.2 hygiene).
- *
- * The counter is monotonic across the whole expansion run, so two invocations
- * of the same macro receive distinct names — which is required, because their
- * bindings are distinct. The `.` in the generated name mirrors the VM
- * expander's format so the two engines are recognisably doing the same thing.
- */
-std::string MacroExpander::freshName(const std::string& name) {
-    std::string fresh = "_h" + std::to_string(rename_counter_++) + "." + name;
-    active_renames_[name] = fresh;
-    return fresh;
-}
-
-/**
- * @brief Reports whether a template identifier in a binder position may be
- * alpha-renamed.
- *
- * Pattern variables may not: they are replaced by caller code, which must keep
- * the caller's own names. `_` is not an identifier.
- */
-bool MacroExpander::isRenameableBinder(const std::string& name, const Bindings& bindings) {
-    if (name.empty() || name == "_") return false;
-    return bindings.find(name) == bindings.end();
-}
-
-eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
-                                                 const Bindings& bindings) {
-    // Check if this is a variable that should be substituted
-    if (ast.type == ESHKOL_VAR && ast.variable.id) {
-        std::string name = ast.variable.id;
-        auto it = bindings.find(name);
-        if (it != bindings.end() && matchTreeHasValue(it->second.tree)) {
-            return copyAst(matchTreeFirstScalar(it->second.tree));
-        }
-        // Hygiene: a template identifier bound by the template itself carries
-        // the fresh name allocated at its binder (R7RS 4.3.2). Anything else
-        // is free in the template and is emitted verbatim.
-        auto rn = active_renames_.find(name);
-        if (!in_datum_ && rn != active_renames_.end()) {
-            eshkol_ast_t result = copyAst(ast);
-            // Identifier text is owned by the AST string owner, so the copy's
-            // id is replaced, never freed (ast_strings.h).
-            result.variable.id = eshkol_ast_string_copy(rn->second);
-            return result;
-        }
-        auto def_name = active_template_value_env_.find(name);
-        if (!in_datum_ && def_name != active_template_value_env_.end()) {
-            eshkol_ast_t result = copyAst(ast);
-            result.variable.id = eshkol_ast_string_copy(def_name->second);
-            definition_identifiers_.insert(result.variable.id);
-            return result;
-        }
-        eshkol_ast_t result = copyAst(ast);
-        if (!in_datum_) {
-            for (auto scope = active_template_macro_env_.rbegin();
-                 scope != active_template_macro_env_.rend(); ++scope) {
-                auto found = scope->find(name);
-                if (found == scope->end()) continue;
-                auto& alias = macro_alias_names_[found->second];
-                if (alias.empty()) {
-                    alias = "__eshkol_macro_binding_" + std::to_string(rename_counter_++);
-                    macro_aliases_[alias] = found->second;
-                }
-                result.variable.id = eshkol_ast_string_copy(alias);
-                break;
-            }
-            definition_identifiers_.insert(result.variable.id);
-        }
-        return result;
-    }
-
-    // Recursively substitute in cons cells (used for let bindings: (var . val))
-    if (ast.type == ESHKOL_CONS) {
-        eshkol_ast_t result;
-        result.type = ESHKOL_CONS;
-        result.cons_cell.car = new eshkol_ast_t;
-        *result.cons_cell.car = ast.cons_cell.car ?
-            substituteBindings(*ast.cons_cell.car, bindings) : eshkol_ast_t{};
-        result.cons_cell.cdr = new eshkol_ast_t;
-        *result.cons_cell.cdr = ast.cons_cell.cdr ?
-            substituteBindings(*ast.cons_cell.cdr, bindings) : eshkol_ast_t{};
-        return result;
-    }
-
-    // For operations, recursively substitute
-    if (ast.type == ESHKOL_OP) {
-        eshkol_ast_t result;
-        result.type = ESHKOL_OP;
-        result.operation = ast.operation;
-        auto* op = &result.operation;
-
-        {
-            enum class AstRoute {
-                Call, Sequence, Define, Lambda, Let, Match,
-                Cond, Set, Guard, Raise, Values, CallCc,
-                DynamicWind, OtherOperations
-            };
-            switch (eshkol::routeAstOperation(op->op,
-                eshkol::AstRouteGroup<AstRoute::Call,
-                    ESHKOL_CALL_OP, ESHKOL_IF_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
-                    ESHKOL_QUOTE_OP
-                >{},
-                eshkol::AstRouteGroup<AstRoute::Sequence,
-                    ESHKOL_SEQUENCE_OP, ESHKOL_AND_OP, ESHKOL_OR_OP
-                >{},
-                eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
-                eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
-                eshkol::AstRouteGroup<AstRoute::Let,
-                    ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP
-                >{},
-                eshkol::AstRouteGroup<AstRoute::Match, ESHKOL_MATCH_OP>{},
-                eshkol::AstRouteGroup<AstRoute::Cond,
-                    ESHKOL_COND_OP, ESHKOL_CASE_OP, ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP,
-                    ESHKOL_DO_OP
-                >{},
-                eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
-                eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
-                eshkol::AstRouteGroup<AstRoute::Raise, ESHKOL_RAISE_OP>{},
-                eshkol::AstRouteGroup<AstRoute::Values, ESHKOL_VALUES_OP>{},
-                eshkol::AstRouteGroup<AstRoute::CallCc, ESHKOL_CALL_CC_OP>{},
-                eshkol::AstRouteGroup<AstRoute::DynamicWind, ESHKOL_DYNAMIC_WIND_OP>{},
-                eshkol::AstRouteGroup<AstRoute::OtherOperations,
-                    ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP,
-                    ESHKOL_SUB_OP, ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP,
-                    ESHKOL_EXTERN_VAR_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
-                    ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
-                    ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
-                    ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
-                    ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP, ESHKOL_CURL_OP, ESHKOL_LAPLACIAN_OP,
-                    ESHKOL_DIRECTIONAL_DERIV_OP, ESHKOL_TAYLOR_OP, ESHKOL_DERIVATIVE_N_OP, ESHKOL_TYPE_ANNOTATION_OP,
-                    ESHKOL_FORALL_OP, ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP, ESHKOL_CALL_WITH_VALUES_OP,
-                    ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_LOGIC_VAR_OP,
-                    ESHKOL_UNIFY_OP, ESHKOL_MAKE_SUBST_OP, ESHKOL_WALK_OP, ESHKOL_MAKE_FACT_OP,
-                    ESHKOL_MAKE_KB_OP, ESHKOL_KB_ASSERT_OP, ESHKOL_KB_QUERY_OP, ESHKOL_MAKE_FACTOR_GRAPH_OP,
-                    ESHKOL_FG_ADD_FACTOR_OP, ESHKOL_FG_INFER_OP, ESHKOL_FREE_ENERGY_OP, ESHKOL_EXPECTED_FREE_ENERGY_OP,
-                    ESHKOL_MAKE_WORKSPACE_OP, ESHKOL_WS_REGISTER_OP, ESHKOL_WS_STEP_OP, ESHKOL_FG_UPDATE_CPT_OP,
-                    ESHKOL_FG_OBSERVE_OP, ESHKOL_LOGIC_VAR_PRED_OP, ESHKOL_SUBSTITUTION_PRED_OP, ESHKOL_KB_PRED_OP,
-                    ESHKOL_FACT_PRED_OP, ESHKOL_FACTOR_GRAPH_PRED_OP, ESHKOL_WORKSPACE_PRED_OP, ESHKOL_CASE_LAMBDA_OP,
-                    ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_PARAMETERIZE_OP, ESHKOL_MAKE_PARAMETER_OP, ESHKOL_COND_EXPAND_OP,
-                    ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP, ESHKOL_KB_QUERY_PREFIX_OP, ESHKOL_DNC_MAKE_OP,
-                    ESHKOL_DNC_CONTENT_ADDR_OP, ESHKOL_DNC_LOC_ADDR_OP, ESHKOL_DNC_READ_OP, ESHKOL_DNC_WRITE_OP,
-                    ESHKOL_DNC_ALLOC_WEIGHTS_OP, ESHKOL_DNC_READ_GRAD_OP, ESHKOL_DNC_PRED_OP, ESHKOL_SDNC_PROGRAM_OP,
-                    ESHKOL_SDNC_RUN_OP, ESHKOL_SDNC_WEIGHT_GRAD_OP, ESHKOL_SDNC_PARAMS_OP, ESHKOL_SDNC_SET_PARAMS_OP,
-                    ESHKOL_SDNC_IMPROVE_OP, ESHKOL_SDNC_PRED_OP, ESHKOL_THE_OP
-                >{}
-            )) {
-            case AstRoute::Call:
-            // quasiquote/unquote/unquote-splicing/quote store their operand(s)
-            // in the same call_op layout (func=nullptr, variables[], num_vars).
-            // R7RS §4.3.2: pattern variables occurring anywhere in a template —
-            // including inside (quasi)quoted data and unquote escapes — must be
-            // replaced by the matched input subforms. Recursing here is what
-            // makes `(car `(,(+ x 1)))`-style macro templates substitute x
-            // (previously these ops hit default: and copied the operand verbatim,
-            // leaving x undefined and collapsing nested expansions).
-
-
-
-             {
-                // Hygiene: a symbol in quoted data is DATA, so it keeps its
-                // literal name; unquote escapes back to identifier position.
-                // Pattern-variable substitution is unaffected either way.
-                const bool saved_datum = in_datum_;
-                if (op->op == ESHKOL_QUOTE_OP || op->op == ESHKOL_QUASIQUOTE_OP) {
-                    in_datum_ = true;
-                } else if (op->op == ESHKOL_UNQUOTE_OP ||
-                           op->op == ESHKOL_UNQUOTE_SPLICING_OP) {
-                    in_datum_ = false;
-                }
-                if (op->call_op.func) {
-                    eshkol_ast_t* new_func = new eshkol_ast_t;
-                    *new_func = substituteBindings(*op->call_op.func, bindings);
-                    op->call_op.func = new_func;
-                }
-                if (op->call_op.num_vars > 0 && op->call_op.variables) {
-                    std::vector<eshkol_ast_t> new_vars_vec =
-                        substituteBindingsInList(op->call_op.variables, op->call_op.num_vars, bindings);
-                    op->call_op.num_vars = new_vars_vec.size();
-                    if (op->call_op.num_vars > 0) {
-                        eshkol_ast_t* new_vars = new eshkol_ast_t[op->call_op.num_vars];
-                        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                            new_vars[i] = new_vars_vec[i];
-                        }
-                        op->call_op.variables = new_vars;
-                    } else {
-                        op->call_op.variables = nullptr;
-                    }
-                }
-                in_datum_ = saved_datum;
-                break;
-            }
-
-            case AstRoute::Sequence:
-                if (op->sequence_op.num_expressions > 0 && op->sequence_op.expressions) {
-                    std::vector<eshkol_ast_t> new_exprs_vec =
-                        substituteBindingsInList(op->sequence_op.expressions,
-                                                 op->sequence_op.num_expressions,
-                                                 bindings);
-                    op->sequence_op.num_expressions = new_exprs_vec.size();
-                    if (op->sequence_op.num_expressions > 0) {
-                        eshkol_ast_t* new_exprs = new eshkol_ast_t[op->sequence_op.num_expressions];
-                        for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-                            new_exprs[i] = new_exprs_vec[i];
-                        }
-                        op->sequence_op.expressions = new_exprs;
-                    } else {
-                        op->sequence_op.expressions = nullptr;
-                    }
-                }
-                break;
-
-            case AstRoute::Define:
-                if (op->define_op.value) {
-                    eshkol_ast_t* new_val = new eshkol_ast_t;
-                    *new_val = substituteBindings(*op->define_op.value, bindings);
-                    op->define_op.value = new_val;
-                }
-                break;
-
-            case AstRoute::Lambda: {
-                // Hygiene: a template-introduced parameter is fresh in the body.
-                auto saved_renames = active_renames_;
-                if (op->lambda_op.num_params > 0 && op->lambda_op.parameters) {
-                    eshkol_ast_t* new_params = new eshkol_ast_t[op->lambda_op.num_params];
-                    for (uint64_t i = 0; i < op->lambda_op.num_params; i++) {
-                        const eshkol_ast_t& p = op->lambda_op.parameters[i];
-                        if (p.type == ESHKOL_VAR && p.variable.id &&
-                            isRenameableBinder(p.variable.id, bindings)) {
-                            freshName(p.variable.id);
-                        }
-                        new_params[i] = substituteBindings(p, bindings);
-                    }
-                    op->lambda_op.parameters = new_params;
-                }
-                if (op->lambda_op.rest_param &&
-                    isRenameableBinder(op->lambda_op.rest_param, bindings)) {
-                    op->lambda_op.rest_param =
-                        eshkol_ast_string_copy(freshName(op->lambda_op.rest_param));
-                }
-                if (op->lambda_op.body) {
-                    eshkol_ast_t* new_body = new eshkol_ast_t;
-                    *new_body = substituteBindings(*op->lambda_op.body, bindings);
-                    op->lambda_op.body = new_body;
-                }
-                active_renames_ = saved_renames;
-                break;
-            }
-
-            case AstRoute::Let: {
-                // Hygiene: each template-introduced binder gets a fresh name,
-                // visible exactly where the binding construct makes it visible.
-                //   let          inits see the OUTER scope
-                //   let*         init i sees binders 0..i-1
-                //   letrec(*)    every init sees every binder
-                //   named let    the loop name is bound in the body
-                const bool is_rec = (op->op == ESHKOL_LETREC_OP ||
-                                     op->op == ESHKOL_LETREC_STAR_OP);
-                const bool is_seq = (op->op == ESHKOL_LET_STAR_OP);
-                auto saved_renames = active_renames_;
-
-                if (is_rec && op->let_op.num_bindings > 0 && op->let_op.bindings) {
-                    for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                        const eshkol_ast_t& b = op->let_op.bindings[i];
-                        if (b.type == ESHKOL_CONS && b.cons_cell.car &&
-                            b.cons_cell.car->type == ESHKOL_VAR &&
-                            b.cons_cell.car->variable.id &&
-                            isRenameableBinder(b.cons_cell.car->variable.id, bindings)) {
-                            freshName(b.cons_cell.car->variable.id);
-                        }
-                    }
-                }
-                if (op->let_op.name && isRenameableBinder(op->let_op.name, bindings)) {
-                    op->let_op.name = eshkol_ast_string_copy(freshName(op->let_op.name));
-                }
-
-                if (op->let_op.num_bindings > 0 && op->let_op.bindings) {
-                    const uint64_t n = op->let_op.num_bindings;
-                    eshkol_ast_t* new_bindings = new eshkol_ast_t[n];
-                    std::vector<eshkol_ast_t> inits(n);
-                    std::vector<bool> is_cons(n, false);
-
-                    // Pass 1 — inits. For plain `let` every init is substituted
-                    // while NO binder of this group is in scope (that is what
-                    // makes `let` parallel); `let*` accumulates as it goes;
-                    // `letrec` already has the whole group in scope.
-                    for (uint64_t i = 0; i < n; i++) {
-                        const eshkol_ast_t& b = op->let_op.bindings[i];
-                        if (b.type != ESHKOL_CONS || !b.cons_cell.car) continue;
-                        is_cons[i] = true;
-                        inits[i] = b.cons_cell.cdr
-                            ? substituteBindings(*b.cons_cell.cdr, bindings)
-                            : eshkol_ast_t{};
-                        if (is_seq && b.cons_cell.car->type == ESHKOL_VAR &&
-                            b.cons_cell.car->variable.id &&
-                            isRenameableBinder(b.cons_cell.car->variable.id, bindings)) {
-                            freshName(b.cons_cell.car->variable.id);
-                        }
-                    }
-
-                    // Pass 2 — binders. For plain `let` they all enter scope
-                    // together, after every init has been substituted.
-                    if (!is_rec && !is_seq) {
-                        for (uint64_t i = 0; i < n; i++) {
-                            if (!is_cons[i]) continue;
-                            const eshkol_ast_t* car = op->let_op.bindings[i].cons_cell.car;
-                            if (car->type == ESHKOL_VAR && car->variable.id &&
-                                isRenameableBinder(car->variable.id, bindings)) {
-                                freshName(car->variable.id);
-                            }
-                        }
-                    }
-
-                    for (uint64_t i = 0; i < n; i++) {
-                        const eshkol_ast_t& b = op->let_op.bindings[i];
-                        if (!is_cons[i]) {
-                            new_bindings[i] = substituteBindings(b, bindings);
-                            continue;
-                        }
-                        eshkol_ast_t nb;
-                        nb.type = ESHKOL_CONS;
-                        nb.cons_cell.car = new eshkol_ast_t;
-                        *nb.cons_cell.car = substituteBindings(*b.cons_cell.car, bindings);
-                        nb.cons_cell.cdr = new eshkol_ast_t;
-                        *nb.cons_cell.cdr = inits[i];
-                        new_bindings[i] = nb;
-                    }
-                    op->let_op.bindings = new_bindings;
-                }
-                if (op->let_op.body) {
-                    eshkol_ast_t* new_body = new eshkol_ast_t;
-                    *new_body = substituteBindings(*op->let_op.body, bindings);
-                    op->let_op.body = new_body;
-                }
-                active_renames_ = saved_renames;
-                break;
-            }
-
-            case AstRoute::Match:
-                if (op->match_op.expr) {
-                    eshkol_ast_t* new_expr = new eshkol_ast_t;
-                    *new_expr = substituteBindings(*op->match_op.expr, bindings);
-                    op->match_op.expr = new_expr;
-                }
-                if (op->match_op.num_clauses > 0 && op->match_op.clauses) {
-                    for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
-                        if (op->match_op.clauses[i].body) {
-                            eshkol_ast_t* new_body = new eshkol_ast_t;
-                            *new_body = substituteBindings(*op->match_op.clauses[i].body, bindings);
-                            op->match_op.clauses[i].body = new_body;
-                        }
-                    }
-                }
-                break;
-
-            // Ops that reuse call_op struct layout
-            case AstRoute::Cond:
-                if (op->call_op.func) {
-                    eshkol_ast_t* new_func = new eshkol_ast_t;
-                    *new_func = substituteBindings(*op->call_op.func, bindings);
-                    op->call_op.func = new_func;
-                }
-                if (op->call_op.num_vars > 0 && op->call_op.variables) {
-                    std::vector<eshkol_ast_t> new_vars_vec =
-                        substituteBindingsInList(op->call_op.variables, op->call_op.num_vars, bindings);
-                    op->call_op.num_vars = new_vars_vec.size();
-                    if (op->call_op.num_vars > 0) {
-                        eshkol_ast_t* new_vars = new eshkol_ast_t[op->call_op.num_vars];
-                        for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                            new_vars[i] = new_vars_vec[i];
-                        }
-                        op->call_op.variables = new_vars;
-                    } else {
-                        op->call_op.variables = nullptr;
-                    }
-                }
-                break;
-
-            case AstRoute::Set:
-                // The TARGET is a bare char*, not an AST node, so it was never
-                // reached by the substitution walk. A template like
-                //     ((_ a b) (let ((tmp a)) (set! a b) (set! b tmp)))
-                // therefore emitted a literal `a`, and the classic swap! macro
-                // failed to compile with "set!: undefined variable 'a'".
-                // R7RS 4.3.2: a pattern variable is substituted wherever it
-                // occurs in the template, assignment targets included.
-                if (op->set_op.name) {
-                    std::string target = op->set_op.name;
-                    auto it = bindings.find(target);
-                    if (it != bindings.end() && matchTreeHasValue(it->second.tree)) {
-                        const eshkol_ast_t& v = matchTreeFirstScalar(it->second.tree);
-                        if (v.type == ESHKOL_VAR && v.variable.id) {
-                            op->set_op.name = eshkol_ast_strdup(v.variable.id);
-                        }
-                        // A non-identifier operand in a set! target position is
-                        // a user error; leave the name alone so the compiler
-                        // reports it rather than silently mutating something.
-                    } else {
-                        auto rn = active_renames_.find(target);
-                        if (rn != active_renames_.end()) {
-                            op->set_op.name = eshkol_ast_string_copy(rn->second);
-                        } else {
-                            auto dn = active_template_value_env_.find(target);
-                            if (dn != active_template_value_env_.end())
-                                op->set_op.name = eshkol_ast_string_copy(dn->second);
-                        }
-                        op->set_op.name = eshkol_ast_strdup(op->set_op.name);
-                        definition_identifiers_.insert(op->set_op.name);
-                    }
-                }
-                if (op->set_op.value) {
-                    eshkol_ast_t* new_val = new eshkol_ast_t;
-                    *new_val = substituteBindings(*op->set_op.value, bindings);
-                    op->set_op.value = new_val;
-                }
-                break;
-
-            case AstRoute::Guard:
-                if (op->guard_op.num_clauses > 0 && op->guard_op.clauses) {
-                    eshkol_ast_t* new_clauses = new eshkol_ast_t[op->guard_op.num_clauses];
-                    for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
-                        new_clauses[i] = substituteBindings(op->guard_op.clauses[i], bindings);
-                    }
-                    op->guard_op.clauses = new_clauses;
-                }
-                if (op->guard_op.num_body_exprs > 0 && op->guard_op.body) {
-                    std::vector<eshkol_ast_t> new_body_vec =
-                        substituteBindingsInList(op->guard_op.body,
-                                                 op->guard_op.num_body_exprs,
-                                                 bindings);
-                    op->guard_op.num_body_exprs = new_body_vec.size();
-                    if (op->guard_op.num_body_exprs > 0) {
-                        eshkol_ast_t* new_body = new eshkol_ast_t[op->guard_op.num_body_exprs];
-                        for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
-                            new_body[i] = new_body_vec[i];
-                        }
-                        op->guard_op.body = new_body;
-                    } else {
-                        op->guard_op.body = nullptr;
-                    }
-                }
-                break;
-
-            case AstRoute::Raise:
-                if (op->raise_op.exception) {
-                    eshkol_ast_t* new_exc = new eshkol_ast_t;
-                    *new_exc = substituteBindings(*op->raise_op.exception, bindings);
-                    op->raise_op.exception = new_exc;
-                }
-                break;
-
-            case AstRoute::Values:
-                if (op->values_op.num_values > 0 && op->values_op.expressions) {
-                    std::vector<eshkol_ast_t> new_values_vec =
-                        substituteBindingsInList(op->values_op.expressions,
-                                                 op->values_op.num_values,
-                                                 bindings);
-                    op->values_op.num_values = new_values_vec.size();
-                    if (op->values_op.num_values > 0) {
-                        eshkol_ast_t* new_exprs = new eshkol_ast_t[op->values_op.num_values];
-                        for (uint64_t i = 0; i < op->values_op.num_values; i++) {
-                            new_exprs[i] = new_values_vec[i];
-                        }
-                        op->values_op.expressions = new_exprs;
-                    } else {
-                        op->values_op.expressions = nullptr;
-                    }
-                }
-                break;
-
-            case AstRoute::CallCc:
-                if (op->call_cc_op.proc) {
-                    eshkol_ast_t* new_proc = new eshkol_ast_t;
-                    *new_proc = substituteBindings(*op->call_cc_op.proc, bindings);
-                    op->call_cc_op.proc = new_proc;
-                }
-                break;
-
-            case AstRoute::DynamicWind:
-                if (op->dynamic_wind_op.before) {
-                    eshkol_ast_t* new_before = new eshkol_ast_t;
-                    *new_before = substituteBindings(*op->dynamic_wind_op.before, bindings);
-                    op->dynamic_wind_op.before = new_before;
-                }
-                if (op->dynamic_wind_op.thunk) {
-                    eshkol_ast_t* new_thunk = new eshkol_ast_t;
-                    *new_thunk = substituteBindings(*op->dynamic_wind_op.thunk, bindings);
-                    op->dynamic_wind_op.thunk = new_thunk;
-                }
-                if (op->dynamic_wind_op.after) {
-                    eshkol_ast_t* new_after = new eshkol_ast_t;
-                    *new_after = substituteBindings(*op->dynamic_wind_op.after, bindings);
-                    op->dynamic_wind_op.after = new_after;
-                }
-                break;
-
-            case AstRoute::OtherOperations:
-                break;
-        }
-        }
-
-        return result;
-    }
-
-    // For other AST types, just copy
-    return copyAst(ast);
-}
-
-/**
- * @brief Shallow-copies an AST node, deep-copying its string payload into the
- * AST string owner so the copy never aliases the original's text.
- *
- * For @c ESHKOL_STRING and @c ESHKOL_VAR nodes, the string/identifier
- * pointer is duplicated via eshkol_ast_strdup(). @c ESHKOL_OP nodes are copied
- * shallowly here; deep-copying their nested operand pointers is the
- * responsibility of the caller (expandNode()/substituteBindings()), which
- * know which sub-pointers are relevant for each operation kind. All other
- * node types are plain (primitive) data and are copied as-is.
- *
- * @return The copied AST node.
- */
 eshkol_ast_t MacroExpander::expandQuasiquoted(const eshkol_ast_t& ast, unsigned depth) {
     eshkol_ast_t result = copyAst(ast);
     if (ast.type == ESHKOL_CONS) {
@@ -2014,8 +1157,6 @@ eshkol_ast_t MacroExpander::copyAst(const eshkol_ast_t& ast) {
         case ESHKOL_VAR:
             if (ast.variable.id) {
                 result.variable.id = eshkol_ast_strdup(ast.variable.id);
-                if (definition_identifiers_.count(ast.variable.id))
-                    definition_identifiers_.insert(result.variable.id);
             }
             break;
 
@@ -2030,245 +1171,6 @@ eshkol_ast_t MacroExpander::copyAst(const eshkol_ast_t& ast) {
     }
 
     return result;
-}
-
-/**
- * @brief Reports whether @p ast is a variable reference whose identifier
- * equals @p name.
- */
-bool MacroExpander::isSymbol(const eshkol_ast_t& ast, const std::string& name) const {
-    if (ast.type == ESHKOL_VAR && ast.variable.id) {
-        return std::string(ast.variable.id) == name;
-    }
-    return false;
-}
-
-/**
- * @brief Returns the identifier of a variable-reference AST node.
- *
- * @return The variable's name, or an empty string if @p ast is not a
- * variable reference (or has a null identifier).
- */
-std::string MacroExpander::getSymbolName(const eshkol_ast_t& ast) const {
-    if (ast.type == ESHKOL_VAR && ast.variable.id) {
-        return std::string(ast.variable.id);
-    }
-    return "";
-}
-
-/**
- * @brief Reports whether @p name is one of a macro's declared
- * `syntax-rules` literal identifiers (which must match exactly rather than
- * bind as a pattern variable).
- */
-bool MacroExpander::isLiteral(const std::string& name,
-                               const std::vector<std::string>& literals) const {
-    return std::find(literals.begin(), literals.end(), name) != literals.end();
-}
-
-/**
- * @brief Matches a single `syntax-rules` pattern node against an input AST,
- * recording any pattern-variable bindings on success.
- *
- * Dispatches on pattern kind: @c MACRO_PAT_VARIABLE binds the matched AST
- * under the pattern's identifier (the wildcard `_` matches anything without
- * binding); @c MACRO_PAT_LITERAL requires @p ast to be a symbol reference
- * exactly equal to the pattern's literal identifier; @c MACRO_PAT_LIST
- * requires @p ast to be a call-shaped form and delegates element-by-element
- * matching (including ellipsis handling) to matchPatternSeq().
- *
- * @param bindings Accumulates matched pattern-variable bindings; only
- * modified on a successful match (partial matches from a failed sub-pattern
- * may still leave entries in @p bindings, since callers discard the whole
- * attempt on failure).
- * @return true if @p pattern matches @p ast, false otherwise (including a
- * null @p pattern).
- */
-bool MacroExpander::matchPattern(const eshkol_macro_pattern_t* pattern,
-                                  const eshkol_ast_t& ast,
-                                  const std::vector<std::string>& literals,
-                                  Bindings& bindings) {
-    if (!pattern) return false;
-
-    switch (pattern->type) {
-        case MACRO_PAT_VARIABLE: {
-            // Pattern variables match anything and bind the value
-            std::string var_name = pattern->identifier ? pattern->identifier : "";
-            // R7RS: _ is a wildcard — match without binding
-            if (var_name == "_") return true;
-            Binding binding;
-            binding.name = var_name;
-            binding.tree.depth = 0;
-            binding.tree.scalar = ast;
-            bindings[var_name] = binding;
-            return true;
-        }
-
-        case MACRO_PAT_LITERAL: {
-            // Literals must match exactly
-            std::string lit_name = pattern->identifier ? pattern->identifier : "";
-            return isSymbol(ast, lit_name);
-        }
-
-        case MACRO_PAT_LIST: {
-            // List patterns match list-like ASTs (calls, sequences), which are
-            // represented generically as [func, variables...]. Delegate to the
-            // shared sequence matcher so ellipsis (including nested ellipsis,
-            // e.g. a sub-pattern like (row ...) itself followed by ...) is
-            // handled identically to a top-level macro-call pattern.
-            if (ast.type != ESHKOL_OP) return false;
-
-            const auto* op = &ast.operation;
-            if ((op->op != ESHKOL_CALL_OP && op->op != ESHKOL_IF_OP) ||
-                !op->call_op.func) return false;
-
-            std::vector<eshkol_ast_t> args;
-            args.reserve(op->call_op.num_vars + 1);
-            args.push_back(*op->call_op.func);
-            for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                args.push_back(op->call_op.variables[i]);
-            }
-
-            return matchPatternSeq(pattern->list.elements, 0, pattern->list.num_elements,
-                                    args.data(), args.size(), literals, bindings);
-        }
-
-        default:
-            return false;
-    }
-}
-
-/**
- * @brief Matches a sequence of `syntax-rules` pattern elements (starting at
- * @p pat_start) against a sequence of input argument ASTs, handling ellipsis
- * repetition.
- *
- * Shared by both top-level macro-call matching (tryExpandMacroCall(), which
- * skips the macro-name element) and nested list sub-pattern matching
- * (matchPattern()'s @c MACRO_PAT_LIST case), so nested ellipsis (e.g.
- * `((r ...) ...)`) is handled uniformly wherever it occurs. A pattern element
- * marked @c followed_by_ellipsis greedily consumes every remaining argument
- * as one repetition each of that element's sub-pattern; the per-repetition
- * bindings are then merged into a single depth+1 MatchTree per pattern
- * variable the element can bind (computed via collectPatternVarDepths()), so
- * even a zero-repetition match binds those variables to an empty sequence
- * rather than leaving them unbound. An element with no ellipsis consumes
- * exactly one argument.
- *
- * @return true only if every pattern element matched and the entire argument
- * sequence was consumed exactly (no leftover arguments or unmatched
- * patterns); false otherwise.
- */
-bool MacroExpander::matchPatternSeq(eshkol_macro_pattern_t* const* elements,
-                                     uint64_t pat_start, uint64_t pat_count,
-                                     const eshkol_ast_t* args, uint64_t arg_count,
-                                     const std::vector<std::string>& literals,
-                                     Bindings& bindings) {
-    uint64_t arg_idx = 0;
-
-    for (uint64_t pat_idx = pat_start; pat_idx < pat_count; pat_idx++) {
-        eshkol_macro_pattern_t* elem = elements[pat_idx];
-        if (!elem) return false;
-
-        if (elem->followed_by_ellipsis) {
-            // Greedily consume every remaining argument as one repetition of
-            // `elem`'s (possibly itself nested-ellipsis) sub-pattern.
-            uint64_t reps = arg_count - arg_idx;
-            std::vector<Bindings> sub_results(reps);
-            for (uint64_t r = 0; r < reps; r++) {
-                Bindings sub;
-                if (!matchPattern(elem, args[arg_idx + r], literals, sub)) {
-                    return false;
-                }
-                sub_results[r] = std::move(sub);
-            }
-            arg_idx += reps;
-
-            // Merge the per-repetition bindings into one depth+1 MatchTree
-            // per variable that `elem` can bind — computed structurally so
-            // that a zero-repetition match still binds every such variable
-            // to an empty sequence (R7RS 4.3.2) instead of leaving it
-            // unbound (which previously surfaced as "Undefined variable").
-            std::map<std::string, int> local_depths;
-            collectPatternVarDepths(elem, literals, 0, local_depths);
-            for (const auto& ld : local_depths) {
-                const std::string& name = ld.first;
-                int child_depth = ld.second;
-
-                Binding b;
-                b.name = name;
-                b.tree.depth = child_depth + 1;
-                b.tree.elements.reserve(reps);
-                for (uint64_t r = 0; r < reps; r++) {
-                    auto found = sub_results[r].find(name);
-                    if (found != sub_results[r].end()) {
-                        b.tree.elements.push_back(found->second.tree);
-                    } else {
-                        MatchTree empty;
-                        empty.depth = child_depth;
-                        b.tree.elements.push_back(empty);
-                    }
-                }
-                bindings[name] = b;
-            }
-            continue;
-        }
-
-        // No ellipsis on this pattern element: consume exactly one argument.
-        if (arg_idx >= arg_count) return false;
-        if (!matchPattern(elem, args[arg_idx], literals, bindings)) return false;
-        arg_idx++;
-    }
-
-    return arg_idx == arg_count;
-}
-
-/**
- * @brief Recursively walks a `syntax-rules` sub-pattern, recording each
- * pattern variable's ellipsis-nesting depth (number of enclosing `...`
- * repetitions) into @p out.
- *
- * @p depth is the nesting depth accumulated so far by the caller; each
- * @c MACRO_PAT_LIST child adds one more level if that child itself is
- * marked @c followed_by_ellipsis. Used by matchPatternSeq() to know, for
- * every variable bindable within an ellipsis-repeated element, what depth of
- * MatchTree to build even when a given repetition doesn't happen to bind it.
- *
- * @param out Out-parameter map of pattern-variable name to depth; entries
- * are added, never cleared, so callers should pass a fresh map per
- * ellipsis element.
- */
-void MacroExpander::collectPatternVarDepths(const eshkol_macro_pattern_t* pattern,
-                                             const std::vector<std::string>& literals,
-                                             int depth,
-                                             std::map<std::string, int>& out) const {
-    if (!pattern) return;
-    (void)literals;
-
-    switch (pattern->type) {
-        case MACRO_PAT_VARIABLE: {
-            std::string name = pattern->identifier ? pattern->identifier : "";
-            if (!name.empty() && name != "_") {
-                out[name] = depth;
-            }
-            break;
-        }
-
-        case MACRO_PAT_LITERAL:
-            break;
-
-        case MACRO_PAT_LIST:
-            for (uint64_t i = 0; i < pattern->list.num_elements; i++) {
-                eshkol_macro_pattern_t* child = pattern->list.elements[i];
-                if (!child) continue;
-                int child_depth = depth + (child->followed_by_ellipsis ? 1 : 0);
-                collectPatternVarDepths(child, literals, child_depth, out);
-            }
-            break;
-
-        default:
-            break;
-    }
 }
 
 } // namespace eshkol

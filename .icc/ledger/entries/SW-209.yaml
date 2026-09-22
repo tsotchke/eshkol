@@ -1,0 +1,30 @@
+id: SW-209
+bucket: SILENT-WRONG
+subtag: autodiff
+family: runtime-taylor/perturbation-nesting
+status: fixed
+closed_at: "0a4782007"
+title: "`gradient` at an exact scalar point under an enclosing `derivative` answered 0"
+repro: >-
+  (derivative (lambda (t) (* t (gradient (lambda (u) (* u u)) 3))) 2.0)
+observed: >-
+  0 (JIT and AOT).
+correct: >-
+  6.
+root_cause: >-
+  gradientJetPath admitted its forward arm for an exact scalar only when a tower
+  or a tape was live; with only a jet live the point went to the reverse tape,
+  whose raw double drops the enclosing jet.
+fix: >-
+  lib/backend/autodiff_codegen.cpp: an exact scalar point always takes the
+  order-1 tower pass through the one seed/extract protocol, exact when un-nested
+  and a level of the enclosing passes when nested.
+evidence: >-
+  tests/ad/nested_operator_levels_test.esk (nested_operator_levels_runtime_smoke
+  and _aot_smoke): the review probes as regression cells, 36 checks, pass on JIT
+  and AOT at 0a4782007.
+caught_by: [independent review of fix/v135f-taylor (Fable), 2026-09-22]
+missed_by: [tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk]
+notes: >-
+  Native (JIT and AOT). ADR-0027: docs/design/adr/0027-recursive-taylor-level-
+  carrier.md.

@@ -1,0 +1,138 @@
+;; tests/ad/nested_operator_levels_test.esk
+;; ADR-0027 (ledger SW-206..SW-209, SW-213): every AD operator nests.
+;;
+;; A pass opened inside a live pass runs as a level of the enclosing ones.
+;; These cells are the shapes an independent review found still answering 0
+;; (or crashing) after the level carrier landed, because the operator had a
+;; route of its own that never reached the level protocol:
+;;
+;;   SW-206  a fourth `derivative` level: the 8-jet has two forward slots and
+;;           the reverse-seed slot, so the third live jet level collided;
+;;   SW-207  `hessian` nested in a live pass;
+;;   SW-208  `jacobian` nested in a live pass (0 under `derivative`, SIGSEGV
+;;           under `derivative-n`);
+;;   SW-209  `gradient` at an EXACT scalar point under an enclosing jet;
+;;   SW-213  divergence, laplacian, curl, directional-derivative and the
+;;           vector-point hessian nested in a live pass.
+;;
+;; Every expected value is exact analytic.
+
+(define failures 0)
+(define checks 0)
+
+(define (fail name got want)
+  (set! failures (+ failures 1))
+  (display "FAIL: ") (display name)
+  (display " got=") (display got)
+  (display " want=") (display want) (newline))
+
+(define (check name got want)
+  (set! checks (+ checks 1))
+  (if (<= (abs (- got want)) 1e-9)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+
+(define (check-exact name got want)
+  (set! checks (+ checks 1))
+  (if (and (exact? got) (= got want))
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+
+(define (d1 f x) (derivative f x))
+(define (dn f x n) (derivative-n f x n))
+
+;; --- SW-206: depth beyond the 8-jet's slots --------------------------------
+(check "depth-4 derivative: d/da d/db d/dc d/dd (a b c d) = 1"
+       (d1 (lambda (a) (d1 (lambda (b) (d1 (lambda (c) (d1 (lambda (dd) (* a b c dd)) 1.0)) 1.0)) 1.0)) 1.0) 1.0)
+(check "depth-5 derivative: d^5/(da..de) (a b c d e) = 1"
+       (d1 (lambda (a) (d1 (lambda (b) (d1 (lambda (c) (d1 (lambda (dd) (d1 (lambda (e) (* a b c dd e)) 1.0)) 1.0)) 1.0)) 1.0)) 1.0) 1.0)
+(check "depth-4 derivative with curvature: d/da d/db d/dc d/dd (a^2 b c d^3) at 1 = 2*3 = 6"
+       (d1 (lambda (a) (d1 (lambda (b) (d1 (lambda (c) (d1 (lambda (dd) (* a a b c dd dd dd)) 1.0)) 1.0)) 1.0)) 1.0) 6.0)
+
+;; --- SW-207: hessian nested in a live pass ---------------------------------
+;; hessian_t (q t^3) at 2 = 12 q, so d/dq = 12.
+(check "d1 over hessian"
+       (d1 (lambda (q) (hessian (lambda (t) (* q t t t)) 2.0)) 3.0) 12.0)
+(check "dn1 over hessian"
+       (dn (lambda (q) (hessian (lambda (t) (* q t t t)) 2.0)) 3.0 1) 12.0)
+(check "d1 over d1 over hessian: hessian_t (a c t^3) at 2 = 12ac"
+       (d1 (lambda (a) (d1 (lambda (cc) (hessian (lambda (t) (* a cc t t t)) 2.0)) 3.0)) 2.0) 12.0)
+(check "d1 over hessian at an exact point"
+       (d1 (lambda (q) (hessian (lambda (t) (* q t t t)) 2)) 3.0) 12.0)
+(check-exact "dn1 over hessian at exact points stays exact"
+       (dn (lambda (q) (hessian (lambda (t) (* q t t t)) 2)) 3 1) 12)
+(check "dn1 over hessian of expt at an exact point"
+       (dn (lambda (q) (hessian (lambda (t) (* q (expt t 3))) 2)) 3 1) 12.0)
+(check "hessian over d1: f(q) = q^2 * d/dt(t^2)|1 = 2q^2, hessian 4"
+       (hessian (lambda (q) (* q q (d1 (lambda (t) (* t t)) 1.0))) 5.0) 4.0)
+
+;; --- SW-208: jacobian nested in a live pass --------------------------------
+;; J00 of v -> t v0^2 at #(2) is 4t, so d/dt = 4.
+(define (j00 t)
+  (vector-ref (vector-ref (jacobian (lambda (v) (vector (* t (vector-ref v 0) (vector-ref v 0))))
+                                    (vector 2.0))
+                          0)
+              0))
+(check "d1 over jacobian" (d1 j00 1.0) 4.0)
+(check "dn1 over jacobian" (dn j00 1.0 1) 4.0)
+(check "dn2 over jacobian (J00 linear in t)" (dn j00 1.0 2) 0.0)
+;; a 2x2 field under an enclosing pass: F(v) = (t v0 v1, t^2 v0), J = [[t v1, t v0], [t^2, 0]]
+(define (jac2 t) (jacobian (lambda (v) (vector (* t (vector-ref v 0) (vector-ref v 1))
+                                                (* t t (vector-ref v 0))))
+                           (vector 2.0 5.0)))
+(check "d1 over jacobian J01 = t v0 -> v0 = 2"
+       (d1 (lambda (t) (vector-ref (vector-ref (jac2 t) 0) 1)) 3.0) 2.0)
+(check "d1 over jacobian J10 = t^2 -> 2t = 6"
+       (d1 (lambda (t) (vector-ref (vector-ref (jac2 t) 1) 0)) 3.0) 6.0)
+(check "un-nested jacobian is unchanged"
+       (vector-ref (vector-ref (jac2 3.0) 0) 0) 15.0)
+
+;; --- SW-213: the composed vector operators --------------------------------
+;; divergence of F(v) = (t v0^2, t v1) at (2,5): 2 t v0 + t = 5t
+(define (div-t t) (divergence (lambda (v) (vector (* t (vector-ref v 0) (vector-ref v 0)) (* t (vector-ref v 1)))) (vector 2.0 5.0)))
+(check "d1 over divergence" (d1 div-t 1.0) 5.0)
+(check "dn1 over divergence" (dn div-t 1.0 1) 5.0)
+(check "un-nested divergence is unchanged" (div-t 2.0) 10.0)
+;; laplacian of t (x^2 + y^2) = 4t
+(define (lap-t t) (laplacian (lambda (v) (* t (+ (* (vector-ref v 0) (vector-ref v 0)) (* (vector-ref v 1) (vector-ref v 1))))) (vector 1.0 2.0)))
+(check "d1 over laplacian" (d1 lap-t 1.0) 4.0)
+(check "dn2 over laplacian (linear in t)" (dn lap-t 1.0 2) 0.0)
+(check "un-nested laplacian is unchanged" (lap-t 3.0) 12.0)
+;; vector-point hessian of t x^2 y at (1,2): H00 = 2 t y = 4t, H01 = 2 t x = 2t
+(define (hess-t t) (hessian (lambda (v) (* t (vector-ref v 0) (vector-ref v 0) (vector-ref v 1))) (vector 1.0 2.0)))
+(check "d1 over vector hessian H00" (d1 (lambda (t) (vector-ref (vector-ref (hess-t t) 0) 0)) 1.0) 4.0)
+(check "d1 over vector hessian H01" (d1 (lambda (t) (vector-ref (vector-ref (hess-t t) 0) 1)) 1.0) 2.0)
+(check "d1 over vector hessian H11" (d1 (lambda (t) (vector-ref (vector-ref (hess-t t) 1) 1)) 1.0) 0.0)
+;; a multi-parameter field under an enclosing pass: H of q x^2 + x y at (1,2) is [[2q, 1], [1, 0]]
+(check "d1 over multi-parameter hessian H00 = 2q -> 2"
+       (d1 (lambda (q) (vector-ref (vector-ref (hessian (lambda (x y) (+ (* q x x) (* x y))) (vector 1.0 2.0)) 0) 0)) 1.5) 2.0)
+(check "d1 over multi-parameter jacobian: F(x,y) = (q x y), J00 = q y -> y = 2"
+       (d1 (lambda (q) (vector-ref (vector-ref (jacobian (lambda (x y) (vector (* q x y))) (vector 1.0 2.0)) 0) 0)) 1.5) 2.0)
+;; directional derivative of t x^2 at x = 3 along 1: 6t
+(define (dd-t t) (directional-derivative (lambda (v) (* t (vector-ref v 0) (vector-ref v 0))) (vector 3.0) (vector 1.0)))
+(check "d1 over directional-derivative" (d1 dd-t 1.0) 6.0)
+;; curl of F(v) = (t v1, 0, 0): (0, 0, -t)
+(define (curl-t t) (curl (lambda (v) (vector (* t (vector-ref v 1)) 0.0 0.0)) (vector 1.0 2.0 3.0)))
+(check "d1 over curl, z component" (d1 (lambda (t) (vector-ref (curl-t t) 2)) 1.0) -1.0)
+(check "d1 over curl, x component" (d1 (lambda (t) (vector-ref (curl-t t) 0)) 1.0) 0.0)
+
+;; --- SW-209: gradient at an exact scalar point under an enclosing jet ------
+(check "d1 over gradient at an exact point, t captured: d/dt [2 t u]|u=3 = 6"
+       (d1 (lambda (t) (gradient (lambda (u) (* t u u)) 3)) 2.0) 6.0)
+(check "d1 of t * gradient at an exact point: d/dt (6t) = 6"
+       (d1 (lambda (t) (* t (gradient (lambda (u) (* u u)) 3))) 2.0) 6.0)
+(check "d1 of gradient with t added: d/dt (2u + t)|3 = 1"
+       (d1 (lambda (t) (gradient (lambda (u) (+ (* u u) (* t u))) 3)) 2.0) 1.0)
+(check "gradient at an exact point under d1 and dn both live"
+       (d1 (lambda (t) (dn (lambda (s) (* s (gradient (lambda (u) (* t u u)) 3))) 1.0 1)) 2.0) 6.0)
+(check "dn2 of t^2 * gradient at an exact point = 12"
+       (dn (lambda (t) (* t t (gradient (lambda (u) (* u u)) 3))) 1 2) 12.0)
+(check-exact "gradient over gradient at exact points stays exact"
+       (gradient (lambda (a) (* a (gradient (lambda (t) (* a t t)) 2))) 3/2) 12)
+
+(newline)
+(display "checks: ") (display checks) (newline)
+(if (= failures 0)
+    (begin (display "PASS: nested operator levels") (newline) (exit 0))
+    (begin (display "TOTAL FAILURES: ") (display failures) (newline)
+           (display "FAIL: nested_operator_levels_test") (newline) (exit 1)))

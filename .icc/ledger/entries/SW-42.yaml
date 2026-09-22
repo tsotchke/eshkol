@@ -1,7 +1,8 @@
 
 id: SW-42
 bucket: DOCUMENTED-LIMITATION
-status: open
+status: fixed
+closed_at: "ea7677b6a"
 needs_decision: false
 renumbered_from: >-
   SW-33, then SW-35 (collision). Filed as SW-33 on the pre-rebase stack; renumbered to SW-35
@@ -135,3 +136,14 @@ notes: >-
   expansion detected". The same program with the macro renamed works. That is a
   reserved-name collision in the native frontend, is LOUD (exit 1) rather than silent,
   and is out of scope for this entry.
+resolution: >-
+  Fixed at ea7677b6a (ADR-0026), without syntax objects: each expansion colors
+  the identifiers its template introduces (inc/eshkol/frontend/syntax_color.h),
+  and a colored identifier no binder of its expansion binds resolves in the
+  macro's definition environment on both engines. The close condition is met
+  by measurement: this entry's repro prints 50 on native JIT, AOT and the VM
+  (tests/vm_parity/corpus/93_macro_hygiene_matrix.esk, check
+  "SW-42 free template identifier", ctest macro_hygiene_matrix), and the
+  18-cell SW-30 matrix corpus/68_syntax_rules_hygiene.esk still passes in the
+  VM parity harness. The SW-30 residuals are closed by the same rule: a
+  template's do-loop variable and internal define no longer capture.

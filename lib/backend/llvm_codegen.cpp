@@ -698,6 +698,8 @@ static void deadStripWasmModule(llvm::Module& module) {
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+
+#include "../core/taylor_opcodes.h"
 #include <cstdio>
 #include <cstddef>
 #include <mutex>
@@ -2706,6 +2708,12 @@ public:
 
             // Create built-in function declarations
             createBuiltinFunctions();
+            // SW-211: complex `expt` on carriers needs the value-level math
+            // functions, which live here; ArithmeticCodegen::pow reaches the
+            // formula through this hook.
+            arith_->setComplexCarrierPow([this](Value* base, Value* expo) {
+                return complexCarrierPow(base, expo);
+            });
 
             // ========== HoTT TYPE CHECKING PHASE ==========
             // Run type checker before code generation for gradual typing support
@@ -14272,9 +14280,23 @@ private:
             Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
             BasicBlock* cur_block = builder->GetInsertBlock();
             Function* cur_func = cur_block->getParent();
+            BasicBlock* check_carrier = BasicBlock::Create(*context, "e2i_check_carrier", cur_func);
+            BasicBlock* carrier_bb = BasicBlock::Create(*context, "e2i_carrier", cur_func);
             BasicBlock* convert_bb = BasicBlock::Create(*context, "e2i_convert", cur_func);
             BasicBlock* merge_bb = BasicBlock::Create(*context, "merge_inexact", cur_func);
-            builder->CreateCondBr(is_double, merge_bb, convert_bb);
+            builder->CreateCondBr(is_double, merge_bb, check_carrier);
+            // SW-212: a derivative carrier or a complex value is converted by
+            // R7RS contagion through its own multiplication by an inexact 1,
+            // which keeps the derivative (d inexact(x)/dx = 1) and demotes an
+            // exact tower's coefficients. Reading it as a double dropped it.
+            builder->SetInsertPoint(check_carrier);
+            Value* is_cpx = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
+            builder->CreateCondBr(builder->CreateOr(is_cpx, arith_->isDerivativeCarrier(arg)),
+                                  carrier_bb, convert_bb);
+            builder->SetInsertPoint(carrier_bb);
+            Value* carried = arith_->mul(arg, packDoubleToTaggedValue(ConstantFP::get(double_type, 1.0)));
+            BasicBlock* carrier_end = builder->GetInsertBlock();
+            builder->CreateBr(merge_bb);
             // Convert any exact type (int64, bignum, rational) to double
             builder->SetInsertPoint(convert_bb);
             Value* dbl_val = arith_->extractAsDouble(arg);
@@ -14283,8 +14305,9 @@ private:
             builder->CreateBr(merge_bb);
             // Merge
             builder->SetInsertPoint(merge_bb);
-            PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
+            PHINode* phi = builder->CreatePHI(tagged_value_type, 3);
             phi->addIncoming(arg, cur_block);
+            phi->addIncoming(carried, carrier_end);
             phi->addIncoming(converted, convert_end);
             co_return phi;
         }
@@ -14380,32 +14403,12 @@ private:
             Value* arg = typedValueToTaggedValue(tv);
             // ESH-0093: freeze reverse-tape operands to jets inside forward-mode AD
             arg = autodiff_->maybeJetLiftTapeOperand(arg);
+            // SW-212: everything but a tape node is the polymorphic product,
+            // which owns every numeric kind and every carrier. The inline
+            // flonum/fixnum arms this replaced multiplied a jet's or a tower's
+            // pointer bits (derivative 0) and a rational's too.
             co_return arith_->withADUnaryDispatch(arg, 43 /*AD_NODE_SQUARE*/, [&]() -> llvm::Value* {
-                Value* type = getTaggedValueType(arg);
-                Value* base_type = getBaseType(type);
-                Value* data = builder->CreateExtractValue(arg, {4});
-                Value* is_double = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-                Function* cur_func = builder->GetInsertBlock()->getParent();
-                BasicBlock* double_bb = BasicBlock::Create(*context, "sq_double", cur_func);
-                BasicBlock* int_bb = BasicBlock::Create(*context, "sq_int", cur_func);
-                BasicBlock* merge_bb = BasicBlock::Create(*context, "sq_merge", cur_func);
-                builder->CreateCondBr(is_double, double_bb, int_bb);
-                builder->SetInsertPoint(double_bb);
-                Value* dbl = builder->CreateBitCast(data, double_type);
-                Value* sq_dbl = builder->CreateFMul(dbl, dbl);
-                Value* r_dbl = packDoubleToTaggedValue(sq_dbl);
-                BasicBlock* double_end = builder->GetInsertBlock();
-                builder->CreateBr(merge_bb);
-                builder->SetInsertPoint(int_bb);
-                Value* sq_int = builder->CreateMul(data, data);
-                Value* r_int = packInt64ToTaggedValue(sq_int);
-                BasicBlock* int_end = builder->GetInsertBlock();
-                builder->CreateBr(merge_bb);
-                builder->SetInsertPoint(merge_bb);
-                PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
-                phi->addIncoming(r_dbl, double_end);
-                phi->addIncoming(r_int, int_end);
-                return phi;
+                return arith_->mul(arg, arg);
             });
         }
         if (func_name == "list?") co_return codegenListPredicate(op);
@@ -20655,17 +20658,13 @@ private:
         // ESH-0186: Taylor-tower operand — route to the arbitrary-order kernel
         // before any scalar/tensor handling. Wraps the rest of the function so a
         // tower `sin`/`cos`/`exp`/`log`/... returns a tower, not a misread double.
-        int twr_uop = -1;
-        if      (func_name == "exp")  twr_uop = 1;
-        else if (func_name == "log")  twr_uop = 2;
-        else if (func_name == "sin")  twr_uop = 3;
-        else if (func_name == "cos")  twr_uop = 4;
-        else if (func_name == "tan")  twr_uop = 5;
-        else if (func_name == "sqrt") twr_uop = 6;
-        else if (func_name == "fabs") twr_uop = 7;
-        else if (func_name == "sinh") twr_uop = 8;
-        else if (func_name == "cosh") twr_uop = 9;
-        else if (func_name == "tanh") twr_uop = 10;
+        //
+        // SW-210: the op-code comes from taylor_recurrences.def, the table the
+        // runtime kernel is built from, never from a list kept here. A builtin
+        // without a row used to skip this branch and answer a tower operand
+        // with its primal (derivative 0); every builtin lowered through this
+        // function now has one, and the route guard test keeps it that way.
+        int twr_uop = eshkol_taylor_unary_opcode(func_name.c_str());
         BasicBlock* mf_twr_done = nullptr;
         Value* mf_twr_slot = nullptr;
         if (twr_uop >= 0) {
@@ -21205,7 +21204,8 @@ private:
         builder->CreateCondBr(is_twr, twr_bb, check_callable);
 
         builder->SetInsertPoint(twr_bb);
-        Value* twr_result = arith_->emitTaylorUnaryCall(arg, relu ? 11 : 12);
+        Value* twr_result = arith_->emitTaylorUnaryCall(arg,
+            eshkol_taylor_unary_opcode(relu ? "relu" : "sigmoid"));
         builder->CreateBr(merge_bb);
         BasicBlock* twr_exit = builder->GetInsertBlock();
 
@@ -21643,7 +21643,8 @@ private:
                               taylor_path, check_taylor);
 
         builder->SetInsertPoint(taylor_path);
-        Value* taylor_result = arith_->emitTaylorUnaryCall(arg_tagged, 7);
+        Value* taylor_result = arith_->emitTaylorUnaryCall(arg_tagged,
+            eshkol_taylor_unary_opcode("abs"));
         builder->CreateBr(merge);
         BasicBlock* taylor_exit = builder->GetInsertBlock();
 
@@ -21752,20 +21753,60 @@ private:
     // on a component, so a derivative carrier gets the same rule it gets here.
     Value* codegenBinaryMathFunctionOnTagged(Value* arg1, Value* arg2, const std::string& func_name) {
 
-        // DUAL NUMBER FAST PATH (forward-mode AD).
-        //
-        // For atan2(y, x):
-        //   ∂/∂y atan2(y,x) =  x / (x² + y²)
-        //   ∂/∂x atan2(y,x) = -y / (x² + y²)
-        // Forward-mode chain rule on a dual {y, dy} and dual {x, dx}:
-        //   d(atan2(y,x)) = (x*dy - y*dx) / (x² + y²)
-        //
-        // Without this branch, dual operands collapsed to their primal
-        // via extractDoubleFromTagged and the result was packed as a
-        // tagged DOUBLE — downstream AD then synthesised a zero tangent
-        // via safeUnpackDualFromTagged, giving 0 where the true
-        // derivative is non-zero.
+        // atan2 of a derivative carrier. A Taylor carrier (a tower or a level)
+        // or a forward jet in either argument takes the carrier ring's atan2
+        // in the runtime kernel (SW-210): sigma*atan(y/x or x/y) + const, the
+        // atan recurrence on the better-conditioned quotient, in the full
+        // algebra of each carrier. The first-order dual branch this replaced
+        // read one tangent: a tower lost its higher coefficients and a nested
+        // `derivative` its mixed term, both answering 0.
         if (func_name == "atan2") {
+            Function* twr_fn = builder->GetInsertBlock()->getParent();
+            BasicBlock* twr_bb = BasicBlock::Create(*context, "atan2_taylor", twr_fn);
+            BasicBlock* twr_cont = BasicBlock::Create(*context, "atan2_not_taylor", twr_fn);
+            BasicBlock* twr_join = BasicBlock::Create(*context, "atan2_join", twr_fn);
+            Value* a1_base = getBaseType(getTaggedValueType(arg1));
+            Value* a2_base = getBaseType(getTaggedValueType(arg2));
+            auto base_is = [&](Value* base, int tag) {
+                return builder->CreateICmpEQ(base, ConstantInt::get(int8_type, tag));
+            };
+            Value* any_jet = builder->CreateOr(base_is(a1_base, ESHKOL_VALUE_DUAL_NUMBER),
+                                               base_is(a2_base, ESHKOL_VALUE_DUAL_NUMBER));
+            Value* any_tape = builder->CreateOr(base_is(a1_base, ESHKOL_VALUE_CALLABLE),
+                                                base_is(a2_base, ESHKOL_VALUE_CALLABLE));
+            Value* to_kernel = builder->CreateOr(arith_->emitIsTaylorCheck(arg1, arg2),
+                builder->CreateAnd(any_jet, builder->CreateNot(any_tape)));
+            builder->CreateCondBr(to_kernel, twr_bb, twr_cont);
+            builder->SetInsertPoint(twr_bb);
+            Value* twr_res = arith_->emitTaylorBinaryCall(arg1, arg2,
+                eshkol_taylor_binary_opcode("atan2"));
+            BasicBlock* twr_exit = builder->GetInsertBlock();
+            builder->CreateBr(twr_join);
+            builder->SetInsertPoint(twr_cont);
+            Value* plain_res = codegenAtan2NonTaylor(arg1, arg2);
+            BasicBlock* plain_exit = builder->GetInsertBlock();
+            builder->CreateBr(twr_join);
+            builder->SetInsertPoint(twr_join);
+            PHINode* twr_phi = builder->CreatePHI(tagged_value_type, 2, "atan2_value");
+            twr_phi->addIncoming(twr_res, twr_exit);
+            twr_phi->addIncoming(plain_res, plain_exit);
+            return twr_phi;
+        }
+
+        // Convert to double
+        Value* val1 = extractDoubleFromTagged(arg1);
+        Value* val2 = extractDoubleFromTagged(arg2);
+
+        // Call the function
+        Value* result = builder->CreateCall(mathFunc(func_name), {val1, val2});
+        return packDoubleToTaggedValue(result);
+    }
+
+    // atan2 of operands that are neither Taylor carriers nor forward jets: a
+    // reverse-tape node (recorded on the tape) or plain numbers.
+    Value* codegenAtan2NonTaylor(Value* arg1, Value* arg2) {
+        const std::string func_name = "atan2";
+        {
             Value* arg1_base = getBaseType(getTaggedValueType(arg1));
             Value* arg2_base = getBaseType(getTaggedValueType(arg2));
             Value* arg1_is_ad = builder->CreateICmpEQ(arg1_base,
@@ -21773,16 +21814,10 @@ private:
             Value* arg2_is_ad = builder->CreateICmpEQ(arg2_base,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
             Value* any_ad = builder->CreateOr(arg1_is_ad, arg2_is_ad);
-            Value* arg1_is_dual = builder->CreateICmpEQ(arg1_base,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-            Value* arg2_is_dual = builder->CreateICmpEQ(arg2_base,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_DUAL_NUMBER));
-            Value* any_dual = builder->CreateOr(arg1_is_dual, arg2_is_dual);
 
             Function* outer_func = builder->GetInsertBlock()->getParent();
             BasicBlock* ad_bb = BasicBlock::Create(*context, "atan2_ad", outer_func);
             BasicBlock* check_dual_bb = BasicBlock::Create(*context, "atan2_check_dual", outer_func);
-            BasicBlock* dual_bb = BasicBlock::Create(*context, "atan2_dual", outer_func);
             BasicBlock* normal_bb = BasicBlock::Create(*context, "atan2_normal", outer_func);
             BasicBlock* merge_bb = BasicBlock::Create(*context, "atan2_merge", outer_func);
             builder->CreateCondBr(any_ad, ad_bb, check_dual_bb);
@@ -21825,37 +21860,7 @@ private:
             builder->CreateBr(merge_bb);
 
             builder->SetInsertPoint(check_dual_bb);
-            builder->CreateCondBr(any_dual, dual_bb, normal_bb);
-
-            builder->SetInsertPoint(dual_bb);
-            Value* a1_is_dbl = builder->CreateICmpEQ(arg1_base,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-            Value* a2_is_dbl = builder->CreateICmpEQ(arg2_base,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
-            Value* y_dual = arith_->convertToDual(arg1, arg1_is_dual, a1_is_dbl);
-            Value* x_dual = arith_->convertToDual(arg2, arg2_is_dual, a2_is_dbl);
-            Value* y = builder->CreateExtractValue(y_dual, {0}, "atan2_y");
-            Value* dy = builder->CreateExtractValue(y_dual, {1}, "atan2_dy");
-            Value* x = builder->CreateExtractValue(x_dual, {0}, "atan2_x");
-            Value* dx = builder->CreateExtractValue(x_dual, {1}, "atan2_dx");
-            Value* primal_d = builder->CreateCall(mathFunc("atan2"), {y, x}, "atan2_primal");
-            Value* xx = builder->CreateFMul(x, x);
-            Value* yy = builder->CreateFMul(y, y);
-            Value* denom = builder->CreateFAdd(xx, yy, "atan2_denom");
-            Value* num_y = builder->CreateFMul(x, dy);
-            Value* num_x = builder->CreateFMul(y, dx);
-            Value* num = builder->CreateFSub(num_y, num_x, "atan2_num");
-            Value* tangent_d = builder->CreateFDiv(num, denom, "atan2_tangent");
-            Value* result_dual = ConstantAggregateZero::get(ctx_->dualNumberType()) /* ESH-0117: zero-fills fields 4-7 */;
-            Value* atan2_dzero = ConstantFP::get(double_type, 0.0);
-            result_dual = builder->CreateInsertValue(result_dual, primal_d, {0});
-            result_dual = builder->CreateInsertValue(result_dual, tangent_d, {1});
-            // 2nd-order dual: zero e2 / e1e2 slots (avoid poison).
-            result_dual = builder->CreateInsertValue(result_dual, atan2_dzero, {2});
-            result_dual = builder->CreateInsertValue(result_dual, atan2_dzero, {3});
-            Value* dual_tagged = autodiff_->packDualToTagged(result_dual);
-            BasicBlock* dual_exit = builder->GetInsertBlock();
-            builder->CreateBr(merge_bb);
+            builder->CreateBr(normal_bb);
 
             builder->SetInsertPoint(normal_bb);
             Value* val1 = extractDoubleFromTagged(arg1);
@@ -21866,9 +21871,8 @@ private:
             builder->CreateBr(merge_bb);
 
             builder->SetInsertPoint(merge_bb);
-            PHINode* phi = builder->CreatePHI(tagged_value_type, 3, "atan2_result");
+            PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "atan2_result");
             phi->addIncoming(ad_tagged, ad_exit);
-            phi->addIncoming(dual_tagged, dual_exit);
             phi->addIncoming(normal_tagged, normal_exit);
             return phi;
         }
@@ -40244,34 +40248,210 @@ private:
         return out;
     }
 
-    // exp, log, sqrt, sin, cos and tan of a carrier complex, by their component
-    // formulas. nullptr for a procedure with no formula here; the caller raises.
+    // A complex number as its two real components, each any real number: a
+    // plain number or a derivative carrier. The carrier formulas below are
+    // written on these pairs with the real arithmetic and the value-level math
+    // functions, which have a rule for every carrier, and mirror the plain
+    // kernels in <eshkol/core/complex_math.h> formula for formula.
+    struct CPair { Value* re; Value* im; };
+    Value* cpxDouble(double v) { return packDoubleToTaggedValue(ConstantFP::get(double_type, v)); }
+    Value* cpxExact(int64_t v) { return packInt64ToTaggedValue(ConstantInt::get(int64_type, v), true); }
+    CPair cpxOf(Value* z) { return {arith_->complexComponent(z, false), arith_->complexComponent(z, true)}; }
+    Value* cpxPack(const CPair& p) { return arith_->makeRectangular(p.re, p.im); }
+    Value* cpxReal(Value* v, const char* name) { return codegenMathFunctionOnTagged(v, name, /*operand_is_real=*/true); }
+    CPair cpxAdd(const CPair& a, const CPair& b) { return {arith_->add(a.re, b.re), arith_->add(a.im, b.im)}; }
+    CPair cpxSub(const CPair& a, const CPair& b) { return {arith_->sub(a.re, b.re), arith_->sub(a.im, b.im)}; }
+    CPair cpxMul(const CPair& a, const CPair& b) {
+        return {arith_->sub(arith_->mul(a.re, b.re), arith_->mul(a.im, b.im)),
+                arith_->add(arith_->mul(a.re, b.im), arith_->mul(a.im, b.re))};
+    }
+    CPair cpxDiv(const CPair& a, const CPair& b) {
+        Value* den = arith_->add(arith_->mul(b.re, b.re), arith_->mul(b.im, b.im));
+        return {arith_->div(arith_->add(arith_->mul(a.re, b.re), arith_->mul(a.im, b.im)), den),
+                arith_->div(arith_->sub(arith_->mul(a.im, b.re), arith_->mul(a.re, b.im)), den)};
+    }
+    CPair cpxScale(const CPair& a, Value* k) { return {arith_->mul(a.re, k), arith_->mul(a.im, k)}; }
+    CPair cpxMulI(const CPair& a) { return {carrierNegate(a.im), a.re}; }   // i a
+    CPair cpxDivI(const CPair& a) { return {a.im, carrierNegate(a.re)}; }   // a / i
+    CPair cpxConst(int64_t re) { return {cpxExact(re), cpxExact(0)}; }
+    CPair cpxExp(const CPair& a) {
+        Value* e = cpxReal(a.re, "exp");
+        return {arith_->mul(e, cpxReal(a.im, "cos")), arith_->mul(e, cpxReal(a.im, "sin"))};
+    }
+    CPair cpxLog(const CPair& a) {
+        return {cpxReal(carrierMagnitude(a.re, a.im), "log"), carrierAngle(a.re, a.im)};
+    }
+    CPair cpxSqrt(const CPair& a) {
+        Value* m = cpxReal(carrierMagnitude(a.re, a.im), "sqrt");
+        Value* half = arith_->mul(carrierAngle(a.re, a.im), cpxDouble(0.5));
+        return {arith_->mul(m, cpxReal(half, "cos")), arith_->mul(m, cpxReal(half, "sin"))};
+    }
+    CPair cpxSin(const CPair& a) {
+        return {arith_->mul(cpxReal(a.re, "sin"), cpxReal(a.im, "cosh")),
+                arith_->mul(cpxReal(a.re, "cos"), cpxReal(a.im, "sinh"))};
+    }
+    CPair cpxCos(const CPair& a) {
+        return {arith_->mul(cpxReal(a.re, "cos"), cpxReal(a.im, "cosh")),
+                carrierNegate(arith_->mul(cpxReal(a.re, "sin"), cpxReal(a.im, "sinh")))};
+    }
+    CPair cpxSinh(const CPair& a) {
+        return {arith_->mul(cpxReal(a.re, "sinh"), cpxReal(a.im, "cos")),
+                arith_->mul(cpxReal(a.re, "cosh"), cpxReal(a.im, "sin"))};
+    }
+    CPair cpxCosh(const CPair& a) {
+        return {arith_->mul(cpxReal(a.re, "cosh"), cpxReal(a.im, "cos")),
+                arith_->mul(cpxReal(a.re, "sinh"), cpxReal(a.im, "sin"))};
+    }
+    CPair cpxAsin(const CPair& z) {            // -i log(iz + sqrt(1 - z^2))
+        CPair root = cpxSqrt(cpxSub(cpxConst(1), cpxMul(z, z)));
+        return cpxDivI(cpxLog(cpxAdd(cpxMulI(z), root)));
+    }
+
+    // Every complex procedure with a plain complex kernel, on a carrier complex,
+    // by its component formula (ADR-0025). nullptr for a procedure with no
+    // formula here; the caller raises.
     Value* complexCarrierMath(Value* z_tagged, const std::string& func_name) {
-        Value* re = complex_->componentTagged(z_tagged, false);
-        Value* im = complex_->componentTagged(z_tagged, true);
-        auto fn1 = [&](Value* v, const char* name) { return codegenMathFunctionOnTagged(v, name, /*operand_is_real=*/true); };
-        if (func_name == "exp") {
-            Value* e = fn1(re, "exp");
-            return arith_->makeRectangular(arith_->mul(e, fn1(im, "cos")), arith_->mul(e, fn1(im, "sin")));
+        CPair z = cpxOf(z_tagged);
+        auto scaled_log = [&](double base_ln) { return cpxScale(cpxLog(z), cpxDouble(1.0 / base_ln)); };
+        if (func_name == "exp")   return cpxPack(cpxExp(z));
+        if (func_name == "exp2")  return cpxPack(cpxExp(cpxScale(z, cpxDouble(0.69314718055994530942))));
+        if (func_name == "log")   return cpxPack(cpxLog(z));
+        if (func_name == "log2")  return cpxPack(scaled_log(0.69314718055994530942));
+        if (func_name == "log10") return cpxPack(scaled_log(2.30258509299404568402));
+        if (func_name == "sqrt")  return cpxPack(cpxSqrt(z));
+        if (func_name == "sin")   return cpxPack(cpxSin(z));
+        if (func_name == "cos")   return cpxPack(cpxCos(z));
+        if (func_name == "tan")   return cpxPack(cpxDiv(cpxSin(z), cpxCos(z)));
+        if (func_name == "sinh")  return cpxPack(cpxSinh(z));
+        if (func_name == "cosh")  return cpxPack(cpxCosh(z));
+        if (func_name == "tanh")  return cpxPack(cpxDiv(cpxSinh(z), cpxCosh(z)));
+        if (func_name == "asin")  return cpxPack(cpxAsin(z));
+        if (func_name == "acos") {                                   // pi/2 - asin z
+            CPair s = cpxAsin(z);
+            return cpxPack({arith_->sub(cpxDouble(1.57079632679489661923), s.re), carrierNegate(s.im)});
         }
-        if (func_name == "log") {
-            return arith_->makeRectangular(fn1(carrierMagnitude(re, im), "log"), carrierAngle(re, im));
+        if (func_name == "atan") {                                   // (i/2)(log(1 - iz) - log(1 + iz))
+            CPair iz = cpxMulI(z);
+            CPair lo = cpxLog(cpxSub(cpxConst(1), iz));
+            CPair hi = cpxLog(cpxAdd(cpxConst(1), iz));
+            return cpxPack(cpxScale(cpxMulI(cpxSub(lo, hi)), cpxDouble(0.5)));
         }
-        if (func_name == "sqrt") {
-            Value* m = fn1(carrierMagnitude(re, im), "sqrt");
-            Value* half = arith_->mul(carrierAngle(re, im), packDoubleToTaggedValue(ConstantFP::get(double_type, 0.5)));
-            return arith_->makeRectangular(arith_->mul(m, fn1(half, "cos")), arith_->mul(m, fn1(half, "sin")));
+        if (func_name == "asinh") {                                  // log(z + sqrt(z^2 + 1))
+            return cpxPack(cpxLog(cpxAdd(z, cpxSqrt(cpxAdd(cpxMul(z, z), cpxConst(1))))));
         }
-        if (func_name == "sin" || func_name == "cos" || func_name == "tan") {
-            Value* sin_z = arith_->makeRectangular(arith_->mul(fn1(re, "sin"), fn1(im, "cosh")),
-                                                   arith_->mul(fn1(re, "cos"), fn1(im, "sinh")));
-            if (func_name == "sin") return sin_z;
-            Value* cos_z = arith_->makeRectangular(arith_->mul(fn1(re, "cos"), fn1(im, "cosh")),
-                                                   carrierNegate(arith_->mul(fn1(re, "sin"), fn1(im, "sinh"))));
-            if (func_name == "cos") return cos_z;
-            return arith_->div(sin_z, cos_z);
+        if (func_name == "acosh") {                                  // log(z + sqrt(z+1) sqrt(z-1))
+            CPair rp = cpxSqrt(cpxAdd(z, cpxConst(1)));
+            CPair rm = cpxSqrt(cpxSub(z, cpxConst(1)));
+            return cpxPack(cpxLog(cpxAdd(z, cpxMul(rp, rm))));
+        }
+        if (func_name == "atanh") {                                  // (log(1 + z) - log(1 - z)) / 2
+            CPair hi = cpxLog(cpxAdd(cpxConst(1), z));
+            CPair lo = cpxLog(cpxSub(cpxConst(1), z));
+            return cpxPack(cpxScale(cpxSub(hi, lo), cpxDouble(0.5)));
         }
         return nullptr;
+    }
+
+    // (expt a b) when a derivative is in play and either operand is complex
+    // (SW-211). The plain kernel eshkol_complex_pow works on the primals and
+    // drops the derivative. An exact integer exponent is repeated complex
+    // multiplication (binary exponentiation, a reciprocal for a negative one),
+    // which is exact where the components are and defined at a zero base;
+    // any other exponent is exp(b log a), as eshkol_cpx_pow computes it.
+    Value* complexCarrierPow(Value* base, Value* expo) {
+        Function* fn = builder->GetInsertBlock()->getParent();
+        BasicBlock* int_bb = BasicBlock::Create(*context, "cpow_int", fn);
+        BasicBlock* gen_bb = BasicBlock::Create(*context, "cpow_general", fn);
+        BasicBlock* join_bb = BasicBlock::Create(*context, "cpow_join", fn);
+        Value* is_int = builder->CreateICmpEQ(getBaseType(getTaggedValueType(expo)),
+            ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+        builder->CreateCondBr(is_int, int_bb, gen_bb);
+
+        // exact integer exponent
+        builder->SetInsertPoint(int_bb);
+        CPair a = cpxOf(base);
+        Value* n = unpackInt64FromTaggedValue(expo);
+        Value* neg = builder->CreateICmpSLT(n, ConstantInt::get(int64_type, 0));
+        Value* m0 = builder->CreateSelect(neg, builder->CreateNeg(n), n);
+        CPair one = cpxConst(1);
+        BasicBlock* pre = builder->GetInsertBlock();
+        BasicBlock* head = BasicBlock::Create(*context, "cpow_head", fn);
+        BasicBlock* body = BasicBlock::Create(*context, "cpow_body", fn);
+        BasicBlock* take = BasicBlock::Create(*context, "cpow_take", fn);
+        BasicBlock* next = BasicBlock::Create(*context, "cpow_next", fn);
+        BasicBlock* done = BasicBlock::Create(*context, "cpow_done", fn);
+        builder->CreateBr(head);
+        builder->SetInsertPoint(head);
+        PHINode* m = builder->CreatePHI(int64_type, 2, "cpow_m");
+        PHINode* acc_re = builder->CreatePHI(tagged_value_type, 2, "cpow_acc_re");
+        PHINode* acc_im = builder->CreatePHI(tagged_value_type, 2, "cpow_acc_im");
+        PHINode* b_re = builder->CreatePHI(tagged_value_type, 2, "cpow_b_re");
+        PHINode* b_im = builder->CreatePHI(tagged_value_type, 2, "cpow_b_im");
+        m->addIncoming(m0, pre);
+        acc_re->addIncoming(one.re, pre);
+        acc_im->addIncoming(one.im, pre);
+        b_re->addIncoming(a.re, pre);
+        b_im->addIncoming(a.im, pre);
+        builder->CreateCondBr(builder->CreateICmpNE(m, ConstantInt::get(int64_type, 0)), body, done);
+
+        builder->SetInsertPoint(body);
+        Value* bit = builder->CreateICmpNE(builder->CreateAnd(m, ConstantInt::get(int64_type, 1)),
+                                           ConstantInt::get(int64_type, 0));
+        BasicBlock* body_exit = builder->GetInsertBlock();
+        builder->CreateCondBr(bit, take, next);
+        builder->SetInsertPoint(take);
+        CPair taken = cpxMul({acc_re, acc_im}, {b_re, b_im});
+        BasicBlock* take_exit = builder->GetInsertBlock();
+        builder->CreateBr(next);
+        builder->SetInsertPoint(next);
+        PHINode* nacc_re = builder->CreatePHI(tagged_value_type, 2, "cpow_nacc_re");
+        PHINode* nacc_im = builder->CreatePHI(tagged_value_type, 2, "cpow_nacc_im");
+        nacc_re->addIncoming(taken.re, take_exit);
+        nacc_re->addIncoming(acc_re, body_exit);
+        nacc_im->addIncoming(taken.im, take_exit);
+        nacc_im->addIncoming(acc_im, body_exit);
+        Value* m_next = builder->CreateLShr(m, ConstantInt::get(int64_type, 1));
+        CPair sq = cpxMul({b_re, b_im}, {b_re, b_im});
+        BasicBlock* next_exit = builder->GetInsertBlock();
+        m->addIncoming(m_next, next_exit);
+        acc_re->addIncoming(nacc_re, next_exit);
+        acc_im->addIncoming(nacc_im, next_exit);
+        b_re->addIncoming(sq.re, next_exit);
+        b_im->addIncoming(sq.im, next_exit);
+        builder->CreateBr(head);
+
+        builder->SetInsertPoint(done);
+        CPair pos = {acc_re, acc_im};
+        BasicBlock* recip_bb = BasicBlock::Create(*context, "cpow_recip", fn);
+        BasicBlock* int_join = BasicBlock::Create(*context, "cpow_int_join", fn);
+        BasicBlock* done_exit = builder->GetInsertBlock();
+        builder->CreateCondBr(neg, recip_bb, int_join);
+        builder->SetInsertPoint(recip_bb);
+        CPair inv = cpxDiv(one, pos);
+        BasicBlock* recip_exit = builder->GetInsertBlock();
+        builder->CreateBr(int_join);
+        builder->SetInsertPoint(int_join);
+        PHINode* ir = builder->CreatePHI(tagged_value_type, 2, "cpow_int_re");
+        PHINode* ii = builder->CreatePHI(tagged_value_type, 2, "cpow_int_im");
+        ir->addIncoming(inv.re, recip_exit);
+        ir->addIncoming(pos.re, done_exit);
+        ii->addIncoming(inv.im, recip_exit);
+        ii->addIncoming(pos.im, done_exit);
+        Value* int_res = cpxPack({ir, ii});
+        BasicBlock* int_exit = builder->GetInsertBlock();
+        builder->CreateBr(join_bb);
+
+        // any other exponent: exp(b log a)
+        builder->SetInsertPoint(gen_bb);
+        Value* gen_res = cpxPack(cpxExp(cpxMul(cpxOf(expo), cpxLog(cpxOf(base)))));
+        BasicBlock* gen_exit = builder->GetInsertBlock();
+        builder->CreateBr(join_bb);
+
+        builder->SetInsertPoint(join_bb);
+        PHINode* out = builder->CreatePHI(tagged_value_type, 2, "cpow");
+        out->addIncoming(int_res, int_exit);
+        out->addIncoming(gen_res, gen_exit);
+        return out;
     }
 
     Value* codegenMakeRectangular(const eshkol_operations_t* op) {

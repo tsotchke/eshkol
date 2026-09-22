@@ -14,7 +14,7 @@
 (edge-check-g523)
 
 ;; check call_cc_no_escape__in__set_bang_lambda_store
-(define (edge-check-g524) (edge-chk "call_cc_no_escape__in__set_bang_lambda_store" (let ((swg524 #f)) ((lambda () (set! swg524 (call/cc (lambda (k1) (+ 40 2)))))) swg524) 42))
+(define (edge-check-g524) (edge-chk "call_cc_no_escape__in__set_bang_lambda_store" (let ((slg524 #f)) ((lambda () (set! slg524 (call/cc (lambda (k1) (+ 40 2)))))) slg524) 42))
 (edge-check-g524)
 
 ;; check call_cc_no_escape__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g526)
 
 ;; check call_cc_escape_val__in__set_bang_lambda_store
-(define (edge-check-g527) (edge-chk "call_cc_escape_val__in__set_bang_lambda_store" (let ((swg527 #f)) ((lambda () (set! swg527 (+ 1 (call/cc (lambda (k2) (k2 10) 99)))))) swg527) 11))
+(define (edge-check-g527) (edge-chk "call_cc_escape_val__in__set_bang_lambda_store" (let ((slg527 #f)) ((lambda () (set! slg527 (+ 1 (call/cc (lambda (k2) (k2 10) 99)))))) slg527) 11))
 (edge-check-g527)
 
 ;; check call_cc_escape_val__in__set_bang_set_twice

@@ -1966,28 +1966,17 @@ static void evac_drain(EvacState& st) {
                 const size_t ncoeff = (size_t)t->order_k + 1;
                 if (ESH_TAYLOR_HAS_TANGENT(t->flags) &&
                     ESH_TAYLOR_TANGENT_IS_EXACT(t->flags)) {
-                    t->exact_c = (eshkol_tagged_value_t*)(void*)
-                        (t->c + (ESH_TAYLOR_HAS_TANGENT2(t->flags)
-                            ? 4u * ncoeff : 2u * ncoeff));
-                    const size_t arrays = ESH_TAYLOR_TANGENT2_IS_EXACT(t->flags)
-                        ? 4u : 2u;
-                    for (size_t i = 0; i < arrays * ncoeff; ++i)
+                    t->exact_c = (eshkol_tagged_value_t*)(void*)(t->c + 2u * ncoeff);
+                    for (size_t i = 0; i < 2u * ncoeff; ++i)
                         t->exact_c[i] = evac_value(st, t->exact_c[i]);
-                } else if ((t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_RATIONAL) {
+                } else if ((t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_RATIONAL ||
+                           (t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_CARRIER) {
+                    /* A level carrier (ADR-0027) stores tagged coefficients
+                     * the same way; each may itself be a jet, a bignum or
+                     * rational, or an enclosing level's carrier. */
                     t->exact_c = (eshkol_tagged_value_t*)(void*)t->c;
                     auto* c = t->exact_c;
                     for (size_t i = 0; i < ncoeff; ++i) c[i] = evac_value(st, c[i]);
-                } else if (t->exact_c) {
-                    /* Exact value/tangent sidecars follow the raw double
-                     * halves in a mixed Taylor carrier. Rebase the pointer
-                     * into the copied object before walking both arrays. */
-                    t->exact_c = (eshkol_tagged_value_t*)(void*)
-                        (t->c + (ESH_TAYLOR_HAS_TANGENT2(t->flags)
-                            ? 4u * ncoeff : 2u * ncoeff));
-                    const size_t arrays = ESH_TAYLOR_TANGENT2_IS_EXACT(t->flags)
-                        ? 4u : (ESH_TAYLOR_TANGENT_IS_EXACT(t->flags) ? 2u : 1u);
-                    for (size_t i = 0; i < arrays * ncoeff; ++i)
-                        t->exact_c[i] = evac_value(st, t->exact_c[i]);
                 }
                 break;
             }

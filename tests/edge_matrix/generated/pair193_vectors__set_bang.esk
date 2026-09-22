@@ -14,7 +14,7 @@
 (edge-check-g1687)
 
 ;; check vectors_vec_ref__in__set_bang_lambda_store
-(define (edge-check-g1688) (edge-chk "vectors_vec_ref__in__set_bang_lambda_store" (let ((swg1688 #f)) ((lambda () (set! swg1688 (vector-ref (vector 'va 'vb) 1)))) swg1688) (string->symbol "vb")))
+(define (edge-check-g1688) (edge-chk "vectors_vec_ref__in__set_bang_lambda_store" (let ((slg1688 #f)) ((lambda () (set! slg1688 (vector-ref (vector 'va 'vb) 1)))) slg1688) (string->symbol "vb")))
 (edge-check-g1688)
 
 ;; check vectors_vec_ref__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g1690)
 
 ;; check vectors_make_set_ref__in__set_bang_lambda_store
-(define (edge-check-g1691) (edge-chk "vectors_make_set_ref__in__set_bang_lambda_store" (let ((swg1691 #f)) ((lambda () (set! swg1691 (let ((mv (make-vector 3 0))) (vector-set! mv 1 9) (vector-ref mv 1))))) swg1691) 9))
+(define (edge-check-g1691) (edge-chk "vectors_make_set_ref__in__set_bang_lambda_store" (let ((slg1691 #f)) ((lambda () (set! slg1691 (let ((mv (make-vector 3 0))) (vector-set! mv 1 9) (vector-ref mv 1))))) slg1691) 9))
 (edge-check-g1691)
 
 ;; check vectors_make_set_ref__in__set_bang_set_twice
@@ -38,7 +38,7 @@
 (edge-check-g1693)
 
 ;; check vectors_vec_len__in__set_bang_lambda_store
-(define (edge-check-g1694) (edge-chk "vectors_vec_len__in__set_bang_lambda_store" (let ((swg1694 #f)) ((lambda () (set! swg1694 (vector-length (vector 1 2 3))))) swg1694) 3))
+(define (edge-check-g1694) (edge-chk "vectors_vec_len__in__set_bang_lambda_store" (let ((slg1694 #f)) ((lambda () (set! slg1694 (vector-length (vector 1 2 3))))) slg1694) 3))
 (edge-check-g1694)
 
 ;; check vectors_vec_len__in__set_bang_set_twice

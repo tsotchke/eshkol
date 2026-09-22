@@ -16,7 +16,7 @@
 
 ;; check internal_define_consecutive__in__set_bang_lambda_store
 (define (idpg1040) (define ia 3) (define ib 4) (+ ia ib))
-(define (edge-check-g1040) (edge-chk "internal_define_consecutive__in__set_bang_lambda_store" (let ((swg1040 #f)) ((lambda () (set! swg1040 (idpg1040)))) swg1040) 7))
+(define (edge-check-g1040) (edge-chk "internal_define_consecutive__in__set_bang_lambda_store" (let ((slg1040 #f)) ((lambda () (set! slg1040 (idpg1040)))) slg1040) 7))
 (edge-check-g1040)
 
 ;; check internal_define_consecutive__in__set_bang_set_twice

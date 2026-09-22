@@ -153,6 +153,43 @@
        (dn-op (lambda (a) (+ (dn-op (lambda (b) (* a b)) 1.0)
                              (dn-op (lambda (c) (* a c c)) 2.0))) 3.0) 5.0)
 
+;; ===========================================================================
+;; 6. ESH-0413: THE SAME 3x3 MATRIX WITH BOTH PASSES ABOVE FIRST ORDER.
+;;    One value series plus one first-order companion could not represent these
+;;    at all: the outer-order->=2 x inner-order->=2 cells RAISED
+;;    ("unsupported nested differentiation (both passes order >= 2)") and the
+;;    capture cells above first order raised the captured-carrier variant.
+;;    A level whose coefficients are themselves carriers has no such ceiling.
+;;
+;;    h(a,b) = a^3 b^3;  d^m/da^m d^n/db^n h = A(m,a) * A(n,b)
+;;    with A(1,x)=3x^2, A(2,x)=6x, A(3,x)=6.  At a=2, b=3.
+;; ===========================================================================
+(define (dn2-op  f x) (derivative-n f x 2))
+(define (dn3-op  f x) (derivative-n f x 3))
+(define (tay2-op f x) (* 2.0 (list-ref (taylor f x 2) 2)))
+(define (tay3-op f x) (* 6.0 (list-ref (taylor f x 3) 3)))
+
+(define (cell2 outer inner) (outer (lambda (a) (inner (lambda (b) (* a a a b b b)) 3.0)) 2.0))
+
+(check "order2 x order2: dn  x dn " (cell2 dn2-op  dn2-op ) 216.0)   ; 12 * 18
+(check "order2 x order2: dn  x tay" (cell2 dn2-op  tay2-op) 216.0)
+(check "order2 x order2: tay x dn " (cell2 tay2-op dn2-op ) 216.0)
+(check "order2 x order2: tay x tay" (cell2 tay2-op tay2-op) 216.0)
+(check "order3 x order3: dn  x dn " (cell2 dn3-op  dn3-op ) 36.0)    ; 6 * 6
+(check "order3 x order3: tay x tay" (cell2 tay3-op tay3-op) 36.0)
+(check "order2 x order3: dn  x dn " (cell2 dn2-op  dn3-op ) 72.0)    ; 12 * 6
+(check "order3 x order2: dn  x tay" (cell2 dn3-op  tay2-op) 108.0)   ; 6 * 18
+(check "order3 x order1: tay x d  " (cell2 tay3-op d-op   ) 162.0)   ; 6 * 27
+(check "order1 x order3: d   x tay" (cell2 d-op    tay3-op) 72.0)    ; 12 * 6
+
+;; and the point-nested spelling of the same ceiling: an order-2 pass whose
+;; evaluation point is an order-2 pass's carrier.
+(define (r4 r) (* r r r r))
+(check "point-nested order2 over order2"
+       (dn2-op (lambda (t) (dn2-op r4 (+ 1.0 t))) 0.0) 24.0)
+(check "point-nested taylor2 over order2"
+       (tay2-op (lambda (t) (dn2-op r4 (+ 1.0 t))) 0.0) 24.0)
+
 (newline)
 (if (= failures 0)
     (begin (display "PASS: nested operator matrix") (newline) (exit 0))

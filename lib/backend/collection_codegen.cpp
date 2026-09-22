@@ -1816,14 +1816,31 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     llvm::Value* slice_f1 = ctx_.builder().CreateStructGEP(ctx_.tensorType(), slice_tensor, 1);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), slice_f1);
 
-    // Field 2: elements pointer (view into original at row offset)
-    llvm::Value* row_start = ctx_.builder().CreateGEP(ctx_.int64Type(), elems_ptr, row_offset);
+    // Field 2: elements pointer (view into original at row offset). A tagged
+    // carrier (a dual tensor, e.g. a Jacobian whose entries carry an enclosing
+    // derivative, ADR-0027) has 16-byte slots, and the row view keeps its dtype.
+    llvm::Value* nd_dtype = ctx_.builder().CreateLoad(ctx_.int64Type(),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), tensor_ptr, 4), "vref_nd_dtype");
+    llvm::Value* nd_is_tagged = ctx_.builder().CreateOr(
+        ctx_.builder().CreateICmpEQ(nd_dtype,
+            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_BOXED)),
+        ctx_.builder().CreateICmpEQ(nd_dtype,
+            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_DUAL)));
+    llvm::Value* slot_bytes = ctx_.builder().CreateSelect(nd_is_tagged,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(eshkol_tagged_value_t)),
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    llvm::Value* row_start = ctx_.builder().CreateGEP(ctx_.int8Type(), elems_ptr,
+        ctx_.builder().CreateMul(row_offset, slot_bytes));
     llvm::Value* slice_f2 = ctx_.builder().CreateStructGEP(ctx_.tensorType(), slice_tensor, 2);
     ctx_.builder().CreateStore(row_start, slice_f2);
 
     // Field 3: total_elements = row_size
     llvm::Value* slice_f3 = ctx_.builder().CreateStructGEP(ctx_.tensorType(), slice_tensor, 3);
     ctx_.builder().CreateStore(row_size, slice_f3);
+
+    // Field 4: the row view has the source's element representation.
+    ctx_.builder().CreateStore(nd_dtype,
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), slice_tensor, 4));
 
     // Pack as TENSOR_PTR
     llvm::Value* slice_int = ctx_.builder().CreatePtrToInt(slice_tensor, ctx_.int64Type());

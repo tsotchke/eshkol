@@ -1,0 +1,33 @@
+id: SW-206
+bucket: SILENT-WRONG
+subtag: autodiff
+family: runtime-taylor/perturbation-nesting
+status: fixed
+closed_at: "0a4782007"
+title: "A fourth nested `derivative` answered 0: the 8-jet has two forward slots and the reverse-seed slot, and the third live jet level aliased onto it"
+repro: >-
+  (derivative (lambda (a) (derivative (lambda (b) (derivative (lambda (c)
+  (derivative (lambda (dd) (* a b c dd)) 1.0)) 1.0)) 1.0)) 1.0)
+observed: >-
+  0, with exit status 0, on the JIT and AOT lanes (independent review of
+  fix/v135f-taylor at 1dad8eff6).
+correct: >-
+  1.
+root_cause: >-
+  eshkol_ad_nested_seed ran a first-order `derivative` pass as a level only when
+  a tower was open or the point was a tower. A jet pass seeded slot e1 at
+  forward level 0, e2 at level 1 and the reverse-seed slot ep at level 2 and
+  above, so the fourth level shared ep with the third.
+fix: >-
+  lib/core/runtime_taylor.c eshkol_ad_nested_seed: a jet pass also runs as a
+  level when two jet levels are already live (pert_level >= 2), so the 8-jet
+  only ever holds e1 and e2 and ep stays the reverse seed. ADR-0027 section 3.
+evidence: >-
+  tests/ad/nested_operator_levels_test.esk (nested_operator_levels_runtime_smoke
+  and _aot_smoke): the review probes as regression cells, 36 checks, pass on JIT
+  and AOT at 0a4782007.
+caught_by: [independent review of fix/v135f-taylor (Fable), 2026-09-22]
+missed_by: [tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk]
+notes: >-
+  Native (JIT and AOT). ADR-0027: docs/design/adr/0027-recursive-taylor-level-
+  carrier.md.

@@ -14,7 +14,7 @@
 (edge-check-g336)
 
 ;; check variadic_all_rest_car__in__set_bang_lambda_store
-(define (edge-check-g337) (edge-chk "variadic_all_rest_car__in__set_bang_lambda_store" (let ((swg337 #f)) ((lambda () (set! swg337 ((lambda vargs (car vargs)) 9 8 7)))) swg337) 9))
+(define (edge-check-g337) (edge-chk "variadic_all_rest_car__in__set_bang_lambda_store" (let ((slg337 #f)) ((lambda () (set! slg337 ((lambda vargs (car vargs)) 9 8 7)))) slg337) 9))
 (edge-check-g337)
 
 ;; check variadic_all_rest_car__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g339)
 
 ;; check variadic_dotted_rest__in__set_bang_lambda_store
-(define (edge-check-g340) (edge-chk "variadic_dotted_rest__in__set_bang_lambda_store" (let ((swg340 #f)) ((lambda () (set! swg340 ((lambda (va . vr) vr) 1 2 3)))) swg340) (list 2 3)))
+(define (edge-check-g340) (edge-chk "variadic_dotted_rest__in__set_bang_lambda_store" (let ((slg340 #f)) ((lambda () (set! slg340 ((lambda (va . vr) vr) 1 2 3)))) slg340) (list 2 3)))
 (edge-check-g340)
 
 ;; check variadic_dotted_rest__in__set_bang_set_twice
@@ -40,7 +40,7 @@
 
 ;; check variadic_define_variadic__in__set_bang_lambda_store
 (define (vfg343 . vxs) vxs)
-(define (edge-check-g343) (edge-chk "variadic_define_variadic__in__set_bang_lambda_store" (let ((swg343 #f)) ((lambda () (set! swg343 (vfg343 7 8)))) swg343) (list 7 8)))
+(define (edge-check-g343) (edge-chk "variadic_define_variadic__in__set_bang_lambda_store" (let ((slg343 #f)) ((lambda () (set! slg343 (vfg343 7 8)))) slg343) (list 7 8)))
 (edge-check-g343)
 
 ;; check variadic_define_variadic__in__set_bang_set_twice

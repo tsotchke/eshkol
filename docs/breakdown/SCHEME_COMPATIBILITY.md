@@ -711,7 +711,7 @@ Module discovery is automatic: `collect_all_submodules()` recursively discovers 
 
 ## Macro System
 
-Eshkol implements R7RS hygienic macros via `syntax-rules` pattern matching ([macro_expander.cpp](../../lib/frontend/macro_expander.cpp), 1,820 lines).
+Eshkol implements R7RS hygienic macros via `syntax-rules` pattern matching. The native compiler and the bytecode VM share one engine ([syntax_rules_core.h](../../inc/eshkol/frontend/syntax_rules_core.h)) and one renaming rule ([ADR-0026](../design/adr/0026-syntax-rules-one-engine-one-renaming-rule.md)); the full rules are in the [macro reference](../reference/language/macros.md).
 
 ```scheme
 ;; Pattern-based macros
@@ -737,7 +737,7 @@ Eshkol implements R7RS hygienic macros via `syntax-rules` pattern matching ([mac
     (list x y)))                      ; => (2 1)
 ```
 
-**Hygiene:** The macro expander maintains a symbol table that renames identifiers introduced by macros to avoid capture. This means macros are safe to use in any context without variable name collisions.
+**Hygiene:** Both directions of R7RS 4.3.2 hold. A binding a template introduces can neither capture nor be captured by the caller's code, and an identifier a template uses freely (a special form, a builtin, a global, a definition-site local, another macro) means what it meant where the macro was defined, whatever the use site binds with the same spelling. The pattern language is complete: literals, `_`, custom ellipsis, ellipsis followed by further patterns, dotted tails, vectors, nested ellipses and `(... ...)`.
 
 **Supported forms:**
 - `define-syntax` — top-level macro definition

@@ -985,9 +985,9 @@ class EshkolRuntime {
                 eshkol_taylor_extract_tangent:  () => 0.0,
                 eshkol_taylor_lift_ad_node:     () => {},
                 eshkol_taylor_project_forward_tangent: () => 0,
-                // ESH-0402 nested-AD carrier composition (runtime_taylor.c):
-                //   i32  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, i32, tagged*)
-                //   void eshkol_ad_nested_extract(arena*, tagged*, i32, i32, tagged*)
+                // ADR-0027 nested levels (runtime_taylor.c):
+                //   i32  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, i64, tagged*)
+                //   void eshkol_ad_nested_extract(arena*, tagged*, i32, i32, i32, tagged*)
                 //   void eshkol_ad_nested_unsupported(i32)
                 //   void eshkol_ad_curried_gradient_unsupported()
                 // ESH_AD_NEST_NONE (0) keeps the lite lane on the unchanged
@@ -1005,6 +1005,9 @@ class EshkolRuntime {
                 },
                 eshkol_ad_tower_enter: () => {},
                 eshkol_ad_tower_leave: () => {},
+                // A jet pass's extraction guard (ADR-0027). The lite lane has no Taylor
+                // carrier, so no carrier can reach it.
+                eshkol_ad_jet_result_check: () => {},
                 // END GENERATED FLAT-AD IMPORTS
                 eshkol_ad_nested_extract:       () => {},
                 eshkol_ad_nested_unsupported:   () => {},

@@ -95,8 +95,27 @@ above cannot conflict with user code:
 (display tmp)  ;; => 42
 ```
 
-This is guaranteed by the R7RS specification. Eshkol's macro expander
-renames internal variables to prevent capture.
+Hygiene also works in the other direction: a name the template uses but
+does not bind means what it meant where the macro was defined, even if the
+code that uses the macro binds the same name locally. The operand, on the
+other hand, is the caller's code and sees the caller's bindings:
+
+```scheme
+(define (double x) (* 2 x))
+(define-syntax twice (syntax-rules () ((_ e) (double e))))
+
+(display (let ((double (lambda (x) 0))) (twice 21)))  ;; => 42
+(newline)
+(display (let ((car cdr)) (twice (length (car '(5 6 7))))))  ;; => 4
+```
+
+In the second use the caller's `car` is `cdr`, so the operand is
+`(length '(6 7))`, which is `2`; the template's `double` is still the
+top-level procedure.
+
+Both directions hold for every binding form a template can contain and on
+every engine (JIT, AOT, bytecode VM). See the
+[macro reference](../reference/language/macros.md) for the full rules.
 
 ---
 
