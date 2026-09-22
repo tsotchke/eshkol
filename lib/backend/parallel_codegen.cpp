@@ -39,6 +39,7 @@
 #include <atomic>
 #include <algorithm>
 #include <cstring>
+#include <csetjmp>
 #ifndef _WIN32
 #include <dlfcn.h>   /* dlsym(RTLD_DEFAULT, …) for lazy worker resolution */
 #endif
@@ -231,6 +232,86 @@ struct eshkol_parallel_execute_task {
 };
 
 // ============================================================================
+// The unwind boundary between a pool-run callback and its caller
+// ============================================================================
+//
+// One rule for every scheduler (parallel-map, -filter, -for-each, -execute and
+// async futures): a callback's raise never leaves the thread that raised it.
+// The exception-handler chain is thread-local, so before this boundary a raise
+// on a worker found no handler at all and exited the process, and a raise on
+// the calling thread longjmp'd through this file's C++ frames (leaking their
+// vectors and leaving the parallel arena scope open).
+//
+// Every callback now runs under a handler pushed by run_in_boundary() on the
+// thread that runs it; a raise lands there with its dynamic-wind, region and AD
+// state already unwound to the boundary, and is recorded. After the join, the
+// entry point returns from its implementation (so every C++ local is
+// destroyed) and re-raises the first recorded condition in element order on
+// the caller's thread, where the caller's own handlers see the original object.
+namespace {
+struct ParallelRaise {
+    bool pending;
+    eshkol_tagged_value_t value;
+    eshkol_exception_t* exception;
+};
+
+struct ParallelBoundaryTask {
+    parallel_worker_fn worker;
+    void* task;
+    ParallelRaise raised;
+};
+} // namespace
+
+extern "C" {
+eshkol_exception_t* eshkol_get_current_exception(void);
+void eshkol_clear_current_exception(void);
+void eshkol_get_raised_value(eshkol_tagged_value_t* out);
+void eshkol_set_raised_value(const eshkol_tagged_value_t* value);
+}
+
+// Kept out of line: setjmp needs a frame with no live C++ objects.
+__attribute__((noinline))
+static void run_in_boundary(parallel_worker_fn worker, void* task,
+                            ParallelRaise* out) {
+    out->pending = false;
+    out->exception = nullptr;
+    std::jmp_buf landing;
+    const int64_t depth = eshkol_exception_handler_depth();
+    eshkol_push_exception_handler(&landing);
+    if (setjmp(landing) == 0) {
+        worker(task);
+        eshkol_exception_handlers_unwind_to(depth);
+        return;
+    }
+    eshkol_exception_handlers_unwind_to(depth);
+    out->pending = true;
+    eshkol_get_raised_value(&out->value);
+    out->exception = eshkol_get_current_exception();
+    eshkol_clear_current_exception();
+}
+
+static void* parallel_boundary_worker(void* arg) {
+    auto* b = static_cast<ParallelBoundaryTask*>(arg);
+    run_in_boundary(b->worker, b->task, &b->raised);
+    return nullptr;
+}
+
+static ParallelRaise first_parallel_raise(const std::vector<ParallelBoundaryTask>& tasks) {
+    for (const auto& t : tasks)
+        if (t.raised.pending) return t.raised;
+    ParallelRaise none{};
+    return none;
+}
+
+// Deliver a recorded condition on the calling thread. Called only from an
+// extern "C" entry shell whose implementation frame has already returned.
+static void reraise_on_caller(ParallelRaise raised) {
+    if (!raised.pending) return;
+    eshkol_set_raised_value(&raised.value);
+    eshkol_raise(raised.exception);
+}
+
+// ============================================================================
 // Eager async future submission
 // ============================================================================
 //
@@ -300,20 +381,21 @@ extern "C" uint8_t eshkol_lazy_future_submit_async(
     // Allocate result slot + task on the heap; lazy_future owns them.
     auto* slot = new eshkol_tagged_value_t{};
     slot->type = ESHKOL_VALUE_NULL;
-    auto* task = new eshkol_parallel_execute_task{
+    auto* exec = new eshkol_parallel_execute_task{
         closure_ptr,
         static_cast<uint64_t>(closure_type),
         static_cast<uint64_t>(closure_flags),
         reinterpret_cast<uint64_t>(slot),
     };
+    auto* task = new ParallelBoundaryTask{g_parallel_execute_worker, exec, {}};
     // Open a parallel scope for the lifetime of this async future (closed in
     // eshkol_lazy_future_join_async). While it is outstanding the shared arena
     // is pinned to the thread-safe root so the async worker — and any with-region
     // in its thunk — never races the spawning thread on the current-arena slot.
     eshkol_parallel_scope_begin();
 
-    eshkol_future_t* fut = thread_pool_submit(pool, g_parallel_execute_worker, task);
-    if (!fut) { eshkol_parallel_scope_end(); delete slot; delete task; return 0; }
+    eshkol_future_t* fut = thread_pool_submit(pool, parallel_boundary_worker, task);
+    if (!fut) { eshkol_parallel_scope_end(); delete slot; delete exec; delete task; return 0; }
 
     lf->pool_future = fut;
     lf->async_result_slot = slot;
@@ -346,9 +428,14 @@ extern "C" void eshkol_lazy_future_join_async(void* lf_void) {
         lf->result_type  = slot->type;
         lf->result_flags = slot->flags;
     }
-    lf->forced = 1;
+    auto* task = static_cast<ParallelBoundaryTask*>(lf->async_task);
+    const ParallelRaise raised = task ? task->raised : ParallelRaise{};
+    // A thunk that raised is not forced: a later force evaluates it again on
+    // the forcing thread, exactly as an unforced lazy future would.
+    lf->forced = raised.pending ? 0 : 1;
     future_release(fut);
-    delete static_cast<eshkol_parallel_execute_task*>(lf->async_task);
+    if (task) delete static_cast<eshkol_parallel_execute_task*>(task->task);
+    delete task;
     delete slot;
     lf->pool_future = nullptr;
     lf->async_task = nullptr;
@@ -356,6 +443,7 @@ extern "C" void eshkol_lazy_future_join_async(void* lf_void) {
 
     // Close the parallel scope opened at submit (balances scope_begin above).
     eshkol_parallel_scope_end();
+    reraise_on_caller(raised);
 }
 
 // ============================================================================
@@ -467,13 +555,15 @@ extern "C" void eshkol_parallel_map_sret(
     const eshkol_tagged_value_t* list_ptr,
     arena_t* arena);
 
-void eshkol_parallel_map(
+static void parallel_map_impl(
     eshkol_tagged_value_t fn,
     eshkol_tagged_value_t list,
     arena_t* arena,
-    eshkol_tagged_value_t* out_result)
+    eshkol_tagged_value_t* out_result,
+    ParallelRaise* raised)
 {
     eshkol_debug("parallel-map: fn.type=%d, list.type=%d", fn.type, list.type);
+    raised->pending = false;
 
     // Suppress region-arena hijack + pin the shared arena to the thread-safe root
     // for the whole construct, so worker bodies using with-region are race-free.
@@ -521,6 +611,9 @@ void eshkol_parallel_map(
         *out_result = null_val; return;
     }
 
+    // Every element runs under the unwind boundary, on whichever thread.
+    std::vector<ParallelBoundaryTask> boundaries(n);
+
     // For small lists, use LLVM worker directly (still benefits from LLVM→LLVM calls)
     if (n < 4) {
         eshkol_debug("parallel-map: sequential path for small list");
@@ -534,9 +627,11 @@ void eshkol_parallel_map(
             task.result_ptr = reinterpret_cast<uint64_t>(&results[i]);
 
             // Call LLVM worker via function pointer
-            g_parallel_map_worker(&task);
+            run_in_boundary(g_parallel_map_worker, &task, &boundaries[i].raised);
         }
-        *out_result = vector_to_list(results, arena); return;
+        *raised = first_parallel_raise(boundaries);
+        if (!raised->pending) *out_result = vector_to_list(results, arena);
+        return;
     }
 
     // Get global thread pool
@@ -559,6 +654,7 @@ void eshkol_parallel_map(
                            | (static_cast<uint64_t>(items[i].flags) << 8);
         tasks[i].item_data = items[i].data.raw_val;
         tasks[i].result_ptr = reinterpret_cast<uint64_t>(&results[i]);
+        boundaries[i] = ParallelBoundaryTask{g_parallel_map_worker, &tasks[i], {}};
     }
 
     // ── JIT-warmup phase ───────────────────────────────────────────────────
@@ -580,7 +676,7 @@ void eshkol_parallel_map(
     size_t parallel_start = 0;
     if (do_warmup && n > 1) {
         eshkol_debug("parallel-map: warming up JIT via item[0] on caller");
-        g_parallel_map_worker(&tasks[0]);
+        run_in_boundary(g_parallel_map_worker, &tasks[0], &boundaries[0].raised);
         parallel_start = 1;  // item[0] is already done
     }
 
@@ -595,9 +691,10 @@ void eshkol_parallel_map(
             do_warmup ? 1 : 0, parallel_start);
     }
     for (size_t i = parallel_start; i < n; ++i) {
-        futures[i] = thread_pool_submit(pool, g_parallel_map_worker, &tasks[i]);
+        futures[i] = thread_pool_submit(pool, parallel_boundary_worker, &boundaries[i]);
         if (!futures[i]) {
-            eshkol_error("parallel-map: failed to submit task %zu", i);
+            // Never drop an element: a refused submit runs on this thread.
+            parallel_boundary_worker(&boundaries[i]);
         }
     }
 
@@ -618,7 +715,19 @@ void eshkol_parallel_map(
     }
 
     eshkol_debug("parallel-map: all tasks completed, building result list");
-    *out_result = vector_to_list(results, arena); return;
+    *raised = first_parallel_raise(boundaries);
+    if (!raised->pending) *out_result = vector_to_list(results, arena);
+}
+
+void eshkol_parallel_map(
+    eshkol_tagged_value_t fn,
+    eshkol_tagged_value_t list,
+    arena_t* arena,
+    eshkol_tagged_value_t* out_result)
+{
+    ParallelRaise raised{};
+    parallel_map_impl(fn, list, arena, out_result, &raised);
+    reraise_on_caller(raised);
 }
 
 /* Pointer-argument entry point for LLVM codegen. */
@@ -739,13 +848,15 @@ void eshkol_parallel_for_each(
  * The worker calls the predicate and stores the result (a boolean).
  * We then filter based on whether the result is truthy.
  */
-void eshkol_parallel_filter(
+static void parallel_filter_impl(
     eshkol_tagged_value_t pred,
     eshkol_tagged_value_t list,
     arena_t* arena,
-    eshkol_tagged_value_t* out_result)
+    eshkol_tagged_value_t* out_result,
+    ParallelRaise* raised)
 {
     eshkol_debug("parallel-filter: pred.type=%d, list.type=%d", pred.type, list.type);
+    raised->pending = false;
 
     // See eshkol_parallel_map: race-free with-region for worker predicate bodies.
     ParallelArenaScope _parallel_scope;
@@ -788,6 +899,8 @@ void eshkol_parallel_filter(
         pred_results[i].data.raw_val = 0;
     }
 
+    std::vector<ParallelBoundaryTask> boundaries(n);
+
     // For small lists, use LLVM worker directly
     if (n < 4) {
         eshkol_debug("parallel-filter: sequential path for small list");
@@ -799,8 +912,10 @@ void eshkol_parallel_filter(
             task.item_data = items[i].data.raw_val;
             task.result_ptr = reinterpret_cast<uint64_t>(&pred_results[i]);
 
-            g_parallel_filter_worker(&task);
+            run_in_boundary(g_parallel_filter_worker, &task, &boundaries[i].raised);
         }
+        *raised = first_parallel_raise(boundaries);
+        if (raised->pending) return;
 
         // Collect items where predicate returned truthy
         std::vector<eshkol_tagged_value_t> filtered;
@@ -830,14 +945,16 @@ void eshkol_parallel_filter(
                            | (static_cast<uint64_t>(items[i].flags) << 8);
         tasks[i].item_data = items[i].data.raw_val;
         tasks[i].result_ptr = reinterpret_cast<uint64_t>(&pred_results[i]);
+        boundaries[i] = ParallelBoundaryTask{g_parallel_filter_worker, &tasks[i], {}};
     }
 
     // Submit LLVM filter worker to thread pool via function pointer
     eshkol_debug("parallel-filter: submitting %zu tasks to thread pool", n);
     for (size_t i = 0; i < n; ++i) {
-        futures[i] = thread_pool_submit(pool, g_parallel_filter_worker, &tasks[i]);
+        futures[i] = thread_pool_submit(pool, parallel_boundary_worker, &boundaries[i]);
         if (!futures[i]) {
-            eshkol_error("parallel-filter: failed to submit task %zu", i);
+            // Never drop an element: a refused submit runs on this thread.
+            parallel_boundary_worker(&boundaries[i]);
         }
     }
 
@@ -849,6 +966,9 @@ void eshkol_parallel_filter(
         }
     }
 
+    *raised = first_parallel_raise(boundaries);
+    if (raised->pending) return;
+
     // Collect items that passed the predicate (truthy results)
     std::vector<eshkol_tagged_value_t> filtered;
     for (size_t i = 0; i < n; ++i) {
@@ -858,7 +978,18 @@ void eshkol_parallel_filter(
     }
 
     eshkol_debug("parallel-filter: filtered %zu items to %zu", n, filtered.size());
-    *out_result = vector_to_list(filtered, arena); return;
+    *out_result = vector_to_list(filtered, arena);
+}
+
+void eshkol_parallel_filter(
+    eshkol_tagged_value_t pred,
+    eshkol_tagged_value_t list,
+    arena_t* arena,
+    eshkol_tagged_value_t* out_result)
+{
+    ParallelRaise raised{};
+    parallel_filter_impl(pred, list, arena, out_result, &raised);
+    reraise_on_caller(raised);
 }
 
 // ============================================================================
@@ -876,13 +1007,15 @@ void eshkol_parallel_filter(
  * Each thunk is a zero-argument closure. They are submitted to the thread pool
  * for parallel execution. Results are collected in order and returned as a list.
  */
-void eshkol_parallel_execute(
+static void parallel_execute_impl(
     eshkol_tagged_value_t* thunks_ptr,
     int64_t num_thunks,
     arena_t* arena,
-    eshkol_tagged_value_t* out_result)
+    eshkol_tagged_value_t* out_result,
+    ParallelRaise* raised)
 {
     eshkol_debug("parallel-execute: num_thunks=%lld", (long long)num_thunks);
+    raised->pending = false;
 
     // See eshkol_parallel_map: race-free with-region for worker thunk bodies.
     ParallelArenaScope _parallel_scope;
@@ -925,6 +1058,8 @@ void eshkol_parallel_execute(
         }
     }
 
+    std::vector<ParallelBoundaryTask> boundaries(n);
+
     // For a single thunk, execute sequentially (no parallelism benefit)
     if (n == 1) {
         eshkol_debug("parallel-execute: sequential path for single thunk");
@@ -933,8 +1068,10 @@ void eshkol_parallel_execute(
         task.closure_type = static_cast<uint64_t>(thunks_ptr[0].type);
         task.closure_flags = static_cast<uint64_t>(thunks_ptr[0].flags);
         task.result_ptr = reinterpret_cast<uint64_t>(&results[0]);
-        g_parallel_execute_worker(&task);
-        *out_result = vector_to_list(results, arena); return;
+        run_in_boundary(g_parallel_execute_worker, &task, &boundaries[0].raised);
+        *raised = first_parallel_raise(boundaries);
+        if (!raised->pending) *out_result = vector_to_list(results, arena);
+        return;
     }
 
     // Get global thread pool
@@ -948,9 +1085,11 @@ void eshkol_parallel_execute(
             task.closure_type = static_cast<uint64_t>(thunks_ptr[i].type);
             task.closure_flags = static_cast<uint64_t>(thunks_ptr[i].flags);
             task.result_ptr = reinterpret_cast<uint64_t>(&results[i]);
-            g_parallel_execute_worker(&task);
+            run_in_boundary(g_parallel_execute_worker, &task, &boundaries[i].raised);
         }
-        *out_result = vector_to_list(results, arena); return;
+        *raised = first_parallel_raise(boundaries);
+        if (!raised->pending) *out_result = vector_to_list(results, arena);
+        return;
     }
 
     // Create task data and submit to thread pool
@@ -962,13 +1101,15 @@ void eshkol_parallel_execute(
         tasks[i].closure_type = static_cast<uint64_t>(thunks_ptr[i].type);
         tasks[i].closure_flags = static_cast<uint64_t>(thunks_ptr[i].flags);
         tasks[i].result_ptr = reinterpret_cast<uint64_t>(&results[i]);
+        boundaries[i] = ParallelBoundaryTask{g_parallel_execute_worker, &tasks[i], {}};
     }
 
     eshkol_debug("parallel-execute: submitting %zu thunks to thread pool", n);
     for (size_t i = 0; i < n; ++i) {
-        futures[i] = thread_pool_submit(pool, g_parallel_execute_worker, &tasks[i]);
+        futures[i] = thread_pool_submit(pool, parallel_boundary_worker, &boundaries[i]);
         if (!futures[i]) {
-            eshkol_error("parallel-execute: failed to submit thunk %zu to thread pool", i);
+            // Never drop a thunk: a refused submit runs on this thread.
+            parallel_boundary_worker(&boundaries[i]);
         }
     }
 
@@ -981,7 +1122,19 @@ void eshkol_parallel_execute(
     }
 
     eshkol_debug("parallel-execute: all %zu thunks completed, building result list", n);
-    *out_result = vector_to_list(results, arena);
+    *raised = first_parallel_raise(boundaries);
+    if (!raised->pending) *out_result = vector_to_list(results, arena);
+}
+
+void eshkol_parallel_execute(
+    eshkol_tagged_value_t* thunks_ptr,
+    int64_t num_thunks,
+    arena_t* arena,
+    eshkol_tagged_value_t* out_result)
+{
+    ParallelRaise raised{};
+    parallel_execute_impl(thunks_ptr, num_thunks, arena, out_result, &raised);
+    reraise_on_caller(raised);
 }
 
 // ============================================================================

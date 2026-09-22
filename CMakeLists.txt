@@ -11300,15 +11300,17 @@ endif()
 # clean run is not evidence. Sanitizer configurations run the same tests.
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-vm-standalone-test)
     set(_eshkol_vm_parallel_cases
-        "error_irritants_lifetime|error irritants lifetime PASS"
-        "parallel_ad_carrier_lifetime|parallel AD carrier lifetime PASS"
-        "parallel_callback_raise|parallel callback raise PASS")
+        "vm_parity/corpus/error_irritants_lifetime|error irritants lifetime PASS"
+        "vm_parity/corpus/parallel_ad_carrier_lifetime|parallel AD carrier lifetime PASS"
+        "vm_parity/corpus/parallel_callback_raise|parallel callback raise PASS"
+        "vm/parallel_worker_settle_regression|parallel worker settle PASS")
     set(_eshkol_vm_parallel_files "")
     foreach(_case IN LISTS _eshkol_vm_parallel_cases)
         string(REPLACE "|" ";" _parts "${_case}")
-        list(GET _parts 0 _name)
+        list(GET _parts 0 _path)
         list(GET _parts 1 _pass)
-        set(_file "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/${_name}.esk")
+        get_filename_component(_name "${_path}" NAME)
+        set(_file "${CMAKE_CURRENT_SOURCE_DIR}/tests/${_path}.esk")
         list(APPEND _eshkol_vm_parallel_files "'${_file}'")
         add_test(NAME vm_${_name}
             COMMAND $<TARGET_FILE:eshkol-vm-standalone-test> "${_file}")
@@ -11325,5 +11327,24 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-vm-standalone-test)
         ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
         TIMEOUT 600 LABELS "vm;parallel;regression"
         PASS_REGULAR_EXPRESSION "PASS: 50 VM parallel callback runs"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+# Native parallel callbacks raise into the caller (SW-201): JIT once, and an AOT
+# binary 50 times in a row, since the unwind boundary runs on pool threads.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run)
+    set(_eshkol_par_raise "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/parallel_callback_raise.esk")
+    add_test(NAME native_parallel_callback_raise_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> -r "${_eshkol_par_raise}")
+    add_test(NAME native_parallel_callback_raise_aot_repeat50
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/parallel_callback_raise_aot' '${_eshkol_par_raise}' -L'${CMAKE_CURRENT_BINARY_DIR}' || exit 1; i=0; while [ $i -lt 50 ]; do out=$('${CMAKE_CURRENT_BINARY_DIR}/parallel_callback_raise_aot' 2>/dev/null) || { echo \"FAIL: run $i exit\"; echo \"$out\"; exit 1; }; case \"$out\" in *'parallel callback raise PASS'*) ;; *) echo \"FAIL: run $i\"; echo \"$out\"; exit 1;; esac; i=$((i+1)); done; echo 'PASS: 50 native parallel callback runs'")
+    set_tests_properties(native_parallel_callback_raise_jit PROPERTIES
+        TIMEOUT 180 LABELS "parallel;regression"
+        PASS_REGULAR_EXPRESSION "parallel callback raise PASS"
+        FAIL_REGULAR_EXPRESSION "Unhandled exception|fatal signal")
+    set_tests_properties(native_parallel_callback_raise_aot_repeat50 PROPERTIES
+        TIMEOUT 600 LABELS "parallel;regression"
+        PASS_REGULAR_EXPRESSION "PASS: 50 native parallel callback runs"
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()

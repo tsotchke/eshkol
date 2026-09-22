@@ -440,13 +440,26 @@ There is no timeout on `future_get`. For timed waits, `future_wait` (line 760) a
 
 ### 11.5 Eshkol Runtime Errors
 
-Eshkol's runtime `raise` function (used for Scheme-level errors like division by zero, type mismatches, or bounds violations) calls `longjmp` or `exit` depending on context. If a parallel worker triggers such an error, the behavior depends on the error path:
+The exception-handler chain is thread-local, so a raise can only be handled on
+the thread that raised it. Every parallel primitive therefore runs each
+callback under an unwind boundary (`run_in_boundary` in
+`lib/backend/parallel_codegen.cpp`): a handler pushed on the thread that runs
+the callback, on a pool worker and on the calling thread alike. A raise the
+callback does not handle itself lands on that boundary with its dynamic-wind,
+region and AD state already unwound, and is recorded with its raised object.
 
-- `eshkol_error` (logging): Writes to stderr and returns. The worker continues; the task result is whatever was computed before the error.
-- `exit()` or `abort()`: Terminates the entire process, including all worker threads.
-- `longjmp` to an error handler: Undefined behavior if the jump target is on a different thread's stack. The parallel primitives do not install per-worker error handlers.
+After the join, the entry point returns from its implementation (so no C++
+frame is skipped by a `longjmp`) and re-raises the first recorded condition in
+element order on the calling thread, where the caller's own `guard` sees the
+original object. An asynchronous future records the condition in the same way
+and re-raises it from `force`, leaving the future unforced. A refused pool
+submission runs that element on the calling thread instead of dropping it.
 
-This means that Scheme-level errors within parallel-mapped closures that call `error` or `raise` may terminate the process rather than gracefully reporting per-task failures.
+The bytecode VM applies the same rule differently: an isolated worker VM never
+transfers control. A failed worker run is re-evaluated on the calling
+interpreter after the join (`vm_parmap_settle_failed` and friends in
+`lib/backend/vm_parallel.c`), which reproduces the callback's own condition in
+the caller's handler chain.
 
 ---
 
