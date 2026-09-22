@@ -97,10 +97,8 @@ esh_taylor_t* eshkol_taylor_alloc(arena_t* arena, uint32_t order_k, uint32_t fla
     if (!arena) return NULL;
 
     size_t ncoeff = (size_t)order_k + 1;
-    const size_t lanes = ESH_TAYLOR_HAS_TANGENT2(flags) ? 4u :
-                         ESH_TAYLOR_HAS_TANGENT(flags) ? 2u : 1u;
-    const size_t exact_lanes = (ESH_TAYLOR_TANGENT_IS_EXACT(flags) ? 2u : 0u) +
-                              (ESH_TAYLOR_TANGENT2_IS_EXACT(flags) ? 2u : 0u);
+    const size_t lanes = ESH_TAYLOR_HAS_TANGENT(flags) ? 2u : 1u;
+    const size_t exact_lanes = ESH_TAYLOR_TANGENT_IS_EXACT(flags) ? 2u : 0u;
     const size_t bytes_per_coefficient = lanes * sizeof(double) +
         exact_lanes * sizeof(eshkol_tagged_value_t);
     if (ncoeff == 0 || ncoeff > (SIZE_MAX - sizeof(esh_taylor_t)) /
@@ -112,8 +110,6 @@ esh_taylor_t* eshkol_taylor_alloc(arena_t* arena, uint32_t order_k, uint32_t fla
     size_t exact_value_size = ESH_TAYLOR_TANGENT_IS_EXACT(flags)
         ? ncoeff * sizeof(eshkol_tagged_value_t) : 0u;
     size_t tangent_exact_size = exact_value_size;
-    size_t tangent2_exact_size = ESH_TAYLOR_TANGENT2_IS_EXACT(flags)
-        ? 2u * ncoeff * sizeof(eshkol_tagged_value_t) : 0u;
     size_t data_size = sizeof(esh_taylor_t) + ncoeff * bytes_per_coefficient;
     if (!eshkol_object_payload_fits(data_size)) {
         eshkol_error("Taylor payload exceeds uint32_t header limit");
@@ -141,18 +137,15 @@ esh_taylor_t* eshkol_taylor_alloc(arena_t* arena, uint32_t order_k, uint32_t fla
     esh_taylor_t* t = (esh_taylor_t*)(mem + sizeof(eshkol_object_header_t));
     t->order_k = order_k;
     t->flags = flags;
-    t->tangent_epoch = 0;
-    t->tangent2_epoch = 0;
-    t->carry_epoch = 0;
+    t->reserved_epochs[0] = t->reserved_epochs[1] = t->reserved_epochs[2] = 0;
     t->reserved1 = 0;
     t->exact_c = exact_value_size
         ? (eshkol_tagged_value_t*)(void*)(t->c + nstore) : NULL;
     memset(t->c, 0, nstore * sizeof(double) + exact_value_size +
-                     tangent_exact_size + tangent2_exact_size);
+                     tangent_exact_size);
     if (t->exact_c) {
         eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
-        size_t exact_arrays = ESH_TAYLOR_TANGENT2_IS_EXACT(flags) ? 4u : 2u;
-        for (size_t i = 0; i < exact_arrays * ncoeff; ++i)
+        for (size_t i = 0; i < 2u * ncoeff; ++i)
             t->exact_c[i] = zero;
     }
     return t;
@@ -163,16 +156,6 @@ esh_taylor_t* eshkol_taylor_alloc(arena_t* arena, uint32_t order_k, uint32_t fla
 static inline double* taylor_tan(esh_taylor_t* t) {
     if (!t || !ESH_TAYLOR_HAS_TANGENT(t->flags)) return NULL;
     return t->c + ((size_t)t->order_k + 1);
-}
-
-static inline double* taylor_tan2(esh_taylor_t* t) {
-    if (!t || !ESH_TAYLOR_HAS_TANGENT2(t->flags)) return NULL;
-    return t->c + 2u * ((size_t)t->order_k + 1u);
-}
-
-static inline double* taylor_mix(esh_taylor_t* t) {
-    if (!t || !ESH_TAYLOR_HAS_TANGENT2(t->flags)) return NULL;
-    return t->c + 3u * ((size_t)t->order_k + 1u);
 }
 
 static inline eshkol_tagged_value_t* taylor_tan_exact(esh_taylor_t* t) {
@@ -187,18 +170,6 @@ static inline const eshkol_tagged_value_t* taylor_tan_exact_const(
     return taylor_tan_exact((esh_taylor_t*)(uintptr_t)t);
 }
 
-
-static inline eshkol_tagged_value_t* taylor_tan2_exact(esh_taylor_t* t) {
-    if (!t || !ESH_TAYLOR_HAS_TANGENT2(t->flags) ||
-        !ESH_TAYLOR_TANGENT2_IS_EXACT(t->flags) || !t->exact_c) return NULL;
-    return t->exact_c + 2u * ((size_t)t->order_k + 1u);
-}
-
-static inline eshkol_tagged_value_t* taylor_mix_exact(esh_taylor_t* t) {
-    if (!t || !ESH_TAYLOR_HAS_TANGENT2(t->flags) ||
-        !ESH_TAYLOR_TANGENT2_IS_EXACT(t->flags) || !t->exact_c) return NULL;
-    return t->exact_c + 3u * ((size_t)t->order_k + 1u);
-}
 
 /* ----------------------------------------------------------------------- */
 /* EXACT-COEFFICIENT tower allocation & scalar helpers (P6, ESH-0191)       */
@@ -243,9 +214,7 @@ esh_taylor_t* eshkol_taylor_alloc_exact(arena_t* arena, uint32_t order_k, uint32
     esh_taylor_t* t = (esh_taylor_t*)(mem + sizeof(eshkol_object_header_t));
     t->order_k = order_k;
     t->flags = ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_RATIONAL, epoch);
-    t->tangent_epoch = 0;
-    t->tangent2_epoch = 0;
-    t->carry_epoch = 0;
+    t->reserved_epochs[0] = t->reserved_epochs[1] = t->reserved_epochs[2] = 0;
     t->reserved1 = 0;
     t->exact_c = (eshkol_tagged_value_t*)(void*)t->c;
 
@@ -342,13 +311,6 @@ static double tagged_any_to_double(const eshkol_tagged_value_t* v) {
     return 0.0;
 }
 
-static inline double foreign_taylor_derivative(const esh_taylor_t* t,
-                                               uint32_t k) {
-    if (!t || k >= t->order_k) return 0.0;
-    return (double)(k + 1u) * (taylor_is_exact(t)
-        ? tagged_any_to_double(&taylor_exact_c_const(t)[k + 1u])
-        : t->c[k + 1u]);
-}
 
 /* Exact scalar binary dispatch (op: 0=add,1=sub,2=mul,3=div). Routes pure
  * integer add/sub/mul through the bignum substrate (arbitrary precision --
@@ -1305,59 +1267,6 @@ static void result_shape(const eshkol_tagged_value_t* l, const eshkol_tagged_val
  * its tangent series. */
 extern double eshkol_ad_seed_flag(void* node);
 
-/* ── ESH-0412: nesting through a CAPTURED carrier ────────────────────────────
- *
- * §5a lifts a foreign-epoch tower to its constant c[0]. That is right for the
- * VALUE series -- an outer level's perturbation is not this level's -- but it
- * also threw away the outer level's FIRST-ORDER dependence, and with it every
- * nesting in which the outer variable reaches the inner pass through a CAPTURED
- * variable rather than through the evaluation point:
- *
- *     (derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1)
- *
- * eshkol_ad_nested_seed only ever saw the inner POINT (1.0, an ordinary value),
- * so it reported "not nested"; `a` then met `b` inside the body as a foreign
- * tower, was lifted to the constant 2.0, and the outer pass read the inner
- * result as having no dependence at all -- a silent zero.
- *
- * The fix is the SAME discipline the point-nesting routes already use: one
- * value series plus one first-order companion. A foreign-epoch tower's c[1] IS
- * a live first-order dependence on the enclosing level, so it rides the
- * companion dimension instead of being dropped, and the tower remembers WHICH
- * level it is riding (carry_epoch) so the extraction can hand the answer back
- * as a tower of that level. Nothing here fires unless a foreign-epoch tower
- * actually appears in tower arithmetic, so a non-nested pass is unchanged.
- *
- * A foreign tower of order >= 2 with a non-zero coefficient above index 1
- * exceeds one first-order companion; that raises, exactly like the
- * both-passes-order->=2 point-nesting case, rather than answering a number. */
-void eshkol_ad_nested_capture_unsupported(void);
-static double nest_coeff(const esh_taylor_t* t, uint32_t i);   /* defined with the ESH-0402 routes */
-
-/* The first-order dependence a foreign-epoch tower brings to the active level,
- * or 0.0 when it is a genuine constant here. Raises when the foreign level
- * carries curvature the single companion cannot represent. */
-static double foreign_first_order(const esh_taylor_t* t) {
-    if (!t) return 0.0;
-    for (uint32_t i = 2; i <= t->order_k; i++) {
-        if (nest_coeff(t, i) != 0.0) { eshkol_ad_nested_capture_unsupported(); return 0.0; }
-    }
-    return (t->order_k >= 1) ? nest_coeff(t, 1) : 0.0;
-}
-
-/* The enclosing level whose perturbation this operand ties to the companion
- * dimension at `active_epoch`: the foreign epoch it is lifted from, or the one
- * it is already carrying. 0 = none. */
-static uint32_t operand_carry_epoch(const eshkol_tagged_value_t* tv, uint32_t active_epoch) {
-    esh_taylor_t* t = tagged_as_taylor(tv);
-    if (!t) return 0u;
-    uint32_t ep = ESH_TAYLOR_GET_EPOCH(t->flags);
-    if (ep == active_epoch) return t->carry_epoch;
-    if (ep == 0u) return 0u;                       /* an epoch-less constant lift */
-    if (ESH_TAYLOR_HAS_TANGENT(t->flags)) return t->carry_epoch;
-    return (foreign_first_order(t) != 0.0) ? ep : 0u;
-}
-
 /* Does this operand carry (or induce) a first-order seed tangent?
  *   - a tower with ESH_TAYLOR_TANGENT_FLAG            -> yes
  *   - a forward-mode DUAL number (outer gradient seed) -> yes (its e1 tangent)
@@ -1375,19 +1284,6 @@ static int operand_has_tangent(const eshkol_tagged_value_t* tv) {
         return hdr && hdr->subtype == CALLABLE_SUBTYPE_AD_NODE;
     }
     return 0;
-}
-
-/* A tower from another live perturbation epoch is not a scalar constant.  Its
- * coefficients are opaque to the current recurrence, but they still have to
- * survive the pass as an orthogonal coefficient payload.  The dual-tower
- * companion is the shared carrier for that payload (the same representation
- * used for reverse-seed tangents). */
-static int operand_has_foreign_tower(const eshkol_tagged_value_t* tv,
-                                     uint32_t active_epoch) {
-    esh_taylor_t* t = tagged_as_taylor(tv);
-    uint32_t tower_epoch = t ? ESH_TAYLOR_GET_EPOCH(t->flags) : 0u;
-    return t && tower_epoch != 0 && active_epoch != 0 &&
-           tower_epoch != active_epoch;
 }
 
 /* Materialise BOTH the value series (epoch-gated, exactly like normalise_operand)
@@ -1415,25 +1311,12 @@ static void normalise_operand_dual(const eshkol_tagged_value_t* tv, uint32_t act
              * epoch, so it always combines. */
             if (tt) memcpy(tbuf, tt, (size_t)m * sizeof(double));
         } else {
-            /* FOREIGN level (§5a). Its c[0] is a constant at this level (read
-             * through nest_coeff so an EXACT foreign tower is demoted, not
-             * mis-read). Its companion, when it has one, is the P5 seed
-             * dimension and combines unchanged (an epoch-0 AD-node lift is
-             * exactly this). Its c[1], when it has no companion, is a LIVE
-             * first-order dependence on an ENCLOSING tower pass -- dropping
-             * that is what made every capture-nested differentiation answer
-             * zero (ESH-0412), so it rides the same companion dimension. Both
-             * at once would need two companions; that raises rather than
-             * answering a number. The higher foreign coefficients are NOT
-             * copied into tbuf[k>0]: vbuf[k>0] is zero for a lifted constant,
-             * so its seed derivative is zero too. */
-            vbuf[0] = nest_coeff(t, 0);
-            if (tt) {
-                if (foreign_first_order(t) != 0.0) eshkol_ad_nested_capture_unsupported();
-                tbuf[0] = tt[0];
-            } else {
-                tbuf[0] = foreign_first_order(t);
-            }
+            /* Another level's tower never reaches this tier (ADR-0027: two
+             * levels take the level path); what remains here is the epoch-0
+             * lift of a reverse-tape AD node, a constant of this level whose
+             * companion is the reverse seed. */
+            vbuf[0] = tagged_scalar_value(tv);
+            if (tt) tbuf[0] = tt[0];
         }
         return;
     }
@@ -1464,10 +1347,8 @@ static int operand_has_exact_tangent(const eshkol_tagged_value_t* tv,
                                      uint32_t active_epoch) {
     esh_taylor_t* t = tagged_as_taylor(tv);
     if (!t) return 0;
-    if (ESH_TAYLOR_TANGENT_IS_EXACT(t->flags)) return 1;
-    return ESH_TAYLOR_GET_EPOCH(t->flags) != 0 && active_epoch != 0 &&
-           ESH_TAYLOR_GET_EPOCH(t->flags) != active_epoch &&
-           taylor_is_exact(t);
+    (void)active_epoch;
+    return ESH_TAYLOR_TANGENT_IS_EXACT(t->flags) ? 1 : 0;
 }
 
 /* Exact companion-side normalisation.  A foreign exact tower contributes its
@@ -1483,115 +1364,8 @@ static void normalise_tangent_exact(const eshkol_tagged_value_t* tv,
     if (t && ESH_TAYLOR_TANGENT_IS_EXACT(t->flags)) {
         const eshkol_tagged_value_t* tan = taylor_tan_exact_const(t);
         for (int i = 0; i < n && i <= (int)t->order_k; ++i) buf[i] = tan[i];
-    } else if (t && ESH_TAYLOR_GET_EPOCH(t->flags) != active_epoch &&
-               taylor_is_exact(t)) {
-        const eshkol_tagged_value_t* value = taylor_exact_c_const(t);
-        for (int i = 0; i < n && i < (int)t->order_k; ++i) {
-            eshkol_tagged_value_t factor = eshkol_make_int64(i + 1, true);
-            buf[i] = exact_mul(arena, value[i + 1], factor);
-        }
     }
-}
-
-#define ESH_TAYLOR_SEED_EPOCH 0xFFFFFFFFu
-
-static void add_epoch(uint32_t epoch, uint32_t epochs[2], int* count) {
-    if (!count || epoch == 0u) return;
-    for (int i = 0; i < *count; ++i)
-        if (epochs[i] == epoch) return;
-    if (*count < 2) epochs[(*count)++] = epoch;
-}
-
-static void collect_operand_epochs(const eshkol_tagged_value_t* tv,
-                                   uint32_t active_epoch,
-                                   uint32_t epochs[2], int* count) {
-    esh_taylor_t* t = tagged_as_taylor(tv);
-    if (t) {
-        uint32_t value_epoch = ESH_TAYLOR_GET_EPOCH(t->flags);
-        if (value_epoch && value_epoch != active_epoch)
-            add_epoch(value_epoch, epochs, count);
-        if (ESH_TAYLOR_HAS_TANGENT(t->flags))
-            add_epoch(t->tangent_epoch ? t->tangent_epoch
-                                       : ESH_TAYLOR_SEED_EPOCH,
-                      epochs, count);
-        if (ESH_TAYLOR_HAS_TANGENT2(t->flags))
-            add_epoch(t->tangent2_epoch ? t->tangent2_epoch
-                                        : ESH_TAYLOR_SEED_EPOCH,
-                      epochs, count);
-        return;
-    }
-    if (!tv) return;
-    uint8_t bt = (uint8_t)(tv->type & 0x0F);
-    if (bt == ESHKOL_VALUE_DUAL_NUMBER ||
-        (bt == ESHKOL_VALUE_CALLABLE && tv->data.ptr_val))
-        add_epoch(ESH_TAYLOR_SEED_EPOCH, epochs, count);
-}
-
-static int epoch_slot(uint32_t epoch, const uint32_t epochs[2]) {
-    if (epochs[0] == epoch) return 0;
-    if (epochs[1] == epoch) return 1;
-    return -1;
-}
-
-static void exact_zero_series(eshkol_tagged_value_t* out, int n) {
-    eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
-    for (int i = 0; i < n; ++i) out[i] = zero;
-}
-
-static int normalise_operand_hyper_exact(
-    const eshkol_tagged_value_t* tv, uint32_t active_epoch,
-    const uint32_t epochs[2], eshkol_tagged_value_t* value,
-    eshkol_tagged_value_t* d1, eshkol_tagged_value_t* d2,
-    eshkol_tagged_value_t* mixed, int n, arena_t* arena) {
-    exact_zero_series(value, n); exact_zero_series(d1, n);
-    exact_zero_series(d2, n); exact_zero_series(mixed, n);
-    esh_taylor_t* t = tagged_as_taylor(tv);
-    if (!t) {
-        if (!tagged_is_exact_number(tv)) return 0;
-        value[0] = *tv;
-        return 1;
-    }
-    if (!taylor_is_exact(t) && !t->exact_c) return 0;
-    uint32_t value_epoch = ESH_TAYLOR_GET_EPOCH(t->flags);
-    const eshkol_tagged_value_t* c = taylor_exact_c_const(t);
-    if (value_epoch == active_epoch) {
-        int m = (int)t->order_k + 1; if (m > n) m = n;
-        for (int i = 0; i < m; ++i) value[i] = c[i];
-        if (ESH_TAYLOR_TANGENT_IS_EXACT(t->flags)) {
-            int s = epoch_slot(t->tangent_epoch ? t->tangent_epoch
-                                                : ESH_TAYLOR_SEED_EPOCH,
-                               epochs);
-            const eshkol_tagged_value_t* src = taylor_tan_exact_const(t);
-            if (s >= 0 && src)
-                for (int i = 0; i < m; ++i) (s == 0 ? d1 : d2)[i] = src[i];
-        }
-        if (ESH_TAYLOR_TANGENT2_IS_EXACT(t->flags)) {
-            int s = epoch_slot(t->tangent2_epoch ? t->tangent2_epoch
-                                                 : ESH_TAYLOR_SEED_EPOCH,
-                               epochs);
-            eshkol_tagged_value_t* src2 = taylor_tan2_exact(t);
-            eshkol_tagged_value_t* srcm = taylor_mix_exact(t);
-            if (s >= 0 && src2)
-                for (int i = 0; i < m; ++i) (s == 0 ? d1 : d2)[i] = src2[i];
-            if (srcm) for (int i = 0; i < m; ++i) mixed[i] = srcm[i];
-        }
-        return 1;
-    }
-    value[0] = c[0];
-    int vs = epoch_slot(value_epoch, epochs);
-    if (vs >= 0 && t->order_k >= 1)
-        (vs == 0 ? d1 : d2)[0] = c[1];
-    if (ESH_TAYLOR_TANGENT_IS_EXACT(t->flags)) {
-        int ts = epoch_slot(t->tangent_epoch ? t->tangent_epoch
-                                             : ESH_TAYLOR_SEED_EPOCH,
-                            epochs);
-        const eshkol_tagged_value_t* tan = taylor_tan_exact_const(t);
-        if (ts >= 0 && tan) (ts == 0 ? d1 : d2)[0] = tan[0];
-        if (vs >= 0 && ts >= 0 && vs != ts && tan && t->order_k >= 1)
-            mixed[0] = tan[1];
-    }
-    (void)arena;
-    return 1;
+    (void)active_epoch; (void)arena;
 }
 
 static eshkol_tagged_value_t exact_series_op(arena_t* arena,
@@ -1677,107 +1451,6 @@ static int exact_tangent_binary(arena_t* arena,
     return 1;
 }
 
-static int exact_hyper_binary(arena_t* arena,
-                              const eshkol_tagged_value_t* left,
-                              const eshkol_tagged_value_t* right,
-                              int op, uint32_t order_k, uint32_t epoch,
-                              const uint32_t epochs[2], esh_taylor_t* out) {
-    const int n = (int)order_k + 1;
-    eshkol_tagged_value_t *u = alloc_exact_series(arena, n);
-    eshkol_tagged_value_t *u1 = alloc_exact_series(arena, n);
-    eshkol_tagged_value_t *u2 = alloc_exact_series(arena, n);
-    eshkol_tagged_value_t *u12 = alloc_exact_series(arena, n);
-    eshkol_tagged_value_t *w = alloc_exact_series(arena, n);
-    eshkol_tagged_value_t *w1 = alloc_exact_series(arena, n);
-    eshkol_tagged_value_t *w2 = alloc_exact_series(arena, n);
-    eshkol_tagged_value_t *w12 = alloc_exact_series(arena, n);
-    eshkol_tagged_value_t *q = alloc_exact_series(arena, n);
-    eshkol_tagged_value_t *q1 = alloc_exact_series(arena, n);
-    eshkol_tagged_value_t *q2 = alloc_exact_series(arena, n);
-    eshkol_tagged_value_t *q12 = alloc_exact_series(arena, n);
-    if (!u || !u1 || !u2 || !u12 || !w || !w1 || !w2 || !w12 ||
-        !q || !q1 || !q2 || !q12) return 0;
-    if (!normalise_operand_hyper_exact(left, epoch, epochs, u, u1, u2, u12,
-                                       n, arena) ||
-        !normalise_operand_hyper_exact(right, epoch, epochs, w, w1, w2, w12,
-                                       n, arena)) return 0;
-    if (op != ESH_TAYLOR_OP_add && op != ESH_TAYLOR_OP_sub &&
-        op != ESH_TAYLOR_OP_mul && op != ESH_TAYLOR_OP_div) return 0;
-    const eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
-    for (int k = 0; k < n; ++k) {
-        if (op == ESH_TAYLOR_OP_add || op == ESH_TAYLOR_OP_sub) {
-            int bop = op == ESH_TAYLOR_OP_add ? 0 : 1;
-            q[k] = exact_series_op(arena, u[k], w[k], bop);
-            q1[k] = exact_series_op(arena, u1[k], w1[k], bop);
-            q2[k] = exact_series_op(arena, u2[k], w2[k], bop);
-            q12[k] = exact_series_op(arena, u12[k], w12[k], bop);
-            continue;
-        }
-        if (op == ESH_TAYLOR_OP_mul) {
-            q[k] = q1[k] = q2[k] = q12[k] = zero;
-            for (int i = 0; i <= k; ++i) {
-                int j = k - i;
-#define HACC(dst, a, b) \
-                dst = exact_series_op(arena, dst, \
-                    exact_series_op(arena, a, b, 2), 0)
-                HACC(q[k], u[i], w[j]);
-                HACC(q1[k], u1[i], w[j]); HACC(q1[k], u[i], w1[j]);
-                HACC(q2[k], u2[i], w[j]); HACC(q2[k], u[i], w2[j]);
-                HACC(q12[k], u12[i], w[j]);
-                HACC(q12[k], u1[i], w2[j]);
-                HACC(q12[k], u2[i], w1[j]);
-                HACC(q12[k], u[i], w12[j]);
-#undef HACC
-            }
-            continue;
-        }
-
-        q[k] = u[k]; q1[k] = u1[k]; q2[k] = u2[k]; q12[k] = u12[k];
-        for (int i = 1; i <= k; ++i) {
-            int j = k - i;
-#define HSUB(dst, a, b) \
-            dst = exact_series_op(arena, dst, \
-                exact_series_op(arena, a, b, 2), 1)
-            HSUB(q[k], w[i], q[j]);
-            HSUB(q1[k], w1[i], q[j]); HSUB(q1[k], w[i], q1[j]);
-            HSUB(q2[k], w2[i], q[j]); HSUB(q2[k], w[i], q2[j]);
-            HSUB(q12[k], w12[i], q[j]);
-            HSUB(q12[k], w1[i], q2[j]);
-            HSUB(q12[k], w2[i], q1[j]);
-            HSUB(q12[k], w[i], q12[j]);
-#undef HSUB
-        }
-        q[k] = exact_series_op(arena, q[k], w[0], 3);
-        q1[k] = exact_series_op(arena,
-            exact_series_op(arena, q1[k],
-                exact_series_op(arena, w1[0], q[k], 2), 1), w[0], 3);
-        q2[k] = exact_series_op(arena,
-            exact_series_op(arena, q2[k],
-                exact_series_op(arena, w2[0], q[k], 2), 1), w[0], 3);
-        q12[k] = exact_series_op(arena, q12[k],
-            exact_series_op(arena, w12[0], q[k], 2), 1);
-        q12[k] = exact_series_op(arena, q12[k],
-            exact_series_op(arena, w1[0], q2[k], 2), 1);
-        q12[k] = exact_series_op(arena, q12[k],
-            exact_series_op(arena, w2[0], q1[k], 2), 1);
-        q12[k] = exact_series_op(arena, q12[k], w[0], 3);
-    }
-    eshkol_tagged_value_t* o = out->exact_c;
-    eshkol_tagged_value_t* o1 = taylor_tan_exact(out);
-    eshkol_tagged_value_t* o2 = taylor_tan2_exact(out);
-    eshkol_tagged_value_t* o12 = taylor_mix_exact(out);
-    if (!o || !o1 || !o2 || !o12) return 0;
-    double* d1 = taylor_tan(out); double* d2 = taylor_tan2(out);
-    double* d12 = taylor_mix(out);
-    for (int k = 0; k < n; ++k) {
-        o[k] = q[k]; o1[k] = q1[k]; o2[k] = q2[k]; o12[k] = q12[k];
-        out->c[k] = tagged_any_to_double(&q[k]);
-        d1[k] = tagged_any_to_double(&q1[k]);
-        d2[k] = tagged_any_to_double(&q2[k]);
-        d12[k] = tagged_any_to_double(&q12[k]);
-    }
-    return 1;
-}
 
 /* ----------------------------------------------------------------------- */
 /* tagged binary / unary dispatch (called from codegen)                     */
@@ -2429,52 +2102,12 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
     uint32_t order_k, epoch;
     result_shape(left, right, &order_k, &epoch);
     int n = (int)order_k + 1;
-    esh_taylor_t* left_t = tagged_as_taylor(left);
-    esh_taylor_t* right_t = tagged_as_taylor(right);
-
-    uint32_t foreign_epochs[2] = {0u, 0u};
-    int foreign_count = 0;
-    collect_operand_epochs(left, epoch, foreign_epochs, &foreign_count);
-    collect_operand_epochs(right, epoch, foreign_epochs, &foreign_count);
-    if (foreign_count >= 2) {
-        uint32_t out_flags = ESH_TAYLOR_MK_FLAGS(
-            ESH_TAYLOR_COEFF_RATIONAL, epoch) |
-            ESH_TAYLOR_TANGENT_FLAG | ESH_TAYLOR_TANGENT_EXACT_FLAG |
-            ESH_TAYLOR_TANGENT2_FLAG | ESH_TAYLOR_TANGENT2_EXACT_FLAG;
-        esh_taylor_t* out = eshkol_taylor_alloc(arena, order_k, out_flags);
-        if (!out || !exact_hyper_binary(arena, left, right, op, order_k,
-                                        epoch, foreign_epochs, out)) {
-            eshkol_error("Taylor hyperdual propagation requires exact +, -, *, or / operands");
-            eshkol_exception_t* exc = eshkol_make_exception(
-                ESHKOL_EXCEPTION_ERROR,
-                "unsupported inexact/non-rational Taylor hyperdual operation");
-            eshkol_raise(exc);
-            *result = eshkol_make_double(0.0);
-            return;
-        }
-        out->tangent_epoch = foreign_epochs[0] == ESH_TAYLOR_SEED_EPOCH
-            ? 0u : foreign_epochs[0];
-        out->tangent2_epoch = foreign_epochs[1] == ESH_TAYLOR_SEED_EPOCH
-            ? 0u : foreign_epochs[1];
-        *result = taylor_to_tagged(out);
-        return;
-    }
 
     /* P5 (ESH-0190): reverse-over-Taylor. If either operand carries a first-
      * order seed tangent (a tangent-tower, a forward jet, or a reverse-tape AD
      * node), propagate the seed derivative alongside the value series so the
      * outer gradient can read d(f^(k))/d(seed) at extraction. */
-    /* ESH-0412: a foreign-epoch tower captured into this level's arithmetic
-     * brings a first-order dependence on the ENCLOSING pass; it rides the same
-     * companion dimension, and the result remembers which level it is riding. */
-    uint32_t carry_l = operand_carry_epoch(left, epoch);
-    uint32_t carry_r = operand_carry_epoch(right, epoch);
-    if (carry_l && carry_r && carry_l != carry_r) eshkol_ad_nested_capture_unsupported();
-    uint32_t carry = carry_l ? carry_l : carry_r;
-
-    if (operand_has_tangent(left) || operand_has_tangent(right) || carry != 0u ||
-        operand_has_foreign_tower(left, epoch) ||
-        operand_has_foreign_tower(right, epoch)) {
+    if (operand_has_tangent(left) || operand_has_tangent(right)) {
         double uvb[ESH_TAYLOR_STACKN], utb[ESH_TAYLOR_STACKN];
         double wvb[ESH_TAYLOR_STACKN], wtb[ESH_TAYLOR_STACKN];
         double *uv=uvb,*ut=utb,*wv=wvb,*wt=wtb, *h1=NULL,*h2=NULL,*h3=NULL,*h4=NULL;
@@ -2502,12 +2135,6 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
             (exact_tangent ? ESH_TAYLOR_TANGENT_EXACT_FLAG : 0u);
         esh_taylor_t* out = eshkol_taylor_alloc(arena, order_k, out_flags);
         if (!out) { *result = eshkol_make_double(0.0); return; }
-        if (taylor_tan(left_t)) out->tangent_epoch = left_t->tangent_epoch;
-        if (!out->tangent_epoch && taylor_tan(right_t)) out->tangent_epoch = right_t->tangent_epoch;
-        if (!out->tangent_epoch && operand_has_foreign_tower(left, epoch) && !taylor_tan(left_t))
-            out->tangent_epoch = ESH_TAYLOR_GET_EPOCH(left_t->flags);
-        if (!out->tangent_epoch && operand_has_foreign_tower(right, epoch) && !taylor_tan(right_t))
-            out->tangent_epoch = ESH_TAYLOR_GET_EPOCH(right_t->flags);
         out->flags |= taylor_dual_primal_sign(arena, left, right, op);
         double* ov = out->c;
         double* ot = taylor_tan(out);
@@ -2545,7 +2172,6 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
                                                    order_k, epoch, out)) {
             out->flags &= ~ESH_TAYLOR_TANGENT_EXACT_FLAG;
         }
-        out->carry_epoch = carry;   /* ESH-0412 */
         *result = taylor_to_tagged(out);
         return;
     }
@@ -2691,10 +2317,6 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
             (exact_linear ? ESH_TAYLOR_TANGENT_EXACT_FLAG : 0u);
         esh_taylor_t* out = eshkol_taylor_alloc(arena, order_k, unary_flags);
         if (!out) { *result = eshkol_make_double(0.0); return; }
-        out->tangent_epoch = t->tangent_epoch;
-        if (!out->tangent_epoch && ESH_TAYLOR_GET_EPOCH(t->flags) != epoch)
-            out->tangent_epoch = ESH_TAYLOR_GET_EPOCH(t->flags);
-        out->carry_epoch = operand_carry_epoch(in, epoch);   /* ESH-0412 */
         double* ov = out->c;
         double* ot = taylor_tan(out);
         switch (op) {
@@ -3099,81 +2721,22 @@ void eshkol_taylor_lift_ad_node(arena_t* arena, void* node, int32_t order_k,
 /* ----------------------------------------------------------------------- */
 /* ESH-0402: nested-AD carrier composition (SW-03 / SW-04)                  */
 /* ----------------------------------------------------------------------- */
-/*
- * Eshkol carries forward-mode derivatives in TWO representations: the 8-jet
- * (three independent FIRST-order perturbations e1/e2/ep, used by `derivative`
- * / `gradient` / `hessian`) and the heap Taylor tower (ONE perturbation to
- * arbitrary order, used by `derivative-n` / `taylor`). Until this change the
- * boundary between them was lossy in BOTH directions:
+/* Nested passes (ADR-0027)                                                 */
+/* ----------------------------------------------------------------------- */
+
+/**
+ * @brief Guard at a jet pass's extraction: a Taylor carrier never reaches it.
  *
- *   - eshkol_taylor_seed_tagged() read only the SCALAR value of its point
- *     (`tagged_scalar_value`, i.e. c[0] of an outer tower or the primal of an
- *     outer jet) and seeded a tangent-free tower, so an enclosing pass's
- *     perturbation was dropped at the seed;
- *   - the tower's extraction returned a bare double, which an enclosing pass
- *     then read as "no dependence".
- *
- * The result was a SILENT ZERO for every composition involving `derivative-n`
- * or `taylor` (ledger SW-03/SW-04):
- *
- *     (derivative   (lambda (y) (derivative-n f y 1)) 2.0)     => 0
- *     (derivative-n (lambda (y) (derivative   f y))   2.0 1)   => 0
- *     (derivative-n (lambda (y) (derivative-n f y 1)) 2.0 1)   => 0
- *     (derivative-n (derivative f) 2.0 1)                      => 0
- *
- * while the jet-over-jet spellings of the same mathematics answered correctly.
- *
- * The fix does NOT need a second full series (the deferred "jets of jets"
- * work). A tower already carries a parallel FIRST-ORDER companion series --
- * the P5 seed tangent (ESH_TAYLOR_TANGENT_FLAG) -- and every recurrence in
- * this file already propagates it (see eshkol_taylor_binary_tagged's dual
- * tier and the ddual_* kernels). A first-order companion is exactly what one
- * extra `derivative`-class pass needs. So the two carriers compose whenever
- * ONE of the two passes is first order, by putting that pass on the tangent
- * dimension:
- *
- *   RIDE      the INNER pass is first order: it rides the OUTER tower's
- *             tangent. The seed keeps the outer's value series and epoch
- *             untouched and sets tangent = {1,0,...}; after the body runs, the
- *             tangent series IS d(body)/d(inner argument) as a series in the
- *             outer perturbation, so extraction just promotes the tangent
- *             series to the value series of a tower at the OUTER epoch.
- *             The outer pass then reads it exactly as it reads any tower.
- *             Outer order is unrestricted.
- *
- *   CARRY     the OUTER pass is first order: it rides the INNER tower's
- *             tangent. The seed builds the ordinary fresh-epoch tower
- *             {x0,1,0,...} and additionally sets tangent[0] = the outer's
- *             first-order coefficient, so the tower's tangent series tracks
- *             d(c[k])/d(outer perturbation). Extraction reports
- *             d(f^(k))/d(outer) = k!*tangent[k] back to the outer carrier.
- *             Inner order is unrestricted.
- *
- * When BOTH passes are order >= 2 the composition genuinely exceeds what one
- * value series plus one first-order companion can represent; that case
- * returns ESH_AD_NEST_UNSUPPORTED and the caller raises a LOUD error rather
- * than answering zero.
- *
- * The route is returned PACKED so a single i32 threads from the seed site to
- * the extraction site through codegen: low byte = route, bits 8..23 = the
- * outer tower's epoch (needed only by CARRY_TWR, which must hand its result
- * back in the outer epoch).
+ * A pass nested inside a tower or level runs as a level itself and is
+ * extracted by eshkol_ad_nested_extract, so a carrier arriving at an un-nested
+ * 8-jet extraction escaped the pass that owns it (a carrier stored and read
+ * back outside its pass). Reading it as a constant would answer 0; raise.
  */
-
-
-
-/** @brief Read coefficient `i` of a tower as a double, whatever its coefficient type. */
-static double nest_coeff(const esh_taylor_t* t, uint32_t i) {
-    if (i > t->order_k) return 0.0;
-    if (taylor_is_exact(t)) return tagged_any_to_double(&taylor_exact_c_const(t)[i]);
-    return t->c[i];
+void eshkol_ad_jet_result_check(const eshkol_tagged_value_t* result) {
+    if (!result || !tagged_as_taylor(result)) return;
+    eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+        "derivative: a Taylor carrier escaped the differentiation pass that owns it");
 }
-
-static void taylor_project_epoch(arena_t* arena,
-                                 const eshkol_tagged_value_t* result,
-                                 uint32_t selected_epoch, uint32_t order_k,
-                                 int coefficient,
-                                 eshkol_tagged_value_t* out);
 
 /**
  * @brief Decide whether a differentiation pass runs as a LEVEL (ADR-0027) and,
@@ -3311,120 +2874,9 @@ void eshkol_ad_nested_extract(arena_t* arena, const eshkol_tagged_value_t* resul
     *out = acc;
 }
 
-/**
- * @brief Restate this tower pass's k-th derivative in the ENCLOSING TOWER's
- *        carrier, when the body captured an enclosing tower level (ESH-0412).
- *
- * The companion series of `result` holds d(c[j])/d(the enclosing level's
- * perturbation), and `result->carry_epoch` names that level. The enclosing pass
- * reads an ordinary same-epoch tower, so hand it exactly that: the order-1
- * tower {f^(k), d f^(k)/d(outer)} tagged with the outer epoch. Returning it as
- * a bare double (or as a jet, which is what an enclosing 8-jet wants) is what
- * made the enclosing pass read "no dependence" and answer zero.
- *
- * @return 1 when `out` was written; 0 when there is no enclosing TOWER level and
- *         the caller should keep its own (jet / reverse-tape) extraction.
- */
-/* Defined below; the exact restatement in eshkol_ad_tower_carry_result needs
- * them here. */
+/* Defined below. */
 void eshkol_taylor_extract_tagged(arena_t* arena, const eshkol_tagged_value_t* tv,
                                   uint32_t n, eshkol_tagged_value_t* out);
-void eshkol_taylor_extract_tangent_tagged(arena_t* arena,
-                                          const eshkol_tagged_value_t* tv,
-                                          uint32_t n,
-                                          eshkol_tagged_value_t* out);
-
-int32_t eshkol_ad_tower_carry_result(arena_t* arena, const eshkol_tagged_value_t* result,
-                                     int32_t order_k, eshkol_tagged_value_t* out) {
-    if (!arena) arena = get_global_arena();
-    if (!out || !result) return 0;
-    const esh_taylor_t* r = tagged_as_taylor(result);
-    if (!r || !ESH_TAYLOR_HAS_TANGENT(r->flags) || r->carry_epoch == 0u) return 0;
-    if (order_k < 0) order_k = 0;
-    /* P6 (ESH-0191) x ESH-0412: when BOTH the selected derivative and the
-     * companion it rides are exact, restate the carry EXACTLY -- the same rule
-     * taylor_project_epoch() uses for the point-nested route. Restating a
-     * capture-nested pass in F64 unconditionally would spend the exactness
-     * the exact-coefficient tier just earned, and `exact?` on
-     * `(derivative (lambda (y) (derivative-n (lambda (x) (abs (+ x y))) 0 0)) 0)`
-     * would answer #f for an answer that is exactly 0. */
-    eshkol_tagged_value_t ev, edv;
-    eshkol_taylor_extract_tagged(arena, result, (uint32_t)order_k, &ev);
-    eshkol_taylor_extract_tangent_tagged(arena, result, (uint32_t)order_k, &edv);
-    if (tagged_is_exact_number(&ev) && tagged_is_exact_number(&edv)) {
-        esh_taylor_t* eo = eshkol_taylor_alloc_exact(arena, 1u, r->carry_epoch);
-        if (eo) {
-            eshkol_tagged_value_t* c = taylor_exact_c(eo);
-            c[0] = ev;
-            c[1] = edv;
-            *out = taylor_to_tagged(eo);
-            return 1;
-        }
-    }
-    double v  = tagged_any_to_double(&ev);
-    double dv = tagged_any_to_double(&edv);
-    esh_taylor_t* o = eshkol_taylor_alloc(arena, 1u,
-        ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, r->carry_epoch));
-    if (!o) { *out = eshkol_make_double(v); return 1; }
-    o->c[0] = v;
-    o->c[1] = dv;
-    *out = taylor_to_tagged(o);
-    return 1;
-}
-
-/**
- * @brief Extraction for an 8-jet pass whose body returned a TOWER (ESH-0412).
- *
- * A `derivative` nested inside a `derivative-n` / `taylor` sees its own
- * perturbation land on the enclosing tower's companion dimension, so its body
- * comes back as a tower carrying a tangent rather than as a jet. The jet
- * extraction read that tower as a scalar and reported no dependence -- a silent
- * zero. The derivative w.r.t. THIS pass's argument is the companion series, so
- * promote it to a value series of the tower's own epoch, exactly as the
- * point-nested RIDE route does; with no enclosing tower level (epoch 0) the
- * companion is a plain first-order number and the answer is a scalar.
- *
- * @return 1 when `out` was written; 0 when the result is not a tangent-carrying
- *         tower and the caller's ordinary jet extraction applies unchanged.
- */
-int32_t eshkol_ad_jet_extract_tower(arena_t* arena, const eshkol_tagged_value_t* result,
-                                    eshkol_tagged_value_t* out) {
-    if (!arena) arena = get_global_arena();
-    if (!out || !result) return 0;
-    const esh_taylor_t* r = tagged_as_taylor(result);
-    if (!r || !ESH_TAYLOR_HAS_TANGENT(r->flags)) return 0;
-    const double* rt = (const double*)(r->c + ((size_t)r->order_k + 1));
-    uint32_t ep = ESH_TAYLOR_GET_EPOCH(r->flags);
-    if (ep == 0u) { *out = eshkol_make_double(rt[0]); return 1; }
-    esh_taylor_t* o = eshkol_taylor_alloc(arena, r->order_k,
-        ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, ep));
-    if (!o) { *out = eshkol_make_double(rt[0]); return 1; }
-    memcpy(o->c, rt, ((size_t)r->order_k + 1) * sizeof(double));
-    o->carry_epoch = r->carry_epoch;
-    *out = taylor_to_tagged(o);
-    return 1;
-}
-
-/**
- * @brief Report a capture-nested differentiation the single first-order
- *        companion cannot represent (ESH-0412).
- *
- * Raising is deliberate and matches eshkol_ad_nested_unsupported: the answer
- * this replaces was a silent zero (or worse, a plausible wrong number).
- */
-void eshkol_ad_nested_capture_unsupported(void) {
-    eshkol_error(
-        "unsupported nested differentiation: an enclosing differentiation reaches "
-        "this pass through a CAPTURED variable and carries second- or higher-order "
-        "dependence (or two different enclosing levels do). Eshkol's forward "
-        "carriers compose when the captured enclosing level is first order; make "
-        "the outer pass a first-order `derivative`, or compute the higher-order "
-        "term with a single `(derivative-n f x k)`.");
-    eshkol_exception_t* exc = eshkol_make_exception(
-        ESHKOL_EXCEPTION_ERROR,
-        "unsupported nested differentiation through a captured carrier");
-    eshkol_raise(exc);
-}
 
 /**
  * @brief Report a nested differentiation the two AD carriers cannot represent.
@@ -3521,230 +2973,38 @@ void eshkol_taylor_extract_tagged(arena_t* arena, const eshkol_tagged_value_t* t
     *out = eshkol_make_double(factorial_d(n) * t->c[n]);
 }
 
-/* Project exactly one perturbation epoch and preserve every foreign epoch as
- * an attached carrier. Value coefficients and the orthogonal tangent have
- * independent epoch tags; this is the only extraction routine allowed to
- * decide which half belongs to the current pass. */
-static void taylor_project_epoch(arena_t* arena,
-                                 const eshkol_tagged_value_t* result,
-                                 uint32_t selected_epoch, uint32_t order_k,
-                                 int coefficient,
-                                 eshkol_tagged_value_t* out) {
-    if (!arena) arena = get_global_arena();
-    if (!out) return;
-    esh_taylor_t* t = tagged_as_taylor(result);
-    if (!t) {
-        *out = (result && order_k == 0) ? *result : eshkol_make_double(0.0);
-        return;
-    }
-
-    const uint32_t value_epoch = ESH_TAYLOR_GET_EPOCH(t->flags);
-    const uint32_t tangent_epoch = t->tangent_epoch;
-    const int tangent_selected = ESH_TAYLOR_HAS_TANGENT(t->flags) &&
-        selected_epoch == tangent_epoch &&
-        selected_epoch != value_epoch;
-
-    if (tangent_selected) {
-        /* Order zero is the identity projection: discard only this pass's
-         * seed and return the foreign value series unchanged. */
-        if (order_k == 0) {
-            int exact = taylor_is_exact(t) || t->exact_c;
-            esh_taylor_t* projected = exact
-                ? eshkol_taylor_alloc_exact(arena, t->order_k, value_epoch)
-                : eshkol_taylor_alloc(arena, t->order_k,
-                    ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, value_epoch));
-            if (!projected) { *out = eshkol_make_double(0.0); return; }
-            if (exact) {
-                eshkol_tagged_value_t* dst = taylor_exact_c(projected);
-                const eshkol_tagged_value_t* src = taylor_exact_c_const(t);
-                for (uint32_t i = 0; i <= t->order_k; ++i) dst[i] = src[i];
-            } else {
-                memcpy(projected->c, t->c,
-                       ((size_t)t->order_k + 1u) * sizeof(double));
-            }
-            *out = taylor_to_tagged(projected);
-            return;
-        }
-        if (order_k == 1) {
-            int exact = ESH_TAYLOR_TANGENT_IS_EXACT(t->flags);
-            esh_taylor_t* projected = exact
-                ? eshkol_taylor_alloc_exact(arena, t->order_k, value_epoch)
-                : eshkol_taylor_alloc(arena, t->order_k,
-                    ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, value_epoch));
-            if (!projected) { *out = eshkol_make_double(0.0); return; }
-            if (exact) {
-                eshkol_tagged_value_t* dst = taylor_exact_c(projected);
-                const eshkol_tagged_value_t* src = taylor_tan_exact_const(t);
-                for (uint32_t i = 0; i <= t->order_k; ++i) dst[i] = src[i];
-            } else {
-                memcpy(projected->c, taylor_tan(t),
-                       ((size_t)t->order_k + 1u) * sizeof(double));
-            }
-            *out = taylor_to_tagged(projected);
-            return;
-        }
-        *out = ESH_TAYLOR_TANGENT_IS_EXACT(t->flags)
-            ? eshkol_make_int64(0, true) : eshkol_make_double(0.0);
-        return;
-    }
-
-    if (selected_epoch != value_epoch) {
-        *out = order_k == 0 ? *result : eshkol_make_double(0.0);
-        return;
-    }
-
-    eshkol_tagged_value_t value;
-    if (coefficient) {
-        value = order_k <= t->order_k
-            ? ((taylor_is_exact(t) || t->exact_c)
-                ? taylor_exact_c_const(t)[order_k]
-                : eshkol_make_double(t->c[order_k]))
-            : ((taylor_is_exact(t) || t->exact_c)
-                ? eshkol_make_int64(0, true) : eshkol_make_double(0.0));
-    } else {
-        eshkol_taylor_extract_tagged(arena, result, order_k, &value);
-    }
-    if (!ESH_TAYLOR_HAS_TANGENT(t->flags) || tangent_epoch == selected_epoch) {
-        *out = value;
-        return;
-    }
-
-    if (ESH_TAYLOR_HAS_TANGENT2(t->flags) && selected_epoch == value_epoch) {
-        eshkol_tagged_value_t factor = eshkol_make_int64(1, true);
-        if (!coefficient)
-            for (uint32_t i = 2; i <= order_k; ++i)
-                factor = exact_mul(arena, factor,
-                                   eshkol_make_int64((int64_t)i, true));
-        const eshkol_tagged_value_t* e1 = taylor_tan_exact_const(t);
-        eshkol_tagged_value_t* e2 = taylor_tan2_exact(t);
-        eshkol_tagged_value_t* e12 = taylor_mix_exact(t);
-        if (e1 && e2 && e12 && order_k <= t->order_k) {
-            esh_taylor_t* projected = eshkol_taylor_alloc(
-                arena, 1u,
-                ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_RATIONAL,
-                                    t->tangent_epoch) |
-                ESH_TAYLOR_TANGENT_FLAG |
-                ESH_TAYLOR_TANGENT_EXACT_FLAG);
-            if (!projected) { *out = eshkol_make_double(0.0); return; }
-            projected->tangent_epoch = t->tangent2_epoch;
-            projected->exact_c[0] = value;
-            projected->exact_c[1] = exact_mul(arena, factor, e1[order_k]);
-            eshkol_tagged_value_t* pt = taylor_tan_exact(projected);
-            pt[0] = exact_mul(arena, factor, e2[order_k]);
-            pt[1] = exact_mul(arena, factor, e12[order_k]);
-            projected->c[0] = tagged_any_to_double(&projected->exact_c[0]);
-            projected->c[1] = tagged_any_to_double(&projected->exact_c[1]);
-            taylor_tan(projected)[0] = tagged_any_to_double(&pt[0]);
-            taylor_tan(projected)[1] = tagged_any_to_double(&pt[1]);
-            *out = taylor_to_tagged(projected);
-            return;
-        }
-    }
-
-    eshkol_tagged_value_t tangent;
-    if (coefficient) {
-        const eshkol_tagged_value_t* exact_tangent =
-            taylor_tan_exact_const(t);
-        tangent = order_k <= t->order_k
-            ? (exact_tangent ? exact_tangent[order_k]
-                             : eshkol_make_double(taylor_tan(t)[order_k]))
-            : (exact_tangent ? eshkol_make_int64(0, true)
-                             : eshkol_make_double(0.0));
-    } else {
-        eshkol_taylor_extract_tangent_tagged(arena, result, order_k, &tangent);
-    }
-    if (tangent_epoch == 0u) {
-        double* dual = (double*)arena_allocate_aligned(
-            arena, ESHKOL_DUAL_HEAP_PAYLOAD_SIZE, 16u);
-        if (!dual) { *out = eshkol_make_double(0.0); return; }
-        memset(dual, 0, ESHKOL_DUAL_HEAP_PAYLOAD_SIZE);
-        dual[0] = tagged_any_to_double(&value);
-        dual[1] = tagged_any_to_double(&tangent);
-        out->type = ESHKOL_VALUE_DUAL_NUMBER;
-        out->flags = 0;
-        out->reserved = 0;
-        out->data.ptr_val = (uint64_t)(uintptr_t)dual;
-        return;
-    }
-    if (tagged_is_exact_number(&value) && tagged_is_exact_number(&tangent)) {
-        esh_taylor_t* projected = eshkol_taylor_alloc_exact(arena, 1u,
-                                                             tangent_epoch);
-        if (projected) {
-            eshkol_tagged_value_t* c = taylor_exact_c(projected);
-            c[0] = value;
-            c[1] = tangent;
-            *out = taylor_to_tagged(projected);
-            return;
-        }
-    }
-    esh_taylor_t* projected = eshkol_taylor_alloc(arena, 1u,
-        ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, tangent_epoch));
-    if (!projected) { *out = eshkol_make_double(0.0); return; }
-    projected->c[0] = tagged_any_to_double(&value);
-    projected->c[1] = tagged_any_to_double(&tangent);
-    *out = taylor_to_tagged(projected);
-}
-
-/* Project the selected inner derivative into the enclosing first-order Taylor
- * carrier. The c[1] slot is the attached outer perturbation, so the inner
- * epoch's coefficients are never mistaken for the outer seed. */
-void eshkol_taylor_project_tangent_outer(
-    arena_t* arena, const eshkol_tagged_value_t* tv, uint32_t n,
-    eshkol_tagged_value_t* out) {
-    esh_taylor_t* t = tagged_as_taylor(tv);
-    uint32_t selected_epoch = t ? ESH_TAYLOR_GET_EPOCH(t->flags) : 0u;
-    taylor_project_epoch(arena, tv, selected_epoch, n, 0, out);
-}
-
-int32_t eshkol_taylor_project_forward_tangent(
-    arena_t* arena, const eshkol_tagged_value_t* tv,
-    eshkol_tagged_value_t* out) {
-    esh_taylor_t* t = tagged_as_taylor(tv);
-    if (!t) return 0;
-    uint32_t selected_epoch = t->tangent_epoch;
-    taylor_project_epoch(arena, tv, selected_epoch, 1u, 0, out);
-    return 1;
-}
-
-int32_t eshkol_taylor_epoch_tagged(const eshkol_tagged_value_t* tv) {
-    esh_taylor_t* t = tagged_as_taylor(tv);
-    return t ? (int32_t)ESH_TAYLOR_GET_EPOCH(t->flags) : 0;
-}
-
 extern void* eshkol_ad_mixed_record_tagged(
     void* arena, void* tape, const eshkol_tagged_value_t* value,
     const eshkol_tagged_value_t* dseed);
 
-void eshkol_taylor_project_selected_epoch(
-    arena_t* arena, const eshkol_tagged_value_t* tv, uint32_t selected_epoch,
-    uint32_t order, void* tape, eshkol_tagged_value_t* out) {
-    if (!arena) arena = get_global_arena();
+/* Coefficient k of a tower that carries the reverse-seed companion (P5),
+ * restated as a jet {c[k], tangent[k]} so the enclosing forward gradient
+ * reads d(c[k])/d(seed) from the jet's first slot. A tower without the
+ * companion answers the plain coefficient. */
+static void taylor_coefficient_with_seed(arena_t* arena,
+                                         const eshkol_tagged_value_t* tv,
+                                         uint32_t k,
+                                         eshkol_tagged_value_t* out) {
     esh_taylor_t* t = tagged_as_taylor(tv);
-    if (t && tape && selected_epoch == ESH_TAYLOR_GET_EPOCH(t->flags) &&
-        ESH_TAYLOR_HAS_TANGENT(t->flags) && t->tangent_epoch == 0u &&
-        order <= t->order_k) {
-        eshkol_tagged_value_t value;
-        eshkol_tagged_value_t tangent;
-        eshkol_taylor_extract_tagged(arena, tv, order, &value);
-        eshkol_taylor_extract_tangent_tagged(arena, tv, order, &tangent);
-        void* node = eshkol_ad_mixed_record_tagged(
-            arena, tape, &value, &tangent);
-        if (node) {
-            memset(out, 0, sizeof(*out));
-            out->type = ESHKOL_VALUE_CALLABLE;
-            out->data.ptr_val = (uint64_t)(uintptr_t)node;
-            return;
-        }
-    }
-    taylor_project_epoch(arena, tv, selected_epoch, order, 0, out);
-}
-
-static void taylor_project_coefficient(
-    arena_t* arena, const eshkol_tagged_value_t* tv, uint32_t n,
-    eshkol_tagged_value_t* out) {
-    esh_taylor_t* t = tagged_as_taylor(tv);
-    uint32_t selected_epoch = t ? ESH_TAYLOR_GET_EPOCH(t->flags) : 0u;
-    taylor_project_epoch(arena, tv, selected_epoch, n, 1, out);
+    if (!t) { *out = k == 0 ? *tv : eshkol_make_double(0.0); return; }
+    const int exact = taylor_is_exact(t) || t->exact_c;
+    eshkol_tagged_value_t value = k <= t->order_k
+        ? (exact ? taylor_exact_c_const(t)[k] : eshkol_make_double(t->c[k]))
+        : (exact ? eshkol_make_int64(0, true) : eshkol_make_double(0.0));
+    if (!ESH_TAYLOR_HAS_TANGENT(t->flags)) { *out = value; return; }
+    const eshkol_tagged_value_t* exact_tangent = taylor_tan_exact_const(t);
+    eshkol_tagged_value_t tangent = k <= t->order_k
+        ? (exact_tangent ? exact_tangent[k] : eshkol_make_double(taylor_tan(t)[k]))
+        : eshkol_make_double(0.0);
+    double* dual = (double*)arena_allocate_aligned(
+        arena, ESHKOL_DUAL_HEAP_PAYLOAD_SIZE, 16u);
+    if (!dual) { *out = eshkol_make_double(0.0); return; }
+    memset(dual, 0, ESHKOL_DUAL_HEAP_PAYLOAD_SIZE);
+    dual[0] = tagged_any_to_double(&value);
+    dual[1] = tagged_any_to_double(&tangent);
+    memset(out, 0, sizeof(*out));
+    out->type = ESHKOL_VALUE_DUAL_NUMBER;
+    out->data.ptr_val = (uint64_t)(uintptr_t)dual;
 }
 
 /* Differentiate a tower: (f')_k = (k+1) * c_{k+1}. Preserves order/epoch;
@@ -3802,55 +3062,39 @@ void eshkol_taylor_coeffs_list(arena_t* arena, const eshkol_tagged_value_t* tv,
 
     esh_taylor_t* t = tagged_as_taylor(tv);
     int exact = t && taylor_is_exact(t);
-    /* ESH-0412: when the tower carries a companion series, this `taylor` pass is
-     * nested inside another differentiation, and EVERY coefficient depends on
-     * the enclosing level. Handing back bare doubles is what made
-     * `(derivative (lambda (a) (list-ref (taylor (lambda (b) (* a b)) 1.0 1) 1)) 2.0)`
-     * answer zero. Each coefficient is restated in the enclosing pass's carrier:
-     * an order-1 tower of the enclosing epoch when one is named, else an
-     * order-0 tower carrying the companion, which the enclosing 8-jet's
-     * extraction (eshkol_ad_jet_extract_tower) reads. */
-    const double* ctan = (t && ESH_TAYLOR_HAS_TANGENT(t->flags))
-                       ? (const double*)(t->c + ((size_t)t->order_k + 1)) : NULL;
     eshkol_tagged_value_t acc = nil;
     /* cons from the tail so element order is c[0], c[1], ..., c[K]. */
     for (int k = (int)order_k; k >= 0; k--) {
         eshkol_tagged_value_t cv;
-        if (t && ESH_TAYLOR_HAS_TANGENT(t->flags) &&
+        if (t && taylor_is_level(t)) {
+            /* ADR-0027: a level's coefficients are numbers of the enclosing
+             * levels, returned as they are. */
+            cv = (uint32_t)k <= t->order_k ? level_c_const(t)[k] : eshkol_make_int64(0, true);
+        } else if (t && ESH_TAYLOR_HAS_TANGENT(t->flags) &&
             (uint32_t)k <= t->order_k) {
-            if (t->tangent_epoch == 0u && tape) {
+            /* P5: the reverse-seed companion. With a live tape each
+             * coefficient is recorded as an exact local linearisation;
+             * without one it is restated as a jet for the forward gradient. */
+            void* node = NULL;
+            if (tape) {
                 eshkol_tagged_value_t value = exact
                     ? taylor_exact_c_const(t)[k] : eshkol_make_double(t->c[k]);
                 const eshkol_tagged_value_t* exact_tangent =
                     taylor_tan_exact_const(t);
                 eshkol_tagged_value_t tangent = exact_tangent
                     ? exact_tangent[k] : eshkol_make_double(taylor_tan(t)[k]);
-                void* node = eshkol_ad_mixed_record_tagged(
-                    arena, tape, &value, &tangent);
-                if (node) {
-                    memset(&cv, 0, sizeof(cv));
-                    cv.type = ESHKOL_VALUE_CALLABLE;
-                    cv.data.ptr_val = (uint64_t)(uintptr_t)node;
-                } else {
-                    taylor_project_coefficient(arena, tv, (uint32_t)k, &cv);
-                }
+                node = eshkol_ad_mixed_record_tagged(arena, tape, &value, &tangent);
+            }
+            if (node) {
+                memset(&cv, 0, sizeof(cv));
+                cv.type = ESHKOL_VALUE_CALLABLE;
+                cv.data.ptr_val = (uint64_t)(uintptr_t)node;
             } else {
-                taylor_project_coefficient(arena, tv, (uint32_t)k, &cv);
+                taylor_coefficient_with_seed(arena, tv, (uint32_t)k, &cv);
             }
         } else if (t) {
             if ((uint32_t)k <= t->order_k) {
-                if (ctan) {
-                    esh_taylor_t* o = t->carry_epoch
-                        ? eshkol_taylor_alloc(arena, 1u,
-                              ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, t->carry_epoch))
-                        : eshkol_taylor_alloc(arena, 0u,
-                              ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, 0u) | ESH_TAYLOR_TANGENT_FLAG);
-                    if (!o) { cv = eshkol_make_double(t->c[k]); }
-                    else if (t->carry_epoch) { o->c[0] = t->c[k]; o->c[1] = ctan[k]; cv = taylor_to_tagged(o); }
-                    else { o->c[0] = t->c[k]; taylor_tan(o)[0] = ctan[k]; cv = taylor_to_tagged(o); }
-                } else {
-                    cv = exact ? taylor_exact_c_const(t)[k] : eshkol_make_double(t->c[k]);
-                }
+                cv = exact ? taylor_exact_c_const(t)[k] : eshkol_make_double(t->c[k]);
             } else {
                 cv = exact ? eshkol_make_int64(0, true) : eshkol_make_double(0.0);
             }

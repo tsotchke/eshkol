@@ -470,20 +470,6 @@ llvm::Function* getTaylorCoeffsFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_coeffs_list", &ctx.module());
 }
-llvm::Function* getTaylorEpochFunc(CodegenContext& ctx) {
-    if (auto* f = ctx.module().getFunction("eshkol_taylor_epoch_tagged")) return f;
-    auto* ft = llvm::FunctionType::get(ctx.int32Type(), {ctx.ptrType()}, false);
-    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                  "eshkol_taylor_epoch_tagged", &ctx.module());
-}
-llvm::Function* getTaylorProjectSelectedFunc(CodegenContext& ctx) {
-    if (auto* f = ctx.module().getFunction("eshkol_taylor_project_selected_epoch")) return f;
-    llvm::Type* p = ctx.ptrType();
-    auto* ft = llvm::FunctionType::get(ctx.voidType(),
-        {p, p, ctx.int32Type(), ctx.int32Type(), p, p}, false);
-    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                  "eshkol_taylor_project_selected_epoch", &ctx.module());
-}
 /** @brief Get or declare `eshkol_ad_nested_seed` (arena*, point tagged*, order i32, level i64, tower_pass i32, tower_depth i64, out tagged*) -> i32 route (ADR-0027). */
 llvm::Function* getAdNestedSeedFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_ad_nested_seed")) return f;
@@ -503,22 +489,6 @@ llvm::Function* getAdNestedExtractFunc(CodegenContext& ctx) {
          ctx.int32Type() /*want_list*/, p /*out*/}, false);
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_ad_nested_extract", &ctx.module());
-}
-/** @brief Get or declare `eshkol_ad_tower_carry_result` (arena*, result tagged*, order i32, out tagged*) -> i32: restate a tower pass's k-th derivative in the ENCLOSING TOWER's carrier when the body captured that level (ESH-0412). */
-llvm::Function* getAdTowerCarryResultFunc(CodegenContext& ctx) {
-    if (auto* f = ctx.module().getFunction("eshkol_ad_tower_carry_result")) return f;
-    llvm::Type* p = ctx.ptrType();
-    auto* ft = llvm::FunctionType::get(ctx.int32Type(), {p, p, ctx.int32Type(), p}, false);
-    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                  "eshkol_ad_tower_carry_result", &ctx.module());
-}
-/** @brief Get or declare `eshkol_ad_jet_extract_tower` (arena*, result tagged*, out tagged*) -> i32: extraction for an 8-jet pass whose body came back as a tangent-carrying tower (ESH-0412). */
-llvm::Function* getAdJetExtractTowerFunc(CodegenContext& ctx) {
-    if (auto* f = ctx.module().getFunction("eshkol_ad_jet_extract_tower")) return f;
-    llvm::Type* p = ctx.ptrType();
-    auto* ft = llvm::FunctionType::get(ctx.int32Type(), {p, p, p}, false);
-    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                  "eshkol_ad_jet_extract_tower", &ctx.module());
 }
 /** @brief Get or declare `eshkol_ad_nested_unsupported` (order i32) -> void, the LOUD diagnostic for a nesting neither carrier can represent (ESH-0402). */
 llvm::Function* getAdNestedUnsupportedFunc(CodegenContext& ctx) {
@@ -938,28 +908,11 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCorePlain(llvm::Value* result_
         b.CreateBr(done_bb);
         llvm::BasicBlock* plain_exit = b.GetInsertBlock();
 
-        // tangent: dseed = k! * tangent[k].
+        // tangent: the pass carries the reverse-seed companion (P5), so
+        // dseed = k! * tangent[k] reaches the enclosing gradient: recorded as
+        // an exact local linearisation on a live tape, or as a jet
+        // {f^(k), dseed} for the forward gradient.
         b.SetInsertPoint(tan_bb);
-        // ESH-0412: when the companion series is tracking an enclosing TOWER
-        // level (the body captured it), the enclosing pass reads an ordinary
-        // same-epoch tower, not a jet -- the runtime builds that restatement.
-        llvm::AllocaInst* carry_slot;
-        {
-            llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-            carry_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_carry_out");
-        }
-        llvm::Value* carried = b.CreateCall(getAdTowerCarryResultFunc(ctx_),
-            {getArenaPtr(), res_slot, adTowerOrder_, carry_slot});
-        llvm::BasicBlock* carry_bb  = llvm::BasicBlock::Create(ctx_.context(), "twr_carry", fn);
-        llvm::BasicBlock* tanjet_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_tan_jet", fn);
-        b.CreateCondBr(b.CreateICmpNE(carried, llvm::ConstantInt::get(ctx_.int32Type(), 0)),
-                       carry_bb, tanjet_bb);
-        b.SetInsertPoint(carry_bb);
-        llvm::Value* carry_res = b.CreateLoad(ctx_.taggedValueType(), carry_slot, "twr_carry_res");
-        b.CreateBr(done_bb);
-        llvm::BasicBlock* carry_exit = b.GetInsertBlock();
-
-        b.SetInsertPoint(tanjet_bb);
         llvm::Value* dseed = b.CreateCall(getTaylorExtractTangentFunc(ctx_), {res_slot, adTowerOrder_});
         llvm::AllocaInst* tan_value_slot = b.CreateAlloca(
             ctx_.taggedValueType(), nullptr, "twr_tan_value");
@@ -970,78 +923,7 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCorePlain(llvm::Value* result_
         b.CreateCall(getTaylorExtractTangentTaggedFunc(ctx_),
                      {getArenaPtr(), res_slot, adTowerOrder_, tan_dseed_slot});
         llvm::Value* tan_res = nullptr;
-        llvm::GlobalVariable* tower_active = ctx_.adTowerActive();
-        if (tower_active) {
-            llvm::Value* outer_tan_res = nullptr;
-            llvm::Value* active_depth = b.CreateLoad(ctx_.int64Type(), tower_active,
-                                                     "outer_tower_depth");
-            llvm::Value* has_outer_tower = b.CreateICmpSGT(
-                active_depth, llvm::ConstantInt::get(ctx_.int64Type(), 0));
-            llvm::BasicBlock* outer_tower_bb = llvm::BasicBlock::Create(
-                ctx_.context(), "twr_outer_project", fn);
-            llvm::BasicBlock* tangent_dispatch_bb = llvm::BasicBlock::Create(
-                ctx_.context(), "twr_tangent_dispatch", fn);
-            llvm::BasicBlock* tangent_done_bb = llvm::BasicBlock::Create(
-                ctx_.context(), "twr_tangent_done", fn);
-            llvm::AllocaInst* outer_projected_slot = b.CreateAlloca(
-                ctx_.taggedValueType(), nullptr, "twr_outer_projected");
-            b.CreateCondBr(has_outer_tower, outer_tower_bb, tangent_dispatch_bb);
-
-            b.SetInsertPoint(outer_tower_bb);
-            b.CreateCall(ctx_.module().getOrInsertFunction(
-                "eshkol_taylor_project_tangent_outer",
-                llvm::FunctionType::get(ctx_.voidType(),
-                    {ctx_.ptrType(), ctx_.ptrType(), ctx_.int32Type(), ctx_.ptrType()}, false)),
-                {getArenaPtr(), res_slot, adTowerOrder_, outer_projected_slot});
-            outer_tan_res = b.CreateLoad(ctx_.taggedValueType(), outer_projected_slot,
-                                         "twr_outer_projected_value");
-            tan_res = outer_tan_res;
-            b.CreateBr(tangent_done_bb);
-            llvm::BasicBlock* outer_projected_exit = b.GetInsertBlock();
-
-            b.SetInsertPoint(tangent_dispatch_bb);
-            if (ctx_.currentAdTape()) {
-            llvm::FunctionCallee mixed_rec = ctx_.module().getOrInsertFunction(
-                "eshkol_ad_mixed_record_tagged",
-                llvm::FunctionType::get(ctx_.ptrType(),
-                    {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false));
-            llvm::Value* arena_ptr = getArenaPtr();
-            llvm::Value* tape_ptr = b.CreateLoad(ctx_.ptrType(), ctx_.currentAdTape());
-            llvm::Value* node = b.CreateCall(mixed_rec, {arena_ptr, tape_ptr,
-                                                         tan_value_slot, tan_dseed_slot});
-            llvm::Value* node_ok = b.CreateICmpNE(node,
-                llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx_.context())));
-            llvm::BasicBlock* rec_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_rec", fn);
-            llvm::BasicBlock* jet_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_jet", fn);
-            llvm::BasicBlock* tmrg   = llvm::BasicBlock::Create(ctx_.context(), "twr_tmrg", fn);
-            b.CreateCondBr(node_ok, rec_bb, jet_bb);
-            b.SetInsertPoint(rec_bb);
-            llvm::Value* rec_v = tagged_.packPtr(node, ESHKOL_VALUE_CALLABLE);
-            b.CreateBr(tmrg);
-            llvm::BasicBlock* rec_exit = b.GetInsertBlock();
-            b.SetInsertPoint(jet_bb);
-            llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
-            llvm::Value* jet_v = packDualToTagged(makeDual8(ctx_, d, dseed, zero, zero, zero, zero, zero, zero));
-            b.CreateBr(tmrg);
-            llvm::BasicBlock* jet_exit = b.GetInsertBlock();
-            b.SetInsertPoint(tmrg);
-            llvm::PHINode* tsel = b.CreatePHI(ctx_.taggedValueType(), 2, "twr_tan_sel");
-            tsel->addIncoming(rec_v, rec_exit);
-            tsel->addIncoming(jet_v, jet_exit);
-            tan_res = tsel;
-            } else {
-                llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
-                tan_res = packDualToTagged(makeDual8(ctx_, d, dseed, zero, zero, zero, zero, zero, zero));
-            }
-            b.CreateBr(tangent_done_bb);
-            llvm::BasicBlock* tangent_dispatch_exit = b.GetInsertBlock();
-            b.SetInsertPoint(tangent_done_bb);
-            llvm::PHINode* outer_tan_sel = b.CreatePHI(ctx_.taggedValueType(), 2,
-                                                       "twr_outer_tangent_sel");
-            outer_tan_sel->addIncoming(outer_tan_res, outer_projected_exit);
-            outer_tan_sel->addIncoming(tan_res, tangent_dispatch_exit);
-            tan_res = outer_tan_sel;
-        } else if (ctx_.currentAdTape()) {
+        if (ctx_.currentAdTape()) {
             llvm::FunctionCallee mixed_rec = ctx_.module().getOrInsertFunction(
                 "eshkol_ad_mixed_record_tagged",
                 llvm::FunctionType::get(ctx_.ptrType(),
@@ -1078,10 +960,9 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCorePlain(llvm::Value* result_
         llvm::BasicBlock* tan_exit = b.GetInsertBlock();
 
         b.SetInsertPoint(done_bb);
-        llvm::PHINode* dres = b.CreatePHI(ctx_.taggedValueType(), 3, "twr_deriv_res");
+        llvm::PHINode* dres = b.CreatePHI(ctx_.taggedValueType(), 2, "twr_deriv_res");
         dres->addIncoming(plain_res, plain_exit);
         dres->addIncoming(tan_res, tan_exit);
-        dres->addIncoming(carry_res, carry_exit);
         return dres;
     }
     if (adTowerMode_ == TowerMode::COEFFS && adTowerOrder_) {
@@ -1115,35 +996,12 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCorePlain(llvm::Value* result_
 
     llvm::Function* fn = b.GetInsertBlock()->getParent();
 
-    // ── ESH-0412: this 8-jet pass's body came back as a TAYLOR TOWER ─────
-    // A `derivative` nested inside a `derivative-n`/`taylor` -- reached through
-    // a CAPTURED variable, so no seed-site route was recorded -- has its own
-    // perturbation land on the enclosing tower's first-order companion, and the
-    // body returns a tangent-carrying tower rather than a jet. The scalar
-    // extraction below reads that tower as a plain value and reports no
-    // dependence: a silent zero. The runtime restates it (the companion series
-    // IS d(body)/d(this pass's argument)); everything else is untouched.
-    llvm::AllocaInst* jt_in;
-    llvm::AllocaInst* jt_out;
     llvm::AllocaInst* jt_sel;
     {
         llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-        jt_in  = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "jet_twr_in");
-        jt_out = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "jet_twr_out");
-        jt_sel = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "jet_twr_sel");
+        jt_sel = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "jet_extract_sel_slot");
     }
-    b.CreateStore(result_tagged, jt_in);
-    llvm::Value* jt_handled = b.CreateCall(getAdJetExtractTowerFunc(ctx_),
-        {getArenaPtr(), jt_in, jt_out});
-    llvm::BasicBlock* jt_tower_bb = llvm::BasicBlock::Create(ctx_.context(), "jet_from_tower", fn);
-    llvm::BasicBlock* jt_core_bb  = llvm::BasicBlock::Create(ctx_.context(), "jet_core", fn);
     llvm::BasicBlock* jt_done_bb  = llvm::BasicBlock::Create(ctx_.context(), "jet_extract_done", fn);
-    b.CreateCondBr(b.CreateICmpNE(jt_handled, llvm::ConstantInt::get(ctx_.int32Type(), 0)),
-                   jt_tower_bb, jt_core_bb);
-    b.SetInsertPoint(jt_tower_bb);
-    b.CreateStore(b.CreateLoad(ctx_.taggedValueType(), jt_out), jt_sel);
-    b.CreateBr(jt_done_bb);
-    b.SetInsertPoint(jt_core_bb);
 
     // ── R → Rⁿ: vector-valued derivative ────────────────────────────────
     // A function like (lambda (t) (vector (* t t) (* t t t))) returns a scheme
@@ -1155,35 +1013,26 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCorePlain(llvm::Value* result_
     // supported here; a tensor result falls through to the scalar path.)
     llvm::AllocaInst* nd_slot;
     llvm::AllocaInst* nd_taylor_in;
-    llvm::AllocaInst* nd_taylor_out;
     {
         llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
         nd_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "fwd_ex_nd_slot");
         nd_taylor_in = eb.CreateAlloca(ctx_.taggedValueType(), nullptr,
                                       "fwd_ex_taylor_in");
-        nd_taylor_out = eb.CreateAlloca(ctx_.taggedValueType(), nullptr,
-                                       "fwd_ex_taylor_out");
     }
-    llvm::BasicBlock* nd_taylor = llvm::BasicBlock::Create(
-        ctx_.context(), "fwd_ex_taylor", fn);
     llvm::BasicBlock* nd_dispatch = llvm::BasicBlock::Create(
         ctx_.context(), "fwd_ex_dispatch", fn);
     llvm::BasicBlock* nd_done = llvm::BasicBlock::Create(
         ctx_.context(), "fwd_ex_nd_done", fn);
+    // ADR-0027: a Taylor carrier never reaches a jet pass's extraction -- a
+    // pass nested in a tower level runs as a level and is extracted by the
+    // runtime. A carrier arriving here escaped its pass; the runtime raises
+    // rather than read it as a constant.
     b.CreateStore(result_tagged, nd_taylor_in);
-    llvm::Value* nd_taylor_handled = b.CreateCall(
-        ctx_.module().getOrInsertFunction(
-            "eshkol_taylor_project_forward_tangent",
-            llvm::FunctionType::get(ctx_.int32Type(),
-                {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false)),
-        {getArenaPtr(), nd_taylor_in, nd_taylor_out});
-    b.CreateCondBr(b.CreateICmpNE(nd_taylor_handled,
-                                  llvm::ConstantInt::get(ctx_.int32Type(), 0)),
-                   nd_taylor, nd_dispatch);
-
-    b.SetInsertPoint(nd_taylor);
-    b.CreateStore(b.CreateLoad(ctx_.taggedValueType(), nd_taylor_out), nd_slot);
-    b.CreateBr(nd_done);
+    b.CreateCall(ctx_.module().getOrInsertFunction(
+            "eshkol_ad_jet_result_check",
+            llvm::FunctionType::get(ctx_.voidType(), {ctx_.ptrType()}, false)),
+        {nd_taylor_in});
+    b.CreateBr(nd_dispatch);
 
     b.SetInsertPoint(nd_dispatch);
     llvm::Value* nd_base = tagged_.getBaseType(tagged_.getType(result_tagged));

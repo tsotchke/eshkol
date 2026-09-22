@@ -914,6 +914,9 @@ class EshkolRepl {
                 },
                 eshkol_ad_tower_enter: () => {},
                 eshkol_ad_tower_leave: () => {},
+                // A jet pass's extraction guard (ADR-0027). The lite lane has no Taylor
+                // carrier, so no carrier can reach it.
+                eshkol_ad_jet_result_check: () => {},
                 // END GENERATED FLAT-AD IMPORTS
 
                 // Newly-surfaced runtime env imports the wasm backend can emit
