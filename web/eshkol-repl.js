@@ -574,6 +574,55 @@ class EshkolRepl {
                 eshkol_tensor_matrix_operand_checked: () => 0,
                 eshkol_tensor_counts_checked: () => {},
                 eshkol_tensor_axis_checked: (axis) => axis,
+                // Shape and index helpers with the native contracts
+                // (lib/core/tensor_validation.cpp, runtime_tensor_math.cpp,
+                // runtime_tensor_index.cpp). i64 results are BigInt.
+                eshkol_tensor_shape_total: (dimsPtr, ndim) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    const n = Number(ndim);
+                    if (!dv || !dimsPtr || n <= 0) return -1n;
+                    const MAX = 0x7fffffffffffffffn;
+                    let total = 1n;
+                    for (let i = 0; i < n; i++) {
+                        const d = dv.getBigInt64(Number(dimsPtr) + i * 8, true);
+                        if (d < 0n) return -1n;
+                        if (d === 0n) { total = 0n; continue; }
+                        if (total > MAX / d) return -1n;
+                        total *= d;
+                    }
+                    return total > MAX / 8n ? -1n : total;
+                },
+                eshkol_matmul_shape_valid: (M, K, N) => {
+                    const MAX = 0x7fffffffffffffffn;
+                    const pair = (a, b) => {
+                        a = BigInt(a); b = BigInt(b);
+                        if (a < 0n || b < 0n) return false;
+                        if (a !== 0n && b !== 0n && a > MAX / b) return false;
+                        return a * b <= MAX / 8n;
+                    };
+                    return (pair(M, K) && pair(K, N) && pair(M, N)) ? 1n : 0n;
+                },
+                eshkol_unwrap_list_index: (tvPtr) => {
+                    // A one-element list index unwraps to its car (a tagged
+                    // cons cell stores car at offset 0); anything else is the
+                    // index itself. Doubles truncate toward zero.
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    if (!dv || !tvPtr) return 0n;
+                    const baseType = (p) => { const t = dv.getUint8(p); return t < 8 ? (t & 0x0F) : t; };
+                    const toInt = (p) => {
+                        if (baseType(p) === 2) {
+                            const d = dv.getFloat64(p + 8, true);
+                            return Number.isFinite(d) ? BigInt(Math.trunc(d)) : 0n;
+                        }
+                        return dv.getBigInt64(p + 8, true);
+                    };
+                    const p = Number(tvPtr);
+                    if (baseType(p) === 8) {
+                        const cell = Number(dv.getBigUint64(p + 8, true) & 0xFFFFFFFFn);
+                        if (cell >= 8 && dv.getUint8(cell - 8) === 0) return toInt(cell);
+                    }
+                    return toInt(p);
+                },
                 // Shape helpers use the same row-major broadcast contract as
                 // the native runtime.  These operate on WASM linear-memory
                 // int64 arrays and are needed by generated tensor code.
@@ -611,9 +660,16 @@ class EshkolRepl {
                     for (let i = rank - 1; i >= 0; i--) { const d = dv.getBigInt64(Number(outPtr) + i * 8, true); if (d <= 0n) return -1n; const coord = rem % d; rem /= d; const si = i - (rank - srank); if (si >= 0 && dv.getBigInt64(Number(srcPtr) + si * 8, true) !== 1n) result += coord * strides[si]; }
                     return result;
                 },
-                eshkol_enforce_tensor_elements: () => { throw new Error('tensor element limits unsupported in WASM glue'); },
+                // No resource limit is ever active in the browser (limits come
+                // from the native environment), so the ceiling check is the
+                // native no-op path of lib/core/resource_limits.cpp.
+                eshkol_enforce_tensor_elements: () => {},
                 eshkol_ad_copy_shape_to_home: () => { throw new Error('AD arena copying unsupported in WASM glue'); },
-                eshkol_ad_home_arena: () => { throw new Error('AD arena ownership unsupported in WASM glue'); },
+                // The browser glue never records an AD tape (see
+                // arena_allocate_ad_node above), so the home arena is the
+                // caller's arena: the native no-tape path of
+                // lib/core/runtime_autodiff.cpp.
+                eshkol_ad_home_arena: (fallback) => fallback,
                 eshkol_ad_node_probe: () => { throw new Error('AD node probing unsupported in WASM glue'); },
                 eshkol_ad_node_set_exact_value: () => { throw new Error('exact AD values unsupported in WASM glue'); },
                 eshkol_ad_node_total_elements: () => { throw new Error('AD node element totals unsupported in WASM glue'); },
@@ -621,7 +677,22 @@ class EshkolRepl {
                 eshkol_continuation_restore_handlers: () => { throw new Error('continuation handlers unsupported in WASM glue'); },
                 eshkol_i128_binary_tagged: () => { throw new Error('i128 arithmetic unsupported in WASM glue'); },
                 eshkol_i128_compare_tagged: () => { throw new Error('i128 comparison unsupported in WASM glue'); },
-                eshkol_is_i128_tagged: () => { throw new Error('i128 values unsupported in WASM glue'); },
+                eshkol_is_i128_tagged: (v) => {
+                    // Match lib/core/i128_runtime.cpp: a HEAP_PTR (8) with
+                    // HEAP_SUBTYPE_I128 (25) in its eight-byte object header.
+                    // Generic arithmetic asks this of ordinary values too, so
+                    // unlike the two operators above (only ever reached once
+                    // this predicate has already said "yes"), this one MUST
+                    // answer for real rather than throw: a throwing stub here
+                    // would abort ordinary generic arithmetic on any heap
+                    // operand, not just genuine i128 values. Kept in sync with
+                    // site/static/eshkol-runtime.js.
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    if (!dv || !v) return 0;
+                    if ((dv.getUint8(Number(v)) & 0x0F) !== 8) return 0;
+                    const p = Number(dv.getBigUint64(Number(v) + 8, true) & 0xFFFFFFFFn);
+                    return (p >= 8 && dv.getUint8(p - 8) === 25) ? 1 : 0;
+                },
 
                 // GPU compute (WebGPU). These are the ordinary GPU dispatch
                 // seam — the same symbols the native Metal/CUDA backends

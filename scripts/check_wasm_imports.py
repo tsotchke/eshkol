@@ -125,6 +125,11 @@ SMOKE_PROGRAMS = {
     "symbols": "(define x 'foo) (display (eq? x 'foo)) (newline)",
     "arena_lists": "(define xs (list 1 2 3)) (display (length xs)) (newline)",
     "math_tensor": "(define v (vector 1.0 2.0 3.0)) (display (vector-length v)) (newline)",
+    # reshape + matmul: the tensor shape helpers and the GPU dispatch seam
+    # (eshkol_matmul_dispatch, served by WebGPU or the CPU in the browser).
+    "tensor_matmul":
+        "(define a (reshape (vector 1.0 2.0 3.0 4.0) 2 2))"
+        " (define c (matmul a a)) (display (tensor-get c (list 0) 1)) (newline)",
     "string_io": "(define p (open-output-string)) (display \"hi\" p) (display (get-output-string p)) (newline)",
     "parameters": "(define p (make-parameter 1)) (display (p)) (newline)",
     "regions": "(with-region (lambda () (define x (list 1 2 3)) (display (car x)) (newline)))",
