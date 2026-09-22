@@ -1,0 +1,39 @@
+id: SW-221
+bucket: SILENT-WRONG
+subtag: containers
+family: cross-engine/container-accessor-boundary
+status: fixed
+closed_at: 'f01071dd29bfce422ffab0c0359848262c89025a'
+title: "Container accessors read the wrong kind of container as their own: (vector-ref (list 1 2 3) 0) answered 8 natively and () on the VM"
+repro: >-
+  (display (vector-ref (list 1 2 3) 0)), (vector-length (list 1 2 3)) and
+  (string-ref (list 1 2) 0) on eshkol-run -r, an -O0/-O2 AOT binary and
+  eshkol-vm-standalone-test.
+observed_before: >-
+  Native: 8, 4097 and a control character, exit status 0; (string-ref 5 0),
+  (vector-ref 5 0) and (tensor-ref (list 1 2) 0) faulted with SIGSEGV;
+  bytevector-u8-ref and bytevector-length of a vector answered 1 and 4097.
+  VM: (), 0 and the NUL character; vector->list of a list was a fatal,
+  uncatchable refusal. The VM's threaded string-ref/string-length indexed
+  bytes, so (string-ref "héllo" 1) answered 195.
+observed_after: >-
+  Every listed accessor raises a catchable error naming itself on native JIT,
+  AOT (-O0, -O2) and the VM, directly and as a first-class value; vectors,
+  tensors, strings, bytevectors and records still answer; the VM string
+  accessors index characters under both dispatch loops.
+root_cause: >-
+  Each accessor classified its operand by hand and treated anything it did not
+  recognise as its own container (collection_codegen.cpp "assume legacy
+  vector"; vm_ops.c / vm_native.c pushing (), 0 or NUL), and the VM string
+  accessors had divergent threaded and switch copies.
+fixed_by: >-
+  One container check per engine: TaggedValueCodegen::requireContainer and
+  resolveSequenceOperand natively, vm_require_container in the VM with the
+  vector and string accessors each one implementation shared by opcodes,
+  both dispatch loops and the first-class natives.
+evidence: >-
+  tests/error_handling/sw221_container_type_boundary_test.esk (ctest
+  sw221_container_type_boundary_jit_smoke, _aot_o0_smoke, _aot_o2_smoke,
+  _vm_src_smoke).
+caught_by: [v135f-coordinator]
+missed_by: [builtins_first_class_audit, run_vm_parity]
