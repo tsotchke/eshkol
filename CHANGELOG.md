@@ -1338,6 +1338,29 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **`syntax-rules` is hygienic in both directions, identically on every engine
+  (ADR-0026, SW-192, SW-42).** The native compiler and the bytecode VM now run
+  one `syntax-rules` engine (`inc/eshkol/frontend/syntax_rules_core.h`, C, so
+  the browser and freestanding VM builds share it) and one renaming rule
+  (`inc/eshkol/frontend/syntax_color.h`): every identifier a template
+  introduces is colored per expansion, so a template's binders can neither
+  capture nor be captured by caller code, and a template's free identifiers
+  resolve in the macro's definition environment. Before, a caller's local
+  binding of a name the template used freely (`helper`, `car`, `else`, `if`,
+  another macro keyword) silently replaced it; a template-introduced `do`,
+  `let-values`, `guard` or internal-`define` binder captured caller code or
+  lost its operand on native; a macro-defining macro lost its pattern
+  variables; a library procedure's formal did not shadow a macro keyword of
+  the same spelling; continuation-passing macros were rejected as circular;
+  the VM expanded operands before their scope was known, matched no dotted
+  tails or repeated structured patterns, and did not see a macro used above
+  its definition. The native expander now matches reader syntax recorded by
+  the parser instead of lowered ASTs, and hands expansions back to the parser.
+  A use no rule matches is a syntax error on both engines (a bare `()` no
+  longer matches the pattern `(x)`). New: `tests/vm_parity/corpus/93_macro_hygiene_matrix.esk`
+  (ctest `macro_hygiene_matrix`, JIT, AOT and VM), `syntax_rules_core_test`,
+  and the reference page `docs/reference/language/macros.md`.
+
 - ESKM v1 scalar and empty tensor checkpoints retain their shapes and values
   across native and VM producers and consumers. Scalar observation is admitted
   narrowly without relaxing arithmetic tensor metadata checks. (#698)
