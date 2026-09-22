@@ -45,10 +45,17 @@ a reverse-tape node and a Taylor tower each flow through with the rules they
 already have and no operation needs a rule per carrier.
 `ArithmeticCodegen::makeRectangular` is the one constructor;
 `withComplexCarrierDispatch` wraps `+ - * /` ahead of the real-carrier
-dispatch; one helper per builtin kind serves `real-part`, `imag-part`,
-`magnitude`, `angle`, `conjugate`, `make-polar` and `exp`, `log`, `sqrt`,
-`sin`, `cos`, `tan`. A real carrier is a complex number with no imaginary
-part and is no longer flattened.
+dispatch, and `expt` through the same wrapper (an exact integer exponent is
+repeated complex multiplication, any other exponent `exp(b log a)`); one
+helper per builtin kind serves `real-part`, `imag-part`, `magnitude`,
+`angle`, `conjugate`, `make-polar`, and every procedure with a plain complex
+kernel (`exp`, `exp2`, `log`, `log2`, `log10`, `sqrt`, the circular and
+hyperbolic functions and their inverses), each by the formula its plain
+kernel in `<eshkol/core/complex_math.h>` uses. `angle` is `atan2` of the
+components, which a Taylor carrier reaches through the tower's own `atan2`
+recurrence. `scripts/check_taylor_unary_routes.py` fails when a plain complex
+kernel has no carrier formula. A real carrier is a complex number with no
+imaginary part and is no longer flattened.
 
 VM. The VM's forward carrier is a first-order dual, so `VmComplex` carries the
 matching tangent pair and each VM complex operation propagates it by its own
@@ -63,7 +70,8 @@ operand to the complex path before the dual path. The same boundary gives
 they had read a dual as its primal.
 
 Where no derivative exists (`magnitude` and `angle` at `0+0i`, `log` and
-`sqrt` at the origin, `expt` at a zero base) and a derivative is flowing, the
+`sqrt` at the origin, `expt` at a zero base with a non-integer exponent) and a
+derivative is flowing, the
 operation raises. A derivative is never answered as 0.
 
 ## Consequences

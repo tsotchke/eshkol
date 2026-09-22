@@ -14,6 +14,23 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **Every unary numeric builtin keeps a Taylor derivative.** `asin`, `acos`,
+  `atan`, `asinh`, `acosh`, `atanh`, `log2`, `log10`, `exp2`, `cbrt`, `atan2`
+  and the rounding functions returned their primal on a Taylor tower or level,
+  so `(derivative-n atan 1.0 2)` was 0 and a first-order `derivative` nested in
+  a `derivative-n` of `atan` was 0 (SW-210). They are now one recurrence,
+  `s_k = (1/k) Σ j u_j d_{k-j}` with `d = f'(u)`, in every carrier tier; exact
+  inputs keep every rational coefficient (`(derivative-n atan 0 3)` is `-2`).
+  The code generator reads its tower routes from `taylor_recurrences.def`, and
+  `taylor_unary_route_guard` fails when a builtin has no route.
+- **Complex `expt`, `log`, `angle` and the inverse functions keep the
+  derivative a complex value carries.** `(derivative (lambda (w) (expt w 3))
+  1+1i)` was 0 and `(derivative-n log 1+1i 1)` lost its imaginary part (SW-211).
+  Every procedure with a plain complex kernel now has a carrier formula.
+- **`square`, `inexact` and `magnitude` of a real carrier keep the
+  derivative.** They answered 0 on a jet or a tower, and `square` of a
+  rational or a complex number printed pointer bits (SW-214).
+
 - Preserve browser VM output without a trailing newline, including UTF-8 text.
   Learn and Examples no longer lose their last displayed result or carry it
   into a later evaluation. The Pages gate executes all 41 runnable site examples

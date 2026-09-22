@@ -128,8 +128,30 @@ log   s = log(u)     : s_k = ( u_k − (1/k) Σ_{j=1..k-1} j · s_j · u_{k-j} )
 sin/cos (coupled)    : s_k = (1/k) Σ_{j=1..k} j · u_j · c_{k-j}
                        c_k = −(1/k) Σ_{j=1..k} j · u_j · s_{k-j}
 pow   s = u^r        : s_k = (1/(k·u_0)) Σ_{j=1..k} (j·r − (k−j)) · u_j · s_{k-j}
-sqrt, tan, atan, tanh, exp2, expm1, log1p : derived from the above / their own linear recurrences
+sqrt, tan, tanh     : derived from the above
+f in the integral family, with d = f'(u) as a series:
+                       s_0 = f(u_0),  s_k = (1/k) Σ_{j=1..k} j · u_j · d_{k-j}
+                       atan  d = 1/(1+u²)        atanh d = 1/(1−u²)
+                       asin  d = (1−u²)^(−1/2)   acos  d = −(1−u²)^(−1/2)
+                       asinh d = (1+u²)^(−1/2)   acosh d = (u²−1)^(−1/2)
+                       log2, log10  d = 1/(u·ln b)
+                       exp2  the exp recurrence on u·ln 2;  cbrt  the pow recurrence, r = 1/3
+atan2(y, x)          : σ·atan(q) + c with q = y/x (σ = 1) when |x_0| ≥ |y_0|, else q = x/y (σ = −1);
+                       c is constant, so only s_0 = atan2(y_0, x_0) moves
+floor ceiling truncate round : s_0 = f(u_0), every higher coefficient 0
 ```
+
+The integral family is one recurrence: `f(u)` solves `ds/dt = f'(u)·du/dt`,
+and for the inverse functions `f'` is algebraic in `u`, so `d` comes from the
+mul/div/pow recurrences. It runs over doubles (`tr_ext_unary`), with the reverse
+seed tangent `f'(u)·u'` (`ddual_ext`), over tagged coefficients for a level or
+an exact tower (`level_ext_unary`), and in the 8-jet algebra of an enclosing
+`derivative`. Over tagged coefficients an exact input keeps every coefficient
+that is rational: `(derivative-n atan 0 3)` is exactly `-2`, `(derivative-n
+cbrt 8 3)` is exactly `5/3456`, and a level keeps an exact tail past an
+irrational `s_0`. At a point where `f'` is unbounded (`atanh` at `±1`, `cbrt`
+at `0`) the point is read as inexact rather than dividing an exact number by
+exact `0`.
 
 For the piecewise unary primitives, `abs` uses the sign of the base
 coefficient for the entire smooth-side series (`abs(u₀)`, then
@@ -178,6 +200,17 @@ Three expansions of the same table:
 3. **Auto-generated test** (`taylor_recurrences_test.c`, generated at build) — for each row, seeds `x` at `TEST_X0`, runs the tower to `TEST_ORDER`, and compares `k!·c_k` against `k`-th finite-order derivative of the C-library `TEST_FN` (obtained via a high-precision reference: exact for polynomials/rationals, and via the *coupled* analytic derivative pattern for transcendentals) at rel-err < 1e-12.
 
 Consequence: **adding a primitive is a one-line table edit that automatically adds its d=8 correctness gate.** You cannot merge a recurrence without its test.
+
+The code generator reads the table too. `lib/core/taylor_opcodes.h` maps a
+builtin's spelling (a row's own, or a `TAYLOR_ALIAS` lowering spelling such as
+`fabs` or `ceil`) to its op-code, and the math dispatch routes a Taylor carrier
+through that lookup instead of a list of its own, so a builtin has a tower
+route exactly when it has a row. `scripts/check_taylor_unary_routes.py` (ctest
+`taylor_unary_route_guard`) fails when a builtin lowered through the math
+dispatch has no row, when a row has no runtime rule, or when a procedure with
+a plain complex kernel has no carrier formula; its `selftest` proves each check
+goes red. The runtime dispatchers end in a fatal error, not a copy of the
+input, so an op-code without a recurrence can never answer with its primal.
 
 ---
 
@@ -294,7 +327,8 @@ the design's "tower-valued primals and adjoints".
   lock-step with the value series, using the same `fma` / ascending-`j`
   reduction order as §6a: `(u·w)′ = u′·w + u·w′`; `(u/w)′` from the divided
   recurrence; and `g(u)′ = g′(u)·u′` realised as a series convolution for
-  `exp/log/sin/cos/tan/pow/sqrt/sinh/cosh/tanh`. A tower without the flag never
+  `exp/log/sin/cos/tan/pow/sqrt/sinh/cosh/tanh` and the integral family of §5
+  (whose `d` series is already `g′(u)`). A tower without the flag never
   enters this path, so the P1/P2 forward tower is **byte-for-byte unchanged**.
 - **Extraction.** `popAndExtractForward` for `DERIV_N` reads
   `value = k!·c[K]` and `dseed = k!·c′[K]`. If a reverse tape is live it records
