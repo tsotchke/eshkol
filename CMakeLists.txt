@@ -11293,3 +11293,37 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET esh
         TIMEOUT 360 LABELS "macros;repl;regression"
         PASS_REGULAR_EXPRESSION "PASS: REPL keyword macro")
 endif()
+
+# VM parallel callback control and result ownership (SW-195/196/198). Each
+# program runs once as its own test, then 50 times in a row, because a worker
+# publication or unwind-boundary defect is scheduling dependent: a single
+# clean run is not evidence. Sanitizer configurations run the same tests.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-vm-standalone-test)
+    set(_eshkol_vm_parallel_cases
+        "error_irritants_lifetime|error irritants lifetime PASS"
+        "parallel_ad_carrier_lifetime|parallel AD carrier lifetime PASS"
+        "parallel_callback_raise|parallel callback raise PASS")
+    set(_eshkol_vm_parallel_files "")
+    foreach(_case IN LISTS _eshkol_vm_parallel_cases)
+        string(REPLACE "|" ";" _parts "${_case}")
+        list(GET _parts 0 _name)
+        list(GET _parts 1 _pass)
+        set(_file "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/${_name}.esk")
+        list(APPEND _eshkol_vm_parallel_files "'${_file}'")
+        add_test(NAME vm_${_name}
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test> "${_file}")
+        set_tests_properties(vm_${_name} PROPERTIES
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            TIMEOUT 120 LABELS "vm;parallel;regression"
+            PASS_REGULAR_EXPRESSION "${_pass}"
+            FAIL_REGULAR_EXPRESSION "ERROR:|mismatch|Sanitizer")
+    endforeach()
+    list(JOIN _eshkol_vm_parallel_files " " _eshkol_vm_parallel_argv)
+    add_test(NAME vm_parallel_callbacks_repeat50
+        COMMAND sh -c "i=0; while [ $i -lt 50 ]; do for f in ${_eshkol_vm_parallel_argv}; do out=$('$<TARGET_FILE:eshkol-vm-standalone-test>' \"$f\" 2>&1) || { echo \"FAIL: run $i $f\"; echo \"$out\"; exit 1; }; case \"$out\" in *ERROR:*|*mismatch*|*Sanitizer*) echo \"FAIL: run $i $f\"; echo \"$out\"; exit 1;; esac; done; i=$((i+1)); done; echo 'PASS: 50 VM parallel callback runs'")
+    set_tests_properties(vm_parallel_callbacks_repeat50 PROPERTIES
+        ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+        TIMEOUT 600 LABELS "vm;parallel;regression"
+        PASS_REGULAR_EXPRESSION "PASS: 50 VM parallel callback runs"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()

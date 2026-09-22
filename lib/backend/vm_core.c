@@ -867,6 +867,13 @@ typedef struct VM {
     int native_call_depth;
     VmNativeEscape* native_escape_context;
 
+    /* Set on the isolated VM a pool worker runs a callback in (vm_parallel.c).
+     * Such a VM has no handlers of its own: an unhandled raise there is not the
+     * program's failure but a task failure the caller settles by re-running the
+     * callback on its own interpreter, which reports it if it is truly
+     * unhandled. The worker therefore stays silent about it. */
+    int isolated_worker;
+
     uint32_t language_coverage_call_hash;
     int32_t language_coverage_call_pc;
 
