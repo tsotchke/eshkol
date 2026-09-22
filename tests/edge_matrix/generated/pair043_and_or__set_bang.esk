@@ -14,7 +14,7 @@
 (edge-check-g431)
 
 ;; check and_or_and_last__in__set_bang_lambda_store
-(define (edge-check-g432) (edge-chk "and_or_and_last__in__set_bang_lambda_store" (let ((swg432 #f)) ((lambda () (set! swg432 (and 1 2 3)))) swg432) 3))
+(define (edge-check-g432) (edge-chk "and_or_and_last__in__set_bang_lambda_store" (let ((slg432 #f)) ((lambda () (set! slg432 (and 1 2 3)))) slg432) 3))
 (edge-check-g432)
 
 ;; check and_or_and_last__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g434)
 
 ;; check and_or_or_first__in__set_bang_lambda_store
-(define (edge-check-g435) (edge-chk "and_or_or_first__in__set_bang_lambda_store" (let ((swg435 #f)) ((lambda () (set! swg435 (or 42 99)))) swg435) 42))
+(define (edge-check-g435) (edge-chk "and_or_or_first__in__set_bang_lambda_store" (let ((slg435 #f)) ((lambda () (set! slg435 (or 42 99)))) slg435) 42))
 (edge-check-g435)
 
 ;; check and_or_or_first__in__set_bang_set_twice
@@ -38,7 +38,7 @@
 (edge-check-g437)
 
 ;; check and_or_or_quote_null__in__set_bang_lambda_store
-(define (edge-check-g438) (edge-chk "and_or_or_quote_null__in__set_bang_lambda_store" (let ((swg438 #f)) ((lambda () (set! swg438 (or #f '())))) swg438) (list)))
+(define (edge-check-g438) (edge-chk "and_or_or_quote_null__in__set_bang_lambda_store" (let ((slg438 #f)) ((lambda () (set! slg438 (or #f '())))) slg438) (list)))
 (edge-check-g438)
 
 ;; check and_or_or_quote_null__in__set_bang_set_twice
@@ -50,7 +50,7 @@
 (edge-check-g440)
 
 ;; check and_or_and_empty__in__set_bang_lambda_store
-(define (edge-check-g441) (edge-chk "and_or_and_empty__in__set_bang_lambda_store" (let ((swg441 #f)) ((lambda () (set! swg441 (and)))) swg441) #t))
+(define (edge-check-g441) (edge-chk "and_or_and_empty__in__set_bang_lambda_store" (let ((slg441 #f)) ((lambda () (set! slg441 (and)))) slg441) #t))
 (edge-check-g441)
 
 ;; check and_or_and_empty__in__set_bang_set_twice

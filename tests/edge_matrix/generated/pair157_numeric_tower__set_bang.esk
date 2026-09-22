@@ -14,7 +14,7 @@
 (edge-check-g1359)
 
 ;; check numeric_tower_int42__in__set_bang_lambda_store
-(define (edge-check-g1360) (edge-chk "numeric_tower_int42__in__set_bang_lambda_store" (let ((swg1360 #f)) ((lambda () (set! swg1360 42))) swg1360) (- 50 8)))
+(define (edge-check-g1360) (edge-chk "numeric_tower_int42__in__set_bang_lambda_store" (let ((slg1360 #f)) ((lambda () (set! slg1360 42))) slg1360) (- 50 8)))
 (edge-check-g1360)
 
 ;; check numeric_tower_int42__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g1362)
 
 ;; check numeric_tower_bignum_mul__in__set_bang_lambda_store
-(define (edge-check-g1363) (edge-chk "numeric_tower_bignum_mul__in__set_bang_lambda_store" (let ((swg1363 #f)) ((lambda () (set! swg1363 (* 99999999999 99999999999)))) swg1363) 9999999999800000000001))
+(define (edge-check-g1363) (edge-chk "numeric_tower_bignum_mul__in__set_bang_lambda_store" (let ((slg1363 #f)) ((lambda () (set! slg1363 (* 99999999999 99999999999)))) slg1363) 9999999999800000000001))
 (edge-check-g1363)
 
 ;; check numeric_tower_bignum_mul__in__set_bang_set_twice
@@ -38,7 +38,7 @@
 (edge-check-g1365)
 
 ;; check numeric_tower_expt_2_64__in__set_bang_lambda_store
-(define (edge-check-g1366) (edge-chk "numeric_tower_expt_2_64__in__set_bang_lambda_store" (let ((swg1366 #f)) ((lambda () (set! swg1366 (expt 2 64)))) swg1366) (* 4294967296 4294967296)))
+(define (edge-check-g1366) (edge-chk "numeric_tower_expt_2_64__in__set_bang_lambda_store" (let ((slg1366 #f)) ((lambda () (set! slg1366 (expt 2 64)))) slg1366) (* 4294967296 4294967296)))
 (edge-check-g1366)
 
 ;; check numeric_tower_expt_2_64__in__set_bang_set_twice
@@ -50,7 +50,7 @@
 (edge-check-g1368)
 
 ;; check numeric_tower_rational_third__in__set_bang_lambda_store
-(define (edge-check-g1369) (edge-chk "numeric_tower_rational_third__in__set_bang_lambda_store" (let ((swg1369 #f)) ((lambda () (set! swg1369 (/ 1 3)))) swg1369) (/ 2 6)))
+(define (edge-check-g1369) (edge-chk "numeric_tower_rational_third__in__set_bang_lambda_store" (let ((slg1369 #f)) ((lambda () (set! slg1369 (/ 1 3)))) slg1369) (/ 2 6)))
 (edge-check-g1369)
 
 ;; check numeric_tower_rational_third__in__set_bang_set_twice
@@ -62,7 +62,7 @@
 (edge-check-g1371)
 
 ;; check numeric_tower_double_half__in__set_bang_lambda_store
-(define (edge-check-g1372) (edge-chk "numeric_tower_double_half__in__set_bang_lambda_store" (let ((swg1372 #f)) ((lambda () (set! swg1372 (+ 1.25 1.25)))) swg1372) 2.5))
+(define (edge-check-g1372) (edge-chk "numeric_tower_double_half__in__set_bang_lambda_store" (let ((slg1372 #f)) ((lambda () (set! slg1372 (+ 1.25 1.25)))) slg1372) 2.5))
 (edge-check-g1372)
 
 ;; check numeric_tower_double_half__in__set_bang_set_twice
@@ -74,7 +74,7 @@
 (edge-check-g1374)
 
 ;; check numeric_tower_mixed_exactness__in__set_bang_lambda_store
-(define (edge-check-g1375) (edge-chk "numeric_tower_mixed_exactness__in__set_bang_lambda_store" (let ((swg1375 #f)) ((lambda () (set! swg1375 (+ 1/2 0.25)))) swg1375) 0.75))
+(define (edge-check-g1375) (edge-chk "numeric_tower_mixed_exactness__in__set_bang_lambda_store" (let ((slg1375 #f)) ((lambda () (set! slg1375 (+ 1/2 0.25)))) slg1375) 0.75))
 (edge-check-g1375)
 
 ;; check numeric_tower_mixed_exactness__in__set_bang_set_twice

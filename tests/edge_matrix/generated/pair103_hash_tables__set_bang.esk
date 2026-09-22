@@ -14,7 +14,7 @@
 (edge-check-g943)
 
 ;; check hash_tables_set_ref__in__set_bang_lambda_store
-(define (edge-check-g944) (edge-chk "hash_tables_set_ref__in__set_bang_lambda_store" (let ((swg944 #f)) ((lambda () (set! swg944 (let ((hh (make-hash-table))) (hash-table-set! hh 'hk 42) (hash-table-ref hh 'hk))))) swg944) 42))
+(define (edge-check-g944) (edge-chk "hash_tables_set_ref__in__set_bang_lambda_store" (let ((slg944 #f)) ((lambda () (set! slg944 (let ((hh (make-hash-table))) (hash-table-set! hh 'hk 42) (hash-table-ref hh 'hk))))) slg944) 42))
 (edge-check-g944)
 
 ;; check hash_tables_set_ref__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g946)
 
 ;; check hash_tables_str_key__in__set_bang_lambda_store
-(define (edge-check-g947) (edge-chk "hash_tables_str_key__in__set_bang_lambda_store" (let ((swg947 #f)) ((lambda () (set! swg947 (let ((hs (make-hash-table))) (hash-table-set! hs "k" (list 1 2)) (hash-table-ref hs "k"))))) swg947) (list 1 2)))
+(define (edge-check-g947) (edge-chk "hash_tables_str_key__in__set_bang_lambda_store" (let ((slg947 #f)) ((lambda () (set! slg947 (let ((hs (make-hash-table))) (hash-table-set! hs "k" (list 1 2)) (hash-table-ref hs "k"))))) slg947) (list 1 2)))
 (edge-check-g947)
 
 ;; check hash_tables_str_key__in__set_bang_set_twice
