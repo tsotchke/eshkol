@@ -1,24 +1,26 @@
 id: SW-199
 bucket: SILENT-WRONG
-family: vm/complex-exact-parts
-status: open
-needs_decision: false
-title: "VM make-rectangular with exact rational parts answers +0i"
+subtag: complex
+family: vm/complex-boundary
+status: fixed
+closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+title: "VM (make-rectangular 1/2 1/3) printed +0i: exact rational parts of a complex were read as 0"
 repro: >-
-  (display (make-rectangular 1/2 1/3)) (newline)
-  (display (map (lambda (y) (* y (make-rectangular 1/2 1/3))) (list 1 2)))
-observed: >-
-  eshkol-vm-standalone-test prints +0i and (+0i +0i), exit 0, no diagnostic.
-  Native (eshkol-run -r) prints 0.5+0.3333333333333333i and
-  (0.5+0.3333333333333333i 1+0.6666666666666666i). Integer and float parts
-  are correct on the VM.
-correct: >-
-  The native answer (or an exact complex value if the tower gains one).
+  (display (make-rectangular 1/2 1/3)) on eshkol-vm-standalone-test; also
+  (atan 1/2 1), (asin 1/2), (make-polar 2 1/2).
+observed_before: >-
+  +0i with exit status 0; native prints 0.5+0.3333333333333333i. Every real
+  function sharing the real/complex boundary saw 0 for a rational argument.
+observed_after: >-
+  0.5+0.3333333333333333i, and the rational arguments read correctly, on the
+  VM, the browser VM and native.
+root_cause: >-
+  lib/backend/vm_native.c vm_real_with_tangent read a non-dual part with
+  as_number(), which knows only the immediate tags, instead of the heap-aware
+  as_number_vm().
+fixed_by: "vm_real_with_tangent uses as_number_vm; carriers pass the boundary whole (ADR-0027)"
 evidence: >-
-  Found by the v135f-vmrt lane on 2026-09-22 at base 62c5b1b32 while
-  probing complex AD carriers published from parallel workers.
-caught_by: [v135f-vmrt-probe]
-missed_by: [vm_parity]
-notes: >-
-  Lives in the VM complex constructor (vm_complex.c), which the Taylor/complex
-  carrier lane owns; handed to that lane on the ICC bus.
+  tests/complex/complex_exact_parts_test.esk (ctest complex_exact_parts_vm,
+  complex_exact_parts_browser_vm, complex_exact_parts_jit).
+caught_by: [v135f-vmrt-lane]
+missed_by: [run_vm_parity]

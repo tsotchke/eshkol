@@ -10977,6 +10977,15 @@ entries:
       (lib/backend/vm_native.c case 393, ESH-0369), so this defect has no VM twin and
       the VM's documented raise is unchanged. Direct successor of SW-150, which
       closed the one-companion half of the same family.
+    vm_status: fixed
+    vm_closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+    vm_evidence: >-
+      VM half of ADR-0027 (branch fix/v135f-vmtaylor): tests/ad/nested_towers_matrix_test.esk
+      (164 checks) and tests/ad/nested_operator_matrix_test.esk pass with zero
+      silent zeros on eshkol-vm-standalone-test and on the browser VM (ctest
+      nested_towers_matrix_vm, nested_towers_matrix_browser_vm,
+      nested_operator_matrix_vm, nested_operator_matrix_browser_vm). The entry
+      stays guarded until the native half (fix/v135f-taylor) lands.
   - id: SW-163
     bucket: SILENT-WRONG
     status: closed
@@ -14042,7 +14051,7 @@ entries:
   - id: SW-194
     bucket: SILENT-WRONG
     family: ad/scalar-hessian
-    status: open
+    status: fixed
     needs_decision: false
     title: "browser VM scalar Hessian drops the second derivative of expt"
     repro: >-
@@ -14062,6 +14071,14 @@ entries:
     notes: >-
       Not yet committed to the release cut or deployed. Final artifact and
       release qualification remain required; a refusal is not a resolution.
+    closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+    fixed_by: "ADR-0027 level carrier, VM half; site/static/eshkol-vm.{js,wasm} rebuilt with scripts/build-wasm-repl.sh"
+    observed_after: >-
+      (hessian (lambda (x) (expt x 4)) 1/3) is exact 4/3 on the rebuilt browser VM
+      bundle, the bytecode VM, JIT and AOT.
+    evidence: >-
+      tests/ad/site_scalar_hessian_test.esk (ctest site_scalar_hessian_browser_vm,
+      site_scalar_hessian_vm, site_scalar_hessian_jit, site_scalar_hessian_aot).
   - id: SW-195
     bucket: SILENT-WRONG
     family: conditions/error-irritants
@@ -14244,7 +14261,7 @@ entries:
   - id: SW-193
     bucket: SILENT-WRONG
     family: ad/complex-carrier
-    status: open
+    status: fixed
     needs_decision: false
     title: "nested holomorphic complex derivatives discard the enclosing carrier and answer 0+0i instead of the second derivative"
     repro: >-
@@ -14269,56 +14286,95 @@ entries:
     notes: >-
       Integrated source is implemented without refusal. Keep open through broad
       parity, sanitizer, site artifact, and final release qualification.
+    closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+    fixed_by: "ADR-0027 level carrier, VM half (branch fix/v135f-vmtaylor)"
+    observed_after: >-
+      (derivative (lambda (z) (derivative (lambda (w) (* w (* w w))) z))
+      (make-rectangular 1.0 1.0)) is 6+6i on the VM, the browser VM and native;
+      nested derivative-n and taylor at complex points agree too.
+    evidence: >-
+      tests/ad/vm_nested_holomorphic_test.esk (ctest vm_nested_holomorphic_vm,
+      vm_nested_holomorphic_browser_vm, vm_nested_holomorphic_jit).
   - id: SW-199
     bucket: SILENT-WRONG
-    family: vm/complex-exact-parts
-    status: open
-    needs_decision: false
-    title: "VM make-rectangular with exact rational parts answers +0i"
+    subtag: complex
+    family: vm/complex-boundary
+    status: fixed
+    closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+    title: "VM (make-rectangular 1/2 1/3) printed +0i: exact rational parts of a complex were read as 0"
     repro: >-
-      (display (make-rectangular 1/2 1/3)) (newline)
-      (display (map (lambda (y) (* y (make-rectangular 1/2 1/3))) (list 1 2)))
-    observed: >-
-      eshkol-vm-standalone-test prints +0i and (+0i +0i), exit 0, no diagnostic.
-      Native (eshkol-run -r) prints 0.5+0.3333333333333333i and
-      (0.5+0.3333333333333333i 1+0.6666666666666666i). Integer and float parts
-      are correct on the VM.
-    correct: >-
-      The native answer (or an exact complex value if the tower gains one).
+      (display (make-rectangular 1/2 1/3)) on eshkol-vm-standalone-test; also
+      (atan 1/2 1), (asin 1/2), (make-polar 2 1/2).
+    observed_before: >-
+      +0i with exit status 0; native prints 0.5+0.3333333333333333i. Every real
+      function sharing the real/complex boundary saw 0 for a rational argument.
+    observed_after: >-
+      0.5+0.3333333333333333i, and the rational arguments read correctly, on the
+      VM, the browser VM and native.
+    root_cause: >-
+      lib/backend/vm_native.c vm_real_with_tangent read a non-dual part with
+      as_number(), which knows only the immediate tags, instead of the heap-aware
+      as_number_vm().
+    fixed_by: "vm_real_with_tangent uses as_number_vm; carriers pass the boundary whole (ADR-0027)"
     evidence: >-
-      Found by the v135f-vmrt lane on 2026-09-22 at base 62c5b1b32 while
-      probing complex AD carriers published from parallel workers.
-    caught_by: [v135f-vmrt-probe]
-    missed_by: [vm_parity]
-    notes: >-
-      Lives in the VM complex constructor (vm_complex.c), which the Taylor/complex
-      carrier lane owns; handed to that lane on the ICC bus.
+      tests/complex/complex_exact_parts_test.esk (ctest complex_exact_parts_vm,
+      complex_exact_parts_browser_vm, complex_exact_parts_jit).
+    caught_by: [v135f-vmrt-lane]
+    missed_by: [run_vm_parity]
   - id: SW-200
     bucket: SILENT-WRONG
-    family: vm/taylor-through-complex
-    status: open
-    needs_decision: false
-    title: "VM higher-order derivatives through a complex intermediate answer the wrong order"
+    subtag: autodiff
+    family: vm/complex-carrier
+    status: fixed
+    closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+    title: "VM derivative-n and hessian through a complex intermediate returned the wrong derivative order"
     repro: >-
-      (display (derivative-n (lambda (x) (real-part (* x x x (make-rectangular 1 2)))) 1/3 2))
-      (display (hessian (lambda (x) (imag-part (* x x (make-rectangular 1 2)))) 3))
-      (display (hessian (lambda (x) (real-part (* x x (make-rectangular 1 2)))) 3))
-    observed: >-
-      VM: 0.3333333333333333, 12, 6. Native: 2, 4, 2. Exit 0, no diagnostic.
-      The VM result is off by the point x for the Hessians and returns a
-      lower-order coefficient for derivative-n; first derivatives through the
-      same functions agree with native.
-    correct: >-
-      2, 4, 2 (the second derivatives of x^3, 2x^2 and x^2).
+      (derivative-n (lambda (x) (real-part (* x x x (make-rectangular 1 2)))) 1/3 2)
+      and (hessian (lambda (x) (imag-part (* x x (make-rectangular 1 2)))) x0).
+    observed_before: >-
+      0.333 on the VM where native answers 2; the hessian answered 12 where native
+      answers 4. Exit status 0.
+    observed_after: >-
+      2 and 4 on the VM and the browser VM, matching native; higher orders, taylor
+      coefficients, make-rectangular/make-polar of carriers and magnitude/angle of
+      a complex intermediate carry every order.
+    root_cause: >-
+      real-part and imag-part returned the part's first-order (value, tangent)
+      pair and dropped the Taylor tower the part carried; make-rectangular and
+      make-polar flattened carrier arguments the same way.
+    fixed_by: "complex parts are carriers of any kind and are returned whole (ADR-0025, ADR-0027)"
     evidence: >-
-      Found by the v135f-vmrt lane on 2026-09-22 at base 62c5b1b32. Independent
-      of parallel-map: the serial forms above reproduce it.
-    caught_by: [v135f-vmrt-probe]
-    missed_by: [vm_parity]
-    notes: >-
-      Same family as SW-193 (nested holomorphic derivatives). Lives in the VM
-      Taylor/complex carrier (vm_dual.c, vm_complex.c), owned by the Taylor
-      carrier lane; handed over on the ICC bus.
+      tests/ad/vm_complex_intermediate_taylor_test.esk (ctest
+      vm_complex_intermediate_taylor_vm, vm_complex_intermediate_taylor_browser_vm).
+      Native answers the SW-200 cells correctly; native second derivatives of
+      angle answer 0 and are reported to the native lane.
+    caught_by: [v135f-vmrt-lane]
+    missed_by: [run_vm_parity]
+  - id: SW-203
+    bucket: SILENT-WRONG
+    subtag: complex
+    family: vm/complex-boundary
+    status: fixed
+    closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+    title: "VM unary (- z) of a complex answered -0.0 and (abs z) answered 0"
+    repro: >-
+      (display (- (make-rectangular 1.0 2.0))) and (abs (make-rectangular 3.0 4.0))
+      on eshkol-vm-standalone-test.
+    observed_before: >-
+      -0.0 and 0 with exit status 0; native prints -1-2i and raises for abs.
+    observed_after: >-
+      -1-2i, and abs raises "abs: argument is a complex number ..." on the VM and
+      the browser VM, as on native.
+    root_cause: >-
+      lib/backend/vm_run.c lbl_NEG/lbl_ABS and their switch-dispatch twins had no
+      complex arm and read the heap pointer as 0.0; the switch twin of NEG also
+      lacked the dual arms.
+    fixed_by: "one shared carrier arm, vm_unary_sign_carrier (lib/backend/vm_ops.c), used by both loops"
+    evidence: >-
+      tests/complex/complex_negate_abs_test.esk (ctest complex_negate_abs_vm,
+      complex_negate_abs_browser_vm, complex_negate_abs_jit).
+    caught_by: [v135f-vmtaylor-lane]
+    missed_by: [run_vm_parity]
   - id: SW-201
     bucket: LOUD-ERROR
     family: native/parallel-callback-control
@@ -14353,7 +14409,7 @@ entries:
       native_parallel_callback_raise_aot_repeat50 (50 consecutive AOT runs) pass.
     caught_by: [v135f-vmrt-parity-probe]
     missed_by: [vm_parity]
-  - id: SW-202
+  - id: SW-218
     bucket: LOUD-ERROR
     family: native/parallel-callback-control
     status: open

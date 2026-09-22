@@ -469,26 +469,29 @@ static VmDual* vm_dual_clone_payload_to(VmRegionStack* rs, const VmDual* src) {
     dst->etangent = vm_rational_clone_to(rs, src->etangent);
     if ((src->eprimal && !dst->eprimal) || (src->etangent && !dst->etangent)) return NULL;
     const size_t count = (size_t)src->order + 1;
-    if (count > SIZE_MAX / sizeof(VmRational*) || count > SIZE_MAX / sizeof(double)) return NULL;
-    double* values[4] = {src->coeff, src->tangent_coeff, src->tangent2_coeff, src->mixed_coeff};
-    double** copies[4] = {&dst->coeff, &dst->tangent_coeff, &dst->tangent2_coeff, &dst->mixed_coeff};
-    VmRational** exact[4] = {src->exact_coeff, src->exact_tangent_coeff,
-                            src->exact_tangent2_coeff, src->exact_mixed_coeff};
-    VmRational*** exact_copies[4] = {&dst->exact_coeff, &dst->exact_tangent_coeff,
-                                    &dst->exact_tangent2_coeff, &dst->exact_mixed_coeff};
-    for (int channel = 0; channel < 4; ++channel) {
-        if (values[channel]) {
-            *copies[channel] = (double*)vm_alloc(rs, count * sizeof(double));
-            if (!*copies[channel]) return NULL;
-            memcpy(*copies[channel], values[channel], count * sizeof(double));
+    if (count > SIZE_MAX / sizeof(VmDual*) || count > SIZE_MAX / sizeof(double)) return NULL;
+    if (src->kind == VM_DUAL_KIND_TAYLOR) {
+        if (src->coeff) {
+            dst->coeff = (double*)vm_alloc(rs, count * sizeof(double));
+            if (!dst->coeff) return NULL;
+            memcpy(dst->coeff, src->coeff, count * sizeof(double));
         }
-        if (exact[channel]) {
-            *exact_copies[channel] = (VmRational**)vm_alloc(rs, count * sizeof(VmRational*));
-            if (!*exact_copies[channel]) return NULL;
+        if (src->exact_coeff) {
+            dst->exact_coeff = (VmRational**)vm_alloc(rs, count * sizeof(VmRational*));
+            if (!dst->exact_coeff) return NULL;
             for (size_t k = 0; k < count; ++k) {
-                (*exact_copies[channel])[k] = vm_rational_clone_to(rs, exact[channel][k]);
-                if (exact[channel][k] && !(*exact_copies[channel])[k]) return NULL;
+                dst->exact_coeff[k] = vm_rational_clone_to(rs, src->exact_coeff[k]);
+                if (src->exact_coeff[k] && !dst->exact_coeff[k]) return NULL;
             }
+        }
+    } else if (src->kind == VM_DUAL_KIND_LEVEL && src->lcoeff) {
+        /* ADR-0027: a level's coefficients are carriers in their own right,
+         * at any depth; each is cloned, so the worker owns the whole tree. */
+        dst->lcoeff = (VmDual**)vm_alloc(rs, count * sizeof(VmDual*));
+        if (!dst->lcoeff) return NULL;
+        for (size_t k = 0; k < count; ++k) {
+            dst->lcoeff[k] = vm_dual_clone_payload_to(rs, src->lcoeff[k]);
+            if (src->lcoeff[k] && !dst->lcoeff[k]) return NULL;
         }
     }
     return dst;

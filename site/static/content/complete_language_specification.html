@@ -173,12 +173,13 @@
 <h5 id="tensor">TENSOR</h5>
 <ul>
 <li><p><strong>Subtype:</strong> <code>HEAP_SUBTYPE_TENSOR</code> (3)</p></li>
-<li><p><strong>Structure:</strong> <code>eshkol_tensor_t</code> (32 bytes)</p>
+<li><p><strong>Structure:</strong> <code>eshkol_tensor_t</code> (40 bytes; 8-byte aligned)</p>
 <pre class="c"><code>struct {
     uint64_t* dimensions;      // Dimension sizes array
     uint64_t  num_dimensions;  // Rank (number of dimensions)
     int64_t*  elements;        // Element data (doubles as int64 bits)
     uint64_t  total_elements;  // Product of all dimensions
+    uint64_t  dtype;           // Tensor dtype tag (default f64)
 }</code></pre></li>
 <li><p><strong>Syntax:</strong></p>
 <ul>
@@ -1090,11 +1091,11 @@ use-exactly-once is NOT enforced for it</code></pre>
 <p><strong>Signature:</strong> <code>(apply proc arg... list)</code></p>
 <p><strong>Example:</strong></p>
 <pre class="scheme"><code>(apply + &#39;(1 2 3))    ; =&gt; 6
-(apply + 1 2 &#39;(3 4))  ; =&gt; 10   (native only, see below)
+(apply + 1 2 &#39;(3 4))  ; =&gt; 10
 (apply vector-copy (list (vector 7 8 9)))   ; =&gt; #(7 8 9)</code></pre>
 <p><code>proc</code> may be any callable value, including a builtin reached as a first-class value rather than in operator position: <code>apply</code> resolves its operator through the same route <code>map</code> and a user higher-order call use, so a builtin gains a value representation exactly once. A genuinely undefined name fails compilation with a diagnostic, never a silent <code>()</code>.</p>
 <blockquote>
-<p><strong>Engine difference — the leading-args form is native-only.</strong> The bytecode VM supports <code>(apply proc arg-list)</code>. It does <strong>not</strong> support arguments before the list, for any operator: under the VM, <code>(apply + 1 2 '(3 4))</code> raises <code>arity mismatch: expected 2 arguments, got 4</code>. Write <code>(apply + (append '(1 2) '(3 4)))</code> for a form that runs on both engines.</p>
+<p>Both native and bytecode engines support leading arguments before the final list operand. The full-list and prefix forms are covered by <code>tests/vm_parity/corpus/apply_variadic_full_list.esk</code>.</p>
 </blockquote>
 <h3 id="47-string-operations">4.7 String Operations</h3>
 <h4 id="471-string-construction">4.7.1 String Construction</h4>
@@ -3048,4 +3049,4 @@ tests/                   # Test suites
 <hr />
 <h2 id="conclusion">Conclusion</h2>
 <p>This document provides a <strong>complete</strong> specification of the Eshkol programming language version v1.3.5-evolve, documenting <strong>every</strong> feature, function, operator, and capability found in the implementation.</p>
-<p><strong>Total Coverage:</strong> (counts from <code>tests/coverage/language_surface.json</code> and <code>tests/coverage/coverage_policy.json</code>, the machine sources the coverage gate reads) - All 116 special forms and 113 parser AST operations - All 1,052 built-in functions (1,115 declared constructs in total) - 743 VM native-call IDs - 72-opcode bytecode VM with ESKB binary format - Complete type system (15+ types with 18+ heap subtypes) - Full memory management system (OALR arenas) - Entire standard library (40 modules) - Complete autodiff system (forward, reverse, symbolic, 83 AD node types declared in <code>inc/eshkol/ad_node_registry.def</code>) - Dual backend architecture (LLVM + bytecode VM) - Weight matrix transformer (3-way verified) - Module system with <code>require</code>, <code>provide</code>, <code>load</code> - REPL JIT with precompiled stdlib - Quantum RNG (8-qubit circuit simulation) - GPU dispatch (Metal SF64 + CUDA, forward and backward) - Compilation pipeline (LLVM 18-24; major pinned per build, default 21) - Runtime architecture - Exact arithmetic (bignum, rational, numeric tower) - Complex number type with overflow-safe division - First-class continuations, dynamic-wind, and exception handling - Consciousness engine (logic programming, active inference, global workspace) - Parallel execution model (thread pool, futures, memory safety) - GPU dispatch (Metal SF64, CUDA, cost model) - Signal processing (FFT, windows, filters, convolution)</p>
+<p><strong>Total Coverage:</strong> (counts from <code>tests/coverage/language_surface.json</code> and <code>tests/coverage/coverage_policy.json</code>, the machine sources the coverage gate reads) - All 116 special forms and 113 parser AST operations - All 1,053 built-in functions (1,115 declared constructs in total) - 743 VM native-call IDs - 72-opcode bytecode VM with ESKB binary format - Complete type system (15+ types with 18+ heap subtypes) - Full memory management system (OALR arenas) - Entire standard library (40 modules) - Complete autodiff system (forward, reverse, symbolic, 83 AD node types declared in <code>inc/eshkol/ad_node_registry.def</code>) - Dual backend architecture (LLVM + bytecode VM) - Weight matrix transformer (3-way verified) - Module system with <code>require</code>, <code>provide</code>, <code>load</code> - REPL JIT with precompiled stdlib - Quantum RNG (8-qubit circuit simulation) - GPU dispatch (Metal SF64 + CUDA, forward and backward) - Compilation pipeline (LLVM 18-24; major pinned per build, default 21) - Runtime architecture - Exact arithmetic (bignum, rational, numeric tower) - Complex number type with overflow-safe division - First-class continuations, dynamic-wind, and exception handling - Consciousness engine (logic programming, active inference, global workspace) - Parallel execution model (thread pool, futures, memory safety) - GPU dispatch (Metal SF64, CUDA, cost model) - Signal processing (FFT, windows, filters, convolution)</p>

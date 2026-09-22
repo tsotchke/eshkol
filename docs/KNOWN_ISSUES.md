@@ -115,8 +115,8 @@
 - **`gradient` was native-only on the bytecode VM.** Forward/reverse-mode
   `gradient` — direct, through a callable parameter, and curried — now runs on
   the VM byte-identically to native codegen (#337). `op:GRADIENT` and
-  `op:DERIVATIVE` are `vm-supported`; higher-order nesting (gradient-of-derivative
-  / Taylor tower) remains native-only.
+  `op:DERIVATIVE` are `vm-supported`; nesting (gradient-of-derivative / Taylor
+  tower) runs on the level carrier of ADR-0027.
 - **`hessian`/`laplacian` crashed at a tensor-literal or variable-bound point.**
   The differentiation point was classified from the AST node kind, so a variable
   bound to a vector (or a `#(...)` / `(tensor ...)` literal, or a `(the ...)`

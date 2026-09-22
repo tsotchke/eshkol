@@ -1,7 +1,7 @@
 <h1 id="eshkol-v135-evolve-feature-matrix">Eshkol v1.3.5-evolve Feature Matrix</h1>
 <p><strong>Status Key</strong> (table cells): <code>Yes</code> = Production | <code>WIP</code> = In Progress | <code>Planned</code> = Planned | <code>No</code> = Not Planned | <code>Partial</code> = Partially supported</p>
 <p>This matrix lists every implemented and planned feature in the Eshkol ecosystem. Feature implementation status is recorded here; release verification is recorded separately, in the “Final verification” section of <a href="/docs#page=release_notes" data-url="/content/release_notes.html">RELEASE_NOTES.md</a>, and is bound to the tagged commit.</p>
-<p><strong>Language surface count (canonical):</strong> the declared language surface is <strong>1,115</strong> constructs — 1,052 builtins, 116 special forms, 113 AST ops and 16 prelude entries, deduplicated by name with internal-only helpers excluded. Older cited figures — 1,107, 1,091 and 1,106 here and in <code>docs/COMPILER_ROADMAP.md</code>, 1,078 in <code>.icc/architecture-model.yaml</code>, “550+ built-in functions”/“39 special forms” in <code>README.md</code> — were each correct on the day they were written but drifted as the surface grew; the gate has ratcheted upward since. The “1,058 in ADR-0011 §2.1” citation from the previous reconciliation pass was itself wrong: ADR-0011 is the guest-collector adapter design and contains no surface-count section — there is no §2.1 that states 1,058. The only correct citation for this number is the coverage manifest itself: <code>tests/coverage/language_surface.json</code> (1,052 builtins + 116 special forms + 113 AST ops + 16 prelude), deduplicated by name and with internal-only helpers excluded exactly the way <code>scripts/language_coverage.py</code> already deduplicates it to compute the number the coverage gate enforces: <code>tests/coverage/coverage_policy.json</code> <code>baseline_surface_total</code> = <code>tests/coverage/execution_deficit.json</code> <code>surface_total</code> = <strong>1,115</strong>, confirmed by regenerating <code>tests/coverage/language_surface.json</code> at the release commit. This is the figure this doc, README.md, and <code>.icc/architecture-model.yaml</code> use; <code>scripts/check_surface_counts.py</code> fails CI if any of them drift from the manifest again.</p>
+<p><strong>Language surface count (canonical):</strong> the declared language surface is <strong>1,116</strong> constructs — 1,053 builtins, 116 special forms, 113 AST ops and 16 prelude entries, deduplicated by name with internal-only helpers excluded. Older cited figures — 1,107, 1,091 and 1,106 here and in <code>docs/COMPILER_ROADMAP.md</code>, 1,078 in <code>.icc/architecture-model.yaml</code>, “550+ built-in functions”/“39 special forms” in <code>README.md</code> — were each correct on the day they were written but drifted as the surface grew; the gate has ratcheted upward since. The “1,058 in ADR-0011 §2.1” citation from the previous reconciliation pass was itself wrong: ADR-0011 is the guest-collector adapter design and contains no surface-count section — there is no §2.1 that states 1,058. The only correct citation for this number is the coverage manifest itself: <code>tests/coverage/language_surface.json</code> (1,053 builtins + 116 special forms + 113 AST ops + 16 prelude), deduplicated by name and with internal-only helpers excluded exactly the way <code>scripts/language_coverage.py</code> already deduplicates it to compute the number the coverage gate enforces: <code>tests/coverage/coverage_policy.json</code> <code>baseline_surface_total</code> = <code>tests/coverage/execution_deficit.json</code> <code>surface_total</code> = <strong>1,116</strong>, confirmed by regenerating <code>tests/coverage/language_surface.json</code> at the release commit. This is the figure this doc, README.md, and <code>.icc/architecture-model.yaml</code> use; <code>scripts/check_surface_counts.py</code> fails CI if any of them drift from the manifest again.</p>
 <hr />
 <h2 id="core-language-features">Core Language Features</h2>
 <table>
@@ -2473,7 +2473,7 @@
 <td>API Reference</td>
 <td>Yes</td>
 <td>Complete</td>
-<td>1,052 builtins across a 1,115-construct declared surface (canonical count, see below)</td>
+<td>1,053 builtins across a 1,116-construct declared surface (canonical count, see below)</td>
 </tr>
 <tr>
 <td>Quickstart Guide</td>
@@ -3757,7 +3757,7 @@
 <h2 id="production-readiness">Production Readiness</h2>
 <h3 id="production-ready-v11">Production-Ready (v1.1)</h3>
 <ul>
-<li>Core language (116 special forms, 1,052 builtins — 1,115-construct canonical surface, see “Language surface count” below)</li>
+<li>Core language (116 special forms, 1,053 builtins — 1,116-construct canonical surface, see “Language surface count” below)</li>
 <li>Automatic differentiation (3 modes)</li>
 <li>Tensor operations (30+ functions)</li>
 <li>List processing (50+ operations)</li>

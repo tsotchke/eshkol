@@ -770,6 +770,7 @@ typedef struct VmNativeEscape {
     int frame_floor;
     uint64_t frame_generation;
     int native_depth;
+    int ad_live_passes;   /* forward passes live at the escape point (ADR-0027) */
 } VmNativeEscape;
 
 typedef struct VM {
@@ -888,6 +889,10 @@ typedef struct VM {
     /* Backend-local AD instrumentation.  These mirror the public native
      * `(ad-*-counters)` contract, but count the VM's own exact/finite-
      * difference work instead of reporting the LLVM runtime's globals. */
+    /* ADR-0027 section 3: forward differentiation passes currently live
+     * (derivative, derivative-n, taylor and every operator built on them).
+     * A pass that opens while one is live runs as a level carrier. */
+    int ad_live_passes;
     uint64_t ad_primal_calls;
     uint64_t ad_reverse_passes;
     uint64_t ad_tape_allocations;

@@ -14,6 +14,64 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- Preserve browser VM output without a trailing newline, including UTF-8 text.
+  Learn and Examples no longer lose their last displayed result or carry it
+  into a later evaluation. The Pages gate executes all 41 runnable site examples
+  with output/property checks and no-newline, Unicode, and isolation regressions. (#712)
+
+- Restore website rendering by implementing the browser runtime's tagged i128
+  predicate. Ordinary heap operands no longer throw during homepage startup;
+  the Pages workflow now exercises this runtime import before deployment. (#711)
+
+- **The dev REPL's glue still threw on the same predicate.** The site runtime
+  fix above landed only in `site/static/eshkol-runtime.js`; `web/eshkol-repl.js`
+  kept the old throwing stub for `eshkol_is_i128_tagged`, which generic
+  arithmetic asks of every heap operand — so any REPL evaluation touching a
+  pair, string or vector through generic arithmetic aborted with an uncaught
+  WASM-glue exception. Ported the real implementation into the REPL glue so
+  both files answer identically again.
+
+- Refreshed the homepage's declared-surface and parity-row figures in
+  `site/src/main.esk`, which had drifted behind `tests/vm_parity/PARITY.tsv`
+  and `tests/coverage/coverage_policy.json`, and rebuilt
+  `site/static/eshkol-site.wasm` so the deployed page carries the correction.
+
+- **The browser REPL answered nothing.** Every `repl_eval` call in the
+  WebAssembly bundle — the site's REPL pane and every runnable code block on
+  the docs pages — returned with no output at all; `(+ 1 2)` printed nothing
+  and the page rendered "error: could not parse expression". The VM was
+  computing the right answer the whole time.
+
+  The REPL's auto-print of the last expression was riding on `OP_PRINT`, which
+  is the lowering of `(display x)` and nothing else. When `OP_PRINT` was
+  corrected to match native `display` byte-for-byte — no trailing newline —
+  the REPL echo silently lost its line terminator along with it. On a terminal
+  that is only untidy; through Emscripten it is an outage, because stdout
+  reaches the embedder's `print` callback one COMPLETE LINE at a time, so an
+  unterminated answer is buffered indefinitely and the page never sees it.
+
+  The echo is now emitted by the session that owns the transcript, in
+  `repl_session_eval()`: the last expression leaves its value on the VM stack
+  and the session prints it with its terminator. The opcode keeps exactly one
+  meaning. `(display "hi")` in the REPL is now a fragment awaiting a
+  `(newline)`, exactly as it is under `eshkol-run -r`, instead of gaining a
+  newline the batch engine does not emit.
+
+- **The browser REPL bundle aborted on tensor programs.** Built from candidate
+  source with the recipe CONTRIBUTING.md carried, `(make-tensor (list 2 2)
+  1.0)` killed the whole WASM module with `Aborted(missing function:
+  eshkol_tensor_shape_total)`, taking every later evaluation with it. The
+  bundle's link needs `-s ERROR_ON_UNDEFINED_SYMBOLS=0` for a few leaf runtime
+  deps that genuinely have no WASM implementation, which also means a
+  translation unit missing from the source list does not fail the build —
+  emscripten substitutes an aborting stub. The hand-copied list had fallen
+  behind `lib/core/tensor_validation.cpp`.
+
+  The recipe is now `scripts/build-wasm-repl.sh`, which shares one source list
+  (`scripts/lib/wasm_vm_sources.sh`) with the CI execute-and-diff lane, so the
+  bundle users load and the module CI executes are the same link, and fails the
+  build on any undefined symbol outside a documented allowlist.
+
 ### Added
 
 - Private, experimental ESKM v2 preflight validation with exact-byte fixtures,
@@ -1353,6 +1411,27 @@ the source changes; the verification record for the tagged commit is the
 
 - The browser VM's bootstrap image is regenerated, so caught error objects
   report their irritants there as on the desktop VM. (SW-195)
+
+- **Nested differentiation on the bytecode VM and the browser VM (ADR-0027,
+  SW-154, SW-193, SW-194).** A pass nested inside another live pass runs as a
+  level carrier (`VM_DUAL_KIND_LEVEL`): a truncated series in its own
+  perturbation whose coefficients are carriers of the enclosing passes, at
+  any depth and any order. `derivative`, `derivative-n`, `taylor`,
+  `gradient` and `hessian` nest in every combination, through a captured
+  variable or through the evaluation point, and at complex points; the
+  answers agree with native, including exactness. Before, nesting on the VM
+  raised, or answered 0 for two enclosing levels over an order-2 pass. The
+  special-case ride, carry and hyper-dual lanes are gone. `atan`, `asin`,
+  `acos` and two-argument `atan` carry every order, and a derivative of a
+  vector-, list- or complex-valued function is read element by element.
+- **Complex values on the VM keep exact parts and every derivative order
+  (SW-199, SW-200, SW-203).** `(make-rectangular 1/2 1/3)` printed `+0i`;
+  `real-part` and `imag-part` of a complex carrying a Taylor tower returned
+  only the first order; unary `-` of a complex answered `-0.0` and `abs`
+  answered 0 instead of raising.
+- **VM full tensor reductions return a number (SW-202).** With no axis,
+  `tensor-sum`, `tensor-mean`, `tensor-max` and `tensor-min` answered a
+  1-element tensor for a vector and a row of partial results for a matrix.
 
 - ESKM v1 scalar and empty tensor checkpoints retain their shapes and values
   across native and VM producers and consumers. Scalar observation is admitted
