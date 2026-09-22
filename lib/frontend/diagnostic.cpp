@@ -1,7 +1,9 @@
 #include <eshkol/frontend/diagnostic.h>
+#include <eshkol/frontend/syntax_color.h>
 
 #include <atomic>
 #include <mutex>
+#include <string>
 
 namespace {
 
@@ -28,7 +30,10 @@ extern "C" void eshkol_diagnostic_emit_v1(eshkol_diagnostic_severity_t severity,
     diagnostic.severity = severity;
     diagnostic.node_id = node_id;
     diagnostic.code = code ? code : "";
-    diagnostic.message = message ? message : "";
+    // A diagnostic names identifiers as the user wrote them, never by the
+    // expander's fresh binder spelling (syntax_color.h).
+    const std::string source_message = eshkol_syntax_source_text(message ? message : "");
+    diagnostic.message = source_message.c_str();
     (void)eshkol_node_span_lookup(node_id, &diagnostic.span);
 
     eshkol_diagnostic_sink_v1 sink = nullptr;

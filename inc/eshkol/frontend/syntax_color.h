@@ -130,8 +130,102 @@ static inline int eshkol_syntax_is_auxiliary(const char* name) {
     return 0;
 }
 
+/*
+ * Binder renaming and the source spelling.
+ *
+ * The native expander gives every lexical binder a fresh spelling,
+ * `_v<n>.<base>`, so a colored free identifier can reach a definition-site
+ * local that a caller's binding of the same spelling would otherwise shadow
+ * (ADR-0026, referential transparency). That spelling is an implementation
+ * name. Whatever a user reads -- a diagnostic, the source form of a
+ * procedure -- names the identifier as it was written. These functions are
+ * the one place that knows the format in both directions.
+ */
+
+/** The prefix of a fresh binder spelling: `_v<n>.` */
+#define ESHKOL_SYNTAX_FRESH_PREFIX "_v"
+#define ESHKOL_SYNTAX_FRESH_SEPARATOR '.'
+
+/** @brief Length of the `_v<n>.` prefix at @p name, or 0 if there is none. */
+static inline size_t eshkol_syntax_fresh_prefix_length(const char* name) {
+    if (!name || name[0] != '_' || name[1] != 'v') return 0;
+    const char* p = name + 2;
+    if (*p < '0' || *p > '9') return 0;
+    while (*p >= '0' && *p <= '9') ++p;
+    return *p == ESHKOL_SYNTAX_FRESH_SEPARATOR ? (size_t)(p + 1 - name) : 0;
+}
+
+/**
+ * @brief The spelling the user wrote for @p name: every fresh-binder prefix
+ *        removed, then every color.
+ * @param len receives the length of the source spelling.
+ * @return a pointer into @p name where the source spelling starts.
+ */
+static inline const char* eshkol_syntax_source_spelling(const char* name, size_t* len) {
+    if (!name) {
+        if (len) *len = 0;
+        return name;
+    }
+    size_t skip;
+    while ((skip = eshkol_syntax_fresh_prefix_length(name)) != 0) name += skip;
+    if (len) *len = eshkol_syntax_base_length(name);
+    return name;
+}
+
+/** @brief True for a byte that can continue an identifier in running text. */
+static inline int eshkol_syntax_is_identifier_byte(char c) {
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+        return 1;
+    return c != '\0' && strchr("!$%&*/:<=>?^_~+-.@", c) != NULL;
+}
+
+/**
+ * @brief Rewrite running text (a diagnostic) in place so every identifier in
+ *        it carries its source spelling: fresh-binder prefixes that start an
+ *        identifier are removed, and so is every color suffix.
+ *
+ * The result is never longer than the input.
+ */
+static inline void eshkol_syntax_source_text_inplace(char* text) {
+    if (!text) return;
+    char* out = text;
+    const char* in = text;
+    int at_boundary = 1;
+    while (*in) {
+        if (at_boundary) {
+            size_t skip;
+            while ((skip = eshkol_syntax_fresh_prefix_length(in)) != 0) in += skip;
+            if (!*in) break;
+        }
+        if (*in == ESHKOL_SYNTAX_COLOR_MARK) {
+            ++in;
+            while (*in >= '0' && *in <= '9') ++in;
+            continue;
+        }
+        at_boundary = !eshkol_syntax_is_identifier_byte(*in);
+        *out++ = *in++;
+    }
+    *out = '\0';
+}
+
 #ifdef __cplusplus
 } /* extern "C" */
+#endif
+
+#ifdef __cplusplus
+#include <string>
+/** @brief C++ convenience over eshkol_syntax_source_text_inplace(). */
+static inline std::string eshkol_syntax_source_text(std::string text) {
+    eshkol_syntax_source_text_inplace(&text[0]);
+    text.resize(strlen(text.c_str()));
+    return text;
+}
+/** @brief C++ convenience over eshkol_syntax_source_spelling(). */
+static inline std::string eshkol_syntax_source_name(const char* name) {
+    size_t len = 0;
+    const char* start = eshkol_syntax_source_spelling(name, &len);
+    return start ? std::string(start, len) : std::string();
+}
 #endif
 
 #endif /* ESHKOL_FRONTEND_SYNTAX_COLOR_H */

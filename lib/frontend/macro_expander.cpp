@@ -9,6 +9,7 @@
 #include <eshkol/core/ast_routing.h>
 #include <eshkol/frontend/ast_strings.h>
 #include <eshkol/frontend/macro_expander.h>
+#include <eshkol/frontend/shadowable_ops.h>
 #include <eshkol/frontend/syntax_color.h>
 #include <eshkol/frontend/syntax_datum.h>
 #include <eshkol/frontend/syntax_rules.h>
@@ -369,6 +370,28 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
 
     if (result.type == ESHKOL_OP) {
         auto* op = &result.operation;
+
+        // A builtin the parser lowered to its own node, used where a local
+        // binder of the same name is in scope, is a call of that binder.
+        // Scope is known here and nowhere later: once the binder carries its
+        // fresh spelling, no downstream pass can see that it shadows the
+        // builtin (shadowable_ops.h). The operands already sit in the call
+        // payload; the head becomes the variable, which the Call route below
+        // resolves like any other reference.
+        {
+            const auto& shadowable = eshkol::userShadowableBuiltinOps();
+            auto builtin = shadowable.find(op->op);
+            if (builtin != shadowable.end() &&
+                value_renames_.find(builtin->second) != value_renames_.end()) {
+                auto* head = new eshkol_ast_t{};
+                head->type = ESHKOL_VAR;
+                head->variable.id = eshkol_ast_string_copy(builtin->second);
+                head->line = result.line;
+                head->column = result.column;
+                op->op = ESHKOL_CALL_OP;
+                op->call_op.func = head;
+            }
+        }
 
         {
             enum class AstRoute {
@@ -989,9 +1012,12 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
     return result;
 }
 
-/** A fresh unique spelling for a binder written @p name (colors dropped). */
+/** A fresh unique spelling for a binder written @p name (colors dropped).
+ *  The format is owned by syntax_color.h, which also recovers the source
+ *  spelling for everything a user reads. */
 std::string MacroExpander::freshValueName(const std::string& name) {
-    return "_v" + std::to_string(rename_counter_++) + "." +
+    return ESHKOL_SYNTAX_FRESH_PREFIX + std::to_string(rename_counter_++) +
+           ESHKOL_SYNTAX_FRESH_SEPARATOR +
            name.substr(0, eshkol_syntax_base_length(name.c_str()));
 }
 

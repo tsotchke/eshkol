@@ -14,6 +14,15 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **Renamed binders keep their source spelling, and a local binding shadows
+  every builtin.** The hygienic expander renames every lexical binder, and the
+  implementation name leaked: type diagnostics read ``argument 2 of
+  '_v972.loop'`` and ``linear variable '_v973.b'``, and `(display (lambda (x)
+  x))` printed `(lambda (_v975.x) _v975.x)`. Diagnostics and procedure source
+  forms now name identifiers as written. A local `walk`, `unify`, `make-fact`
+  or other builtin the parser lowers to its own operation was ignored inside
+  its scope once renamed, so the builtin ran instead; the expander now turns
+  those uses into calls of the local binding.
 - **Every unary numeric builtin keeps a Taylor derivative.** `asin`, `acos`,
   `atan`, `asinh`, `acosh`, `atanh`, `log2`, `log10`, `exp2`, `cbrt`, `atan2`
   and the rounding functions returned their primal on a Taylor tower or level,

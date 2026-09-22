@@ -9411,6 +9411,30 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
                 FAIL_REGULAR_EXPRESSION "^FAIL:|^<|^>")
     endif()
 
+    # ADR-0026 renames every lexical binder to a fresh implementation
+    # spelling. Nothing a user reads may show it: the source form of a
+    # procedure, and every checker diagnostic, name identifiers as written.
+    add_test(
+        NAME renamed_binder_source_form_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/frontend/renamed_binder_source_spelling_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(renamed_binder_source_form_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: renamed binders keep their source spelling -- 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+    add_test(
+        NAME renamed_binder_diagnostic_spelling
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' tests/typesystem/named_let_numeric_accumulator_string_reject_test.esk -o '${CMAKE_CURRENT_BINARY_DIR}/renamed_binder_diag.out' -L'${CMAKE_CURRENT_BINARY_DIR}' 2>&1; '$<TARGET_FILE:eshkol-run>' tests/typesystem/qubit_clone_via_alias_chain_test.esk -o '${CMAKE_CURRENT_BINARY_DIR}/renamed_binder_diag2.out' -L'${CMAKE_CURRENT_BINARY_DIR}' 2>&1; true"
+    )
+    set_tests_properties(renamed_binder_diagnostic_spelling
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "argument 2 of 'loop': expected Int64, got String.*linear variable 'b' was consumed more than once"
+            FAIL_REGULAR_EXPRESSION "_v[0-9]+\\.")
+
     # SW-27: REST-ARG procedures as first-class values. Gated on the JIT and
     # both AOT levels because the failure mode differed by axis and by
     # procedure: silent wrong answer (`(h append '(1) '(2))` -> 1), a raised

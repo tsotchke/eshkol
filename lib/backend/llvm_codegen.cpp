@@ -15,6 +15,8 @@
 #include <eshkol/frontend/node_identity.h>
 #include <eshkol/frontend/semantic_identity.h>
 #include <eshkol/frontend/diagnostic.h>
+#include <eshkol/frontend/shadowable_ops.h>
+#include <eshkol/frontend/syntax_color.h>
 #include <eshkol/backend/type_system.h>
 #include <eshkol/backend/llvm_compat.h>
 #include <eshkol/backend/libm_codegen.h>
@@ -10785,42 +10787,10 @@ private:
      * header is the minimal vehicle to reuse it without duplicating
      * 150 lines. */
     static const std::unordered_map<eshkol_op_t, const char*>& userShadowableOps() {
-        static const std::unordered_map<eshkol_op_t, const char*> m = {
-            {ESHKOL_UNIFY_OP,               "unify"},
-            {ESHKOL_MAKE_SUBST_OP,          "make-substitution"},
-            {ESHKOL_WALK_OP,                "walk"},
-            {ESHKOL_MAKE_FACT_OP,           "make-fact"},
-            {ESHKOL_MAKE_KB_OP,             "make-kb"},
-            {ESHKOL_KB_ASSERT_OP,           "kb-assert!"},
-            {ESHKOL_KB_QUERY_OP,            "kb-query"},
-            {ESHKOL_KB_QUERY_PREFIX_OP,     "kb-query-prefix"},
-            {ESHKOL_MAKE_FACTOR_GRAPH_OP,   "make-factor-graph"},
-            {ESHKOL_FG_ADD_FACTOR_OP,       "fg-add-factor!"},
-            {ESHKOL_FG_INFER_OP,            "fg-infer!"},
-            {ESHKOL_FG_OBSERVE_OP,          "fg-observe!"},
-            {ESHKOL_FG_UPDATE_CPT_OP,       "fg-update-cpt!"},
-            {ESHKOL_FREE_ENERGY_OP,         "free-energy"},
-            {ESHKOL_EXPECTED_FREE_ENERGY_OP,"expected-free-energy"},
-            {ESHKOL_MAKE_WORKSPACE_OP,      "make-workspace"},
-            {ESHKOL_WS_REGISTER_OP,         "ws-register!"},
-            {ESHKOL_WS_STEP_OP,             "ws-step!"},
-            {ESHKOL_DNC_MAKE_OP,            "make-dnc-memory"},
-            {ESHKOL_DNC_CONTENT_ADDR_OP,    "dnc-content-address"},
-            {ESHKOL_DNC_LOC_ADDR_OP,        "dnc-loc-address"},
-            {ESHKOL_DNC_READ_OP,            "dnc-read"},
-            {ESHKOL_DNC_WRITE_OP,           "dnc-write!"},
-            {ESHKOL_DNC_ALLOC_WEIGHTS_OP,   "dnc-alloc-weights"},
-            {ESHKOL_DNC_READ_GRAD_OP,       "dnc-read-grad"},
-            {ESHKOL_DNC_PRED_OP,            "dnc-memory?"},
-            {ESHKOL_SDNC_PROGRAM_OP,        "sdnc-program"},
-            {ESHKOL_SDNC_RUN_OP,            "sdnc-run"},
-            {ESHKOL_SDNC_WEIGHT_GRAD_OP,    "sdnc-weight-grad"},
-            {ESHKOL_SDNC_PARAMS_OP,         "sdnc-params"},
-            {ESHKOL_SDNC_SET_PARAMS_OP,     "sdnc-set-params!"},
-            {ESHKOL_SDNC_IMPROVE_OP,        "sdnc-improve!"},
-            {ESHKOL_SDNC_PRED_OP,           "sdnc?"},
-        };
-        return m;
+        // One table, shared with the macro expander, which resolves the
+        // LEXICAL shadows before codegen runs (shadowable_ops.h). What
+        // reaches this redirect is a top-level or REPL-batch definition.
+        return eshkol::userShadowableBuiltinOps();
     }
 
     /* Does `name` resolve to a user-defined binding in a scope that
@@ -37102,7 +37072,9 @@ private:
         return eshkol_make_int_ast(0);
     }
 
-    // Convert AST to runtime S-expression (quoted list)
+    // Convert AST to runtime S-expression (quoted list). Identifiers carry
+    // their source spelling: this is also the source form of a procedure,
+    // whose binders the expander renamed (syntax_color.h).
     Value* codegenQuotedAST(const eshkol_ast_t* ast) {
         if (!ast) return packNullToTaggedValue();
 
@@ -37121,7 +37093,7 @@ private:
             case ESHKOL_VAR:
                 // Return symbol with HEAP_SUBTYPE_SYMBOL (distinct from strings)
                 return packPtrToTaggedValue(
-                    ctx_->internStringWithHeader(ast->variable.id, HEAP_SUBTYPE_SYMBOL),
+                    ctx_->internStringWithHeader(eshkol_syntax_source_name(ast->variable.id), HEAP_SUBTYPE_SYMBOL),
                     ESHKOL_VALUE_HEAP_PTR);
 
             case ESHKOL_BOOL:
@@ -37426,7 +37398,7 @@ private:
                         const eshkol_ast_t* var_ast = binding_cons->cons_cell.car;
                         Value* var;
                         if (var_ast->type == ESHKOL_VAR && var_ast->variable.id) {
-                            var = packPtrToTaggedValue(ctx_->internStringWithHeader(var_ast->variable.id, HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
+                            var = packPtrToTaggedValue(ctx_->internStringWithHeader(eshkol_syntax_source_name(var_ast->variable.id), HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
                         } else {
                             var = codegenQuotedAST(var_ast);
                         }
@@ -37464,7 +37436,7 @@ private:
             case AstRoute::Define: {
                 // Build (define name value) or (define (name params) body)
                 Value* define_sym = packPtrToTaggedValue(ctx_->internStringWithHeader("define", HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
-                Value* name = packPtrToTaggedValue(ctx_->internStringWithHeader(op->define_op.name, HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
+                Value* name = packPtrToTaggedValue(ctx_->internStringWithHeader(eshkol_syntax_source_name(op->define_op.name), HEAP_SUBTYPE_SYMBOL), ESHKOL_VALUE_HEAP_PTR);
 
                 if (op->define_op.is_function) {
                     // Build (define (name params...) body)
@@ -37472,7 +37444,7 @@ private:
                     Value* name_params = packNullToTaggedValue();
                     for (int64_t i = op->define_op.num_params - 1; i >= 0; i--) {
                         Value* param = packPtrToTaggedValue(
-                            ctx_->internStringWithHeader(op->define_op.parameters[i].variable.id, HEAP_SUBTYPE_SYMBOL),
+                            ctx_->internStringWithHeader(eshkol_syntax_source_name(op->define_op.parameters[i].variable.id), HEAP_SUBTYPE_SYMBOL),
                             ESHKOL_VALUE_HEAP_PTR);
                         name_params = codegenTaggedArenaConsCellFromTaggedValue(param, name_params);
                         name_params = packPtrToTaggedValue(builder->CreateIntToPtr(name_params, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
@@ -37726,7 +37698,7 @@ private:
                 return result_int;
             }
 
-            Value* op_string = ctx_->internStringWithHeader(op->call_op.func->variable.id, HEAP_SUBTYPE_SYMBOL);
+            Value* op_string = ctx_->internStringWithHeader(eshkol_syntax_source_name(op->call_op.func->variable.id), HEAP_SUBTYPE_SYMBOL);
             TypedValue op_symbol(op_string, ESHKOL_VALUE_HEAP_PTR, true);
             Value* op_tagged = typedValueToTaggedValue(op_symbol);
 
@@ -37765,7 +37737,7 @@ private:
             if (params[i].type != ESHKOL_VAR || !params[i].variable.id) continue;
             
             // Create parameter symbol string with header for HEAP_PTR
-            Value* param_name = ctx_->internStringWithHeader(params[i].variable.id, HEAP_SUBTYPE_SYMBOL);
+            Value* param_name = ctx_->internStringWithHeader(eshkol_syntax_source_name(params[i].variable.id), HEAP_SUBTYPE_SYMBOL);
             Value* param_tagged = packPtrToTaggedValue(param_name, ESHKOL_VALUE_HEAP_PTR);
             
             // Get rest of list as tagged value
