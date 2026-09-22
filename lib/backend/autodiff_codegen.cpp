@@ -11,6 +11,8 @@
  */
 
 #include <eshkol/core/ast_routing.h>
+#include <cmath>
+#include <limits>
 #include <eshkol/backend/autodiff_codegen.h>
 #include <eshkol/backend/llvm_compat.h>
 #include <eshkol/backend/libm_codegen.h>
@@ -9499,7 +9501,60 @@ private:
             co[k] = b().CreateFDiv(b().CreateFNeg(ac), cst((double)k));
         }
     }
+    // SW-225: tr_pow_at_zero of runtime_taylor.c, operation for operation, as
+    // straight-line SSA selected when u_0 == 0 (the recurrence is 0/0 there).
+    V e_pow_at_zero(const V& u, double r) {
+        if (r == std::floor(r) && std::fabs(r) <= 1073741824.0) {
+            int64_t p = (int64_t)r;
+            uint64_t e = p < 0 ? (uint64_t)(-p) : (uint64_t)p;
+            V acc = zeros();
+            acc[0] = cst(1.0);
+            V base = u;
+            while (e) {
+                if (e & 1u) acc = e_mul(acc, base);
+                e >>= 1;
+                if (e) base = e_mul(base, base);
+            }
+            if (p >= 0) return acc;
+            V one = zeros();
+            one[0] = cst(1.0);
+            return e_div(one, acc);
+        }
+        V s(n_);
+        s[0] = libm2("pow", u[0], cst(r));
+        for (int k = 1; k < n_; k++) s[k] = cst(0.0);   // u is 0 to this order
+        double nan = std::numeric_limits<double>::quiet_NaN();
+        double inf = std::numeric_limits<double>::infinity();
+        for (int m = n_ - 1; m >= 1; m--) {            // the first nonzero u_m wins
+            llvm::Value* nonzero = b().CreateFCmpUNE(u[m], cst(0.0));
+            llvm::Value* u1_neg = b().CreateFCmpOLT(u[1], cst(0.0));
+            llvm::Value* u1_nan = b().CreateFCmpUNO(u[1], u[1]);
+            double falling = 1.0;
+            for (int k = 1; k < n_; k++) {
+                falling *= (r - (double)(k - 1)) < 0.0 ? -1.0 : 1.0;
+                llvm::Value* v;
+                if ((double)k < (double)m * r) v = cst(0.0);
+                else if (m > 1) v = cst(nan);
+                else {
+                    llvm::Value* signed_inf = (k & 1)
+                        ? b().CreateSelect(u1_neg, cst(-falling * inf), cst(falling * inf))
+                        : cst(falling * inf);
+                    v = b().CreateSelect(u1_nan, cst(nan), signed_inf);
+                }
+                s[k] = b().CreateSelect(nonzero, v, s[k]);
+            }
+        }
+        return s;
+    }
     V e_pow_const(const V& u, double r) {
+        V rec = e_pow_recurrence(u, r);
+        if (n_ < 2) return rec;
+        V z = e_pow_at_zero(u, r);
+        llvm::Value* at_zero = b().CreateFCmpOEQ(u[0], cst(0.0));
+        for (int k = 0; k < n_; k++) rec[k] = b().CreateSelect(at_zero, z[k], rec[k]);
+        return rec;
+    }
+    V e_pow_recurrence(const V& u, double r) {
         V s(n_);
         s[0] = libm2("pow", u[0], cst(r));
         for (int k = 1; k < n_; k++) {

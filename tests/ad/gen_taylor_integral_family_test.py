@@ -139,6 +139,35 @@ for label, expr, want in [
     emit(f'(check-ieee "{label}" {expr} {want})')
 
 emit("")
+emit(";; SW-225: the power step at a zero base is the IEEE value of the closed")
+emit(";; form, through the runtime tower (bare procedure) and the compile-time-K")
+emit(";; tier (lambda), which must agree.")
+for label, body, point, k, want in [
+    ("sqrt", "sqrt", "0.0", 1, "+inf"), ("sqrt", "sqrt", "0.0", 2, "-inf"),
+    ("sqrt", "sqrt", "0.0", 3, "+inf"), ("sqrt", "sqrt", "0", 1, "+inf"),
+    ("sqrt", "sqrt", "-0.0", 1, "+inf"),
+    ("x^1.5", "(lambda (x) (expt x 1.5))", "0.0", 1, "0.0"),
+    ("x^1.5", "(lambda (x) (expt x 1.5))", "0.0", 2, "+inf"),
+    ("x^-0.5", "(lambda (x) (expt x -0.5))", "0.0", 1, "-inf"),
+    ("x^2.0", "(lambda (x) (expt x 2.0))", "0.0", 2, "2.0"),
+    ("x^-1.0", "(lambda (x) (expt x -1.0))", "0.0", 2, "+inf"),
+    ("(2x)^2.5", "(lambda (x) (expt (* 2.0 x) 2.5))", "0.0", 3, "+inf"),
+    ("sqrt(-x)", "(lambda (x) (sqrt (- x)))", "0.0", 1, "-inf"),
+    ("sqrt(x+x^2)", "(lambda (x) (sqrt (+ x (* x x))))", "0.0", 2, "-inf"),
+    ("sqrt(x^2) = |x|", "(lambda (x) (sqrt (* x x)))", "0.0", 2, "nan"),
+    ("asin", "asin", "1.0", 1, "+inf"), ("asin", "asin", "1.0", 2, "+inf"),
+    ("asin", "asin", "-1.0", 2, "-inf"), ("acos", "acos", "1.0", 2, "-inf"),
+    ("acosh", "acosh", "1.0", 2, "-inf"),
+]:
+    emit(f'(check-ieee "{label} d{k} at {point}" (derivative-n {body} {point} {k}) {want})')
+    if not body.startswith("(lambda"):
+        emit(f'(check-ieee "{label} d{k} lambda at {point}" (derivative-n (lambda (x) ({body} x)) {point} {k}) {want})')
+emit('(check-ieee "sqrt at 0 under a jet" (derivative (lambda (a) (derivative-n (lambda (x) (* a (sqrt x))) 0.0 1)) 2.0) +inf)')
+emit('(define ts (taylor sqrt 0.0 3))')
+emit('(check-ieee "sqrt taylor c1 at 0" (list-ref ts 1) +inf)')
+emit('(check-ieee "sqrt taylor c2 at 0" (list-ref ts 2) -inf)')
+
+emit("")
 emit(";; The rounding functions are constant between their jumps.")
 for name in ["floor", "ceiling", "truncate", "round"]:
     for k in (1, 2, 3):

@@ -14684,6 +14684,49 @@ entries:
     notes: >-
       The VM's (derivative-n (lambda (x) (/ 1.0 x)) 0.0 2) prints <dual>; reported
       to the VM lane.
+  - id: SW-225
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/pole-propagation
+    status: fixed
+    closed_at: "db05575c7"
+    title: "the Taylor power step answered NaN at a zero base: sqrt, expt with a constant exponent and the inverse functions' poles"
+    repro: >-
+      (derivative-n sqrt 0.0 1); (derivative-n sqrt 0.0 2);
+      (derivative-n (lambda (x) (expt x 2.0)) 0.0 2);
+      (derivative-n (lambda (x) (expt x 1.5)) 0.0 1); (derivative-n asin 1.0 2)
+    observed: >-
+      +nan.0 for every one on native JIT and AOT (runtime tower and the
+      compile-time-K tier alike).
+    correct: >-
+      +inf.0, -inf.0, 2, 0 and +inf.0: the IEEE values of the closed forms.
+    root_cause: >-
+      The constant-exponent power recurrence s_k = (1/(k u_0)) sum (j r - (k-j))
+      u_j s_{k-j} divides by u_0; at u_0 = 0 every coefficient past s_0 is 0/0.
+      sqrt, expt with a constant exponent (including integers on the inexact
+      path), the dual and level towers and the inverse functions' derivative
+      series all use it.
+    fix: >-
+      tr_pow_const (lib/core/runtime_taylor.c) answers a zero base by
+      tr_pow_at_zero: an integer exponent is exact algebra (repeated Cauchy
+      products, and 1/u^|p| by the division recurrence of SW-222); any other r
+      gives s_k = 0 for k < m r and, for m = 1, the signed infinity of
+      r (r-1) ... (r-k+1) u_1^k; m > 1 is NaN (0 * inf in the closed form). The
+      compile-time-K emitter mirrors it as straight-line SSA selected on u_0 == 0;
+      the seed tangent uses u^(r-1) by the same step; the level tier routes a
+      plain-number zero base to it.
+    evidence: >-
+      tests/ad/taylor_integral_family_test.esk section SW-225: 32 checks through
+      the bare procedure (runtime tower) and a lambda (compile-time-K tier), plus
+      under an enclosing jet and in the Taylor list; ctest taylor_integral_family
+      _jit and _aot pass. The same expressions on the pre-change build printed
+      +nan.0. Broad AD ctest subset 172 of 174 (the two failures are the VM
+      nested_towers_matrix pair, unchanged, no VM file touched).
+    caught_by: [coordinator-review]
+    missed_by: [taylor-tower-self-test]
+    notes: >-
+      The VM does not agree yet: derivative-n of sqrt at 0.0 beyond order 1 prints
+      <dual>, and (expt x 1.5) gives NaN; reported to the VM lane, so no VM test.
   - id: SW-221
     bucket: SILENT-WRONG
     subtag: containers
