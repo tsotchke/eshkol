@@ -3,7 +3,7 @@ bucket: SILENT-WRONG
 subtag: autodiff
 family: runtime-taylor/pole-propagation
 status: fixed
-closed_at: "PENDING"
+closed_at: "db05575c7"
 title: "the Taylor power step answered NaN at a zero base: sqrt, expt with a constant exponent and the inverse functions' poles"
 repro: >-
   (derivative-n sqrt 0.0 1); (derivative-n sqrt 0.0 2);
