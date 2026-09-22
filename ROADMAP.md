@@ -532,6 +532,20 @@ The user-reachable region **handle** surface (`region-open`/`region-close`)
 remains bookkeeping-only on the VM (Stage-2, not yet scheduled to a
 release).
 
+- Native checked promotion (#713): **IMPLEMENTED CANDIDATE, pending integration
+  (2026-09-22); not released.** The complete P0–P3 union adds transactional
+  promotion, prepublication scalar/batch mutation checks, fixed emergency
+  transfer and the admitted constructor null checks. The focused supported
+  Ubuntu 22.04 / LLVM 21.1.8 gate passed 11/11; the native ASan/UBSan gate passed
+  7/7. See [checked-promotion-v1](docs/checked-promotion-v1.md) for reproducible
+  commands, explicit raw-alias/layout limits, retained-memory measurements and
+  constructor coverage gaps. The preserved production-OFF closure and existing
+  continuation region-capture regression now pass as optimized AOT and full-file
+  JIT through the immutable root getter. Current source and artifact manifests are
+  recorded for implementation commit `714d20fe`; integration remains pending. The
+  transformer roadmap and toolchain pin remain blocked
+  until explicit root adoption; local consumer checks do not authorize a pin
+  change.
 - Interop wave 1: **H1 NumPy capsule-lifetime fix, SHIPPED (#458)** — the
   Python bindings' zero-copy tensor array now holds a strong reference to
   its owning `Context` via its NumPy capsule, so the array stays valid past
