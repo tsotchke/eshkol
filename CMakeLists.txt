@@ -5629,6 +5629,41 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 900
             PASS_REGULAR_EXPRESSION "PASS: Jacobian counterexample"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # SW-197: a derivative keeps its carrier -- and at an exact point its
+    # exactness -- through list, vector and tensor intermediates (ADR-0020
+    # amendment 2: a forward-mode carrier stored into a tensor makes it a jet
+    # tensor and is read back whole). One self-checking matrix on all four
+    # routes: native JIT, AOT, VM from source, VM from ESKB.
+    add_test(
+        NAME exact_collection_intermediates_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    add_test(
+        NAME exact_collection_intermediates_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates_aot'"
+    )
+    add_test(
+        NAME exact_collection_intermediates_vm_smoke
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk"
+    )
+    add_test(
+        NAME exact_collection_intermediates_vm_eskb_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates.eskb'"
+    )
+    set_tests_properties(
+        exact_collection_intermediates_runtime_smoke
+        exact_collection_intermediates_aot_smoke
+        exact_collection_intermediates_vm_smoke
+        exact_collection_intermediates_vm_eskb_smoke
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: exact derivative through collection intermediates"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
     # ESH-0394: the exact-coefficient Taylor tier is the ORACLE the exact tier
     # routes `derivative`/`gradient`/`hessian` to at an exact point, so a
     # regression in it is a regression in all three. It was unwired -- nothing in

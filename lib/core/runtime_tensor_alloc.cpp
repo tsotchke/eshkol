@@ -106,6 +106,34 @@ void* eshkol_tensor_from_collection(arena_t* arena,
  * not return (the type error raises). The trailing `return nullptr` keeps the
  * compiler happy and is never reached.
  */
+/* A leaf a flat collection may contribute to a coerced tensor operand: a real
+ * number of any exactness, or a forward-mode derivative carrier (a dual jet or
+ * a Taylor tower). The slot store boundary answers, so this coercion and the
+ * tensor constructors cannot disagree. */
+static bool coercible_tensor_leaf(const eshkol_tagged_value_t& e) {
+    return eshkol_tensor_leaf_is_storable(&e) != 0;
+}
+
+/* Build the 1-D tensor a flat collection denotes. Each leaf is stored through
+ * the container slot store boundary (ADR-0020), the one rule every tensor
+ * construction applies: a real becomes the f64 `inexact` gives it, and a
+ * forward-mode carrier widens the tensor to a jet tensor and is kept whole. */
+static void* coerce_leaves_to_tensor(const eshkol_tagged_value_t* leaves,
+                                     int64_t len, const char* op_name) {
+    eshkol_tensor_t* t = arena_allocate_tensor_full(get_global_arena(), 1, (uint64_t)len);
+    if (!t) return nullptr;
+    if (t->dimensions) t->dimensions[0] = (uint64_t)len;
+    for (int64_t i = 0; i < len; i++) {
+        if (eshkol_tensor_slot_store(t, i, &leaves[i]) != ESHKOL_SLOT_STORE_OK) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                 "%s: collection element has no tensor representation",
+                                 op_name ? op_name : "tensor-op");
+            return nullptr;
+        }
+    }
+    return t;
+}
+
 static void* tensor_operand_checked_core(const eshkol_tagged_value_t* val,
                                           const char* op_name) {
     if (val) {
@@ -150,56 +178,27 @@ static void* tensor_operand_checked_core(const eshkol_tagged_value_t* val,
                     return ptr;  /* already a tensor — zero-copy fast path */
                 }
                 if (hdr->subtype == HEAP_SUBTYPE_VECTOR) {
-                    /* Coerce a homogeneous numeric vector to a 1-D tensor.
+                    /* Coerce a flat numeric vector to a 1-D tensor.
                      * Layout: [len:i64][eshkol_tagged_value_t elems...].
                      * A forward-mode derivative deliberately uses the same
-                     * collection carrier, with DUAL_NUMBER elements.  Keep
-                     * those tagged jets in a dual tensor instead of rejecting
-                     * them or flattening them to their primal values. */
+                     * collection carrier, with dual-jet or Taylor-tower
+                     * elements; the slot store boundary keeps those whole in
+                     * a jet tensor instead of rejecting them or flattening
+                     * them to their primal values. */
                     char* v = (char*)ptr;
                     int64_t len = *(int64_t*)v;
                     if (len < 0) len = 0;
                     const eshkol_tagged_value_t* elems =
                         (const eshkol_tagged_value_t*)(v + sizeof(int64_t));
-                    bool has_dual = false;
                     for (int64_t i = 0; i < len; i++) {
-                        uint8_t bt = (uint8_t)(elems[i].type & 0x0F);
-                        if (bt == ESHKOL_VALUE_DUAL_NUMBER) {
-                            has_dual = true;
-                        } else if (bt != ESHKOL_VALUE_INT64 && bt != ESHKOL_VALUE_DOUBLE) {
+                        if (!coercible_tensor_leaf(elems[i])) {
                             /* heterogeneous / non-numeric vector — not coercible */
                             eshkol_type_error_with_operand(
                                 op_name, "tensor or numeric vector", val);
                             return nullptr;  /* not reached */
                         }
                     }
-                    arena_t* arena = get_global_arena();
-                    eshkol_tensor_t* t =
-                        arena_allocate_tensor_full(arena, 1, (uint64_t)len);
-                    if (!t) return nullptr;
-                    if (t->dimensions) t->dimensions[0] = (uint64_t)len;
-                    if (has_dual) {
-                        /* The ordinary allocator reserves f64 bit-patterns.
-                         * Replace that element allocation with tagged slots;
-                         * the abandoned arena bytes are harmless and remain
-                         * owned by the same arena. */
-                        void* dual_elems = arena_allocate(
-                            arena, (size_t)len * sizeof(eshkol_tagged_value_t));
-                        if (!dual_elems) return nullptr;
-                        t->elements = (int64_t*)dual_elems;
-                        t->dtype = ESHKOL_TENSOR_DTYPE_DUAL;
-                        std::memcpy(t->elements, elems,
-                                    (size_t)len * sizeof(eshkol_tagged_value_t));
-                        return t;
-                    }
-                    for (int64_t i = 0; i < len; i++) {
-                        const eshkol_tagged_value_t* e = &elems[i];
-                        double d = ((e->type & 0x0F) == ESHKOL_VALUE_DOUBLE)
-                                       ? e->data.double_val
-                                       : (double)e->data.int_val;
-                        std::memcpy(&t->elements[i], &d, sizeof(double));
-                    }
-                    return t;
+                    return coerce_leaves_to_tensor(elems, len, op_name);
                 }
                 /* A CONS-subtype operand is handled below, by the single
                  * ESHKOL_IS_CONS_COMPAT site — it covers this consolidated
@@ -234,8 +233,7 @@ static void* tensor_operand_checked_core(const eshkol_tagged_value_t* val,
                 const auto* cell =
                     (const arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
                 if (!cell) { numeric = false; break; }
-                uint8_t bt = (uint8_t)(cell->car.type & 0x0F);
-                if (bt != ESHKOL_VALUE_INT64 && bt != ESHKOL_VALUE_DOUBLE) {
+                if (!coercible_tensor_leaf(cell->car)) {
                     numeric = false;
                     break;
                 }
@@ -244,21 +242,17 @@ static void* tensor_operand_checked_core(const eshkol_tagged_value_t* val,
             }
             if (numeric && cur.type == ESHKOL_VALUE_NULL) {
                 arena_t* arena = get_global_arena();
-                eshkol_tensor_t* t =
-                    arena_allocate_tensor_full(arena, 1, (uint64_t)len);
-                if (!t) return nullptr;
-                if (t->dimensions) t->dimensions[0] = (uint64_t)len;
+                auto* leaves = static_cast<eshkol_tagged_value_t*>(arena_allocate(
+                    arena, (size_t)(len ? len : 1) * sizeof(eshkol_tagged_value_t)));
+                if (!leaves) return nullptr;
                 cur = *val;
                 for (int64_t i = 0; i < len && ESHKOL_IS_CONS_COMPAT(cur); i++) {
                     const auto* cell =
                         (const arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
-                    double d = ((cell->car.type & 0x0F) == ESHKOL_VALUE_DOUBLE)
-                                   ? cell->car.data.double_val
-                                   : (double)cell->car.data.int_val;
-                    std::memcpy(&t->elements[i], &d, sizeof(double));
+                    leaves[i] = cell->car;
                     cur = cell->cdr;
                 }
-                return t;
+                return coerce_leaves_to_tensor(leaves, len, op_name);
             }
             eshkol_type_error_with_operand(
                 op_name, "tensor, numeric vector, or list of numbers", val);

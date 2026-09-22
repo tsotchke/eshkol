@@ -35004,6 +35004,8 @@ private:
 
         // TENSOR INPUT: Normal tensor access path (existing logic)
         builder->SetInsertPoint(tensor_input);
+        Value* tagged_slot_result = nullptr;
+        BasicBlock* tagged_slot_exit = nullptr;
 
         // Unpack if tagged_value (lambda parameters are tagged_value)
         Value* vector_ptr_int = builder->CreateLoad(int64_type, vref_src_slot);
@@ -35037,6 +35039,29 @@ private:
             builder->SetInsertPoint(tref_fail);
             emitVrefBoundsRaise("tensor-ref: index out of bounds");
             builder->SetInsertPoint(tref_ok);
+        }
+
+        // A jet tensor (a forward-mode derivative carrier stored by
+        // construction or a mutator, ADR-0020 amendment 2) or a boxed carrier
+        // holds 16-byte tagged values: the slot IS the value, whole, with
+        // nothing to decode. Reading it as an 8-byte f64 answered the carrier's
+        // pointer bits (0 or a denormal) for a derivative that passed through
+        // `(tensor ...)` (SW-197).
+        {
+            Value* tref_dtype = builder->CreateLoad(int64_type,
+                builder->CreateStructGEP(tensor_type, vector_ptr, 4), "tref_dtype");
+            Value* tref_is_tagged = builder->CreateOr(
+                builder->CreateICmpEQ(tref_dtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_DUAL)),
+                builder->CreateICmpEQ(tref_dtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_BOXED)));
+            BasicBlock* tref_tagged = BasicBlock::Create(*context, "vref_tensor_tagged_slot", current_func);
+            BasicBlock* tref_numeric = BasicBlock::Create(*context, "vref_tensor_numeric_slot", current_func);
+            builder->CreateCondBr(tref_is_tagged, tref_tagged, tref_numeric);
+            builder->SetInsertPoint(tref_tagged);
+            tagged_slot_result = builder->CreateLoad(tagged_value_type,
+                builder->CreateGEP(tagged_value_type, typed_elements_ptr, index_int), "tref_tagged_value");
+            builder->CreateBr(vref_final);
+            tagged_slot_exit = builder->GetInsertBlock();
+            builder->SetInsertPoint(tref_numeric);
         }
 
         // Load element as int64 (could be double bitcasted OR AD node pointer)
@@ -35145,10 +35170,11 @@ private:
         
         // Final merge: Return tensor element, Scheme vector element, or AD node
         builder->SetInsertPoint(vref_final);
-        PHINode* final_result = builder->CreatePHI(tagged_value_type, 4, "vref_final_result");
+        PHINode* final_result = builder->CreatePHI(tagged_value_type, 5, "vref_final_result");
         final_result->addIncoming(scalar_result, scalar_exit);
         final_result->addIncoming(ad_result, ad_node_exit);
         final_result->addIncoming(scheme_result, scheme_vector_exit);
+        final_result->addIncoming(tagged_slot_result, tagged_slot_exit);
         final_result->addIncoming(result_phi, vref_merge);
 
         return final_result;
