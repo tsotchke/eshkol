@@ -1,0 +1,59 @@
+;; SW-230 regression: every math builtin of the math dispatch is a first-class
+;; value that answers what the call position answers -- passed, stored,
+;; returned, mapped and applied, on a real, an exact rational and a derivative
+;; carrier. atan2 used to be the raw libm function (a crash when called
+;; through a closure, invalid IR under apply), and a first-class atan or round
+;; dropped its second argument.
+(define failures 0)
+(define checks 0)
+(define (check name got want)
+  (set! checks (+ checks 1))
+  (if (not (or (and (number? got) (number? want) (nan? (real-part want)) (nan? (real-part got)))
+               (and (number? got) (number? want)
+                    (<= (magnitude (- got want)) (+ 1e-12 (* 1e-9 (magnitude want)))))
+               (equal? got want)))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (display " got ") (write got)
+             (display " want ") (write want) (newline))))
+(define (pass1 f a) (f a))
+(define (pass2 f a b) (f a b))
+(define stored-atan2 atan2)
+(define (returned) atan2)
+
+(define-syntax check-unary
+  (syntax-rules ()
+    ((_ f x)
+     (begin
+       (check (list 'f 'passed x) (pass1 f x) (f x))
+       (check (list 'f 'mapped x) (car (map f (list x))) (f x))
+       (check (list 'f 'applied x) (apply f (list x)) (f x))
+       (check (list 'f 'derivative-passed x)
+              (derivative (lambda (y) (pass1 f y)) x) (derivative (lambda (y) (f y)) x))))))
+(check-unary exp 0.3) (check-unary exp2 0.3) (check-unary log 0.3) (check-unary log2 0.3)
+(check-unary log10 0.3) (check-unary sin 0.3) (check-unary cos 0.3) (check-unary tan 0.3)
+(check-unary asin 0.3) (check-unary acos 0.3) (check-unary atan 0.3) (check-unary sinh 0.3)
+(check-unary cosh 0.3) (check-unary tanh 0.3) (check-unary asinh 0.3) (check-unary acosh 1.3)
+(check-unary atanh 0.3) (check-unary sqrt 0.3) (check-unary cbrt 0.3) (check-unary abs -0.3)
+(check-unary fabs -0.3) (check-unary square 0.3) (check-unary inexact 0.3)
+(check-unary floor 1/3) (check-unary ceiling 1/3) (check-unary truncate 7/3) (check-unary round 5/2)
+(check-unary sqrt 1/4) (check-unary abs -1/3) (check-unary square 2/3)
+
+;; atan2 and the two-argument atan
+(check "atan2 passed" (pass2 atan2 1.0 2.0) (atan 1.0 2.0))
+(check "atan2 stored" (stored-atan2 1.0 2.0) (atan 1.0 2.0))
+(check "atan2 returned" ((returned) 1.0 2.0) (atan 1.0 2.0))
+(check "atan2 mapped" (map atan2 (list 1.0 -1.0) (list 2.0 -2.0)) (list (atan 1.0 2.0) (atan -1.0 -2.0)))
+(check "atan2 applied" (apply atan2 (list 1.0 2.0)) (atan 1.0 2.0))
+(check "atan2 passed derivative" (derivative (lambda (x) (pass2 atan2 x 2.0)) 1.0) 0.4)
+(check "atan value, two arguments" (pass2 atan 1.0 2.0) (atan 1.0 2.0))
+(check "atan value, one argument" (pass1 atan 1.0) (atan 1.0))
+(check "atan mapped over two lists" (map atan (list 1.0) (list 2.0)) (list (atan 1.0 2.0)))
+(check "atan applied, two arguments" (apply atan (list 1.0 2.0)) (atan 1.0 2.0))
+(check "atan value derivative" (derivative (lambda (x) (pass2 atan x 2.0)) 1.0) 0.4)
+(check "round value" (pass1 round 2.5) 2.0)
+(check "atan value, wrong count raises"
+       (guard (e (#t 'raised)) (let ((f atan)) (f 1.0 2.0 3.0))) 'raised)
+
+(if (= failures 0)
+    (begin (display "PASS: first_class_math_builtins ") (display checks) (newline))
+    (begin (display "FAIL: ") (display failures) (display " of ") (display checks) (newline)))
