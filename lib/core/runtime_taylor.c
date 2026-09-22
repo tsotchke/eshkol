@@ -62,6 +62,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 
 #ifndef M_LN2
 #define M_LN2 0.69314718055994530942
@@ -860,7 +861,68 @@ static void tr_pow_seeded(double* s, double s0, const double* u, double r, int n
         s[k] = acc / ((double)k * u[0]);
     }
 }
+#define ESH_TAYLOR_STACKN 64
+
+/* SW-225: u^r when u_0 is zero. The recurrence below divides by u_0 and is
+ * 0/0 there, where the closed form has a definite IEEE value. This applies
+ * the SW-222 pole rule to the power step, for every caller (sqrt, expt with
+ * a constant exponent, the inverse functions' derivative series, the jets):
+ *
+ *  - an integer r is exact algebra: u^p by repeated Cauchy products, and for
+ *    p < 0 the division recurrence 1/u^|p|, whose poles are those of SW-222
+ *    (a simple pole is the closed form, a higher-order one ends in 0/0);
+ *  - any other r, the IEEE value of the closed form's k-th derivative:
+ *    with m the first index of a nonzero u_m, u^r vanishes to order m r, so
+ *    s_k = 0 for k < m r. For m = 1 the k-th derivative r (r-1) ... (r-k+1)
+ *    u^(r-k) u_1^k is an infinity of that sign for k > r. For m > 1 the chain
+ *    rule meets 0 * inf and the closed form is NaN, as the SW-222 double pole
+ *    is (sqrt of x^2 = |x| has no derivative at 0). A series that is zero to
+ *    its truncation order is taken as the zero it shows.
+ *
+ * `scratch` holds 3 n doubles for the integer case. */
+static void tr_pow_at_zero(double* s, const double* u, double r, int n, double* scratch) {
+    if (r == floor(r) && fabs(r) <= 1073741824.0) {
+        int64_t p = (int64_t)r;
+        uint64_t e = p < 0 ? (uint64_t)(-p) : (uint64_t)p;
+        double* acc = scratch;
+        double* base = scratch + n;
+        double* tmp = scratch + 2 * n;
+        for (int k = 0; k < n; k++) { acc[k] = k == 0 ? 1.0 : 0.0; base[k] = u[k]; }
+        while (e) {
+            if (e & 1u) { tr_mul(tmp, acc, base, n); memcpy(acc, tmp, (size_t)n * sizeof(double)); }
+            e >>= 1;
+            if (e) { tr_mul(tmp, base, base, n); memcpy(base, tmp, (size_t)n * sizeof(double)); }
+        }
+        if (p < 0) {
+            for (int k = 0; k < n; k++) base[k] = k == 0 ? 1.0 : 0.0;
+            tr_div(s, base, acc, n);
+        } else {
+            memcpy(s, acc, (size_t)n * sizeof(double));
+        }
+        return;
+    }
+    int m = 0;
+    for (int j = 1; j < n; j++) if (u[j] != 0.0) { m = j; break; }
+    s[0] = pow(u[0], r);
+    double falling = 1.0;               /* sign of r (r-1) ... (r-k+1) */
+    for (int k = 1; k < n; k++) {
+        falling *= (r - (double)(k - 1)) < 0.0 ? -1.0 : 1.0;
+        if (m == 0) s[k] = 0.0;                          /* u is 0 to this order */
+        else if ((double)k < (double)m * r) s[k] = 0.0;
+        else if (m > 1 || isnan(u[1])) s[k] = NAN;
+        else s[k] = ((u[1] < 0.0 && (k & 1)) ? -falling : falling) * INFINITY;
+    }
+}
+
 static void tr_pow_const(double* s, const double* u, double r, int n) {
+    if (u[0] == 0.0 && n > 1) {
+        double sb[3 * ESH_TAYLOR_STACKN];
+        double* scratch = n > ESH_TAYLOR_STACKN ? (double*)malloc((size_t)(3 * n) * sizeof(double)) : sb;
+        if (!scratch) { for (int k = 0; k < n; k++) s[k] = NAN; return; }
+        tr_pow_at_zero(s, u, r, n, scratch);
+        if (scratch != sb) free(scratch);
+        return;
+    }
     s[0] = pow(u[0], r);
     for (int k = 1; k < n; k++) {
         double acc = 0.0;
@@ -870,7 +932,6 @@ static void tr_pow_const(double* s, const double* u, double r, int n) {
     }
 }
 
-#define ESH_TAYLOR_STACKN 64
 
 static void tr_relu(double* s, const double* u, int n) {
     double sign = u[0] > 0.0 ? 1.0 : 0.0;
@@ -1201,7 +1262,8 @@ static void ddual_pow_const(double* sv, double* st, const double* uv, const doub
     double qb[ESH_TAYLOR_STACKN];
     double* q = qb; double* hq = NULL;
     if (n > ESH_TAYLOR_STACKN) { hq = (double*)arena_allocate(arena, (size_t)n*sizeof(double)); q = hq; }
-    tr_div(q, sv, uv, n);                   /* q = u^r / u = u^{r-1} */
+    if (uv[0] == 0.0) tr_pow_const(q, uv, r - 1.0, n);   /* SW-225: u^{r-1} at the pole */
+    else tr_div(q, sv, uv, n);              /* q = u^r / u = u^{r-1} */
     tr_conv(st, q, ut, n);
     for (int k = 0; k < n; k++) st[k] = r * st[k];
 }
@@ -2203,6 +2265,25 @@ static void level_ser_pow_const(arena_t* ar, eshkol_tagged_value_t* s,
             memcpy(s, acc, (size_t)n * sizeof(*s));
         }
         return;
+    }
+    /* SW-225: at a zero base the recurrence is 0/0; when every coefficient is
+     * a plain number the double kernel's pole rule (tr_pow_at_zero) answers.
+     * The result is inexact, as u^r of a non-integer r is. */
+    if (n > 1 && !tagged_as_taylor(&u[0]) && !num_is_jet(&u[0]) && !num_is_ad_node(&u[0]) &&
+        !tagged_as_taylor(&r) && !num_is_jet(&r) && tagged_any_to_double(&u[0]) == 0.0) {
+        int plain = 1;
+        for (int k = 1; k < n && plain; k++)
+            plain = !tagged_as_taylor(&u[k]) && !num_is_jet(&u[k]) && !num_is_ad_node(&u[k]);
+        if (plain) {
+            double* ud = (double*)arena_allocate(ar, (size_t)n * sizeof(double));
+            double* sd = (double*)arena_allocate(ar, (size_t)n * sizeof(double));
+            if (ud && sd) {
+                for (int k = 0; k < n; k++) ud[k] = tagged_any_to_double(&u[k]);
+                tr_pow_const(sd, ud, tagged_any_to_double(&r), n);
+                for (int k = 0; k < n; k++) s[k] = eshkol_make_double(sd[k]);
+                return;
+            }
+        }
     }
     s[0] = num_binary(ar, u[0], r, ESH_TAYLOR_OP_pow);
     level_ser_pow_tail(ar, s, u, r, n);

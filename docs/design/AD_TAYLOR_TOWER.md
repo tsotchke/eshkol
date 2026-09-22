@@ -155,6 +155,19 @@ ends in `0/0` and stays NaN. `cbrt` carries `d = (1/3)u^(−2/3)` by the power
 recurrence from `d_0 = 1/(3 cbrt(u_0)²)`, so its derivatives at `0` are the
 pole's infinities rather than `0/0`.
 
+**The power step at a zero base (SW-225).** `u^r` divides by `u_0`, which
+is `0/0` at `u_0 = 0`. There the step answers the IEEE value of the closed
+form instead (`tr_pow_at_zero`, mirrored as straight-line SSA by the
+compile-time-K emitter): an integer `r` is exact algebra (repeated Cauchy
+products, and `1/u^|r|` by the division recurrence for `r < 0`); for any other
+`r`, with `m` the first index of a nonzero `u_m`, `s_k = 0` for `k < m·r`, and
+for `m = 1` the `k`-th derivative `r(r−1)…(r−k+1) u^(r−k) u_1^k` is an
+infinity of that sign. For `m > 1` the closed form meets `0·∞` and the
+coefficient is NaN (`sqrt(x²) = |x|` has no derivative at `0`). So `sqrt` at
+`0.0` has derivatives `+inf.0, -inf.0, +inf.0, …`, `(expt x 1.5)` has `0` then
+`+inf.0`, and the inverse functions reach their poles (`asin''(1) = +inf.0`).
+A series that is zero to its truncation order is taken as the zero it shows.
+
 The integral family is one recurrence: `f(u)` solves `ds/dt = f'(u)·du/dt`,
 and for the inverse functions `f'` is algebraic in `u`, so `d` comes from the
 mul/div/pow recurrences. It runs over doubles (`tr_ext_unary`), with the reverse

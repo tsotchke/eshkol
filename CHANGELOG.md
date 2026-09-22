@@ -27,6 +27,12 @@ the source changes; the verification record for the tagged commit is the
   derivative a complex value carries.** `(derivative (lambda (w) (expt w 3))
   1+1i)` was 0 and `(derivative-n log 1+1i 1)` lost its imaginary part (SW-211).
   Every procedure with a plain complex kernel now has a carrier formula.
+- **Powers at a zero base have the closed form's derivatives.** On a Taylor
+  tower `sqrt`, `expt` with a constant exponent and the inverse functions'
+  derivative series answered NaN at `0.0`, because the power recurrence divides
+  by the base. `(derivative-n sqrt 0.0 2)` is now `-inf.0`, `(derivative-n
+  (lambda (x) (expt x 2.0)) 0.0 2)` is `2`, and `|x|` written as `sqrt(x*x)`
+  stays NaN (SW-225).
 - **A derivative through a simple pole is the closed form's infinity on every
   engine.** `(derivative (lambda (x) (/ 1.0 x)) 0.0)` answered `+nan.0`
   natively and `-inf.0` on the VM; it is `-inf.0` everywhere, the second
