@@ -85,7 +85,11 @@ void eshkol_clear_error_location(void) {
  * of bytes written (0 if no location is set). The trailing space is included
  * so callers can concatenate the message directly. */
 static size_t eshkol_format_error_location_prefix(char* buf, size_t buflen) {
-    if (g_error_loc_line == 0 || buflen == 0) {
+    if (buflen == 0) return 0;
+    // Callers print `buf` unconditionally, so "no location" must still be a
+    // terminated empty string, never the caller's uninitialised stack bytes.
+    buf[0] = '\0';
+    if (g_error_loc_line == 0) {
         return 0;
     }
     int n;
