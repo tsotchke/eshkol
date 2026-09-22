@@ -14065,7 +14065,8 @@ entries:
   - id: SW-195
     bucket: SILENT-WRONG
     family: conditions/error-irritants
-    status: open
+    status: fixed
+    closed_at: "a4279eb76"
     needs_decision: false
     title: "VM error objects drop their irritant list"
     repro: >-
@@ -14088,10 +14089,32 @@ entries:
       Source is not yet committed/integrated or deployed. Lifetime and callback
       tests exposed SW-196, which is separately tracked. No waiver or refusal
       counts as a fix.
+    fix: >-
+      The source VM already stored a typed Value-compatible irritant head
+      (9d47e16a4). The browser VM does not compile the builtin preamble: it boots
+      from the checked-in bytecode image lib/backend/vm_prelude_cache.h, which
+      predated the packed-tail error ABI, so its `error` closure still called the
+      legacy single-argument native 237 and every caught error object answered
+      (). The image is regenerated from current sources (a4279eb76); the existing
+      vm_prelude_cache_is_current gate, which was failing on the base, passes.
+    remeasured: >-
+      At a4279eb76 (fix/v135f-vmrt): a native REPL-session driver over the same
+      bootstrap as the browser printed () before regeneration and (1 2) after.
+      scripts/build-wasm-repl.sh bundle driven through scripts/lib/wasm_repl_runner.js:
+      (guard (e (#t (error-object-irritants e))) (error "boom" 1 2)) -> (1 2);
+      error-object-message -> boom. scripts/run_wasm_differential.sh: 176 passed,
+      0 failed (transcript rows added for SW-195/196). run_vm_parity.sh: 373
+      passed, 0 failed, including error_object_irritants_roundtrip and
+      error_irritants_lifetime on native, VM source and ESKB. ctest
+      vm_error_irritants_lifetime and vm_parallel_callbacks_repeat50 pass; 50
+      consecutive runs of the lifetime programs under an ASan+UBSan VM report no
+      finding. The published site bundle (site/static/eshkol-vm.*) is a release
+      artifact regenerated at the source freeze.
   - id: SW-196
     bucket: SILENT-WRONG
     family: vm/native-callback-control
-    status: open
+    status: fixed
+    closed_at: "417fcfd4e"
     needs_decision: false
     title: "VM worker callbacks can unwind through the caller thread's interpreter context"
     repro: >-
@@ -14119,6 +14142,28 @@ entries:
     notes: >-
       Broader VM parity and final release qualification remain outstanding.
       Do not close until the final integrated source and artifacts are qualified.
+    fix: >-
+      Workers never execute the caller VM and never transfer control. Every VM
+      scheduler (parallel-map, -filter, -for-each, -execute, future, force)
+      records a failed isolated run and, after the join, re-evaluates each failed
+      task on the caller's own interpreter in element order
+      (vm_parmap_settle_failed / vm_parthunk_settle_failed /
+      vm_future_force_on_caller in lib/backend/vm_parallel.c). Admitted callbacks
+      are pure, so this is the sequential semantics: the callback's own condition
+      object reaches the caller's handler chain, and an outer guard or
+      continuation resumes its owning scope through vm_run's per-invocation native
+      escape. Before, a faulting worker callback surfaced as the generic
+      "parallel-map: worker closure failed" and a refused submit fabricated one.
+      The isolated VM no longer reports the raise it hands back on stderr.
+    remeasured: >-
+      At 417fcfd4e/5895adefb (fix/v135f-vmrt): tests/vm/parallel_worker_settle_regression.esk
+      prints "parallel worker settle PASS"; the base VM prints
+      'FAIL: map got "parallel-map: worker closure failed"'.
+      tests/vm_parity/corpus/parallel_callback_raise.esk is byte-identical on
+      native, VM source and ESKB. Browser VM transcript rows: guarded callback over
+      (1 2 3) -> (-1 2 -3), caller-handled raise -> two, evaluation continues.
+      ctest vm_parallel_callbacks_repeat50 (50 consecutive runs of four programs)
+      passes; the same 50x loop under an ASan+UBSan VM reports no finding.
   - id: SW-197
     bucket: SILENT-WRONG
     family: ad/native-exact-tier
@@ -14152,7 +14197,8 @@ entries:
   - id: SW-198
     bucket: SILENT-WRONG
     family: vm/parallel-ad-carrier-ownership
-    status: open
+    status: fixed
+    closed_at: "417fcfd4e"
     needs_decision: false
     title: "VM parallel AD results retain worker-owned exact carrier storage"
     repro: >-
@@ -14178,6 +14224,23 @@ entries:
     notes: >-
       Source is not yet committed to the release cut. Keep open until integrated
       sanitizer and release qualification complete.
+    fix: >-
+      Leaf payloads crossing between VM instances go through one facility,
+      vm_leaf_payload_clone_to() in lib/backend/vm_parallel.c, in both directions
+      (main -> worker snapshot, worker -> main publication). It deep-copies
+      bignum limbs, exact rationals, all four dual/Taylor coefficient and exact
+      channels, and now also the dual parts of a complex value, which the old
+      per-direction arms copied as bare structs. The region evacuator retains
+      complex parts transitively (their blocks are scanned for interior pointers),
+      so no evacuator change was needed.
+    remeasured: >-
+      At 417fcfd4e (fix/v135f-vmrt): parallel_ad_carrier_lifetime passes on
+      native, VM source and ESKB (run_vm_parity.sh 373/0) and 50 consecutive runs
+      under an ASan+UBSan VM (detect_leaks=0; native runtime libraries not
+      instrumented) report no finding. Complex results carrying derivatives
+      published from workers pass under ASan; the complex-part copy was found by
+      inspection, since no measured VM program yet produces complex parts with
+      exact or Taylor channels (see SW-199, SW-200).
   - id: SW-193
     bucket: SILENT-WRONG
     family: ad/complex-carrier
@@ -14206,3 +14269,115 @@ entries:
     notes: >-
       Integrated source is implemented without refusal. Keep open through broad
       parity, sanitizer, site artifact, and final release qualification.
+  - id: SW-199
+    bucket: SILENT-WRONG
+    family: vm/complex-exact-parts
+    status: open
+    needs_decision: false
+    title: "VM make-rectangular with exact rational parts answers +0i"
+    repro: >-
+      (display (make-rectangular 1/2 1/3)) (newline)
+      (display (map (lambda (y) (* y (make-rectangular 1/2 1/3))) (list 1 2)))
+    observed: >-
+      eshkol-vm-standalone-test prints +0i and (+0i +0i), exit 0, no diagnostic.
+      Native (eshkol-run -r) prints 0.5+0.3333333333333333i and
+      (0.5+0.3333333333333333i 1+0.6666666666666666i). Integer and float parts
+      are correct on the VM.
+    correct: >-
+      The native answer (or an exact complex value if the tower gains one).
+    evidence: >-
+      Found by the v135f-vmrt lane on 2026-09-22 at base 62c5b1b32 while
+      probing complex AD carriers published from parallel workers.
+    caught_by: [v135f-vmrt-probe]
+    missed_by: [vm_parity]
+    notes: >-
+      Lives in the VM complex constructor (vm_complex.c), which the Taylor/complex
+      carrier lane owns; handed to that lane on the ICC bus.
+  - id: SW-200
+    bucket: SILENT-WRONG
+    family: vm/taylor-through-complex
+    status: open
+    needs_decision: false
+    title: "VM higher-order derivatives through a complex intermediate answer the wrong order"
+    repro: >-
+      (display (derivative-n (lambda (x) (real-part (* x x x (make-rectangular 1 2)))) 1/3 2))
+      (display (hessian (lambda (x) (imag-part (* x x (make-rectangular 1 2)))) 3))
+      (display (hessian (lambda (x) (real-part (* x x (make-rectangular 1 2)))) 3))
+    observed: >-
+      VM: 0.3333333333333333, 12, 6. Native: 2, 4, 2. Exit 0, no diagnostic.
+      The VM result is off by the point x for the Hessians and returns a
+      lower-order coefficient for derivative-n; first derivatives through the
+      same functions agree with native.
+    correct: >-
+      2, 4, 2 (the second derivatives of x^3, 2x^2 and x^2).
+    evidence: >-
+      Found by the v135f-vmrt lane on 2026-09-22 at base 62c5b1b32. Independent
+      of parallel-map: the serial forms above reproduce it.
+    caught_by: [v135f-vmrt-probe]
+    missed_by: [vm_parity]
+    notes: >-
+      Same family as SW-193 (nested holomorphic derivatives). Lives in the VM
+      Taylor/complex carrier (vm_dual.c, vm_complex.c), owned by the Taylor
+      carrier lane; handed over on the ICC bus.
+  - id: SW-201
+    bucket: LOUD-ERROR
+    family: native/parallel-callback-control
+    status: fixed
+    closed_at: "5895adefb"
+    title: "native parallel callbacks that raise exit the process instead of reaching the caller's handler"
+    repro: >-
+      (display (guard (e ((symbol? e) (list 'caught e)))
+        (parallel-map (lambda (x) (if (= x 6) (raise 'six) x)) '(1 2 3 4 5 6 7 8))))
+    observed_before: >-
+      eshkol-run -r prints "Unhandled exception: user exception" and exits 1;
+      nothing after the form runs. The exception-handler chain is thread-local, so
+      a raise on a pool worker found no handler; a raise on the calling thread
+      (small lists, the JIT warm-up element) longjmp'd through the scheduler's
+      C++ frames. docs/breakdown/PARALLEL_COMPUTING.md 11.5 described the process
+      exit as the behaviour. The VM answered (caught six).
+    correct: >-
+      (caught six): the callback's own raised object reaches the caller's
+      handler; a guard inside the callback resumes that callback.
+    fix: >-
+      One unwind boundary (run_in_boundary in lib/backend/parallel_codegen.cpp)
+      runs every callback of parallel-map, -filter, -for-each, -execute and async
+      futures under a handler on the thread that runs it. After the join the entry
+      point returns from its implementation and re-raises the first recorded
+      condition in element order on the calling thread. A future that raised
+      stays unforced and re-raises from force; a refused submission runs its
+      element on the calling thread.
+    remeasured: >-
+      At 5895adefb (fix/v135f-vmrt): tests/vm_parity/corpus/parallel_callback_raise.esk
+      is byte-identical on native JIT, VM source and ESKB (run_vm_parity.sh
+      373/0); ctest native_parallel_callback_raise_jit and
+      native_parallel_callback_raise_aot_repeat50 (50 consecutive AOT runs) pass.
+    caught_by: [v135f-vmrt-parity-probe]
+    missed_by: [vm_parity]
+  - id: SW-202
+    bucket: LOUD-ERROR
+    family: native/parallel-callback-control
+    status: open
+    needs_decision: false
+    title: "native continuation escape from a parallel-map worker crashes the process"
+    repro: >-
+      (display (call-with-current-continuation
+        (lambda (k) (parallel-map (lambda (x) (if (= x 4) (k 'escaped) x))
+                                  '(1 2 3 4 5 6 7 8)))))
+    observed: >-
+      eshkol-run -r: "[Eshkol] fatal signal: SIGBUS" and exit 138. The invoke
+      sequence reroots dynamic-wind, promise and region state against marks that
+      belong to the capturing thread and then longjmps to a jmp_buf on that
+      thread's stack from a pool worker. The VM prints escaped.
+    correct: >-
+      escaped: the escape resumes the continuation's owning scope on its own
+      thread, as the VM does, e.g. by recording the foreign continuation at the
+      worker's unwind boundary and resuming it on the caller after the join.
+    evidence: >-
+      Found by the v135f-vmrt lane on 2026-09-22 after SW-201. Not silent: the
+      process dies with a signal.
+    caught_by: [v135f-vmrt-probe]
+    missed_by: [vm_parity]
+    notes: >-
+      Needs the invoke sequence in llvm_codegen (continuation_invoke_bb) to
+      detect a continuation captured on another thread before it touches
+      thread-local state; beyond the VM runtime lane's scope.

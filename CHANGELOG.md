@@ -1338,6 +1338,22 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **Raises inside parallel callbacks reach the caller's handler.** A callback
+  of `parallel-map`, `parallel-filter`, `parallel-for-each`,
+  `parallel-execute` or a future that raises now delivers its own raised
+  object to the caller's `guard`, on every engine; a guard inside the callback
+  resumes that callback. Native used to exit the process (the handler chain is
+  per-thread); the VM reported a generic "worker closure failed". Native runs
+  each callback under an unwind boundary and re-raises after the join; the VM
+  re-evaluates a failed pure worker callback on the calling interpreter.
+  (SW-196, SW-201)
+
+- VM parallel results own every payload they expose, including the dual parts
+  of a complex value, before the worker's arena is released. (SW-198)
+
+- The browser VM's bootstrap image is regenerated, so caught error objects
+  report their irritants there as on the desktop VM. (SW-195)
+
 - ESKM v1 scalar and empty tensor checkpoints retain their shapes and values
   across native and VM producers and consumers. Scalar observation is admitted
   narrowly without relaxing arithmetic tensor metadata checks. (#698)

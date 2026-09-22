@@ -1,0 +1,24 @@
+id: SW-199
+bucket: SILENT-WRONG
+family: vm/complex-exact-parts
+status: open
+needs_decision: false
+title: "VM make-rectangular with exact rational parts answers +0i"
+repro: >-
+  (display (make-rectangular 1/2 1/3)) (newline)
+  (display (map (lambda (y) (* y (make-rectangular 1/2 1/3))) (list 1 2)))
+observed: >-
+  eshkol-vm-standalone-test prints +0i and (+0i +0i), exit 0, no diagnostic.
+  Native (eshkol-run -r) prints 0.5+0.3333333333333333i and
+  (0.5+0.3333333333333333i 1+0.6666666666666666i). Integer and float parts
+  are correct on the VM.
+correct: >-
+  The native answer (or an exact complex value if the tower gains one).
+evidence: >-
+  Found by the v135f-vmrt lane on 2026-09-22 at base 62c5b1b32 while
+  probing complex AD carriers published from parallel workers.
+caught_by: [v135f-vmrt-probe]
+missed_by: [vm_parity]
+notes: >-
+  Lives in the VM complex constructor (vm_complex.c), which the Taylor/complex
+  carrier lane owns; handed to that lane on the ICC bus.
