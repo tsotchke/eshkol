@@ -93,3 +93,12 @@ notes: >-
   (lib/backend/vm_native.c case 393, ESH-0369), so this defect has no VM twin and
   the VM's documented raise is unchanged. Direct successor of SW-150, which
   closed the one-companion half of the same family.
+vm_status: fixed
+vm_closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+vm_evidence: >-
+  VM half of ADR-0027 (branch fix/v135f-vmtaylor): tests/ad/nested_towers_matrix_test.esk
+  (164 checks) and tests/ad/nested_operator_matrix_test.esk pass with zero
+  silent zeros on eshkol-vm-standalone-test and on the browser VM (ctest
+  nested_towers_matrix_vm, nested_towers_matrix_browser_vm,
+  nested_operator_matrix_vm, nested_operator_matrix_browser_vm). The entry
+  stays guarded until the native half (fix/v135f-taylor) lands.
