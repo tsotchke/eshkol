@@ -17,11 +17,24 @@ the source changes; the verification record for the tagged commit is the
 - Preserve browser VM output without a trailing newline, including UTF-8 text.
   Learn and Examples no longer lose their last displayed result or carry it
   into a later evaluation. The Pages gate executes all 41 runnable site examples
-  with output/property checks and no-newline, Unicode, and isolation regressions.
+  with output/property checks and no-newline, Unicode, and isolation regressions. (#712)
 
 - Restore website rendering by implementing the browser runtime's tagged i128
   predicate. Ordinary heap operands no longer throw during homepage startup;
-  the Pages workflow now exercises this runtime import before deployment.
+  the Pages workflow now exercises this runtime import before deployment. (#711)
+
+- **The dev REPL's glue still threw on the same predicate.** The site runtime
+  fix above landed only in `site/static/eshkol-runtime.js`; `web/eshkol-repl.js`
+  kept the old throwing stub for `eshkol_is_i128_tagged`, which generic
+  arithmetic asks of every heap operand — so any REPL evaluation touching a
+  pair, string or vector through generic arithmetic aborted with an uncaught
+  WASM-glue exception. Ported the real implementation into the REPL glue so
+  both files answer identically again.
+
+- Refreshed the homepage's declared-surface and parity-row figures in
+  `site/src/main.esk`, which had drifted behind `tests/vm_parity/PARITY.tsv`
+  and `tests/coverage/coverage_policy.json`, and rebuilt
+  `site/static/eshkol-site.wasm` so the deployed page carries the correction.
 
 - **The browser REPL answered nothing.** Every `repl_eval` call in the
   WebAssembly bundle — the site's REPL pane and every runnable code block on
