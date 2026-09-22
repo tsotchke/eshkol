@@ -14,7 +14,7 @@
 (edge-check-g827)
 
 ;; check eqv_pred_equal_lists__in__set_bang_lambda_store
-(define (edge-check-g828) (edge-chk "eqv_pred_equal_lists__in__set_bang_lambda_store" (let ((swg828 #f)) ((lambda () (set! swg828 (equal? (list 1 2) '(1 2))))) swg828) #t))
+(define (edge-check-g828) (edge-chk "eqv_pred_equal_lists__in__set_bang_lambda_store" (let ((slg828 #f)) ((lambda () (set! slg828 (equal? (list 1 2) '(1 2))))) slg828) #t))
 (edge-check-g828)
 
 ;; check eqv_pred_equal_lists__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g830)
 
 ;; check eqv_pred_eqv_sym__in__set_bang_lambda_store
-(define (edge-check-g831) (edge-chk "eqv_pred_eqv_sym__in__set_bang_lambda_store" (let ((swg831 #f)) ((lambda () (set! swg831 (eqv? 'a 'a)))) swg831) #t))
+(define (edge-check-g831) (edge-chk "eqv_pred_eqv_sym__in__set_bang_lambda_store" (let ((slg831 #f)) ((lambda () (set! slg831 (eqv? 'a 'a)))) slg831) #t))
 (edge-check-g831)
 
 ;; check eqv_pred_eqv_sym__in__set_bang_set_twice
@@ -38,7 +38,7 @@
 (edge-check-g833)
 
 ;; check eqv_pred_eq_null__in__set_bang_lambda_store
-(define (edge-check-g834) (edge-chk "eqv_pred_eq_null__in__set_bang_lambda_store" (let ((swg834 #f)) ((lambda () (set! swg834 (eq? '() '())))) swg834) #t))
+(define (edge-check-g834) (edge-chk "eqv_pred_eq_null__in__set_bang_lambda_store" (let ((slg834 #f)) ((lambda () (set! slg834 (eq? '() '())))) slg834) #t))
 (edge-check-g834)
 
 ;; check eqv_pred_eq_null__in__set_bang_set_twice

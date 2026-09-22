@@ -16,7 +16,7 @@
 
 ;; check toplevel_top_def_read__in__set_bang_lambda_store
 (define tlpg312 42)
-(define (edge-check-g312) (edge-chk "toplevel_top_def_read__in__set_bang_lambda_store" (let ((swg312 #f)) ((lambda () (set! swg312 tlpg312))) swg312) 42))
+(define (edge-check-g312) (edge-chk "toplevel_top_def_read__in__set_bang_lambda_store" (let ((slg312 #f)) ((lambda () (set! slg312 tlpg312))) slg312) 42))
 (edge-check-g312)
 
 ;; check toplevel_top_def_read__in__set_bang_set_twice

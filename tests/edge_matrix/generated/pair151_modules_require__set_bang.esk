@@ -15,7 +15,7 @@
 (edge-check-g1303)
 
 ;; check modules_require_filter_odd__in__set_bang_lambda_store
-(define (edge-check-g1304) (edge-chk "modules_require_filter_odd__in__set_bang_lambda_store" (let ((swg1304 #f)) ((lambda () (set! swg1304 (filter odd? (list 1 2 3 4))))) swg1304) (list 1 3)))
+(define (edge-check-g1304) (edge-chk "modules_require_filter_odd__in__set_bang_lambda_store" (let ((slg1304 #f)) ((lambda () (set! slg1304 (filter odd? (list 1 2 3 4))))) slg1304) (list 1 3)))
 (edge-check-g1304)
 
 ;; check modules_require_filter_odd__in__set_bang_set_twice
@@ -27,7 +27,7 @@
 (edge-check-g1306)
 
 ;; check modules_require_assq_hit__in__set_bang_lambda_store
-(define (edge-check-g1307) (edge-chk "modules_require_assq_hit__in__set_bang_lambda_store" (let ((swg1307 #f)) ((lambda () (set! swg1307 (assq 'b '((a 1) (b 2)))))) swg1307) (list 'b 2)))
+(define (edge-check-g1307) (edge-chk "modules_require_assq_hit__in__set_bang_lambda_store" (let ((slg1307 #f)) ((lambda () (set! slg1307 (assq 'b '((a 1) (b 2)))))) slg1307) (list 'b 2)))
 (edge-check-g1307)
 
 ;; check modules_require_assq_hit__in__set_bang_set_twice

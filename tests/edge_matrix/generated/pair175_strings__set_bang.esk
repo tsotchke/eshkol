@@ -14,7 +14,7 @@
 (edge-check-g1511)
 
 ;; check strings_append__in__set_bang_lambda_store
-(define (edge-check-g1512) (edge-chk "strings_append__in__set_bang_lambda_store" (let ((swg1512 #f)) ((lambda () (set! swg1512 (string-append "ab" "cd")))) swg1512) (string #\a #\b #\c #\d)))
+(define (edge-check-g1512) (edge-chk "strings_append__in__set_bang_lambda_store" (let ((slg1512 #f)) ((lambda () (set! slg1512 (string-append "ab" "cd")))) slg1512) (string #\a #\b #\c #\d)))
 (edge-check-g1512)
 
 ;; check strings_append__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g1514)
 
 ;; check strings_substr__in__set_bang_lambda_store
-(define (edge-check-g1515) (edge-chk "strings_substr__in__set_bang_lambda_store" (let ((swg1515 #f)) ((lambda () (set! swg1515 (substring "hello" 1 3)))) swg1515) "el"))
+(define (edge-check-g1515) (edge-chk "strings_substr__in__set_bang_lambda_store" (let ((slg1515 #f)) ((lambda () (set! slg1515 (substring "hello" 1 3)))) slg1515) "el"))
 (edge-check-g1515)
 
 ;; check strings_substr__in__set_bang_set_twice
@@ -38,7 +38,7 @@
 (edge-check-g1517)
 
 ;; check strings_num_to_str__in__set_bang_lambda_store
-(define (edge-check-g1518) (edge-chk "strings_num_to_str__in__set_bang_lambda_store" (let ((swg1518 #f)) ((lambda () (set! swg1518 (number->string 42)))) swg1518) "42"))
+(define (edge-check-g1518) (edge-chk "strings_num_to_str__in__set_bang_lambda_store" (let ((slg1518 #f)) ((lambda () (set! slg1518 (number->string 42)))) slg1518) "42"))
 (edge-check-g1518)
 
 ;; check strings_num_to_str__in__set_bang_set_twice
@@ -50,7 +50,7 @@
 (edge-check-g1520)
 
 ;; check strings_str_to_num__in__set_bang_lambda_store
-(define (edge-check-g1521) (edge-chk "strings_str_to_num__in__set_bang_lambda_store" (let ((swg1521 #f)) ((lambda () (set! swg1521 (string->number "42")))) swg1521) 42))
+(define (edge-check-g1521) (edge-chk "strings_str_to_num__in__set_bang_lambda_store" (let ((slg1521 #f)) ((lambda () (set! slg1521 (string->number "42")))) slg1521) 42))
 (edge-check-g1521)
 
 ;; check strings_str_to_num__in__set_bang_set_twice

@@ -14,7 +14,7 @@
 (edge-check-g743)
 
 ;; check delay_force_simple__in__set_bang_lambda_store
-(define (edge-check-g744) (edge-chk "delay_force_simple__in__set_bang_lambda_store" (let ((swg744 #f)) ((lambda () (set! swg744 (force (delay (+ 40 2)))))) swg744) 42))
+(define (edge-check-g744) (edge-chk "delay_force_simple__in__set_bang_lambda_store" (let ((slg744 #f)) ((lambda () (set! slg744 (force (delay (+ 40 2)))))) slg744) 42))
 (edge-check-g744)
 
 ;; check delay_force_simple__in__set_bang_set_twice
@@ -30,7 +30,7 @@
 ;; check delay_force_memoized__in__set_bang_lambda_store
 (define cmng747 0)
 (define (cmg747) (set! cmng747 (+ cmng747 1)) cmng747)
-(define (edge-check-g747) (edge-chk "delay_force_memoized__in__set_bang_lambda_store" (let ((swg747 #f)) ((lambda () (set! swg747 (let ((mpg747 (delay (cmg747)))) (+ (force mpg747) (force mpg747)))))) swg747) 2))
+(define (edge-check-g747) (edge-chk "delay_force_memoized__in__set_bang_lambda_store" (let ((slg747 #f)) ((lambda () (set! slg747 (let ((mpg747 (delay (cmg747)))) (+ (force mpg747) (force mpg747)))))) slg747) 2))
 (edge-check-g747)
 
 ;; check delay_force_memoized__in__set_bang_set_twice

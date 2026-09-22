@@ -20,7 +20,7 @@ sources:
 # ADR-0027: Nested differentiation uses one recursive Taylor level carrier
 
 **Status:** Accepted
-**Ledger:** SW-154; SW-193 and SW-194 are closed against the same carrier
+**Ledger:** SW-154; SW-193 and SW-194 are closed against the same carrier, and SW-206..SW-209 and SW-213 bring every operator onto it
 **Scope:** Native LLVM code generation (JIT and AOT), the bytecode VM, and the
 browser VM, which is the same VM compiled to WebAssembly.
 
