@@ -5380,7 +5380,9 @@ static VmTensor* vm_tensor_operand_carrier(VM* vm, Value v, const char* op_name)
 static int vm_tensor_has_tangent(const VmTensor* t) {
     if (!t || !t->dual_data) return 0;
     for (int64_t i = 0; i < t->total; i++) {
-        if (t->dual_data[i].tangent != 0.0 || vm_dual_is_taylor(&t->dual_data[i])) return 1;
+        /* Any non-scalar carrier (a Taylor tower, or an ADR-0027 level) is a
+         * derivative even when its first-order tangent field reads 0. */
+        if (t->dual_data[i].tangent != 0.0 || t->dual_data[i].kind != VM_DUAL_KIND_SCALAR) return 1;
     }
     return 0;
 }
@@ -5407,7 +5409,7 @@ static VmTensor* vm_tensor_tangent_of(VM* vm, const VmTensor* t, const char* who
     if (!c) return NULL;
     if (c->dual_data) {
         for (int64_t i = 0; i < c->total; i++) {
-            if (vm_dual_is_taylor(&c->dual_data[i])) {
+            if (c->dual_data[i].kind != VM_DUAL_KIND_SCALAR) {
                 char msg[200];
                 snprintf(msg, sizeof msg, "%s: a higher-order derivative cannot pass through a tensor operation on the VM; use the native backend", who);
                 vm_raise_error_msg(vm, msg);

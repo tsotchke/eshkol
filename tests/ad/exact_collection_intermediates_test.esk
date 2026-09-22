@@ -83,6 +83,17 @@
     (and (= (vref g 0) 1) (= (vref g 1) 4)))
   #t)
 
+;; --- nested passes: a level carrier (ADR-0027) through a tensor (SW-212) ------
+(check-inexact "derivative of derivative-n through tensor-ref"
+  (derivative (lambda (a) (derivative-n (lambda (b) (tensor-ref (tensor (* a b b) 5.0) 0)) 1.0 2)) 2.0) 2.0)
+(check-inexact "derivative of derivative-n through tensor-sum"
+  (derivative (lambda (a) (derivative-n (lambda (b) (tensor-sum (tensor (* a b b) 5.0))) 1.0 2)) 2.0) 2.0)
+(check-inexact "derivative-n through tensor-sum"
+  (derivative-n (lambda (b) (tensor-sum (tensor (* b b b) 5.0))) 1.0 2) 6.0)
+(check-equal "taylor of derivative through tensor"
+  (map (lambda (c) (= c 0)) (taylor (lambda (a) (derivative (lambda (b) (tensor-ref (tensor (* a b b)) 0)) 1.0)) 2.0 2))
+  (list #f #f #t))
+
 ;; --- tensor kernels compute on inexact numbers ------------------------------
 (check-inexact "tensor-sum kernel"
   (derivative (lambda (x) (tensor-sum (tensor x (* x x)))) 1/3) (+ 1 (* 2 (/ 1.0 3))))

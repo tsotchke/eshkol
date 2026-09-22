@@ -5701,6 +5701,27 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 900
             PASS_REGULAR_EXPRESSION "PASS: exact derivative through collection intermediates"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
+    # SW-212: a nested differentiation level's carrier (ADR-0027) survives a
+    # tensor literal, tensor-ref and tensor-sum (ADR-0020 amendment 2). Native
+    # JIT and AOT; the VM half of the level carrier is ADR-0027 section 6.
+    add_test(
+        NAME nested_level_through_tensor_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    add_test(
+        NAME nested_level_through_tensor_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor_aot'"
+    )
+    set_tests_properties(
+        nested_level_through_tensor_runtime_smoke
+        nested_level_through_tensor_aot_smoke
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: nested level carrier through tensors"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
     # ESH-0394: the exact-coefficient Taylor tier is the ORACLE the exact tier
     # routes `derivative`/`gradient`/`hessian` to at an exact point, so a
     # regression in it is a regression in all three. It was unwired -- nothing in

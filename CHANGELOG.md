@@ -1423,7 +1423,11 @@ the source changes; the verification record for the tagged commit is the
   a tensor kernel, which answers inexactly on a tensor's numbers. Lists,
   vectors, `map`, `fold` and `parallel-map` keep an exact point exact. Test:
   `tests/ad/exact_collection_intermediates_test.esk` on JIT, AOT, VM source and
-  VM ESKB, and parity corpus program 94.
+  VM ESKB, and parity corpus program 94. The same holds for the carrier of a
+  nested differentiation level (ADR-0027): `(derivative (lambda (a)
+  (derivative-n (lambda (b) (tensor-ref (tensor (* a b b) 5.0) 0)) 1.0 2)) 2.0)`
+  answered 0 and is 2, and `tensor-sum` over such a tensor folds its towers with
+  the language's own `+` (SW-212, `tests/ad/nested_level_through_tensor_test.esk`).
 
 - ESKM v1 scalar and empty tensor checkpoints retain their shapes and values
   across native and VM producers and consumers. Scalar observation is admitted

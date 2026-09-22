@@ -235,9 +235,11 @@ element with its own rule, and none knew a derivative carrier:
 
 **Decision.**
 
-- Every construction path stores each element through the boundary:
-  `emitTensorSlotStore` for the literal, `eshkol_tensor_slot_store` for the
-  collection walker and the operand coercion, `emitTensorFill` /
+- Every construction path stores each element through the boundary: the
+  literal evaluates its elements and, when any is a tagged value, hands them
+  to `eshkol_tensor_store_values` in one call (an all-numeric literal keeps its
+  straight-line double stores); `eshkol_tensor_slot_store` serves the
+  collection walker and the operand coercion; `emitTensorFill` /
   `eshkol_tensor_fill_slots` for `make-tensor`, and `vm_tensor_store_value` on
   the VM.
 - A **forward-mode carrier** is a first-order dual jet or a Taylor tower. A
@@ -248,10 +250,16 @@ element with its own rule, and none knew a derivative carrier:
   tensor is still a numeric tensor: it answers `tensor?`, and the kernels with a
   forward rule accept it. A value that is not a number at all still widens only
   through the vector API (amendment 1). A tensor that holds a reverse-mode node
-  pointer is not widened; the store is refused.
+  pointer is not widened; the store is refused. A carrier of a nested level
+  (ADR-0027) is a Taylor tower like any other and is kept whole the same way
+  (SW-212).
 - Element reads return the slot whole: native `tensor-ref`/`vref` read a tagged
   slot as the tagged value, and the VM has one element reader,
   `vm_tensor_element_value`, used by `tensor-ref` and `vector-ref`.
+- The jet tensor's full `tensor-sum` folds its slots with the language's own
+  `+` (`eshkol_jet_tensor_sum`): a tower goes through the one generic Taylor
+  entry, so a tower or a nested level carrier is summed as itself. The other
+  kernels carry a first-order f64 jet at most and refuse a tower by name.
 - The exact tier declines a body that applies a tensor **kernel**
   (`AutodiffCodegen::adExactTowerEligible`). Construction, `tensor-ref`,
   `tensor-shape` and `tensor-length` move a tower whole; the kernels carry a
@@ -274,4 +282,5 @@ element with its own rule, and none knew a derivative carrier:
 - `tests/ad/exact_collection_intermediates_test.esk` runs the list, vector,
   tensor, nested and map/fold matrix on JIT, AOT, VM source and VM ESKB, and
   `tests/vm_parity/corpus/94_derivative_through_tensor_carrier.esk` holds the
-  engines to one transcript.
+  engines to one transcript. `tests/ad/nested_level_through_tensor_test.esk`
+  covers nested levels (SW-212) on the native engines.

@@ -229,6 +229,55 @@ static tensor_dual_jet parameter_jet(const eshkol_tagged_value_t* source,
 
 }  // namespace
 
+extern "C" void eshkol_taylor_binary_tagged(arena_t* arena,
+                                            const eshkol_tagged_value_t* left,
+                                            const eshkol_tagged_value_t* right,
+                                            int op, eshkol_tagged_value_t* result);
+
+/* The full sum of a jet tensor (ADR-0020 amendment 2). Its slots are tagged
+ * values: numbers, first-order dual jets, or Taylor towers -- a classic tower
+ * or a nested level carrier (ADR-0027). The sum is the language's own `+`
+ * folded over the slots: a tower operand goes through the one generic Taylor
+ * entry, eshkol_taylor_binary_tagged, which keeps every coefficient whole and
+ * exact while its inputs are; two jets or a jet and a number use the jet sum.
+ * The fold starts from the first slot, not from 0.0, so an all-exact tower
+ * sum is not made inexact by its seed. */
+extern "C" void eshkol_jet_tensor_sum(arena_t* arena, const eshkol_tensor_t* tensor,
+                                      eshkol_tagged_value_t* out) {
+    if (!out) return;
+    if (!tensor || tensor->total_elements == 0 || !tensor->elements) {
+        eshkol_tagged_value_t zero{};
+        zero.type = ESHKOL_VALUE_DOUBLE;
+        zero.flags = ESHKOL_VALUE_INEXACT_FLAG;
+        zero.data.double_val = 0.0;
+        *out = zero;
+        return;
+    }
+    const auto* slots = reinterpret_cast<const eshkol_tagged_value_t*>(tensor->elements);
+    eshkol_tagged_value_t acc = slots[0];
+    for (uint64_t i = 1; i < tensor->total_elements; ++i) {
+        const eshkol_tagged_value_t& e = slots[i];
+        if (eshkol_is_taylor_tagged(&acc) || eshkol_is_taylor_tagged(&e)) {
+            eshkol_tagged_value_t next{};
+            eshkol_taylor_binary_tagged(arena, &acc, &e, /*add=*/0, &next);
+            acc = next;
+        } else if ((acc.type & 0x0F) == ESHKOL_VALUE_DUAL_NUMBER ||
+                   (e.type & 0x0F) == ESHKOL_VALUE_DUAL_NUMBER) {
+            acc = jet_to_tagged(arena, jet_add(jet_from_tagged(acc, "tensor-sum"),
+                                               jet_from_tagged(e, "tensor-sum")),
+                                "tensor-sum");
+        } else {
+            eshkol_tagged_value_t sum{};
+            sum.type = ESHKOL_VALUE_DOUBLE;
+            sum.flags = ESHKOL_VALUE_INEXACT_FLAG;
+            sum.data.double_val = jet_from_tagged(acc, "tensor-sum").c[0] +
+                                  jet_from_tagged(e, "tensor-sum").c[0];
+            acc = sum;
+        }
+    }
+    *out = acc;
+}
+
 extern "C" eshkol_tensor_t* eshkol_tensor_layer_norm_dual(
     const eshkol_tensor_t* input,
     const eshkol_tagged_value_t* gamma,
