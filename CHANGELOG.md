@@ -1396,6 +1396,27 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **Nested differentiation on the bytecode VM and the browser VM (ADR-0027,
+  SW-154, SW-193, SW-194).** A pass nested inside another live pass runs as a
+  level carrier (`VM_DUAL_KIND_LEVEL`): a truncated series in its own
+  perturbation whose coefficients are carriers of the enclosing passes, at
+  any depth and any order. `derivative`, `derivative-n`, `taylor`,
+  `gradient` and `hessian` nest in every combination, through a captured
+  variable or through the evaluation point, and at complex points; the
+  answers agree with native, including exactness. Before, nesting on the VM
+  raised, or answered 0 for two enclosing levels over an order-2 pass. The
+  special-case ride, carry and hyper-dual lanes are gone. `atan`, `asin`,
+  `acos` and two-argument `atan` carry every order, and a derivative of a
+  vector-, list- or complex-valued function is read element by element.
+- **Complex values on the VM keep exact parts and every derivative order
+  (SW-199, SW-200, SW-203).** `(make-rectangular 1/2 1/3)` printed `+0i`;
+  `real-part` and `imag-part` of a complex carrying a Taylor tower returned
+  only the first order; unary `-` of a complex answered `-0.0` and `abs`
+  answered 0 instead of raising.
+- **VM full tensor reductions return a number (SW-202).** With no axis,
+  `tensor-sum`, `tensor-mean`, `tensor-max` and `tensor-min` answered a
+  1-element tensor for a vector and a row of partial results for a matrix.
+
 - ESKM v1 scalar and empty tensor checkpoints retain their shapes and values
   across native and VM producers and consumers. Scalar observation is admitted
   narrowly without relaxing arithmetic tensor metadata checks. (#698)

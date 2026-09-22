@@ -1,0 +1,44 @@
+;; tests/tensor/tensor_full_reduction_test.esk
+;; Ledger SW-202: with no axis, tensor-sum / tensor-mean / tensor-max /
+;; tensor-min reduce the WHOLE tensor to a number. The VM's prelude passed
+;; axis -1 for "no axis", and -1 also names the last axis, so the VM answered
+;; a 1-element tensor #(0.75) for (tensor-sum (tensor 0.5 0.25)) and a row of
+;; partial sums for a matrix; (number? ...) was #f and (+ 1 ...) was a fatal
+;; runtime error. Expected values are the native engine's.
+
+(define failures 0)
+(define (fail name got want)
+  (set! failures (+ failures 1))
+  (display "FAIL: ") (display name)
+  (display " got=") (display got) (display " want=") (display want) (newline))
+(define (check name got want)
+  (if (and (number? got) (< (abs (- got want)) 1e-12))
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+(define (check-equal name got want)
+  (if (equal? got want)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name got want)))
+
+(define v (tensor 0.5 0.25))
+(define m (reshape (tensor 1.0 2.0 3.0 4.0) 2 2))
+
+(check "tensor-sum vector" (tensor-sum v) 0.75)
+(check "tensor-mean vector" (tensor-mean v) 0.375)
+(check "tensor-max vector" (tensor-max v) 0.5)
+(check "tensor-min vector" (tensor-min v) 0.25)
+(check "tensor-sum matrix is a full reduction" (tensor-sum m) 10.0)
+(check "tensor-mean matrix" (tensor-mean m) 2.5)
+(check "tensor-max matrix" (tensor-max m) 4.0)
+(check "tensor-min matrix" (tensor-min m) 1.0)
+(check "a full reduction is a number in arithmetic" (+ 1 (tensor-sum v)) 1.75)
+(check-equal "number?" (number? (tensor-sum v)) #t)
+;; an explicit axis still reduces that axis; -1 is the last one
+(check-equal "tensor-sum axis 0" (tensor-sum m 0) (tensor 4.0 6.0))
+(check-equal "tensor-sum axis 1" (tensor-sum m 1) (tensor 3.0 7.0))
+(check-equal "tensor-sum axis -1 is the last axis" (tensor-sum m -1) (tensor 3.0 7.0))
+(check-equal "tensor-mean axis 1" (tensor-mean m 1) (tensor 1.5 3.5))
+(newline)
+(if (= failures 0)
+    (begin (display "PASS: tensor full reductions") (newline) (exit 0))
+    (begin (display "FAIL: tensor full reductions") (newline) (exit 1)))
