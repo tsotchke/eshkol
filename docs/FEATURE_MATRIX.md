@@ -129,7 +129,7 @@ manifest again.
 | Dual numbers | Yes | Forward | O(1) overhead/op |
 | Scalar derivatives | Yes | Forward | `derivative` |
 | Higher-order derivatives | Yes | Forward | Nested differentials; every spelling agrees — `(derivative-n f x k)`, the nested-lambda form, and the curried form `(define df (derivative f))` … `(derivative df)` / `(derivative (derivative f))` (v1.3.4, ESH-0369: the returned closure is dual-transparent, so orders 1-3 are exact) |
-| Math function support | Yes | Forward | sin, cos, exp, log, sqrt, tan, sinh, cosh, tanh, abs, pow |
+| Math function support | Yes | Forward | sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, asinh, acosh, atanh, exp, exp2, log, log2, log10, sqrt, cbrt, abs, square, expt, floor, ceiling, truncate, round, on jets, Taylor towers and levels, at every order; the complex forms carry a derivative too |
 | Dual arithmetic | Yes | Forward | +, -, *, / |
 | `derivative` operator | Yes | Forward | 30+ tests |
 | **Reverse-Mode AD** |

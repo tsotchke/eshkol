@@ -1,0 +1,47 @@
+id: SW-222
+bucket: SILENT-WRONG
+subtag: autodiff
+family: runtime-taylor/pole-propagation
+status: fixed
+closed_at: "6adb2890f"
+title: "a derivative through a simple pole of a quotient answered NaN natively (VM -inf); cbrt at 0 answered NaN"
+repro: >-
+  (derivative (lambda (x) (/ 1.0 x)) 0.0); (derivative-n (lambda (x) (/ 1.0 x))
+  0.0 2); (derivative (lambda (x) (/ 1.0 x)) -0.0); (derivative-n cbrt 0 1)
+observed: >-
+  +nan.0, +nan.0, +nan.0 and +nan.0 on native JIT and AOT; the VM answered
+  -inf.0 for the first, so the engines disagreed.
+correct: >-
+  -inf.0, +inf.0, -inf.0 and +inf.0 (IEEE values of the closed forms -1/x^2,
+  2/x^3 and (1/3) x^(-2/3)).
+root_cause: >-
+  Native jet division was a * (1/b) with the reciprocal built by the chain
+  rule from g'(b0) = -inf, g''(b0) = +inf, so every structurally absent
+  (zero) coefficient multiplied an infinity into NaN, which the product rule
+  then spread into the tangent. The tower recurrences did the same from order
+  2 on (0 * inf in the Cauchy sums), and cbrt's power recurrence on s divided
+  s_k by u_0, 0/0 at 0.
+fix: >-
+  A zero perturbation coefficient contributes nothing to a product (zfma and
+  zfma_ij in lib/core/runtime_taylor.c, pertMul in autodiff_codegen.cpp's
+  jet4Mul, fma3/fmaIJ in the compile-time-K emitter, which stays bit-equal to
+  the runtime); a zero primal keeps IEEE semantics. Jet division, native
+  (dualDiv) and runtime (jet_div_raw), is the series division recurrence
+  q_S = (a_S - sum b_T q_{S\T}) / b_0 instead of a reciprocal chain, and the
+  chain rule itself stays IEEE, so poles enter only through a division: a
+  simple pole is the closed form, a higher-order pole or x * (1/x) ends in 0/0
+  and stays NaN. cbrt carries d = (1/3) u^(-2/3) from d_0 = 1/(3 cbrt(u_0)^2)
+  and integrates it.
+evidence: >-
+  tests/ad/division_pole_test.esk passes on native JIT and AOT and on the
+  bytecode and browser VMs (ctest division_pole_jit, _aot, _vm, _browser_vm).
+  tests/ad/taylor_integral_family_test.esk adds the higher orders, nested
+  jets, the double pole and cbrt at 0 on JIT and AOT. ctest -R
+  'nested|taylor|complex|compiler_architecture': 65 of 67 pass, the two
+  failures being nested_towers_matrix_vm/_browser_vm (VM exact division by
+  exact zero, no VM file touched here).
+caught_by: [coordinator-review]
+missed_by: [vm_parity]
+notes: >-
+  The VM's (derivative-n (lambda (x) (/ 1.0 x)) 0.0 2) prints <dual>; reported
+  to the VM lane.

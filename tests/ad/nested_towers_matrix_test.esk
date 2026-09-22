@@ -277,6 +277,12 @@
 (check "inner constant in its own argument" (dn2 (lambda (a) (dn2 (lambda (b) (* a a a)) 1.0)) 2.0) 0.0)
 ;; sibling (not nested) passes over the same variable stay independent
 (check "sibling inner passes" (dn1 (lambda (a) (+ (dn2 (lambda (b) (* a b b)) 1.0) (dn1 (lambda (cc) (* a cc cc)) 2.0))) 3.0) 6.0)
+;; exact division by an exact zero inside a nested level raises, exactly as
+;; it does un-nested (R7RS); it never turns into an infinity
+(set! checks (+ checks 1))
+(if (eq? (guard (e (#t 'raised)) (dn1 (lambda (a) (dn1 (lambda (b) (/ a b)) 0)) 1)) 'raised)
+    (begin (display "  ok   nested exact division by exact zero raises") (newline))
+    (fail "nested exact division by exact zero raises" "no raise" "raised"))
 ;; the un-nested spellings must not move
 (check "plain derivative-n order 3" (dn3 (lambda (x) (* x x x x)) 2.0) 48.0)
 (check "plain taylor order 3"       (ty3 (lambda (x) (* x x x x)) 2.0) 48.0)

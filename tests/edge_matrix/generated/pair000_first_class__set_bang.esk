@@ -14,7 +14,7 @@
 (edge-check-g0)
 
 ;; check first_class_builtin_var__in__set_bang_lambda_store
-(define (edge-check-g1) (edge-chk "first_class_builtin_var__in__set_bang_lambda_store" (let ((swg1 #f)) ((lambda () (set! swg1 (let ((fp null?)) (fp '()))))) swg1) #t))
+(define (edge-check-g1) (edge-chk "first_class_builtin_var__in__set_bang_lambda_store" (let ((slg1 #f)) ((lambda () (set! slg1 (let ((fp null?)) (fp '()))))) slg1) #t))
 (edge-check-g1)
 
 ;; check first_class_builtin_var__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g3)
 
 ;; check first_class_apply_builtin__in__set_bang_lambda_store
-(define (edge-check-g4) (edge-chk "first_class_apply_builtin__in__set_bang_lambda_store" (let ((swg4 #f)) ((lambda () (set! swg4 (apply + (list 20 22))))) swg4) 42))
+(define (edge-check-g4) (edge-chk "first_class_apply_builtin__in__set_bang_lambda_store" (let ((slg4 #f)) ((lambda () (set! slg4 (apply + (list 20 22))))) slg4) 42))
 (edge-check-g4)
 
 ;; check first_class_apply_builtin__in__set_bang_set_twice
@@ -38,7 +38,7 @@
 (edge-check-g6)
 
 ;; check first_class_builtin_from_list__in__set_bang_lambda_store
-(define (edge-check-g7) (edge-chk "first_class_builtin_from_list__in__set_bang_lambda_store" (let ((swg7 #f)) ((lambda () (set! swg7 ((car (list +)) 20 22)))) swg7) 42))
+(define (edge-check-g7) (edge-chk "first_class_builtin_from_list__in__set_bang_lambda_store" (let ((slg7 #f)) ((lambda () (set! slg7 ((car (list +)) 20 22)))) slg7) 42))
 (edge-check-g7)
 
 ;; check first_class_builtin_from_list__in__set_bang_set_twice
@@ -50,7 +50,7 @@
 (edge-check-g9)
 
 ;; check first_class_map_builtin__in__set_bang_lambda_store
-(define (edge-check-g10) (edge-chk "first_class_map_builtin__in__set_bang_lambda_store" (let ((swg10 #f)) ((lambda () (set! swg10 (map car '((1 2) (3 4)))))) swg10) (list 1 3)))
+(define (edge-check-g10) (edge-chk "first_class_map_builtin__in__set_bang_lambda_store" (let ((slg10 #f)) ((lambda () (set! slg10 (map car '((1 2) (3 4)))))) slg10) (list 1 3)))
 (edge-check-g10)
 
 ;; check first_class_map_builtin__in__set_bang_set_twice

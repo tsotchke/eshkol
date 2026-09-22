@@ -459,12 +459,11 @@ block ordinary use.
   `(derivative-n (lambda (y) (derivative f y)) x k)`,
   `(derivative-n (lambda (y) (derivative-n f y j)) x k)`,
   `(derivative-n (derivative f) x k)` and the `taylor` forms of the same now
-  answer exactly. **Remaining limit, and it is loud:** a composition in which
-  *both* passes are order ≥ 2 exceeds what one value series plus one first-order
-  companion series can represent, and raises `unsupported nested
-  differentiation` rather than answering. Rewrite one of the two passes as a
-  first-order `derivative`, or ask for the combined order with a single
-  `(derivative-n f x k)`.
+  answer exactly, and so do the shapes one companion series could not hold
+  (fixed, SW-154): both passes of order ≥ 2, and two enclosing levels over a
+  pass of order ≥ 2. A nested pass runs as a level whose coefficients are
+  numbers of the enclosing levels (ADR-0027), so nesting has no depth or order
+  limit on native JIT and AOT.
 - **Generic arithmetic and comparison over `i128` use the i128 domain.** On
   both native and VM, `+ - * / modulo`, unary `-`, `abs`, and `= < > <= >=`
   dispatch to the shared fixed-width implementation whenever either operand
@@ -474,32 +473,6 @@ block ordinary use.
   `remainder`/`truncate-remainder` truncate toward zero, and
   `modulo`/`floor-remainder` use divisor-sign floor semantics. The regression
   is `tests/types/i128_test.esk`.
-- **`syntax-rules` templates have no referential transparency: a free
-  identifier resolves at the USE site, not the macro-definition site.**
-  Minimal reproducer:
-  ```scheme
-  (define (helper x) (* x 10))
-  (define-syntax usehelp (syntax-rules () ((_ a) (helper a))))
-  (display (let ((helper (lambda (x) (- x)))) (usehelp 5)))
-  ```
-  Both engines print `-5`. R7RS 4.3.2 requires `50`: a free identifier in a
-  template refers to the binding it had in the macro's *definition*
-  environment, so `helper` must be the top-level one regardless of what the
-  use site binds. The mis-binding only fires when the use site actually
-  shadows a name the template also uses (`+`, `if`, `list`, every builtin and
-  every user helper are all free identifiers in *some* template, so a loud
-  "unsupported hygiene case" diagnostic at every free reference was built,
-  measured, and rejected — it would fire on nearly every macro in the
-  language, including 42 of this repo's own `.esk` files). Closing this
-  needs syntax objects (or marks / scope sets): every identifier carrying the
-  environment it was written in, threaded through the reader, both expanders,
-  and both name-resolution paths — native resolves at LLVM codegen, the VM at
-  compile time against a flat local table, and neither currently has anywhere
-  to put that information. Workaround: do not shadow, at a macro's use site,
-  any free identifier the macro's template refers to. Ruled a documented
-  v1.4 limitation rather than a v1.3.4 fix (maintainer ruling 2026-08-13);
-  tracked as SW-42 in `.icc/silent-wrong-ledger.yaml`, bucket
-  DOCUMENTED-LIMITATION.
 - **Very deep non-tail recursion through a top-level `define`d function used
   to bypass the early native-stack guard and die with a silent SIGILL.**
   Closed by ESH-0101: every generated native user-function entry now performs
@@ -511,19 +484,13 @@ block ordinary use.
   stack. `ESHKOL_MAX_STACK` remains a separate optional software depth ceiling.
 
 **Residual mechanization**
-- **The singular-order scan raises on a similarity ansatz without matching V/Pi
-  under the v1.3.5 exact-coefficient carrier.** `core.pde.ns-residual`'s
-  tau-series for an ansatz whose V and Pi profiles do not match reaches a term
-  whose exact divisor is zero, and the library raises rational division by zero
-  where the earlier carrier propagated a floating NaN through the same term.
-  The raise is honest — an exact divisor of zero has no exact quotient — but it
-  is a change of outcome, not the intended answer, and while it was uncaught it
-  ended `tests/stdlib/ns_residual_test.esk` before the file's remaining checks
-  ran. That check now pins the raise, so the rest of the file runs and the
-  jet-over-jet carrier rewrite will make the change visible when it lands. A
-  matched ansatz is unaffected, and every other check in the residual library
-  passes. Same family as SW-154: the exact path is restored by the v1.4 carrier
-  rewrite.
+- **The singular-order scan finishes on a similarity ansatz without matching
+  V/Pi, and the tau-series takes any order (fixed, SW-154 family).** The scan
+  reports order 0 for the unmatched ansatz, whose residual is singular at the
+  similarity time, instead of raising rational division by zero, and
+  `ns-residual-tau-series` / `ns-force-smoothness-probe` accept any `order`
+  now that an outer `taylor` pass nests around the residual's own order-2
+  Laplacian. Pinned by `tests/stdlib/ns_residual_test.esk`.
 
 **Automatic differentiation**
 - **Differentiating a first-class `gradient` closure again with an enclosing

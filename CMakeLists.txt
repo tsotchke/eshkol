@@ -2761,6 +2761,7 @@ add_library(eshkol-workspace STATIC
   lib/frontend/source_paths.cpp
   lib/frontend/node_identity.cpp
   lib/frontend/semantic_identity.cpp
+  lib/frontend/syntax_datum.cpp
   lib/frontend/diagnostic.cpp
   lib/frontend/library_registry.cpp
   lib/frontend/workspace.cpp
@@ -3372,6 +3373,18 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/ast
     add_test(NAME ast_strings_test COMMAND ast_strings_test)
     set_tests_properties(ast_strings_test PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: AST string owner")
+endif()
+
+# ADR-0026: the one syntax-rules engine, compiled as plain C exactly as the
+# bytecode VM compiles it, against hand-computed expansions.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(syntax_rules_core_test tests/frontend/syntax_rules_core_test.c)
+    set_target_properties(syntax_rules_core_test PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_include_directories(syntax_rules_core_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME syntax_rules_core_test COMMAND syntax_rules_core_test)
+    set_tests_properties(syntax_rules_core_test PROPERTIES
+        LABELS "macros;regression"
+        PASS_REGULAR_EXPRESSION "syntax-rules core: PASS")
 endif()
 
 # ADR-0021: a recorded source path is never the absolute host path.
@@ -4441,6 +4454,61 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: complex_value_derivative"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Numeric builtins on derivative carriers. SW-210: the integral family
+    # (asin acos atan asinh acosh atanh log2 log10 exp2 cbrt, the rounding
+    # functions, atan2) on a Taylor tower or level answered its primal.
+    # SW-211: complex expt/log/angle and the inverse functions lost the
+    # derivative a complex value carries. SW-214: square, inexact and
+    # magnitude of a real carrier did the same. SW-222: a derivative through a
+    # simple pole of a quotient was NaN natively (division_pole also runs on
+    # both VMs, in the ADR-0027 table). JIT and AOT.
+    foreach(_carrier_test
+            taylor_integral_family:tests/ad/taylor_integral_family_test.esk
+            complex_carrier_math:tests/ad/complex_carrier_math_test.esk
+            unary_numeric_builtin_carriers:tests/ad/unary_numeric_builtin_carriers_test.esk
+            division_pole:tests/ad/division_pole_test.esk)
+        string(REPLACE ":" ";" _carrier_parts "${_carrier_test}")
+        list(GET _carrier_parts 0 _carrier_name)
+        list(GET _carrier_parts 1 _carrier_src)
+        add_test(
+            NAME ${_carrier_name}_jit
+            COMMAND $<TARGET_FILE:eshkol-run>
+                    -r "${CMAKE_CURRENT_SOURCE_DIR}/${_carrier_src}"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(${_carrier_name}_jit
+            PROPERTIES
+                TIMEOUT 600
+                ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+                PASS_REGULAR_EXPRESSION "PASS: ${_carrier_name}"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Unhandled exception")
+        add_test(
+            NAME ${_carrier_name}_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_carrier_name}_aot' '${CMAKE_CURRENT_SOURCE_DIR}/${_carrier_src}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/${_carrier_name}_aot'"
+        )
+        set_tests_properties(${_carrier_name}_aot
+            PROPERTIES
+                TIMEOUT 900
+                PASS_REGULAR_EXPRESSION "PASS: ${_carrier_name}"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Unhandled exception")
+    endforeach()
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        # Every builtin the math dispatch lowers has a Taylor recurrence, and
+        # every complex kernel a carrier formula; the selftest proves the gate
+        # goes red on each shape it guards.
+        add_test(NAME taylor_unary_route_guard
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_taylor_unary_routes.py
+                         check --repo ${CMAKE_CURRENT_SOURCE_DIR})
+        add_test(NAME taylor_unary_route_guard_selftest
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_taylor_unary_routes.py
+                         selftest --repo ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(taylor_unary_route_guard taylor_unary_route_guard_selftest
+            PROPERTIES PASS_REGULAR_EXPRESSION "PASS: taylor unary route guard")
+    endif()
     add_test(
         NAME complex_evaluation_point_cached
         COMMAND $<TARGET_FILE:eshkol-run>
@@ -4467,6 +4535,27 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     )
     set_tests_properties(complex_evaluation_point_aot_smoke PROPERTIES
         TIMEOUT 300 PASS_REGULAR_EXPRESSION "PASS: complex_evaluation_point"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # SW-193 / ADR-0027: nested holomorphic derivatives keep every enclosing
+    # level, including `derivative-n`/`taylor` levels and captured complex
+    # variables.
+    add_test(
+        NAME complex_nested_carrier_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/complex_nested_carrier_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(complex_nested_carrier_runtime_smoke PROPERTIES
+        TIMEOUT 300 ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: complex_nested_carrier"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME complex_nested_carrier_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/complex_nested_carrier_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/complex_nested_carrier_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/complex_nested_carrier_aot'"
+    )
+    set_tests_properties(complex_nested_carrier_aot_smoke PROPERTIES
+        TIMEOUT 300 PASS_REGULAR_EXPRESSION "PASS: complex_nested_carrier"
         FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # map and reduce call a statically known procedure directly. map re-resolved
     # a named closure's captures by name at the call site (cross-function IR
@@ -4787,15 +4876,55 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: exactness is decided by the carrier at run time"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
-    # ESH-0413 (ledger SW-154) is NOT in force on this branch: the candidate's
-    # Taylor carrier (the hyperdual companion pair plus the exact sidecar) is
-    # the model that ships, and the carrier-coefficient rewrite that lifts the
-    # nesting ceiling is not compatible with it. tests/ad/nested_towers_matrix_
-    # test.esk is kept in the tree as the pinned reproduction of that ceiling
-    # (both-passes-order->=2 raises; two enclosing levels answer 0) and is
-    # deliberately NOT registered here, because it cannot pass until that
-    # rewrite lands. The nesting shapes that DO hold are gated by
-    # nested_operator_matrix_* and ad_carrier_nesting_* above.
+    # ESH-0413 (ledger SW-154): differentiation passes nest at any depth and any
+    # order. A foreign level is represented as a coefficient of the active one,
+    # preserving every enclosing level instead of flattening or refusing it.
+    add_test(
+        NAME nested_towers_matrix_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_towers_matrix_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(nested_towers_matrix_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: nested towers matrix"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME nested_towers_matrix_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_towers_matrix_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_towers_matrix_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_towers_matrix_aot'"
+    )
+    set_tests_properties(nested_towers_matrix_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: nested towers matrix"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    # ADR-0027 (ledger SW-206..SW-209): hessian, jacobian, the exact scalar
+    # gradient and a fourth `derivative` level nest like every other pass.
+    add_test(
+        NAME nested_operator_levels_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_operator_levels_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(nested_operator_levels_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: nested operator levels"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME nested_operator_levels_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_operator_levels_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_operator_levels_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_operator_levels_aot'"
+    )
+    set_tests_properties(nested_operator_levels_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: nested operator levels"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
     # ESH-0096 (ledger SW-05): differentiating a first-class `gradient` closure
     # again with an enclosing REVERSE pass. `(jacobian (gradient f) point)`
     # answered `#((0))` — silently — where `(hessian f point)` answers `#((12))`
@@ -6265,7 +6394,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             "vm_complex_intermediate_taylor|tests/ad/vm_complex_intermediate_taylor_test.esk|PASS: complex intermediate Taylor|vm"
             "tensor_full_reduction|tests/tensor/tensor_full_reduction_test.esk|PASS: tensor full reductions|all"
             "complex_negate_abs|tests/complex/complex_negate_abs_test.esk|PASS: complex negate and abs|all"
-            "vm_region_evac_level_carrier|tests/memory/vm_region_evac_level_carrier_test.esk|PASS: VM region-evac level carrier|vm")
+            "vm_region_evac_level_carrier|tests/memory/vm_region_evac_level_carrier_test.esk|PASS: VM region-evac level carrier|vm"
+            "division_pole|tests/ad/division_pole_test.esk|PASS: division_pole|vm")
         foreach(_esh_spec IN LISTS _esh_vm_carrier_tests)
             string(REPLACE "|" ";" _esh_parts "${_esh_spec}")
             list(GET _esh_parts 0 _esh_name)
@@ -11337,6 +11467,16 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE
     set_tests_properties(macro_definition_scope PROPERTIES
         TIMEOUT 360 LABELS "macros;parity;regression"
         PASS_REGULAR_EXPRESSION "PASS: 14 macro scope values")
+    # ADR-0026 / SW-192: one syntax-rules engine and one renaming rule; the
+    # hand-computed hygiene matrix must hold on native JIT, AOT and the VM.
+    add_test(NAME macro_hygiene_matrix
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/macros/macro_hygiene_matrix_test.py
+            --native $<TARGET_FILE:eshkol-run>
+            --vm $<TARGET_FILE:eshkol-vm-standalone-test>)
+    set_tests_properties(macro_hygiene_matrix PROPERTIES
+        TIMEOUT 600 LABELS "macros;parity;regression"
+        PASS_REGULAR_EXPRESSION "PASS: [0-9]+ hygiene checks agree")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-repl)

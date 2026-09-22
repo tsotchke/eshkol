@@ -573,13 +573,11 @@ Computes gradient vector using reverse-mode AD (backpropagation).
 **Graph Construction**:
 - Forward pass builds computation graph (AD nodes on tape)
 - Backward pass propagates gradients via chain rule
-- Nested gradients are supported through a tape stack, up to the forward
-  carrier's nesting ceiling: any depth of first-order passes composes, and one
-  pass of order >= 2 composes with one enclosing first-order pass. Two
-  enclosing levels over a pass of order >= 2 is not supported in v1.3.5
-  (ledger SW-154) — see
-  [the AD support matrix](reference/ad/support-matrix.md#nesting-ceiling-sw-154)
-  for the full table and the exact diagnostics.
+- Nested gradients are supported through a tape stack, and forward passes nest
+  at any depth and any order (a nested pass runs as a level of the enclosing
+  ones, ADR-0027) — see
+  [the AD support matrix](reference/ad/support-matrix.md#nesting)
+  for the full table.
 
 #### Native squared geodesic-distance bridge
 

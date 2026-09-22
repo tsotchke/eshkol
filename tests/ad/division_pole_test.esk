@@ -1,0 +1,34 @@
+;; SW-222 regression: a derivative through a simple pole of a quotient is the
+;; closed form's IEEE value on every engine. d/dx (1/x) = -1/x^2 is -inf at
+;; x = 0.0 and at x = -0.0; native answered +nan.0, the VM -inf.0. A pole of
+;; higher order than the seed, or an indeterminate 0 * inf, stays NaN.
+(define failures 0)
+(define checks 0)
+(define (report name got want)
+  (set! failures (+ failures 1))
+  (display "FAIL: ") (display name) (display " got ") (write got)
+  (display " want ") (write want) (newline))
+(define (check-inf name got sign)
+  (set! checks (+ checks 1))
+  (if (not (and (number? got) (infinite? got) (if (> sign 0) (> got 0) (< got 0))))
+      (report name got (if (> sign 0) "+inf.0" "-inf.0"))))
+(define (check-nan name got)
+  (set! checks (+ checks 1))
+  (if (not (and (number? got) (nan? got)))
+      (report name got "+nan.0")))
+(define (check-close name got want)
+  (set! checks (+ checks 1))
+  (if (not (and (number? got) (< (abs (- got want)) 1e-12)))
+      (report name got want)))
+
+(check-inf "d/dx 1/x at 0.0" (derivative (lambda (x) (/ 1.0 x)) 0.0) -1)
+(check-inf "d/dx 1/x at -0.0" (derivative (lambda (x) (/ 1.0 x)) -0.0) -1)
+(check-inf "d/dx 2/x at 0.0" (derivative (lambda (x) (/ 2.0 x)) 0.0) -1)
+(check-inf "d/dx (1+x)/x at 0.0" (derivative (lambda (x) (/ (+ 1.0 x) x)) 0.0) -1)
+(check-inf "derivative-n 1/x order 1" (derivative-n (lambda (x) (/ 1.0 x)) 0.0 1) -1)
+(check-nan "x * (1/x) at 0.0 is indeterminate" (derivative (lambda (x) (* x (/ 1.0 x))) 0.0))
+(check-close "away from the pole" (derivative (lambda (x) (/ 1.0 x)) 2.0) -0.25)
+
+(if (= failures 0)
+    (begin (display "PASS: division_pole ") (display checks) (newline))
+    (begin (display "FAIL: ") (display failures) (display " of ") (display checks) (newline)))

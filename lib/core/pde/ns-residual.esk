@@ -40,28 +40,12 @@
 ;;; root in general), so `ns-similarity-field` fields are exact only up to
 ;;; that unavoidable point -- documented per-function below, not a defect.
 ;;;
-;;; AD-nesting note (a real, load-bearing limit -- read before raising
-;;; `ns-residual-tau-series`'s or `ns-force-smoothness-probe`'s `order`
-;;; above 1). `ns-residual` already performs an order-2 `derivative-n` pass
-;;; internally for the Laplacian (`nsr-d2`). Wrapping THAT in a second
-;;; order->=2 pass -- `taylor`/`derivative-n f x k` with k >= 2 as an outer
-;;; pass over a call to `ns-residual` -- fails with "unsupported nested
-;;; differentiation: ... both passes order >= 2", even on the
-;;; nested-AD-and-exact-rational-seed fix this module is built on (the
-;;; "exact rationals reach the derivative carrier ... the three operators
-;;; nest safely" fix immediately upstream of it, which this module
-;;; verifiably DOES rely on and benefit from elsewhere in this file). Nor
-;;; does repeating the outer pass as several separately-nested order-1
-;;; calls recover it: that shape returns 0 silently instead of raising an
-;;; error. A single order-1 outer pass directly around the order-2-internal
-;;; residual body, however, is exact and verified correct. Minimal repros
-;;; for all three cases are under .scratch/nested_ad_repro*.esk (not
-;;; committed to the module; this is a compiler-front-end limitation to
-;;; route around, not a bug in this file). `ns-residual-tau-series` and
-;;; `ns-force-smoothness-probe` therefore support `order` 0 or 1 ONLY, and
-;;; raise `(error ...)` for anything higher rather than risk the silent-zero
-;;; failure mode. The single-level helpers (`nsr-d1`/`nsr-d2`,
-;;; `ns-residual` itself) are unaffected and support any order internally.
+;;; Nesting: `ns-residual` performs an order-2 `derivative-n` pass internally
+;;; for the Laplacian (`nsr-d2`), and the tau-series wraps it in an outer
+;;; `taylor` pass of any order. Differentiation passes nest at any depth and
+;;; order (docs/design/adr/0027-recursive-taylor-level-carrier.md), so
+;;; `ns-residual-tau-series` and `ns-force-smoothness-probe` accept any
+;;; non-negative `order`.
 ;;;
 ;;; See docs/reference/stdlib/ns-residual.md for the full derivation of the
 ;;; cylindrical Laplacian/advection curvature terms and worked examples.
@@ -407,52 +391,24 @@
 ;; ============================================================
 ;; Taylor tower in tau = 1 - t: the object a search compares against zero.
 ;;
-;; ORDER IS CAPPED AT 1. `ns-residual`'s own Laplacian terms are already an
-;; order-2 `derivative-n` internally (nsr-d2). Wrapping that in a SECOND
-;; order->=2 differentiation pass -- `taylor`/`derivative-n f x k` with
-;; k >= 2 as the outer pass -- fails outright:
-;;
-;;   ERROR: unsupported nested differentiation: an order-2 `derivative-n`/
-;;   `taylor` pass inside another differentiation of order 2 or higher.
-;;
-;; and repeating the outer pass as several separately-nested order-1 calls
-;; (the "nested `derivative` calls" pattern that IS safe for a purely
-;; first-order-internal body, per
-;; examples/mathematics_navier_stokes_similarity_scales.esk) does not
-;; recover it either: it silently returns 0 instead of the true value for
-;; this specific shape (outer order-1 nested around another order-1 nested
-;; around an order-2 inner call) rather than raising the same error -- a
-;; SILENT wrong answer, strictly worse than the loud one. Minimal repros
-;; for both are saved under .scratch/nested_ad_repro*.esk. A SINGLE
-;; order-1 outer pass directly around the order-2-internal residual,
-;; however, is exact and verified correct (see the same repro file). So:
-;; c[0] needs no AD at all (it is just `R(r,z,1)`), c[1] uses exactly one
-;; safe order-1 outer pass, and `order` above 1 is refused rather than
-;; risked.
-(define (nsr-tau-c0 Rcomp r z) (Rcomp r z 1))
-
-(define (nsr-tau-c1 Rcomp r z)
-  (nsr-d1 (lambda (tau) (Rcomp r z (- 1 tau))) 0))
-
+;; One `taylor` pass of the requested order around the residual, whose
+;; Laplacian terms are themselves an order-2 pass (nsr-d2): the inner pass is
+;; a level of the outer one, so every coefficient is exact whenever the flow
+;; and the point are.
 (define (nsr-tau-coeffs Rcomp r z order)
-  (if (= order 0)
-      (list (nsr-tau-c0 Rcomp r z))
-      (list (nsr-tau-c0 Rcomp r z) (nsr-tau-c1 Rcomp r z))))
+  (taylor (lambda (tau) (Rcomp r z (- 1 tau))) 0 order))
 
 (define (nsr-tau-series-of-vec Rvec r z order)
-  (if (> order 1)
-      (error "ns-residual-tau-series: order > 1 is not supported -- nesting a second differentiation pass around ns-residual's own order-2 Laplacian term is unsound on this compiler (see the AD-nesting note in lib/core/pde/ns-residual.esk); order must be 0 or 1" order)
-      (vector (nsr-tau-coeffs (vector-ref Rvec 0) r z order)
-              (nsr-tau-coeffs (vector-ref Rvec 1) r z order)
-              (nsr-tau-coeffs (vector-ref Rvec 2) r z order))))
+  (vector (nsr-tau-coeffs (vector-ref Rvec 0) r z order)
+          (nsr-tau-coeffs (vector-ref Rvec 1) r z order)
+          (nsr-tau-coeffs (vector-ref Rvec 2) r z order)))
 
 ;; (ns-residual-tau-series flow r z order) -> (vector cs-r cs-theta cs-z),
-;; each a list of the Taylor coefficients c[0..order] (order 0 or 1 only,
-;; see above) of the corresponding residual component as a function of
+;; each a list of the Taylor coefficients c[0..order] of the corresponding
+;; residual component as a function of
 ;; tau = 1 - t, expanded about tau = 0 (i.e. about t = 1), at the fixed
-;; point (r,z). c[0] is exact whenever `flow`'s procedures and (r,z) are;
-;; c[1] goes through one AD pass (nsr-d1) and inherits its exactness
-;; contract.
+;; point (r,z). Every coefficient is exact whenever `flow`'s procedures and
+;; (r,z) are.
 (define (ns-residual-tau-series flow r z order)
   (nsr-tau-series-of-vec (ns-residual flow) r z order))
 
@@ -465,11 +421,8 @@
 ;; (ns-singular-orders flow r z order) -> (vector kr ktheta kz), the lowest
 ;; tau-exponent at which each residual component is nonzero at (r,z) (an
 ;; exact integer index into the tau-series, 0-based), or #f for a component
-;; whose series vanishes identically up to `order`. `order` is 0 or 1 (see
-;; the AD-nesting note above); with order 1, the possible results per
-;; component are 0 (fails to vanish even at tau = 0), 1 (vanishes at
-;; tau = 0 but not to first order) or #f (vanishes to first order, at
-;; least -- higher orders are not probed).
+;; whose series vanishes identically up to `order` (higher orders are not
+;; probed).
 (define (ns-singular-orders flow r z order)
   (let ((series (ns-residual-tau-series flow r z order)))
     (vector (nsr-first-nonzero-index (vector-ref series 0))
@@ -489,7 +442,7 @@
 ;; (ns-force-smoothness-probe flow force r z order) -- `force` is a
 ;; (vector fr ftheta fz) of procedures `(lambda (r z t) ...)`, the proposed
 ;; external force/cutoff. Returns #t iff every Taylor coefficient up to
-;; `order` (0 or 1 -- see the AD-nesting note above), in tau = 1 - t about
+;; `order`, in tau = 1 - t about
 ;; tau = 0, of every component of the FORCED residual (R - force) stays
 ;; finite (no NaN, no +-infinity) at the fixed positive radius `r`. This is
 ;; the AD analogue of a finite-difference smoothness check: no stepping, no

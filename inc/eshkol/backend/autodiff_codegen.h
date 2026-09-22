@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <unordered_map>
 #include <utility>
@@ -219,11 +220,14 @@ public:
 
     /** ESH-0394: emit the exact-tier route (tower pass at an exact point, the
      *  operator's own jet path otherwise), or return nullptr — emitting
-     *  nothing — when the pass is not eligible. */
+     *  nothing — when the pass is not eligible. With `route_nested`, a scalar
+     *  point met while a forward pass is live (or a carrier point) also takes
+     *  the tower pass, which runs as a level of the enclosing passes
+     *  (ADR-0027); the operator's own path keeps only the un-nested case. */
     llvm::Value* tryExactTowerRoute(const eshkol_ast* function_ast,
                                     const eshkol_ast* point_ast, int order,
                                     const std::function<llvm::Value*()>& jet_arm,
-                                    const char* what);
+                                    const char* what, bool route_nested = false);
 
     /** Shared emitter for the adPointIs* predicates: spill `tagged` to a
      *  hoisted entry-block slot and call `runtime_fn`, or fold to a constant
@@ -274,6 +278,12 @@ public:
     // site. Set by seedForwardAndPush, consumed (and cleared) by
     // popAndExtractForward; null means "this pass did not probe" (no nesting).
     llvm::AllocaInst* nestedRouteSlot_ = nullptr;
+    // ADR-0027: the route slot of each seed site, keyed by the level value that
+    // seedForwardAndPush hands its caller and the caller hands back to
+    // popAndExtractForward. The differentiated body is emitted BETWEEN the two
+    // calls and may contain passes of its own, so the single member slot above
+    // cannot carry the outer pass's route across it.
+    std::unordered_map<llvm::Value*, llvm::AllocaInst*> nestedRouteByLevel_;
 
     // ESH-0093: if `operand_tagged` is a reverse-tape AD node AND a forward-
     // mode perturbation is live (__ad_pert_level > 0), freeze it to a dual
@@ -668,12 +678,47 @@ public:
      * @return Scalar derivative value (k! * c[k])
      */
     llvm::Value* derivativeN(const eshkol_operations_t* op);   // ESHKOL_DERIVATIVE_N_OP
+    /** ADR-0027: call a field on a point slot for a nested vector-point operator. */
+    llvm::Value* emitNestedFieldCall(llvm::Function* func_ptr, llvm::Value* closure_val,
+                                     const eshkol_ast* fn_ast, uint64_t arity,
+                                     llvm::Value* point_slot, const char* what);
+    /** ADR-0027: finish a composed vector operator in the runtime's generic
+     *  arithmetic when its sub-result holds carriers (see the definition). */
+    void emitCarrierCombinatorFork(llvm::Value* sub_tagged, llvm::Value* extra_tagged,
+                                   const char* runtime_fn, llvm::Value*& gen_value,
+                                   llvm::BasicBlock*& gen_exit);
+    /** ADR-0027: the Hessian at a vector point as nested forward passes (levels). */
+    llvm::Value* emitNestedHessian(llvm::Function* func_ptr, llvm::Value* closure_val,
+                                   const eshkol_ast* fn_ast, uint64_t arity,
+                                   llvm::Value* point_tagged);
     /** Selects which tower-API extraction mode a taylorApiCore call performs. */
     enum class TowerMode { NONE, DERIV_N, COEFFS };
     /** Current tower-API mode; only meaningful while a tower-API call (taylor/derivative-n) is in progress. */
     TowerMode adTowerMode_ = TowerMode::NONE;   // set only during a tower-API call
     /** Requested Taylor-tower order k (as an i32 runtime value) for the in-progress tower-API call. */
     llvm::Value* adTowerOrder_ = nullptr;       // i32 requested order k (runtime value)
+    /**
+     * ADR-0027: every AD operator opens its own pass. The tower mode of an
+     * enclosing pass is set while that pass's differentiand is emitted, so an
+     * operator written inside it must not inherit the mode; each operator entry
+     * point clears it for its own emission and restores it on exit.
+     */
+    struct PassModeScope {
+        AutodiffCodegen& owner;
+        TowerMode saved_mode;
+        llvm::Value* saved_order;
+        explicit PassModeScope(AutodiffCodegen& o)
+            : owner(o), saved_mode(o.adTowerMode_), saved_order(o.adTowerOrder_) {
+            o.adTowerMode_ = TowerMode::NONE;
+            o.adTowerOrder_ = nullptr;
+        }
+        ~PassModeScope() {
+            owner.adTowerMode_ = saved_mode;
+            owner.adTowerOrder_ = saved_order;
+        }
+        PassModeScope(const PassModeScope&) = delete;
+        PassModeScope& operator=(const PassModeScope&) = delete;
+    };
     /** ESH-0394 (runtime-property redesign): a one-shot override consumed by the
      *  very next point-evaluation inside codegenDerivativeMonolith(). Exactness
      *  is decided by the CARRIER at run time, not by a static proof that the

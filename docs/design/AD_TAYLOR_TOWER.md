@@ -128,8 +128,57 @@ log   s = log(u)     : s_k = ( u_k − (1/k) Σ_{j=1..k-1} j · s_j · u_{k-j} )
 sin/cos (coupled)    : s_k = (1/k) Σ_{j=1..k} j · u_j · c_{k-j}
                        c_k = −(1/k) Σ_{j=1..k} j · u_j · s_{k-j}
 pow   s = u^r        : s_k = (1/(k·u_0)) Σ_{j=1..k} (j·r − (k−j)) · u_j · s_{k-j}
-sqrt, tan, atan, tanh, exp2, expm1, log1p : derived from the above / their own linear recurrences
+sqrt, tan, tanh     : derived from the above
+f in the integral family, with d = f'(u) as a series:
+                       s_0 = f(u_0),  s_k = (1/k) Σ_{j=1..k} j · u_j · d_{k-j}
+                       atan  d = 1/(1+u²)        atanh d = 1/(1−u²)
+                       asin  d = (1−u²)^(−1/2)   acos  d = −(1−u²)^(−1/2)
+                       asinh d = (1+u²)^(−1/2)   acosh d = (u²−1)^(−1/2)
+                       log2, log10  d = 1/(u·ln b)
+                       exp2  the exp recurrence on u·ln 2;  cbrt  the pow recurrence, r = 1/3
+atan2(y, x)          : σ·atan(q) + c with q = y/x (σ = 1) when |x_0| ≥ |y_0|, else q = x/y (σ = −1);
+                       c is constant, so only s_0 = atan2(y_0, x_0) moves
+floor ceiling truncate round : s_0 = f(u_0), every higher coefficient 0
 ```
+
+**Poles (SW-222).** A perturbation coefficient that is exactly zero is
+structurally absent and contributes nothing to a product, even against an
+infinite factor (`zfma` in the kernel, `pertMul` in the code generator's jets,
+`fma3` in the compile-time-K emitter); a zero primal is a value and keeps IEEE
+semantics. Poles enter only through the division recurrence, over a series and
+over a jet alike (`dualDiv` and `jet_div_raw` solve
+`q_S = (a_S − Σ b_T q_{S∖T}) / b_0` instead of multiplying by a reciprocal
+jet). So a simple pole is the closed form's IEEE value at every order —
+`d/dx (1/x)` at `0.0` is `-inf.0`, the second derivative `+inf.0` — and a pole
+of higher order than the seed (`1/x²` at `0`) or an indeterminate `x·(1/x)`
+ends in `0/0` and stays NaN. `cbrt` carries `d = (1/3)u^(−2/3)` by the power
+recurrence from `d_0 = 1/(3 cbrt(u_0)²)`, so its derivatives at `0` are the
+pole's infinities rather than `0/0`.
+
+**The power step at a zero base (SW-225).** `u^r` divides by `u_0`, which
+is `0/0` at `u_0 = 0`. There the step answers the IEEE value of the closed
+form instead (`tr_pow_at_zero`, mirrored as straight-line SSA by the
+compile-time-K emitter): an integer `r` is exact algebra (repeated Cauchy
+products, and `1/u^|r|` by the division recurrence for `r < 0`); for any other
+`r`, with `m` the first index of a nonzero `u_m`, `s_k = 0` for `k < m·r`, and
+for `m = 1` the `k`-th derivative `r(r−1)…(r−k+1) u^(r−k) u_1^k` is an
+infinity of that sign. For `m > 1` the closed form meets `0·∞` and the
+coefficient is NaN (`sqrt(x²) = |x|` has no derivative at `0`). So `sqrt` at
+`0.0` has derivatives `+inf.0, -inf.0, +inf.0, …`, `(expt x 1.5)` has `0` then
+`+inf.0`, and the inverse functions reach their poles (`asin''(1) = +inf.0`).
+A series that is zero to its truncation order is taken as the zero it shows.
+
+The integral family is one recurrence: `f(u)` solves `ds/dt = f'(u)·du/dt`,
+and for the inverse functions `f'` is algebraic in `u`, so `d` comes from the
+mul/div/pow recurrences. It runs over doubles (`tr_ext_unary`), with the reverse
+seed tangent `f'(u)·u'` (`ddual_ext`), over tagged coefficients for a level or
+an exact tower (`level_ext_unary`), and in the 8-jet algebra of an enclosing
+`derivative`. Over tagged coefficients an exact input keeps every coefficient
+that is rational: `(derivative-n atan 0 3)` is exactly `-2`, `(derivative-n
+cbrt 8 3)` is exactly `5/3456`, and a level keeps an exact tail past an
+irrational `s_0`. At a point where `f'` is unbounded (`atanh` at `±1`, `cbrt`
+at `0`) the point is read as inexact rather than dividing an exact number by
+exact `0`.
 
 For the piecewise unary primitives, `abs` uses the sign of the base
 coefficient for the entire smooth-side series (`abs(u₀)`, then
@@ -153,7 +202,7 @@ is the classic **perturbation-confusion** trap: if the inner and outer different
 
 - **Epoch tags.** Every dynamically-active differentiation context is assigned a distinct 16-bit **epoch tag** (a monotonically increasing counter per nesting entry, wrapping is a hard error). The tag is written into `flags[16..31]` (§4) of every tower seeded within that context. Compile-time-monomorphized towers carry the tag as an immediate constant in the emitted IR (a `constexpr` level id per lexical `derivative` site), so there is no runtime counter on the hot path.
 - **Tag-gated combination.** Binary ops (`mul`, `div`, …) only *combine perturbations* of towers whose epoch tag equals the current context's tag. A tower carrying a **foreign** tag (an inner or outer level) is treated as a **constant** with respect to the current level: its order-≥1 coefficients are not differentiated at this level — the op uses only its `c[0]` value, exactly as a plain scalar would be. This is precisely JAX's "lift a value from an outer trace as a constant."
-- **The foreign level's first order still has to reach the enclosing pass (ESH-0412).** "Lift as a constant" is right for *this* level's value series, but the foreign tower's `c[1]` is a live first-order dependence of the *enclosing* pass, and dropping it is not perturbation safety — it is the enclosing derivative answering **zero**. That is what happened whenever the outer variable reached an inner pass through a **captured variable** rather than through the inner pass's evaluation point, which the seed-site nesting probe (§8, `eshkol_ad_nested_seed`) is the only thing that inspects: five of the nine `derivative` × `derivative-n` × `taylor` outer/inner pairings were silently `0`. So the lift routes that `c[1]` onto the **first-order companion series** (`ESH_TAYLOR_TANGENT_FLAG`, §8) — the same "one value series plus one first-order companion" discipline the point-nesting routes already use — and the result records *which* enclosing level it is riding in `esh_taylor_t.carry_epoch`. Extraction then restates the answer in the enclosing pass's own carrier: an order-1 tower of `carry_epoch` for an enclosing tower, the promoted companion series for an enclosing 8-jet, and coefficient-by-coefficient for `taylor`. A foreign level carrying curvature above first order — or two distinct enclosing levels at once — exceeds one companion, and **raises** (`eshkol_ad_nested_capture_unsupported`) rather than answering a number. Exactness does not survive the composition (the companion is a double series), which is why the exact tier (ESH-0394) still declines while another differentiation is live. In JAX’s terms this is the "lift a value from an outer trace" rule **with the lifted trace retained**, so a closure-captured outer tower cannot be silently erased by an inner pass.
+- **Nested levels (ADR-0027).** "Lift as a constant" is right only if the constant is kept whole. A pass opened inside another live pass runs as a **level**: a series in its own perturbation whose coefficients are numbers of the enclosing levels — exact or inexact scalars, 8-jets of an enclosing `derivative`, classic towers, or level carriers of smaller epochs (`ESH_TAYLOR_COEFF_CARRIER`). Arithmetic takes the largest epoch among the operands as the active level and reads every other operand, whole, as a constant of it; every coefficient operation recurses through the same arithmetic, so a foreign level's full series survives inside the coefficients and depth and per-level order are unbounded. Extraction reads `k!·c[k]` in the level's own epoch, which is a number of the enclosing levels. This replaced the one-companion scheme (ESH-0412), which could carry exactly one enclosing first-order level and raised or answered `0` beyond it (SW-154); the first-order companion now carries only the reverse seed of §8. See [ADR-0027](adr/0027-recursive-taylor-level-carrier.md).
 - **Seeding & extraction.** `seedDerivativeInput` stamps the current tag; `extractDerivativeResult` asserts the extracted tower's tag matches the requesting context and refuses (compile error for literal order; runtime trap for dynamic) on mismatch, so a leaked inner tower can never be silently read as an outer result.
 - **Interaction with JET4/JET8.** The existing e1/e2 (and #138 e3) perturbation levels are the tag mechanism at orders ≤ 2 already; the tower generalizes the same idea to n levels. During P3, JET8's implicit levels are re-expressed as explicit tags so there is one confusion model across all tiers.
 
@@ -178,6 +227,17 @@ Three expansions of the same table:
 3. **Auto-generated test** (`taylor_recurrences_test.c`, generated at build) — for each row, seeds `x` at `TEST_X0`, runs the tower to `TEST_ORDER`, and compares `k!·c_k` against `k`-th finite-order derivative of the C-library `TEST_FN` (obtained via a high-precision reference: exact for polynomials/rationals, and via the *coupled* analytic derivative pattern for transcendentals) at rel-err < 1e-12.
 
 Consequence: **adding a primitive is a one-line table edit that automatically adds its d=8 correctness gate.** You cannot merge a recurrence without its test.
+
+The code generator reads the table too. `lib/core/taylor_opcodes.h` maps a
+builtin's spelling (a row's own, or a `TAYLOR_ALIAS` lowering spelling such as
+`fabs` or `ceil`) to its op-code, and the math dispatch routes a Taylor carrier
+through that lookup instead of a list of its own, so a builtin has a tower
+route exactly when it has a row. `scripts/check_taylor_unary_routes.py` (ctest
+`taylor_unary_route_guard`) fails when a builtin lowered through the math
+dispatch has no row, when a row has no runtime rule, or when a procedure with
+a plain complex kernel has no carrier formula; its `selftest` proves each check
+goes red. The runtime dispatchers end in a fatal error, not a copy of the
+input, so an op-code without a recurrence can never answer with its primal.
 
 ---
 
@@ -294,7 +354,8 @@ the design's "tower-valued primals and adjoints".
   lock-step with the value series, using the same `fma` / ascending-`j`
   reduction order as §6a: `(u·w)′ = u′·w + u·w′`; `(u/w)′` from the divided
   recurrence; and `g(u)′ = g′(u)·u′` realised as a series convolution for
-  `exp/log/sin/cos/tan/pow/sqrt/sinh/cosh/tanh`. A tower without the flag never
+  `exp/log/sin/cos/tan/pow/sqrt/sinh/cosh/tanh` and the integral family of §5
+  (whose `d` series is already `g′(u)`). A tower without the flag never
   enters this path, so the P1/P2 forward tower is **byte-for-byte unchanged**.
 - **Extraction.** `popAndExtractForward` for `DERIV_N` reads
   `value = k!·c[K]` and `dseed = k!·c′[K]`. If a reverse tape is live it records

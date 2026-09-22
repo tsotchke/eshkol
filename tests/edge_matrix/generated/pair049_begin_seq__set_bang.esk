@@ -14,7 +14,7 @@
 (edge-check-g499)
 
 ;; check begin_seq_order__in__set_bang_lambda_store
-(define (edge-check-g500) (edge-chk "begin_seq_order__in__set_bang_lambda_store" (let ((swg500 #f)) ((lambda () (set! swg500 (let ((bl '())) (begin (set! bl (cons 1 bl)) (set! bl (cons 2 bl))) bl)))) swg500) (list 2 1)))
+(define (edge-check-g500) (edge-chk "begin_seq_order__in__set_bang_lambda_store" (let ((slg500 #f)) ((lambda () (set! slg500 (let ((bl '())) (begin (set! bl (cons 1 bl)) (set! bl (cons 2 bl))) bl)))) slg500) (list 2 1)))
 (edge-check-g500)
 
 ;; check begin_seq_order__in__set_bang_set_twice

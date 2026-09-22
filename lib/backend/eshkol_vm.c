@@ -1499,6 +1499,10 @@ static int compile_and_run(const char* source) {
      * body that gets spliced in below it. */
     vm_plan_unit_libraries(top_exprs, n_top_exprs);
 
+    /* Pass 1d: every top-level macro of the unit is visible to the whole
+     * unit (forward references), as on the native engine. */
+    vm_preregister_unit_syntax(&main_chunk, top_exprs, n_top_exprs);
+
     /* Pass 2: Scan for top-level defines that need boxing. A handler closure
      * created by guard is an implicit closure even though it is not spelled
      * as a lambda, so a set! in a guard clause must share the enclosing
@@ -1515,7 +1519,7 @@ static int compile_and_run(const char* source) {
         /* Check if this is a simple define: (define name value) */
         if (expr->type == N_LIST && expr->n_children >= 3
             && expr->children[0]->type == N_SYMBOL
-            && strcmp(expr->children[0]->symbol, "define") == 0
+            && eshkol_syntax_base_is(expr->children[0]->symbol, "define")
             && expr->children[1]->type == N_SYMBOL) {
             const char* name = expr->children[1]->symbol;
             /* Scan ALL subsequent expressions for set! + capture */
@@ -1546,7 +1550,7 @@ static int compile_and_run(const char* source) {
     /* Helper: is this a function-define? (define (name ...) body) */
     #define IS_FUNC_DEFINE(e) ((e)->type == N_LIST && (e)->n_children >= 3 \
         && (e)->children[0]->type == N_SYMBOL \
-        && strcmp((e)->children[0]->symbol, "define") == 0 \
+        && eshkol_syntax_base_is((e)->children[0]->symbol, "define") \
         && (e)->children[1]->type == N_LIST \
         && (e)->children[1]->n_children >= 1 \
         && (e)->children[1]->children[0]->type == N_SYMBOL)
@@ -1660,7 +1664,7 @@ static int compile_and_run(const char* source) {
             int do_box = 0;
             if (expr->type == N_LIST && expr->n_children >= 3
                 && expr->children[0]->type == N_SYMBOL
-                && strcmp(expr->children[0]->symbol, "define") == 0
+                && eshkol_syntax_base_is(expr->children[0]->symbol, "define")
                 && expr->children[1]->type == N_SYMBOL) {
                 const char* name = expr->children[1]->symbol;
                 for (int b = 0; b < n_boxed; b++)
@@ -1902,6 +1906,8 @@ static void compile_source_to_chunk_with_options(const char* source,
      * `define-library` would be emitted as if it had resolved. */
     vm_clear_compile_failure();
     vm_prescan_unit_libraries(source);
+    /* Every top-level macro of the unit is visible to the whole unit. */
+    vm_prescan_unit_syntax(chunk, source);
     vm_set_user_locals_base(chunk->n_locals);
     vm_prescan_forward_function_slots(chunk, source);
 
@@ -1917,7 +1923,7 @@ static void compile_source_to_chunk_with_options(const char* source,
         int do_box = 0;
         if (expr->type == N_LIST && expr->n_children >= 3 &&
             expr->children[0]->type == N_SYMBOL &&
-            strcmp(expr->children[0]->symbol, "define") == 0 &&
+            eshkol_syntax_base_is(expr->children[0]->symbol, "define") &&
             expr->children[1]->type == N_SYMBOL) {
             for (int b = 0; b < n_boxed; ++b) {
                 if (strcmp(boxed_names[b], expr->children[1]->symbol) == 0) {
@@ -2226,6 +2232,7 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
         Node* expr = parse_sexp(); if (!expr) break;
         if (n_top < 256) top_exprs[n_top++] = expr;
     }
+    vm_preregister_unit_syntax(&rs->chunk, top_exprs, n_top);
 
     /* REPL ECHO IS NOT THE `display` PRIMITIVE.
      *
