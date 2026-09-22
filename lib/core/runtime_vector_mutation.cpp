@@ -22,6 +22,11 @@
 #include <cstdint>
 #include <cstring>
 
+// Defined in runtime_autodiff.cpp: is `bits` a live reverse-mode node pointer?
+extern "C" int eshkol_ad_node_probe(const arena_t* arena, uint64_t bits, int32_t expect_type);
+// Defined in runtime_taylor.c: does the value reference a Taylor tower?
+extern "C" int eshkol_is_taylor_tagged(const eshkol_tagged_value_t* tv);
+
 namespace {
 
 uint8_t subtype_of(const void* ptr) {
@@ -106,9 +111,21 @@ bool tagged_real_to_double(const eshkol_tagged_value_t& value, double* out) {
 //  - A reverse-mode AD node keeps the in-tensor carrier encoding the
 //    differentiation operators already read back (its pointer, in an f64
 //    tensor), so a store inside a differentiated function stays on the tape.
-//  - A dual tensor holds tagged jets, so it takes the tagged value unchanged.
+//  - A dual (jet) tensor holds tagged forward-mode carriers -- dual jets and
+//    Taylor towers -- so it takes such a value unchanged; a real stored beside
+//    them is reduced as above. A carrier arriving at a numeric tensor widens it
+//    to a jet tensor first (widen_tensor_for).
 //  - Anything else has no representation in the slot and is refused before
 //    the destination is touched.
+// A forward-mode derivative carrier: a first-order dual jet, or a Taylor tower
+// (the exact tier's carrier, and derivative-n's). Both are whole values that a
+// jet tensor slot holds unchanged; neither has an f64 representation.
+bool is_forward_jet(const eshkol_tagged_value_t& value) {
+    if (value.data.ptr_val == 0) return false;
+    if (base_type(value.type) == ESHKOL_VALUE_DUAL_NUMBER) return true;
+    return eshkol_is_taylor_tagged(&value) != 0;
+}
+
 bool tensor_slot_accepts(const eshkol_tensor_t* tensor,
                          const eshkol_tagged_value_t& value) {
     const uint8_t type = base_type(value.type);
@@ -116,8 +133,7 @@ bool tensor_slot_accepts(const eshkol_tensor_t* tensor,
     if (tensor->dtype == ESHKOL_TENSOR_DTYPE_BOXED) return true;
     if (tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
         double ignored = 0.0;
-        return type == ESHKOL_VALUE_DUAL_NUMBER ||
-               tagged_real_to_double(value, &ignored);
+        return is_forward_jet(value) || tagged_real_to_double(value, &ignored);
     }
     double ignored = 0.0;
     if (tagged_real_to_double(value, &ignored)) return true;
@@ -137,18 +153,53 @@ bool tensor_slot_accepts(const eshkol_tensor_t* tensor,
 // The promoted carrier is no longer a numeric tensor: `tensor?` answers #f and
 // every tensor kernel refuses it through the operand check, which is why the
 // tensor API (`tensor-set!`) refuses the store instead of promoting.
-bool promote_tensor_to_boxed(eshkol_tensor_t* tensor) {
-    if (tensor->dtype == ESHKOL_TENSOR_DTYPE_BOXED) return true;
-    if (tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) return false;
+// Re-point a numeric tensor's elements at a tagged-value buffer of `dtype`,
+// carrying every existing element over as the number it was. A slot holding a
+// reverse-mode node pointer (the f64 carrier encoding) has no tagged-number
+// reading, so such a tensor is not widened and the store is refused loudly.
+bool promote_numeric_tensor_to_tagged(eshkol_tensor_t* tensor, uint64_t dtype) {
     const uint64_t n = tensor->total_elements;
+    arena_t* arena = get_global_arena();
+    const auto* bits = reinterpret_cast<const uint64_t*>(tensor->elements);
+    for (uint64_t i = 0; i < n; ++i) {
+        if (eshkol_ad_node_probe(arena, bits[i], -1)) return false;
+    }
     auto* slots = static_cast<eshkol_tagged_value_t*>(
-        arena_allocate(get_global_arena(), (size_t)n * sizeof(eshkol_tagged_value_t)));
-    if (!slots) return false;
+        arena_allocate(arena, (size_t)n * sizeof(eshkol_tagged_value_t)));
+    if (!slots && n != 0) return false;
     const auto* numeric = reinterpret_cast<const double*>(tensor->elements);
     for (uint64_t i = 0; i < n; ++i) slots[i] = tagged_double(numeric[i]);
     tensor->elements = reinterpret_cast<int64_t*>(slots);
-    tensor->dtype = ESHKOL_TENSOR_DTYPE_BOXED;
+    tensor->dtype = dtype;
     return true;
+}
+
+bool promote_tensor_to_boxed(eshkol_tensor_t* tensor) {
+    if (tensor->dtype == ESHKOL_TENSOR_DTYPE_BOXED) return true;
+    if (tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) return false;
+    return promote_numeric_tensor_to_tagged(tensor, ESHKOL_TENSOR_DTYPE_BOXED);
+}
+
+// Widen a tensor so it can hold `value`, or report that it cannot.
+//
+// ADR-0020 amendment 2. A forward-mode derivative carrier stored into a
+// numeric tensor -- by `(tensor ...)` construction, a collection coerced to a
+// tensor operand, or a mutator -- makes it a jet tensor (dtype DUAL): the same
+// representation the forward-mode tensor kernels already produce and consume,
+// so the derivative survives instead of being refused or read as its primal.
+// This is independent of `allow_boxed`: a jet tensor is still a numeric
+// tensor, so the tensor API widens to it too. Only the vector API may widen to
+// the general boxed carrier for a value that is not a number at all.
+bool widen_tensor_for(eshkol_tensor_t* tensor, const eshkol_tagged_value_t& value,
+                      bool allow_boxed) {
+    if (tensor_slot_accepts(tensor, value)) return true;
+    if (is_forward_jet(value)) {
+        if (eshkol_tensor_dtype_is_tagged(tensor->dtype)) return false;
+        return promote_numeric_tensor_to_tagged(tensor, ESHKOL_TENSOR_DTYPE_DUAL) &&
+               tensor_slot_accepts(tensor, value);
+    }
+    return allow_boxed && promote_tensor_to_boxed(tensor) &&
+           tensor_slot_accepts(tensor, value);
 }
 
 void encode_tensor_slot(eshkol_tensor_t* tensor, int64_t index,
@@ -162,7 +213,7 @@ void encode_tensor_slot(eshkol_tensor_t* tensor, int64_t index,
     if (tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
         auto* slots = reinterpret_cast<eshkol_tagged_value_t*>(tensor->elements);
         double numeric = 0.0;
-        slots[index] = base_type(value.type) == ESHKOL_VALUE_DUAL_NUMBER
+        slots[index] = is_forward_jet(value)
             ? value
             : (tagged_real_to_double(value, &numeric), tagged_double(numeric));
         eshkol_region_write_barrier_range(tensor, slots + index, 1);
@@ -310,9 +361,8 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
     // refused value cannot leave a partially copied tensor behind; a value the
     // numeric carrier cannot hold promotes it once (ADR-0020).
     for (int64_t i = 0; i < count; ++i) {
-        if (!tensor_slot_accepts(dst_tensor, src_values[i])) {
-            if (!promote_tensor_to_boxed(dst_tensor)) return ESHKOL_SLOT_STORE_VALUE;
-            break;
+        if (!widen_tensor_for(dst_tensor, src_values[i], /*allow_boxed=*/true)) {
+            return ESHKOL_SLOT_STORE_VALUE;
         }
     }
     for (int64_t i = 0; i < count; ++i) {
@@ -337,9 +387,7 @@ static int32_t tensor_slot_store(void* tensor_object, int64_t index,
     auto* tensor = reinterpret_cast<eshkol_tensor_t*>(tensor_object);
     const int64_t length = sequence_length(tensor_object, HEAP_SUBTYPE_TENSOR);
     if (index < 0 || index >= length) return ESHKOL_SLOT_STORE_BOUNDS;
-    if (!tensor_slot_accepts(tensor, *value)) {
-        if (!promote || !promote_tensor_to_boxed(tensor)) return ESHKOL_SLOT_STORE_VALUE;
-    }
+    if (!widen_tensor_for(tensor, *value, promote)) return ESHKOL_SLOT_STORE_VALUE;
     encode_tensor_slot(tensor, index, *value);
     return ESHKOL_SLOT_STORE_OK;
 }
@@ -374,6 +422,28 @@ extern "C" int32_t eshkol_sequence_slot_store(const eshkol_tagged_value_t* seque
     return ESHKOL_SLOT_STORE_OK;
 }
 
+// Can this value be an element of a numeric tensor? A real number of any
+// exactness or a forward-mode derivative carrier. The flat-collection operand
+// coercion asks this before building a tensor, so it and the constructors
+// share one answer.
+extern "C" int32_t eshkol_tensor_leaf_is_storable(const eshkol_tagged_value_t* value) {
+    if (!value) return 0;
+    double ignored = 0.0;
+    return (tagged_real_to_double(*value, &ignored) || is_forward_jet(*value)) ? 1 : 0;
+}
+
+extern "C" int32_t eshkol_tensor_fill_slots(void* tensor_object,
+                                             const eshkol_tagged_value_t* value) {
+    if (!tensor_object || !value) return ESHKOL_SLOT_STORE_NULL;
+    if (subtype_of(tensor_object) != HEAP_SUBTYPE_TENSOR) return ESHKOL_SLOT_STORE_CONTAINER;
+    auto* tensor = reinterpret_cast<eshkol_tensor_t*>(tensor_object);
+    const int64_t length = sequence_length(tensor_object, HEAP_SUBTYPE_TENSOR);
+    if (length < 0) return ESHKOL_SLOT_STORE_BOUNDS;
+    if (!widen_tensor_for(tensor, *value, /*allow_boxed=*/false)) return ESHKOL_SLOT_STORE_VALUE;
+    for (int64_t i = 0; i < length; ++i) encode_tensor_slot(tensor, i, *value);
+    return ESHKOL_SLOT_STORE_OK;
+}
+
 extern "C" int32_t eshkol_sequence_fill(const eshkol_tagged_value_t* sequence,
                                          const eshkol_tagged_value_t* value) {
     if (!value) return ESHKOL_SLOT_STORE_NULL;
@@ -384,7 +454,7 @@ extern "C" int32_t eshkol_sequence_fill(const eshkol_tagged_value_t* sequence,
     if (length < 0) return ESHKOL_SLOT_STORE_BOUNDS;
     if (subtype == HEAP_SUBTYPE_TENSOR) {
         auto* tensor = reinterpret_cast<eshkol_tensor_t*>(object);
-        if (!tensor_slot_accepts(tensor, *value) && !promote_tensor_to_boxed(tensor)) {
+        if (!widen_tensor_for(tensor, *value, /*allow_boxed=*/true)) {
             return ESHKOL_SLOT_STORE_VALUE;
         }
         for (int64_t i = 0; i < length; ++i) encode_tensor_slot(tensor, i, *value);

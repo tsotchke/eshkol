@@ -41,6 +41,8 @@ static tensor_dual_jet jet_zero(double value = 0.0) {
     return out;
 }
 
+extern "C" int eshkol_is_taylor_tagged(const eshkol_tagged_value_t* tv);
+
 static tensor_dual_jet jet_from_tagged(const eshkol_tagged_value_t& value,
                                       const char* op_name) {
     const uint8_t base = (uint8_t)(value.type & 0x0F);
@@ -54,6 +56,16 @@ static tensor_dual_jet jet_from_tagged(const eshkol_tagged_value_t& value,
     }
     if (base == ESHKOL_VALUE_DOUBLE) return jet_zero(value.data.double_val);
     if (base == ESHKOL_VALUE_INT64) return jet_zero((double)value.data.int_val);
+    if (eshkol_is_taylor_tagged(&value)) {
+        /* A jet tensor may hold Taylor towers (ADR-0020 amendment 2): element
+         * reads return them whole, but these kernels carry a first-order f64
+         * jet only. Refuse by name rather than read the tower as a number. */
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "%s: a Taylor-mode derivative (derivative-n, taylor, or an "
+                             "exact point) has no rule in this tensor operation; read the "
+                             "elements with tensor-ref or vector-ref instead",
+                             op_name ? op_name : "tensor AD");
+    }
     eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
                          "%s: tensor AD requires numeric elements",
                          op_name ? op_name : "tensor AD");

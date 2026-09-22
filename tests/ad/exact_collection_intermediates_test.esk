@@ -1,0 +1,95 @@
+;;; SW-197: a derivative keeps its carrier -- and at an exact point its
+;;; exactness -- when the differentiated body passes values through lists,
+;;; vectors and tensors. Run unchanged on the native JIT, an AOT binary and the
+;;; bytecode VM; every engine must print the same PASS line.
+;;;
+;;; Lists and vectors hold any value, so an exact Taylor tower survives them
+;;; whole. A tensor keeps a derivative carrier whole in a jet tensor (ADR-0020
+;;; amendment 2): construction and element reads move it, so an exact point
+;;; stays exact through `(tensor ...)` + `tensor-ref`. A tensor KERNEL
+;;; (`tensor-sum`, ...) computes on the tensor's inexact numbers, so a body that
+;;; applies one answers the same derivative inexactly -- never 0, never a refusal.
+
+(define failures 0)
+
+(define (check-exact label got want)
+  (if (and (number? got) (exact? got) (= got want))
+      (begin (display "ok ") (display label) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display label) (display ": got ") (write got)
+             (display " want exact ") (write want) (newline))))
+
+(define (check-inexact label got want)
+  (if (and (number? got) (inexact? got) (< (abs (- got want)) 1e-12))
+      (begin (display "ok ") (display label) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display label) (display ": got ") (write got)
+             (display " want inexact ") (write want) (newline))))
+
+(define (check-equal label got want)
+  (if (equal? got want)
+      (begin (display "ok ") (display label) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display label) (display ": got ") (write got)
+             (display " want ") (write want) (newline))))
+
+(define (sq y) (* y y))
+(define (loss x) (fold-left + 0 (map sq (list x x x x))))
+
+;; --- lists -----------------------------------------------------------------
+(check-exact "list map/fold-left" (derivative loss 1/3) 8/3)
+(check-exact "list fold-right" (derivative (lambda (x) (fold-right * 1 (list x x x))) 1/3) 1/3)
+(check-exact "list apply" (derivative (lambda (x) (apply + (list x (* x x)))) 1/3) 5/3)
+(check-exact "nested list" (derivative (lambda (x) (car (car (list (list (* x x x)))))) 1/3) 1/3)
+(check-exact "parallel-map" (derivative (lambda (x) (fold-left + 0 (parallel-map sq (list x x)))) 1/3) 4/3)
+(define tiny (/ 1 (expt 2 2000)))
+(check-exact "list tiny rational" (derivative loss tiny) (* 8 tiny))
+
+;; --- vectors ---------------------------------------------------------------
+(check-exact "vector-ref"
+  (derivative (lambda (x) (let ((v (vector x (* x x)))) (+ (vector-ref v 0) (vector-ref v 1)))) 1/3) 5/3)
+(check-exact "vector-map"
+  (derivative (lambda (x) (let ((v (vector-map sq (vector x x)))) (+ (vector-ref v 0) (vector-ref v 1)))) 1/3) 4/3)
+(check-exact "list->vector"
+  (derivative (lambda (x) (vector-ref (list->vector (list x (* x x))) 1)) 1/3) 2/3)
+
+;; --- tensors: construction and element reads keep the carrier ---------------
+(check-exact "tensor literal, let-bound"
+  (derivative (lambda (x) (let ((t (tensor x (* x x)))) (+ (tensor-ref t 0) (tensor-ref t 1)))) 1/3) 5/3)
+(check-exact "tensor literal, inline"
+  (derivative (lambda (x) (tensor-ref (tensor x (* x x)) 1)) 1/3) 2/3)
+(check-exact "tensor from list"
+  (derivative (lambda (x) (tensor-ref (tensor (list x (* x x))) 1)) 1/3) 2/3)
+(check-exact "nested tensor"
+  (derivative (lambda (x) (tensor-ref (tensor (list (list x (* x x)) (list 1 x))) 1)) 1/3) 2/3)
+(check-exact "tensor tiny rational"
+  (derivative (lambda (x) (let ((t (tensor x (* x x)))) (tensor-ref t 1))) tiny) (* 2 tiny))
+(check-exact "derivative-n through tensor"
+  (derivative-n (lambda (x) (let ((t (tensor x (* x x x)))) (tensor-ref t 1))) 1/3 2) 2)
+(check-exact "hessian through tensor"
+  (hessian (lambda (x) (let ((t (tensor x (* x x x)))) (tensor-ref t 1))) 1/3) 2)
+(check-equal "taylor through tensor"
+  (taylor (lambda (x) (let ((t (tensor x (* x x)))) (tensor-ref t 1))) 1/2 2) (list 1/4 1 1))
+
+;; --- tensors at an inexact point: the jet carrier, never refused or 0 --------
+(check-inexact "tensor literal, jet"
+  (derivative (lambda (x) (tensor-ref (tensor x (* x x)) 1)) 0.5) 1.0)
+(check-inexact "derivative-n through tensor, jet"
+  (derivative-n (lambda (x) (let ((t (tensor x (* x x x)))) (tensor-ref t 1))) 0.5 2) 3.0)
+(check-equal "gradient through tensor literal"
+  (let ((g (gradient (lambda (v) (let ((t (tensor (vref v 0) (* (vref v 1) (vref v 1)))))
+                                   (+ (tensor-ref t 0) (tensor-ref t 1))))
+                     #(1.0 2.0))))
+    (and (= (vref g 0) 1) (= (vref g 1) 4)))
+  #t)
+
+;; --- tensor kernels compute on inexact numbers ------------------------------
+(check-inexact "tensor-sum kernel"
+  (derivative (lambda (x) (tensor-sum (tensor x (* x x)))) 1/3) (+ 1 (* 2 (/ 1.0 3))))
+(check-inexact "kernel beside element read"
+  (derivative (lambda (x) (let ((t (tensor x (* x x)))) (+ (tensor-ref t 0) (tensor-sum t)))) 1/3)
+  (+ 2 (* 2 (/ 1.0 3))))
+
+(if (= failures 0)
+    (begin (display "PASS: exact derivative through collection intermediates") (newline))
+    (begin (display "FAIL: ") (display failures) (display " case(s)") (newline)))

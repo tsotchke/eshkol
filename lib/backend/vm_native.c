@@ -5031,12 +5031,58 @@ static Value vm_tensor_collection_at(VM* vm, Value v, int index) {
     return NIL_VAL;
 }
 
+/**
+ * @brief The VM half of the tensor slot store boundary for a value that may
+ *        be a derivative carrier (ADR-0020 amendment 2).
+ *
+ * Stores @p v into flat slot @p i of the contiguous tensor @p t. A real number
+ * converts exactly as `inexact` converts it (vm_tensor_slot_value). A forward-
+ * mode carrier -- a VAL_DUAL, which on the VM is both the first-order dual and
+ * the Taylor tower, with any exact halves -- gives the tensor a dual_data
+ * array parallel to data (the representation the vector coercion and the
+ * dual-aware tensor natives already use) and is kept whole there, so an
+ * element read returns the carrier rather than its primal. Every tensor
+ * construction path stores through here: `(tensor a b ...)`, a nested
+ * collection, `make-tensor`'s fill, and a collection coerced to an operand.
+ *
+ * @return 1 on success, 0 when @p v has no tensor representation (nothing is
+ *         written).
+ */
+static int vm_tensor_store_value(VM* vm, VmTensor* t, int64_t i, Value v) {
+    if (!t || !t->data || i < 0 || i >= t->total) return 0;
+    if (v.type == VAL_DUAL) {
+        if (!is_valid_heap_ptr(vm, v.as.ptr) || !vm->heap.objects[v.as.ptr] ||
+            vm->heap.objects[v.as.ptr]->type != HEAP_DUAL ||
+            !vm->heap.objects[v.as.ptr]->opaque.ptr)
+            return 0;
+        if (!t->dual_data) {
+            t->dual_data = (VmDual*)vm_alloc(&vm->heap.regions,
+                                             (size_t)t->total * sizeof(VmDual));
+            if (!t->dual_data) return 0;
+            memset(t->dual_data, 0, (size_t)t->total * sizeof(VmDual));
+            for (int64_t j = 0; j < t->total; j++) t->dual_data[j].primal = t->data[j];
+            t->dtype = VM_TENSOR_DTYPE_DUAL;
+        }
+        t->dual_data[i] = *(VmDual*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        t->data[i] = as_number_vm(vm, v);
+        return 1;
+    }
+    double d = 0.0;
+    if (!vm_tensor_slot_value(vm, v, &d)) return 0;
+    t->data[i] = d;
+    if (t->dual_data) {
+        memset(&t->dual_data[i], 0, sizeof(VmDual));
+        t->dual_data[i].primal = d;
+    }
+    return 1;
+}
+
 /** @brief Row-major fill of @p data from nested collection @p v, validating
  *         @p v against @p shape at every level. Returns 0 on success, -1 when
  *         @p v is ragged (a level's length disagrees with the shape) or nests
  *         deeper/shallower than the inferred rank. */
 static int vm_tensor_nested_fill(VM* vm, Value v, const int64_t* shape, int level,
-                                 int rank, double* data, int64_t* pos, int64_t cap) {
+                                 int rank, VmTensor* out, int64_t* pos, int64_t cap) {
     if (level == rank) {
         if (vm_tensor_collection_len(vm, v) >= 0) return -1;  /* deeper than rank */
         /* MS-04 / SW-166: a tensor's elements are homogeneous doubles, so an
@@ -5047,16 +5093,17 @@ static int vm_tensor_nested_fill(VM* vm, Value v, const int64_t* shape, int leve
          * heap payload) rather than either being refused here or, on the
          * native engine's equivalent path, silently reading as 0.0. */
         if (v.type != VAL_INT && v.type != VAL_FLOAT &&
-            v.type != VAL_RATIONAL && v.type != VAL_BIGNUM) return -1;
+            v.type != VAL_RATIONAL && v.type != VAL_BIGNUM && v.type != VAL_DUAL) return -1;
         if (*pos >= cap) return -1;
-        data[(*pos)++] = as_number_vm(vm, v);
+        /* A derivative carrier leaf is kept whole (ADR-0020 amendment 2). */
+        if (!vm_tensor_store_value(vm, out, (*pos)++, v)) return -1;
         return 0;
     }
     int len = vm_tensor_collection_len(vm, v);
     if (len != (int)shape[level]) return -1;                  /* ragged */
     for (int i = 0; i < len; i++) {
         if (vm_tensor_nested_fill(vm, vm_tensor_collection_at(vm, v, i),
-                                  shape, level + 1, rank, data, pos, cap) != 0)
+                                  shape, level + 1, rank, out, pos, cap) != 0)
             return -1;
     }
     return 0;
@@ -5101,7 +5148,7 @@ static VmTensor* vm_tensor_from_nested(VM* vm, Value v, const char** err) {
     VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, rank);
     if (!t) { if (err) *err = "tensor: allocation failed"; return NULL; }
     int64_t pos = 0;
-    if (vm_tensor_nested_fill(vm, v, shape, 0, rank, t->data, &pos, t->total) != 0
+    if (vm_tensor_nested_fill(vm, v, shape, 0, rank, t, &pos, t->total) != 0
         || pos != t->total) {
         if (err) *err = "tensor: nested collection is not rectangular";
         return NULL;
@@ -5240,23 +5287,16 @@ static VmTensor* vm_tensor_operand_carrier(VM* vm, Value v, const char* op_name)
         VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
         if (!vec) return NULL;
 
-        /* Fast path: a flat homogeneous numeric vector -> a fresh 1-D tensor.
-         * Forward-mode derivative calls use the same vector shape with one or
-         * more VAL_DUAL elements. Preserve those carriers in a parallel
-         * VmDual array instead of rejecting them or retaining only primals. */
+        /* Fast path: a flat numeric vector -> a fresh 1-D tensor. Forward-mode
+         * derivative calls use the same vector shape with VAL_DUAL elements
+         * (a dual or a Taylor tower); the slot store boundary keeps those
+         * carriers whole in dual_data instead of rejecting them or retaining
+         * only primals (ADR-0020 amendment 2). */
         int all_numeric = 1;
-        int has_dual = 0;
         for (int i = 0; i < vec->len; i++) {
-            if (vec->items[i].type == VAL_DUAL) {
-                if (!is_valid_heap_ptr(vm, vec->items[i].as.ptr) ||
-                    !vm->heap.objects[vec->items[i].as.ptr] ||
-                    vm->heap.objects[vec->items[i].as.ptr]->type != HEAP_DUAL ||
-                    !vm->heap.objects[vec->items[i].as.ptr]->opaque.ptr) {
-                    all_numeric = 0;
-                    break;
-                }
-                has_dual = 1;
-            } else if (vec->items[i].type != VAL_INT && vec->items[i].type != VAL_FLOAT) {
+            ValType et = vec->items[i].type;
+            if (et != VAL_INT && et != VAL_FLOAT && et != VAL_RATIONAL &&
+                et != VAL_BIGNUM && et != VAL_DUAL) {
                 all_numeric = 0;
                 break;
             }
@@ -5265,26 +5305,10 @@ static VmTensor* vm_tensor_operand_carrier(VM* vm, Value v, const char* op_name)
             int64_t shape1[1] = { vec->len };
             VmTensor* t = vm_tensor_new(&vm->heap.regions, shape1, 1);
             if (!t) return NULL;
-            if (has_dual) {
-                t->dual_data = (VmDual*)vm_alloc(&vm->heap.regions,
-                    (size_t)vec->len * sizeof(VmDual));
-                if (!t->dual_data) return NULL;
-                t->dtype = VM_TENSOR_DTYPE_DUAL;
-            }
-            for (int i = 0; i < vec->len; i++) {
-                if (vec->items[i].type == VAL_DUAL) {
-                    t->dual_data[i] = *(VmDual*)vm->heap.objects[
-                        vec->items[i].as.ptr]->opaque.ptr;
-                    t->data[i] = t->dual_data[i].primal;
-                } else {
-                    t->data[i] = as_number_vm(vm, vec->items[i]);
-                    if (has_dual) {
-                        t->dual_data[i].primal = t->data[i];
-                        t->dual_data[i].tangent = 0.0;
-                    }
-                }
-            }
-            return t;
+            int stored = 1;
+            for (int i = 0; i < vec->len && stored; i++)
+                stored = vm_tensor_store_value(vm, t, i, vec->items[i]);
+            if (stored) return t;
         }
 
         /* #322: a nested numeric vector (#(#(1 2) #(3 4)) ...) coerces to an
@@ -5557,6 +5581,24 @@ static VmTensor* vm_tensor_binary_special_tangent(VM* vm, const VmTensor* a,
  */
 static Value vm_make_taylor_val(VM* vm, VmDual* tower);   /* defined below */
 
+/** @brief The ONE element reader for a tensor slot (ADR-0020 amendment 2).
+ *
+ * A tensor carrying dual_data holds a whole forward-mode carrier per slot --
+ * a first-order dual or a Taylor tower, with any exact halves. The element is
+ * returned as that carrier, copied so a later store into the slot cannot
+ * change a value already read. Rebuilding it from primal/tangent (as the
+ * tensor-ref native once did) dropped a tower's higher coefficients and its
+ * exactness (SW-197). A plain tensor's slot is its f64. */
+static Value vm_tensor_element_value(VM* vm, const VmTensor* t, int64_t flat) {
+    if (t->dual_data) {
+        VmDual* copy = (VmDual*)vm_alloc(&vm->heap.regions, sizeof(VmDual));
+        if (!copy) { vm->error = 1; return NIL_VAL; }
+        *copy = t->dual_data[flat];
+        return vm_make_taylor_val(vm, copy);
+    }
+    return FLOAT_VAL(t->data[flat]);
+}
+
 static int vm_vecref_tensor_path(VM* vm, Value tensor_val, Value idx_val) {
     /* An element read keeps the element's derivative carrier (SW-186). */
     VmTensor* t = vm_tensor_operand_carrier(vm, tensor_val, "vector-ref");
@@ -5567,8 +5609,7 @@ static int vm_vecref_tensor_path(VM* vm, Value tensor_val, Value idx_val) {
             vm_raise_error_msg(vm, "vector-ref: index out of bounds");
             return 0;
         }
-        vm_push(vm, t->dual_data ? vm_make_taylor_val(vm, &t->dual_data[idx])
-                                 : FLOAT_VAL(t->data[idx]));
+        vm_push(vm, vm_tensor_element_value(vm, t, idx));
         return 1;
     }
     if (idx < 0 || idx >= t->shape[0]) {
@@ -10725,8 +10766,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
         VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, n_dims);
         if (!t) { vm_push(vm, NIL_VAL); break; }
-        for (int64_t i = 0; i < t->total; i++)
-            t->data[i] = as_number_vm(vm, args[first_value + i]);
+        /* Every element goes through the slot store boundary: a derivative
+         * carrier is kept whole instead of being read as its primal (SW-197),
+         * and a value that is not a number is refused rather than stored as
+         * the 0.0 as_number_vm answers for it. */
+        int stored = 1;
+        for (int64_t i = 0; i < t->total && stored; i++)
+            stored = vm_tensor_store_value(vm, t, i, args[first_value + i]);
+        if (!stored) {
+            vm_raise_error_msg(vm, "tensor: value has no representation in a numeric tensor slot");
+            break;
+        }
         VM_PUSH_TENSOR(vm, t);
         break;
     }
@@ -10796,12 +10846,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm_raise_error_msg(vm, "tensor-ref: index out of bounds");
                 break;
             }
-            if (t->dual_data) {
-                VmDual d = t->dual_data[flat];
-                vm_push(vm, vm_make_dual_val(vm, d.primal, d.tangent));
-            } else {
-                vm_push(vm, FLOAT_VAL(t->data[flat]));
-            }
+            vm_push(vm, vm_tensor_element_value(vm, t, flat));
         } else if (idx_val.type == VAL_PAIR || idx_val.type == VAL_VECTOR) {
             /* Multi-dim index, given as a list or a vector.  Same bounds
              * contract as the flat path above: vm_tensor_ref() answers 0.0 for
@@ -10816,12 +10861,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 break;
             }
             int64_t flat = vm_tensor_flat_offset(t, indices, nd);
-            if (t->dual_data) {
-                VmDual d = t->dual_data[flat];
-                vm_push(vm, vm_make_dual_val(vm, d.primal, d.tangent));
-            } else {
-                vm_push(vm, FLOAT_VAL(vm_tensor_ref(t, indices, nd)));
-            }
+            vm_push(vm, vm_tensor_element_value(vm, t, flat));
         } else {
             /* Anything else is not an index — fabricating 0.0 hid the mistake. */
             vm_raise_error_msg(vm, "tensor-ref: index must be an integer, list or vector");

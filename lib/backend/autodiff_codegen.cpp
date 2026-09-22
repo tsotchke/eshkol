@@ -3851,6 +3851,20 @@ static bool adIsTensorValuedBuiltin(const char* cname) {
     return tset.count(n) != 0;
 }
 
+// Tensor builtins that only construct a tensor or read its elements or shape.
+// They move a value between representations without computing on it, so any
+// derivative carrier -- including a Taylor tower -- passes through them whole
+// (ADR-0020 amendment 2). Every other tensor builtin is a KERNEL with a first-
+// order f64 jet rule at most. `tensor-ref` is an element read in both its
+// flat-index and full-index forms.
+static bool adIsTensorRepresentationMove(const char* cname) {
+    if (!cname) return false;
+    static const std::unordered_set<std::string> moves = {
+        "tensor", "make-tensor", "tensor-ref", "tensor-shape", "tensor-length",
+    };
+    return moves.count(cname) != 0;
+}
+
 // ESH-0070: does this SOURCE subtree flow values through a tensor op? Scanned on
 // the AST (not the emitted IR) so it is NOT confused by tensor allocations that
 // an inline nested gradient's own machinery emits. Mirrors astSetsVar's
@@ -3881,15 +3895,24 @@ static bool adAstUsesTensorOps(
         const eshkol_ast_t* ast,
         const std::unordered_map<std::string, const eshkol_ast_t*>* bodies = nullptr,
         std::unordered_set<std::string>* visited = nullptr,
-        int depth = 0) {
+        int depth = 0,
+        bool kernels_only = false) {
     if (!ast) return false;
     if (ast->type == ESHKOL_CONS) {
-        return adAstUsesTensorOps(ast->cons_cell.car, bodies, visited, depth) ||
-               adAstUsesTensorOps(ast->cons_cell.cdr, bodies, visited, depth);
+        return adAstUsesTensorOps(ast->cons_cell.car, bodies, visited, depth, kernels_only) ||
+               adAstUsesTensorOps(ast->cons_cell.cdr, bodies, visited, depth, kernels_only);
     }
     if (ast->type != ESHKOL_OP) return false;
     const eshkol_operations_t* op = &ast->operation;
-    if (op->op == ESHKOL_TENSOR_OP) return true;
+    if (op->op == ESHKOL_TENSOR_OP) {
+        if (!kernels_only) return true;
+        // Construction is a representation move, not a kernel; its elements
+        // may still apply one.
+        for (uint64_t i = 0; i < op->tensor_op.total_elements; i++)
+            if (adAstUsesTensorOps(&op->tensor_op.elements[i], bodies, visited, depth, kernels_only))
+                return true;
+        return false;
+    }
     {
         enum class AstRoute { Call, Sequence, Let, Lambda, Define, OtherOperations };
         switch (eshkol::routeAstOperation(op->op,
@@ -3942,34 +3965,35 @@ static bool adAstUsesTensorOps(
             if (f && f->type == ESHKOL_VAR && f->variable.id &&
                 (std::strcmp(f->variable.id, "vqe-energy") == 0 ||
                  std::strcmp(f->variable.id, "vqe-energy-primitive") == 0)) return true;
-            if (f && f->type == ESHKOL_VAR && adIsTensorValuedBuiltin(f->variable.id)) return true;
+            if (f && f->type == ESHKOL_VAR && adIsTensorValuedBuiltin(f->variable.id) &&
+                !(kernels_only && adIsTensorRepresentationMove(f->variable.id))) return true;
             // Follow a call into a user-defined function's body (ESH-0235).
             if (bodies && visited && depth < 8 && f && f->type == ESHKOL_VAR &&
                 !visited->count(f->variable.id)) {
                 auto it = bodies->find(f->variable.id);
                 if (it != bodies->end()) {
                     visited->insert(f->variable.id);
-                    if (adAstUsesTensorOps(it->second, bodies, visited, depth + 1)) return true;
+                    if (adAstUsesTensorOps(it->second, bodies, visited, depth + 1, kernels_only)) return true;
                 }
             }
-            if (f && adAstUsesTensorOps(f, bodies, visited, depth)) return true;
+            if (f && adAstUsesTensorOps(f, bodies, visited, depth, kernels_only)) return true;
             for (uint64_t i = 0; i < op->call_op.num_vars; i++)
-                if (adAstUsesTensorOps(&op->call_op.variables[i], bodies, visited, depth)) return true;
+                if (adAstUsesTensorOps(&op->call_op.variables[i], bodies, visited, depth, kernels_only)) return true;
             return false;
         }
         case AstRoute::Sequence:
             for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
-                if (adAstUsesTensorOps(&op->sequence_op.expressions[i], bodies, visited, depth)) return true;
+                if (adAstUsesTensorOps(&op->sequence_op.expressions[i], bodies, visited, depth, kernels_only)) return true;
             return false;
         case AstRoute::Let: {
             for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
-                if (adAstUsesTensorOps(&op->let_op.bindings[i], bodies, visited, depth)) return true;
-            return adAstUsesTensorOps(op->let_op.body, bodies, visited, depth);
+                if (adAstUsesTensorOps(&op->let_op.bindings[i], bodies, visited, depth, kernels_only)) return true;
+            return adAstUsesTensorOps(op->let_op.body, bodies, visited, depth, kernels_only);
         }
         case AstRoute::Lambda:
-            return adAstUsesTensorOps(op->lambda_op.body, bodies, visited, depth);
+            return adAstUsesTensorOps(op->lambda_op.body, bodies, visited, depth, kernels_only);
         case AstRoute::Define:
-            return adAstUsesTensorOps(op->define_op.value, bodies, visited, depth);
+            return adAstUsesTensorOps(op->define_op.value, bodies, visited, depth, kernels_only);
         case AstRoute::OtherOperations:
             return false;
     }
@@ -9870,7 +9894,11 @@ static bool adBodyMayEscapeNumber(
                     "make-hash-table", "hash-table", "make-tensor", "tensor",
                 };
                 if (non_numeric_ctors.count(f->variable.id) != 0) return true;
-                if (adIsTensorValuedBuiltin(f->variable.id)) return true;
+                // A flat-index `(tensor-ref t i)` reads one element: a number,
+                // or the derivative carrier stored there (ADR-0020 amendment 2).
+                const bool element_read =
+                    std::strcmp(f->variable.id, "tensor-ref") == 0 && op->call_op.num_vars == 2;
+                if (adIsTensorValuedBuiltin(f->variable.id) && !element_read) return true;
                 if (bodies && visited && depth < 8 && !visited->count(f->variable.id)) {
                     auto it = bodies->find(f->variable.id);
                     if (it != bodies->end()) {
@@ -9915,7 +9943,7 @@ static bool adBodyMayEscapeNumber(
  *
  * Purely STRUCTURAL: does `function_ast` reach codegenDerivativeMonolith() in
  * a shape it is known to handle as ONE scalar argument, without ever escaping
- * to a non-number? Three checks, none of them a purity/arithmetic whitelist:
+ * to a non-number? Four checks, none of them a purity/arithmetic whitelist:
  *
  *  1. An INLINE lambda must have exactly one parameter; a VAR naming a
  *     top-level `(define (f p) body)` (via function_def_ast_, the same table
@@ -9974,6 +10002,13 @@ static bool adBodyMayEscapeNumber(
  *     adExactTowerGate) exist to get right regardless of whether the nesting
  *     is visible in this AST.
  *
+ *  4. The body (and every top-level helper it calls) applies no tensor
+ *     KERNEL. A tensor carries a tower through construction and element reads
+ *     whole (ADR-0020 amendment 2), but the tensor kernels have a first-order
+ *     f64 jet rule at most; a tower reaching one is refused by name. The jet
+ *     arm computes the same derivative there, as a tensor's numbers are
+ *     inexact anyway.
+ *
  * Declining here costs nothing beyond the exact tier itself -- jet_arm() (the
  * operator's ordinary, always-correct path) runs exactly as it always did.
  */
@@ -9987,7 +10022,9 @@ bool AutodiffCodegen::adExactTowerEligible(const eshkol_ast* function_ast,
         if (!L.parameters[0].variable.id) return false;
         std::unordered_set<std::string> visited;
         if (adBodyMayEscapeNumber(L.body, function_def_ast_, &visited)) return false;
-        return true;
+        std::unordered_set<std::string> kernel_visited;
+        return !adAstUsesTensorOps(L.body, function_def_ast_, &kernel_visited, 0,
+                                   /*kernels_only=*/true);
     }
     if (function_ast->type == ESHKOL_VAR) {
         if (!function_ast->variable.id) return false;
@@ -10011,7 +10048,10 @@ bool AutodiffCodegen::adExactTowerEligible(const eshkol_ast* function_ast,
                             !D.parameters[0].variable.id)
                             return false;
                         std::unordered_set<std::string> visited{name};
-                        return !adBodyMayEscapeNumber(D.value, function_def_ast_, &visited);
+                        if (adBodyMayEscapeNumber(D.value, function_def_ast_, &visited)) return false;
+                        std::unordered_set<std::string> kernel_visited{name};
+                        return !adAstUsesTensorOps(D.value, function_def_ast_, &kernel_visited, 0,
+                                                   /*kernels_only=*/true);
                     }
                 }
             }

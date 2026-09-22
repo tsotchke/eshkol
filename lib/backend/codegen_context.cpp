@@ -126,6 +126,15 @@ void CodegenContext::emitSequenceSlotStore(llvm::Value* sequence_tagged,
     emitSlotStoreStatusCheck(status, who);
 }
 
+void CodegenContext::emitTensorFill(llvm::Value* tensor_ptr, llvm::Value* tagged_value,
+                                    const char* who) {
+    llvm::Value* val_slot = spillTaggedToEntrySlot(tagged_value, "tfill_val");
+    llvm::FunctionCallee fill = module_.getOrInsertFunction(
+        "eshkol_tensor_fill_slots",
+        llvm::FunctionType::get(int32Type(), {ptrType(), ptrType()}, false));
+    emitSlotStoreStatusCheck(builder_.CreateCall(fill, {tensor_ptr, val_slot}, "tfill_status"), who);
+}
+
 void CodegenContext::emitTensorSlotStore(llvm::Value* tensor_ptr, llvm::Value* index,
                                          llvm::Value* tagged_value, const char* who,
                                          bool promote_on_non_numeric) {
