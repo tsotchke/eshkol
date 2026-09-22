@@ -1409,6 +1409,10 @@ the source changes; the verification record for the tagged commit is the
   compose with `derivative-n` and `taylor` the same way (SW-193). The companion
   lanes that carried one or two enclosing levels are retired.
   `ns-residual-tau-series` and `ns-force-smoothness-probe` accept any order.
+  The operators with routes of their own reach the same levels (SW-206..209):
+  a fourth nested `derivative`, `hessian` and `jacobian` inside a live pass,
+  and `gradient` at an exact point under an enclosing `derivative` answered 0,
+  and a `jacobian` under `derivative-n` crashed; each now answers exactly.
 
 - ESKM v1 scalar and empty tensor checkpoints retain their shapes and values
   across native and VM producers and consumers. Scalar observation is admitted

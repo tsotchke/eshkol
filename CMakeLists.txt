@@ -4833,6 +4833,30 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             PASS_REGULAR_EXPRESSION "PASS: nested towers matrix"
             FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    # ADR-0027 (ledger SW-206..SW-209): hessian, jacobian, the exact scalar
+    # gradient and a fourth `derivative` level nest like every other pass.
+    add_test(
+        NAME nested_operator_levels_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_operator_levels_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(nested_operator_levels_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: nested operator levels"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME nested_operator_levels_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_operator_levels_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_operator_levels_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_operator_levels_aot'"
+    )
+    set_tests_properties(nested_operator_levels_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: nested operator levels"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
     # ESH-0096 (ledger SW-05): differentiating a first-class `gradient` closure
     # again with an enclosing REVERSE pass. `(jacobian (gradient f) point)`
     # answered `#((0))` — silently — where `(hessian f point)` answers `#((12))`

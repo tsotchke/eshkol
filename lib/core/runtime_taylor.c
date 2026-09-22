@@ -2741,7 +2741,8 @@ void eshkol_ad_jet_result_check(const eshkol_tagged_value_t* result) {
  * A `derivative-n`/`taylor` pass (tower_pass = 1) runs as a level when any
  * forward pass is live (pert_level > 0 or tower_depth > 0) or its point is
  * already a carrier. A first-order jet pass (tower_pass = 0) runs as an
- * order-1 level when a tower or level pass is open or its point is a tower;
+ * order-1 level when a tower or level pass is open, its point is a tower, or
+ * two jet levels are already live (the 8-jet has no third forward slot);
  * otherwise it keeps the 8-jet, which nests with itself. Every other pass is
  * un-nested and seeds exactly as before (ESH_AD_NEST_NONE).
  *
@@ -2765,9 +2766,12 @@ int32_t eshkol_ad_nested_seed(arena_t* arena, const eshkol_tagged_value_t* point
     if (order_k < 0) order_k = 0;
     const int point_is_tower = tagged_as_taylor(point) != NULL;
     const int point_is_jet = num_is_jet(point);
+    /* The 8-jet holds two forward directions (e1, e2) plus the reverse-seed
+     * slot ep, so a third live jet level has no slot of its own: it runs as a
+     * level too (SW-206). */
     const int nested = tower_pass
         ? (pert_level > 0 || tower_depth > 0 || point_is_tower || point_is_jet)
-        : (tower_depth > 0 || point_is_tower);
+        : (tower_depth > 0 || point_is_tower || pert_level >= 2);
     if (!nested) return ESH_AD_NEST_NONE;
 
     uint32_t epoch = eshkol_taylor_next_epoch();
@@ -2873,6 +2877,254 @@ void eshkol_ad_nested_extract(arena_t* arena, const eshkol_tagged_value_t* resul
 /* Defined below. */
 void eshkol_taylor_extract_tagged(arena_t* arena, const eshkol_tagged_value_t* tv,
                                   uint32_t n, eshkol_tagged_value_t* out);
+
+
+/* ── Vector-point operators nested in a live pass (ADR-0027) ─────────────
+ * A `jacobian` whose point carries an enclosing carrier, or which runs while a
+ * forward pass is live, is computed column by column as forward passes of its
+ * own: each column seeds one coordinate through the one forward-pass protocol
+ * (so it runs as a level when nested) and the columns are assembled into a
+ * tensor whose elements are tagged numbers of the enclosing levels. These
+ * helpers read and build the points and the result. */
+
+static int tagged_is_heap_subtype(const eshkol_tagged_value_t* v, uint8_t subtype) {
+    if (!v || (uint8_t)(v->type & 0x0F) != ESHKOL_VALUE_HEAP_PTR || !v->data.ptr_val) return 0;
+    const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);
+    return hdr && hdr->subtype == subtype;
+}
+
+/** @brief Number of coordinates of a vector/list/tensor point (1 for a scalar). */
+int64_t eshkol_ad_point_length(const eshkol_tagged_value_t* point) {
+    if (tagged_is_heap_subtype(point, HEAP_SUBTYPE_VECTOR))
+        return *(const int64_t*)(uintptr_t)point->data.ptr_val;
+    if (tagged_is_heap_subtype(point, HEAP_SUBTYPE_TENSOR))
+        return (int64_t)((const eshkol_tensor_t*)(uintptr_t)point->data.ptr_val)->total_elements;
+    if (tagged_is_heap_subtype(point, HEAP_SUBTYPE_CONS)) {
+        int64_t n = 0;
+        eshkol_tagged_value_t cur = *point;
+        while (tagged_is_heap_subtype(&cur, HEAP_SUBTYPE_CONS)) {
+            n++;
+            cur = ((const arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val)->cdr;
+        }
+        return n;
+    }
+    return 1;
+}
+
+/** @brief Coordinate `j` of a vector/list/tensor point as a tagged number. */
+void eshkol_ad_point_element(const eshkol_tagged_value_t* point, int64_t j,
+                             eshkol_tagged_value_t* out) {
+    if (tagged_is_heap_subtype(point, HEAP_SUBTYPE_VECTOR)) {
+        *out = ((const eshkol_tagged_value_t*)(uintptr_t)(point->data.ptr_val + 8))[j];
+        return;
+    }
+    if (tagged_is_heap_subtype(point, HEAP_SUBTYPE_TENSOR)) {
+        const eshkol_tensor_t* t = (const eshkol_tensor_t*)(uintptr_t)point->data.ptr_val;
+        if (eshkol_tensor_dtype_is_tagged(t->dtype)) {
+            *out = ((const eshkol_tagged_value_t*)(void*)t->elements)[j];
+        } else {
+            double d;
+            memcpy(&d, &t->elements[j], sizeof(d));
+            *out = eshkol_make_double(d);
+        }
+        return;
+    }
+    if (tagged_is_heap_subtype(point, HEAP_SUBTYPE_CONS)) {
+        eshkol_tagged_value_t cur = *point;
+        for (int64_t i = 0; i < j && tagged_is_heap_subtype(&cur, HEAP_SUBTYPE_CONS); i++)
+            cur = ((const arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val)->cdr;
+        *out = ((const arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val)->car;
+        return;
+    }
+    *out = *point;
+}
+
+/** @brief Does the point (or any coordinate of it) carry a differentiation carrier? */
+int32_t eshkol_ad_point_has_carrier(const eshkol_tagged_value_t* point) {
+    if (!point) return 0;
+    if (tagged_as_taylor(point) || num_is_jet(point)) return 1;
+    if (!tagged_is_heap_subtype(point, HEAP_SUBTYPE_VECTOR) &&
+        !tagged_is_heap_subtype(point, HEAP_SUBTYPE_CONS) &&
+        !tagged_is_heap_subtype(point, HEAP_SUBTYPE_TENSOR)) return 0;
+    if (tagged_is_heap_subtype(point, HEAP_SUBTYPE_TENSOR) &&
+        !eshkol_tensor_dtype_is_tagged(
+            ((const eshkol_tensor_t*)(uintptr_t)point->data.ptr_val)->dtype)) return 0;
+    int64_t n = eshkol_ad_point_length(point);
+    for (int64_t j = 0; j < n; j++) {
+        eshkol_tagged_value_t e;
+        eshkol_ad_point_element(point, j, &e);
+        if (tagged_as_taylor(&e) || num_is_jet(&e)) return 1;
+    }
+    return 0;
+}
+
+/** @brief A Scheme vector copy of the point with coordinate `j` replaced by `v`. */
+void eshkol_ad_point_with(arena_t* arena, const eshkol_tagged_value_t* point, int64_t j,
+                          const eshkol_tagged_value_t* v, eshkol_tagged_value_t* out) {
+    if (!arena) arena = get_global_arena();
+    int64_t n = eshkol_ad_point_length(point);
+    uint8_t* dst = (uint8_t*)arena_allocate_vector_with_header(arena, (size_t)(n > 0 ? n : 0));
+    if (!dst) { *out = *v; return; }
+    *(int64_t*)(void*)dst = n;
+    eshkol_tagged_value_t* el = (eshkol_tagged_value_t*)(void*)(dst + 8);
+    for (int64_t i = 0; i < n; i++) {
+        if (i == j) el[i] = *v;
+        else eshkol_ad_point_element(point, i, &el[i]);
+    }
+    memset(out, 0, sizeof(*out));
+    out->type = ESHKOL_VALUE_HEAP_PTR;
+    out->data.ptr_val = (uint64_t)(uintptr_t)dst;
+}
+
+/**
+ * @brief Store column `j` (the forward derivative of every output along
+ *        coordinate j) into the m x n Jacobian held in `*jac`, allocating it on
+ *        the first column. The Jacobian's elements are tagged numbers, so an
+ *        entry that is a carrier of an enclosing level stays one.
+ */
+void eshkol_ad_jacobian_store_column(arena_t* arena, eshkol_tagged_value_t* jac,
+                                     int64_t n, int64_t j,
+                                     const eshkol_tagged_value_t* column) {
+    if (!arena) arena = get_global_arena();
+    int64_t m = (tagged_is_heap_subtype(column, HEAP_SUBTYPE_VECTOR) ||
+                 tagged_is_heap_subtype(column, HEAP_SUBTYPE_TENSOR) ||
+                 tagged_is_heap_subtype(column, HEAP_SUBTYPE_CONS))
+                ? eshkol_ad_point_length(column) : 1;
+    eshkol_tensor_t* t = tagged_is_heap_subtype(jac, HEAP_SUBTYPE_TENSOR)
+        ? (eshkol_tensor_t*)(uintptr_t)jac->data.ptr_val : NULL;
+    if (!t) {
+        t = arena_allocate_tensor_with_header(arena);
+        if (!t) eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "jacobian: allocation failed");
+        t->dimensions = (uint64_t*)arena_allocate(arena, 2 * sizeof(uint64_t));
+        t->elements = (int64_t*)arena_allocate(arena, (size_t)(m * n) * sizeof(eshkol_tagged_value_t));
+        if (!t->dimensions || !t->elements)
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "jacobian: allocation failed");
+        t->dimensions[0] = (uint64_t)m;
+        t->dimensions[1] = (uint64_t)n;
+        t->num_dimensions = 2;
+        t->total_elements = (uint64_t)(m * n);
+        t->dtype = ESHKOL_TENSOR_DTYPE_DUAL;
+        eshkol_tagged_value_t* el = (eshkol_tagged_value_t*)(void*)t->elements;
+        for (int64_t i = 0; i < m * n; i++) el[i] = eshkol_make_double(0.0);
+        memset(jac, 0, sizeof(*jac));
+        jac->type = ESHKOL_VALUE_HEAP_PTR;
+        jac->data.ptr_val = (uint64_t)(uintptr_t)t;
+    }
+    if ((int64_t)t->dimensions[0] != m)
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+            "jacobian: the function returned outputs of different lengths");
+    eshkol_tagged_value_t* el = (eshkol_tagged_value_t*)(void*)t->elements;
+    for (int64_t i = 0; i < m; i++) {
+        eshkol_tagged_value_t e;
+        if (m == 1 && !tagged_is_heap_subtype(column, HEAP_SUBTYPE_VECTOR) &&
+            !tagged_is_heap_subtype(column, HEAP_SUBTYPE_TENSOR) &&
+            !tagged_is_heap_subtype(column, HEAP_SUBTYPE_CONS)) e = *column;
+        else eshkol_ad_point_element(column, i, &e);
+        el[i * n + j] = e;
+    }
+}
+
+
+/* Element (i, j) of a matrix: a rank-2 tensor (f64 or tagged) or a vector of
+ * rows. Out of range reads an exact 0 (a field that does not depend on a
+ * coordinate has a vanishing partial). */
+static eshkol_tagged_value_t level_matrix_ref(const eshkol_tagged_value_t* m, int64_t i, int64_t j) {
+    if (tagged_is_heap_subtype(m, HEAP_SUBTYPE_TENSOR)) {
+        const eshkol_tensor_t* t = (const eshkol_tensor_t*)(uintptr_t)m->data.ptr_val;
+        if (t->num_dimensions == 2) {
+            int64_t rows = (int64_t)t->dimensions[0], cols = (int64_t)t->dimensions[1];
+            if (i < 0 || j < 0 || i >= rows || j >= cols) return num_exact_int(0);
+            eshkol_tagged_value_t e;
+            eshkol_ad_point_element(m, i * cols + j, &e);
+            return e;
+        }
+    }
+    if (i < 0 || i >= eshkol_ad_point_length(m)) return num_exact_int(0);
+    eshkol_tagged_value_t row;
+    eshkol_ad_point_element(m, i, &row);
+    if (j < 0 || j >= eshkol_ad_point_length(&row)) return num_exact_int(0);
+    eshkol_tagged_value_t e;
+    eshkol_ad_point_element(&row, j, &e);
+    return e;
+}
+
+/** @brief The trace of a matrix whose entries may be carriers (divergence, Laplacian). */
+void eshkol_ad_generic_trace(arena_t* arena, const eshkol_tagged_value_t* m,
+                             eshkol_tagged_value_t* out) {
+    if (!arena) arena = get_global_arena();
+    int64_t n = eshkol_ad_point_length(m);
+    if (tagged_is_heap_subtype(m, HEAP_SUBTYPE_TENSOR)) {
+        const eshkol_tensor_t* t = (const eshkol_tensor_t*)(uintptr_t)m->data.ptr_val;
+        if (t->num_dimensions == 2) n = (int64_t)t->dimensions[0];
+    }
+    eshkol_tagged_value_t acc = num_exact_int(0);
+    for (int64_t i = 0; i < n; i++) acc = num_add(arena, acc, level_matrix_ref(m, i, i));
+    *out = acc;
+}
+
+/** @brief The dot product of two vectors whose entries may be carriers (directional derivative). */
+void eshkol_ad_generic_dot(arena_t* arena, const eshkol_tagged_value_t* a,
+                           const eshkol_tagged_value_t* b, eshkol_tagged_value_t* out) {
+    if (!arena) arena = get_global_arena();
+    int64_t n = eshkol_ad_point_length(a);
+    int64_t nb = eshkol_ad_point_length(b);
+    if (nb < n) n = nb;
+    eshkol_tagged_value_t acc = num_exact_int(0);
+    for (int64_t i = 0; i < n; i++) {
+        eshkol_tagged_value_t x, y;
+        eshkol_ad_point_element(a, i, &x);
+        eshkol_ad_point_element(b, i, &y);
+        acc = num_add(arena, acc, num_mul(arena, x, y));
+    }
+    *out = acc;
+}
+
+/** @brief The curl (J21 - J12, J02 - J20, J10 - J01) of a Jacobian whose entries may be carriers. */
+void eshkol_ad_generic_curl(arena_t* arena, const eshkol_tagged_value_t* j,
+                            eshkol_tagged_value_t* out) {
+    if (!arena) arena = get_global_arena();
+    uint8_t* dst = (uint8_t*)arena_allocate_vector_with_header(arena, 3);
+    if (!dst) eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "curl: allocation failed");
+    *(int64_t*)(void*)dst = 3;
+    eshkol_tagged_value_t* el = (eshkol_tagged_value_t*)(void*)(dst + 8);
+    el[0] = num_sub(arena, level_matrix_ref(j, 2, 1), level_matrix_ref(j, 1, 2));
+    el[1] = num_sub(arena, level_matrix_ref(j, 0, 2), level_matrix_ref(j, 2, 0));
+    el[2] = num_sub(arena, level_matrix_ref(j, 1, 0), level_matrix_ref(j, 0, 1));
+    memset(out, 0, sizeof(*out));
+    out->type = ESHKOL_VALUE_HEAP_PTR;
+    out->data.ptr_val = (uint64_t)(uintptr_t)dst;
+}
+
+/**
+ * @brief Store entry (i, j) of the rows x cols matrix held in `*m`, allocating a
+ *        tagged-element (dual) tensor on the first store (the nested Hessian).
+ */
+void eshkol_ad_matrix_store(arena_t* arena, eshkol_tagged_value_t* m, int64_t rows,
+                            int64_t cols, int64_t i, int64_t j,
+                            const eshkol_tagged_value_t* value) {
+    if (!arena) arena = get_global_arena();
+    eshkol_tensor_t* t = tagged_is_heap_subtype(m, HEAP_SUBTYPE_TENSOR)
+        ? (eshkol_tensor_t*)(uintptr_t)m->data.ptr_val : NULL;
+    if (!t) {
+        t = arena_allocate_tensor_with_header(arena);
+        if (!t) eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "hessian: allocation failed");
+        t->dimensions = (uint64_t*)arena_allocate(arena, 2 * sizeof(uint64_t));
+        t->elements = (int64_t*)arena_allocate(arena, (size_t)(rows * cols) * sizeof(eshkol_tagged_value_t));
+        if (!t->dimensions || !t->elements)
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "hessian: allocation failed");
+        t->dimensions[0] = (uint64_t)rows;
+        t->dimensions[1] = (uint64_t)cols;
+        t->num_dimensions = 2;
+        t->total_elements = (uint64_t)(rows * cols);
+        t->dtype = ESHKOL_TENSOR_DTYPE_DUAL;
+        eshkol_tagged_value_t* el = (eshkol_tagged_value_t*)(void*)t->elements;
+        for (int64_t k = 0; k < rows * cols; k++) el[k] = eshkol_make_double(0.0);
+        memset(m, 0, sizeof(*m));
+        m->type = ESHKOL_VALUE_HEAP_PTR;
+        m->data.ptr_val = (uint64_t)(uintptr_t)t;
+    }
+    ((eshkol_tagged_value_t*)(void*)t->elements)[i * cols + j] = *value;
+}
 
 /**
  * @brief Report a nested differentiation the two AD carriers cannot represent.

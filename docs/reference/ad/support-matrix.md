@@ -119,6 +119,7 @@ to the same pass ([ADR-0027](../../design/adr/0027-recursive-taylor-level-carrie
 | Passes of any order at any depth, through the evaluation point or a captured variable | Exact |
 | Exact evaluation points | Exact results, by the numeric tower's contagion |
 | Complex evaluation points (holomorphic derivatives) | Exact, nested with `derivative-n` and `taylor` too |
+| `gradient`, `hessian` and `jacobian` inside a live pass, and any depth of `derivative` | Exact (each is a level of the enclosing passes; a nested `jacobian` is a tensor of tagged numbers) |
 
 Verified on this build:
 
@@ -153,7 +154,10 @@ The acceptance matrices are
 (every operator and order pairing at depth 2, the depth-3 order sweep, nesting
 through the point, exact seeds, and the perturbation-confusion controls) and
 [`tests/ad/nested_operator_matrix_test.esk`](../../../tests/ad/nested_operator_matrix_test.esk)
-(the captured-variable matrix), on the JIT and AOT lanes.
+(the captured-variable matrix) and
+[`tests/ad/nested_operator_levels_test.esk`](../../../tests/ad/nested_operator_levels_test.esk)
+(`gradient`, `hessian`, `jacobian` and deep `derivative` inside live passes),
+on the JIT and AOT lanes.
 
 ---
 
