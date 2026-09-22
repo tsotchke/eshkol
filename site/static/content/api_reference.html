@@ -439,12 +439,13 @@
 <hr />
 <h2 id="tensor-operations">Tensor Operations</h2>
 <p>Tensors are N-dimensional arrays with homogeneous double-precision elements stored as int64 bit patterns.</p>
-<p><strong>Tensor Structure</strong> (32 bytes):</p>
+<p><strong>Tensor Structure</strong> (40 bytes; 8-byte aligned):</p>
 <pre class="c"><code>struct eshkol_tensor_t {
     uint64_t* dims;          // Dimension sizes [d0, d1, ..., d(n-1)]
     uint64_t num_dimensions; // Rank of tensor
     int64_t* elements;       // Flattened data (double bits as int64)
     uint64_t total_elements; // Product of all dimensions
+    uint64_t dtype;          // Tensor dtype tag (default f64)
 };</code></pre>
 <h3 id="tensor-creation">Tensor Creation</h3>
 <h4 id="zeros-ones"><code>zeros</code>, <code>ones</code></h4>
@@ -1178,12 +1179,13 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <p><strong>Features</strong>: - Mutable captures (set! inside closures) - Nested closures (arbitrary depth) - Variadic functions (rest parameters) - S-expression preservation (homoiconicity)</p>
 <hr />
 <h3 id="tensor-memory-layout">Tensor Memory Layout</h3>
-<p><strong>Tensor Structure</strong> (32 bytes):</p>
+<p><strong>Tensor Structure</strong> (40 bytes; 8-byte aligned):</p>
 <pre class="c"><code>struct eshkol_tensor_t {
     uint64_t* dims;          // [d0, d1, ..., d(n-1)]
     uint64_t num_dimensions; // Rank
     int64_t* elements;       // Doubles stored as int64 bits
     uint64_t total_elements; // Product of dims
+    uint64_t dtype;          // Tensor dtype tag (default f64)
 };</code></pre>
 <p><strong>Element Storage</strong>: Doubles stored as int64 bit patterns (enables uniform storage for doubles and AD node pointers)</p>
 <p><strong>Row-Major Order</strong>: <code>elem[i,j,k] = elements[i*stride0 + j*stride1 + k]</code></p>
@@ -1860,14 +1862,17 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <h3 id="activation-functions">Activation Functions</h3>
 <p>Activation functions introduce non-linearity into neural networks. Without them, any composition of linear layers collapses to a single affine transformation y = Wx + b, regardless of depth. Each activation function has distinct gradient properties that affect training dynamics — in particular, susceptibility to vanishing or exploding gradients, and the presence or absence of “dead” regions where gradients are zero.</p>
 <p>All activation functions operate element-wise on tensors and return a new tensor of the same shape.</p>
+<blockquote>
+<p><strong>A number or a tensor.</strong> Every activation below takes either, and returns the same kind: <code>(softplus 0.0)</code> is <code>0.6931…</code> and <code>(softplus #(0.0))</code> is <code>#(0.6931…)</code>. One dispatch point lowers both — a tensor (or a reverse-mode node carrying one) through the tensor kernel, a number or a scalar differentiation carrier through the same formula over scalar primitives — so the two agree elementwise and both differentiate. A value that is neither raises a catchable type error. The optional second argument applies to both forms.</p>
+</blockquote>
 <h4 id="relu"><code>relu</code></h4>
-<p><strong>Syntax:</strong> <code>(relu t)</code> → Tensor</p>
+<p><strong>Syntax:</strong> <code>(relu x)</code> → Number or Tensor (whichever <code>x</code> is)</p>
 <p>Rectified Linear Unit: f(x) = max(0, x).</p>
 <p><strong>Gradient:</strong> f’(x) = 1 if x &gt; 0, 0 otherwise. Sparse gradients promote efficient computation but risk “dead neurons” — units that output zero for all inputs and receive zero gradient, permanently ceasing to learn.</p>
 <p><strong>Use case:</strong> Default activation for hidden layers in most architectures.</p>
 <p><strong>Implementation:</strong> <code>tensorRelu</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>. Backward: <code>tensorReluBackward</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="sigmoid"><code>sigmoid</code></h4>
-<p><strong>Syntax:</strong> <code>(sigmoid t)</code> → Tensor</p>
+<p><strong>Syntax:</strong> <code>(sigmoid x)</code> → Number or Tensor (whichever <code>x</code> is)</p>
 <p>Logistic sigmoid: σ(x) = 1 / (1 + e^(-x)).</p>
 <p><strong>Gradient:</strong> σ’(x) = σ(x)(1 - σ(x)). Output range (0, 1). Saturates at extremes (x ≪ 0 or x ≫ 0), causing vanishing gradients in deep networks. Outputs are not zero-centered.</p>
 <p><strong>Use case:</strong> Binary classification output layers, gating mechanisms (LSTM, GRU).</p>
@@ -1880,62 +1885,68 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <p><strong>Use case:</strong> Multi-class classification output (produces a probability distribution that sums to 1), attention weight normalization in transformers.</p>
 <p><strong>Implementation:</strong> <code>tensorSoftmax</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>. Backward: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_codegen.cpp</a>.</p>
 <h4 id="gelu"><code>gelu</code></h4>
-<p><strong>Syntax:</strong> <code>(gelu t)</code> → Tensor</p>
+<p><strong>Syntax:</strong> <code>(gelu x)</code> → Number or Tensor (whichever <code>x</code> is)</p>
 <p>Gaussian Error Linear Unit: GELU(x) = x · Φ(x) ≈ x · σ(1.702x), where Φ is the standard Gaussian CDF.</p>
 <p><strong>Gradient:</strong> Smooth and non-monotonic. Unlike ReLU, provides non-zero gradients for negative inputs, enabling information flow through negative activations.</p>
 <p><strong>Use case:</strong> Transformer architectures (BERT, GPT, ViT). Outperforms ReLU in language modeling tasks due to smoother optimization landscape.</p>
 <p><strong>Implementation:</strong> <code>tensorGelu</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>. Backward: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_codegen.cpp</a>.</p>
 <h4 id="leaky-relu"><code>leaky-relu</code></h4>
-<p><strong>Syntax:</strong> <code>(leaky-relu t [α])</code> → Tensor</p>
+<p><strong>Syntax:</strong> <code>(leaky-relu x [α])</code> → Number or Tensor (whichever <code>x</code> is)</p>
 <p>Leaky ReLU: f(x) = x if x &gt; 0, αx otherwise. Default α = 0.01.</p>
 <p><strong>Gradient:</strong> f’(x) = 1 if x &gt; 0, α otherwise. The small positive slope for negative inputs eliminates dead neurons — every unit always receives non-zero gradient.</p>
 <p><strong>Use case:</strong> Drop-in replacement for ReLU when dead neurons are observed during training.</p>
 <p><strong>Implementation:</strong> <code>tensorLeakyRelu</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>. Backward: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_codegen.cpp</a>.</p>
 <h4 id="silu"><code>silu</code></h4>
-<p><strong>Syntax:</strong> <code>(silu t)</code> → Tensor</p>
+<p><strong>Syntax:</strong> <code>(silu x)</code> → Number or Tensor (whichever <code>x</code> is)</p>
 <p>Sigmoid Linear Unit (Swish): SiLU(x) = x · σ(x).</p>
 <p><strong>Gradient:</strong> Self-gated — the sigmoid acts as a learnable gate on the linear signal. Smooth, non-monotonic, and bounded below. Gradients flow more uniformly than ReLU.</p>
 <p><strong>Use case:</strong> EfficientNet, modern ConvNets. Often outperforms both ReLU and GELU.</p>
 <p><strong>Implementation:</strong> <code>tensorSilu</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>. Backward: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_codegen.cpp</a>.</p>
+<h4 id="swish"><code>swish</code></h4>
+<p><strong>Syntax:</strong> <code>(swish x [β])</code> → Number or Tensor (whichever <code>x</code> is)</p>
+<p>Swish: f(x) = x · σ(βx). With the default β = 1 this is <a href="/docs#page=api_reference&amp;silu" data-url="/content/api_reference.html"><code>silu</code></a>.</p>
+<p><strong>Gradient:</strong> f’(x) = σ(βx) + βx · σ(βx)(1 - σ(βx)).</p>
+<p><strong>Use case:</strong> The self-gated activation of EfficientNet and friends, with β left free.</p>
+<p><strong>Implementation:</strong> the activation family dispatch in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/llvm_codegen.cpp</a>; the tensor path reaches <code>tensorSilu</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="elu"><code>elu</code></h4>
-<p><strong>Syntax:</strong> <code>(elu t [α])</code> → Tensor</p>
+<p><strong>Syntax:</strong> <code>(elu x [α])</code> → Number or Tensor (whichever <code>x</code> is)</p>
 <p>Exponential Linear Unit: f(x) = x if x &gt; 0, α(e^x - 1) otherwise. Default α = 1.0.</p>
 <p><strong>Gradient:</strong> f’(x) = 1 if x &gt; 0, f(x) + α if x ≤ 0. Negative saturation pushes mean activations closer to zero, reducing the bias shift effect and accelerating convergence.</p>
 <p><strong>Use case:</strong> When negative outputs are needed and mean activation near zero is desirable.</p>
 <p><strong>Implementation:</strong> <code>tensorElu</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="selu"><code>selu</code></h4>
-<p><strong>Syntax:</strong> <code>(selu t)</code> → Tensor</p>
+<p><strong>Syntax:</strong> <code>(selu x)</code> → Number or Tensor (whichever <code>x</code> is)</p>
 <p>Scaled Exponential Linear Unit: SELU(x) = λ · ELU(x, α) where λ ≈ 1.0507 and α ≈ 1.6733.</p>
 <p>These specific constants were derived analytically (Klambauer et al., 2017) to ensure the <strong>self-normalizing property</strong>: if inputs have zero mean and unit variance, outputs maintain zero mean and unit variance. This holds across arbitrarily deep networks, eliminating the need for batch normalization.</p>
 <p><strong>Prerequisite:</strong> Works best with LeCun normal initialization (<code>lecun-normal!</code>).</p>
 <p><strong>Use case:</strong> Deep fully-connected networks without batch normalization.</p>
 <p><strong>Implementation:</strong> <code>tensorSelu</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="mish"><code>mish</code></h4>
-<p><strong>Syntax:</strong> <code>(mish t)</code> → Tensor</p>
+<p><strong>Syntax:</strong> <code>(mish x)</code> → Number or Tensor (whichever <code>x</code> is)</p>
 <p>Mish: f(x) = x · tanh(softplus(x)) = x · tanh(ln(1 + e^x)).</p>
 <p><strong>Gradient:</strong> Smooth, non-monotonic, and self-regularizing. The function is C∞ (infinitely differentiable), unlike ReLU (non-differentiable at 0) or Leaky ReLU (non-smooth at 0).</p>
 <p><strong>Use case:</strong> Object detection (YOLOv4 adopted Mish as default activation).</p>
 <p><strong>Implementation:</strong> <code>tensorMish</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="hard-swish"><code>hard-swish</code></h4>
-<p><strong>Syntax:</strong> <code>(hard-swish t)</code> → Tensor</p>
+<p><strong>Syntax:</strong> <code>(hard-swish x)</code> → Number or Tensor (whichever <code>x</code> is)</p>
 <p>Piecewise linear approximation of Swish: f(x) = x · min(max(x + 3, 0), 6) / 6.</p>
 <p><strong>Gradient:</strong> Piecewise linear, computationally cheaper than SiLU/Swish. Negligible accuracy difference in practice.</p>
 <p><strong>Use case:</strong> Mobile and edge deployment (MobileNetV3). Optimized for inference speed on resource-constrained devices.</p>
 <p><strong>Implementation:</strong> <code>tensorHardSwish</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="hard-sigmoid"><code>hard-sigmoid</code></h4>
-<p><strong>Syntax:</strong> <code>(hard-sigmoid t)</code> → Tensor</p>
+<p><strong>Syntax:</strong> <code>(hard-sigmoid x)</code> → Number or Tensor (whichever <code>x</code> is)</p>
 <p>Piecewise linear approximation of sigmoid: f(x) = min(max(x + 3, 0), 6) / 6.</p>
 <p><strong>Gradient:</strong> Simple, efficient. Three constant regions (0, linear, 1).</p>
 <p><strong>Use case:</strong> Mobile architectures where sigmoid’s exponential is expensive. Gating in efficient architectures.</p>
 <p><strong>Implementation:</strong> <code>tensorHardSigmoid</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="softplus"><code>softplus</code></h4>
-<p><strong>Syntax:</strong> <code>(softplus t)</code> → Tensor</p>
+<p><strong>Syntax:</strong> <code>(softplus x [β])</code> → Number or Tensor (whichever <code>x</code> is)</p>
 <p>Smooth approximation of ReLU: f(x) = ln(1 + e^x).</p>
 <p><strong>Gradient:</strong> f’(x) = σ(x) (the sigmoid function). Always positive, never zero. Numerically stabilized for large x: softplus(x) ≈ x when x ≫ 0.</p>
 <p><strong>Use case:</strong> Parameterizing positive-only quantities (e.g., variance in variational inference, concentration parameters in Bayesian models).</p>
 <p><strong>Implementation:</strong> <code>tensorSoftplus</code> in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_activation_codegen.cpp" target="_blank" rel="noopener noreferrer">lib/backend/tensor_activation_codegen.cpp</a>.</p>
 <h4 id="celu"><code>celu</code></h4>
-<p><strong>Syntax:</strong> <code>(celu t [α])</code> → Tensor</p>
+<p><strong>Syntax:</strong> <code>(celu x [α])</code> → Number or Tensor (whichever <code>x</code> is)</p>
 <p>Continuously Differentiable ELU: f(x) = max(0, x) + min(0, α(e^(x/α) - 1)). Default α = 1.0.</p>
 <p><strong>Gradient:</strong> Continuous and everywhere differentiable (unlike ELU which has a derivative discontinuity at x = 0). This smoothness property improves optimization convergence.</p>
 <p><strong>Use case:</strong> Research architectures requiring smooth activation functions.</p>

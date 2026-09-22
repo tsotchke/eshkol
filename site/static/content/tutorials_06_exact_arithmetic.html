@@ -57,7 +57,7 @@
 ;; Polar form
 (define w (make-polar 2.0 1.5707963267948966))  ;; r=2, theta=pi/2
 (display w)              ;; =&gt; ~0+2i</code></pre>
-<p>Complex numbers integrate with autodiff — you can differentiate functions of complex arguments.</p>
+<p>Complex numbers integrate with autodiff — you can differentiate holomorphic functions of complex arguments. A complex evaluation point seeds the holomorphic derivative with <code>dz = 1</code>; a derivative with respect to a real parameter passes through every complex operation: <code>(derivative (lambda (x) (magnitude (make-rectangular x 4.0))) 3.0)</code> is <code>0.6</code>, and the filter-design derivatives in the signal-processing tutorial are computed this way.</p>
 <hr />
 <h2 id="part-4-number-conversions-and-predicates">Part 4: Number Conversions and Predicates</h2>
 <pre class="scheme"><code>;; Type predicates

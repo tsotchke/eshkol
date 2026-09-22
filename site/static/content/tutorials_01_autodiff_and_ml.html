@@ -154,18 +154,24 @@
 <h2 id="part-7-using-ml-builtins">Part 7: Using ML Builtins</h2>
 <p>Eshkol includes 555+ builtins for ML. Here are the most useful:</p>
 <h3 id="activation-functions">Activation Functions</h3>
-<pre class="scheme"><code>;; sigmoid, tanh and relu take a number or a tensor
+<pre class="scheme"><code>;; All take and return doubles or tensors
 (sigmoid 0.0)           ;; =&gt; 0.5
 (tanh 1.0)              ;; =&gt; 0.7616...
 (relu -0.5)             ;; =&gt; 0.0
 (relu 0.5)              ;; =&gt; 0.5
-
-;; The rest are tensor operations: pass a tensor, get a tensor back
-(softplus #(0.0))       ;; =&gt; #(0.6931...) (ln(2))
-(leaky-relu #(-0.5))    ;; =&gt; #(-0.005) (alpha=0.01)
-(elu #(-1.0))           ;; =&gt; #(-0.6321...)
+(softplus 0.0)          ;; =&gt; 0.6931... (ln(2))
+(leaky-relu -0.5)       ;; =&gt; -0.005 (alpha=0.01)
+(elu -1.0)              ;; =&gt; -0.6321...
+(gelu 0.5)              ;; =&gt; 0.3457...
+(swish 1.0)             ;; =&gt; 0.7311...</code></pre>
+<p>The same names take a tensor and return a tensor, elementwise:</p>
+<pre class="scheme"><code>(softplus #(0.0 1.0))   ;; =&gt; #(0.6931... 1.3132...)
 (gelu #(0.5))           ;; =&gt; #(0.3457...)
-(silu #(1.0))           ;; =&gt; #(0.7311...) (also known as swish)</code></pre>
+(silu #(1.0))           ;; =&gt; #(0.7311...)   ; silu is swish with beta = 1</code></pre>
+<p>Several take an optional second argument — <code>softplus</code>’s beta, <code>leaky-relu</code>’s and <code>elu</code>’s and <code>celu</code>’s alpha, <code>swish</code>’s beta — and it applies to a number and to a tensor alike:</p>
+<pre class="scheme"><code>(leaky-relu -2.0 0.1)   ;; =&gt; -0.2
+(elu -1.0 2.0)          ;; =&gt; -1.2642...
+(swish 1.0 2.0)         ;; =&gt; 0.8807...</code></pre>
 <h3 id="loss-functions">Loss Functions</h3>
 <pre class="scheme"><code>;; Losses take a prediction tensor and a target tensor and return a number
 (define predicted #(1.0 2.0 3.0))
