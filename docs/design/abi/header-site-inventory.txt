@@ -1,15 +1,15 @@
 Object-header layout dependence — machine inventory
 ==================================================================
 
-commit        175891e7dcaa3700074245ab0ac590171dd0ea0d
+commit        ee79fd3f452a6af0000e8085a2de8c0288796118
 layout pin    OK
-total sites   906
+total sites   917
 files         104
 semantic      complete
 
 Class breakdown
 ------------------------------------------------------------------
-  A_macro_api                  130 sites   34 files  [lexical]
+  A_macro_api                  133 sites   34 files  [lexical]
       what: Uses of the ESHKOL_GET_HEADER macro family.
       how:  Comment- and string-literal-stripped token match on the macro names declared in inc/eshkol/eshkol.h's HEADER ACCESS MACROS block. The macro names are unique identifiers, so the match is exact, not heuristic.
 
@@ -29,7 +29,7 @@ Class breakdown
       what: Header offsets baked into emitted LLVM IR as compile-time constants.
       how:  Stripped regex over lib/backend and lib/repl for an LLVM integer constant equal to the negated header size — `ConstantInt::get(T, -8)`, `getInt64(-8)`, `CreateConstGEP1_64(..., -8)`. This is the class no grep for the header type finds, because the type name never appears: the compiler emits a raw number. Each such site bakes in TWO facts, the header size and the field offset within it, so a site reading `subtype` emits -8 today and would need -(newsize) + newsubtypeoffset.
 
-  E_alloc_with_header          192 sites   49 files  [lexical]
+  E_alloc_with_header          198 sites   49 files  [lexical]
       what: Calls through the `*_with_header` allocator family — the sites that WRITE the layout.
       how:  Stripped token match on identifiers matching `\w*_with_header\b`. These are the constructor half of the ABI; classes A-D are the reader half. A migration that fixes readers and misses writers produces exactly the silent garbage this inventory exists to prevent.
 
@@ -37,7 +37,7 @@ Class breakdown
       what: Struct declarations that structurally duplicate the canonical header under a different name.
       how:  Parse every `typedef struct { ... } Name;` and `struct Name { ... };` body in the tree and compare its field sequence — types and names in order — against the canonical header's. A structural match under a different name is a second definition of the ABI that no search for the canonical type name will ever find, and that will not be updated when the canonical one is.
 
-  G_header_field_write         182 sites   38 files  [lexical]
+  G_header_field_write         184 sites   38 files  [lexical]
       what: Direct writes to header fields through a pointer whose name suggests a header.
       how:  Stripped regex for `<ident>->{subtype,flags,ref_count,size}` where <ident> matches a header-ish name (hdr, header, h, obj_header, ...). Heuristic by design; the semantic layer supersedes it when libclang is available.
 
@@ -77,7 +77,7 @@ Per-file counts
 ------------------------------------------------------------------
   A_macro_api
         33  inc/eshkol/eshkol.h
-         9  lib/core/runtime_taylor.c
+        12  lib/core/runtime_taylor.c
          7  lib/core/logic.cpp
          7  lib/core/runtime_deep_equal.cpp
          7  lib/core/runtime_tensor_index.cpp
@@ -185,6 +185,7 @@ Per-file counts
         10  tests/core/runtime_object_alloc_test.cpp
          9  lib/core/arena_memory.h
          9  lib/repl/repl_jit.cpp
+         8  lib/core/runtime_taylor.c
          7  lib/core/rational.cpp
          7  lib/core/runtime_list_helpers.cpp
          7  lib/core/runtime_object_alloc.cpp
@@ -211,7 +212,6 @@ Per-file counts
          2  lib/core/prng.cpp
          2  lib/core/runtime_continuations.cpp
          2  lib/core/runtime_parameters_hosted.cpp
-         2  lib/core/runtime_taylor.c
          2  lib/core/runtime_tensor_alloc.cpp
          2  tests/core/model_io_test.cpp
          2  tests/core/runtime_closure_alloc_test.cpp
@@ -234,8 +234,8 @@ Per-file counts
          1  lib/backend/vm_arena.h
 
   G_header_field_write
+        22  lib/core/runtime_taylor.c
         20  lib/core/runtime_object_alloc.cpp
-        20  lib/core/runtime_taylor.c
         11  lib/core/runtime_tensor_alloc.cpp
         10  lib/core/introspection.cpp
         10  lib/core/logic.cpp

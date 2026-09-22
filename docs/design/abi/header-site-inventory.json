@@ -1,5 +1,5 @@
 {
-  "commit": "175891e7dcaa3700074245ab0ac590171dd0ea0d",
+  "commit": "ee79fd3f452a6af0000e8085a2de8c0288796118",
   "counts": {
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 33,
@@ -20,7 +20,7 @@
       "lib/core/runtime_hash_table.cpp": 3,
       "lib/core/runtime_list_helpers.cpp": 4,
       "lib/core/runtime_regions.cpp": 1,
-      "lib/core/runtime_taylor.c": 9,
+      "lib/core/runtime_taylor.c": 12,
       "lib/core/runtime_tensor_alloc.cpp": 5,
       "lib/core/runtime_tensor_fill.cpp": 1,
       "lib/core/runtime_tensor_index.cpp": 7,
@@ -139,7 +139,7 @@
       "lib/core/runtime_regions.cpp": 1,
       "lib/core/runtime_string.cpp": 3,
       "lib/core/runtime_string_ports_hosted.cpp": 3,
-      "lib/core/runtime_taylor.c": 2,
+      "lib/core/runtime_taylor.c": 8,
       "lib/core/runtime_tensor_alloc.cpp": 2,
       "lib/core/runtime_tensor_math.cpp": 1,
       "lib/core/sdnc_api.c": 3,
@@ -186,7 +186,7 @@
       "lib/core/runtime_object_alloc.cpp": 20,
       "lib/core/runtime_regions.cpp": 5,
       "lib/core/runtime_string.cpp": 2,
-      "lib/core/runtime_taylor.c": 20,
+      "lib/core/runtime_taylor.c": 22,
       "lib/core/runtime_tensor_alloc.cpp": 11,
       "lib/core/runtime_tensor_fill.cpp": 1,
       "lib/core/runtime_tensor_index.cpp": 7,
@@ -424,231 +424,231 @@
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1077,
+      "line": 1030,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_GET_HEADER(data_ptr) \\"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1081,
+      "line": 1034,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_GET_DATA_PTR(header_ptr) \\"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1085,
+      "line": 1038,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_GET_SUBTYPE(data_ptr) \\"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1086,
+      "line": 1039,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->subtype)"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1089,
+      "line": 1042,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_GET_FLAGS(data_ptr) \\"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1090,
+      "line": 1043,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->flags)"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1093,
+      "line": 1046,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_SET_SUBTYPE(data_ptr, st) \\"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1094,
+      "line": 1047,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->subtype = (st))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1097,
+      "line": 1050,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_SET_FLAGS(data_ptr, fl) \\"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1098,
+      "line": 1051,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->flags = (fl))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1101,
+      "line": 1054,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_HAS_FLAG(data_ptr, flag) \\"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1102,
+      "line": 1055,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "((ESHKOL_GET_FLAGS(data_ptr) & (flag)) != 0)"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1105,
+      "line": 1058,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_ADD_FLAG(data_ptr, flag) \\"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1106,
+      "line": 1059,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->flags |= (flag))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1109,
+      "line": 1062,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_CLEAR_FLAG(data_ptr, flag) \\"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1110,
+      "line": 1063,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->flags &= ~(flag))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1114,
+      "line": 1067,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->size)"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1119,
+      "line": 1072,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "((void*)ESHKOL_GET_HEADER(data_ptr))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1132,
+      "line": 1085,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->ref_count)"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1136,
+      "line": 1089,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(++(ESHKOL_GET_HEADER(data_ptr)->ref_count))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1140,
+      "line": 1093,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(--(ESHKOL_GET_HEADER(data_ptr)->ref_count))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1156,
+      "line": 1109,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_CONS))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1163,
+      "line": 1116,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_STRING))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1170,
+      "line": 1123,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_VECTOR))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1177,
+      "line": 1130,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_TENSOR))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1184,
+      "line": 1137,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_HASH))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1191,
+      "line": 1144,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_EXCEPTION))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1197,
+      "line": 1150,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_MULTI_VALUE)"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1203,
+      "line": 1156,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_BIGNUM)"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1210,
+      "line": 1163,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == CALLABLE_SUBTYPE_CLOSURE))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1217,
+      "line": 1170,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == CALLABLE_SUBTYPE_LAMBDA_SEXPR))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1224,
+      "line": 1177,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == CALLABLE_SUBTYPE_AD_NODE))"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1594,
+      "line": 1547,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "eshkol_object_header_t* header = ESHKOL_GET_HEADER((void*)ptr);"
     },
@@ -1005,72 +1005,93 @@
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 2181,
+      "line": 2170,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "const uint8_t sub = ESHKOL_GET_SUBTYPE(p);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 281,
+      "line": 257,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 290,
+      "line": 266,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 297,
+      "line": 273,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 452,
+      "line": 421,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(ptr);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 638,
+      "line": 631,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 684,
+      "line": 677,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 711,
+      "line": 704,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1350,
+      "line": 1520,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "ESHKOL_GET_HEADER((void*)(uintptr_t)tv->data.ptr_val);"
     },
     {
       "cls": "A_macro_api",
       "detector": "A_macro_api",
-      "line": 1429,
+      "line": 1573,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(node);"
+    },
+    {
+      "cls": "A_macro_api",
+      "detector": "A_macro_api",
+      "line": 1756,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);"
+    },
+    {
+      "cls": "A_macro_api",
+      "detector": "A_macro_api",
+      "line": 3336,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "ESHKOL_GET_HEADER((void*)(uintptr_t)result->data.ptr_val)->subtype == HEAP_SUBTYPE_VECTOR) {"
+    },
+    {
+      "cls": "A_macro_api",
+      "detector": "A_macro_api",
+      "line": 3390,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);"
     },
     {
       "cls": "A_macro_api",
@@ -1362,14 +1383,14 @@
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 801,
+      "line": 754,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "typedef struct eshkol_object_header {"
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 806,
+      "line": 759,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "} eshkol_object_header_t;"
     },
@@ -1607,7 +1628,7 @@
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 2801,
+      "line": 2790,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "const auto* hdr = (const eshkol_object_header_t*)"
     },
@@ -1621,42 +1642,42 @@
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 135,
+      "line": 138,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;"
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 237,
+      "line": 215,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;"
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 637,
+      "line": 630,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr ="
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 683,
+      "line": 676,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr ="
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 710,
+      "line": 703,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr ="
     },
     {
       "cls": "B_header_type",
       "detector": "B_header_type",
-      "line": 1349,
+      "line": 1519,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "const eshkol_object_header_t* hdr ="
     },
@@ -1887,28 +1908,28 @@
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 809,
+      "line": 762,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_STATIC_ASSERT(sizeof(eshkol_object_header_t) == 8,"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 1078,
+      "line": 1031,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "((eshkol_object_header_t*)((uint8_t*)(data_ptr) - sizeof(eshkol_object_header_t)))"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 1082,
+      "line": 1035,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "((void*)((uint8_t*)(header_ptr) + sizeof(eshkol_object_header_t)))"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 1127,
+      "line": 1080,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "((size_t)((sizeof(eshkol_object_header_t) + \\"
     },
@@ -2237,7 +2258,7 @@
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 2802,
+      "line": 2791,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "((const uint8_t*)(uintptr_t)v->data.ptr_val - sizeof(eshkol_object_header_t));"
     },
@@ -2251,42 +2272,42 @@
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 122,
+      "line": 125,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "if (data_size > SIZE_MAX - sizeof(eshkol_object_header_t) - 15) {"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 126,
+      "line": 129,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "size_t total = sizeof(eshkol_object_header_t) + data_size;"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 141,
+      "line": 144,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "esh_taylor_t* t = (esh_taylor_t*)(mem + sizeof(eshkol_object_header_t));"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 224,
+      "line": 202,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "if (data_size > SIZE_MAX - sizeof(eshkol_object_header_t) - 15) {"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 228,
+      "line": 206,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "size_t total = sizeof(eshkol_object_header_t) + data_size;"
     },
     {
       "cls": "C_sizeof_header",
       "detector": "C_sizeof_header",
-      "line": 243,
+      "line": 221,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "esh_taylor_t* t = (esh_taylor_t*)(mem + sizeof(eshkol_object_header_t));"
     },
@@ -2377,182 +2398,182 @@
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 9504,
+      "line": 9512,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 25628,
+      "line": 25637,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* size_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -4));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 38363,
+      "line": 38377,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 38402,
+      "line": 38416,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 38471,
+      "line": 38485,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 38534,
+      "line": 38548,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 38544,
+      "line": 38558,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* refcount_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -6));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 38582,
+      "line": 38596,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 983,
+      "line": 986,
       "path": "lib/backend/string_io_codegen.cpp",
       "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -4));"
     },
     {
       "cls": "D2_ir_field_offset",
       "detector": "D2_ir_field_offset",
-      "line": 2871,
+      "line": 2875,
       "path": "lib/backend/string_io_codegen.cpp",
       "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -4));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 3142,
+      "line": 3189,
       "path": "lib/backend/arithmetic_codegen.cpp",
       "snippet": "ctx_.int8Type(), heap_ptr, llvm::ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 3364,
+      "line": 3411,
       "path": "lib/backend/arithmetic_codegen.cpp",
       "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 3719,
+      "line": 3770,
       "path": "lib/backend/arithmetic_codegen.cpp",
       "snippet": "ctx_.int8Type(), exp_heap_ptr, llvm::ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 4858,
+      "line": 4780,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* pre_hdr = ctx_.builder().CreateGEP(ctx_.int8Type(), pre_ptr, ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 4952,
+      "line": 4874,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* rvt_hdr = b.CreateGEP(ctx_.int8Type(), rvt_hp, ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 5253,
+      "line": 5175,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "b.CreateGEP(ctx_.int8Type(), rvt_ohp, ConstantInt::get(ctx_.int64Type(), -8)));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 5605,
+      "line": 5527,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 6554,
+      "line": 6445,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* grad_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), grad_heap_ptr, ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 7723,
+      "line": 7614,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "ctx_.builder().CreateGEP(ctx_.int8Type(), out_hp, ConstantInt::get(ctx_.int64Type(), -8)));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 8183,
+      "line": 8074,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 8395,
+      "line": 8383,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* jac_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), jac_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 8672,
+      "line": 8661,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* test_out_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), test_out_ptr, ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 8982,
+      "line": 8970,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 10929,
+      "line": 11109,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* hess_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), hess_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 11607,
+      "line": 11851,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* curl_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), curl_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 12080,
+      "line": 12351,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "Value* dd_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), dd_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));"
     },
@@ -2594,28 +2615,28 @@
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 1992,
+      "line": 2009,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 2231,
+      "line": 2249,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 2444,
+      "line": 2463,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "ctx_.int8Type(), ptr, llvm::ConstantInt::get(ctx_.int64Type(), -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 2717,
+      "line": 2736,
       "path": "lib/backend/collection_codegen.cpp",
       "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -8));"
     },
@@ -2636,119 +2657,119 @@
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 6979,
+      "line": 6987,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 8206,
+      "line": 8214,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 15928,
+      "line": 15931,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 16163,
+      "line": 16166,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 16870,
+      "line": 16876,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 17205,
+      "line": 17212,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* hdr = builder->CreateGEP(int8_type, vp, ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 17300,
+      "line": 17308,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* hdr = builder->CreateGEP(int8_type, vp, ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 34913,
+      "line": 34927,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 39417,
+      "line": 39431,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 41650,
+      "line": 41840,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "Value* header_ptr = builder->CreateGEP(int8_type, ptr_val, ConstantInt::get(int64_type, -8));"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 44571,
+      "line": 44761,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8), \"header_ptr\");"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 44608,
+      "line": 44798,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8), \"header_ptr\");"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 44653,
+      "line": 44843,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8), \"header_ptr\");"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 44690,
+      "line": 44880,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8), \"header_ptr\");"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 44727,
+      "line": 44917,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "ConstantInt::get(int64_type, -8), \"header_ptr\");"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 1036,
+      "line": 1039,
       "path": "lib/backend/string_io_codegen.cpp",
       "snippet": "{llvm::ConstantInt::get(ctx_.int64Type(), -8)});"
     },
     {
       "cls": "D_ir_const_offset",
       "detector": "D_ir_const_offset",
-      "line": 927,
+      "line": 996,
       "path": "lib/backend/tagged_value_codegen.cpp",
       "snippet": "llvm::ConstantInt::get(ctx_.int64Type(), -8),"
     },
@@ -2916,7 +2937,7 @@
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 1812,
+      "line": 1765,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "eshkol_exception_t* eshkol_make_exception_with_header(eshkol_exception_type_t type, const char* message);"
     },
@@ -3742,14 +3763,56 @@
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 3263,
+      "line": 3341,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "uint8_t* dst = (uint8_t*)arena_allocate_vector_with_header(arena, (size_t)(len > 0 ? len : 0));"
+    },
+    {
+      "cls": "E_alloc_with_header",
+      "detector": "E_alloc_with_header",
+      "line": 3362,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);"
     },
     {
       "cls": "E_alloc_with_header",
       "detector": "E_alloc_with_header",
-      "line": 3299,
+      "line": 3464,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "uint8_t* dst = (uint8_t*)arena_allocate_vector_with_header(arena, (size_t)(n > 0 ? n : 0));"
+    },
+    {
+      "cls": "E_alloc_with_header",
+      "detector": "E_alloc_with_header",
+      "line": 3494,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "t = arena_allocate_tensor_with_header(arena);"
+    },
+    {
+      "cls": "E_alloc_with_header",
+      "detector": "E_alloc_with_header",
+      "line": 3584,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "uint8_t* dst = (uint8_t*)arena_allocate_vector_with_header(arena, 3);"
+    },
+    {
+      "cls": "E_alloc_with_header",
+      "detector": "E_alloc_with_header",
+      "line": 3607,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "t = arena_allocate_tensor_with_header(arena);"
+    },
+    {
+      "cls": "E_alloc_with_header",
+      "detector": "E_alloc_with_header",
+      "line": 3855,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);"
+    },
+    {
+      "cls": "E_alloc_with_header",
+      "detector": "E_alloc_with_header",
+      "line": 3891,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);"
     },
@@ -4120,7 +4183,7 @@
     {
       "cls": "F_parallel_header_decl",
       "detector": "F_parallel_header_decl",
-      "line": 801,
+      "line": 754,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "eshkol_object_header_t: typedef struct eshkol_object_header {"
     },
@@ -4134,7 +4197,7 @@
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 1595,
+      "line": 1548,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "if (header->subtype != CALLABLE_SUBTYPE_CLOSURE) {"
     },
@@ -4925,7 +4988,7 @@
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 2803,
+      "line": 2792,
       "path": "lib/core/runtime_regions.cpp",
       "snippet": "if (hdr->subtype == HEAP_SUBTYPE_STRING) {"
     },
@@ -4946,142 +5009,156 @@
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 136,
-      "path": "lib/core/runtime_taylor.c",
-      "snippet": "hdr->subtype = HEAP_SUBTYPE_TAYLOR;"
-    },
-    {
-      "cls": "G_header_field_write",
-      "detector": "G_header_field_write",
-      "line": 137,
-      "path": "lib/core/runtime_taylor.c",
-      "snippet": "hdr->flags = 0;"
-    },
-    {
-      "cls": "G_header_field_write",
-      "detector": "G_header_field_write",
-      "line": 138,
-      "path": "lib/core/runtime_taylor.c",
-      "snippet": "hdr->ref_count = 0;"
-    },
-    {
-      "cls": "G_header_field_write",
-      "detector": "G_header_field_write",
       "line": 139,
       "path": "lib/core/runtime_taylor.c",
-      "snippet": "hdr->size = (uint32_t)data_size;"
-    },
-    {
-      "cls": "G_header_field_write",
-      "detector": "G_header_field_write",
-      "line": 238,
-      "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->subtype = HEAP_SUBTYPE_TAYLOR;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 239,
+      "line": 140,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->flags = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 240,
+      "line": 141,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->ref_count = 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 241,
+      "line": 142,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->size = (uint32_t)data_size;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 282,
+      "line": 216,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "hdr->subtype = HEAP_SUBTYPE_TAYLOR;"
+    },
+    {
+      "cls": "G_header_field_write",
+      "detector": "G_header_field_write",
+      "line": 217,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "hdr->flags = 0;"
+    },
+    {
+      "cls": "G_header_field_write",
+      "detector": "G_header_field_write",
+      "line": 218,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "hdr->ref_count = 0;"
+    },
+    {
+      "cls": "G_header_field_write",
+      "detector": "G_header_field_write",
+      "line": 219,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "hdr->size = (uint32_t)data_size;"
+    },
+    {
+      "cls": "G_header_field_write",
+      "detector": "G_header_field_write",
+      "line": 258,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "return hdr != NULL && (hdr->subtype == HEAP_SUBTYPE_BIGNUM || hdr->subtype == HEAP_SUBTYPE_RATIONAL);"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 291,
+      "line": 267,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "return hdr != NULL && hdr->subtype == HEAP_SUBTYPE_BIGNUM;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 298,
+      "line": 274,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "return hdr != NULL && hdr->subtype == HEAP_SUBTYPE_RATIONAL;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 453,
+      "line": 422,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "if (!hdr || hdr->subtype != HEAP_SUBTYPE_TAYLOR) return NULL;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 640,
+      "line": 633,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "switch (hdr->subtype) {"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 685,
+      "line": 678,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "if (hdr && (hdr->subtype == HEAP_SUBTYPE_RATIONAL ||"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 686,
+      "line": 679,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->subtype == HEAP_SUBTYPE_BIGNUM  ||"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 687,
+      "line": 680,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->subtype == HEAP_SUBTYPE_TAYLOR))"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 712,
+      "line": 705,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "return (hdr && (hdr->subtype == HEAP_SUBTYPE_RATIONAL ||"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 713,
+      "line": 706,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "hdr->subtype == HEAP_SUBTYPE_BIGNUM)) ? 1 : 0;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 1351,
+      "line": 1521,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "return hdr && hdr->subtype == CALLABLE_SUBTYPE_AD_NODE;"
     },
     {
       "cls": "G_header_field_write",
       "detector": "G_header_field_write",
-      "line": 1430,
+      "line": 1574,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "if (hdr && hdr->subtype == CALLABLE_SUBTYPE_AD_NODE) {"
+    },
+    {
+      "cls": "G_header_field_write",
+      "detector": "G_header_field_write",
+      "line": 1757,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "return hdr && hdr->subtype == CALLABLE_SUBTYPE_AD_NODE;"
+    },
+    {
+      "cls": "G_header_field_write",
+      "detector": "G_header_field_write",
+      "line": 3391,
+      "path": "lib/core/runtime_taylor.c",
+      "snippet": "return hdr && hdr->subtype == subtype;"
     },
     {
       "cls": "G_header_field_write",
@@ -5842,301 +5919,301 @@
     {
       "cls": "I_public_abi",
       "detector": "L_layout_in_prose",
-      "line": 793,
+      "line": 746,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "* @brief 8-byte header prepended to every heap-allocated object."
     },
     {
       "cls": "I_public_abi",
       "detector": "B_header_type",
-      "line": 801,
+      "line": 754,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "typedef struct eshkol_object_header {"
     },
     {
       "cls": "I_public_abi",
       "detector": "B_header_type",
-      "line": 806,
+      "line": 759,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "} eshkol_object_header_t;"
     },
     {
       "cls": "I_public_abi",
       "detector": "C_sizeof_header",
-      "line": 809,
+      "line": 762,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_STATIC_ASSERT(sizeof(eshkol_object_header_t) == 8,"
     },
     {
       "cls": "I_public_abi",
       "detector": "L_layout_in_prose",
-      "line": 1073,
+      "line": 1026,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "// Memory layout: [header (8 bytes)][object data (variable)]"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1077,
+      "line": 1030,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_GET_HEADER(data_ptr) \\"
     },
     {
       "cls": "I_public_abi",
       "detector": "C_sizeof_header",
-      "line": 1078,
+      "line": 1031,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "((eshkol_object_header_t*)((uint8_t*)(data_ptr) - sizeof(eshkol_object_header_t)))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1081,
+      "line": 1034,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_GET_DATA_PTR(header_ptr) \\"
     },
     {
       "cls": "I_public_abi",
       "detector": "C_sizeof_header",
-      "line": 1082,
+      "line": 1035,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "((void*)((uint8_t*)(header_ptr) + sizeof(eshkol_object_header_t)))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1085,
+      "line": 1038,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_GET_SUBTYPE(data_ptr) \\"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1086,
+      "line": 1039,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->subtype)"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1089,
+      "line": 1042,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_GET_FLAGS(data_ptr) \\"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1090,
+      "line": 1043,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->flags)"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1093,
+      "line": 1046,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_SET_SUBTYPE(data_ptr, st) \\"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1094,
+      "line": 1047,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->subtype = (st))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1097,
+      "line": 1050,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_SET_FLAGS(data_ptr, fl) \\"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1098,
+      "line": 1051,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->flags = (fl))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1101,
+      "line": 1054,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_HAS_FLAG(data_ptr, flag) \\"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1102,
+      "line": 1055,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "((ESHKOL_GET_FLAGS(data_ptr) & (flag)) != 0)"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1105,
+      "line": 1058,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_ADD_FLAG(data_ptr, flag) \\"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1106,
+      "line": 1059,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->flags |= (flag))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1109,
+      "line": 1062,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "#define ESHKOL_CLEAR_FLAG(data_ptr, flag) \\"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1110,
+      "line": 1063,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->flags &= ~(flag))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1114,
+      "line": 1067,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->size)"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1119,
+      "line": 1072,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "((void*)ESHKOL_GET_HEADER(data_ptr))"
     },
     {
       "cls": "I_public_abi",
       "detector": "C_sizeof_header",
-      "line": 1127,
+      "line": 1080,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "((size_t)((sizeof(eshkol_object_header_t) + \\"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1132,
+      "line": 1085,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(ESHKOL_GET_HEADER(data_ptr)->ref_count)"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1136,
+      "line": 1089,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(++(ESHKOL_GET_HEADER(data_ptr)->ref_count))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1140,
+      "line": 1093,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "(--(ESHKOL_GET_HEADER(data_ptr)->ref_count))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1156,
+      "line": 1109,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_CONS))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1163,
+      "line": 1116,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_STRING))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1170,
+      "line": 1123,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_VECTOR))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1177,
+      "line": 1130,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_TENSOR))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1184,
+      "line": 1137,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_HASH))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1191,
+      "line": 1144,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_EXCEPTION))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1197,
+      "line": 1150,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_MULTI_VALUE)"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1203,
+      "line": 1156,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == HEAP_SUBTYPE_BIGNUM)"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1210,
+      "line": 1163,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == CALLABLE_SUBTYPE_CLOSURE))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1217,
+      "line": 1170,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == CALLABLE_SUBTYPE_LAMBDA_SEXPR))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1224,
+      "line": 1177,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "ESHKOL_GET_SUBTYPE((void*)(val).data.ptr_val) == CALLABLE_SUBTYPE_AD_NODE))"
     },
     {
       "cls": "I_public_abi",
       "detector": "A_macro_api",
-      "line": 1594,
+      "line": 1547,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "eshkol_object_header_t* header = ESHKOL_GET_HEADER((void*)ptr);"
     },
     {
       "cls": "I_public_abi",
       "detector": "G_header_field_write",
-      "line": 1595,
+      "line": 1548,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "if (header->subtype != CALLABLE_SUBTYPE_CLOSURE) {"
     },
     {
       "cls": "I_public_abi",
       "detector": "E_alloc_with_header",
-      "line": 1812,
+      "line": 1765,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "eshkol_exception_t* eshkol_make_exception_with_header(eshkol_exception_type_t type, const char* message);"
     },
@@ -6619,7 +6696,7 @@
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 911,
+      "line": 818,
       "path": "docs/api/eshkol.md",
       "snippet": "8-byte header prepended to every heap-allocated object. Enables pointer-type consolidation: ESHKOL_VALUE_HEAP_PTR, CALLABLE, HANDLE, BUFFER, STREAM, and EVENT tagged values all point past one of these"
     },
@@ -6766,28 +6843,28 @@
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 793,
+      "line": 746,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "* @brief 8-byte header prepended to every heap-allocated object."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 1073,
+      "line": 1026,
       "path": "inc/eshkol/eshkol.h",
       "snippet": "// Memory layout: [header (8 bytes)][object data (variable)]"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 3138,
+      "line": 3185,
       "path": "lib/backend/arithmetic_codegen.cpp",
       "snippet": "// Read heap subtype header at ptr-8"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 8980,
+      "line": 8968,
       "path": "lib/backend/autodiff_codegen.cpp",
       "snippet": "// Header is at ptr - 8 bytes"
     },
@@ -6850,77 +6927,77 @@
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 8194,
+      "line": 8202,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "//   [subtype(1)][flags(1)][ref_count(2)][size(4)][data...]"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 8204,
+      "line": 8212,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Header is at ptr - 8, subtype is the first byte"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 15905,
+      "line": 15908,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// tagged-value type but have no arena header at ptr-8, so reading"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 15995,
+      "line": 15998,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "//     with HEAP_SUBTYPE_PROMISE in the heap header at ptr-8."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 23095,
+      "line": 23104,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// (header at ptr-8 contains HEAP_SUBTYPE_STRING for guard handlers)"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 34911,
+      "line": 34925,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Header is at ptr - 8 bytes"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 38361,
+      "line": 38375,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Object header: [subtype(1)][flags(1)][ref_count(2)][size(4)]"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 38532,
+      "line": 38546,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Object header: [subtype(1)][flags(1)][ref_count(2)][size(4)]"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 41548,
+      "line": 41738,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// the heap subtype byte at ptr-8 says HEAP_SUBTYPE_CONS."
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 41647,
+      "line": 41837,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Check subtype - read from header at ptr-8"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 44569,
+      "line": 44759,
       "path": "lib/backend/llvm_codegen.cpp",
       "snippet": "// Header is at offset -8 from data_ptr"
     },
@@ -7025,21 +7102,21 @@
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 912,
+      "line": 981,
       "path": "lib/backend/tagged_value_codegen.cpp",
       "snippet": "//   offset 0: uint8_t subtype"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 968,
+      "line": 1037,
       "path": "lib/backend/tagged_value_codegen.cpp",
       "snippet": "/** @brief Same as checkHeapSubtype(), for CALLABLE-typed values (both read the header at ptr-8). */"
     },
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 971,
+      "line": 1040,
       "path": "lib/backend/tagged_value_codegen.cpp",
       "snippet": "// Same implementation as checkHeapSubtype - both use object header at ptr-8"
     },
@@ -7109,7 +7186,7 @@
     {
       "cls": "L_layout_in_prose",
       "detector": "L_layout_in_prose",
-      "line": 90,
+      "line": 97,
       "path": "lib/core/runtime_taylor.c",
       "snippet": "* Returns the DATA pointer (after the 8-byte object header), so it can be"
     },
@@ -7165,7 +7242,7 @@
     {
       "cls": "S1_clang_header_member",
       "detector": "S1_clang_header_member",
-      "line": 1595,
+      "line": 1548,
       "path": "inc/eshkol/eshkol.h",
       "snippet": ""
     },
@@ -7228,14 +7305,14 @@
     {
       "cls": "S2_clang_sizeof",
       "detector": "S2_clang_sizeof",
-      "line": 809,
+      "line": 762,
       "path": "inc/eshkol/eshkol.h",
       "snippet": ""
     },
     {
       "cls": "S2_clang_sizeof",
       "detector": "S2_clang_sizeof",
-      "line": 1594,
+      "line": 1547,
       "path": "inc/eshkol/eshkol.h",
       "snippet": ""
     },
@@ -7319,7 +7396,7 @@
     {
       "cls": "S3_clang_header_cast",
       "detector": "S3_clang_header_cast",
-      "line": 1594,
+      "line": 1547,
       "path": "inc/eshkol/eshkol.h",
       "snippet": ""
     },
@@ -7383,14 +7460,14 @@
   "tool": "scripts/abi_header_inventory.py",
   "totals": {
     "classes": {
-      "A_macro_api": 130,
+      "A_macro_api": 133,
       "B_header_type": 78,
       "C_sizeof_header": 71,
       "D2_ir_field_offset": 10,
       "D_ir_const_offset": 47,
-      "E_alloc_with_header": 192,
+      "E_alloc_with_header": 198,
       "F_parallel_header_decl": 2,
-      "G_header_field_write": 182,
+      "G_header_field_write": 184,
       "H_wasm_glue": 34,
       "I_public_abi": 88,
       "J_secondary_prefix_abi": 33,
@@ -7401,7 +7478,7 @@
       "S3_clang_header_cast": 9
     },
     "files": 104,
-    "sites": 906,
-    "sites_including_public_view": 994
+    "sites": 917,
+    "sites_including_public_view": 1005
   }
 }
