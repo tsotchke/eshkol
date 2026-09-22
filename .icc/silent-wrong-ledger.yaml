@@ -14220,7 +14220,7 @@ entries:
     notes: >-
       Integrated source is implemented without refusal. Keep open through broad
       parity, sanitizer, site artifact, and final release qualification.
-  - id: SW-199
+  - id: SW-202
     bucket: SILENT-WRONG
     family: vm/tensor-reduction-shape
     status: open
@@ -14251,4 +14251,6 @@ entries:
       tests/vm_parity/corpus/36_tensor_axis_reduce.esk pins to a one-element tensor
       on both engines. The fix needs a distinct no-axis sentinel in the prelude
       (and a regenerated prelude cache), not a change to the axis path. The
-      corpus file already notes the 1-argument form as a known divergence.
+      corpus file already notes the 1-argument form as a known divergence. The
+      integrator reports the fix is on the VM Taylor lane's branch
+      (fix/v135f-taylor); close this entry against that commit when it lands.

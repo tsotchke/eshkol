@@ -573,40 +573,66 @@ llvm::Value* TensorCodegen::tensorOperation(const eshkol_operations_t* op) {
     llvm::Value* total_elements_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 3);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), op->tensor_op.total_elements), total_elements_field_ptr);
 
-    for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
-        llvm::Value* element_val = codegenAST(&op->tensor_op.elements[i]);
-        if (!element_val) continue;
-        llvm::Value* index = llvm::ConstantInt::get(ctx_.int64Type(), i);
-
-        if (element_val->getType() == ctx_.taggedValueType()) {
-            // One rule for every value (ADR-0020 and its amendment 2): a real
-            // of any exactness becomes the f64 `inexact` gives it; a reverse-
-            // mode node keeps its in-tensor pointer encoding; a forward-mode
-            // carrier -- a dual jet, or a Taylor tower on the exact tier and
-            // under derivative-n -- widens the tensor to a jet tensor and is
-            // kept whole, so a derivative that passes through a tensor literal
-            // is neither refused nor read as 0 (SW-197); anything else is
-            // refused with a catchable error.
-            ctx_.emitTensorSlotStore(typed_tensor_ptr, index, element_val, "tensor");
-            continue;
-        }
-
-        // An untagged element is a raw machine number. It is stored as a
-        // DOUBLE through the same emitter, whose inline path handles an f64
-        // tensor and whose runtime path handles one an earlier element widened.
-        llvm::Value* double_val = nullptr;
-        if (element_val->getType()->isIntegerTy()) {
-            double_val = ctx_.builder().CreateSIToFP(element_val, ctx_.doubleType());
-        } else if (element_val->getType()->isFloatingPointTy()) {
-            double_val = element_val->getType() != ctx_.doubleType()
-                ? ctx_.builder().CreateFPExt(element_val, ctx_.doubleType())
-                : element_val;
+    // Evaluate every element first, in order. A literal whose elements are all
+    // raw machine numbers (the common numeric literal, possibly thousands of
+    // constants) keeps its straight-line double stores. A literal with any
+    // tagged element hands all of them to the slot store boundary in ONE call
+    // (ADR-0020 and its amendment 2): a real of any exactness becomes the f64
+    // `inexact` gives it; a reverse-mode node keeps its in-tensor pointer
+    // encoding; a forward-mode carrier -- a dual jet, or a Taylor tower on the
+    // exact tier, under derivative-n and in a nested level -- widens the tensor
+    // to a jet tensor and is kept whole, so a derivative that passes through a
+    // tensor literal is neither refused nor read as 0 (SW-197); anything else
+    // is refused with a catchable error.
+    const uint64_t n_elems = op->tensor_op.total_elements;
+    std::vector<llvm::Value*> element_vals(n_elems, nullptr);
+    bool any_tagged = false;
+    for (uint64_t i = 0; i < n_elems; i++) {
+        llvm::Value* v = codegenAST(&op->tensor_op.elements[i]);
+        if (!v) continue;
+        if (v->getType() == ctx_.taggedValueType()) {
+            any_tagged = true;
+        } else if (v->getType()->isIntegerTy()) {
+            v = ctx_.builder().CreateSIToFP(v, ctx_.doubleType());
+        } else if (v->getType()->isFloatingPointTy()) {
+            if (v->getType() != ctx_.doubleType())
+                v = ctx_.builder().CreateFPExt(v, ctx_.doubleType());
         } else {
             eshkol_error("tensor: element %llu has no numeric representation",
                          (unsigned long long)i);
             return nullptr;
         }
-        ctx_.emitTensorSlotStore(typed_tensor_ptr, index, tagged_.packDouble(double_val), "tensor");
+        element_vals[i] = v;
+    }
+
+    if (!any_tagged) {
+        for (uint64_t i = 0; i < n_elems; i++) {
+            llvm::Value* v = element_vals[i] ? element_vals[i]
+                                             : llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+            llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_elements_ptr,
+                llvm::ConstantInt::get(ctx_.int64Type(), i));
+            ctx_.builder().CreateStore(ctx_.builder().CreateBitCast(v, ctx_.int64Type()), elem_ptr);
+        }
+    } else {
+        llvm::Value* values_bytes = llvm::ConstantInt::get(ctx_.sizeType(),
+            n_elems * 16);
+        llvm::Value* values_buf = builder.CreateCall(arena_alloc_func,
+            {arena_ptr, values_bytes}, "tlit_values");
+        for (uint64_t i = 0; i < n_elems; i++) {
+            llvm::Value* v = element_vals[i];
+            llvm::Value* tagged = !v ? tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0))
+                : (v->getType() == ctx_.taggedValueType() ? v : tagged_.packDouble(v));
+            ctx_.builder().CreateStore(tagged, ctx_.builder().CreateGEP(ctx_.taggedValueType(),
+                values_buf, llvm::ConstantInt::get(ctx_.int64Type(), i)));
+        }
+        llvm::FunctionCallee store_values = ctx_.module().getOrInsertFunction(
+            "eshkol_tensor_store_values",
+            llvm::FunctionType::get(ctx_.int32Type(),
+                {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false));
+        llvm::Value* status = ctx_.builder().CreateCall(store_values,
+            {typed_tensor_ptr, values_buf, llvm::ConstantInt::get(ctx_.int64Type(), n_elems)},
+            "tlit_store_status");
+        ctx_.emitSlotStoreStatusCheck(status, "tensor");
     }
 
     // Return pointer to tensor as consolidated HEAP_PTR tagged value
