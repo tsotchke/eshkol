@@ -20,6 +20,7 @@
 
 #include <cstring>
 #include <cstdlib>
+#include <new>
 #include <unordered_map>
 #include <vector>
 #include <utility>
@@ -1201,6 +1202,7 @@ struct EvacState {
     // Only for memory that existed before this transaction began.
     void preserve(void* p, size_t n) {
         if (failed || !p || n == 0) return;
+        if (eshkol_alloc_failpoint_fire(ESHKOL_ALLOC_FAILPOINT_EVAC_SAVED)) throw std::bad_alloc();
         const size_t off = saved_bytes.size();
         saved_bytes.insert(saved_bytes.end(), (const uint8_t*)p, (const uint8_t*)p + n);
         saved.push_back({p, n, off});
@@ -1211,9 +1213,15 @@ struct EvacState {
         return it == fwd->end() ? nullptr : it->second;
     }
 
+    // The key is recorded BEFORE it enters the map: if the record cannot
+    // grow, the map is untouched; if the map cannot grow, erasing a recorded
+    // key that never went in is harmless. The other order left a map entry
+    // pointing into the rewound destination with nothing to remove it.
     void record(const void* old, void* copy) {
-        (*fwd)[old] = copy;
+        if (eshkol_alloc_failpoint_fire(ESHKOL_ALLOC_FAILPOINT_EVAC_INSERTED)) throw std::bad_alloc();
         inserted.push_back(old);
+        if (eshkol_alloc_failpoint_fire(ESHKOL_ALLOC_FAILPOINT_EVAC_FORWARD)) throw std::bad_alloc();
+        (*fwd)[old] = copy;
     }
 
     bool owns(const void* p) const {
@@ -1226,6 +1234,10 @@ struct EvacState {
 
 // Free a region's persistent deep-escape forwarding map (declared above
 // region_destroy; the map type is only visible from here down).
+extern "C" size_t eshkol_region_forwarding_size(const eshkol_region_t* region) {
+    return (region && region->fwd_map) ? ((const EvacFwdMap*)region->fwd_map)->size() : 0;
+}
+
 static void region_free_fwd_map(eshkol_region_t* region) {
     if (region && region->fwd_map) {
         delete (EvacFwdMap*)region->fwd_map;
@@ -1464,7 +1476,8 @@ static EvacKind evac_kind_for(EvacState& st, const eshkol_tagged_value_t& v, con
 static void* evac_raw(EvacState& st, const void* old, size_t size) {
     if (!old || size == 0 || st.failed) return (void*)old;
     if (void* fwd = st.lookup(old)) return fwd;
-    void* raw = arena_allocate_aligned(st.target, size, 16);
+    void* raw = eshkol_alloc_failpoint_fire(ESHKOL_ALLOC_FAILPOINT_EVAC_COPY)
+                    ? nullptr : arena_allocate_aligned(st.target, size, 16);
     if (!raw) {
         // #713: the transaction is now doomed; the caller aborts it. The old
         // pointer is returned only so the rest of the walk is the identity --
@@ -1502,7 +1515,8 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
         return old_data;
     }
 
-    void* raw = arena_allocate_aligned(st.target, total, 16);
+    void* raw = eshkol_alloc_failpoint_fire(ESHKOL_ALLOC_FAILPOINT_EVAC_COPY)
+                    ? nullptr : arena_allocate_aligned(st.target, total, 16);
     if (!raw) {
         st.fail(total);   // #713: abort the whole transaction, see EvacState
         return old_data;

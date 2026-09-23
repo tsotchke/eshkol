@@ -901,6 +901,30 @@ void eshkol_region_write_barrier_range(const void* dst,
 void eshkol_raise_allocation_failure(const char* operation, size_t bytes);
 void eshkol_reserve_allocation_failure_condition(void);
 
+// Allocation failpoints: deterministic, test-driven allocation failure at the
+// sites a region promotion depends on, so every abort path of the promotion
+// transaction can be exercised on purpose rather than by exhausting memory.
+// Disarmed (the default) each site costs one thread-local load. Arming makes
+// the nth (0-based) occurrence of one site on the calling thread fail -- an
+// allocator NULL for the two allocator sites, std::bad_alloc for the three
+// bookkeeping sites -- exactly once. Runtime-internal: not part of the
+// installed ABI.
+typedef enum {
+    ESHKOL_ALLOC_FAILPOINT_EVAC_COPY = 0,   // destination copy of an object or buffer
+    ESHKOL_ALLOC_FAILPOINT_ARENA_BLOCK,     // the OS providing a new arena block
+    ESHKOL_ALLOC_FAILPOINT_EVAC_FORWARD,    // forwarding-map insert
+    ESHKOL_ALLOC_FAILPOINT_EVAC_SAVED,      // saved-bytes record of a shared buffer
+    ESHKOL_ALLOC_FAILPOINT_EVAC_INSERTED,   // inserted-forwarding-keys record
+    ESHKOL_ALLOC_FAILPOINT_COUNT
+} eshkol_alloc_failpoint_t;
+void eshkol_alloc_failpoint_arm(int site, uint64_t nth);
+void eshkol_alloc_failpoint_disarm(void);
+uint64_t eshkol_alloc_failpoint_hits(int site);
+int eshkol_alloc_failpoint_fire(int site);   // 1 = this occurrence must fail
+
+// Number of entries in @p region's persistent promotion forwarding relation.
+size_t eshkol_region_forwarding_size(const eshkol_region_t* region);
+
 // The container slot store boundary (docs/design/adr/0020-container-slot-store-boundary.md).
 //
 // Eshkol exposes two sequence representations through the R7RS vector API: a
