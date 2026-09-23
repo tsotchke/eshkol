@@ -1542,6 +1542,52 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **Gradient of a rest-parameter procedure.** Natively, the gradient of an
+  inline variadic lambda such as `(lambda args (apply * args))` returned
+  `#(0 0)` with a cons-cell error, and `(lambda (a . r) ...)` failed to
+  compile; the point is now spread element by element on every route, as on
+  the VM. (SW-248)
+
+- **Variadic builtins are variadic values.** `+`, `-`, `*`, `/` and the
+  numeric, string and char comparison chains passed as values used to be
+  their 2-argument form natively, so `(apply f (append a m))` with `+` over
+  three arguments raised an arity mismatch. They are now the R7RS variadic
+  procedures on both engines. (SW-241)
+
+- **Continuation escapes from parallel callbacks and `map` arity.** Native
+  code invoking, inside a `parallel-map`, `-filter`, `-for-each`,
+  `-execute` or future callback, a continuation captured outside it crashed
+  with SIGBUS; the escape now resumes the continuation in its owning scope
+  after the join, as on the VM. `(map (lambda (x y) x) '(1 2))` failed to
+  compile natively; a procedure that does not take one argument per list now
+  goes through the call protocol and raises the catchable arity error.
+  (SW-205, SW-226)
+
+- **One call protocol for procedure values.** A procedure reached through a
+  variable, a parameter or a closure is entered only with an argument count
+  its declaration accepts; native used to pad a short call with null and drop
+  surplus arguments, and called a captured non-procedure into a fabricated
+  result (or a fault for an integer). Both engines now raise a catchable
+  error with the shared `Arity mismatch: ` wording, including the minimum of
+  a rest-parameter procedure; the VM's arity and non-procedure refusals, which
+  were fatal, are catchable. First-class math, I/O and `make-vector` values
+  record their real arity. (SW-204, SW-216, SW-217)
+
+- **Raises inside parallel callbacks reach the caller's handler.** A callback
+  of `parallel-map`, `parallel-filter`, `parallel-for-each`,
+  `parallel-execute` or a future that raises now delivers its own raised
+  object to the caller's `guard`, on every engine; a guard inside the callback
+  resumes that callback. Native used to exit the process (the handler chain is
+  per-thread); the VM reported a generic "worker closure failed". Native runs
+  each callback under an unwind boundary and re-raises after the join; the VM
+  re-evaluates a failed pure worker callback on the calling interpreter.
+  (SW-196, SW-201)
+
+- VM parallel results own every payload they expose, including the dual parts
+  of a complex value, before the worker's arena is released. (SW-198)
+
+- The browser VM's bootstrap image is regenerated, so caught error objects
+  report their irritants there as on the desktop VM. (SW-195)
 - **`syntax-rules` is hygienic in both directions, identically on every engine
   (ADR-0026, SW-192, SW-42).** The native compiler and the bytecode VM now run
   one `syntax-rules` engine (`inc/eshkol/frontend/syntax_rules_core.h`, C, so

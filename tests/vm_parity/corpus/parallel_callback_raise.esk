@@ -1,0 +1,54 @@
+;; SW-196 / SW-201: a raise inside a parallel callback belongs to the caller.
+;; The callback's own raised object reaches the caller's handler, a guard
+;; inside the callback resumes the callback, and nothing after the parallel
+;; form is lost, on every engine and for every scheduler.
+(define inputs '(1 2 3 4 5 6 7 8))
+
+;; A callback that faults for one element (car of a non-pair).
+(display (guard (e (#t 'caught))
+  (parallel-map (lambda (x) (car (if (= x 5) x (list x)))) inputs)))
+(newline)
+
+;; The same scheduler with no failing element still runs to completion.
+(display (parallel-map (lambda (x) (* x x)) inputs))
+(newline)
+
+;; The caller's handler sees the callback's own raised object.
+(display (guard (e ((symbol? e) (list 'caught e)))
+  (parallel-map (lambda (x) (if (= x 6) (raise 'six) x)) inputs)))
+(newline)
+(display (guard (e ((error-object? e)
+                    (list (error-object-message e) (error-object-irritants e))))
+  (parallel-map (lambda (x) (if (= x 3) (error "bad element" x (* x 10)) x))
+                inputs)))
+(newline)
+
+;; A locally guarded callback resumes the callback, element by element.
+(display (parallel-map (lambda (x) (guard (e (#t (- x))) (if (odd? x) (raise x) x)))
+                       '(1 2 3)))
+(newline)
+(display (parallel-map (lambda (x) (guard (e ((symbol? e) 0)) (if (odd? x) (raise 'odd) x)))
+                       inputs))
+(newline)
+(display "after local guard")
+(newline)
+
+;; parallel-filter, parallel-for-each and parallel-execute share the boundary.
+(display (guard (e ((string? e) e))
+  (parallel-filter (lambda (x) (if (= x 2) (raise "filter") (< x 4))) inputs)))
+(newline)
+(display (parallel-filter (lambda (x) (< x 4)) inputs))
+(newline)
+(display (guard (e ((number? e) (list 'for-each e)))
+  (parallel-for-each (lambda (x) (if (= x 7) (raise (* x 100)) x)) inputs)))
+(newline)
+(display (guard (e ((symbol? e) e))
+  (parallel-execute (lambda () 1) (lambda () (raise 'thunk)) (lambda () 3))))
+(newline)
+(display (guard (e (#t 'caught))
+  (parallel-execute (lambda () 1) (lambda () (car 2)) (lambda () 3))))
+(newline)
+(display (parallel-execute (lambda () 1) (lambda () 2) (lambda () 3)))
+(newline)
+(display "parallel callback raise PASS")
+(newline)

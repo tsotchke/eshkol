@@ -1,0 +1,34 @@
+id: SW-241
+bucket: SILENT-WRONG
+family: native/closure-call-arity
+status: fixed
+closed_at: "c2db2b26e"
+title: "native first-class + (and the other variadic operators) is the 2-argument builtin, so a curried + applied to three arguments raises an arity mismatch"
+repro: >-
+  (define curry (lambda (f . a) (lambda m (apply f (append a m)))))
+  (display ((curry + 1) 2 3))
+observed_before: >-
+  eshkol-run -r: "Arity mismatch: <procedure> expects 2 arguments but got 3".
+  Before the call protocol (SW-216) the surplus argument was dropped silently.
+  The VM prints 6. The same held for - * / and the numeric, string and char
+  comparison chains reached as values.
+correct: >-
+  6. A variadic builtin passed as a value is the variadic R7RS procedure:
+  (+) 0, (*) 1, (- x) negation, (/ x) reciprocal, comparisons over every
+  adjacent pair with two or more arguments.
+fix: >-
+  The value of + - * / and < > <= >= = is built by
+  makeVariadicOperatorClosureValue (lib/backend/llvm_codegen.cpp): a rest-list
+  closure over the same polymorphic operations as the call position, folded
+  by emitVariadicBuiltinLeftFold (now with optional one- and zero-argument
+  forms) or checked pairwise by emitVariadicBuiltinChain. The string and char
+  comparison rows of the SW-230 first-class table are VariadicRest::Chain. The
+  VM's comparison values gain the same chains in its prelude (call positions
+  still lower to the opcodes).
+remeasured: >-
+  At c2db2b26e (fix/v135f-vmrt): tests/vm_parity/corpus/variadic_builtin_values.esk
+  is byte-identical on native and VM (curried + and *, zero/one-argument
+  arithmetic, comparison chains, the one-argument chain refusal, map over
+  three lists); native_variadic_builtin_values_jit and _aot pass.
+caught_by: [v135f-coordinator-probe]
+missed_by: [vm_parity, value_position_axis_sweep]

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  *
  */
+#include <functional>
 #include <eshkol/core/ast_routing.h>
 #include <eshkol/util/continuation_task.h>
 #include <eshkol/backend/ir_builder.h>
@@ -1601,6 +1602,7 @@ namespace ControlFlowCallbacks {
     llvm::Function* getClosureAllocWrapper(void* context);
     llvm::Function* getConsSetPtrWrapper(void* context);
     llvm::Value* resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
+    bool variadicLookupWrapper(const char* name, void* context);
     llvm::Value* indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
     void pushFunctionContextWrapper(void* context);
     void popFunctionContextWrapper(void* context);
@@ -1654,6 +1656,7 @@ class EshkolLLVMCodeGen {
     friend llvm::Value* ControlFlowCallbacks::closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context);
     friend llvm::Function* ControlFlowCallbacks::getConsSetPtrWrapper(void* context);
     friend llvm::Value* ControlFlowCallbacks::resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
+    friend bool ControlFlowCallbacks::variadicLookupWrapper(const char* name, void* context);
     friend llvm::Value* ControlFlowCallbacks::indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
     friend void ControlFlowCallbacks::pushFunctionContextWrapper(void* context);
     friend void ControlFlowCallbacks::popFunctionContextWrapper(void* context);
@@ -4025,7 +4028,8 @@ private:
      */
     Value* emitFunctionAsCallableValue(Function* func, uint64_t num_params,
                                        bool is_variadic = false,
-                                       uint64_t fixed_params = 0) {
+                                       uint64_t fixed_params = 0,
+                                       uint8_t return_category = CLOSURE_RETURN_UNKNOWN) {
         if (!func) return nullptr;
 
         Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
@@ -4041,7 +4045,7 @@ private:
 
         Value* sexpr_ptr = intPtrConst(0);
         // Pack: bits 0-7 = return_type, bits 8-15 = input_arity
-        uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (arity_field << 8);
+        uint64_t return_type_info_val = (uint64_t)return_category | (arity_field << 8);
         Value* return_type_info = intPtrConst(return_type_info_val);
         Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
 
@@ -6869,6 +6873,19 @@ private:
 
     // Runtime closure call dispatcher - supports variadic closures with up to 16 captures
     // This is essential for N-dimensional lambda calculus and AD operations
+    // void eshkol_procedure_call_error(const eshkol_tagged_value_t* callee,
+    //     int64_t expected, int64_t got, int64_t variadic)  -- never returns.
+    Function* getProcedureCallErrorFunc() {
+        Function* fn = module->getFunction("eshkol_procedure_call_error");
+        if (!fn) {
+            fn = Function::Create(FunctionType::get(builder->getVoidTy(),
+                    {builder->getPtrTy(), int64_type, int64_type, int64_type}, false),
+                Function::ExternalLinkage, "eshkol_procedure_call_error", module.get());
+            fn->setDoesNotReturn();
+        }
+        return fn;
+    }
+
     Value* codegenClosureCall(Value* func_result, const std::vector<Value*>& call_args,
                               const char* caller_info = "unknown",
                               bool parameter_dispatch = true,
@@ -7040,6 +7057,19 @@ private:
                 invoke_value = packPtrToTaggedValue(mv_ptr, ESHKOL_VALUE_HEAP_PTR);
             }
             builder->CreateStore(invoke_value, value_slot);
+            // SW-205: inside a parallel callback, a continuation owned by
+            // another thread (or by the caller) is recorded at the callback's
+            // unwind boundary and resumed by the caller after the join. This
+            // call does not return in that case; otherwise it is a no-op.
+            {
+                Function* transfer_check = module->getFunction("eshkol_continuation_transfer_check");
+                if (!transfer_check) {
+                    transfer_check = Function::Create(
+                        FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false),
+                        Function::ExternalLinkage, "eshkol_continuation_transfer_check", module.get());
+                }
+                builder->CreateCall(transfer_check, {state_ptr});
+            }
 
             // Unwind dynamic-wind stack before longjmp
             // Load the dynamic-wind and promise marks from the same public
@@ -7371,9 +7401,33 @@ private:
         // Small closures retain the bounded over-provisioned pointer ABI.
         const int MAX_CLOSURE_DISPATCH_CAPTURES = 64;
 
-        // VARIADIC CLOSURE FIX: Check if this is a variadic closure
+        // THE CALL PROTOCOL (SW-216): a procedure is entered only with an
+        // argument count its declaration accepts -- exactly fixed_params, or
+        // at least fixed_params for a variadic one. Anything else raises one
+        // catchable R7RS error with the canonical "Arity mismatch: " wording
+        // (eshkol_procedure_call_error). This used to pad a short call with
+        // null and silently drop a surplus argument, and a fixed-arity apply
+        // had a separate overflow-only refusal; this check replaces both.
         Value* is_variadic_cond = builder->CreateICmpNE(is_variadic,
             ConstantInt::get(int64_type, 0));
+        {
+            Value* supplied = spread
+                ? (full_spread_count ? full_spread_count : spread_count)
+                : ConstantInt::get(int64_type, call_args.size());
+            Value* bad_count = builder->CreateSelect(is_variadic_cond,
+                builder->CreateICmpULT(supplied, fixed_params),
+                builder->CreateICmpNE(supplied, fixed_params), "call_arity_bad");
+            BasicBlock* arity_bad_bb = BasicBlock::Create(*context, "call_arity_bad", current_func);
+            BasicBlock* arity_ok_bb = BasicBlock::Create(*context, "call_arity_ok", current_func);
+            builder->CreateCondBr(bad_count, arity_bad_bb, arity_ok_bb);
+            builder->SetInsertPoint(arity_bad_bb);
+            Value* callee_slot = builder->CreateAlloca(tagged_value_type, nullptr, "call_arity_callee");
+            builder->CreateStore(func_result, callee_slot);
+            builder->CreateCall(getProcedureCallErrorFunc(),
+                {callee_slot, fixed_params, supplied, is_variadic});
+            builder->CreateUnreachable();
+            builder->SetInsertPoint(arity_ok_bb);
+        }
         BasicBlock* variadic_bb = BasicBlock::Create(*context, "variadic_closure", current_func);
         BasicBlock* non_variadic_bb = BasicBlock::Create(*context, "non_variadic_closure", current_func);
         builder->CreateCondBr(is_variadic_cond, variadic_bb, non_variadic_bb);
@@ -7598,36 +7652,7 @@ private:
         // the variadic/non-variadic split above.)
         builder->SetInsertPoint(non_variadic_bb);
 
-        // List-aware apply knows the complete runtime count.  A fixed-arity
-        // callable must reject surplus elements instead of clamping to the
-        // staging window (which would silently drop arguments).
-        BasicBlock* nonvar_overflow = nullptr;
-        BasicBlock* nonvar_checked = nullptr;
-        if (spread && spread->full_count) {
-            nonvar_overflow = BasicBlock::Create(*context, "apply_fixed_overflow", current_func);
-            nonvar_checked = BasicBlock::Create(*context, "apply_fixed_checked", current_func);
-            builder->CreateCondBr(builder->CreateICmpUGT(spread->full_count, fixed_params),
-                                  nonvar_overflow, nonvar_checked);
-            builder->SetInsertPoint(nonvar_overflow);
-            // An arity-contract violation, raised as one: the runtime renders
-            // it with the shared arity formatter ("Arity mismatch: ...") and
-            // raises ESHKOL_EXCEPTION_ARITY_ERROR, the class the bytecode VM
-            // and the static call-site guards already report. The callee is a
-            // procedure value with no public name here, hence NULL.
-            Function* arity_err = module->getFunction("eshkol_arity_mismatch_error");
-            if (!arity_err) {
-                arity_err = Function::Create(FunctionType::get(builder->getVoidTy(),
-                    {builder->getPtrTy(), int64_type, int64_type}, false),
-                    Function::ExternalLinkage, "eshkol_arity_mismatch_error", module.get());
-                arity_err->setDoesNotReturn();
-            }
-            builder->CreateCall(arity_err, {
-                ConstantPointerNull::get(PointerType::getUnqual(*context)),
-                builder->CreateZExtOrTrunc(fixed_params, int64_type),
-                builder->CreateZExtOrTrunc(spread->full_count, int64_type)});
-            builder->CreateUnreachable();
-            builder->SetInsertPoint(nonvar_checked);
-        }
+        // Argument count already validated by the call protocol check above.
 
         // ARITY MISMATCH FIX (x86_64 crash prevention):
         // When call_args.size() < fixed_params, we need to pad with undefined values.
@@ -7802,21 +7827,28 @@ private:
         // NON-CALLABLE FIX: Check if this is actually a callable type
         // Only INT64 (function pointer) and LAMBDA_SEXPR should be called directly
         // CONS_PTR, STRING_PTR, NULL, BOOL, DOUBLE etc. should be returned as-is
-        Value* is_lambda_sexpr = builder->CreateICmpEQ(base_type,
+        // A number is never a procedure: an integer operand used to be called
+        // as a raw function pointer and fault at its own value (SW-204).
+        Value* is_callable = builder->CreateICmpEQ(base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* is_int64 = builder->CreateICmpEQ(base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
-        Value* is_callable = builder->CreateOr(is_lambda_sexpr, is_int64);
 
         BasicBlock* do_direct_call = BasicBlock::Create(*context, "do_direct_call", current_func);
         BasicBlock* return_as_is = BasicBlock::Create(*context, "return_as_is", current_func);
         builder->CreateCondBr(is_callable, do_direct_call, return_as_is);
 
-        // Return non-callable value as-is (e.g., cons pair from Y combinator)
+        // A value that is not a procedure is never "called" into a result
+        // (SW-204): applying it is a catchable R7RS error.
         builder->SetInsertPoint(return_as_is);
-        Value* as_is_result = func_result;
-        builder->CreateBr(merge_bb);
-        BasicBlock* as_is_exit_bb = builder->GetInsertBlock();
+        {
+            Value* callee_slot = builder->CreateAlloca(tagged_value_type, nullptr, "call_nonproc_callee");
+            builder->CreateStore(func_result, callee_slot);
+            builder->CreateCall(getProcedureCallErrorFunc(),
+                {callee_slot, ConstantInt::get(int64_type, -1),
+                 spread ? (full_spread_count ? full_spread_count : spread_count)
+                        : ConstantInt::get(int64_type, call_args.size()),
+                 ConstantInt::get(int64_type, 0)});
+            builder->CreateUnreachable();
+        }
 
         // Actually call the function pointer
         builder->SetInsertPoint(do_direct_call);
@@ -7862,7 +7894,7 @@ private:
         builder->SetInsertPoint(merge_bb);
         PHINode* phi = builder->CreatePHI(tagged_value_type,
                                           results.size() + direct_results.size()
-                                              + (parameter_dispatch ? 2 : 1),
+                                              + (parameter_dispatch ? 1 : 0),
                                           "call_result");
         for (auto& [bb, val] : results) {
             phi->addIncoming(val, bb);
@@ -7870,7 +7902,6 @@ private:
         for (auto& [bb, val] : direct_results) {
             phi->addIncoming(val, bb);
         }
-        phi->addIncoming(as_is_result, as_is_exit_bb);
         if (parameter_dispatch) {
             phi->addIncoming(ensureTaggedValue(parameter_result), parameter_exit_bb);
         }
@@ -8092,14 +8123,15 @@ private:
         // Arity 1 is the vectorized single-argument loss; arity 0 (unreadable)
         // and the variadic sentinel legitimately want that same form. A
         // closure flagged VARIADIC is always spread: the caller passes the
-        // point's dimension as its arity, and a one-coordinate point is one
-        // scalar argument to it, not a vector.
+        // point's dimension as its arity (SW-248), and a one-coordinate point
+        // is one scalar argument to it, not a vector -- `(gradient * '(3.0))`
+        // through a wrapper is #(1).
         builder->SetInsertPoint(within_bb);
         Value* closure_flags = builder->CreateLoad(int8_type, builder->CreateGEP(int8_type,
             builder->CreateIntToPtr(unpackInt64FromTaggedValue(closure_arg), builder->getPtrTy()),
             ConstantInt::get(int64_type, 34)));
         Value* closure_is_variadic = builder->CreateICmpNE(
-            builder->CreateAnd(closure_flags, ConstantInt::get(int8_type, 1)),
+            builder->CreateAnd(closure_flags, ConstantInt::get(int8_type, CLOSURE_FLAG_VARIADIC)),
             ConstantInt::get(int8_type, 0));
         Value* wants_vector = builder->CreateAnd(builder->CreateNot(closure_is_variadic),
             builder->CreateOr(
@@ -9867,52 +9899,9 @@ private:
         // Handle builtin operators as first-class functions
         // Comparison operators - wrap in closure for proper first-class function use
         if (var_name == "<" || var_name == ">" || var_name == "<=" ||
-            var_name == ">=" || var_name == "=") {
-            Function* builtin_func = createBuiltinComparisonFunction(var_name);
-            if (builtin_func) {
-                // Create closure for the comparison function
-                Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
-                Value* arena_ptr = getArenaPtr();
-                // Pack info: no captures, arity=2
-                uint64_t packed_info = 0 | (2ULL << 32);  // arity in bits 32-47
-                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
-                Value* sexpr_ptr = intPtrConst(0);
-                // Comparison builtins return booleans
-                uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
-                Value* return_type_info = intPtrConst(return_type_info_val);
-                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
-                // Use with_header allocator for consolidated CALLABLE type
-                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
-                // Pack as CALLABLE (subtype CLOSURE is in header)
-                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
-            }
-        }
-
-        // Arithmetic operators as values. R7RS `+ - * /` take any number of
-        // arguments (`-` and `/` at least one), so the value is a genuine
-        // VARIADIC closure whose body is `(apply <op> rest)` -- the same
-        // applyReduction the call-position `apply` lowers to. A 2-ary closure
-        // here was a claim about arity the procedure does not have: the
-        // closure dispatcher had to guess it back with a function-pointer
-        // compare, and any path that believed the closure's arity (a list
-        // `apply`) rejected `(apply g '(1 2 3))` for `(define g +)`.
-        if (var_name == "+" || var_name == "-" || var_name == "*" || var_name == "/") {
-            if (Function* wrapper = getOrCreateVariadicArithmeticWrapper(var_name)) {
-                // Built by hand rather than makeVariadicClosureValueFor so the
-                // value keeps its (primitive <op>) source form.
-                Value* func_ptr_int = builder->CreatePtrToInt(wrapper, intptr_type);
-                Value* arena_ptr = getArenaPtr();
-                uint64_t packed_info = (uint64_t)1 << 63;   // 0 captures, 0 fixed, variadic
-                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
-                Value* sexpr_cons = homoiconic_->builtinToSExpr(var_name);
-                Value* sexpr_ptr = toIntPtr(sexpr_cons);
-                Value* return_type_info = intPtrConst(CLOSURE_RETURN_SCALAR);
-                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
-                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                    {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
-                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
-            }
+            var_name == ">=" || var_name == "=" ||
+            var_name == "+" || var_name == "-" || var_name == "*" || var_name == "/") {
+            if (Value* v = makeVariadicOperatorClosureValue(var_name)) return v;
         }
 
         // Faculty-level builtins (AD tape ops, hash tables, etc.) — wrap any
@@ -10453,35 +10442,6 @@ private:
         return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
     }
 
-    /* `(rest) -> tagged` body for an arithmetic operator used as a value:
-     * `(apply <op> rest)`, lowered by the one reduction `apply` itself uses
-     * (CallApplyCodegen::applyReduction), so the value and the call position
-     * cannot disagree on any argument count. */
-    Function* getOrCreateVariadicArithmeticWrapper(const std::string& op) {
-        const std::string wrapper_name = "builtin_" + op + "_varargs";
-        if (Function* existing = module->getFunction(wrapper_name)) return existing;
-        FunctionType* wrap_ty =
-            FunctionType::get(tagged_value_type, {tagged_value_type}, false);
-        Function* wrap_fn = Function::Create(
-            wrap_ty,
-#ifdef _WIN32
-            Function::InternalLinkage,
-#else
-            Function::LinkOnceODRLinkage,
-#endif
-            wrapper_name, module.get());
-        IRBuilderBase::InsertPoint old_point = builder->saveIP();
-        Function* old_current_function = current_function;
-        current_function = wrap_fn;
-        builder->SetInsertPoint(BasicBlock::Create(*context, "entry", wrap_fn));
-        Value* rest = &*wrap_fn->arg_begin();
-        rest->setName("rest");
-        Value* list_int = unpackInt64FromTaggedValue(rest);
-        builder->CreateRet(call_apply_->applyReduction(op, list_int));
-        current_function = old_current_function;
-        if (old_point.isSet()) builder->restoreIP(old_point);
-        return wrap_fn;
-    }
 
     /* SW-230: a builtin that accepts a small RANGE of argument counts (`atan`
      * of 1 or 2, `round` with an optional precision) as a value. The closure
@@ -10716,6 +10676,9 @@ private:
             // call, no arity ceiling, and the callee is itself generated
             // from the call-position lowering.
             builder->CreateRet(builder->CreateCall(rest_fn, {rest}));
+        } else if (spec.rest == VariadicRest::Chain) {
+            // R7RS comparison chains: (string<? a b c) is (and (string<? a b) (string<? b c)).
+            emitVariadicBuiltinChain(wrap_fn, name, rest, binary_fn);
         } else {
             emitVariadicBuiltinLeftFold(wrap_fn, name, rest, binary_fn);
         }
@@ -10732,7 +10695,9 @@ private:
      * that declare LeftFold. There is no argument-count ceiling — unlike a
      * fixed-arity wrapper, or a switch over unrolled arities. */
     void emitVariadicBuiltinLeftFold(Function* wrap_fn, const std::string& name,
-                                     Value* rest, Function* binary_fn) {
+                                     Value* rest, Function* binary_fn,
+                                     const std::function<Value*(Value*)>& unary = nullptr,
+                                     const std::function<Value*()>& nullary = nullptr) {
         BasicBlock* first_bb = BasicBlock::Create(*context, "fold_first", wrap_fn);
         BasicBlock* empty_bb = BasicBlock::Create(*context, "fold_empty", wrap_fn);
         BasicBlock* loop_bb  = BasicBlock::Create(*context, "fold_loop", wrap_fn);
@@ -10749,6 +10714,19 @@ private:
         Value* rest_i = unpackInt64FromTaggedValue(rest);
         Value* head = extractCarAsTaggedValue(rest_i);
         Value* tail = extractCdrAsTaggedValue(rest_i);
+        if (unary) {
+            // One argument has its own meaning for some builtins: (- x) is
+            // negation, (/ x) the reciprocal -- not the argument itself.
+            BasicBlock* one_bb = BasicBlock::Create(*context, "fold_one", wrap_fn);
+            BasicBlock* many_bb = BasicBlock::Create(*context, "fold_many", wrap_fn);
+            builder->CreateCondBr(
+                builder->CreateICmpEQ(getBaseType(getTaggedValueType(tail)),
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR)),
+                many_bb, one_bb);
+            builder->SetInsertPoint(one_bb);
+            builder->CreateRet(unary(head));
+            builder->SetInsertPoint(many_bb);
+        }
         BasicBlock* first_end = builder->GetInsertBlock();
         builder->CreateBr(loop_bb);
 
@@ -10782,8 +10760,112 @@ private:
         // lowering. Rather than invent one, raise: an explicit arity error,
         // never a silently wrong value.
         builder->SetInsertPoint(empty_bb);
+        if (nullary) {
+            builder->CreateRet(nullary());
+            return;
+        }
         raiseVariadicBuiltinZeroArgError(name);
         builder->CreateRet(packNullToTaggedValue());
+    }
+
+    /* `(f a b c …)` == `(and (f a b) (f b c) …)` for the R7RS comparison
+     * chains. Fewer than two arguments is an arity error. */
+    void emitVariadicBuiltinChain(Function* wrap_fn, const std::string& name,
+                                  Value* rest, Function* binary_fn) {
+        BasicBlock* first_bb = BasicBlock::Create(*context, "chain_first", wrap_fn);
+        BasicBlock* empty_bb = BasicBlock::Create(*context, "chain_empty", wrap_fn);
+        BasicBlock* loop_bb  = BasicBlock::Create(*context, "chain_loop", wrap_fn);
+        BasicBlock* body_bb  = BasicBlock::Create(*context, "chain_body", wrap_fn);
+        BasicBlock* next_bb  = BasicBlock::Create(*context, "chain_next", wrap_fn);
+        BasicBlock* false_bb = BasicBlock::Create(*context, "chain_false", wrap_fn);
+        BasicBlock* true_bb  = BasicBlock::Create(*context, "chain_true", wrap_fn);
+        auto is_pair = [&](Value* v) {
+            return builder->CreateICmpEQ(getBaseType(getTaggedValueType(v)),
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        };
+        builder->CreateCondBr(is_pair(rest), first_bb, empty_bb);
+        builder->SetInsertPoint(first_bb);
+        Value* rest_i = unpackInt64FromTaggedValue(rest);
+        Value* head = extractCarAsTaggedValue(rest_i);
+        Value* tail = extractCdrAsTaggedValue(rest_i);
+        // R7RS: a comparison chain takes two or more arguments.
+        BasicBlock* two_bb = BasicBlock::Create(*context, "chain_two", wrap_fn);
+        builder->CreateCondBr(is_pair(tail), two_bb, empty_bb);
+        builder->SetInsertPoint(two_bb);
+        BasicBlock* first_end = builder->GetInsertBlock();
+        builder->CreateBr(loop_bb);
+        builder->SetInsertPoint(loop_bb);
+        PHINode* prev = builder->CreatePHI(tagged_value_type, 2, "chain_prev");
+        PHINode* cur = builder->CreatePHI(tagged_value_type, 2, "chain_cur");
+        prev->addIncoming(head, first_end);
+        cur->addIncoming(tail, first_end);
+        builder->CreateCondBr(is_pair(cur), body_bb, true_bb);
+        builder->SetInsertPoint(body_bb);
+        Value* cur_i = unpackInt64FromTaggedValue(cur);
+        Value* elem = extractCarAsTaggedValue(cur_i);
+        Value* next = extractCdrAsTaggedValue(cur_i);
+        Value* r = builder->CreateCall(binary_fn, {prev, elem});
+        Value* r_false = builder->CreateAnd(
+            builder->CreateICmpEQ(getBaseType(getTaggedValueType(r)),
+                                  ConstantInt::get(int8_type, ESHKOL_VALUE_BOOL)),
+            builder->CreateICmpEQ(unpackInt64FromTaggedValue(r),
+                                  ConstantInt::get(int64_type, 0)));
+        builder->CreateCondBr(r_false, false_bb, next_bb);
+        builder->SetInsertPoint(next_bb);
+        prev->addIncoming(elem, next_bb);
+        cur->addIncoming(next, next_bb);
+        builder->CreateBr(loop_bb);
+        builder->SetInsertPoint(false_bb);
+        builder->CreateRet(packBoolToTaggedValue(ConstantInt::getFalse(*context)));
+        builder->SetInsertPoint(true_bb);
+        builder->CreateRet(packBoolToTaggedValue(ConstantInt::getTrue(*context)));
+        builder->SetInsertPoint(empty_bb);
+        raiseVariadicBuiltinZeroArgError(name);
+        builder->CreateRet(packNullToTaggedValue());
+    }
+
+    /* SW-241: the arithmetic operators and numeric comparisons as VALUES are
+     * the variadic R7RS procedures, not their 2-argument lowering. Built from
+     * the same polymorphic operations the call position uses. */
+    Value* makeVariadicOperatorClosureValue(const std::string& op) {
+        const bool arithmetic = op == "+" || op == "-" || op == "*" || op == "/";
+        const std::string wrapper_name = "builtin_op_" + inlineBuiltinSymbolSuffix(op) + "_varargs";
+        if (Function* existing = module->getFunction(wrapper_name))
+            return makeVariadicClosureValueFor(existing);
+        Function* binary_fn = arithmetic ? createBuiltinArithmeticFunction(op, 2)
+                                         : createBuiltinComparisonFunction(op);
+        if (!binary_fn) return nullptr;
+        Function* wrap_fn = Function::Create(
+            FunctionType::get(tagged_value_type, {tagged_value_type}, false),
+#ifdef _WIN32
+            Function::InternalLinkage,
+#else
+            Function::LinkOnceODRLinkage,
+#endif
+            wrapper_name, module.get());
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        Function* old_current_function = current_function;
+        current_function = wrap_fn;
+        builder->SetInsertPoint(BasicBlock::Create(*context, "entry", wrap_fn));
+        Value* rest = &*wrap_fn->arg_begin();
+        rest->setName("rest");
+        if (!arithmetic) {
+            emitVariadicBuiltinChain(wrap_fn, op, rest, binary_fn);
+        } else {
+            auto exact = [&](int64_t n) {
+                return packInt64ToTaggedValue(ConstantInt::get(int64_type, n), true);
+            };
+            std::function<Value*(Value*)> unary;
+            if (op == "-") unary = [&](Value* x) { return polymorphicSub(exact(0), x); };
+            if (op == "/") unary = [&](Value* x) { return polymorphicDiv(exact(1), x); };
+            std::function<Value*()> nullary;
+            if (op == "+") nullary = [&]() { return exact(0); };
+            if (op == "*") nullary = [&]() { return exact(1); };
+            emitVariadicBuiltinLeftFold(wrap_fn, op, rest, binary_fn, unary, nullary);
+        }
+        current_function = old_current_function;
+        if (old_point.isSet()) builder->restoreIP(old_point);
+        return makeVariadicClosureValueFor(wrap_fn);
     }
 
     void raiseVariadicBuiltinZeroArgError(const std::string& name) {
@@ -44096,7 +44178,7 @@ private:
      * Every one of these is built from the AUTHORITATIVE call-position
      * lowering (createInlineBuiltinWrapper re-enters codegenCall), so none
      * of them is a second implementation that can drift. */
-    enum class VariadicRest : uint8_t { None, Identity, RestUnary, LeftFold, ByCount };
+    enum class VariadicRest : uint8_t { None, Identity, RestUnary, LeftFold, ByCount, Chain };
 
     /* A row of the first-class builtin table.
      *
@@ -44136,10 +44218,10 @@ private:
             // variadic rows. Marked so a use site that knows its arity gets a
             // wrapper at that arity instead of the 2-argument default; at the
             // overwhelmingly common arity 2 the generated body is identical.
-            {"string=?",  {2, true}}, {"string<?",  {2, true}}, {"string>?",  {2, true}},
-            {"string<=?", {2, true}}, {"string>=?", {2, true}},
-            {"string-ci=?",  {2, true}}, {"string-ci<?",  {2, true}}, {"string-ci>?",  {2, true}},
-            {"string-ci<=?", {2, true}}, {"string-ci>=?", {2, true}},
+            {"string=?",  {2, true, VariadicRest::Chain}}, {"string<?",  {2, true, VariadicRest::Chain}}, {"string>?",  {2, true, VariadicRest::Chain}},
+            {"string<=?", {2, true, VariadicRest::Chain}}, {"string>=?", {2, true, VariadicRest::Chain}},
+            {"string-ci=?",  {2, true, VariadicRest::Chain}}, {"string-ci<?",  {2, true, VariadicRest::Chain}}, {"string-ci>?",  {2, true, VariadicRest::Chain}},
+            {"string-ci<=?", {2, true, VariadicRest::Chain}}, {"string-ci>=?", {2, true, VariadicRest::Chain}},
             // Strings — accessors and constructors
             {"string-append", {2, true, VariadicRest::LeftFold}},
             {"string-length", {1}}, {"string-ref", {2}},
@@ -44170,17 +44252,17 @@ private:
             // rediscovered.
             {"make-string", {2}},
             // Characters
-            {"char=?",  {2, true}}, {"char<?",  {2, true}}, {"char>?",  {2, true}},
-            {"char<=?", {2, true}}, {"char>=?", {2, true}},
-            {"char-ci=?",  {2, true}}, {"char-ci<?",  {2, true}}, {"char-ci>?",  {2, true}},
-            {"char-ci<=?", {2, true}}, {"char-ci>=?", {2, true}},
+            {"char=?",  {2, true, VariadicRest::Chain}}, {"char<?",  {2, true, VariadicRest::Chain}}, {"char>?",  {2, true, VariadicRest::Chain}},
+            {"char<=?", {2, true, VariadicRest::Chain}}, {"char>=?", {2, true, VariadicRest::Chain}},
+            {"char-ci=?",  {2, true, VariadicRest::Chain}}, {"char-ci<?",  {2, true, VariadicRest::Chain}}, {"char-ci>?",  {2, true, VariadicRest::Chain}},
+            {"char-ci<=?", {2, true, VariadicRest::Chain}}, {"char-ci>=?", {2, true, VariadicRest::Chain}},
             {"char->integer", {1}}, {"integer->char", {1}},
             {"char-alphabetic?", {1}}, {"char-numeric?", {1}},
             {"char-whitespace?", {1}}, {"char-upper-case?", {1}},
             {"char-lower-case?", {1}}, {"digit-value", {1}},
             // Vectors
             {"vector-ref", {2}}, {"vector-set!", {3}}, {"vector-length", {1}},
-            {"vector-fill!", {2}}, {"make-vector", {1}},
+            {"vector-fill!", {2}}, {"make-vector", {2}},  // as make-string: the value form takes the fill (SW-216)
             {"vector->list", {1}}, {"list->vector", {1}},
             // Numerics
             {"expt", {2}}, {"pow", {2}},
@@ -45407,6 +45489,11 @@ namespace ControlFlowCallbacks {
     llvm::Value* resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context) {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         return codegen->resolveLambdaFunction(ast, arity);
+    }
+
+    bool variadicLookupWrapper(const char* name, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return name && codegen->lookupVariadicProcedure(name, nullptr);
     }
 
     llvm::Value* indirectCallWrapper(llvm::Value* arg, size_t arity, void* context) {

@@ -1,0 +1,45 @@
+id: SW-205
+bucket: LOUD-ERROR
+family: native/parallel-callback-control
+status: fixed
+closed_at: "747b6964d"
+needs_decision: false
+title: "native continuation escape from a parallel-map worker crashes the process"
+repro: >-
+  (display (call-with-current-continuation
+    (lambda (k) (parallel-map (lambda (x) (if (= x 4) (k 'escaped) x))
+                              '(1 2 3 4 5 6 7 8)))))
+observed: >-
+  eshkol-run -r: "[Eshkol] fatal signal: SIGBUS" and exit 138. The invoke
+  sequence reroots dynamic-wind, promise and region state against marks that
+  belong to the capturing thread and then longjmps to a jmp_buf on that
+  thread's stack from a pool worker. The VM prints escaped.
+correct: >-
+  escaped: the escape resumes the continuation's owning scope on its own
+  thread, as the VM does, e.g. by recording the foreign continuation at the
+  worker's unwind boundary and resuming it on the caller after the join.
+evidence: >-
+  Found by the v135f-vmrt lane on 2026-09-22 after SW-201. Not silent: the
+  process dies with a signal.
+caught_by: [v135f-vmrt-probe]
+missed_by: [vm_parity]
+notes: >-
+  Needs the invoke sequence in llvm_codegen (continuation_invoke_bb) to
+  detect a continuation captured on another thread before it touches
+  thread-local state; beyond the VM runtime lane's scope.
+fix: >-
+  Every native continuation invocation calls eshkol_continuation_transfer_check
+  (lib/backend/parallel_codegen.cpp) after storing its value. Inside a parallel
+  callback's unwind boundary, a continuation whose capture point is not in the
+  callback's own live extent on that thread is not resumed there: the
+  callback's dynamic-wind, promise, region and AD state is unwound to the
+  boundary through the facility eshkol_raise uses
+  (eshkol_restore_state_for_handler, now shared), and the transfer is
+  recorded. The caller performs it after the join, in element order with any
+  recorded raise, on its own thread; an enclosing boundary defers it again.
+remeasured: >-
+  At 747b6964d (fix/v135f-vmrt): the repro prints escaped and the program
+  continues, on native JIT and AOT. tests/vm_parity/corpus/parallel_continuation_escape.esk
+  (worker and calling-thread elements, parallel-execute, parallel-filter,
+  local continuations, dynamic-wind after-thunk) is byte-identical on native
+  and VM; native_parallel_continuation_escape_aot_repeat50 passes.

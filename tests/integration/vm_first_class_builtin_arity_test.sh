@@ -18,7 +18,7 @@ for source in \
 do
     output="$("$VM" "$ROOT_DIR/$source" 2>&1)"
     status=$?
-    if [ "$status" -eq 0 ] || ! printf '%s\n' "$output" | grep -q 'arity mismatch'; then
+    if [ "$status" -eq 0 ] || ! printf '%s\n' "$output" | grep -q 'Arity mismatch: '; then
         echo "FAIL: $source did not fail with an arity diagnostic"
         failures=$((failures + 1))
     else

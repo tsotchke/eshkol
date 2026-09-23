@@ -757,6 +757,39 @@ static char* eshkol_find_provider_file(const char* name) {
     return strdup(res.best_path.c_str());
 }
 
+// Restore every piece of thread-local dynamic state a control transfer to
+// @p handler must leave behind: dynamic-wind after-thunks, pending promise
+// evaluations, regions opened since (promoting @p inflight out of them) and
+// reverse-mode AD state. The one facility for eshkol_raise and for a parallel
+// callback's unwind boundary (eshkol_exception_unwind_state_to_depth).
+static void eshkol_restore_state_for_handler(eshkol_exception_handler_t* handler,
+                                             eshkol_tagged_value_t* inflight) {
+        eshkol_unwind_dynamic_wind(handler->wind_mark);
+        eshkol_promise_eval_unwind_to(
+            handler->promise_mark);
+        // #341: close every region opened after the handler was installed — an
+        // open `region-open` handle or a `with-region` body the raise is jumping
+        // out of. The raised value is passed as the in-flight value so it is
+        // deep-promoted out of each region before that region's arena is freed;
+        // without this the handler would receive a pointer into freed memory
+        // (and the allocation slot would still point at the dead arena).
+        // The exception STRUCT itself needs no promotion: exceptions are
+        // allocated from __repl_shared_arena, which region entry never hijacks.
+        eshkol_region_unwind_to(handler->region_mark,
+                                inflight, inflight ? 1 : 0);
+        // Restore the reverse-mode AD state the handler was installed with.
+        // The gradient pass this raise is jumping out of published its tape and
+        // turned AD mode on; its matching "off" store lives on the normal exit
+        // path the longjmp skips. Leaving them set makes every later tensor
+        // operation in the program return an AD-node carrier instead of a
+        // number -- silently, with no diagnostic anywhere.
+        eshkol_ad_state_restore(handler->ad_mode_active,
+                                handler->ad_tape_depth,
+                                handler->ad_tape_current,
+                                handler->ad_seed_node,
+                                handler->ad_mixed_record_count);
+}
+
 // True when a raise now would be caught: a guard (or with-exception-handler)
 // frame with a landing point is installed. The runtime's own error sites ask
 // this before they print a report, so a condition a handler catches prints
@@ -785,30 +818,8 @@ extern "C" void eshkol_raise(eshkol_exception_t* exception) {
         // A longjmp skips generated normal-exit code.  Unwind dynamic-wind
         // first so parameterize after-thunks pop their eshkol_param_t stack
         // entries (and ordinary dynamic-wind cleanup retains R7RS ordering).
-        eshkol_unwind_dynamic_wind(g_exception_handler_stack->wind_mark);
-        eshkol_promise_eval_unwind_to(
-            g_exception_handler_stack->promise_mark);
-        // #341: close every region opened after the handler was installed — an
-        // open `region-open` handle or a `with-region` body the raise is jumping
-        // out of. The raised value is passed as the in-flight value so it is
-        // deep-promoted out of each region before that region's arena is freed;
-        // without this the handler would receive a pointer into freed memory
-        // (and the allocation slot would still point at the dead arena).
-        // The exception STRUCT itself needs no promotion: exceptions are
-        // allocated from __repl_shared_arena, which region entry never hijacks.
-        eshkol_region_unwind_to(g_exception_handler_stack->region_mark,
-                                &g_raised_tagged_value, 1);
-        // Restore the reverse-mode AD state the handler was installed with.
-        // The gradient pass this raise is jumping out of published its tape and
-        // turned AD mode on; its matching "off" store lives on the normal exit
-        // path the longjmp skips. Leaving them set makes every later tensor
-        // operation in the program return an AD-node carrier instead of a
-        // number -- silently, with no diagnostic anywhere.
-        eshkol_ad_state_restore(g_exception_handler_stack->ad_mode_active,
-                                g_exception_handler_stack->ad_tape_depth,
-                                g_exception_handler_stack->ad_tape_current,
-                                g_exception_handler_stack->ad_seed_node,
-                                g_exception_handler_stack->ad_mixed_record_count);
+        eshkol_restore_state_for_handler(g_exception_handler_stack,
+                                         &g_raised_tagged_value);
         // Jump to the handler
         longjmp(*(jmp_buf*)g_exception_handler_stack->jmp_buf_ptr, 1);
     } else {
@@ -1223,3 +1234,18 @@ extern "C" void eshkol_display_exception(eshkol_exception_t* exc) {
 }
 
 // ===== END EXCEPTION HANDLING IMPLEMENTATION =====
+
+// Restore the dynamic state recorded by the handler at @p depth (as returned by
+// eshkol_exception_handler_depth() right after it was pushed), without
+// transferring control. Used by a parallel callback's unwind boundary when a
+// continuation captured on another thread is invoked inside the callback: the
+// callback's extent is abandoned on this thread and the transfer is completed
+// on the owning thread after the join.
+extern "C" void eshkol_exception_unwind_state_to_depth(int64_t depth,
+                                                      eshkol_tagged_value_t* inflight) {
+    eshkol_exception_handler_t* handler = g_exception_handler_stack;
+    int64_t d = g_exception_handler_depth;
+    while (handler && d > depth) { handler = handler->prev; d--; }
+    if (!handler || d != depth) return;
+    eshkol_restore_state_for_handler(handler, inflight);
+}

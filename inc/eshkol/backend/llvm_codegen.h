@@ -165,6 +165,7 @@ namespace ControlFlowCallbacks {
     llvm::Function* getClosureAllocWrapper(void* context);
     llvm::Function* getConsSetPtrWrapper(void* context);
     llvm::Value* resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
+    bool variadicLookupWrapper(const char* name, void* context);
     llvm::Value* indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
     void pushFunctionContextWrapper(void* context);
     void popFunctionContextWrapper(void* context);

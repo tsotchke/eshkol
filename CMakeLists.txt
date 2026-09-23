@@ -11894,3 +11894,137 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET esh
         TIMEOUT 360 LABELS "macros;repl;regression"
         PASS_REGULAR_EXPRESSION "PASS: REPL keyword macro")
 endif()
+
+# VM parallel callback control and result ownership (SW-195/196/198). Each
+# program runs once as its own test, then 50 times in a row, because a worker
+# publication or unwind-boundary defect is scheduling dependent: a single
+# clean run is not evidence. Sanitizer configurations run the same tests.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-vm-standalone-test)
+    set(_eshkol_vm_parallel_cases
+        "vm_parity/corpus/error_irritants_lifetime|error irritants lifetime PASS"
+        "vm_parity/corpus/parallel_ad_carrier_lifetime|parallel AD carrier lifetime PASS"
+        "vm_parity/corpus/parallel_callback_raise|parallel callback raise PASS"
+        "vm/parallel_worker_settle_regression|parallel worker settle PASS"
+        "vm/closure_arity_catchable_regression|closure arity catchable PASS"
+        "vm_parity/corpus/parallel_continuation_escape|parallel continuation escape PASS"
+        "vm_parity/corpus/map_arity_protocol|map arity protocol PASS"
+        "vm_parity/corpus/variadic_builtin_values|variadic builtin values PASS")
+    set(_eshkol_vm_parallel_files "")
+    foreach(_case IN LISTS _eshkol_vm_parallel_cases)
+        string(REPLACE "|" ";" _parts "${_case}")
+        list(GET _parts 0 _path)
+        list(GET _parts 1 _pass)
+        get_filename_component(_name "${_path}" NAME)
+        set(_file "${CMAKE_CURRENT_SOURCE_DIR}/tests/${_path}.esk")
+        list(APPEND _eshkol_vm_parallel_files "'${_file}'")
+        add_test(NAME vm_${_name}
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test> "${_file}")
+        set_tests_properties(vm_${_name} PROPERTIES
+            ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+            TIMEOUT 120 LABELS "vm;parallel;regression"
+            PASS_REGULAR_EXPRESSION "${_pass}"
+            FAIL_REGULAR_EXPRESSION "ERROR:|mismatch|Sanitizer")
+    endforeach()
+    list(JOIN _eshkol_vm_parallel_files " " _eshkol_vm_parallel_argv)
+    add_test(NAME vm_parallel_callbacks_repeat50
+        COMMAND sh -c "i=0; while [ $i -lt 50 ]; do for f in ${_eshkol_vm_parallel_argv}; do out=$('$<TARGET_FILE:eshkol-vm-standalone-test>' \"$f\" 2>&1) || { echo \"FAIL: run $i $f\"; echo \"$out\"; exit 1; }; case \"$out\" in *ERROR:*|*mismatch*|*Sanitizer*) echo \"FAIL: run $i $f\"; echo \"$out\"; exit 1;; esac; done; i=$((i+1)); done; echo 'PASS: 50 VM parallel callback runs'")
+    set_tests_properties(vm_parallel_callbacks_repeat50 PROPERTIES
+        ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+        TIMEOUT 600 LABELS "vm;parallel;regression"
+        PASS_REGULAR_EXPRESSION "PASS: 50 VM parallel callback runs"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+# Native parallel callbacks raise into the caller (SW-201): JIT once, and an AOT
+# binary 50 times in a row, since the unwind boundary runs on pool threads.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run)
+    set(_eshkol_par_raise "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/parallel_callback_raise.esk")
+    add_test(NAME native_parallel_callback_raise_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> -r "${_eshkol_par_raise}")
+    add_test(NAME native_parallel_callback_raise_aot_repeat50
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/parallel_callback_raise_aot' '${_eshkol_par_raise}' -L'${CMAKE_CURRENT_BINARY_DIR}' || exit 1; i=0; while [ $i -lt 50 ]; do out=$('${CMAKE_CURRENT_BINARY_DIR}/parallel_callback_raise_aot' 2>/dev/null) || { echo \"FAIL: run $i exit\"; echo \"$out\"; exit 1; }; case \"$out\" in *'parallel callback raise PASS'*) ;; *) echo \"FAIL: run $i\"; echo \"$out\"; exit 1;; esac; i=$((i+1)); done; echo 'PASS: 50 native parallel callback runs'")
+    set_tests_properties(native_parallel_callback_raise_jit PROPERTIES
+        TIMEOUT 180 LABELS "parallel;regression"
+        PASS_REGULAR_EXPRESSION "parallel callback raise PASS"
+        FAIL_REGULAR_EXPRESSION "Unhandled exception|fatal signal")
+    set_tests_properties(native_parallel_callback_raise_aot_repeat50 PROPERTIES
+        TIMEOUT 600 LABELS "parallel;regression"
+        PASS_REGULAR_EXPRESSION "PASS: 50 native parallel callback runs"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+# The closure call protocol (SW-204, SW-216, SW-217): JIT and AOT refuse a
+# wrong argument count or a non-procedure with a catchable error.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run)
+    set(_eshkol_call_protocol "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/procedure_call_protocol.esk")
+    add_test(NAME native_procedure_call_protocol_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> -r "${_eshkol_call_protocol}")
+    add_test(NAME native_procedure_call_protocol_aot
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/procedure_call_protocol_aot' '${_eshkol_call_protocol}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/procedure_call_protocol_aot'")
+    set_tests_properties(native_procedure_call_protocol_jit native_procedure_call_protocol_aot PROPERTIES
+        TIMEOUT 180 LABELS "regression"
+        PASS_REGULAR_EXPRESSION "procedure call protocol PASS"
+        FAIL_REGULAR_EXPRESSION "Unhandled exception|fatal signal")
+endif()
+
+# SW-205 / SW-226 on native: continuation escapes from parallel callbacks (JIT
+# once, AOT 50 times) and map arity through the call protocol (JIT and AOT).
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run)
+    set(_eshkol_par_cont "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/parallel_continuation_escape.esk")
+    set(_eshkol_map_arity "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/map_arity_protocol.esk")
+    add_test(NAME native_parallel_continuation_escape_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> -r "${_eshkol_par_cont}")
+    add_test(NAME native_parallel_continuation_escape_aot_repeat50
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/parallel_continuation_escape_aot' '${_eshkol_par_cont}' -L'${CMAKE_CURRENT_BINARY_DIR}' || exit 1; i=0; while [ $i -lt 50 ]; do out=$('${CMAKE_CURRENT_BINARY_DIR}/parallel_continuation_escape_aot' 2>/dev/null) || { echo \"FAIL: run $i exit\"; exit 1; }; case \"$out\" in *'parallel continuation escape PASS'*) ;; *) echo \"FAIL: run $i\"; echo \"$out\"; exit 1;; esac; i=$((i+1)); done; echo 'PASS: 50 native continuation escape runs'")
+    add_test(NAME native_map_arity_protocol_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> -r "${_eshkol_map_arity}")
+    add_test(NAME native_map_arity_protocol_aot
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/map_arity_protocol_aot' '${_eshkol_map_arity}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/map_arity_protocol_aot'")
+    set_tests_properties(native_parallel_continuation_escape_jit PROPERTIES
+        TIMEOUT 180 LABELS "parallel;regression"
+        PASS_REGULAR_EXPRESSION "parallel continuation escape PASS"
+        FAIL_REGULAR_EXPRESSION "Unhandled exception|fatal signal")
+    set_tests_properties(native_parallel_continuation_escape_aot_repeat50 PROPERTIES
+        TIMEOUT 600 LABELS "parallel;regression"
+        PASS_REGULAR_EXPRESSION "PASS: 50 native continuation escape runs"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+    set_tests_properties(native_map_arity_protocol_jit native_map_arity_protocol_aot PROPERTIES
+        TIMEOUT 180 LABELS "regression"
+        PASS_REGULAR_EXPRESSION "map arity protocol PASS"
+        FAIL_REGULAR_EXPRESSION "Unhandled exception|fatal signal|verification failed")
+endif()
+
+# SW-241: variadic builtins passed as values are variadic procedures natively.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run)
+    set(_eshkol_variadic_values "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/variadic_builtin_values.esk")
+    add_test(NAME native_variadic_builtin_values_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> -r "${_eshkol_variadic_values}")
+    add_test(NAME native_variadic_builtin_values_aot
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/variadic_builtin_values_aot' '${_eshkol_variadic_values}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/variadic_builtin_values_aot'")
+    set_tests_properties(native_variadic_builtin_values_jit native_variadic_builtin_values_aot PROPERTIES
+        TIMEOUT 180 LABELS "regression"
+        PASS_REGULAR_EXPRESSION "variadic builtin values PASS"
+        FAIL_REGULAR_EXPRESSION "Unhandled exception|fatal signal|verification failed")
+endif()
+
+# SW-248: gradient of a rest-parameter procedure on JIT, AOT and VM.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    set(_eshkol_var_grad "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/variadic_gradient_matrix.esk")
+    add_test(NAME variadic_gradient_matrix_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> -r "${_eshkol_var_grad}")
+    add_test(NAME variadic_gradient_matrix_aot
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/variadic_gradient_matrix_aot' '${_eshkol_var_grad}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/variadic_gradient_matrix_aot'")
+    add_test(NAME variadic_gradient_matrix_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test> "${_eshkol_var_grad}")
+    set_tests_properties(variadic_gradient_matrix_jit variadic_gradient_matrix_aot variadic_gradient_matrix_vm PROPERTIES
+        ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+        TIMEOUT 180 LABELS "ad;parity;regression"
+        PASS_REGULAR_EXPRESSION "variadic gradient matrix PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|ERROR|Unhandled exception|fatal signal|verification failed")
+endif()

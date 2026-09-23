@@ -33,10 +33,8 @@
 (check "lambda 1-arg arity"        (= (procedure-arity lmb-1) 1))
 (check "lambda 2-arg arity"        (= (procedure-arity lmb-2) 2))
 (check "builtin car arity = 1"     (= (procedure-arity car) 1))
-;; `+` takes any number of arguments (R7RS 6.2.6), so as a value it is a
-;; variadic procedure with no required ones -- the same answer as a user
-;; `(lambda args ...)`. A reported 2 was the binary wrapper's arity, not +'s.
-(check "builtin + fixed-arity = 0"  (= (procedure-arity +) 0))
+;; + is variadic (SW-241): like max and (lambda args ...), it reports its fixed part.
+(check "builtin + arity = 0 (variadic)" (= (procedure-arity +) (procedure-arity max) 0))
 (check "imported fold-left arity = 3" (= (procedure-arity fold-left) 3))
 (check "aliased imported arity = 3" (= (procedure-arity imported-fold-left) 3))
 

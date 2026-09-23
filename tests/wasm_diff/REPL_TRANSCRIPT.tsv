@@ -34,3 +34,8 @@
 (display "hi")		display writes a FRAGMENT — no terminator, so no line yet
 (newline)	hi	the pending "hi" fragment completes into a line here
 (begin (display "a") (newline) 7)	a\n7	explicit output line, then the auto-printed answer line
+(guard (e (#t (error-object-irritants e))) (error "boom" 1 2))	(1 2)	SW-195: a caught error object keeps its irritant list
+(guard (e ((error-object? e) (error-object-message e))) (error "boom" 1 2))	boom	SW-195: and its message
+(parallel-map (lambda (x) (guard (e (#t (- x))) (if (odd? x) (raise x) x))) (list 1 2 3))	(-1 2 -3)	SW-196: a guard inside a parallel callback resumes that callback for every element
+(guard (e ((symbol? e) e)) (parallel-map (lambda (x) (if (= x 2) (raise (quote two)) x)) (list 1 2 3)))	two	SW-196: an unguarded callback raise reaches the caller handler with its own object
+(string-append "after" "-parallel")	after-parallel	SW-196: the session keeps evaluating after parallel callbacks raised

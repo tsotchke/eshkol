@@ -160,5 +160,8 @@
 (define gtail (gwrap vtail (list 2.0 5.0 3.0)))
 (check "fixed + rest loss: grad[1]" (vector-ref gtail 1) 6.0)
 (check "fixed + rest loss: grad[2]" (vector-ref gtail 2) 10.0)
+; a one-coordinate point is one scalar argument to a variadic loss
+(define gone (gwrap times (list 3.0)))
+(check "variadic loss, one coordinate" (vector-ref gone 0) 1.0)
 
 (arity-spread-summary)

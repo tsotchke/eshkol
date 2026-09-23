@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2514/5387 public symbols documented (46.7%), 2873 undocumented.
+**Coverage:** 2526/5428 public symbols documented (46.5%), 2902 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -43,12 +43,12 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1307/3021 symbols documented.
+1311/3029 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`backend/arithmetic_codegen.h`](backend/arithmetic_codegen.md) | 62 | 53 |
-| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 203 | 125 |
+| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 207 | 126 |
 | [`backend/binding_codegen.h`](backend/binding_codegen.md) | 75 | 24 |
 | [`backend/blas_backend.h`](backend/blas_backend.md) | 23 | 23 |
 | [`backend/builtin_declarations.h`](backend/builtin_declarations.md) | 16 | 6 |
@@ -69,7 +69,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/ir_builder.h`](backend/ir_builder.md) | 10 | 0 |
 | [`backend/libm_codegen.h`](backend/libm_codegen.md) | 5 | 5 |
 | [`backend/link_probe.h`](backend/link_probe.md) | 1 | 1 |
-| [`backend/llvm_codegen.h`](backend/llvm_codegen.md) | 745 | 17 |
+| [`backend/llvm_codegen.h`](backend/llvm_codegen.md) | 746 | 17 |
 | [`backend/llvm_compat.h`](backend/llvm_compat.md) | 5 | 0 |
 | [`backend/logic_workspace_codegen.h`](backend/logic_workspace_codegen.md) | 42 | 25 |
 | [`backend/map_codegen.h`](backend/map_codegen.md) | 54 | 23 |
@@ -81,7 +81,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/static_callee_binding.h`](backend/static_callee_binding.md) | 13 | 7 |
 | [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 74 | 56 |
 | [`backend/system_codegen.h`](backend/system_codegen.md) | 277 | 265 |
-| [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 54 | 46 |
+| [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 57 | 49 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
 | [`backend/tensor_backward.h`](backend/tensor_backward.md) | 22 | 22 |
 | [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 207 | 187 |
@@ -124,13 +124,13 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-289/564 symbols documented.
+293/589 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`core/arity_contract.h`](core/arity_contract.md) | 3 | 3 |
 | [`core/ast_routing.h`](core/ast_routing.md) | 3 | 0 |
-| [`core/bignum.h`](core/bignum.md) | 44 | 27 |
+| [`core/bignum.h`](core/bignum.md) | 45 | 27 |
 | [`core/complex_math.h`](core/complex_math.md) | 33 | 30 |
 | [`core/config.h`](core/config.md) | 62 | 19 |
 | [`core/dtoa_shortest.h`](core/dtoa_shortest.md) | 1 | 1 |
@@ -144,10 +144,11 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/introspection.h`](core/introspection.md) | 30 | 29 |
 | [`core/linear_solve.h`](core/linear_solve.md) | 9 | 4 |
 | [`core/logic.h`](core/logic.md) | 37 | 11 |
+| [`core/number_syntax.h`](core/number_syntax.md) | 22 | 2 |
 | [`core/object_limits.h`](core/object_limits.md) | 4 | 0 |
 | [`core/rational.h`](core/rational.md) | 38 | 10 |
 | [`core/resource_limits.h`](core/resource_limits.md) | 65 | 40 |
-| [`core/runtime.h`](core/runtime.md) | 65 | 53 |
+| [`core/runtime.h`](core/runtime.md) | 67 | 55 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
 | [`core/string_escape.h`](core/string_escape.md) | 3 | 0 |
 | [`core/symbol_syntax.h`](core/symbol_syntax.md) | 16 | 4 |
@@ -156,19 +157,19 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `frontend/`
 
-70/239 symbols documented.
+74/247 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`frontend/ast_strings.h`](frontend/ast_strings.md) | 14 | 11 |
 | [`frontend/binding_forms.h`](frontend/binding_forms.md) | 3 | 0 |
 | [`frontend/diagnostic.h`](frontend/diagnostic.md) | 8 | 0 |
-| [`frontend/macro_expander.h`](frontend/macro_expander.md) | 31 | 16 |
+| [`frontend/macro_expander.h`](frontend/macro_expander.md) | 33 | 18 |
 | [`frontend/node_identity.h`](frontend/node_identity.md) | 14 | 14 |
 | [`frontend/semantic_identity.h`](frontend/semantic_identity.md) | 75 | 0 |
 | [`frontend/source_paths.h`](frontend/source_paths.md) | 2 | 2 |
 | [`frontend/syntax_color.h`](frontend/syntax_color.md) | 8 | 8 |
-| [`frontend/syntax_datum.h`](frontend/syntax_datum.md) | 27 | 13 |
+| [`frontend/syntax_datum.h`](frontend/syntax_datum.md) | 33 | 15 |
 | [`frontend/syntax_rules.h`](frontend/syntax_rules.md) | 2 | 2 |
 | [`frontend/syntax_rules_core.h`](frontend/syntax_rules_core.md) | 34 | 4 |
 | [`frontend/workspace.h`](frontend/workspace.md) | 21 | 0 |

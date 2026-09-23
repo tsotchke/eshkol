@@ -2,7 +2,8 @@ id: SW-204
 bucket: SILENT-WRONG
 family: native/closure-call-non-procedure
 owner: v135f-vmrt (VM runtime lane)
-status: open
+status: fixed
+closed_at: "98d0a9250"
 needs_decision: false
 title: "native: calling a non-procedure held by a closure-captured local answers #f with exit 0"
 repro: >-
@@ -26,3 +27,18 @@ missed_by: [edge_matrix, vm_parity]
 notes: >-
   Out of the macro lane's scope (closure call lowering in native codegen);
   filed for the owner of native call dispatch.
+fix: >-
+  One call protocol at the closure call boundary (codegenClosureCall in
+  lib/backend/llvm_codegen.cpp): a value that is not a CALLABLE is never
+  "called" into a result; it raises a catchable type error through
+  eshkol_procedure_call_error. The integer operand, which was called as a raw
+  function pointer and faulted at its own value, takes the same path. The VM's
+  non-procedure refusal (vm_callable_closure, tail calls in vm_run.c), which
+  was fatal, now raises the same catchable condition. Same change as SW-216.
+remeasured: >-
+  At 98d0a9250 (fix/v135f-vmrt): the repro under a guard prints caught on
+  native JIT and the VM; tests/vm_parity/corpus/procedure_call_protocol.esk
+  ((mk 5) and (mk "s") through a captured local) is byte-identical on native
+  and VM; ctest native_procedure_call_protocol_jit / _aot and
+  vm_closure_arity_catchable_regression pass. Full ctest: the only failures
+  are the pre-existing gates also failing at the integration base.

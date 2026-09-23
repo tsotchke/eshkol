@@ -3409,6 +3409,18 @@ llvm::Value* AutodiffCodegen::loadNodeInput2(llvm::Value* node_ptr) {
  * Emits at the CURRENT insert point: the differentiand must be evaluated where
  * the AD form appears, exactly once, before any wrapper function is created.
  */
+// Whether the differentiand is known at compile time to take a rest list: an
+// inline (lambda args ...) / (lambda (a . r) ...), or a name bound by
+// (define (f . args) ...) / (define f (lambda args ...)).
+bool AutodiffCodegen::differentiandIsVariadic(const eshkol_ast_t* func_ast) const {
+    if (!func_ast) return false;
+    if (func_ast->type == ESHKOL_OP && func_ast->operation.op == ESHKOL_LAMBDA_OP)
+        return func_ast->operation.lambda_op.is_variadic != 0;
+    if (func_ast->type == ESHKOL_VAR && func_ast->variable.id && variadic_lookup_callback_)
+        return variadic_lookup_callback_(func_ast->variable.id, callback_context_);
+    return false;
+}
+
 llvm::Value* AutodiffCodegen::resolveDifferentiandClosure(const eshkol_ast_t* func_ast,
                                                           const char* what) {
     using namespace llvm;
@@ -3548,7 +3560,9 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
     Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
     Value* arena_ptr = ctx_.currentArena();
 
-    uint64_t packed_info = 1;  // 1 capture (the function)
+    // 1 capture (the function), 1 fixed parameter (x): the call protocol
+    // checks the recorded arity (SW-216).
+    uint64_t packed_info = 1 | (1ULL << 32);
     Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
     Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
     // Derivative function returns a scalar
@@ -4862,23 +4876,19 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                             ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(closure_val), ctx_.ptrType()),
                             ConstantInt::get(ctx_.int64Type(), 33))),
                     ctx_.int64Type());
-                // A VARIADIC loss (flag bit 0 of the byte at offset 34) takes
-                // the point's coordinates as arguments whatever its fixed
-                // count, so it is never handed the whole point as one vector:
-                // `+` has no fixed parameters and `(gradient + '(2.0 5.0))` is
-                // the gradient of x+y.
-                Value* clo_variadic = ctx_.builder().CreateICmpNE(
+                // A variadic callable takes the point spread (SW-241), never the
+                // whole point as one tensor argument.
+                Value* clo_variadic_rt = ctx_.builder().CreateICmpNE(
                     ctx_.builder().CreateAnd(
                         ctx_.builder().CreateLoad(ctx_.int8Type(),
                             ctx_.builder().CreateGEP(ctx_.int8Type(),
                                 ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(closure_val), ctx_.ptrType()),
                                 ConstantInt::get(ctx_.int64Type(), 34))),
-                        ConstantInt::get(ctx_.int8Type(), 1)),
+                        ConstantInt::get(ctx_.int8Type(), CLOSURE_FLAG_VARIADIC)),
                     ConstantInt::get(ctx_.int8Type(), 0));
                 Value* clo_arity_le1 = ctx_.builder().CreateAnd(
-                    ctx_.builder().CreateNot(clo_variadic),
-                    ctx_.builder().CreateICmpULE(clo_arity_val,
-                        ConstantInt::get(ctx_.int64Type(), 1)));
+                    ctx_.builder().CreateICmpULE(clo_arity_val, ConstantInt::get(ctx_.int64Type(), 1)),
+                    ctx_.builder().CreateNot(clo_variadic_rt));
 
                 BasicBlock* grad_rt_scalar_fwd = BasicBlock::Create(
                     ctx_.context(), "grad_rt_scalar_fwd", current_func);
@@ -5769,24 +5779,24 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                 Value* clo_ptr = ctx_.builder().CreateIntToPtr(clo_ptr_i64, ctx_.ptrType());
                 Value* clo_arity_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), clo_ptr,
                     ConstantInt::get(ctx_.int64Type(), 33));
-                Value* clo_fixed_arity = ctx_.builder().CreateZExt(
+                Value* clo_arity_declared = ctx_.builder().CreateZExt(
                     ctx_.builder().CreateLoad(ctx_.int8Type(), clo_arity_ptr), ctx_.int64Type());
-                /* A VARIADIC loss accepts the point's coordinates however many
-                 * there are (its input_arity byte is only the fixed count), so
-                 * it is called with all n of them -- `(gradient + (list 2.0
-                 * 5.0))` is the gradient of x+y. Reading the fixed count alone
-                 * handed `+` (no fixed parameters) the whole point as one vector
-                 * and dropped the coordinates past a `(a b . rest)` loss's two. */
-                Value* clo_flags = ctx_.builder().CreateLoad(ctx_.int8Type(),
-                    ctx_.builder().CreateGEP(ctx_.int8Type(), clo_ptr,
-                        ConstantInt::get(ctx_.int64Type(), 34)));
+                // A variadic procedure accepts one argument per point element
+                // (SW-241; the VM spreads the same way), so it is called with
+                // the point spread, not with the whole point as one argument.
                 Value* clo_is_variadic = ctx_.builder().CreateICmpNE(
-                    ctx_.builder().CreateAnd(clo_flags, ConstantInt::get(ctx_.int8Type(), 1)),
+                    ctx_.builder().CreateAnd(
+                        ctx_.builder().CreateLoad(ctx_.int8Type(),
+                            ctx_.builder().CreateGEP(ctx_.int8Type(), clo_ptr,
+                                ConstantInt::get(ctx_.int64Type(), 34))),
+                        ConstantInt::get(ctx_.int8Type(), CLOSURE_FLAG_VARIADIC)),
                     ConstantInt::get(ctx_.int8Type(), 0));
-                Value* clo_arity = ctx_.builder().CreateSelect(clo_is_variadic,
-                    ctx_.builder().CreateSelect(
-                        ctx_.builder().CreateICmpUGT(n, clo_fixed_arity), n, clo_fixed_arity),
-                    clo_fixed_arity);
+                // Every coordinate, including a one-coordinate point: the
+                // spread helper never hands a variadic callable the vector form.
+                Value* clo_arity = ctx_.builder().CreateSelect(
+                    ctx_.builder().CreateAnd(clo_is_variadic,
+                        ctx_.builder().CreateICmpUGE(n, clo_arity_declared)),
+                    n, clo_arity_declared, "grad_call_arity");
 
                 /* Arity of a RUNTIME closure is only known at run time, so the
                  * point has to be spread into that many scalar arguments by a
@@ -5890,7 +5900,10 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
  */
 llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     PassModeScope pass_scope(*this);   // ADR-0027: this operator is its own pass
-    if (op && op->gradient_op.function && op->gradient_op.point) {
+    // SW-248: a rest-parameter differentiand always takes the runtime-closure
+    // spread rule (gradientJetPath), never a static per-parameter route.
+    if (op && op->gradient_op.function && op->gradient_op.point &&
+        !differentiandIsVariadic(op->gradient_op.function)) {
         if (llvm::Value* exact = tryExactTowerRoute(
                 op->gradient_op.function, op->gradient_op.point, /*order=*/1,
                 [&]() { return gradientJetPath(op); }, "gradient"))
@@ -5918,6 +5931,24 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
         "eshkol_ad_count_primal",
         FunctionType::get(ctx_.voidType(), {}, false)), {});
+
+    // SW-248: a rest-parameter differentiand takes one argument per point
+    // element. Its compiled function has a fixed parameter list plus a rest
+    // list, which the static path cannot fill, so it goes through the
+    // runtime-closure gradient, whose spread rule gives a variadic callable
+    // the point element-wise (the same rule, whether it is written inline,
+    // named, or reached through a wrapper).
+    if (differentiandIsVariadic(op->gradient_op.function)) {
+        Value* closure_val = resolveDifferentiandClosure(op->gradient_op.function, "gradient");
+        if (!closure_val) return nullptr;
+        Value* point_val = codegen_ast_callback_(op->gradient_op.point, callback_context_);
+        if (!point_val) return nullptr;
+        if (point_val->getType() != ctx_.taggedValueType()) {
+            if (point_val->getType()->isDoubleTy()) point_val = tagged_.packDouble(point_val);
+            else if (point_val->getType()->isIntegerTy(64)) point_val = tagged_.packInt64(point_val, true);
+        }
+        return emitRuntimeClosureGradient(closure_val, point_val);
+    }
 
     // Resolve function (lambda or function reference)
     Value* func = resolve_lambda_callback_(op->gradient_op.function, 0, callback_context_);

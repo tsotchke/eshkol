@@ -60,6 +60,46 @@ phase afterward.
 Practical rule: make the mapped/folded function pure. Thread an accumulator as a
 loop variable rather than `set!`-ing a shared cell from inside parallel work.
 
+On the bytecode VM, a published result is owned by the calling VM before the
+worker's arena is released: strings, vectors, bignum limbs, exact rationals,
+dual and Taylor coefficient channels (including the parts of a complex value)
+and error objects with their irritants are all copied into the caller's heap.
+
+## Errors raised by parallel callbacks
+
+A raise inside a callback of `parallel-map`, `parallel-filter`,
+`parallel-for-each`, `parallel-execute` or a future belongs to the caller, on
+both engines:
+
+- A `guard` (or other handler) **inside** the callback handles it there, and
+  that element's result is whatever the handler returns.
+- Otherwise the caller's handler receives the callback's **own** raised object
+  (the symbol, string or error object with its message and irritants), after
+  every element has finished. When several elements raise, the first in list
+  order is delivered.
+- A future whose thunk raised delivers the condition when it is forced; forcing
+  it again evaluates the thunk again.
+
+```scheme
+(guard (e ((error-object? e) (error-object-irritants e)))
+  (parallel-map (lambda (x) (if (= x 3) (error "bad element" x) x))
+                '(1 2 3 4 5 6 7 8)))
+;; => (3)
+```
+
+An escape from a callback to a continuation captured outside it, such as
+`(call/cc (lambda (k) (parallel-map (lambda (x) (if (= x 4) (k 'done) x)) xs)))`,
+resumes that continuation in its owning scope after every element has finished,
+unwinding the callback's `dynamic-wind` extents on the way out. A continuation
+captured inside the callback stays local to that callback.
+
+No control transfer ever crosses threads. Native runs every callback under an
+unwind boundary on the thread that runs it and re-raises the recorded
+condition on the calling thread after the join. The VM never lets a worker
+transfer control: a callback admitted to an isolated worker VM that fails is
+evaluated again on the calling interpreter, which is observationally the
+sequential semantics because only pure callbacks are admitted to workers.
+
 ### Scope reclamation on workers is commit-only (since v1.3.4)
 
 `parallel-map` is safe for closures that **allocate and return collections** —

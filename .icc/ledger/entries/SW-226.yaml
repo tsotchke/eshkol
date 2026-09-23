@@ -1,0 +1,30 @@
+id: SW-226
+bucket: LOUD-ERROR
+family: native/map-arity
+status: fixed
+closed_at: "747b6964d"
+title: "native (map (lambda (x y) x) '(1 2)) fails to compile with a module verification error"
+repro: >-
+  (display (guard (e (#t 'caught)) (map (lambda (x y) x) '(1 2))))
+observed_before: >-
+  eshkol-run -r: "Map: capture 'y' not found ... using null pointer" and
+  "LLVM module verification failed: Call parameter type does not match
+  function signature". The same for a named two-parameter procedure and for a
+  one-parameter procedure over two lists. The VM raises the catchable arity
+  error.
+correct: >-
+  caught: the program compiles and the call raises "Arity mismatch:
+  <procedure> expects 2 arguments but got 1" at run time.
+fix: >-
+  map's static fast path (lib/backend/map_codegen.cpp) is used only when the
+  procedure is known to take exactly one argument per list (an inline
+  non-variadic lambda with that many parameters, or a named procedure whose
+  declared parameters number that many). Every other procedure goes through
+  the runtime closure dispatcher, where the call protocol of SW-216 applies.
+remeasured: >-
+  At 747b6964d (fix/v135f-vmrt): tests/vm_parity/corpus/map_arity_protocol.esk
+  (inline, named, surplus-list and for-each mismatches; unaffected exact and
+  rest-parameter maps) is byte-identical on native and VM;
+  native_map_arity_protocol_jit and _aot pass.
+caught_by: [v135f-vmrt-probe]
+missed_by: [vm_parity]

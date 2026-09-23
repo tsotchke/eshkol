@@ -1,0 +1,27 @@
+id: SW-217
+bucket: LOUD-ERROR
+family: vm/closure-call-arity
+status: fixed
+closed_at: "98d0a9250"
+title: "VM closure arity mismatch is fatal, cannot be caught by guard, and says \"arity mismatch:\" instead of the canonical \"Arity mismatch: \""
+repro: >-
+  (display (guard (e (#t 'caught)) ((lambda (x) x) 1 2)))
+observed_before: >-
+  eshkol-vm-standalone-test: "ERROR: arity mismatch: expected 1 argument, got
+  2" and a fatal exit; the guard never runs. Two duplicate checks
+  (vm_check_closure_arity, vm_validate_closure_arity) printed two wordings.
+correct: >-
+  caught; the condition's message is "Arity mismatch: <procedure> expects 1
+  argument but got 2", as native raises it.
+fix: >-
+  One admission check, vm_check_closure_arity (lib/backend/vm_core.c), raises
+  a catchable condition with the shared arity_contract.h wording; callers
+  resume dispatch at the handler. vm_validate_closure_arity is retired. A
+  rest-parameter procedure's minimum is enforced in its PACK_REST prologue.
+remeasured: >-
+  At 98d0a9250 (fix/v135f-vmrt): tests/vm/closure_arity_catchable_regression.esk
+  prints "closure arity catchable PASS" (surplus, missing, direct, variadic
+  minimum, tail position, non-procedure); vm_first_class_builtin_arity_smoke
+  (updated to the canonical marker) passes; run_vm_parity.sh clean.
+caught_by: [v135f-coordinator-audit]
+missed_by: [vm_parity]

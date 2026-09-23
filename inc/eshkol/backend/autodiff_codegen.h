@@ -654,6 +654,7 @@ public:
      * @return a tagged value expected to carry ESHKOL_VALUE_CALLABLE, or
      *         nullptr if the expression could not be evaluated to one.
      */
+    bool differentiandIsVariadic(const eshkol_ast_t* func_ast) const;
     llvm::Value* resolveDifferentiandClosure(const eshkol_ast_t* func_ast,
                                              const char* what);
 
@@ -1053,6 +1054,8 @@ private:
 
     using ResolveLambdaCallback = llvm::Value* (*)(const eshkol_ast_t*, size_t, void*);
     ResolveLambdaCallback resolve_lambda_callback_ = nullptr;
+    using VariadicLookupCallback = bool (*)(const char*, void*);
+    VariadicLookupCallback variadic_lookup_callback_ = nullptr;
 
     // Pack/unpack helpers that delegate to main codegen
     using PackDualCallback = llvm::Value* (*)(llvm::Value*, llvm::Value*, void*);
@@ -1130,6 +1133,11 @@ public:
      */
     void setResolveLambdaCallback(ResolveLambdaCallback callback) {
         resolve_lambda_callback_ = callback;
+    }
+
+    /** Set the callback answering whether a name is bound to a rest-parameter procedure. */
+    void setVariadicLookupCallback(VariadicLookupCallback callback) {
+        variadic_lookup_callback_ = callback;
     }
 
     /**

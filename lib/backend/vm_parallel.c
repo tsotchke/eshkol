@@ -7,7 +7,9 @@
  *
  * Workers execute read-only closure bytecode in isolated VM/arena snapshots and
  * publish returned values back to the main VM heap. Closures that may mutate
- * shared VM state use a serialized fallback through the main VM.
+ * shared VM state use a serialized fallback through the main VM. A worker
+ * never transfers control: a failed isolated run is re-evaluated on the
+ * caller's interpreter after the join (see "Caller-side settlement").
  *
  * Native call IDs: 620-639
  *
@@ -495,6 +497,72 @@ static VmDual* vm_dual_clone_payload_to(VmRegionStack* rs, const VmDual* src) {
     return dst;
 }
 
+/* ADR-0025: a complex value's parts are full dual carriers, so each part owns
+ * its exact halves and Taylor channels exactly as a HEAP_DUAL does. Copying
+ * the part structs alone (the old arms) left those interior pointers in the
+ * source arena. */
+static VmComplex* vm_complex_clone_payload_to(VmRegionStack* rs, const VmComplex* src) {
+    if (!src) return NULL;
+    VmComplex* dst = (VmComplex*)vm_alloc(rs, sizeof(VmComplex));
+    if (!dst) return NULL;
+    *dst = *src;
+    dst->creal = vm_dual_clone_payload_to(rs, src->creal);
+    dst->cimag = vm_dual_clone_payload_to(rs, src->cimag);
+    if ((src->creal && !dst->creal) || (src->cimag && !dst->cimag)) return NULL;
+    return dst;
+}
+
+/**
+ * @brief The one ownership rule for leaf payloads that cross between VM
+ *        instances (main -> worker snapshot, worker -> main publication):
+ *        the copy is deep, into @p rs, down to every limb buffer, exact
+ *        rational sidecar and coefficient channel, so nothing in the result
+ *        refers to the source VM's arena once that VM is destroyed.
+ * @return 1 copied (or @p src NULL), 0 allocation failure, -1 @p type is not
+ *         a leaf payload (the caller walks its child Values itself).
+ */
+static int vm_leaf_payload_clone_to(VmRegionStack* rs, int type,
+                                    const void* src, void** out) {
+    *out = NULL;
+    switch (type) {
+        case HEAP_STRING: {
+            const VmString* s = (const VmString*)src;
+            if (s) *out = vm_string_new(rs, s->data, s->byte_len);
+            break;
+        }
+        case HEAP_COMPLEX:
+            *out = vm_complex_clone_payload_to(rs, (const VmComplex*)src);
+            break;
+        case HEAP_RATIONAL:
+            *out = vm_rational_clone_to(rs, (const VmRational*)src);
+            break;
+        case HEAP_BIGNUM:
+            *out = vm_bignum_clone_to(rs, (const VmBignum*)src);
+            break;
+        case HEAP_DUAL:
+            *out = vm_dual_clone_payload_to(rs, (const VmDual*)src);
+            break;
+        case HEAP_TENSOR:
+            if (src) *out = vm_tensor_copy(rs, (VmTensor*)src);
+            break;
+        case HEAP_BYTEVECTOR: {
+            VmBytevector* bv = (VmBytevector*)src;
+            if (bv) *out = vm_bv_copy(rs, bv, 0, bv->len);
+            break;
+        }
+        case HEAP_HYPER_DUAL:
+            if (src) {
+                VmHyperDual* h = (VmHyperDual*)vm_alloc(rs, sizeof(VmHyperDual));
+                if (h) *h = *(const VmHyperDual*)src;
+                *out = h;
+            }
+            break;
+        default:
+            return -1;
+    }
+    return !src || *out != NULL;
+}
+
 /**
  * @brief Clone the heap object at index @p idx from @p main_vm's heap into
  *        @p worker's isolated heap at the same index, recursing into
@@ -576,12 +644,6 @@ static int vm_clone_object_at(VM* worker, VM* main_vm, int32_t idx,
             }
             return 1;
 
-        case HEAP_STRING: {
-            VmString* s = (VmString*)src->opaque.ptr;
-            dst->opaque.ptr = s ? vm_string_new(&worker->heap.regions, s->data, s->byte_len) : NULL;
-            return !s || dst->opaque.ptr != NULL;
-        }
-
         case HEAP_VECTOR:
         case HEAP_PROMISE: {
             VmVector* sv = (VmVector*)src->opaque.ptr;
@@ -607,62 +669,6 @@ static int vm_clone_object_at(VM* worker, VM* main_vm, int32_t idx,
             return 1;
         }
 
-        case HEAP_COMPLEX: {
-            VmComplex* src_z = (VmComplex*)src->opaque.ptr;
-            VmComplex* dst_z = src_z ? (VmComplex*)vm_alloc(&worker->heap.regions, sizeof(VmComplex)) : NULL;
-            if (src_z && !dst_z) return 0;
-            if (src_z) {
-                *dst_z = *src_z;
-                if (src_z->creal) { dst_z->creal = (VmDual*)vm_alloc(&worker->heap.regions,sizeof(VmDual)); if (!dst_z->creal) return 0; *dst_z->creal=*src_z->creal; }
-                if (src_z->cimag) { dst_z->cimag = (VmDual*)vm_alloc(&worker->heap.regions,sizeof(VmDual)); if (!dst_z->cimag) return 0; *dst_z->cimag=*src_z->cimag; }
-            }
-            dst->opaque.ptr = dst_z;
-            return 1;
-        }
-
-        case HEAP_RATIONAL: {
-            VmRational* src_r = (VmRational*)src->opaque.ptr;
-            VmRational* dst_r = src_r ? (VmRational*)vm_alloc(&worker->heap.regions, sizeof(VmRational)) : NULL;
-            if (src_r && !dst_r) return 0;
-            if (src_r) {
-                *dst_r = *src_r;
-                /* SW-18: a bignum-backed rational owns two pointers into the
-                 * SOURCE region stack.  Copying the struct alone would hand the
-                 * other VM two dangling pointers, so clone both halves the same
-                 * way HEAP_BIGNUM below does. */
-                if (src_r->is_big) {
-                    dst_r->big_num = vm_bignum_clone_to(&worker->heap.regions, src_r->big_num);
-                    dst_r->big_den = vm_bignum_clone_to(&worker->heap.regions, src_r->big_den);
-                    if (!dst_r->big_num || !dst_r->big_den) return 0;
-                }
-            }
-            dst->opaque.ptr = dst_r;
-            return 1;
-        }
-
-        case HEAP_BIGNUM:
-            dst->opaque.ptr = vm_bignum_clone_to(&worker->heap.regions,
-                                                 (VmBignum*)src->opaque.ptr);
-            return !src->opaque.ptr || dst->opaque.ptr != NULL;
-
-        case HEAP_DUAL: {
-            VmDual* src_d = (VmDual*)src->opaque.ptr;
-            VmDual* dst_d = vm_dual_clone_payload_to(&worker->heap.regions, src_d);
-            if (src_d && !dst_d) return 0;
-            dst->opaque.ptr = dst_d;
-            return 1;
-        }
-
-        case HEAP_TENSOR:
-            dst->opaque.ptr = vm_tensor_copy(&worker->heap.regions, (VmTensor*)src->opaque.ptr);
-            return !src->opaque.ptr || dst->opaque.ptr != NULL;
-
-        case HEAP_BYTEVECTOR: {
-            VmBytevector* bv = (VmBytevector*)src->opaque.ptr;
-            dst->opaque.ptr = bv ? vm_bv_copy(&worker->heap.regions, bv, 0, bv->len) : NULL;
-            return !bv || dst->opaque.ptr != NULL;
-        }
-
         case HEAP_ERROR: {
             VmError* se = (VmError*)src->opaque.ptr;
             VmError* de = se ? (VmError*)vm_alloc(&worker->heap.regions, sizeof(VmError)) : NULL;
@@ -681,17 +687,16 @@ static int vm_clone_object_at(VM* worker, VM* main_vm, int32_t idx,
             return 1;
         }
 
-        case HEAP_HYPER_DUAL: {
-            VmHyperDual* src_h = (VmHyperDual*)src->opaque.ptr;
-            VmHyperDual* dst_h = src_h ? (VmHyperDual*)vm_alloc(&worker->heap.regions, sizeof(VmHyperDual)) : NULL;
-            if (src_h && !dst_h) return 0;
-            if (src_h) *dst_h = *src_h;
-            dst->opaque.ptr = dst_h;
-            return 1;
+        default: {
+            /* Leaf payloads are deep-copied into the worker's arena; any
+             * other subtype stays shared with the (longer-lived) main VM. */
+            void* copy = NULL;
+            int copied = vm_leaf_payload_clone_to(&worker->heap.regions, src->type,
+                                                  src->opaque.ptr, &copy);
+            if (copied < 0) return 1;
+            dst->opaque.ptr = copy;
+            return copied;
         }
-
-        default:
-            return 1;
     }
 }
 
@@ -938,12 +943,6 @@ static int vm_publish_object_locked(VM* main_vm, VM* worker, Value in,
             }
             return 1;
 
-        case HEAP_STRING: {
-            VmString* s = (VmString*)src->opaque.ptr;
-            dst->opaque.ptr = s ? vm_string_new(&main_vm->heap.regions, s->data, s->byte_len) : NULL;
-            return !s || dst->opaque.ptr != NULL;
-        }
-
         case HEAP_VECTOR:
         case HEAP_PROMISE: {
             VmVector* sv = (VmVector*)src->opaque.ptr;
@@ -969,62 +968,6 @@ static int vm_publish_object_locked(VM* main_vm, VM* worker, Value in,
             return 1;
         }
 
-        case HEAP_COMPLEX: {
-            VmComplex* src_z = (VmComplex*)src->opaque.ptr;
-            VmComplex* dst_z = src_z ? (VmComplex*)vm_alloc(&main_vm->heap.regions, sizeof(VmComplex)) : NULL;
-            if (src_z && !dst_z) return 0;
-            if (src_z) {
-                *dst_z = *src_z;
-                if (src_z->creal) { dst_z->creal = (VmDual*)vm_alloc(&main_vm->heap.regions,sizeof(VmDual)); if (!dst_z->creal) return 0; *dst_z->creal=*src_z->creal; }
-                if (src_z->cimag) { dst_z->cimag = (VmDual*)vm_alloc(&main_vm->heap.regions,sizeof(VmDual)); if (!dst_z->cimag) return 0; *dst_z->cimag=*src_z->cimag; }
-            }
-            dst->opaque.ptr = dst_z;
-            return 1;
-        }
-
-        case HEAP_RATIONAL: {
-            VmRational* src_r = (VmRational*)src->opaque.ptr;
-            VmRational* dst_r = src_r ? (VmRational*)vm_alloc(&main_vm->heap.regions, sizeof(VmRational)) : NULL;
-            if (src_r && !dst_r) return 0;
-            if (src_r) {
-                *dst_r = *src_r;
-                /* SW-18: a bignum-backed rational owns two pointers into the
-                 * SOURCE region stack.  Copying the struct alone would hand the
-                 * other VM two dangling pointers, so clone both halves the same
-                 * way HEAP_BIGNUM below does. */
-                if (src_r->is_big) {
-                    dst_r->big_num = vm_bignum_clone_to(&main_vm->heap.regions, src_r->big_num);
-                    dst_r->big_den = vm_bignum_clone_to(&main_vm->heap.regions, src_r->big_den);
-                    if (!dst_r->big_num || !dst_r->big_den) return 0;
-                }
-            }
-            dst->opaque.ptr = dst_r;
-            return 1;
-        }
-
-        case HEAP_BIGNUM:
-            dst->opaque.ptr = vm_bignum_clone_to(&main_vm->heap.regions,
-                                                 (VmBignum*)src->opaque.ptr);
-            return !src->opaque.ptr || dst->opaque.ptr != NULL;
-
-        case HEAP_DUAL: {
-            VmDual* src_d = (VmDual*)src->opaque.ptr;
-            VmDual* dst_d = vm_dual_clone_payload_to(&main_vm->heap.regions, src_d);
-            if (src_d && !dst_d) return 0;
-            dst->opaque.ptr = dst_d;
-            return 1;
-        }
-
-        case HEAP_TENSOR:
-            dst->opaque.ptr = vm_tensor_copy(&main_vm->heap.regions, (VmTensor*)src->opaque.ptr);
-            return !src->opaque.ptr || dst->opaque.ptr != NULL;
-
-        case HEAP_BYTEVECTOR: {
-            VmBytevector* bv = (VmBytevector*)src->opaque.ptr;
-            dst->opaque.ptr = bv ? vm_bv_copy(&main_vm->heap.regions, bv, 0, bv->len) : NULL;
-            return !bv || dst->opaque.ptr != NULL;
-        }
-
         case HEAP_ERROR: {
             VmError* se = (VmError*)src->opaque.ptr;
             VmError* de = se ? (VmError*)vm_alloc(&main_vm->heap.regions, sizeof(VmError)) : NULL;
@@ -1044,17 +987,16 @@ static int vm_publish_object_locked(VM* main_vm, VM* worker, Value in,
             return 1;
         }
 
-        case HEAP_HYPER_DUAL: {
-            VmHyperDual* src_h = (VmHyperDual*)src->opaque.ptr;
-            VmHyperDual* dst_h = src_h ? (VmHyperDual*)vm_alloc(&main_vm->heap.regions, sizeof(VmHyperDual)) : NULL;
-            if (src_h && !dst_h) return 0;
-            if (src_h) *dst_h = *src_h;
-            dst->opaque.ptr = dst_h;
-            return 1;
+        default: {
+            /* Everything the result can expose must be parent-owned before
+             * the worker's arena is destroyed. */
+            void* copy = NULL;
+            int copied = vm_leaf_payload_clone_to(&main_vm->heap.regions, src->type,
+                                                  src->opaque.ptr, &copy);
+            if (copied < 0) return 0;
+            dst->opaque.ptr = copy;
+            return copied;
         }
-
-        default:
-            return 0;
     }
 }
 
@@ -1102,6 +1044,7 @@ static int vm_call_closure_from_native_isolated(VM* main_vm, Value closure,
     VM* worker = (VM*)malloc(sizeof(VM));
     if (!worker) return 0;
     vm_init(worker);
+    worker->isolated_worker = 1;
     worker->code = main_vm->code;
     worker->code_len = main_vm->code_len;
     /* vm_init() only pre-sizes the constant pool to ESHKOL_VM_MAX_CONSTS
@@ -1319,6 +1262,71 @@ static Value vm_future_force(VmFuture* fut) {
     Value result = fut->result;
     pthread_mutex_unlock(&fut->mutex);
     return result;
+}
+
+/*******************************************************************************
+ * Caller-side settlement: the unwind boundary between workers and the caller
+ *
+ * One rule for every scheduler (parallel-map/filter/for-each/execute, future,
+ * force): a worker never owns control transfer. An isolated run that failed —
+ * a raise, a runtime type error, or a refused submit — is recorded as failed
+ * and nothing more; after the join the caller re-evaluates each failed task on
+ * ITS OWN interpreter, in element order. Worker-admitted closures are pure
+ * (vm_closure_is_worker_safe()), so that re-evaluation is observationally the
+ * sequential semantics: the original condition object is raised through the
+ * caller's handler chain, an outer guard or continuation resumes its owning
+ * interpreter scope through vm_run()'s native escape, and an unhandled error
+ * reports the callback's own diagnostic rather than a generic scheduler one.
+ * No longjmp ever crosses a thread.
+ ******************************************************************************/
+
+/** @brief Re-run one failed task on the caller's interpreter.
+ * @return 1 with *@p out set, 0 when the call left an unhandled error. */
+static int vm_parallel_settle_call(VM* vm, Value closure, Value* args, int argc,
+                                   Value* out) {
+    Value result = vm_call_closure_from_native(vm, closure, args, argc);
+    if (vm->error) return 0;
+    *out = result;
+    return 1;
+}
+
+/** @brief Settle every failed element task in order; 0 on an unhandled error. */
+static int vm_parmap_settle_failed(VM* vm, VmParMapTask* tasks, int n) {
+    for (int i = 0; i < n; i++) {
+        if (!tasks[i].failed) continue;
+        if (!vm_parallel_settle_call(vm, tasks[i].closure, &tasks[i].input, 1,
+                                     &tasks[i].output)) return 0;
+        tasks[i].failed = 0;
+    }
+    return 1;
+}
+
+/** @brief Settle every failed thunk task in order; 0 on an unhandled error. */
+static int vm_parthunk_settle_failed(VM* vm, VmParThunkTask* tasks, int n) {
+    for (int i = 0; i < n; i++) {
+        if (!tasks[i].failed) continue;
+        if (!vm_parallel_settle_call(vm, tasks[i].closure, NULL, 0,
+                                     &tasks[i].output)) return 0;
+        tasks[i].failed = 0;
+    }
+    return 1;
+}
+
+/** @brief Force @p fut on the caller: wait for the worker, and if its isolated
+ *         run failed, evaluate the thunk here and memoize the value.
+ * @return 1 with *@p out set, 0 when the thunk left an unhandled error. */
+static int vm_future_force_on_caller(VM* vm, VmFuture* fut, Value* out) {
+    Value result = vm_future_force(fut);
+    if (!fut || !fut->failed) { *out = result; return 1; }
+    if (fut->thunk_or_value.type != VAL_CLOSURE) {
+        *out = fut->thunk_or_value;
+        return 1;
+    }
+    if (!vm_parallel_settle_call(vm, fut->thunk_or_value, NULL, 0, &result))
+        return 0;
+    vm_future_mark_ready(fut, result, 0);
+    *out = result;
+    return 1;
 }
 
 /*******************************************************************************

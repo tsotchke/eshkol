@@ -355,7 +355,7 @@ void vm_run(VM* vm) {
     /* --- Function call --- */
 
     lbl_CALL: {
-        if (vm_enter_call(vm, instr.operand, vm->pc) < 0) goto vm_exit;
+        if (vm_enter_call(vm, instr.operand, vm->pc) < 0 && vm->error) goto vm_exit;
         DISPATCH();
     }
 
@@ -400,11 +400,16 @@ void vm_run(VM* vm) {
                 DISPATCH();
             }
         }
-        if (func.type != VAL_CLOSURE) { vm->error = 1; goto vm_exit; }
+        if (func.type != VAL_CLOSURE) {
+            vm_raise_error_msg(vm, "Type error in apply: expected procedure");
+            if (vm->error) goto vm_exit;
+            DISPATCH();
+        }
         HeapObject* cl = vm->heap.objects[func.as.ptr];
-        if (!vm_check_closure_arity(vm, cl, argc)) goto vm_exit;
-
-        if (!vm_validate_closure_arity(vm, cl, argc)) goto vm_exit;
+        if (!vm_check_closure_arity(vm, cl, argc)) {
+            if (vm->error) goto vm_exit;
+            DISPATCH();   /* a handler took the arity condition */
+        }
 
         if (vm_tail_call_from_exception_handler(vm, argc, &func)) {
             cl = vm->heap.objects[func.as.ptr];
@@ -531,7 +536,10 @@ void vm_run(VM* vm) {
         Value proc = vm_pop(vm);
         if (proc.type != VAL_CLOSURE) { vm_push(vm, NIL_VAL); DISPATCH(); }
         HeapObject* proc_closure = vm->heap.objects[proc.as.ptr];
-        if (!vm_check_closure_arity(vm, proc_closure, 1)) goto vm_exit;
+        if (!vm_check_closure_arity(vm, proc_closure, 1)) {
+            if (vm->error) goto vm_exit;
+            DISPATCH();
+        }
         /* Validate bounds before capture */
         if (vm->sp > STACK_SIZE || vm->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
         int32_t cont_ptr = heap_alloc(&vm->heap);
@@ -589,6 +597,16 @@ void vm_run(VM* vm) {
     lbl_PACK_REST: {
         int n_fixed = instr.operand;
         int n_args = vm->sp - vm->fp;
+        if (n_args < n_fixed) {
+            /* A variadic procedure's fixed part is its minimum (SW-217). */
+            char msg[192];
+            snprintf(msg, sizeof(msg), ESHKOL_ARITY_MISMATCH_PREFIX
+                     "<procedure> expects at least %d argument%s but got %d",
+                     n_fixed, n_fixed == 1 ? "" : "s", n_args);
+            vm_raise_error_msg(vm, msg);
+            if (vm->error) goto vm_exit;
+            DISPATCH();
+        }
         Value list = NIL_VAL;
         for (int i = n_args - 1; i >= n_fixed; i--) {
             Value item = vm->stack[vm->fp + i];
@@ -810,11 +828,12 @@ vm_exit:
                 }
                 break;
             }
-            if (func.type != VAL_CLOSURE) { vm->error = 1; break; }
+            if (func.type != VAL_CLOSURE) {
+                vm_raise_error_msg(vm, "Type error in apply: expected procedure");
+                break;
+            }
             HeapObject* cl = vm->heap.objects[func.as.ptr];
             if (!vm_check_closure_arity(vm, cl, argc)) break;
-
-            if (!vm_validate_closure_arity(vm, cl, argc)) break;
 
             if (vm_tail_call_from_exception_handler(vm, argc, &func)) {
                 cl = vm->heap.objects[func.as.ptr];
@@ -972,6 +991,14 @@ vm_exit:
         case OP_PACK_REST: {
             int n_fixed = instr.operand;
             int n_args = vm->sp - vm->fp;
+            if (n_args < n_fixed) {
+                char msg[192];
+                snprintf(msg, sizeof(msg), ESHKOL_ARITY_MISMATCH_PREFIX
+                         "<procedure> expects at least %d argument%s but got %d",
+                         n_fixed, n_fixed == 1 ? "" : "s", n_args);
+                vm_raise_error_msg(vm, msg);
+                break;
+            }
             Value list = NIL_VAL;
             for (int i = n_args - 1; i >= n_fixed; i--) {
                 Value item = vm->stack[vm->fp + i];

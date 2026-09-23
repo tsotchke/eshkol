@@ -8563,6 +8563,8 @@ static void vm_dispatch_exception(VM* vm, Value exn) {
         }
         vm->handler_call_pending = 1;
         vm_escape_native_control(vm);
+    } else if (vm->isolated_worker) {
+        vm->error = 1;   /* settled by the caller; see VM.isolated_worker */
     } else {
         /* Report the condition on stderr ONLY, and report what it actually says.
          * print_value() writes to stdout and renders every error object as the
@@ -15065,15 +15067,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                         tasks[i].failed = 1;
                 }
                 vm_pool_wait_all(pool);
-                int worker_failed = 0;
-                for (int i = 0; i < n; i++) {
-                    worker_failed |= tasks[i].failed;
-                    results[i] = tasks[i].output;
-                }
-                if (worker_failed) {
-                    vm_raise_error_msg(vm, "parallel-map: worker closure failed");
-                    break;
-                }
+                if (!vm_parmap_settle_failed(vm, tasks, n)) break;
+                for (int i = 0; i < n; i++) results[i] = tasks[i].output;
             } else {
                 /* Fallback: sequential */
                 for (int i = 0; i < n; i++) {
@@ -15136,15 +15131,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     if (vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL) != 0)
                         tasks[i].failed = 1;
                 vm_pool_wait_all(pool);
-                int worker_failed = 0;
-                for (int i = 0; i < n; i++) {
-                    worker_failed |= tasks[i].failed;
-                    preds[i] = tasks[i].output;
-                }
-                if (worker_failed) {
-                    vm_raise_error_msg(vm, "parallel-filter: worker closure failed");
-                    break;
-                }
+                if (!vm_parmap_settle_failed(vm, tasks, n)) break;
+                for (int i = 0; i < n; i++) preds[i] = tasks[i].output;
             } else {
                 for (int i = 0; i < n; i++)
                     preds[i] = vm_call_closure_from_native(vm, pred, &elems[i], 1);
@@ -15216,12 +15204,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     if (vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL) != 0)
                         tasks[i].failed = 1;
                 vm_pool_wait_all(pool);
-                int worker_failed = 0;
-                for (int i = 0; i < n; i++) worker_failed |= tasks[i].failed;
-                if (worker_failed) {
-                    vm_raise_error_msg(vm, "parallel-for-each: worker closure failed");
-                    break;
-                }
+                if (!vm_parmap_settle_failed(vm, tasks, n)) break;
             } else {
                 for (int i = 0; i < n; i++)
                     vm_call_closure_from_native(vm, fn, &elems[i], 1);
@@ -15282,15 +15265,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     if (vm_pool_submit(pool, vm_parthunk_task_fn, &tasks[i], NULL) != 0)
                         tasks[i].failed = 1;
                 vm_pool_wait_all(pool);
-                int worker_failed = 0;
-                for (int i = 0; i < n; i++) {
-                    worker_failed |= tasks[i].failed;
-                    results[i] = tasks[i].output;
-                }
-                if (worker_failed) {
-                    vm_raise_error_msg(vm, "parallel-execute: worker closure failed");
-                    break;
-                }
+                if (!vm_parthunk_settle_failed(vm, tasks, n)) break;
+                for (int i = 0; i < n; i++) results[i] = tasks[i].output;
             } else {
                 for (int i = 0; i < n; i++)
                     results[i] = vm_call_closure_from_native(vm, closures[i], NULL, 0);
@@ -15356,12 +15332,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (fut.type == VAL_FUTURE && fut.as.ptr >= 0 && fut.as.ptr < vm->heap.next_free &&
             vm->heap.objects[fut.as.ptr]->type == HEAP_FUTURE) {
             VmFuture* handle = (VmFuture*)vm->heap.objects[fut.as.ptr]->opaque.ptr;
-            Value result = vm_future_force(handle);
-            if (handle->failed) {
-                vm_raise_error_msg(vm, "force-future: worker closure failed");
-                break;
-            }
-            vm_push(vm, result);
+            Value result;
+            if (vm_future_force_on_caller(vm, handle, &result)) vm_push(vm, result);
             break;
         }
 #endif
@@ -16921,11 +16893,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
             promise.as.ptr < vm->heap.next_free &&
             vm->heap.objects[promise.as.ptr]->type == HEAP_FUTURE) {
             VmFuture* handle = (VmFuture*)vm->heap.objects[promise.as.ptr]->opaque.ptr;
-            Value result = vm_future_force(handle);
-            if (handle->failed)
-                vm_raise_error_msg(vm, "force: worker closure failed");
-            else
-                vm_push(vm, result);
+            Value result;
+            if (vm_future_force_on_caller(vm, handle, &result)) vm_push(vm, result);
             break;
         }
 #endif
