@@ -43,8 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reduce the whole tensor to a number, as on native (SW-202). The VM used to
   answer `#(0.75)` for `(tensor-sum (tensor 0.5 0.25))` and per-row sums for a
   matrix, because "no axis" and "last axis" were both -1; `gpu-reduce` had the
-  same problem. VM max/min now start from the infinities, so the max of an
-  all `-inf.0` tensor is `-inf.0`, not `-1.797e308`.
+  same problem.
+
+- VM max/min reductions now start from the infinities, so the max of an all
+  `-inf.0` tensor is `-inf.0`, as on native and on the GPU path, not
+  `-1.797e308` (SW-246).
 
 - The VM's GPU reduction path read an axis of -1 as "all axes" while its CPU
   path reads the last axis, so a matrix reduction changed answer at the GPU
