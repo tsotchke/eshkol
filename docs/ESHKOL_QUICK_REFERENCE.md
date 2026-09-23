@@ -1,6 +1,6 @@
 # Eshkol Quick Reference Card
 
-**v1.3.5** -- 1,056 built-in functions
+**1,056 built-in functions**
 
 ## Basics
 
@@ -12,6 +12,9 @@
 ;; Functions
 (define (square x) (* x x))
 (define (add a b) (+ a b))
+
+;; Top-level begin splices definitions into the program
+(begin (define answer 42) (define doubled (* answer 2)))
 
 ;; Lambdas
 (lambda (x) (* x 2))
@@ -103,6 +106,11 @@
 (string-append s1 s2 ...)        ;; concatenate
 (string->number "999999999999999999999")  ;; -> bignum
 (number->string n)
+;; The source reader, read, and string->number share the R7RS number grammar.
+(string->number "1+2i")        ;; rectangular complex
+(string->number "#e1.5")       ;; -> 3/2
+(string->number "#xFF")        ;; -> 255
+1+0i                            ;; -> exact integer 1
 ```
 
 ## Higher-Order Functions
@@ -125,10 +133,10 @@
 
 ;; apply: leading fixed args before the final list argument
 (apply + '(1 2 3))              ;; -> 6
-(apply + 1 2 '(3 4 5))          ;; -> 15 (leading args consed onto the list;
-                                ;;    NATIVE ONLY — the bytecode VM rejects the
-                                ;;    leading-args form for any operator)
+(apply + 1 2 '(3 4 5))          ;; -> 15 (leading args precede the final list)
 (apply vector-copy (list (vector 7 8 9)))  ;; -> #(7 8 9)  (builtins are values)
+(define sum +)
+(apply sum '(1 2 3))           ;; -> 6 (variadic builtin used as a value)
 ```
 
 ## Vectors & Tensors
@@ -206,6 +214,7 @@ for the full walkthrough.
 (derivative-n f x k)              ;; the k-th derivative f^(k)(x), any order
                                    ;; exact (bignum/rational) when x is exact
                                    ;; and f uses only +,-,*,/,non-negative expt
+;; Derivative passes can nest at arbitrary depth, subject to available memory.
 
 (require core.ad.guw)
 (mixed-partial f xs idxs)         ;; e.g. (mixed-partial f xs '(0 1 1)) = d^3f/dx0dx1^2
@@ -255,7 +264,7 @@ for the full walkthrough.
 (number->string (expt 2 128))
 (string->number "999999999999999999999")  ;; -> bignum
 
-;; Exact roots and exact expt (v1.3.5)
+;; Exact roots and exact expt
 (sqrt 4/9)                 ;; -> 2/3   exact
 (sqrt 16)                  ;; -> 4     exact
 (expt 8 1/3)               ;; -> 2     exact rational exponent, exact root
@@ -263,7 +272,7 @@ for the full walkthrough.
 (expt 1/3 50)              ;; -> 1/717897987691852588770249
 (sqrt 2)                   ;; -> 1.4142135623730951  (no exact root)
 
-;; Exact values survive literals, quotes and vectors (v1.3.5)
+;; Exact values survive literals, quotes and vectors
 #(1/2 3 1.5 123456789012345678901234567890)
 '123456789012345678901234567890          ;; exact, quoted or evaluated
 `(x ,(/ 1 3))                            ;; -> (x 1/3)
@@ -271,7 +280,7 @@ for the full walkthrough.
                                          ;;    tensors are dense f64 by
                                          ;;    construction; #(...) stays exact
 
-;; Exactness through differentiation follows the RUNTIME value (v1.3.5)
+;; Exactness through differentiation follows the runtime value
 (derivative (lambda (x) (* x x)) 1/3)    ;; -> 2/3   exact
 ```
 
@@ -336,6 +345,17 @@ Everything above answers identically on the native engine and the bytecode VM.
 (guard (e (#t (list (error-object-message e) (error-object-irritants e))))
   (error "boom" 1 2))       ;; -> ("boom" (1 2))
 (error-object? e)           ;; -> #t for an (error ...)-raised condition
+
+;; Standard ports are parameters; implicit I/O follows their current binding.
+(define out (open-output-string))
+(parameterize ((current-output-port out)) (display "ok"))
+(get-output-string out)     ;; -> "ok"
+
+;; Record predicates distinguish types and reject ordinary vectors.
+(define-record-type point
+  (make-point x y) point?
+  (x point-x) (y point-y))
+(point? (make-point 1 2))   ;; -> #t
 
 ;; Multiple values
 (values 1 2 3)              ;; return multiple values

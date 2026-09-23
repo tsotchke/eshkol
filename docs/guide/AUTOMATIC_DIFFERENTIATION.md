@@ -1,6 +1,6 @@
 # Automatic Differentiation in Eshkol
 
-*A user guide to the v1.3.5-evolve Taylor-tower AD system.*
+*A user guide to Taylor-tower automatic differentiation.*
 
 Eshkol differentiates programs, not just formulas. `derivative`, `gradient`,
 `jacobian` and friends are **compiler primitives** — you write ordinary Scheme
@@ -541,9 +541,9 @@ Output:
 
 `g(v)` is the 3rd `t`-derivative of `sin(v·t)`, which analytically is
 `−v³cos(v·t)`; at v=0.6, t=0.4 that is `−0.209809`. Wrapping it in `gradient`
-differentiates *that* with respect to `v`, giving `−1.02851`. Before v1.3 this
-returned a flat 0 (the reverse tape "swallowed" the tower); the seed-tangent
-dual tower fixes it. This is exact, not finite-difference.
+differentiates *that* with respect to `v`, giving `−1.02851`. The seed-tangent
+dual tower retains the dependence through the reverse pass. This is exact,
+not finite-difference.
 
 ### Checkpointed reverse for deep graphs
 
@@ -822,12 +822,10 @@ output ones — Cauchy convolution for multiplication, coupled recurrences for
 `sin`/`cos`, divided recurrences for `/` and `log`, and so on. Because these
 recurrences are O(K²), high-order AD is *polynomial* in the order, not the 2ᴷ
 blow-up of stacking dual numbers. When the order `K` is a literal at the call
-site (the common case in a compiler), the entire tower is emitted as unrolled,
-stack-allocated, branch-free IR — no heap allocation in the AD hot loop. Each
-active differentiation context carries a distinct **epoch tag** in the tower's
-header so nested derivatives never cross-contaminate. Order ≤ 2 keeps the
-existing fast 4-component jet byte-for-byte; the tower only appears when order
-≥ 3 is requested.
+site (the common case in a compiler), an un-nested tower can be emitted as
+unrolled, stack-allocated IR. A nested pass uses a recursive level carrier;
+each level has its own **epoch tag**, and its coefficients can themselves carry
+enclosing levels. Un-nested first-order passes retain the fast jet path.
 
 For the full design — the recurrence table, the compile-time monomorphization,
 the FP-contraction policy that makes `mono ≡ runtime` bit-exact, the exact and
@@ -907,19 +905,15 @@ top-level constant referenced instead of inlined, a point built from `(car …)`
 differentiand given as a bare lambda, a variable, a function-call expression
 that computes a closure (`(derivative (mk 3) x)`), a let-bound closure, or a
 composition (`(derivative (compose f g) x)`) are all exactly as exact as the
-same computation inlined by hand. The exact route still defers to the
-(unchanged) jet path when the function cannot be resolved to a callable at
-all, or when another differentiation is already live — including a nested
-differentiation. Nesting is free of perturbation confusion on every operator
-pairing, and composes up to the carrier ceiling described in section 11. Where
-two passes land on the first-order companion series — a companion of doubles —
-an exact seed keeps its *value* through the nested pass but spends its
-exactness; where the composition stays on the exact tier (a first-order pass
-over `derivative-n`, for one) the answer comes back exact. A body that only calls other top-level
+same computation inlined by hand. The exact route defers to the unchanged jet
+path when the function cannot be resolved to a callable. When another
+differentiation is live, the nested pass uses a recursive level carrier whose
+coefficients retain enclosing perturbations and exact values. Depth and order
+are limited by available memory. A body that only calls other top-level
 definitions is accepted: `(derivative (lambda (s) (h 1/5 s)) 1/3)` where
 `(define (h a b) (* a b b))` is exactly `2/15`, the same answer
-`(derivative-n … 1)` gives. Vector-point `gradient`/`hessian` and the
-remaining operators need one tower pass per component and are build items. See
+`(derivative-n … 1)` gives. Vector-point operators seed a pass for each
+component. See
 [../reference/ad/operators.md](../reference/ad/operators.md#exact-vs-inexact-seeds)
 for the per-point-form detail, including why `(tensor 1/3)` cannot express an
 exact seed (its storage is homogeneous `double`) while `#(1/3)` now does.
