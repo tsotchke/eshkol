@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2526/5428 public symbols documented (46.5%), 2902 undocumented.
+**Coverage:** 2534/5438 public symbols documented (46.6%), 2904 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -43,7 +43,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1311/3029 symbols documented.
+1312/3030 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -79,7 +79,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/qllm_backward.h`](backend/qllm_backward.md) | 9 | 0 |
 | [`backend/riemannian_core.h`](backend/riemannian_core.md) | 87 | 26 |
 | [`backend/static_callee_binding.h`](backend/static_callee_binding.md) | 13 | 7 |
-| [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 74 | 56 |
+| [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 75 | 57 |
 | [`backend/system_codegen.h`](backend/system_codegen.md) | 277 | 265 |
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 57 | 49 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
@@ -157,7 +157,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `frontend/`
 
-74/247 symbols documented.
+81/256 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -167,8 +167,9 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`frontend/macro_expander.h`](frontend/macro_expander.md) | 33 | 18 |
 | [`frontend/node_identity.h`](frontend/node_identity.md) | 14 | 14 |
 | [`frontend/semantic_identity.h`](frontend/semantic_identity.md) | 75 | 0 |
+| [`frontend/shadowable_ops.h`](frontend/shadowable_ops.md) | 1 | 0 |
 | [`frontend/source_paths.h`](frontend/source_paths.md) | 2 | 2 |
-| [`frontend/syntax_color.h`](frontend/syntax_color.md) | 8 | 8 |
+| [`frontend/syntax_color.h`](frontend/syntax_color.md) | 16 | 15 |
 | [`frontend/syntax_datum.h`](frontend/syntax_datum.md) | 33 | 15 |
 | [`frontend/syntax_rules.h`](frontend/syntax_rules.md) | 2 | 2 |
 | [`frontend/syntax_rules_core.h`](frontend/syntax_rules_core.md) | 34 | 4 |

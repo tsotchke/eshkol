@@ -1,0 +1,31 @@
+id: SW-246
+bucket: SILENT-WRONG
+family: vm/tensor-reduction-identity
+status: fixed
+closed_at: "72a41917f"
+needs_decision: false
+title: "VM max/min reductions started from -DBL_MAX/DBL_MAX, so an all-infinite tensor reduced to a finite number"
+repro: >-
+  (display (tensor-max (tensor -inf.0 -inf.0))) and
+  (display (tensor-min (tensor +inf.0))) on the bytecode VM
+  (eshkol-vm-standalone-test) and the browser VM, against the native JIT.
+observed: >-
+  The VM printed -1.7976931348623157e+308 and 1.7976931348623157e+308;
+  native prints -inf.0 and +inf.0, and so does the VM's WebGPU reduction
+  path, so the VM's answer also changed at the GPU threshold. Both the full
+  reduction (vm_tensor_reduce_all) and the axis reduction (vm_tensor_reduce)
+  seeded max/min with the largest finite double.
+correct: >-
+  Max starts from -infinity and min from +infinity, so a reduction over
+  infinite elements returns the infinity, on every engine and on both sides
+  of the GPU threshold.
+evidence: >-
+  Fixed in 72a41917f (lib/backend/vm_tensor_ops.c). Gate:
+  tests/tensor/tensor_full_reduction_test.esk ("tensor-max of -inf",
+  "tensor-min of +inf", "tensor-max axis of -inf") on the native JIT, the
+  bytecode VM and the browser VM bundle.
+caught_by: [webgpu-vm-lane-review]
+missed_by: [vm_parity]
+notes: >-
+  Found while porting SW-202 to master for the browser-VM WebGPU lane. Still
+  present on the release integration branch.

@@ -11778,8 +11778,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, vm_make_taylor_val(vm, acc));
             break;
         }
+        static const int gpu_reduce_ops[] = {0, 4, 3, 2}; /* sum=0, mean=4, max=3, min=2 */
         if (full) {
-            static const int gpu_reduce_ops[] = {0, 4, 3, 2}; /* sum=0, mean=4, max=3, min=2 */
             static const VmReduceOp cpu_reduce_ops[] = {VM_REDUCE_SUM, VM_REDUCE_MEAN,
                                                         VM_REDUCE_MAX, VM_REDUCE_MIN};
             double r = vm_gpu_try_reduce(t, gpu_reduce_ops[fid - 457]);
@@ -11787,8 +11787,31 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, FLOAT_VAL(r));
             break;
         }
+        /* SW-243: an explicit axis goes to the GPU only when that axis covers
+         * every element (every other extent is 1), so the GPU never changes
+         * which reduction is computed. The GPU path used to treat axis -1 as
+         * "all axes" while vm_tensor_reduce reads it as the last axis. */
         VmTensor* out = NULL;
-        switch (fid) {
+        int covers_all = 1;
+        for (int d = 0; covers_all && d < t->n_dims; d++)
+            if (d != axis && t->shape[d] != 1) covers_all = 0;
+        if (covers_all) {
+            double gpu_result = vm_gpu_try_reduce(t, gpu_reduce_ops[fid - 457]);
+            if (!isnan(gpu_result)) {
+                /* Same shape as vm_tensor_reduce: the axis removed, or [1]. */
+                int64_t shape[16];
+                int rank = 0;
+                for (int d = 0; d < t->n_dims && rank < 16; d++)
+                    if (d != axis) shape[rank++] = t->shape[d];
+                if (rank == 0) shape[rank++] = 1;
+                out = (t->n_dims <= 17) ? vm_tensor_zeros(&vm->heap.regions, shape, rank) : NULL;
+                if (out) {
+                    out->data[0] = gpu_result;
+                    out->dtype = t->dtype;
+                }
+            }
+        }
+        if (!out) switch (fid) {
             case 457: out = vm_tensor_sum(&vm->heap.regions, t, axis); break;
             case 458: out = vm_tensor_mean(&vm->heap.regions, t, axis); break;
             case 459: out = vm_tensor_max(&vm->heap.regions, t, axis); break;

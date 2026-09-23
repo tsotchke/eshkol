@@ -36,13 +36,145 @@ if the chosen backend fails, execution falls through to the next-best option.
 | `lib/backend/blas_backend.cpp` | 1,316 | Cost model, dispatch, SIMD/BLAS |
 | `lib/backend/gpu/gpu_memory.mm` | 4,485 | Metal compute pipeline (Obj-C++) |
 | `lib/backend/gpu/metal_softfloat.h` | 4,469 | SF64 IEEE 754 f64 emulation (MSL) |
-| `lib/backend/gpu/gpu_memory_cuda.cpp` | 1,576 | CUDA backend (cuBLAS + kernels) |
+| `lib/backend/gpu/gpu_memory_cuda.cpp` | 1,577 | CUDA backend (cuBLAS + kernels) |
 | `lib/backend/gpu/gpu_cuda_kernels.cu` | 800 | CUDA kernel implementations |
-| `lib/backend/gpu/gpu_memory_stub.cpp` | 449 | No-op stub for platforms without GPU |
+| `lib/backend/gpu/gpu_memory_stub.cpp` | 450 | No-op stub for platforms without GPU |
+| `lib/backend/gpu/gpu_memory_webgpu.cpp` | wasm target | WebGPU C seam and CPU fallback |
+| `web/eshkol-webgpu.js` | browser | WebGPU backend: WGSL sf64/f32 kernels, dispatch imports, CPU reference (mirrored to `site/static/`) |
 
 Build-time flags select the backend: `ESHKOL_GPU_METAL_ENABLED` (macOS),
-`ESHKOL_GPU_CUDA_ENABLED` (Linux/Windows), or the stub (no GPU). The stub logs
+`ESHKOL_GPU_CUDA_ENABLED` (Linux/Windows), `ESHKOL_GPU_WEBGPU_ENABLED`
+(Emscripten/wasm), or the stub (no GPU). The stub logs
 actionable errors via `eshkol_error()` (`gpu_memory_stub.cpp`).
+
+### WebGPU (browser)
+
+WebGPU is part of the same `eshkol_gpu_*` and `eshkol_matmul_dispatch` seam as
+Metal and CUDA. Generated code calls the same symbols on every target; in the
+browser they are provided by `web/eshkol-webgpu.js`, which both WASM loaders
+(`web/eshkol-repl.js`, `site/static/eshkol-runtime.js`) install as env imports.
+Emscripten builds, including the browser bytecode VM, link
+`gpu_memory_webgpu.cpp`, whose bridge imports `EshkolWebGPU.attachVm()` connects
+to the same backend object, so there is one set of kernels and one dispatch
+policy (see "The browser VM" below and ADR-0029).
+
+WebGPU readback is asynchronous and Eshkol code is synchronous. The loaders
+bridge the two with JSPI: the GPU imports are `WebAssembly.Suspending` and the
+module exports are wrapped with `WebAssembly.promising`, so a compiled program
+blocks on the GPU at exactly one point, the buffer readback.
+
+**Precision.** WGSL has no f64 type. The f64 entry points run **sf64**: IEEE 754
+binary64 arithmetic carried out on the integer bit pattern (`vec2<u32>`), the
+WGSL counterpart of `metal_softfloat.h`. Integer arithmetic cannot be
+reassociated by a shader compiler, so the result does not depend on the
+driver's floating-point optimizations. Operands are uploaded as raw f64 bits.
+
+| Tier | WebGPU kernels | Result |
+|---|---|---|
+| `exact` (default) | sf64 | Correctly rounded add/sub/mul/div (round-to-nearest-even, subnormals, signed zeros, infinities, NaN). Matmul and elementwise results are bit-identical to the CPU path; reductions differ only by block reassociation |
+| `high` | sf64 (same kernels) | Meets the `high` contract with the exact kernels |
+| `fast` | f32 | Only with an explicit `precision: "fast"` and `gateTolerance >= 1e-6`; otherwise refused |
+
+`eshkol_gpu_has_fp64()` reports 1 on the `exact`/`high` tiers (as on Metal,
+whose f64 is also emulated) and `eshkol_gpu_supports_f64()` reports 0 (no
+hardware f64).
+
+**Operations.** sf64 kernels cover matmul, elementwise add/sub/mul/div/neg/abs/
+relu/reciprocal, and sum/prod/min/max/mean reductions. Transcendental
+elementwise ops (exp, log, sin, cos, tanh, sigmoid, sqrt), batched matmul,
+transpose, softmax, normalization and backward kernels have no sf64 kernel;
+the dispatch refuses them and runs the CPU path.
+
+**Fallback is explicit.** When `navigator.gpu`, an adapter, a device or JSPI
+is missing, `initWebGPU()` resolves to `{ ok: false, reason }` and
+`eshkol_gpu_get_backend()` reports `ESHKOL_GPU_NONE`; the program runs on the
+CPU with identical results. With a device present, every call the GPU does not
+serve increments `backend.fallbackCount` and records the reason in
+`backend.diagnostics`; every call it does serve increments
+`backend.dispatchCount` and sets `backend.lastPath` (for example
+`webgpu:gemm_sf64`).
+
+**Correctness gate.** `scripts/lib/webgpu_diff_runner.mjs` drives Chrome
+(Playwright, `channel: 'chrome'`) and compares every kernel with the CPU
+reference over data in a real `WebAssembly.Memory`: matmul shapes that are not
+multiples of the tile, each elementwise op on random values, on uniformly
+random f64 bit patterns and on an edge-value matrix, and each reduction. The
+exact tier must match bit for bit (reductions within `GPU_GATE_TOL`, default
+`1e-9`), a run with zero GPU dispatches fails, and `--corrupt=<kernel>`
+(gemm, elem, reduce, round, sticky) proves the gate goes red on a broken kernel.
+`tests/webgpu/webgpu_live_test.mjs` checks device limits, dispatch tiling and
+JSPI suspension in Chrome; `tests/webgpu/webgpu_regressions_test.mjs` checks the
+tier and fallback contracts without a browser.
+
+### The browser VM
+
+The bytecode VM's tensor natives (`vm_gpu_dispatch.h`) call the same seam, and
+their size test is the backend's `eshkol_gpu_should_use()`. The WASM VM build
+(`scripts/build-wasm-repl.sh`, flags in `scripts/lib/wasm_vm_sources.sh`) links
+`gpu_memory_webgpu.cpp` with `ESHKOL_GPU_ENABLED`. `EshkolWebGPU.attachVm()`
+replaces its three compute imports with JSPI-suspending bridges and makes
+`repl_eval`/`run_program` promising, only when the browser has JSPI and a
+device. The VM is built with native wasm exceptions
+(`-fwasm-exceptions -sSUPPORT_LONGJMP=wasm`), because JSPI cannot suspend
+across the JavaScript `invoke_*` frames Emscripten otherwise uses for
+`setjmp`/`longjmp`.
+
+On the GPU in the VM: `matmul`, `tensor-add`/`-sub`/`-mul`/`-div` on
+same-shape operands, and full `tensor-sum`/`-mean`/`-max`/`-min`. Softmax,
+transpose, axis reductions and normalisation have no WebGPU kernel; when the
+dispatch selects them they run on the CPU and are counted in `fallbackCount`
+with a reason in `diagnostics`. `tests/webgpu/webgpu_vm_test.mjs` gates this
+path in Chrome against an unattached run of the same bundle.
+
+### Enabling WebGPU in a page
+
+Load the backend before the runtime and acquire the device before the WASM
+module is instantiated:
+
+```html
+<script src="eshkol-webgpu.js"></script>
+<script src="eshkol-runtime.js"></script>
+<script>
+(async () => {
+  const runtime = new EshkolRuntime();
+  const gpu = await runtime.initWebGPU();   // optional: { threshold, precision }
+  if (!gpu.ok) console.info('Eshkol GPU: CPU path -', gpu.reason);
+  const { instance } = await WebAssembly.instantiate(
+      await (await fetch('program.wasm')).arrayBuffer(), runtime.createImports());
+  const program = runtime.wrapInstance(instance);   // JSPI-promising exports
+  runtime.setInstance(program);
+  await program.exports.main();                     // exports return promises
+})();
+</script>
+```
+
+- WebGPU needs a secure context (`https:` or `http://localhost`).
+- `threshold` is the element count at which the GPU is used (default 100000,
+  the native default); `precision` is `exact` (default), `high`, or `fast`
+  (with `gateTolerance`).
+- After a run, `runtime.webgpuBackend` exposes `dispatchCount`,
+  `fallbackCount`, `lastPath` and `diagnostics`.
+- `EshkolRepl` in `web/eshkol-repl.js` has the same `initWebGPU()`; its
+  `instantiate()` calls it automatically when `eshkol-webgpu.js` is loaded.
+
+For the bytecode VM, attach it to the same backend and call it through
+`vmCall` (evaluations may suspend, so they are asynchronous and serialised):
+
+```html
+<script src="eshkol-webgpu.js"></script>
+<script src="eshkol-vm.js"></script>
+<script>
+(async () => {
+  const gpu = await EshkolWebGPU.create();          // or runtime.webgpuBackend
+  const arg = { print: (t) => console.log(t) };
+  EshkolWebGPU.attachVm(arg, gpu.ok ? gpu.backend : null);
+  if (!arg.eshkolWebGPUStatus.ok) console.info('VM GPU: CPU path -', arg.eshkolWebGPUStatus.reason);
+  const vm = await EshkolVM(arg);
+  vm.ccall('repl_init', null, [], []);
+  await EshkolWebGPU.vmCall(vm, 'repl_eval', '(display (tensor-sum (matmul A B)))');
+})();
+</script>
+```
 
 ---
 
@@ -978,7 +1110,7 @@ are then set to `nil` in order.
 
 ### Implementation Scope
 
-The CUDA backend (`lib/backend/gpu/gpu_memory_cuda.cpp`, 1,576 lines) is a
+The CUDA backend (`lib/backend/gpu/gpu_memory_cuda.cpp`, 1,577 lines) is a
 fully functional GPU acceleration path for NVIDIA hardware. Unlike the Metal
 backend which requires SF64 software emulation, CUDA provides native f64
 hardware, so no precision emulation is needed.
@@ -1069,7 +1201,7 @@ Metal and CUDA coexist via compile-time guards and runtime detection:
   `ESHKOL_GPU_CUDA_ENABLED` (Linux/Windows builds) are set by CMake.
   `gpu_memory.mm` is compiled as Objective-C++ on macOS;
   `gpu_memory_cuda.cpp` is compiled as standard C++ on Linux/Windows.
-  A stub file (`gpu_memory_stub.cpp`, 449 lines) provides no-op
+  A stub file (`gpu_memory_stub.cpp`, 450 lines) provides no-op
   implementations when neither backend is available.
 
 - **Runtime**: `eshkol_gpu_init` (`gpu_memory_cuda.cpp`) tries CUDA

@@ -7,8 +7,10 @@
  * and returns the result tensor on success, or NULL to fall through
  * to the CPU path.
  *
- * On platforms without GPU (WASM, Linux without NVIDIA), all try_*
- * functions return NULL — zero overhead, pure CPU fallback.
+ * The dispatch decision is the backend's own eshkol_gpu_should_use(), the
+ * same selector the compiled path uses (Metal, CUDA, or WebGPU in the wasm
+ * VM build -- see docs/design/adr/0029-browser-vm-webgpu-dispatch.md). Builds
+ * without ESHKOL_GPU_ENABLED compile every try_* to NULL: pure CPU.
  *
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
@@ -26,10 +28,9 @@ extern int  eshkol_gpu_should_use(size_t num_elements);
 typedef struct {
     int initialized;
     int gpu_available;
-    size_t threshold;
 } VmGpuState;
 
-static VmGpuState g_vm_gpu = { 0, 0, 100000 };
+static VmGpuState g_vm_gpu = { 0, 0 };
 
 static inline void vm_gpu_ensure_init(void) {
     if (!g_vm_gpu.initialized) {
@@ -43,10 +44,16 @@ static inline void vm_gpu_ensure_init(void) {
     }
 }
 
+/* One selector: the backend's threshold (ESHKOL_GPU_THRESHOLD, default
+ * 100000) and admission rules, not a VM-private copy of them. */
 static inline int vm_gpu_should_dispatch(int64_t total_elements) {
     vm_gpu_ensure_init();
-    if (!g_vm_gpu.gpu_available) return 0;
-    return (size_t)total_elements >= g_vm_gpu.threshold;
+    if (!g_vm_gpu.gpu_available || total_elements <= 0) return 0;
+#if defined(ESHKOL_GPU_ENABLED)
+    return eshkol_gpu_should_use((size_t)total_elements);
+#else
+    return 0;
+#endif
 }
 
 /* GPU-accelerated matmul — returns result tensor or NULL (fall to CPU) */
@@ -61,9 +68,10 @@ typedef struct { void* host; void* dev; size_t size; int mem; int be; uint32_t f
 
 static inline VmTensor* vm_gpu_try_matmul(VmRegionStack* rs,
                                             const VmTensor* a, const VmTensor* b) {
-    if (!vm_gpu_should_dispatch(a->total * b->total)) return NULL;
     if (a->n_dims != 2 || b->n_dims != 2) return NULL;
     if (a->shape[1] != b->shape[0]) return NULL;
+    /* Same size measure as eshkol_matmul_dispatch: output elements. */
+    if (!vm_gpu_should_dispatch(a->shape[0] * b->shape[1])) return NULL;
 
     int64_t M = a->shape[0], K = a->shape[1], N = b->shape[1];
     int64_t out_shape[2] = { M, N };
@@ -90,7 +98,11 @@ extern int eshkol_gpu_elementwise_f64(void* a, void* b, void* out, uint64_t n, i
 static inline VmTensor* vm_gpu_try_binary(VmRegionStack* rs,
                                             const VmTensor* a, const VmTensor* b, int gpu_op) {
     if (!vm_gpu_should_dispatch(a->total)) return NULL;
-    if (a->total != b->total) return NULL; /* No broadcast on GPU */
+    /* No broadcast on GPU: the operands must have the same shape, not only
+     * the same element count ([6] + [1,6] broadcasts to [1,6]). */
+    if (a->n_dims != b->n_dims || a->total != b->total) return NULL;
+    for (int d = 0; d < a->n_dims; d++)
+        if (a->shape[d] != b->shape[d]) return NULL;
     if (gpu_op < 0) return NULL;
 
     VmTensor* out = vm_tensor_zeros(rs, a->shape, a->n_dims);

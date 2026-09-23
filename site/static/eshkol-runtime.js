@@ -41,6 +41,25 @@ class EshkolRuntime {
         this.memory = instance.exports.memory || this._importedMemory;
     }
 
+    wrapInstance(instance) {
+        const G = (typeof globalThis !== 'undefined') && globalThis.EshkolWebGPU;
+        const exports = G && typeof G.promisingExports === 'function'
+            ? G.promisingExports(instance.exports) : instance.exports;
+        return { rawInstance: instance, exports };
+    }
+
+    // Export facades do not wrap function-table entries. Browser callbacks
+    // therefore apply the JSPI promising wrapper at the callback boundary.
+    invokeWasmCallback(callbackFuncPtr, ...args) {
+        const table = this.instance?.exports?.__indirect_function_table;
+        const fn = table && table.get(callbackFuncPtr);
+        if (typeof fn !== 'function') throw new Error('missing WASM callback ' + callbackFuncPtr);
+        const G = (typeof globalThis !== 'undefined') && globalThis.EshkolWebGPU;
+        const entry = G && typeof G.promisingEntry === 'function'
+            ? G.promisingEntry(fn) : fn;
+        return entry(...args);
+    }
+
     // === Handle System ===
 
     createHandle(obj) {
@@ -372,6 +391,99 @@ class EshkolRuntime {
         return html;
     }
 
+    // === WebGPU compute backend ===
+
+    /**
+     * Acquire a WebGPU device, if this browser has one. Must be awaited
+     * BEFORE createImports() — the GPU env entries are built once, and
+     * whether they are GPU-backed or CPU-backed is decided at that moment.
+     *
+     * Resolves to a result object rather than throwing: no WebGPU, no JSPI,
+     * or no adapter all mean "run on the CPU", never "fail to load".
+     */
+    async initWebGPU(opts) {
+        const G = (typeof globalThis !== 'undefined') && globalThis.EshkolWebGPU;
+        if (!G) {
+            this._webgpuStatus = { ok: false, reason: 'eshkol-webgpu.js not loaded' };
+            return this._webgpuStatus;
+        }
+        if (!G.jspiAvailable()) {
+            // WebGPU readback is async and the wasm runtime is synchronous;
+            // without JSPI there is no way to suspend, so the CPU path is the
+            // only correct one. Say so rather than pretending the GPU ran.
+            this._webgpuStatus = { ok: false, reason: 'JSPI unavailable (WebAssembly.Suspending missing)' };
+            return this._webgpuStatus;
+        }
+        const res = await G.create(opts || {});
+        this._webgpuBackend = res.ok ? res.backend : null;
+        this.__gpuEnv = null;
+        // The Emscripten-built VM shares this backend through
+        // EshkolWebGPU.attachVm(module, runtime.webgpuBackend) (ADR-0029).
+        this._webgpuStatus = res;
+        return res;
+    }
+
+    /** The WebGPU backend object, or null when running on the CPU path. */
+    get webgpuBackend() { return this._webgpuBackend || null; }
+
+    /**
+     * Build (once) the GPU/tensor env entries. Uses the shared WebGPU module
+     * when it is present, and a compact CPU implementation otherwise, so the
+     * loader keeps working if eshkol-webgpu.js is not on the page.
+     */
+    _gpuEnv() {
+        if (this.__gpuEnv) return this.__gpuEnv;
+        const rt = this;
+        const memRef = () => rt.memory || rt._importedMemory;
+        const G = (typeof globalThis !== 'undefined') && globalThis.EshkolWebGPU;
+        this.__gpuEnv = G
+            ? G.makeImports(rt._webgpuBackend || null, memRef)
+            : EshkolRuntime._cpuOnlyGpuEnv(memRef);
+        return this.__gpuEnv;
+    }
+
+    /** CPU-only GPU env, used when eshkol-webgpu.js is absent. */
+    static _cpuOnlyGpuEnv(memRef) {
+        const f64 = (p, n) => new Float64Array(memRef().buffer, p, n);
+        return {
+            eshkol_matmul_dispatch: (aP, bP, cP, M, K, N) => {
+                M = Number(M); K = Number(K); N = Number(N);
+                const A = f64(aP, M * K), B = f64(bP, K * N), C = f64(cP, M * N);
+                for (let i = 0; i < M; i++)
+                    for (let j = 0; j < N; j++) {
+                        let s = 0;
+                        for (let k = 0; k < K; k++) s += A[i * K + k] * B[k * N + j];
+                        C[i * N + j] = s;
+                    }
+            },
+            eshkol_batch_matmul_dispatch: (aP, bP, cP, batch, M, K, N) => {
+                batch = Number(batch); M = Number(M); K = Number(K); N = Number(N);
+                const aStride = M * K, bStride = K * N, cStride = M * N;
+                for (let q = 0; q < batch; q++) {
+                    const A = f64(aP + q * aStride * 8, aStride);
+                    const B = f64(bP + q * bStride * 8, bStride);
+                    const C = f64(cP + q * cStride * 8, cStride);
+                    for (let i = 0; i < M; i++) for (let j = 0; j < N; j++) {
+                        let s = 0;
+                        for (let k = 0; k < K; k++) s += A[i * K + k] * B[k * N + j];
+                        C[i * N + j] = s;
+                    }
+                }
+            },
+            eshkol_gpu_elementwise_f64: () => -1,
+            eshkol_gpu_reduce_f64: () => -1,
+            eshkol_gpu_init: () => 0,
+            eshkol_gpu_shutdown: () => {},
+            eshkol_gpu_get_backend: () => 0,
+            eshkol_gpu_backend_available: () => 0,
+            eshkol_gpu_supports_f64: () => 0,
+            eshkol_gpu_has_fp64: () => 0,
+            eshkol_gpu_should_use: () => 0,
+            eshkol_gpu_set_threshold: () => {},
+            eshkol_gpu_get_threshold: () => 100000
+        };
+    }
+
     // === WASM Imports ===
 
     createImports() {
@@ -411,10 +523,14 @@ class EshkolRuntime {
                 }
             }
         };
+        if (!rt._importedMemory) {
+            rt._importedMemory = new WebAssembly.Memory({ initial: 256, maximum: 1024 });
+        }
+        const gpu = rt._gpuEnv();
         return {
             env: {
                 // Memory
-                __linear_memory: rt._importedMemory = new WebAssembly.Memory({ initial: 256, maximum: 1024 }),
+                __linear_memory: rt._importedMemory,
                 // WASM linker globals (required by LLVM static relocation)
                 __stack_pointer: new WebAssembly.Global({ value: 'i32', mutable: true }, 1048576), // 1MB stack
                 __indirect_function_table: new WebAssembly.Table({ initial: 256, element: 'anyfunc' }),
@@ -573,10 +689,62 @@ class EshkolRuntime {
                 eshkol_ad_mixed_record: () => 0,
                 eshkol_ad_seed_flag: () => 0,
                 eshkol_tensor_operand_checked: () => 0,
+                // Same lite-glue contract as eshkol_tensor_operand_checked: the
+                // browser glue has no tensor runtime (docs/FEATURE_MATRIX.md).
+                eshkol_tensor_operand_carrier_checked: () => 0,
                 eshkol_tensor_destination_checked: () => 0,
                 eshkol_tensor_matrix_operand_checked: () => 0,
                 eshkol_tensor_counts_checked: () => {},
                 eshkol_tensor_axis_checked: (axis) => axis,
+                // Shape and index helpers with the native contracts
+                // (lib/core/tensor_validation.cpp, runtime_tensor_math.cpp,
+                // runtime_tensor_index.cpp). i64 results are BigInt.
+                eshkol_tensor_shape_total: (dimsPtr, ndim) => {
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    const n = Number(ndim);
+                    if (!dv || !dimsPtr || n <= 0) return -1n;
+                    const MAX = 0x7fffffffffffffffn;
+                    let total = 1n;
+                    for (let i = 0; i < n; i++) {
+                        const d = dv.getBigInt64(Number(dimsPtr) + i * 8, true);
+                        if (d < 0n) return -1n;
+                        if (d === 0n) { total = 0n; continue; }
+                        if (total > MAX / d) return -1n;
+                        total *= d;
+                    }
+                    return total > MAX / 8n ? -1n : total;
+                },
+                eshkol_matmul_shape_valid: (M, K, N) => {
+                    const MAX = 0x7fffffffffffffffn;
+                    const pair = (a, b) => {
+                        a = BigInt(a); b = BigInt(b);
+                        if (a < 0n || b < 0n) return false;
+                        if (a !== 0n && b !== 0n && a > MAX / b) return false;
+                        return a * b <= MAX / 8n;
+                    };
+                    return (pair(M, K) && pair(K, N) && pair(M, N)) ? 1n : 0n;
+                },
+                eshkol_unwrap_list_index: (tvPtr) => {
+                    // A one-element list index unwraps to its car (a tagged
+                    // cons cell stores car at offset 0); anything else is the
+                    // index itself. Doubles truncate toward zero.
+                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
+                    if (!dv || !tvPtr) return 0n;
+                    const baseType = (p) => { const t = dv.getUint8(p); return t < 8 ? (t & 0x0F) : t; };
+                    const toInt = (p) => {
+                        if (baseType(p) === 2) {
+                            const d = dv.getFloat64(p + 8, true);
+                            return Number.isFinite(d) ? BigInt(Math.trunc(d)) : 0n;
+                        }
+                        return dv.getBigInt64(p + 8, true);
+                    };
+                    const p = Number(tvPtr);
+                    if (baseType(p) === 8) {
+                        const cell = Number(dv.getBigUint64(p + 8, true) & 0xFFFFFFFFn);
+                        if (cell >= 8 && dv.getUint8(cell - 8) === 0) return toInt(cell);
+                    }
+                    return toInt(p);
+                },
                 // Shape helpers use the same row-major broadcast contract as
                 // the native runtime.  These operate on WASM linear-memory
                 // int64 arrays and are needed by generated tensor code.
@@ -614,9 +782,16 @@ class EshkolRuntime {
                     for (let i = rank - 1; i >= 0; i--) { const d = dv.getBigInt64(Number(outPtr) + i * 8, true); if (d <= 0n) return -1n; const coord = rem % d; rem /= d; const si = i - (rank - srank); if (si >= 0 && dv.getBigInt64(Number(srcPtr) + si * 8, true) !== 1n) result += coord * strides[si]; }
                     return result;
                 },
-                eshkol_enforce_tensor_elements: () => { throw new Error('tensor element limits unsupported in WASM glue'); },
+                // No resource limit is ever active in the browser (limits come
+                // from the native environment), so the ceiling check is the
+                // native no-op path of lib/core/resource_limits.cpp.
+                eshkol_enforce_tensor_elements: () => {},
                 eshkol_ad_copy_shape_to_home: () => { throw new Error('AD arena copying unsupported in WASM glue'); },
-                eshkol_ad_home_arena: () => { throw new Error('AD arena ownership unsupported in WASM glue'); },
+                // The browser glue never records an AD tape (see
+                // arena_allocate_ad_node above), so the home arena is the
+                // caller's arena: the native no-tape path of
+                // lib/core/runtime_autodiff.cpp.
+                eshkol_ad_home_arena: (fallback) => fallback,
                 eshkol_ad_node_probe: () => { throw new Error('AD node probing unsupported in WASM glue'); },
                 eshkol_ad_node_set_exact_value: () => { throw new Error('exact AD values unsupported in WASM glue'); },
                 eshkol_ad_node_total_elements: () => { throw new Error('AD node element totals unsupported in WASM glue'); },
@@ -639,6 +814,32 @@ class EshkolRuntime {
                     const p = Number(dv.getBigUint64(Number(v) + 8, true) & 0xFFFFFFFFn);
                     return (p >= 8 && dv.getUint8(p - 8) === 25) ? 1 : 0;
                 },
+
+                // GPU compute (WebGPU). These are the ordinary GPU dispatch
+                // seam — the same symbols the native Metal/CUDA backends
+                // define in lib/backend/gpu/ — not a browser-special path.
+                // eshkol_matmul_dispatch is what codegenMatmul emits; the
+                // rest mirror the gpu_memory.h surface so a program can query
+                // and steer dispatch. Values come from _gpuEnv(): a
+                // WebAssembly.Suspending wrapper when WebGPU+JSPI are both
+                // present, a plain synchronous CPU function otherwise.
+                // Keep these keys IDENTICAL to web/eshkol-repl.js — the
+                // INV-wasm-import-glue-equality invariant in
+                // .icc/architecture-model.yaml is critical-severity.
+                eshkol_matmul_dispatch: gpu.eshkol_matmul_dispatch,
+                eshkol_batch_matmul_dispatch: gpu.eshkol_batch_matmul_dispatch,
+                eshkol_gpu_elementwise_f64: gpu.eshkol_gpu_elementwise_f64,
+                eshkol_gpu_reduce_f64: gpu.eshkol_gpu_reduce_f64,
+                eshkol_gpu_init: gpu.eshkol_gpu_init,
+                eshkol_gpu_shutdown: gpu.eshkol_gpu_shutdown,
+                eshkol_gpu_get_backend: gpu.eshkol_gpu_get_backend,
+                eshkol_gpu_backend_available: gpu.eshkol_gpu_backend_available,
+                eshkol_gpu_supports_f64: gpu.eshkol_gpu_supports_f64,
+                eshkol_gpu_has_fp64: gpu.eshkol_gpu_has_fp64,
+                eshkol_gpu_should_use: gpu.eshkol_gpu_should_use,
+                eshkol_gpu_set_threshold: gpu.eshkol_gpu_set_threshold,
+                eshkol_gpu_get_threshold: gpu.eshkol_gpu_get_threshold,
+
                 eshkol_format_double: () => 0,
                 eshkol_fprint_double: () => 0,
                 eshkol_set_error_location: () => {},
@@ -1320,11 +1521,19 @@ class EshkolRuntime {
                     const el = rt.getHandle(elHandle);
                     if (!el || !rt.instance) return 0;
                     const eventName = rt.readString(eventPtr);
-                    const fn = rt.instance.exports.__indirect_function_table.get(callbackFuncPtr);
-                    if (!fn) return 0;
                     const handler = (e) => {
                         const eventHandle = rt.createHandle(e);
-                        try { fn(eventHandle); } catch(err) { console.error('Event handler error:', err); }
+                        try {
+                            const result = rt.invokeWasmCallback(callbackFuncPtr, eventHandle);
+                            if (result && typeof result.then === 'function') {
+                                result.catch((err) => console.error('Event handler error:', err))
+                                    .finally(() => rt.releaseHandle(eventHandle));
+                                return;
+                            }
+                        } catch (err) {
+                            console.error('Event handler error:', err);
+                        }
+                        rt.releaseHandle(eventHandle);
                     };
                     el.addEventListener(eventName, handler);
                     return 1;
@@ -1429,14 +1638,26 @@ class EshkolRuntime {
                 // Timers & Animation
                 web_set_timeout: (callbackFuncPtr, ms) => {
                     if (!rt.instance) return 0;
-                    const fn = rt.instance.exports.__indirect_function_table.get(callbackFuncPtr);
-                    return setTimeout(() => { try { fn(0); } catch(e) { console.error(e); } }, ms);
+                    return setTimeout(() => {
+                        try {
+                            const result = rt.invokeWasmCallback(callbackFuncPtr, 0);
+                            if (result && typeof result.then === 'function') {
+                                result.catch((e) => console.error('Timeout callback error:', e));
+                            }
+                        } catch(e) { console.error('Timeout callback error:', e); }
+                    }, ms);
                 },
 
                 web_set_interval: (callbackFuncPtr, ms) => {
                     if (!rt.instance) return 0;
-                    const fn = rt.instance.exports.__indirect_function_table.get(callbackFuncPtr);
-                    return setInterval(() => { try { fn(0); } catch(e) { console.error(e); } }, ms);
+                    return setInterval(() => {
+                        try {
+                            const result = rt.invokeWasmCallback(callbackFuncPtr, 0);
+                            if (result && typeof result.then === 'function') {
+                                result.catch((e) => console.error('Interval callback error:', e));
+                            }
+                        } catch(e) { console.error('Interval callback error:', e); }
+                    }, ms);
                 },
 
                 web_clear_interval: (id) => { clearInterval(id); return 0; },
@@ -1444,8 +1665,14 @@ class EshkolRuntime {
 
                 web_request_animation_frame: (callbackFuncPtr) => {
                     if (!rt.instance) return 0;
-                    const fn = rt.instance.exports.__indirect_function_table.get(callbackFuncPtr);
-                    return requestAnimationFrame((ts) => { try { fn(ts | 0); } catch(e) { console.error(e); } });
+                    return requestAnimationFrame((ts) => {
+                        try {
+                            const result = rt.invokeWasmCallback(callbackFuncPtr, ts | 0);
+                            if (result && typeof result.then === 'function') {
+                                result.catch((e) => console.error('RAF callback error:', e));
+                            }
+                        } catch(e) { console.error('RAF callback error:', e); }
+                    });
                 },
 
                 // Fetch API
@@ -1453,11 +1680,15 @@ class EshkolRuntime {
                     const url = rt.readString(urlPtr);
                     fetch(url).then(r => r.text()).then(text => {
                         if (rt.instance) {
-                            const fn = rt.instance.exports.__indirect_function_table.get(callbackFuncPtr);
                             // Write response to WASM memory
                             const ptr = rt.createImports().env.arena_allocate(0, text.length + 1);
                             rt.writeString(ptr, text, text.length + 1);
-                            try { fn(ptr); } catch(e) { console.error(e); }
+                            try {
+                                const result = rt.invokeWasmCallback(callbackFuncPtr, ptr);
+                                if (result && typeof result.then === 'function') {
+                                    result.catch((e) => console.error('Fetch callback error:', e));
+                                }
+                            } catch(e) { console.error('Fetch callback error:', e); }
                         }
                     }).catch(e => console.error('fetch error:', e));
                     return 0;
@@ -1484,13 +1715,15 @@ class EshkolRuntime {
                     const source = rt.readString(sourcePtr);
                     const target = rt.handles.get(resultHandle);
                     if (target && rt._eshkolVM) {
-                        try {
-                            const evalFn = rt._eshkolVM.cwrap('repl_eval', 'string', ['string']);
-                            const result = evalFn(source);
-                            target.textContent += result;
-                        } catch (e) {
-                            target.textContent += 'Error: ' + e.message + '\n';
-                        }
+                        // The VM may suspend on a WebGPU readback (ADR-0029),
+                        // so its result is appended when it resolves.
+                        const G = (typeof globalThis !== 'undefined') && globalThis.EshkolWebGPU;
+                        const done = G && G.vmCall
+                            ? G.vmCall(rt._eshkolVM, 'repl_eval', source)
+                            : Promise.resolve().then(() =>
+                                rt._eshkolVM.cwrap('repl_eval', 'string', ['string'])(source));
+                        done.then((result) => { target.textContent += result; },
+                                  (e) => { target.textContent += 'Error: ' + e.message + '\n'; });
                     }
                     return 0;
                 },
