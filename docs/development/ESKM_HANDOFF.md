@@ -1,6 +1,72 @@
 # ESKM subsystem status and week 12 handoff
 
-## Current checkpoint — 2026-09-17
+## Current checkpoint — 2026-09-23
+
+The public master baseline is `c3372a49`; the pending v1.3.5 release candidate
+is `2bed1aa9` in [#628](https://github.com/tsotchke/eshkol/pull/628). Inclusion
+in that candidate is not a claim that a change has reached master or shipped.
+
+| Work | Current disposition | Next action |
+|---|---|---|
+| V1 specification, corpus, loader preflight, fuzz campaign | On master through #596 and #555 (carrying #601/#602) | Keep the corpus immutable and retain integrated validation |
+| Model parity, atomic saves, isolated forward-reference runner | On master through #612 (carrying #597/#600/#598) | Maintain cross-engine and platform evidence |
+| Public tensor parity | On master through #620, superseding #617 | Keep testing the public ESKM dispatch |
+| Scalar/empty VM materialization | #698 closed as included in pending #628 | Verify the final merged release SHA; no replacement PR is needed |
+| Private v2 validator | #699 closed as included in pending #628 | Public v2 remains experimental and the format decision remains Proposed |
+| Default v2 preflight runner | Integration regression repaired in [#718](https://github.com/tsotchke/eshkol/pull/718) | Land the small runner fix |
+| Fresh release build | Missing `<cstring>` prerequisite repaired in [#719](https://github.com/tsotchke/eshkol/pull/719) | Land the include fix |
+
+The immediate contributor work is experimental v2 reader/writer integration,
+explicit admission and cleanup evidence, and a separate constructor/handler
+allocation-hardening follow-up. The latter preserves the release's promotion
+transaction: #714's parameter publication fix and failpoint approach were
+incorporated, while its alternative transaction was not. The maintainer
+explicitly invited the remaining allocation checks as a separate post-release
+PR. Do not reintroduce the superseded transaction when porting those checks.
+
+### Integrated Linux verification
+
+Fresh build source: release `2bed1aa9` plus runner fix `5af6cdc4` and parser
+include fix `7e989f35`. Linux x86-64, Clang 22.1.6 and LLVM 21.1.8; Release
+configuration, optional BLAS/GPU/quantum/agent FFI disabled. These results are
+separate from the September 17 evidence and from experimental v2 changes.
+
+- PASS: native model I/O, VM fail-closed/scalar/empty tests, atomic file helper,
+  private v2 C/C++ tests and fixture oracle, public tensor parity and its oracle.
+- PASS: v1 six-fixture four-engine model matrix and negative controls, including
+  scalar/empty rewrites, single-tensor routes, and lifetime cases.
+- PASS: atomic-save replacement, failure, symlink and concurrent-writer checks
+  across native JIT/AOT and VM source/bytecode. The full focused selection was
+  11/11 CTests (261 seconds including initial standard-library compilation).
+- PASS: standalone v2 runner with GCC defaults and Clang ASan/UBSan; 504 C
+  assertions, C++ consumer, three exact-byte goldens and negative controls.
+- PASS: fresh ASan/UBSan runtime fuzz campaign with leak detection, seed
+  `0x5eed5eed`, 700 inputs plus harness self-tests; zero failures and no failure
+  artifacts. ASan's virtual-address requirements mean this run has no address-
+  space cap and is not substituted for the separate bounded campaign.
+- PASS: a separate unsanitized 700-input campaign with the same seed and harness
+  self-tests, a 256 MiB address-space cap per probe, and zero failures/artifacts.
+  Both campaigns used isolated trace paths and did not overwrite release evidence.
+
+Reproduction commands, from that source checkout:
+
+```sh
+ctest --test-dir build --output-on-failure -j2 -R '^(model_io_test|vm_model_io_fail_closed_test|atomic_checkpoint_file_test|eskm_v2_preflight_test|eskm_v2_preflight_cpp_test|eskm_v2_fixture_oracle_test|eskm_tensor_engine_parity|eskm_tensor_oracle_self_test|eskm_v1_model_load_engine_parity|eskm_v1_model_load_engine_parity_selftest|atomic_checkpoint_save_test)$'
+CC=gcc CXX=g++ bash scripts/run_eskm_v2_preflight_tests.sh
+CC=clang CXX=clang++ ESKM_V2_SANITIZE=1 bash scripts/run_eskm_v2_preflight_tests.sh
+python3 scripts/run_eskm_model_fuzz.py --full --self-test --seed 0x5eed5eed --memory-mb 256 --probe build-fuzz/tests/fuzz/eskm_model_fuzz_probe --trace-file build-fuzz/eskm-fuzz-trace.jsonl
+ASAN_OPTIONS=detect_leaks=1 python3 scripts/run_eskm_model_fuzz.py --full --self-test --seed 0x5eed5eed --memory-mb 0 --probe build-fuzz-asan/tests/fuzz/eskm_model_fuzz_probe --trace-file build-fuzz-asan/eskm-fuzz-trace.jsonl
+```
+
+The fuzz builds use `ESHKOL_ENABLE_FUZZ=ON`; the sanitizer build additionally
+uses `ESHKOL_FUZZ_ASAN=ON`. Fixture-integrity self-tests, the coverage inventory,
+shell syntax and whitespace checks also pass.
+
+Native macOS/Windows execution, power-loss durability, browser checkpoint I/O,
+and the full repository test suite are not established by these Linux checks.
+The existing atomic-save guarantee remains process-level replacement.
+
+## Historical checkpoint — 2026-09-17
 
 Source baseline: `upstream/master` at `0901264c`. This status update separates
 landed code from remaining packet acceptance; it does not rerun or relabel the
