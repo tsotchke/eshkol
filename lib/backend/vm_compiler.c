@@ -2408,13 +2408,13 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
     Node* pred = node->children[3];
     const char* pred_name = pred->type == N_SYMBOL ? pred->symbol : NULL;
     if (!type_name) {
-        vm_compile_error("define-record-type: the type name must be an identifier", node);
+        vm_compile_error("define-record-type: the type name must be an identifier", NULL);
         return;
     }
 
     size_t cap = 256, len = 0;
     char* src = (char*)malloc(cap);
-    if (!src) { vm_compile_error("define-record-type: out of memory", node); return; }
+    if (!src) { vm_compile_error("define-record-type: out of memory", NULL); return; }
 #define REC_SRC(...) do { len = 0; src[0] = '\0'; \
         if (!vm_record_src_append(&src, &len, &cap, __VA_ARGS__)) goto oom; } while (0)
 #define REC_ADD(...) do { if (!vm_record_src_append(&src, &len, &cap, __VA_ARGS__)) goto oom; } while (0)
@@ -2475,7 +2475,7 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
     return;
 oom:
     free(src);
-    vm_compile_error("define-record-type: out of memory", node);
+    vm_compile_error("define-record-type: out of memory", NULL);
 }
 
 /** @brief Compile a `(parameterize ((param value)...) body...)` special
