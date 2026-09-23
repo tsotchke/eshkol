@@ -63,7 +63,8 @@ partial derivative with respect to the corresponding argument.
 
 ## Part 3: Higher-Order Derivatives
 
-Eshkol supports nested differentiation up to 32 levels deep. You can
+Eshkol supports nested differentiation at arbitrary depth, limited by available
+memory. You can
 differentiate a derivative to get second derivatives:
 
 ```scheme

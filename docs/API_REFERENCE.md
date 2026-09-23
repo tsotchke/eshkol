@@ -1,4 +1,4 @@
-# Eshkol v1.3.5 API Reference
+# Eshkol API Reference
 
 **Version**: 1.3.5
 **Last Updated**: 2026-09-14
@@ -7336,17 +7336,6 @@ for composability and custom pipelines.
 (clip #(1.0 5.0 10.0) 2.0 8.0)
 ;; => #(2.0 5.0 8.0)
 ```
-
----
-
-## Implementation Statistics
-
-**Codebase Size**: ~329,100 lines of production C++
-**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 47,107 lines
-**Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — 2,012-line dispatcher plus 23,389 lines across thirteen per-domain `tensor_*_codegen.cpp` modules
-**Compiler Modules**: 36 specialized code generators
-**Test Suite**: 37 suites, 528 self-reported tests
-**Verified Operations**: 555+ builtins, 300+ standard library functions
 
 ---
 

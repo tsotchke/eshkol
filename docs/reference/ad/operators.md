@@ -434,23 +434,15 @@ when:
   tower pass has exactly one point argument); every other shape (a name, a
   call expression, a composition, …) is resolved the same way the jet arm
   itself resolves it, so declining here is rare in practice;
-- **a differentiation is already live at run time** — a forward pass
-  (`__ad_pert_level > 0`), a tower pass, or a reverse tape, any of which means
-  the point or a capture may carry a perturbation the tower would drop. This
-  is also what keeps a **nested** differentiation correct: nesting is correct
-  in value on every operator pairing (ESH-0412), whether reached lexically or
-  through a runtime closure call, but the two passes compose through a
-  first-order companion series of doubles, so an exact seed cannot stay exact
-  through one — the exact tier declines rather than promise an exactness it
-  would lose.
+- **a differentiation is already live at run time** — the nested pass uses a
+  recursive level carrier rather than the unnested exact-tower fast path. Its
+  coefficients retain the enclosing carrier, including exact coefficients
+  when the operations preserve exactness (ADR-0027).
 
-**Build items** (capability to add, not limitations to accept):
-`jacobian`/`laplacian`/`divergence`/`curl`/`directional-derivative` and the
-**vector-point** forms of `gradient`/`hessian` need one tower pass per component,
-because the tower is univariate, and a body outside the tower's own recurrence
-set (`lib/core/taylor_recurrences.def`) still demotes to `f64` at that operation
-for those forms; nested tower passes need the epoch-tagged tower-in-tower work
-that would also fix `derivative-n`'s own nesting.
+For a point with several coordinates, each component has its own forward pass.
+A body outside the exact recurrence set in
+`lib/core/taylor_recurrences.def` may make the result inexact at that operation.
+The nested-pass carrier itself has no fixed depth or order ceiling.
 
 > `#(1/3)` now carries the exact rational through the literal (SW-153), the
 > same as `(vector 1/3)` and `(list 1/3)`; what still cannot express an exact
@@ -459,8 +451,8 @@ that would also fix `derivative-n`'s own nesting.
 > correctly *rounded* on construction rather than carried (it is no longer
 > silently zeroed — SW-166; see
 > [../tensors/creation.md](../tensors/creation.md#exact-rationalbignum-elements-sw-166)).
-> An exact-element tensor is separately tracked. The vector-point operators
-> that would consume an exact `#(1/3)` seed are the build item above.
+> A vector containing an exact element retains that element's tag until the
+> operator seeds its differentiation pass.
 
 ---
 
@@ -618,6 +610,25 @@ reference across functions.
 ---
 
 ## Composition / nesting
+
+### Numeric functions, complex points, and poles
+
+Unary math functions propagate Taylor coefficients through nested passes and
+through `derivative-n`. This includes inverse trigonometric and hyperbolic
+functions, `log2`, `log10`, `exp2`, `cbrt`, and rounding functions. Exact inputs
+retain rational coefficients where the function's series permits them:
+`(derivative-n atan 0 3)` returns `-2`. `atan` and `round` also keep their
+argument-count dispatch when passed as procedure values.
+
+Complex points retain both derivative components. For example,
+`(derivative-n log 1+1i 1)` is `0.5-0.5i` and
+`(derivative (lambda (w) (expt w 3)) 1+1i)` is `0+6i`.
+At an inexact zero, `(derivative (lambda (x) (/ 1.0 x)) 0.0)` is
+`-inf.0`, while its second derivative is `+inf.0`.
+An indeterminate expression such as `x * (1/x)` at zero remains NaN.
+See `tests/ad/complex_carrier_math_test.esk`,
+`tests/ad/unary_numeric_builtin_carriers_test.esk`, and
+`tests/ad/division_pole_test.esk`.
 
 | Composition | Status | Note |
 |-------------|--------|------|

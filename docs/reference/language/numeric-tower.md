@@ -286,8 +286,8 @@ runtime value happens to be exact.
 2/15
 ```
 
-See [the AD reference](../ad/INDEX.md) for the exactness tier in full, and for
-the one nesting shape that is **not** supported in v1.3.5.
+See [the AD reference](../ad/INDEX.md) for the exactness tier and the
+recursive carrier that preserves exact values through nested passes.
 
 ## Heap accounting is a fail-closed contract
 

@@ -510,8 +510,7 @@ an inline literal, a top-level `define`, or the value of an expression:
 
 See [reference/language/numeric-tower.md](reference/language/numeric-tower.md)
 for the whole tower and [reference/ad/INDEX.md](reference/ad/INDEX.md) for the
-exactness tier, including the one nesting shape that is not supported in
-v1.3.5.
+exactness tier and nested differentiation.
 
 ---
 

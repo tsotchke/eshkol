@@ -2586,7 +2586,10 @@ struct ad_tape {
 #### 8.2.2 Tape Stack (for nested gradients)
 - **Global:** `__ad_tape_stack[32]` - Stack of tapes
 - **Depth:** `__ad_tape_depth` - Current nesting level
-- **Max Nesting:** 32 levels
+- **Tape Nesting:** The reverse-mode tape stack has 32 slots. Forward
+  differentiation passes use recursive Taylor level carriers and can nest to
+  arbitrary depth, subject to available memory. See
+  [ADR-0027](design/adr/0027-recursive-taylor-level-carrier.md).
 
 #### 8.2.3 `gradient` - Compute Gradient
 **Syntax:**
