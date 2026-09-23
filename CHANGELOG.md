@@ -26,6 +26,9 @@ the source changes; the verification record for the tagged commit is the
   builtin raises a catchable type error for an argument in the port position
   that is not a port of the right direction, where `(newline 1)` used to
   fault. `(procedure-arity +)` is 0, the fixed count of a variadic procedure.
+  `gradient` of a variadic callable reached at run time spreads every
+  coordinate of the point across its fixed parameters and rest list; a
+  `(a . rest)` loss used to receive the whole point as one vector.
 - **Renamed binders keep their source spelling, and a local binding shadows
   every builtin.** The hygienic expander renames every lexical binder, and the
   implementation name leaked: type diagnostics read ``argument 2 of

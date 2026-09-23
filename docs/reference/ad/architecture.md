@@ -660,6 +660,23 @@ direct/indirect/curried equivalence.
 ;; => #(6 8) in every case
 ```
 
+A **variadic** callable is called with every coordinate of the point: its
+fixed parameters take the first ones and its rest list the remainder, so a
+rest-list loss never receives the whole point as one vector and never loses
+coordinates past its fixed count. The arithmetic builtins are variadic values,
+so `(gradient + point)` is the gradient of the sum.
+
+```scheme
+(define (gw f p) (gradient f p))
+(define (vtail a . rest) (* a (car rest) (car (cdr rest))))
+(display (gw vtail (list 2.0 5.0 3.0))) (newline)
+(display (gw + (list 2.0 5.0))) (newline)
+```
+```
+#(15 6 10)
+#(1 1)
+```
+
 A related fix follows transitive closure captures in a **custom vector-Jacobian
 product**: a custom-VJP backward closure that reached a captured value through an
 intermediate closure previously had its contribution silently dropped (zero

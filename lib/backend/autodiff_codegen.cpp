@@ -4838,8 +4838,23 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                             ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(closure_val), ctx_.ptrType()),
                             ConstantInt::get(ctx_.int64Type(), 33))),
                     ctx_.int64Type());
-                Value* clo_arity_le1 = ctx_.builder().CreateICmpULE(clo_arity_val,
-                    ConstantInt::get(ctx_.int64Type(), 1));
+                // A VARIADIC loss (flag bit 0 of the byte at offset 34) takes
+                // the point's coordinates as arguments whatever its fixed
+                // count, so it is never handed the whole point as one vector:
+                // `+` has no fixed parameters and `(gradient + '(2.0 5.0))` is
+                // the gradient of x+y.
+                Value* clo_variadic = ctx_.builder().CreateICmpNE(
+                    ctx_.builder().CreateAnd(
+                        ctx_.builder().CreateLoad(ctx_.int8Type(),
+                            ctx_.builder().CreateGEP(ctx_.int8Type(),
+                                ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(closure_val), ctx_.ptrType()),
+                                ConstantInt::get(ctx_.int64Type(), 34))),
+                        ConstantInt::get(ctx_.int8Type(), 1)),
+                    ConstantInt::get(ctx_.int8Type(), 0));
+                Value* clo_arity_le1 = ctx_.builder().CreateAnd(
+                    ctx_.builder().CreateNot(clo_variadic),
+                    ctx_.builder().CreateICmpULE(clo_arity_val,
+                        ConstantInt::get(ctx_.int64Type(), 1)));
 
                 BasicBlock* grad_rt_scalar_fwd = BasicBlock::Create(
                     ctx_.context(), "grad_rt_scalar_fwd", current_func);
@@ -5730,8 +5745,24 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                 Value* clo_ptr = ctx_.builder().CreateIntToPtr(clo_ptr_i64, ctx_.ptrType());
                 Value* clo_arity_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), clo_ptr,
                     ConstantInt::get(ctx_.int64Type(), 33));
-                Value* clo_arity = ctx_.builder().CreateZExt(
+                Value* clo_fixed_arity = ctx_.builder().CreateZExt(
                     ctx_.builder().CreateLoad(ctx_.int8Type(), clo_arity_ptr), ctx_.int64Type());
+                /* A VARIADIC loss accepts the point's coordinates however many
+                 * there are (its input_arity byte is only the fixed count), so
+                 * it is called with all n of them -- `(gradient + (list 2.0
+                 * 5.0))` is the gradient of x+y. Reading the fixed count alone
+                 * handed `+` (no fixed parameters) the whole point as one vector
+                 * and dropped the coordinates past a `(a b . rest)` loss's two. */
+                Value* clo_flags = ctx_.builder().CreateLoad(ctx_.int8Type(),
+                    ctx_.builder().CreateGEP(ctx_.int8Type(), clo_ptr,
+                        ConstantInt::get(ctx_.int64Type(), 34)));
+                Value* clo_is_variadic = ctx_.builder().CreateICmpNE(
+                    ctx_.builder().CreateAnd(clo_flags, ConstantInt::get(ctx_.int8Type(), 1)),
+                    ConstantInt::get(ctx_.int8Type(), 0));
+                Value* clo_arity = ctx_.builder().CreateSelect(clo_is_variadic,
+                    ctx_.builder().CreateSelect(
+                        ctx_.builder().CreateICmpUGT(n, clo_fixed_arity), n, clo_fixed_arity),
+                    clo_fixed_arity);
 
                 /* Arity of a RUNTIME closure is only known at run time, so the
                  * point has to be spread into that many scalar arguments by a

@@ -8098,11 +8098,21 @@ private:
         }
 
         // Arity 1 is the vectorized single-argument loss; arity 0 (unreadable)
-        // and the variadic sentinel legitimately want that same form.
+        // and the variadic sentinel legitimately want that same form. A
+        // closure flagged VARIADIC is always spread: the caller passes the
+        // point's dimension as its arity, and a one-coordinate point is one
+        // scalar argument to it, not a vector.
         builder->SetInsertPoint(within_bb);
-        Value* wants_vector = builder->CreateOr(
-            builder->CreateICmpULE(arity_arg, ConstantInt::get(int64_type, 1)),
-            builder->CreateICmpEQ(arity_arg, ConstantInt::get(int64_type, GRAD_VARIADIC_ARITY)));
+        Value* closure_flags = builder->CreateLoad(int8_type, builder->CreateGEP(int8_type,
+            builder->CreateIntToPtr(unpackInt64FromTaggedValue(closure_arg), builder->getPtrTy()),
+            ConstantInt::get(int64_type, 34)));
+        Value* closure_is_variadic = builder->CreateICmpNE(
+            builder->CreateAnd(closure_flags, ConstantInt::get(int8_type, 1)),
+            ConstantInt::get(int8_type, 0));
+        Value* wants_vector = builder->CreateAnd(builder->CreateNot(closure_is_variadic),
+            builder->CreateOr(
+                builder->CreateICmpULE(arity_arg, ConstantInt::get(int64_type, 1)),
+                builder->CreateICmpEQ(arity_arg, ConstantInt::get(int64_type, GRAD_VARIADIC_ARITY))));
         builder->CreateCondBr(wants_vector, vector_bb, spread_bb);
 
         builder->SetInsertPoint(vector_bb);
