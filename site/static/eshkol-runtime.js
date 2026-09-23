@@ -55,7 +55,9 @@ class EshkolRuntime {
         const fn = table && table.get(callbackFuncPtr);
         if (typeof fn !== 'function') throw new Error('missing WASM callback ' + callbackFuncPtr);
         const G = (typeof globalThis !== 'undefined') && globalThis.EshkolWebGPU;
-        const entry = G && typeof G.promisingEntry === 'function'
+        const entry = G && typeof G.promisingTableEntry === 'function'
+            ? G.promisingTableEntry(table, callbackFuncPtr)
+            : G && typeof G.promisingEntry === 'function'
             ? G.promisingEntry(fn) : fn;
         return entry(...args);
     }

@@ -489,9 +489,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             this.memory = null;
             this.log = o.log || function () {};
             this.diagnostics = [];
-            if (!this.precisionKnown) {
-                this.diagnostics.push('UNSUPPORTED: unknown WebGPU precision tier ' +
-                                       String(requestedPrecision));
+            const precisionReason = this.gpuPrecisionReason();
+            if (precisionReason) {
+                this.diagnostics.push(precisionReason);
                 this.log('[WebGPU] ' + this.diagnostics[this.diagnostics.length - 1]);
             } else if (this.precision === 'fast') {
                 const optIn = 'explicit reduced-precision opt-in: fast tier, ' +
@@ -552,13 +552,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
          * f32 floor. */
         _f64Tier() { return this.precision === 'exact' || this.precision === 'high'; }
 
+        gpuPrecisionReason() {
+            if (!this.precisionKnown) {
+                return 'UNSUPPORTED: unknown WebGPU precision tier ' + String(this.precision);
+            }
+            if (this.precision === 'fast' &&
+                !(Number.isFinite(this.gateTolerance) && this.gateTolerance >= FAST_GATE_TOL)) {
+                return 'UNSUPPORTED: WebGPU precision tier fast requires gateTolerance >= ' +
+                    FAST_GATE_TOL;
+            }
+            return null;
+        }
+
         fastAdmitted() {
-            return this.precision === 'fast' && this.precisionKnown &&
-                this.gateTolerance >= FAST_GATE_TOL;
+            return this.precision === 'fast' && this.gpuPrecisionReason() === null;
         }
 
         _tierAdmitted() {
-            if (!this.device || !this.precisionKnown) return false;
+            if (!this.device || this.gpuPrecisionReason()) return false;
             return this._f64Tier() || this.fastAdmitted();
         }
 
@@ -1251,6 +1262,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return fn;
     }
 
+    function promisingTableEntry(table, index) {
+        const fn = table && table.get(index);
+        if (typeof fn !== 'function') throw new Error('missing WASM callback ' + index);
+        return promisingEntry(fn);
+    }
+
     /* A WebAssembly.Instance exports object is not replaceable in place. Build
      * a public export facade so every synchronous wasm entry that can reach a
      * suspending GPU import is paired with WebAssembly.promising. Keeping the
@@ -1280,6 +1297,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         vmInvoke,
         vmSerial,
         promisingEntry,
+        promisingTableEntry,
         promisingExports,
         jspiAvailable,
         cpu,

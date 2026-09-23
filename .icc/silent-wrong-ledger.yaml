@@ -16165,3 +16165,30 @@ entries:
       across dispatch thresholds.
     caught_by: [hardware-reproduction]
     missed_by: [webgpu_vm_test]
+  - id: SW-272
+    bucket: SILENT-WRONG
+    subtag: webgpu
+    family: gpu/precision-admission-diagnostic
+    status: fixed
+    title: "WebGPU fast-tier diagnostic claimed opt-in when dispatch was refused"
+    repro: >-
+      Construct a browser WebGPU backend with precision fast and the default
+      1e-9 gate tolerance, then compare its diagnostics with shouldUse(1) and
+      supportsOperation(matmul).
+    observed: >-
+      Dispatch was correctly refused, but diagnostics claimed an explicit
+      reduced-precision opt-in without explaining the required tolerance.
+    correct: >-
+      A refused fast tier reports that gateTolerance must be at least 1e-6;
+      exact and high continue to use the sf64 path.
+    root_cause: >-
+      The constructor emitted an opt-in message based only on the tier name,
+      while the dispatch predicate separately checked the tolerance.
+    fix: >-
+      A shared gpuPrecisionReason admission function drives both the constructor
+      diagnostic and the dispatch predicate.
+    evidence: >-
+      tests/webgpu/webgpu_regressions_test.mjs checks refusal and admission
+      messages and the corresponding dispatch predicates.
+    caught_by: [regression-test]
+    missed_by: [webgpu_live_test]

@@ -232,6 +232,12 @@ the source changes; the verification record for the tagged commit is the
   Four cohomology and two-group examples now complete on the VM, and
   exhausting the configured ceiling still exits with `FRAME OVERFLOW`.
 
+
+- **WebGPU fast-tier admission reports the actual gate (SW-272).** A fast
+  backend with the default `1e-9` tolerance refused dispatch but described
+  itself as opted in. Admission and diagnostics now share the same precision
+  check and report the required `gateTolerance >= 1e-6`. Browser WASM table
+  callbacks use the shared JSPI wrapper in both loaders.
 - **Shared browser WebGPU backends keep concurrent VMs isolated (SW-270).**
   An asynchronous readback could write through another VM's memory, yielding
   zeros in the first VM's matmul result. Each operation now retains its own
