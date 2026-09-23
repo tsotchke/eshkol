@@ -4461,12 +4461,15 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     # derivative a complex value carries. SW-214: square, inexact and
     # magnitude of a real carrier did the same. SW-222: a derivative through a
     # simple pole of a quotient was NaN natively (division_pole also runs on
-    # both VMs, in the ADR-0027 table). JIT and AOT.
+    # both VMs, in the ADR-0027 table). SW-229: forward AD state after a raise
+    # or an escape. SW-230: every math builtin first-class. JIT and AOT.
     foreach(_carrier_test
             taylor_integral_family:tests/ad/taylor_integral_family_test.esk
             complex_carrier_math:tests/ad/complex_carrier_math_test.esk
             unary_numeric_builtin_carriers:tests/ad/unary_numeric_builtin_carriers_test.esk
-            division_pole:tests/ad/division_pole_test.esk)
+            division_pole:tests/ad/division_pole_test.esk
+            first_class_math_builtins:tests/ad/first_class_math_builtins_test.esk
+            ad_state_after_raise:tests/ad/ad_state_after_raise_test.esk)
         string(REPLACE ":" ";" _carrier_parts "${_carrier_test}")
         list(GET _carrier_parts 0 _carrier_name)
         list(GET _carrier_parts 1 _carrier_src)
@@ -4493,6 +4496,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: ${_carrier_name}"
                 FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Unhandled exception")
     endforeach()
+    # SW-229: the VM's exact-division-by-zero program, natively (JIT, AOT).
+    add_test(NAME vm_exact_division_by_zero_jit
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/vm_exact_division_by_zero_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME vm_exact_division_by_zero_aot
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/vm_exact_division_by_zero_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/vm_exact_division_by_zero_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/vm_exact_division_by_zero_aot'")
+    set_tests_properties(vm_exact_division_by_zero_jit vm_exact_division_by_zero_aot
+        PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+            PASS_REGULAR_EXPRESSION "PASS: exact division by zero raises"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Unhandled exception")
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
         # Every builtin the math dispatch lowers has a Taylor recurrence, and

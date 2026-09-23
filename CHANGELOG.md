@@ -66,6 +66,15 @@ the source changes; the verification record for the tagged commit is the
   derivative a complex value carries.** `(derivative (lambda (w) (expt w 3))
   1+1i)` was 0 and `(derivative-n log 1+1i 1)` lost its imaginary part (SW-211).
   Every procedure with a plain complex kernel now has a carrier formula.
+- **Every math builtin is a first-class value.** `atan2` passed, stored or
+  returned was the raw C function (a crash) and `(apply atan2 ...)` did not
+  compile; a first-class `atan` or `round` dropped its second argument. The
+  math builtins now take one table-driven value route, with `atan` and `round`
+  dispatching on their argument count (SW-230).
+- **A raise or an escape out of a derivative leaves no AD state behind.** The
+  forward pass level stayed raised, so later derivatives lost exactness and
+  `(derivative (lambda (b) (/ 1 b)) 0)` answered `-inf.0` instead of raising
+  after an earlier raise (SW-229).
 - **Powers at a zero base have the closed form's derivatives.** On a Taylor
   tower `sqrt`, `expt` with a constant exponent and the inverse functions'
   derivative series answered NaN at `0.0`, because the power recurrence divides

@@ -9768,80 +9768,25 @@ private:
             }
         }
 
-        // SW-35: the ROUNDING builtins are handled by the generic
-        // inline-builtin wrapper further down, NOT by the hand-written
-        // createBuiltinUnaryMathFunction below, and they are excluded here so
-        // they reach it.
-        //
-        // createBuiltinUnaryMathFunction is a SECOND, hand-written
-        // implementation of each math builtin: it unpacks the tagged operand
-        // as a double and calls the C library function. For sin/cos/exp that
-        // is the whole semantics. For floor/ceiling/truncate/round it is not
-        // — their call-position lowering (codegenMathFunction, the
-        // is_rounding_func block) dispatches on EXACTNESS first: exact
-        // integers and bignums are the identity, rationals go to
-        // eshkol_rational_<op>_tagged, and only inexact reals reach libm.
-        // The hand-written wrapper knew none of that, so it read a rational's
-        // HEAP POINTER as a double and returned the address as a number:
-        //
-        //   (map floor (list 7/3 -7/3 2.7 5))
-        //     => (6176988088 6176988304 2 5)   addresses, varying per run
-        //   (floor 7/3) => 2                   call position, correct
-        //
-        // That is the LE-01 failure mode exactly — a duplicated
-        // implementation drifting from the authoritative one — so the fix is
-        // the LE-01 mechanism rather than a second patch to the duplicate:
-        // the generic wrapper generates its body by re-entering codegenCall,
-        // which IS the exactness-aware lowering. The remaining math builtins
-        // stay on the old factory because it carries AD/dual dispatch they
-        // depend on; the sweep in scripts/run_value_position_sweep.py is what
-        // keeps that claim honest.
-        static const std::set<std::string> rounding_builtins = {
-            "floor", "ceil", "ceiling", "round", "trunc", "truncate"
-        };
-
-        // BUILTIN FIRST-CLASS FIX: Check math builtins FIRST before function_table lookup
-        // This prevents returning raw C functions (double->double) which cause ABI mismatch
-        // when called through closure dispatch (tagged_value->tagged_value)
-        static const std::set<std::string> math_builtins = {
-            // Exponential/Logarithmic
-            "exp", "exp2", "log", "log2", "log10",
-            // Trigonometric
-            "sin", "cos", "tan", "asin", "acos", "atan",
-            // Hyperbolic
-            "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
-            // Power/Root
-            "sqrt", "cbrt",
-            // Absolute
-            "abs", "fabs"
-        };
-
-        if (rounding_builtins.count(var_name)) {
+        // SW-230: every math builtin is first-class through ONE route. The
+        // names are the math dispatch's own (the Taylor recurrence table,
+        // whose route guard already requires every lowered math builtin to
+        // have a row), and each is materialised from its first-class table
+        // row by the generic wrapper that re-enters the call-position
+        // lowering -- so value and call position cannot disagree. This runs
+        // before the function_table lookup below, which holds the raw libm
+        // declarations: handing one of those back as a closure called it
+        // through the tagged ABI (`(define f atan2) (f 1.0 2.0)` crashed).
+        // Two hand-kept name sets used to stand here; `atan2` was in neither,
+        // and `atan`'s value dropped a second argument. `round` and `atan`
+        // accept 1 or 2 arguments, and their rows say so (VariadicRest::ByCount).
+        if (isFirstClassMathBuiltin(var_name)) {
+            const InlineBuiltinSpec* math_spec = lookupInlineBuiltin(var_name);
+            if (Value* variadic_value = makeVariadicBuiltinClosureValue(var_name, *math_spec)) {
+                return variadic_value;
+            }
             if (Value* first_class = codegenInlineBuiltinAsValue(var_name)) {
                 return first_class;
-            }
-            // Fall through to the old factory only if the generic path
-            // declined, so a missing table row degrades to the previous
-            // behaviour rather than to "Undefined variable".
-        }
-
-        if (math_builtins.count(var_name)) {
-            // Use createBuiltinUnaryMathFunction which creates a wrapper with proper ABI
-            // (tagged_value -> tagged_value) that internally unpacks, calls C function, repacks
-            Function* wrapper_func = createBuiltinUnaryMathFunction(var_name);
-            if (wrapper_func) {
-                // Create closure for the wrapper function
-                Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, intptr_type);
-                Value* arena_ptr = getArenaPtr();
-                Value* packed_info = ConstantInt::get(int64_type, 0);  // No captures
-                Value* sexpr_ptr = intPtrConst(0);
-                Value* return_type_info = intPtrConst(CLOSURE_RETURN_SCALAR);  // Math builtins return scalars
-                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
-                // Use with_header allocator for consolidated CALLABLE type
-                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info, sexpr_ptr, return_type_info, closure_name});
-                // Pack as CALLABLE (subtype CLOSURE is in header)
-                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
         }
 
@@ -10511,6 +10456,75 @@ private:
         return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
     }
 
+    /* SW-230: a builtin that accepts a small RANGE of argument counts (`atan`
+     * of 1 or 2, `round` with an optional precision) as a value. The closure
+     * is variadic and dispatches on the length of its rest list to the
+     * wrapper built at that arity, each generated from the call-position
+     * lowering; any other count raises an arity error. A fixed-arity value
+     * silently dropped the second argument: `((lambda (f) (f 1.0 2.0)) atan)`
+     * answered atan(1). */
+    Value* makeByCountBuiltinClosureValue(const std::string& name,
+                                          const InlineBuiltinSpec& spec) {
+        const std::string wrapper_name =
+            "builtin_" + inlineBuiltinSymbolSuffix(name) + "_bycount";
+        if (Function* existing = module->getFunction(wrapper_name)) {
+            return makeVariadicClosureValueFor(existing);
+        }
+        std::vector<Function*> by_arity(spec.max_arity + 1, nullptr);
+        for (size_t k = spec.arity; k <= spec.max_arity; ++k) {
+            by_arity[k] = createInlineBuiltinWrapper(name, k);
+            if (!by_arity[k]) return nullptr;
+        }
+        FunctionType* wrap_ty =
+            FunctionType::get(tagged_value_type, {tagged_value_type}, false);
+        Function* wrap_fn = Function::Create(
+            wrap_ty,
+#ifdef _WIN32
+            Function::InternalLinkage,
+#else
+            Function::LinkOnceODRLinkage,
+#endif
+            wrapper_name, module.get());
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        Function* old_current_function = current_function;
+        current_function = wrap_fn;
+        builder->SetInsertPoint(BasicBlock::Create(*context, "entry", wrap_fn));
+        Value* cur = &*wrap_fn->arg_begin();
+        cur->setName("rest");
+        std::vector<Value*> args;
+        auto is_null = [&](Value* v) {
+            return builder->CreateICmpEQ(getBaseType(getTaggedValueType(v)),
+                                         ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
+        };
+        BasicBlock* arity_error = BasicBlock::Create(*context, "bycount_arity_error", wrap_fn);
+        for (size_t i = 0; i <= spec.max_arity; ++i) {
+            BasicBlock* ends_here = BasicBlock::Create(*context, "bycount_ends", wrap_fn);
+            BasicBlock* more = BasicBlock::Create(*context, "bycount_more", wrap_fn);
+            builder->CreateCondBr(is_null(cur), ends_here, more);
+            builder->SetInsertPoint(ends_here);
+            if (i >= spec.arity && by_arity[i]) {
+                builder->CreateRet(builder->CreateCall(by_arity[i], args));
+            } else {
+                builder->CreateBr(arity_error);
+            }
+            builder->SetInsertPoint(more);
+            if (i == spec.max_arity) {
+                builder->CreateBr(arity_error);
+                break;
+            }
+            Value* cell = unpackInt64FromTaggedValue(cur);
+            args.push_back(extractCarAsTaggedValue(cell));
+            cur = extractCdrAsTaggedValue(cell);
+        }
+        builder->SetInsertPoint(arity_error);
+        ctx_->emitRaise((name + ": wrong number of arguments (expected " +
+                         std::to_string(spec.arity) + " to " +
+                         std::to_string(spec.max_arity) + ")").c_str());
+        current_function = old_current_function;
+        if (old_point.isSet()) builder->restoreIP(old_point);
+        return makeVariadicClosureValueFor(wrap_fn);
+    }
+
     /* SW-173: materialise a VARIADIC builtin as a genuine variadic closure.
      *
      * Returns nullptr when the row declares no rest form, so the caller
@@ -10622,6 +10636,9 @@ private:
             return makeVariadicClosureValueFor(wrap_fn);
         }
 
+        if (spec.variadic && spec.rest == VariadicRest::ByCount) {
+            return makeByCountBuiltinClosureValue(name, spec);
+        }
         if (!spec.variadic || spec.rest == VariadicRest::None) return nullptr;
 
         const std::string wrapper_name =
@@ -22584,6 +22601,44 @@ private:
         return flow_->codegenCond(op);
     }
 
+    // SW-229: the forward-mode AD dynamic state a non-local exit must put back.
+    //
+    // A derivative pass raises __ad_pert_level (and a Taylor pass
+    // __ad_tower_active/__ad_tower_order) on entry and lowers it on its normal
+    // exit. A raise or an escaping continuation from inside the pass longjmps
+    // past that exit, so the level stayed raised: every later `derivative`
+    // believed it was nested, declined the exact tier and answered inexact
+    // (exact 6 became 6.0), and a later derivative through exact division by
+    // exact 0 answered -inf.0 instead of raising. The runtime's unwinder
+    // (eshkol_ad_state_restore) cannot reach these: they are module globals,
+    // internal to an AOT module. So every site that installs a longjmp target
+    // snapshots them into entry-block slots before setjmp and stores them back
+    // first thing on the path a longjmp arrives by.
+    using AdForwardSnapshot = std::vector<std::pair<GlobalVariable*, Value*>>;
+    AdForwardSnapshot snapshotAdForwardState() {
+        AdForwardSnapshot snap;
+        Function* fn = builder->GetInsertBlock()->getParent();
+        for (GlobalVariable* g : {ctx_->adPertLevel(), ctx_->adTowerActive(), ctx_->adTowerOrder()}) {
+            if (!g) continue;
+            IRBuilderBase::InsertPoint ip = builder->saveIP();
+            BasicBlock& entry = fn->getEntryBlock();
+            builder->SetInsertPoint(&entry, entry.begin());
+            Value* slot = builder->CreateAlloca(g->getValueType(), nullptr, "ad_fwd_snapshot");
+            builder->restoreIP(ip);
+            builder->CreateStore(builder->CreateLoad(g->getValueType(), g), slot);
+            snap.push_back({g, slot});
+        }
+        return snap;
+    }
+    // Emit the restores at the start of `landing`, the block a longjmp reaches.
+    void restoreAdForwardStateAt(BasicBlock* landing, const AdForwardSnapshot& snap) {
+        IRBuilderBase::InsertPoint ip = builder->saveIP();
+        builder->SetInsertPoint(landing);
+        for (const auto& gs : snap)
+            builder->CreateStore(builder->CreateLoad(gs.first->getValueType(), gs.second), gs.first);
+        builder->restoreIP(ip);
+    }
+
     // Exception handling: guard expression
     // Syntax: (guard (var clause ...) body ...)
     // Sets up setjmp handler, evaluates body, handles exceptions via clauses
@@ -22694,10 +22749,12 @@ private:
         }
 
         // Call setjmp - returns 0 on first call, non-zero when longjmp is called
+        AdForwardSnapshot guard_ad_snapshot = snapshotAdForwardState();   // SW-229
         Value* setjmp_result = builder->CreateCall(setjmp_func, makeSetjmpArgs(jmp_buf_alloc), "setjmp_result");
         Value* is_exception = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
 
         builder->CreateCondBr(is_exception, handler_block, try_block);
+        restoreAdForwardStateAt(handler_block, guard_ad_snapshot);
 
         // Try block - evaluate body
         builder->SetInsertPoint(try_block);
@@ -23406,10 +23463,12 @@ private:
         Value* cont_tagged = packPtrToTaggedValue(cont_closure_ptr, ESHKOL_VALUE_CALLABLE);
 
         // Call setjmp — returns 0 first time, non-zero when continuation is invoked
+        AdForwardSnapshot callcc_ad_snapshot = snapshotAdForwardState();  // SW-229
         Value* setjmp_result = builder->CreateCall(setjmp_func, makeSetjmpArgs(jmp_buf_alloc), "callcc_setjmp");
         Value* was_invoked = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
 
         builder->CreateCondBr(was_invoked, invoked_bb, normal_bb);
+        restoreAdForwardStateAt(invoked_bb, callcc_ad_snapshot);
 
         // Normal path: call proc with the continuation
         builder->SetInsertPoint(normal_bb);
@@ -23646,10 +23705,12 @@ private:
         builder->CreateCall(push_handler_func, {jmp_buf_alloc});
 
         // Call setjmp - returns 0 on first call, non-zero when longjmp fires
+        AdForwardSnapshot weh_ad_snapshot = snapshotAdForwardState();    // SW-229
         Value* setjmp_result = builder->CreateCall(setjmp_func, makeSetjmpArgs(jmp_buf_alloc), "weh_setjmp");
         Value* is_exception = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
 
         builder->CreateCondBr(is_exception, handler_block, try_block);
+        restoreAdForwardStateAt(handler_block, weh_ad_snapshot);
 
         // Try block: call the thunk (0 args)
         builder->SetInsertPoint(try_block);
@@ -42270,45 +42331,16 @@ private:
 
             // BUILTIN FIRST-CLASS FIX: Check for builtin math functions FIRST before raw function_table lookup
             // These need wrapper functions that take/return tagged_value_type
-            // SW-35: THE SECOND VALUE-POSITION ROUTE.
-            //
-            // There are two of them, and they were disagreeing. A builtin
-            // reached through a USER higher-order procedure — `(define (h f a)
-            // (f a))` — resolves through codegenVariable; a builtin reached
-            // through `map`/`for-each`/`filter`/`sort` resolves through THIS
-            // function. Fixing the rounding builtins in codegenVariable alone
-            // made `(h floor 7/3)` correct while `(map floor (list 7/3))` still
-            // printed a heap address, because this site kept handing back the
-            // same hand-written createBuiltinUnaryMathFunction wrapper that
-            // reads a rational's pointer as a double.
-            //
-            // Both routes now consult the generic inline-builtin wrapper
-            // first, so the exactness-aware call-position lowering is the
-            // single source of truth for both. The value-position sweep
-            // exercises BOTH routes for exactly this reason — a fix applied to
-            // one of two parallel sites is the shape of defect that keeps
-            // coming back.
-            static const std::set<std::string> rounding_builtins = {
-                "floor", "ceil", "ceiling", "round", "trunc", "truncate"
-            };
-            if (rounding_builtins.count(func_name)) {
-                if (Function* generic = createInlineBuiltinWrapper(func_name, 1)) {
+            // SW-35 / SW-230: the second value-position route (`map`, `for-each`,
+            // `filter`, `sort` resolve their procedure here) consults the same
+            // table-driven wrapper as codegenVariable, at the arity the use
+            // site needs -- `(map atan ys xs)` is atan at arity 2.
+            if (isFirstClassMathBuiltin(func_name)) {
+                const InlineBuiltinSpec* math_spec = lookupInlineBuiltin(func_name);
+                size_t math_arity = required_arity > 0 ? required_arity : math_spec->arity;
+                if (Function* generic = createInlineBuiltinWrapper(func_name, math_arity)) {
                     return generic;
                 }
-                // Fall through to the old factory if the generic path
-                // declined, rather than failing to resolve at all.
-            }
-
-            static const std::set<std::string> math_builtins = {
-                "sin", "cos", "tan", "exp", "log", "sqrt", "abs", "fabs",
-                "asin", "acos", "atan", "sinh", "cosh", "tanh",
-                "asinh", "acosh", "atanh", "exp2", "log2", "log10",
-                "floor", "ceil", "round", "trunc", "cbrt",
-                "ceiling", "truncate"  // Scheme-style names
-            };
-            if (math_builtins.count(func_name)) {
-                eshkol_debug("resolveLambdaFunction: '%s' is a math builtin, creating wrapper", func_name.c_str());
-                return createBuiltinUnaryMathFunction(func_name);
             }
 
             // Strategy 0: Check function_table for regular defined functions (NOT raw C builtins)
@@ -42424,13 +42456,6 @@ private:
                 return createBuiltinPredicateFunction(func_name);
             }
 
-            // Handle unary math functions as first-class functions (for map, etc.)
-            if (func_name == "abs" || func_name == "sin" || func_name == "cos" ||
-                func_name == "tan" || func_name == "exp" || func_name == "log" ||
-                func_name == "sqrt" || func_name == "floor" || func_name == "ceiling" ||
-                func_name == "truncate" || func_name == "round") {
-                return createBuiltinUnaryMathFunction(func_name);
-            }
 
             // SW-173: VARIADIC BUILTINS MATERIALISE AT THE CALL SITE'S ARITY.
             //
@@ -44065,7 +44090,7 @@ private:
      * Every one of these is built from the AUTHORITATIVE call-position
      * lowering (createInlineBuiltinWrapper re-enters codegenCall), so none
      * of them is a second implementation that can drift. */
-    enum class VariadicRest : uint8_t { None, Identity, RestUnary, LeftFold };
+    enum class VariadicRest : uint8_t { None, Identity, RestUnary, LeftFold, ByCount };
 
     /* A row of the first-class builtin table.
      *
@@ -44079,6 +44104,7 @@ private:
         bool variadic = false;
         VariadicRest rest = VariadicRest::None;
         const char* rest_unary = nullptr;   // RestUnary only
+        size_t max_arity = 0;               // ByCount only: arities arity..max_arity
     };
 
     /* A row's `arity` is what a use site gets when it names no arity of its
@@ -44148,6 +44174,16 @@ private:
             {"vector->list", {1}}, {"list->vector", {1}},
             // Numerics
             {"expt", {2}}, {"pow", {2}},
+            // SW-230: the math builtins, first-class through the generic
+            // wrapper (see isFirstClassMathBuiltin). `atan` and `round` take 1
+            // or 2 arguments; a value reference dispatches on the count.
+            {"atan2", {2}},
+            {"exp", {1}}, {"exp2", {1}}, {"log", {1}}, {"log2", {1}}, {"log10", {1}},
+            {"sin", {1}}, {"cos", {1}}, {"tan", {1}}, {"asin", {1}}, {"acos", {1}},
+            {"atan", {1, true, VariadicRest::ByCount, nullptr, 2}},
+            {"sinh", {1}}, {"cosh", {1}}, {"tanh", {1}},
+            {"asinh", {1}}, {"acosh", {1}}, {"atanh", {1}},
+            {"sqrt", {1}}, {"cbrt", {1}}, {"abs", {1}}, {"fabs", {1}},
             {"min", {2, true, VariadicRest::LeftFold}},
             {"max", {2, true, VariadicRest::LeftFold}},
             {"modulo", {2}}, {"quotient", {2}}, {"remainder", {2}},
@@ -44166,7 +44202,8 @@ private:
             // makes the value route inherit that lowering rather than
             // re-implement a subset of it.
             {"floor", {1}}, {"ceiling", {1}}, {"ceil", {1}},
-            {"truncate", {1}}, {"trunc", {1}}, {"round", {1}},
+            {"truncate", {1}}, {"trunc", {1}},
+            {"round", {1, true, VariadicRest::ByCount, nullptr, 2}},
             // Booleans / symbols / general predicates
             {"not", {1}}, {"boolean=?", {2, true}}, {"symbol=?", {2, true}},
             // The R7RS numeric-tower predicate family, complete (SW-34).
@@ -44567,12 +44604,14 @@ private:
         return emitFunctionAsCallableValue(wrapper, spec->arity);
     }
 
-    // Create wrapper function for builtin unary math functions (abs, etc.)
-    Function* createBuiltinUnaryMathFunction(const std::string& func_name_in) {
-        // Value and call positions share the same runtime-tag dispatch.
-        // The former handwritten wrapper handled scalar jets but stripped
-        // complex component carriers, so (derivative exp z) returned zero.
-        return createInlineBuiltinWrapper(func_name_in, 1);
+    // SW-230: a math builtin of the math dispatch (a row or an alias of the
+    // Taylor recurrence table, which the route guard keeps complete) that has
+    // a first-class table row. The activations have their own value route.
+    bool isFirstClassMathBuiltin(const std::string& name) const {
+        if (eshkol_taylor_unary_opcode(name.c_str()) < 0 &&
+            eshkol_taylor_binary_opcode(name.c_str()) < 0) return false;
+        if (findActivation(name)) return false;
+        return lookupInlineBuiltin(name) != nullptr;
     }
 
     /* Quirk 11: create a unary (or nullary for `newline`) closure wrapper

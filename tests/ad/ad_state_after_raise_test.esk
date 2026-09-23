@@ -1,0 +1,44 @@
+;; SW-229 regression: a raise or an escaping continuation out of a live
+;; derivative pass leaves no forward-mode state behind. The pass level stayed
+;; raised, so every later derivative believed it was nested: an exact
+;; derivative came back inexact, and a later derivative through exact division
+;; by exact 0 answered -inf.0 instead of raising.
+(define failures 0)
+(define checks 0)
+(define (check name ok)
+  (set! checks (+ checks 1))
+  (if (not ok)
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises? thunk) (eq? (guard (e (#t 'raised)) (thunk) 'no) 'raised))
+(define (exact-square-derivative) (derivative (lambda (b) (* b b)) 3))
+
+(check "exact before any raise" (and (exact? (exact-square-derivative)) (= (exact-square-derivative) 6)))
+(check "first exact division by zero raises"
+       (raises? (lambda () (derivative (lambda (b) (/ 1 b)) 0))))
+(check "second one raises too"
+       (eq? (guard (e (#t 'raised)) (let ((r (derivative (lambda (b) (/ 1 b)) 0))) r)) 'raised))
+(check "direct under guard raises"
+       (eq? (guard (e (#t 'raised)) (derivative (lambda (b) (/ 1 b)) 0)) 'raised))
+(check "exact after a raise" (exact? (exact-square-derivative)))
+(check "derivative-n after a raise" (raises? (lambda () (derivative-n (lambda (b) (/ 1 b)) 0 1))))
+(check "with-exception-handler"
+       (eq? (call-with-current-continuation
+              (lambda (k) (with-exception-handler (lambda (e) (k 'raised))
+                            (lambda () (derivative (lambda (b) (/ 1 b)) 0)))))
+            'raised))
+(check "exact after with-exception-handler" (exact? (exact-square-derivative)))
+(check "continuation escaping a pass"
+       (eq? (call-with-current-continuation
+              (lambda (k) (derivative (lambda (x) (k 'escaped)) 1.0)))
+            'escaped))
+(check "exact after an escape" (exact? (exact-square-derivative)))
+(check "Taylor pass escape"
+       (eq? (call-with-current-continuation
+              (lambda (k) (derivative-n (lambda (x) (k 'escaped)) 1.0 3)))
+            'escaped))
+(check "exact derivative-n after a Taylor escape"
+       (let ((v (derivative-n (lambda (b) (* b b b)) 2 2))) (and (exact? v) (= v 12))))
+
+(if (= failures 0)
+    (begin (display "PASS: ad_state_after_raise ") (display checks) (newline))
+    (begin (display "FAIL: ") (display failures) (display " of ") (display checks) (newline)))
