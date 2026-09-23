@@ -4965,6 +4965,22 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    /* #550: (zeros d1 d2 ...) / (ones d1 d2 ...), the documented variadic
+     * form (docs/API_REFERENCE.md). Their BUILTINS-table entries are fixed
+     * 1-arg (shape) closures, so -- exactly as for reshape above -- the
+     * dimensions are packed into the shape list the native reads, and that
+     * native validates the shape. Through the generic call path a 2-arg call
+     * was an arity error, so the malformed-shape check never ran. */
+    if ((is_sym(head, "zeros") || is_sym(head, "ones")) && node->n_children >= 3) {
+        chunk_emit(c, OP_NIL, 0);
+        for (int i = node->n_children - 1; i >= 1; i--) {
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_CONS, 0);
+        }
+        chunk_emit(c, OP_NATIVE_CALL, is_sym(head, "zeros") ? 417 : 418);
+        return;
+    }
+
     /* #322: (arange stop) | (arange start stop) | (arange start stop step).
      * The native handler (case 419) pops exactly (start, stop, step) in that
      * stack order — bottom→top — matching the LLVM path

@@ -6404,7 +6404,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             "vm_no_leaked_carrier|tests/ad/vm_no_leaked_carrier_test.esk|PASS: no leaked carrier|vm"
             "taylor_integral_family|tests/ad/taylor_integral_family_test.esk|PASS: taylor_integral_family|vm"
             "complex_carrier_math|tests/ad/complex_carrier_math_test.esk|PASS: complex_carrier_math|vm"
-            "unary_numeric_builtin_carriers|tests/ad/unary_numeric_builtin_carriers_test.esk|PASS: unary_numeric_builtin_carriers|vm")
+            "unary_numeric_builtin_carriers|tests/ad/unary_numeric_builtin_carriers_test.esk|PASS: unary_numeric_builtin_carriers|vm"
+            # #550: malformed tensor shapes raise error objects everywhere.
+            "malformed_shape_matrix|tests/tensor/malformed_shape_matrix_test.esk|PASS: malformed shape matrix|all")
         foreach(_esh_spec IN LISTS _esh_vm_carrier_tests)
             string(REPLACE "|" ";" _esh_parts "${_esh_spec}")
             list(GET _esh_parts 0 _esh_name)
@@ -6443,6 +6445,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                     FAIL_REGULAR_EXPRESSION "${_esh_fail}")
         endforeach()
     endif()
+    # #550: the malformed-shape matrix on the AOT engine (the JIT, VM and
+    # browser VM rows are registered with the engine matrix above).
+    add_test(
+        NAME malformed_shape_matrix_aot
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/malformed_shape_matrix_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/malformed_shape_matrix_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/malformed_shape_matrix_aot'"
+    )
+    set_tests_properties(malformed_shape_matrix_aot
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: malformed shape matrix"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|fatal signal")
     add_test(
         NAME i128_generic_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
