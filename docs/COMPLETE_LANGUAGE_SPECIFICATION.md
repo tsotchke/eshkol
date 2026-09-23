@@ -1864,8 +1864,15 @@ with a diagnostic, never a silent `()`.
 - `(open-output-file filename)` - Open file for writing
 - `(close-port port)` - Close port
 - `(flush-output-port port)` - Flush output buffer
-- `(current-input-port)` - Get stdin
-- `(current-output-port)` - Get stdout
+- `(current-input-port)`, `(current-output-port)`, `(current-error-port)` - Parameter
+  objects (R7RS 6.13.1) holding the current standard ports; `parameterize` rebinds them,
+  and every read or write that names no port uses the port they hold, on native and the VM:
+
+  ```scheme
+  (define p (open-output-string))
+  (parameterize ((current-output-port p)) (display "hi") (newline))
+  (get-output-string p)   ; => "hi\n"
+  ```
 
 #### 4.13.4 File Operations
 - `(read-file filename)` - Read entire file as string

@@ -946,6 +946,9 @@ static const BuiltinDef BUILTINS[] = {
     {"current-time-ms", 1709, 0}, {"getpid", 1710, 0},
     {"sleep-ms", 1711, 1}, {"setenv", 1712, 2}, {"unsetenv", 1713, 1},
     {"current-error-port", 1714, 0},
+    /* The prelude binds current-input-port, current-output-port and
+     * current-error-port to the parameter objects this returns. */
+    {"_std-port-parameter", 2242, 1},
     {"getenv", 1715, 1}, {"get-environment-variable", 1715, 1},
     /* ═══════════════════════════════════════════════════════════════
      * Path Manipulation — IDs 1720-1739

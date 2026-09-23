@@ -313,6 +313,12 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "  (cond ((null? args) (_write1 value))\n"
     "        ((null? (cdr args)) (_write2 value (car args)))\n"
     "        (else (error \"write: expected one value and at most one port\"))))\n"
+    /* R7RS 6.13.1: the standard ports are parameter objects, so
+     * `parameterize` rebinds them and a write or read that names no port
+     * uses the current one (vm_current_port in vm_native.c). */
+    "(define current-input-port (_std-port-parameter 0))\n"
+    "(define current-output-port (_std-port-parameter 1))\n"
+    "(define current-error-port (_std-port-parameter 2))\n"
     "(define _display1 display)\n"
     "(define (display value . args)\n"
     "  (cond ((null? args) (_display1 value))\n"

@@ -14,6 +14,13 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **The standard ports are parameter objects on the VM.** On the bytecode VM
+  `current-output-port` was an undefined variable, so
+  `(parameterize ((current-output-port p)) ...)` failed, and `current-input-port`
+  did not exist either (SW-250). The three standard ports are now parameter
+  objects on the VM as natively, and every read or write that names no port
+  follows them. Natively, `read` with no port now reads the current input port,
+  as `read-char` and `read-line` already did.
 - **Record predicates tell record types apart on the VM, and accessors check
   their operand on both engines.** The VM's record predicate was `vector?`, so
   a plain vector passed it and `cat?` of a dog was `#t`; its tag was a string

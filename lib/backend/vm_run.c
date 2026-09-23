@@ -459,8 +459,7 @@ void vm_run(VM* vm) {
     lbl_PRINT: {
         Value v = vm_pop(vm);
         if (v.type != VAL_VOID) {
-            print_value(vm, v);
-            fflush(stdout);
+            vm_emit_current(vm, v, 0);   /* the current output port */
             if (vm->n_outputs < 256) vm->outputs[vm->n_outputs++] = v;
         }
         DISPATCH();
@@ -881,7 +880,7 @@ vm_exit:
         case OP_PRINT: {
             Value v = vm_pop(vm);
             if (v.type != VAL_VOID) {
-                print_value(vm, v);
+                vm_emit_current(vm, v, 0);   /* the current output port */
                 if (vm->n_outputs < 256) vm->outputs[vm->n_outputs++] = v;
             }
             break;

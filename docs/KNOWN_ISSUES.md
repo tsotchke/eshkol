@@ -427,14 +427,13 @@ block ordinary use.
 - **Four value divergences the optional-argument probe uncovered, none of them
   about arity.** Probing every optional-argument builtin at its minimum and
   maximum argument count put the two engines side by side over calls nobody had
-  compared before, and four answers differ for reasons that reproduce at FULL
-  arity too: `(hash-ref table key default)` answers the default's raw integer
-  bits on the VM (`vm_ht_ref` stores `void*`, so a symbol comes back as a
-  number) where native answers the value; `(write-string s)` answers `0` on
-  native and the unspecified value on the VM; `(make-tensor shape)` builds a
-  rank-1 tensor on native where the VM builds the requested shape; and the
-  `(bytevector …)` constructor and `current-input-port` / `current-output-port`
-  are not callable on the VM at all. Each is its own build item.
+  compared before, and some answers differ for reasons that reproduce at FULL
+  arity too: `(write-string s)` answers `0` on native and the unspecified
+  value on the VM; `(make-tensor shape)` builds a rank-1 tensor on native
+  where the VM builds the requested shape; and the `(bytevector …)`
+  constructor is not callable on the VM. Each is its own build item. (VM
+  `hash-ref` now returns the stored value, SW-247, and the standard ports are
+  parameter objects on the VM, SW-250.)
 
 - **Some documented optional parameters are not implemented on either engine.**
   `scripts/gen_builtin_min_arity.py` reports 33 builtins whose documented

@@ -15,9 +15,9 @@
     }
   },
   "counts": {
-    "builtins_total": 1054,
+    "builtins_total": 1055,
     "builtins_in_native_closure_table": 435,
-    "builtins_in_vm_table": 752,
+    "builtins_in_vm_table": 753,
     "builtins_in_llvm_aot_dispatch": 797,
     "builtins_aot_only": 263,
     "quantum_agent_ffi_builtins": 22,
@@ -34,7 +34,7 @@
     "list_pair": 53,
     "io_port": 52,
     "string_char": 42,
-    "misc": 39,
+    "misc": 40,
     "consciousness": 37,
     "vector": 23,
     "hash": 22,
@@ -529,6 +529,18 @@
         "vm"
       ],
       "category": "memory_region"
+    },
+    {
+      "name": "_std-port-parameter",
+      "ids": [
+        2242
+      ],
+      "arity": 1,
+      "min_arity": 1,
+      "backends": [
+        "vm"
+      ],
+      "category": "misc"
     },
     {
       "name": "_string-append-2",

@@ -7859,6 +7859,86 @@ static void vm_write_value_port(VM* vm, Value value, VmPort* port,
     }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Standard port parameters (R7RS 6.13.1)
+ *
+ * current-input-port, current-output-port and current-error-port are
+ * parameter objects: `parameterize` rebinds them, and every read or write
+ * that names no port uses the port the parameter currently holds. They are
+ * made once per VM, with the process's standard ports as defaults, and the
+ * prelude binds the three names to them (native 2242).
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static VmPort* vm_std_port_default(int which) {
+    return which == 0 ? vm_port_current_input()
+         : which == 2 ? vm_port_current_error()
+         : vm_port_current_output();
+}
+
+static Value vm_std_port_parameter(VM* vm, int which) {
+    if (which < 0 || which > 2) return NIL_VAL;
+    if (is_heap_type(vm, vm->std_port_params[which], HEAP_PARAMETER))
+        return vm->std_port_params[which];
+    int32_t port_slot = heap_alloc(&vm->heap);
+    if (port_slot < 0) { vm->error = 1; return NIL_VAL; }
+    vm->heap.objects[port_slot]->type = HEAP_PORT;
+    vm->heap.objects[port_slot]->opaque.ptr = vm_std_port_default(which);
+    Value port = (Value){.type = VAL_PORT, .as.ptr = port_slot};
+    Value no_converter = NIL_VAL;
+    VmParameter* parameter = vm_param_make(&vm->heap.regions, &port, &no_converter);
+    if (!parameter) { vm->error = 1; return NIL_VAL; }
+    int32_t param_slot = heap_alloc(&vm->heap);
+    if (param_slot < 0) { vm->error = 1; return NIL_VAL; }
+    vm->heap.objects[param_slot]->type = HEAP_PARAMETER;
+    vm->heap.objects[param_slot]->opaque.ptr = parameter;
+    vm->std_port_params[which] = (Value){.type = VAL_PARAMETER_OBJ, .as.ptr = param_slot};
+    return vm->std_port_params[which];
+}
+
+/** @brief The port a read or write that names none uses: the current value
+ *         of the standard port parameter, or the process port before the
+ *         parameter exists. */
+static VmPort* vm_current_port(VM* vm, int which) {
+    if (vm && which >= 0 && which <= 2 &&
+        is_heap_type(vm, vm->std_port_params[which], HEAP_PARAMETER)) {
+        VmParameter* parameter =
+            (VmParameter*)vm->heap.objects[vm->std_port_params[which].as.ptr]->opaque.ptr;
+        Value current = NIL_VAL;
+        if (parameter) vm_param_ref(parameter, &current);
+        VmPort* port = vm_value_as_port(vm, current);
+        if (port) return port;
+    }
+    return vm_std_port_default(which);
+}
+
+static VmPort* vm_current_output(VM* vm) { return vm_current_port(vm, 1); }
+static VmPort* vm_current_input(VM* vm) { return vm_current_port(vm, 0); }
+
+/** @brief `display` / `write` to the current output port. `write` always
+ *         goes through the port writer (it owns R7RS write syntax, e.g. barred
+ *         symbols); `display` to the process's standard output keeps the
+ *         stdout printer, byte for byte, and any other port gets the port
+ *         writer. */
+static void vm_emit_current(VM* vm, Value v, int write_syntax) {
+    VmPort* port = vm_current_output(vm);
+    if (write_syntax || port != vm_port_current_output()) {
+        vm_write_value_port(vm, v, port, write_syntax);
+    } else {
+        print_value_mode(vm, v, 0);
+    }
+    fflush(stdout);
+}
+
+static void vm_newline_current(VM* vm) {
+    VmPort* port = vm_current_output(vm);
+    if (port == vm_port_current_output()) {
+        printf("\n");
+        fflush(stdout);
+    } else {
+        vm_port_write_cstr(port, "\n");
+    }
+}
+
+
 /* ── Runtime datum reader -------------------------------------------------
  *
  * The source VM used to implement `(read)` as a single getchar(), returning
@@ -9793,8 +9873,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * I/O (60-61)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 60: printf("\n"); fflush(stdout); vm_push(vm, (Value){.type = VAL_VOID}); break;
-    case 61: { Value v = vm_pop(vm); print_value(vm, v); fflush(stdout); vm_push(vm, (Value){.type = VAL_VOID}); break; }
+    case 60: vm_newline_current(vm); vm_push(vm, (Value){.type = VAL_VOID}); break;
+    case 61: { Value v = vm_pop(vm); vm_emit_current(vm, v, 0); vm_push(vm, (Value){.type = VAL_VOID}); break; }
 
     /* ══════════════════════════════════════════════════════════════════════
      * List/apply (70-73)
@@ -12804,7 +12884,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 583: { /* read-char(port) */
         Value port_val = vm_pop(vm);
         VmPort* port = vm_value_as_port(vm, port_val);
-        if (!port) port = vm_port_current_input();
+        if (!port) port = vm_current_input(vm);
         int ch = vm_port_read_char(port);
         vm_push(vm, ch == EOF ? (Value){.type = VAL_EOF} :
                               (Value){.type = VAL_CHAR, .as.i = ch});
@@ -12813,7 +12893,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 584: { /* write-char(char, port) */
         Value port_value = vm_pop(vm), ch = vm_pop(vm);
         VmPort* port = vm_value_as_port(vm, port_value);
-        if (!port) port = vm_port_current_output();
+        if (!port) port = vm_current_output(vm);
         vm_port_write_char(port, (int)as_number(ch));
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
@@ -12823,7 +12903,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* `(read-line)` reads the current input port, as R7RS specifies and as
          * the native lowering does; only a port argument that is PRESENT and
          * wrong is an error. */
-        VmPort* port = vm_native_absent(port_val) ? vm_port_current_input()
+        VmPort* port = vm_native_absent(port_val) ? vm_current_input(vm)
                                                   : vm_value_as_port(vm, port_val);
         if ((!vm_native_absent(port_val) && port_val.type != VAL_PORT) ||
             !port || !port->is_open || port->dir != VM_PORT_INPUT) {
@@ -12842,7 +12922,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 586: { /* write-char(char, port) — write to stdout if no port */
         Value ch = vm_pop(vm);
-        vm_port_write_char(vm_port_current_output(), (int)as_number(ch));
+        vm_port_write_char(vm_current_output(vm), (int)as_number(ch));
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
@@ -12855,13 +12935,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
             ? (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr
             : NULL;
         VmPort* port = vm_value_as_port(vm, port_val);
-        if (!port) port = vm_port_current_output();
+        if (!port) port = vm_current_output(vm);
         vm_port_write_string(port, str);
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
     case 588: { /* _read0 — complete datum reader over current input */
-        vm_push(vm, vm_reader_from_port(vm, vm_port_current_input()));
+        vm_push(vm, vm_reader_from_port(vm, vm_current_input(vm)));
         break;
     }
     case 619: { /* _read1(port) — complete datum reader over explicit port */
@@ -12878,18 +12958,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 589: { /* write(datum) */
         Value v = vm_pop(vm);
-        vm_write_value_port(vm, v, vm_port_current_output(), 1);
+        vm_emit_current(vm, v, 1);
         vm_push(vm, NIL_VAL);
         break;
     }
     case 590: { /* display(datum) — print without quoting (same as write in this VM) */
         Value v = vm_pop(vm);
-        print_value(vm, v);
+        vm_emit_current(vm, v, 0);
         vm_push(vm, NIL_VAL);
         break;
     }
     case 591: { /* newline */
-        printf("\n"); vm_push(vm, NIL_VAL); break;
+        vm_newline_current(vm); vm_push(vm, NIL_VAL); break;
     }
     case 592: { /* eof-object? */
         Value v = vm_pop(vm);
@@ -14890,7 +14970,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 2070: { /* read-u8([port]) → byte or eof */
         Value port_val = vm_pop(vm);
-        VmPort* p = vm_native_absent(port_val) ? vm_port_current_input()
+        VmPort* p = vm_native_absent(port_val) ? vm_current_input(vm)
                                                : vm_value_as_port(vm, port_val);
         int b = vm_port_read_u8(p);
         /* END OF INPUT IS THE EOF OBJECT, not the empty list. `read-char`
@@ -14903,7 +14983,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 2071: { /* write-u8(byte [, port]) → void */
         Value port_val = vm_pop(vm), byte_val = vm_pop(vm);
-        VmPort* p = vm_native_absent(port_val) ? vm_port_current_output()
+        VmPort* p = vm_native_absent(port_val) ? vm_current_output(vm)
                                                : vm_value_as_port(vm, port_val);
         vm_port_write_u8(p, (int)as_number(byte_val));
         vm_push(vm, NIL_VAL);
@@ -14911,7 +14991,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 2072: { /* read-bytevector(k [, port]) → bytevector or eof */
         Value port_val = vm_pop(vm), k_val = vm_pop(vm);
-        VmPort* p = vm_native_absent(port_val) ? vm_port_current_input()
+        VmPort* p = vm_native_absent(port_val) ? vm_current_input(vm)
                                                : vm_value_as_port(vm, port_val);
         int k = (int)as_number(k_val);
         if (!p || k < 0) { vm_push(vm, NIL_VAL); break; }
@@ -14932,7 +15012,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 2073: { /* write-bytevector(bv [, port]) → void */
         Value port_val = vm_pop(vm), bv_val = vm_pop(vm);
-        VmPort* p = vm_native_absent(port_val) ? vm_port_current_output()
+        VmPort* p = vm_native_absent(port_val) ? vm_current_output(vm)
                                                : vm_value_as_port(vm, port_val);
         VmBytevector* bv = vm_value_as_bytevector(vm, bv_val);
         if (p && bv) vm_port_write_bytevector(p, (const char*)bv->data, bv->len);
@@ -16620,10 +16700,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 208: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_BOOL)); break; }   /* boolean? */
     case 209: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_CLOSURE)); break; }/* procedure? */
     case 210: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_VECTOR)); break; } /* vector? */
-    case 211: { Value a = vm_pop(vm); print_value(vm, a); fflush(stdout); vm_push(vm, (Value){.type = VAL_VOID}); break; } /* display */
+    case 211: { Value a = vm_pop(vm); vm_emit_current(vm, a, 0); vm_push(vm, (Value){.type = VAL_VOID}); break; } /* display */
     case 212: { /* _write1(value) */
         Value a = vm_pop(vm);
-        vm_write_value_port(vm, a, vm_port_current_output(), 1);
+        vm_emit_current(vm, a, 1);
         fflush(stdout);
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
@@ -16981,13 +17061,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 240: { /* display (native) */
         Value v = vm_pop(vm);
-        print_value(vm, v);
+        vm_emit_current(vm, v, 0);
         vm_push(vm, NIL_VAL);
         break;
     }
     case 241: { /* write (native) */
         Value v = vm_pop(vm);
-        vm_write_value_port(vm, v, vm_port_current_output(), 1);
+        vm_emit_current(vm, v, 1);
         vm_push(vm, NIL_VAL);
         break;
     }
@@ -17728,6 +17808,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
         (void)name_v;
 #endif
         vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 2242: { /* _std-port-parameter(which): the standard port parameter
+                  * object -- 0 input, 1 output, 2 error (R7RS 6.13.1) */
+        Value which = vm_pop(vm);
+        Value parameter = vm_std_port_parameter(vm, which.type == VAL_INT ? (int)which.as.i : -1);
+        if (parameter.type != VAL_PARAMETER_OBJ) {
+            vm_raise_error_msg(vm, "_std-port-parameter: expected 0, 1 or 2");
+            break;
+        }
+        vm_push(vm, parameter);
         break;
     }
 

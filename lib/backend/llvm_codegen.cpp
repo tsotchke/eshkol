@@ -14975,7 +14975,13 @@ private:
                 Value* port_tagged = ensureTaggedValue(port_arg);
                 fp = strio_->portFile(port_tagged, ESHKOL_PORT_INPUT_FLAG, "read");
             } else {
-                fp = ConstantPointerNull::get(PointerType::getUnqual(*context));
+                // No port: the current input port (R7RS 6.13.2), which
+                // `parameterize` may have rebound -- as read-char and
+                // read-line already do. A null FILE* read stdin instead.
+                FunctionCallee current_in = module->getOrInsertFunction(
+                    "eshkol_runtime_current_input_fp",
+                    FunctionType::get(PointerType::getUnqual(*context), {}, false));
+                fp = builder->CreateCall(current_in, {});
             }
             Value* result_ptr = builder->CreateAlloca(tagged_value_type, nullptr, "read_result");
             llvm::FunctionCallee read_func = module->getOrInsertFunction("eshkol_read_sexpr",

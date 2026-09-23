@@ -842,6 +842,12 @@ typedef struct VM {
     Value parameter_bindings[64];
     int n_parameter_bindings;
 
+    /* The standard port parameter objects current-input-port (0),
+     * current-output-port (1) and current-error-port (2), made on first use
+     * by vm_std_port_parameter(). Every read or write that names no port
+     * goes to the port the matching parameter currently holds. */
+    Value std_port_params[3];
+
     /* `with-region` brackets currently open, innermost last. Each entry is the
      * heap region depth the matching push established, or -1 for a bracket
      * whose push was refused (region-stack overflow) and which must therefore

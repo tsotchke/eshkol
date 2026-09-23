@@ -9713,6 +9713,43 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
                 FAIL_REGULAR_EXPRESSION "^FAIL:|^<|^>")
     endif()
 
+    # SW-250: the standard ports are parameter objects on every engine;
+    # parameterize rebinds them and port-less reads and writes follow.
+    add_test(
+        NAME standard_port_parameters_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/core/standard_port_parameters_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' </dev/null"
+    )
+    add_test(
+        NAME standard_port_parameters_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/standard_port_parameters_aot_o0' tests/core/standard_port_parameters_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/standard_port_parameters_aot_o0' </dev/null"
+    )
+    set_tests_properties(standard_port_parameters_runtime_smoke
+                         standard_port_parameters_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: standard ports are parameters -- 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(
+            NAME standard_port_parameters_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/core/standard_port_parameters_test.esk </dev/null"
+        )
+        add_test(
+            NAME standard_port_parameters_vm_eskb_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/standard_port_parameters.eskb' tests/core/standard_port_parameters_test.esk && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/standard_port_parameters.eskb' </dev/null"
+        )
+        set_tests_properties(standard_port_parameters_vm_smoke
+                             standard_port_parameters_vm_eskb_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: standard ports are parameters -- 0 failures"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
+
     # SW-249: define-record-type predicates tell record types apart and
     # accessors/mutators check their operand, on every engine.
     add_test(
