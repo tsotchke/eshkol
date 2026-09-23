@@ -16,16 +16,46 @@ re-introduce the dependency, the type checker's `synthesize` and the code
 generator's `codegenAST → codegenOperation → codegenCall → codegenArithmetic`
 chain, run on the same driver. **16,000.**
 
-The rest of the release is the same discipline applied to answers rather than
-to depth. Dense tensor autodifferentiation now executes end to end, where the
-reverse pass previously fell into dead code on the path a live program could
-reach; the two lowerings are gated against each other for byte-identical
-gradients. `tensor-apply` used to
-resolve its second operand through a table of builtin *names*, so shadowing a
-name changed nothing; it now calls the callable you actually passed, through
-the same dispatcher an ordinary lambda application uses. The constant-curvature
-geometry surface used to exist twice; it exists once. And the bytecode VM,
-which had no heap reclamation of any kind, reclaims.
+The release also joins exact, arbitrarily nested differentiation with a single
+number grammar and hygienic macros. Dense tensor autodifferentiation records
+one node per operation, and `tensor-apply` invokes the callable value it
+receives. The bytecode VM reclaims memory within `with-region`, supports
+multi-shot continuations, and can dispatch tensor work through browser WebGPU.
+The release record reports **388/388** VM parity differential checks; the
+manifest classifies **962** rows. The full migration contract is in
+[Upgrading](docs/UPGRADING.md).
+
+### Language and runtime contracts
+
+- **Nested derivatives compose at arbitrary depth and order on native JIT and
+  AOT.** Taylor coefficients recursively carry enclosing differentiation
+  levels (ADR-0027). Exact rational coefficients survive exact arithmetic;
+  unary math functions use the shared recurrence, and complex-valued kernels
+  retain complex derivatives. Pole and zero-base cases follow their closed
+  forms where defined.
+- **One number grammar serves program literals, `read`, and `string->number`**
+  on native and VM (ADR-0028). It recognizes rectangular and polar complex
+  numbers, exactness and radix prefixes, rationals, infinities, and NaNs.
+- **`syntax-rules` expansion uses one hygienic renaming rule** across the
+  supported engines (ADR-0026). Lexical bindings shadow builtins while
+  diagnostics and displayed procedure forms retain source identifier names.
+  A top-level `begin`, including one produced by a macro, splices definitions
+  into the program on native and VM.
+- **Calls and conditions have shared contracts.** Wrong arity raises a
+  catchable arity error; supported optional and variadic builtin forms follow
+  the shared call contract on both engines. A handled condition is silent. Standard ports
+  are parameter objects on the VM, and `read` follows the current input port.
+- **Containers and records preserve their type boundaries.** Accessors reject
+  the wrong container kind; record predicates distinguish types on the VM;
+  hash tables compare keys by `equal?` and return the stored value.
+- **The browser VM shares the GPU dispatch seam with native tensor calls**
+  (ADR-0029). Its WebGPU binary64 kernels use integer-word software floating
+  point; unsupported operations and unavailable adapters remain on the CPU.
+  The browser REPL and runnable documentation blocks return complete answers.
+
+These contracts are exercised by the release's native, VM, ESKB, and browser
+regressions. The exact CTest total is intentionally absent from the release
+record until a full run at the tagged commit supplies it.
 
 ## Highlights
 
@@ -149,46 +179,6 @@ request beyond `f64` is refused explicitly instead of answered. Curvature series
 use a degree-10 branch in `q = K r² / 4` with cancellation-free derivatives,
 witnessed against binary128 across a 1,067-binade sweep, and adjoints are
 exponent-scaled at subnormal curvature.
-
-### A mathematical construction, written down as a build plan
-
-Eshkol now documents, step by step, how a published finite-time Navier-Stokes
-blowup construction would be obtained inside the language. The new design note
-walks the paper's own structure — similarity coordinates and the leading field,
-the cumulative radial moments, the admissible stress cone, the heat exterior and
-the analytic axis profiles, the order-by-order background correction, the
-auxiliary torus, the two-family stress solve, the residual-improvement ladder,
-and the localization to a compactly supported force — across 84 numbered proof
-steps, and for each step names the Eshkol primitive that performs it or the
-build item that will, together with the gate that certifies it. What makes this
-tractable is the combination the language already ships: exact rational and
-bignum arithmetic, Taylor towers whose coefficients stay exact, forward and
-reverse differentiation, and validated enclosures — so an identity that is
-supposed to cancel closes to exact zero rather than to a tolerance. The four
-steps that are executable today — the viscosity-scaling identity through the AD
-residual operator, the similarity exponents as an exactly solved rational
-system, the leading-order profile balance by Taylor-coefficient collection with
-a negative control, and the pulse momentum-flux averages with the two-family
-stress solve — run as the companion example programs the note calls for
-(`examples/mathematics_navier_stokes_{viscosity_scaling,similarity_scales,pulse_stress,first_principles}.esk`),
-discovered by the existing examples suite. A residual oracle built on
-automatic differentiation (`core.pde.ns-residual`, over a new
-`core.symbolic` layer of polynomials and truncated power series on the exact
-rationals) mechanizes the construction's residual ladder, verifying the residual to
-order N, and a ledger records, per step, whether the result is exact, validated by
-enclosure, or analytic-only — built up honestly rather than claimed ahead of
-what runs.
-
-What *is* in this cut is programs that verify published finite witnesses in
-pure Eshkol, and they run: the 2026 Jacobian-conjecture counterexample and its
-fiber geometry (11 checks), AlphaTensor rank-23 and rank-47
-matrix-multiplication factorizations over F2 (256 basis pairs), the
-FunSearch 512-cap in AG(8,3) (130,816 exact pair checks), and a further set of
-exact-mathematics example programs spanning finite group cohomology,
-Dijkgraaf-Witten and Yetter invariants, sheaf cohomology on finite spaces,
-homotopy colimits, and Hodge classes on Fermat hypersurfaces — each with a
-closed-form or exactly-computed verdict, negative controls, and independent
-cross-checks. All pass.
 
 ### Model I/O: ESKM v1 is the validated default
 
@@ -527,6 +517,11 @@ four-engine cross-reader matrix, the subsystem handoff record, and the
 engine-parity realignment against the merged dispatch, with further ESKM
 hardening carried into this cut.
 
+Gabriel Kahen also contributed the parameter-binding order correction and the
+allocation-failpoint approach used to verify atomic region promotion (#714).
+LJGz corrected the list tutorial's `take`, `drop`, and `sort` argument order
+(#694).
+
 ## Not claimed by this release
 
 - **No StableHLO, PJRT or TPU execution.** The XLA backend provides a
@@ -551,11 +546,10 @@ hardening carried into this cut.
   continuation captured inside a region pins that region. Objects promoted out
   of a region live in the enclosing arena for its lifetime, which is OALR's
   semantics and equally true natively.
-- **Two continuation cases stay out of scope this release**, each with its own
-  diagnostic path: a binding established after capture on the VM's
-  operand-stack store is refused rather than left ambiguous (SW-61), and a
-  non-boxed `set!`-assigned local is rolled back on re-entry on both engines
-  pending assignment conversion (SW-62).
+- **A VM continuation cannot restore a binding established after capture**
+  on its operand-stack store; the unsupported shape raises a diagnostic
+  (SW-61). Assignment conversion boxes mutated locals so their values remain
+  visible on continuation re-entry (SW-62).
 
 ## Migration and persistence contracts
 
@@ -610,12 +604,12 @@ state cannot certify the tag.
 - **Test suites.** The aggregate suite at **46/46** suites and **1,020/1,020**
   individual tests, and <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->.
 - **VM and engine parity.** <!-- release-record:vm-parity -->VM parity differential **388/388**<!-- /release-record -->
-  over a 961-row manifest: 604 `vm-supported`, 46 `native-only-justified` and
-  311 `gap`, every gap row carrying a live reproducer and a disposition. The
+  over a 962-row manifest: 620 `vm-supported`, 46 `native-only-justified` and
+  296 `gap`, every gap row carrying a live reproducer and a disposition. The
   engine differential holds its recorded floors of 321 of 1,139 constructs and
   155 of 473 high-risk constructs, with five dispositioned divergences and no
   new one, and **2,000** surface-parity probes report no divergence.
-- **Language-surface coverage.** Execution-backed coverage of **1,115/1,115**
+- **Language-surface coverage.** Execution-backed coverage of **1,116/1,116**
   declared constructs, with no high-risk construct uncovered in any category,
   and frontend span coverage at 99.5% against a 99.48% floor.
 - **Probes and oracles.** Runtime smoke probes **87/87**; Taylor
@@ -672,14 +666,10 @@ results as evidence.
 **Release Date**: July 31, 2026
 
 **Release gates** (all measured on the release cut): aggregate suite 45/45
-suites and 770 individual tests; CTest 183/183 (190/190 when remeasured on
-2026-08-25 against `4bf871a0`), which as of this release is
-itself completion-oracle evidence rather than advice; executable language
+suites and 770 individual tests; CTest suite as completion-oracle evidence; executable language
 coverage 1,091/1,091 (100.0%, floor PASS); SICP full-book gate 88/88 probes
 across all five chapters under both `-r` and AOT; reference-Scheme differential
-oracle 34/34 AGREE against chibi-scheme 0.12.0; VM parity differential 184/184
-(the corpus differential; the full manifest gate measured 188/188 on
-2026-08-25);
+oracle 34/34 AGREE against chibi-scheme 0.12.0; VM parity differential;
 qLLM oracle gate 10/10; ICC readiness 100, verdict `ready`. The VM parity
 manifest is 956 rows — 581 `vm-supported`, 44 `native-only-justified`, 331
 `gap`, of which 17 are verified behavioral divergences with reproducible
@@ -1792,7 +1782,7 @@ Eshkol v1.1.12-accelerate unifies the toolchain on LLVM 21 across all platforms,
 
 ### ARM64 ABI Fix
 
-- Fixed `call_thunk_closure` in `arena_memory.cpp:3908`: ARM64 returns 16-byte structs in register pairs (x0:x1), not via hidden return buffer
+- Fixed `call_thunk_closure`: ARM64 returns 16-byte structs in register pairs (x0:x1), not via a hidden return buffer
 - Resolves dynamic-wind + call/cc thunk invocation on Apple Silicon and Linux ARM64
 
 ### Mutual TCO Fix

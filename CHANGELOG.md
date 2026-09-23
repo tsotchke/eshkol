@@ -2741,8 +2741,8 @@ the source changes; the verification record for the tagged commit is the
 
 ### Documentation
 
-- Correct the list tutorial's argument order for `take`, `drop`, and `sort`.
-  (#694)
+- LJGz corrected the list tutorial's argument order for `take`, `drop`, and
+  `sort` (#694).
 
 - **v1.3.5 documentation wave.** `ROADMAP.md` re-dated (maintainer ruling R1,
   executed): the previously published v1.4-v2.0 dates were not achievable at

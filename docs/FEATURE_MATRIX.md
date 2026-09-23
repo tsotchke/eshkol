@@ -275,9 +275,9 @@ manifest again.
 |---------|--------|---------|-------------|
 | **Compiler** |
 | S-expression parser | Yes | Explicit continuation stack | Stack use independent of nesting depth; gated at 16,000 levels on an 8 MiB stack |
-| Macro system | Yes | Hygenic macros | `define-syntax` |
+| Macro system | Yes | Hygienic macros | `define-syntax` |
 | HoTT type checker | Yes | Bidirectional | Gradual typing |
-| LLVM IR generation | Yes | LLVM 18-24 (one major pinned per build, 21 by default) | 39 codegen modules; `lib/backend/llvm_codegen.cpp` is 47,107 lines |
+| LLVM IR generation | Yes | LLVM 18-24 (one major pinned per build, 21 by default) | 39 codegen modules; `lib/backend/llvm_codegen.cpp` is 47,038 lines |
 | Native code emission | Yes | x86-64, ARM64 | Object files |
 | Executable linking | Yes | System linker | Standalone binaries |
 | **Optimizations** |
@@ -938,7 +938,7 @@ not-yet-production, and is listed above accordingly.)
 | Eshkol↔qLLM tensors | Yes | Type conversion (double↔float32) with AD integration |
 | Web Platform | Complete | WebAssembly compilation, 59 DOM bindings, browser REPL, eshkol.ai |
 | VM Dual Number AD | Complete | Forward-mode AD via dual numbers in bytecode VM |
-| VM Production | Partial (documented subset) | Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the release differential (`scripts/run_vm_parity.sh`): <!-- release-record:vm-parity -->VM parity differential **388/388**<!-- /release-record -->. `tests/vm_parity/PARITY.tsv` carries 311 `gap` rows out of 961, plus 328 further names in `tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger entirely (see [VM_PARITY.md](VM_PARITY.md)) — corrected from "Complete" 2026-08-25, conformity audit item d9 |
+| VM Production | Partial (documented subset) | Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the release differential (`scripts/run_vm_parity.sh`): <!-- release-record:vm-parity -->VM parity differential **388/388**<!-- /release-record -->. `tests/vm_parity/PARITY.tsv` carries 296 `gap` rows out of 962, plus 328 further names in `tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger entirely (see [VM_PARITY.md](VM_PARITY.md)) — corrected from "Complete" 2026-08-25, conformity audit item d9 |
 | KB Pattern Matching | Complete | Knowledge base queries with ?-wildcard pattern matching |
 
 ## Tensor Linear Algebra (v1.1)
