@@ -45,11 +45,8 @@
 ;; whose body references only already-computed exact rational values
 ;; (u_n(X), f_n(X), the fixed operator c(X)); it is built fresh inside a
 ;; named helper taking X as a plain function argument, never as a named-let
-;; loop variable (ledger SW-151), and it is never passed to any function
-;; other than `taylor` / `derivative-n` themselves -- routing around the
-;; separate composition-depth exactness leak documented in
-;; .scratch/ns_derivative_composition_exactness_repro.esk and in
-;; examples/mathematics_navier_stokes_stress_cone.esk's AD surface note.
+;; loop variable.  The former inline loop-capture and composition-depth
+;; exactness defects are fixed (SW-151 and SW-159); the helper structure remains.
 
 (define pass-count 0)
 (define fail-count 0)

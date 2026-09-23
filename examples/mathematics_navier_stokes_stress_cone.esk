@@ -46,20 +46,11 @@
 ;;
 ;; AD surface note.  Every derivative below is taken by calling the operator
 ;; directly at an exact rational point.  Looped differentiands are hoisted into
-;; named helpers: a loop variable captured by an inline differentiand is
-;; miscompiled on this tree (ledger SW-151).  A SEPARATE defect, not SW-151,
-;; shows up only here: `(derivative Qs-of X)` -- Qs-of being a several-deep,
-;; multi-call composition (F-of/Sq-of/l-of, each reached more than once) --
-;; comes back INEXACT and with a float-roundoff-sized error (~1e-16) at an
-;; exact rational X, even though every intermediate function is individually
-;; exact at that same X when called outside an active `derivative`.  A
-;; two-line closure repro is .scratch/ns_derivative_composition_exactness_repro.esk.
-;; It is not routed around here (Qs-of still calls the operator on itself) --
-;; the ONE check downstream of it (4.9) is verified to a tight numerical
-;; tolerance instead of an exact zero, and says so.  Nothing else in this file
-;; depends on that nested call: a-of/bs-of/ps1-of/ps2-of call l-of, Uprof and
-;; their own `derivative`s directly at a plain (non-dual) X and stay exact,
-;; which is what keeps the cone decision itself (Parts C, D, E) exact.
+;; named helpers.  The former inline loop-capture defect is fixed (SW-151).
+;; The exactness leak through the several-deep Qs-of composition is also fixed
+;; (SW-159): `derivative` now enters the exact Taylor carrier at an exact point
+;; and agrees with `derivative-n`.  The numerical check of (4.9) below remains
+;; as an independent check of the assembled radial equation.
 
 (define pass-count 0)
 (define fail-count 0)
@@ -224,10 +215,8 @@
      (* (+ 1 (l-of X)) (Qs-of X))
      (- (Sq-of X))))
 
-;; `(derivative Qs-of X)` does not come back exact (see the AD surface note
-;; above), so this is checked to a tight numerical tolerance rather than an
-;; exact zero -- the identity itself (verified symbolically offline for this
-;; profile pair) is exact; what is not exact is this one AD call's output tag.
+;; The identity is checked to a tight numerical tolerance; the earlier
+;; derivative exactness leak described in SW-159 has been fixed.
 (define (all-radial-equations-near-zero?)
   (let loop ((xs sample-radii))
     (cond ((null? xs) #t)
@@ -235,7 +224,7 @@
            (loop (cdr xs)))
           (else #f))))
 
-(check "the integrated Q_s solves the radial equation (4.9) to numerical tolerance (nested-derivative exactness leak, not SW-151 -- see AD surface note)"
+(check "the integrated Q_s solves the radial equation (4.9) to numerical tolerance"
        (all-radial-equations-near-zero?))
 
 (define (perturbed-radial-defect X)

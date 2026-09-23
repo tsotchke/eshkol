@@ -41,15 +41,10 @@
 ;; contrasted against a deliberately wrong candidate exterior carrying the
 ;; INNER profile's own q^{-A} blowup factor, which does not).
 ;;
-;; AD surface note.  Every top-level constant (nu, c2, c1_0, c0_0) that
-;; flows into a `derivative` call is inlined as a literal in the
-;; differentiand's own body (examples/mathematics_navier_stokes_stress_cone.esk's
-;; AD surface note); every differentiand is bound to a variable before being
-;; passed to `derivative`, and every point argument is bound to a variable
-;; before being passed to `derivative`, even when it looks like a literal
-;; already (examples/mathematics_navier_stokes_pulse_growth.esk's AD surface
-;; note) -- both route around distinct exactness leaks in the AD operators,
-;; documented in .scratch/, not fixed here.
+;; AD surface note.  The differentiands and points below remain locally bound
+;; for readability.  The former exactness leaks through named constants,
+;; composition and computed point expressions are fixed (SW-160, SW-159 and
+;; SW-161 respectively).
 
 (define pass-count 0)
 (define fail-count 0)
@@ -100,17 +95,9 @@
 (define sample-rt
   (list (list 1 0) (list 2 1/2) (list 3/2 1) (list 5/2 3/10)))
 
-;; `d_t v` and `d_r v` above come back inexact -- v-of is a 3-term sum of
-;; 2-4-way products, deep enough to hit the SAME composition-depth
-;; exactness leak documented in
-;; examples/mathematics_navier_stokes_stress_cone.esk's AD surface note and
-;; .scratch/ns_derivative_composition_exactness_repro.esk (the raw second
-;; derivative `derivative-n vr-fn r 2` stays exact; the two first
-;; derivatives do not). The residual value itself is still correct to
-;; float roundoff (~1e-15), so this is checked to a tight numerical
-;; tolerance rather than an exact zero, exactly as stress_cone.esk's Q_s
-;; check is.
-(check "the heat exterior solves the curvature-corrected radial heat equation to numerical tolerance (composition-depth exactness leak, not asserted exact)"
+;; The former composition-depth exactness leak in the first derivatives was
+;; fixed by SW-159.  This residual check keeps its tight numerical tolerance.
+(check "the heat exterior solves the curvature-corrected radial heat equation to numerical tolerance"
        (let loop ((ps sample-rt))
          (cond ((null? ps) #t)
                ((let* ((p (car ps)) (r (car p)) (t (car (cdr p))) (res (heat-residual r t)))
@@ -235,10 +222,8 @@
 
 (define r-fixed 2)
 
-;; The two `derivative` calls below hit the same composition-depth leak as
-;; PART A (value correct, `exact?` tag lost); only finiteness/boundedness is
-;; checked for them. `(v-of r-fixed t-near-one)` is a plain evaluation, no
-;; `derivative` involved, and stays exact.
+;; The two `derivative` calls below retain exactness after SW-159.  This check
+;; covers finiteness and boundedness near the endpoint.
 (check "v(r, t) and its r-, t-derivatives stay finite as t -> 1 at fixed r"
        (let* ((t-near-one 999999/1000000)
               (vt-fn (lambda (s) (v-of r-fixed s)))

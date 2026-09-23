@@ -39,13 +39,9 @@
 ;; exact antiderivative by AD, cross-checked against an independently
 ;; numerically integrated amplitude curve.
 ;;
-;; AD surface note.  `derivative` silently drops exactness on a
-;; differentiand that references a top-level `define`d constant instead of
-;; an inline literal (see examples/mathematics_navier_stokes_stress_cone.esk's
-;; AD surface note and its repro); k2-of, rate-of and P-of below use inline
-;; literals throughout for exactly this reason, even though the named
-;; constants S, k-theta, k-r0, G0, lam, nu are also defined, for exposition
-;; and for the negative control (which needs the S = 0 variants literally).
+;; AD surface note.  The former loss of derivative exactness through a named
+;; top-level constant is fixed (SW-160).  k2-of, rate-of and P-of retain their
+;; inline literals; the named parameters below document the same values.
 
 (define pass-count 0)
 (define fail-count 0)
@@ -118,12 +114,8 @@
                ((exact? (k2-of (car ts))) (loop (cdr ts)))
                (else #f))))
 
-;; NOTE (route-around): passing a loop-derived expression like `(car ts)`
-;; directly as `derivative`'s POINT argument loses exactness (repro in
-;; .scratch/ns_derivative_loopvar_point_argument_repro.esk) even though the
-;; differentiand itself never references the loop -- distinct from SW-151,
-;; which is about the differentiand capturing the loop variable. Route
-;; around it by let-binding the point first, here and everywhere below.
+;; A loop-computed point such as `(car ts)` now retains exactness when passed
+;; directly to `derivative` (SW-161).  The binding below is kept for clarity.
 (check "the wavevector law solves the Craik-Criminale equation exactly: dk_r/dt = -S k_theta"
        (let loop ((ts sample-ts))
          (cond ((null? ts) #t)
