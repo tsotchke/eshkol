@@ -305,9 +305,9 @@ The maximum recursion depth (`ESHKOL_MAX_STACK` / `ESHKOL_DEFAULT_MAX_STACK_DEPT
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ESHKOL_GPU_MATMUL_THRESHOLD` | 100000 | Element count threshold for GPU matmul dispatch. Set to `1` to force all matmul through GPU. |
+| `ESHKOL_GPU_MATMUL_THRESHOLD` | 1000000000 | Output element threshold for the BLAS backend's GPU matmul path. Set to `0` to force the GPU decision for smaller matmuls; backend admission and availability still apply. Distinct from `ESHKOL_GPU_THRESHOLD` (default 100000). |
 | `ESHKOL_GPU_PRECISION` | `exact` | GPU precision mode: `exact` (sf64, 53-bit), `high` (df64, ~48-bit), `fast` (f32, 24-bit). In the browser the tier is the `precision` option of `initWebGPU()`; WebGPU serves `exact` and `high` with sf64 kernels and admits `fast` only with an explicit `gateTolerance >= 1e-6`. |
-| `ESHKOL_SF64_KERNEL` | `v2` | Software float64 kernel version: `v1` (original) or `v2` (deferred rounding). |
+| `ESHKOL_SF64_KERNEL` | `fp53` | Metal exact-tier matmul kernel selector: `fp53`, `legacy`, `v2`, `ozaki`, or `ozaki-fast`. See [environment variables](../reference/runtime/environment-variables.md#gpu--blas--xla-backends). |
 
 ### Debug and Diagnostics
 

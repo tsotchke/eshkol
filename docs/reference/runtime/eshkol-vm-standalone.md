@@ -93,6 +93,24 @@ selects the embedded variant.
 > knowledge-base persistence file format (v2) in `lib/core/kb_persistence.cpp`;
 > that is not VM bytecode.
 
+## Shared runtime behavior
+
+The VM's record predicates distinguish record types, and a record accessor
+raises a catchable type error when given the wrong type. Hash-table lookup
+compares keys with `equal?` and returns the stored value, including records.
+The standard `current-input-port`, `current-output-port`, and
+`current-error-port` are parameters; an input or output operation without an
+explicit port uses the current parameter binding. Supplying a port of the
+wrong direction raises a catchable type error.
+
+`swish` accepts an optional beta parameter and computes
+`x * sigmoid(beta * x)`. `make-string` requires a nonnegative integer length
+and an optional character fill; it repeats the complete UTF-8 character and
+raises a catchable error for invalid arguments. The VM also validates tensor
+shapes for variadic `zeros` and `ones` and rejects indexing an empty tensor.
+The [VM parity ratchet](../../VM_PARITY.md) records the supported subset and
+its differential checks.
+
 ## Related
 
 - [`eshkol-run`](eshkol-run.md) — the `--profile` / `--emit-eskb` /
