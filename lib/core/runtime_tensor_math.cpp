@@ -1118,8 +1118,8 @@ extern "C" int64_t eshkol_broadcast_source_index(
  * row-major strides and combines them with `op`.
  *
  * @param op            Operation selector: 0 = add, 1 = subtract, 2 = multiply,
- *                      3 = divide (division by zero yields 0.0 rather than
- *                      trapping); any other value yields 0.0.
+ *                      3 = divide (IEEE 754 infinity or NaN for zero divisors);
+ *                      any other value yields 0.0.
  * @param a_data        First operand's flat row-major elements.
  * @param a_dims        First operand's shape.
  * @param a_ndim        First operand's rank.
@@ -1245,7 +1245,7 @@ extern "C" int64_t eshkol_broadcast_elementwise_f64(
             case 0: result = a_val + b_val; break;
             case 1: result = a_val - b_val; break;
             case 2: result = a_val * b_val; break;
-            case 3: result = (b_val != 0.0) ? a_val / b_val : 0.0; break;
+            case 3: result = a_val / b_val; break;
             default: result = 0.0; break;
         }
 

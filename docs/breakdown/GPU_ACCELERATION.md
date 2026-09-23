@@ -94,6 +94,12 @@ serve increments `backend.fallbackCount` and records the reason in
 `backend.dispatchCount` and sets `backend.lastPath` (for example
 `webgpu:gemm_sf64`).
 
+A backend can be attached to multiple browser VMs. Each compute call retains
+the initiating VM's memory through asynchronous readback, so concurrent calls
+write to their own destination. Dispatch counters, history and diagnostics
+describe the shared backend across those calls. Inexact tensor division has
+IEEE 754 zero-divisor behavior on both CPU fallback and sf64 GPU dispatch.
+
 **Correctness gate.** `scripts/lib/webgpu_diff_runner.mjs` drives Chrome
 (Playwright, `channel: 'chrome'`) and compares every kernel with the CPU
 reference over data in a real `WebAssembly.Memory`: matmul shapes that are not
