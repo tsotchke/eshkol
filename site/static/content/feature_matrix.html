@@ -1,7 +1,7 @@
 <h1 id="eshkol-v135-evolve-feature-matrix">Eshkol v1.3.5-evolve Feature Matrix</h1>
 <p><strong>Status Key</strong> (table cells): <code>Yes</code> = Production | <code>WIP</code> = In Progress | <code>Planned</code> = Planned | <code>No</code> = Not Planned | <code>Partial</code> = Partially supported</p>
 <p>This matrix lists every implemented and planned feature in the Eshkol ecosystem. Feature implementation status is recorded here; release verification is recorded separately, in the “Final verification” section of <a href="/docs#page=release_notes" data-url="/content/release_notes.html">RELEASE_NOTES.md</a>, and is bound to the tagged commit.</p>
-<p><strong>Language surface count (canonical):</strong> the declared language surface is <strong>1,116</strong> constructs — 1,053 builtins, 116 special forms, 113 AST ops and 16 prelude entries, deduplicated by name with internal-only helpers excluded. Older cited figures — 1,107, 1,091 and 1,106 here and in <code>docs/COMPILER_ROADMAP.md</code>, 1,078 in <code>.icc/architecture-model.yaml</code>, “550+ built-in functions”/“39 special forms” in <code>README.md</code> — were each correct on the day they were written but drifted as the surface grew; the gate has ratcheted upward since. The “1,058 in ADR-0011 §2.1” citation from the previous reconciliation pass was itself wrong: ADR-0011 is the guest-collector adapter design and contains no surface-count section — there is no §2.1 that states 1,058. The only correct citation for this number is the coverage manifest itself: <code>tests/coverage/language_surface.json</code> (1,053 builtins + 116 special forms + 113 AST ops + 16 prelude), deduplicated by name and with internal-only helpers excluded exactly the way <code>scripts/language_coverage.py</code> already deduplicates it to compute the number the coverage gate enforces: <code>tests/coverage/coverage_policy.json</code> <code>baseline_surface_total</code> = <code>tests/coverage/execution_deficit.json</code> <code>surface_total</code> = <strong>1,116</strong>, confirmed by regenerating <code>tests/coverage/language_surface.json</code> at the release commit. This is the figure this doc, README.md, and <code>.icc/architecture-model.yaml</code> use; <code>scripts/check_surface_counts.py</code> fails CI if any of them drift from the manifest again.</p>
+<p><strong>Language surface count (canonical):</strong> the declared language surface is <strong>1,116</strong> constructs — 1,056 builtins, 116 special forms, 113 AST ops and 16 prelude entries, deduplicated by name with internal-only helpers excluded. Older cited figures — 1,107, 1,091 and 1,106 here and in <code>docs/COMPILER_ROADMAP.md</code>, 1,078 in <code>.icc/architecture-model.yaml</code>, “550+ built-in functions”/“39 special forms” in <code>README.md</code> — were each correct on the day they were written but drifted as the surface grew; the gate has ratcheted upward since. The “1,058 in ADR-0011 §2.1” citation from the previous reconciliation pass was itself wrong: ADR-0011 is the guest-collector adapter design and contains no surface-count section — there is no §2.1 that states 1,058. The only correct citation for this number is the coverage manifest itself: <code>tests/coverage/language_surface.json</code> (1,056 builtins + 116 special forms + 113 AST ops + 16 prelude), deduplicated by name and with internal-only helpers excluded exactly the way <code>scripts/language_coverage.py</code> already deduplicates it to compute the number the coverage gate enforces: <code>tests/coverage/coverage_policy.json</code> <code>baseline_surface_total</code> = <code>tests/coverage/execution_deficit.json</code> <code>surface_total</code> = <strong>1,116</strong>, confirmed by regenerating <code>tests/coverage/language_surface.json</code> at the release commit. This is the figure this doc, README.md, and <code>.icc/architecture-model.yaml</code> use; <code>scripts/check_surface_counts.py</code> fails CI if any of them drift from the manifest again.</p>
 <hr />
 <h2 id="core-language-features">Core Language Features</h2>
 <table>
@@ -556,7 +556,7 @@
 <td>Math function support</td>
 <td>Yes</td>
 <td>Forward</td>
-<td>sin, cos, exp, log, sqrt, tan, sinh, cosh, tanh, abs, pow</td>
+<td>sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, asinh, acosh, atanh, exp, exp2, log, log2, log10, sqrt, cbrt, abs, square, expt, floor, ceiling, truncate, round, on jets, Taylor towers and levels, at every order; the complex forms carry a derivative too</td>
 </tr>
 <tr>
 <td>Dual arithmetic</td>
@@ -2473,7 +2473,7 @@
 <td>API Reference</td>
 <td>Yes</td>
 <td>Complete</td>
-<td>1,053 builtins across a 1,116-construct declared surface (canonical count, see below)</td>
+<td>1,056 builtins across a 1,116-construct declared surface (canonical count, see below)</td>
 </tr>
 <tr>
 <td>Quickstart Guide</td>
@@ -3236,6 +3236,48 @@
 <td>cuBLAS transpose</td>
 </tr>
 <tr>
+<td><strong>WebGPU (browser)</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Ordinary GPU dispatch seam</td>
+<td>COMPLETE</td>
+<td>WebGPU/WGSL</td>
+<td>Same <code>eshkol_matmul_dispatch</code>/<code>eshkol_gpu_*</code> seam as Metal and CUDA; selected at runtime; explicit CPU fallback with a reason when WebGPU, JSPI or an adapter is absent</td>
+</tr>
+<tr>
+<td>Matmul, elementwise add/sub/mul/div/neg/abs/relu/reciprocal, sum/prod/min/max/mean</td>
+<td>COMPLETE</td>
+<td>sf64 WGSL</td>
+<td>Default <code>exact</code> tier: IEEE f64 on integer words; matmul and elementwise bit-identical to CPU, reductions within <code>GPU_GATE_TOL=1e-9</code>; live Chrome gate</td>
+</tr>
+<tr>
+<td>Transcendental elementwise, batched matmul, transpose, softmax, norms, backward</td>
+<td>CPU fallback</td>
+<td>JS CPU reference</td>
+<td>No sf64 kernel; refused explicitly and counted in <code>fallbackCount</code></td>
+</tr>
+<tr>
+<td>Browser bytecode VM (<code>site/static/eshkol-vm.wasm</code>)</td>
+<td>COMPLETE</td>
+<td>sf64 WGSL via JSPI</td>
+<td><code>EshkolWebGPU.attachVm</code>: VM matmul, same-shape add/sub/mul/div and full sum/mean/max/min reach the same seam and kernels (ADR-0029); explicit CPU fallback without WebGPU or JSPI</td>
+</tr>
+<tr>
+<td>f32 <code>fast</code> tier</td>
+<td>Opt-in</td>
+<td>f32 WGSL</td>
+<td>Requires <code>precision: "fast"</code> and <code>gateTolerance &gt;= 1e-6</code></td>
+</tr>
+<tr>
+<td>Compiled <code>--wasm</code> tensor programs through the lite JS glue</td>
+<td>Partial</td>
+<td><code>site/static/eshkol-runtime.js</code></td>
+<td>The glue provides the dispatch and shape imports, but its tensor operand/allocation helpers are still stubs, so a compiled program that builds tensors cannot yet run end to end in the browser</td>
+</tr>
+<tr>
 <td><strong>Dispatch</strong></td>
 <td></td>
 <td></td>
@@ -3757,7 +3799,7 @@
 <h2 id="production-readiness">Production Readiness</h2>
 <h3 id="production-ready-v11">Production-Ready (v1.1)</h3>
 <ul>
-<li>Core language (116 special forms, 1,053 builtins — 1,116-construct canonical surface, see “Language surface count” below)</li>
+<li>Core language (116 special forms, 1,056 builtins — 1,116-construct canonical surface, see “Language surface count” below)</li>
 <li>Automatic differentiation (3 modes)</li>
 <li>Tensor operations (30+ functions)</li>
 <li>List processing (50+ operations)</li>
@@ -3868,12 +3910,12 @@
 <tr>
 <td>Reverse-mode <code>gradient</code> (<code>op:GRADIENT</code>)</td>
 <td>Yes</td>
-<td>v1.3.4 (#337): forward/reverse-mode, arity-resolved (scalar / N-arg / arity-1 whole-vector) incl. the curried form, byte-identical to native across <code>vm-src</code>/<code>vm-eskb</code>; higher-order nesting (gradient-of-derivative / Taylor tower) stays native-only</td>
+<td>v1.3.4 (#337): forward/reverse-mode, arity-resolved (scalar / N-arg / arity-1 whole-vector) incl. the curried form, byte-identical to native across <code>vm-src</code>/<code>vm-eskb</code>; nested inside or around other differentiation passes through the level carrier of ADR-0027</td>
 </tr>
 <tr>
 <td>Forward-mode <code>derivative</code> (<code>op:DERIVATIVE</code>)</td>
-<td>Yes / first order</td>
-<td>v1.3.4 (ESH-0369): direct <code>(derivative f x)</code> and curried <code>((derivative f) x)</code> both lower to the same native call with the same <code>(f, x)</code>, so they agree exactly with native. First order only — the VM’s carrier is a flat dual <code>{value, tangent}</code> with a single perturbation, so nested/higher-order differentiation now <strong>raises a catchable error</strong> instead of returning the <code>0.0</code> it used to fabricate. Higher-order AD needs the native jet’s <code>e1</code>/<code>e2</code>/<code>ep</code> slots or a VM Taylor tower; native-only until a VM jet carrier is built</td>
+<td>Yes</td>
+<td>Direct <code>(derivative f x)</code> and curried <code>((derivative f) x)</code> agree exactly with native. Nested and higher-order differentiation (<code>derivative</code>, <code>derivative-n</code>, <code>taylor</code>, <code>gradient</code>, <code>hessian</code> in any combination, at any depth and order, at real or complex points) runs on the recursive level carrier of ADR-0027 and matches native</td>
 </tr>
 <tr>
 <td>R7RS module forms (<code>op:IMPORT</code> / <code>op:PROVIDE</code> / <code>op:REQUIRE</code>)</td>
@@ -3948,7 +3990,7 @@
 <tr>
 <td>VM Production</td>
 <td>Partial (documented subset)</td>
-<td>Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the release differential (<code>scripts/run_vm_parity.sh</code>): <!-- release-record:vm-parity -->VM parity differential <strong>340/340</strong><!-- /release-record -->. <code>tests/vm_parity/PARITY.tsv</code> carries 311 <code>gap</code> rows out of 961, plus 328 further names in <code>tests/vm_parity/SURFACE_BASELINE.tsv</code> outside that ledger entirely (see <a href="/docs#page=vm_parity" data-url="/content/vm_parity.html">VM_PARITY.md</a>) — corrected from “Complete” 2026-08-25, conformity audit item d9</td>
+<td>Zero stubs, zero stdout contamination on the surface it implements, gated by the VM source suite, the 81/81 C-API suite, and the release differential (<code>scripts/run_vm_parity.sh</code>): <!-- release-record:vm-parity -->VM parity differential <strong>388/388</strong><!-- /release-record -->. <code>tests/vm_parity/PARITY.tsv</code> carries 311 <code>gap</code> rows out of 961, plus 328 further names in <code>tests/vm_parity/SURFACE_BASELINE.tsv</code> outside that ledger entirely (see <a href="/docs#page=vm_parity" data-url="/content/vm_parity.html">VM_PARITY.md</a>) — corrected from “Complete” 2026-08-25, conformity audit item d9</td>
 </tr>
 <tr>
 <td>KB Pattern Matching</td>

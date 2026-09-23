@@ -6,7 +6,7 @@
 
 **Release evidence (v1.3.5-evolve)**: aggregate suite **46/46
 suites** and **1,020/1,020** individual tests; <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->; the value-position and compound-accessor regression is green; executable language coverage
-**1,115/1,115**; <!-- release-record:vm-parity -->VM parity differential **340/340**<!-- /release-record -->
+**1,115/1,115**; <!-- release-record:vm-parity -->VM parity differential **388/388**<!-- /release-record -->
 over a **961-row** manifest (604
 `vm-supported`, 46 `native-only-justified`, 311 `gap`) plus its
 gap-disposition sidecar (the 338/338, 194/194 and 188/188 figures that older

@@ -381,36 +381,28 @@
 (derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1)
 (derivative   (lambda (a) (list-ref (taylor (lambda (b) (* a b)) 1.0 1) 1)) 2.0)
 ;; =&gt; 1, 1, 1</code></pre>
-<p>Two passes compose by putting the enclosing one on a <strong>first-order companion series</strong> that rides alongside the inner pass’s value series, so exactly one enclosing level can be carried at a time. That is the v1.3.5 ceiling, and it is a property of the carrier rather than of the mathematics.</p>
-<p><strong>Below the ceiling</strong> — any depth of first-order passes, and one pass of order ≥ 2 with one enclosing first-order pass in either position — nesting is exact:</p>
+<p>Nesting has no ceiling. A pass opened inside another live pass runs as a <strong>level</strong>: a truncated Taylor series in its own perturbation whose coefficients are numbers of the enclosing levels, so every enclosing perturbation is kept, at any depth and any order, through the evaluation point or a captured variable (<a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0027-recursive-taylor-level-carrier.md" target="_blank" rel="noopener noreferrer">ADR-0027</a>):</p>
 <pre class="scheme"><code>;; depth 3, all first order: d/dx d/dy d/dz (x^2 y^2 z^2) at (2,3,4)
 (display (derivative (lambda (x) (derivative (lambda (y) (derivative (lambda (z) (* x x y y z z)) 4.0)) 3.0)) 2.0)) (newline)
-;; one order-2 pass under one first-order pass: d/da [d2/db2 (a^2 b^3)] at b=1/2, a=1/3
-(display (derivative (lambda (a) (derivative-n (lambda (b) (* a a b b b)) 1/2 2)) 1/3)) (newline)</code></pre>
-<pre><code>192
-2</code></pre>
-<p><strong>At the ceiling</strong>, two passes both of order ≥ 2 <strong>raise</strong> rather than answering a number:</p>
-<pre><code>unsupported nested differentiation: an order-2 `derivative-n`/`taylor` pass
-inside another differentiation of order 2 or higher</code></pre>
-<p>and an enclosing level with second- or higher-order dependence reaching an inner pass through a <strong>capture</strong> raises its own diagnostic:</p>
-<pre><code>unsupported nested differentiation: an enclosing differentiation reaches this
-pass through a CAPTURED variable and carries second- or higher-order dependence</code></pre>
-<p>Rewrite the outer pass as a first-order <code>derivative</code>, or take the higher-order term with a single <code>(derivative-n f x k)</code>.</p>
-<blockquote>
-<p><strong>Known limitation (ledger SW-154): two enclosing levels over a pass of order ≥ 2 is not supported in v1.3.5.</strong> On the <strong>exact</strong> tier that shape raises (<code>unsupported inexact/non-rational Taylor hyperdual operation</code>). On the <strong>inexact</strong> tier it currently answers <code>0</code> rather than raising, so it is a silent wrong answer — do not rely on it:</p>
-<pre class="scheme"><code>;; the analytic answer is 2
+;; both passes of order 2: d2/da2 d2/db2 (a^3 b^3) at a=2, b=3
+(display (derivative-n (lambda (a) (derivative-n (lambda (b) (* a a a b b b)) 3.0 2)) 2.0 2)) (newline)
+;; two enclosing levels over an order-2 pass: d/da d/db d2/dc2 (a b c^2)
 (display (derivative (lambda (a)
            (derivative (lambda (b)
-             (derivative-n (lambda (c) (* a b c c)) 1.0 2)) 1.0)) 1.0)) (newline)</code></pre>
-<pre><code>0</code></pre>
-<p>The shape is pinned, unregistered, in <code>tests/ad/nested_towers_matrix_test.esk</code>. Lifting the ceiling is the ESH-0413 carrier rewrite, which replaces the carrier this release’s exact-coefficient tier is built on — the two cannot both be in force — and is <strong>v1.4</strong> work.</p>
-</blockquote>
-<p>Exactness through a nested pass depends on which carrier the composition lands on: the first-order companion series carries doubles, so a first-order pass over a first-order pass returns an inexact value even from an exact seed, while a first-order pass over <code>derivative-n</code> stays on the exact tier and returns an exact one.</p>
+             (derivative-n (lambda (c) (* a b c c)) 1.0 2)) 1.0)) 1.0)) (newline)
+;; nesting through the point: g(t) = d2/dr2 [r^4] at r = 1+t = 12 (1+t)^2
+(define (h r) (* r r r r))
+(display (taylor (lambda (t) (* t (derivative-n h (+ 1 t) 2))) 0 2)) (newline)</code></pre>
+<pre><code>192
+216
+2
+(0 12 24)</code></pre>
+<p>Exactness follows the numeric tower through every level: an exact point gives an exact answer while every operation is exactness-preserving.</p>
 <pre class="scheme"><code>(display (derivative (lambda (x) (derivative   (lambda (y) (* x x y y))   1/2))   1/3)) (newline)
 (display (derivative (lambda (a) (derivative-n (lambda (b) (* a a b b b)) 1/2 2)) 1/3)) (newline)</code></pre>
-<pre><code>0.6666666666666666
+<pre><code>2/3
 2</code></pre>
-<p>Gated by <code>tests/ad/nested_operator_matrix_test.esk</code> (the captured-variable matrix, JIT + AOT) and <code>tests/ad/ad_carrier_nesting_test.esk</code> (the point matrix). The full table, with the verified output of every row, is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md#nesting-ceiling-sw-154" target="_blank" rel="noopener noreferrer">the AD support matrix</a>.</p>
+<p>Gated by <code>tests/ad/nested_towers_matrix_test.esk</code> (every operator and order pairing, the depth-3 order sweep, nesting through the point, exact seeds, and the perturbation-confusion controls), <code>tests/ad/nested_operator_matrix_test.esk</code> (the captured-variable matrix) and <code>tests/ad/ad_carrier_nesting_test.esk</code>, on the JIT and AOT lanes. The table, with the verified output of every row, is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md#nesting" target="_blank" rel="noopener noreferrer">the AD support matrix</a>.</p>
 <h3 id="how-it-works-in-one-paragraph">How it works (in one paragraph)</h3>
 <p>The single computational kernel is <strong>truncated-Taylor arithmetic</strong>: a function’s behavior near <code>x₀</code> is represented by its Taylor coefficients <code>c[0..K]</code>, and each primitive operation has a closed recurrence that maps input coefficient arrays to output ones — Cauchy convolution for multiplication, coupled recurrences for <code>sin</code>/<code>cos</code>, divided recurrences for <code>/</code> and <code>log</code>, and so on. Because these recurrences are O(K²), high-order AD is <em>polynomial</em> in the order, not the 2ᴷ blow-up of stacking dual numbers. When the order <code>K</code> is a literal at the call site (the common case in a compiler), the entire tower is emitted as unrolled, stack-allocated, branch-free IR — no heap allocation in the AD hot loop. Each active differentiation context carries a distinct <strong>epoch tag</strong> in the tower’s header so nested derivatives never cross-contaminate. Order ≤ 2 keeps the existing fast 4-component jet byte-for-byte; the tower only appears when order ≥ 3 is requested.</p>
 <p>For the full design — the recurrence table, the compile-time monomorphization, the FP-contraction policy that makes <code>mono ≡ runtime</code> bit-exact, the exact and tensor coefficient layouts, and the Taylor-model remainder arithmetic — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/AD_TAYLOR_TOWER.md" target="_blank" rel="noopener noreferrer"><code>docs/design/AD_TAYLOR_TOWER.md</code></a>.</p>

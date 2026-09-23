@@ -609,7 +609,7 @@ state cannot certify the tag.
   configurations. Each is built and tested on its target platform.
 - **Test suites.** The aggregate suite at **46/46** suites and **1,020/1,020**
   individual tests, and <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->.
-- **VM and engine parity.** <!-- release-record:vm-parity -->VM parity differential **340/340**<!-- /release-record -->
+- **VM and engine parity.** <!-- release-record:vm-parity -->VM parity differential **388/388**<!-- /release-record -->
   over a 961-row manifest: 604 `vm-supported`, 46 `native-only-justified` and
   311 `gap`, every gap row carrying a live reproducer and a disposition. The
   engine differential holds its recorded floors of 321 of 1,139 constructs and

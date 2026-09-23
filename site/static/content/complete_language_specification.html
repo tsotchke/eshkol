@@ -1289,12 +1289,14 @@ use-exactly-once is NOT enforced for it</code></pre>
 </ul>
 <h4 id="4133-ports">4.13.3 Ports</h4>
 <ul>
-<li><code>(open-input-file filename)</code> - Open file for reading; an unavailable path is a catchable I/O error</li>
-<li><code>(open-output-file filename)</code> - Open file for writing</li>
-<li><code>(close-port port)</code> - Close port</li>
-<li><code>(flush-output-port port)</code> - Flush output buffer</li>
-<li><code>(current-input-port)</code> - Get stdin</li>
-<li><code>(current-output-port)</code> - Get stdout</li>
+<li><p><code>(open-input-file filename)</code> - Open file for reading; an unavailable path is a catchable I/O error</p></li>
+<li><p><code>(open-output-file filename)</code> - Open file for writing</p></li>
+<li><p><code>(close-port port)</code> - Close port</p></li>
+<li><p><code>(flush-output-port port)</code> - Flush output buffer</p></li>
+<li><p><code>(current-input-port)</code>, <code>(current-output-port)</code>, <code>(current-error-port)</code> - Parameter objects (R7RS 6.13.1) holding the current standard ports; <code>parameterize</code> rebinds them, and every read or write that names no port uses the port they hold, on native and the VM:</p>
+<pre class="scheme"><code>(define p (open-output-string))
+(parameterize ((current-output-port p)) (display &quot;hi&quot;) (newline))
+(get-output-string p)   ; =&gt; &quot;hi\n&quot;</code></pre></li>
 </ul>
 <h4 id="4134-file-operations">4.13.4 File Operations</h4>
 <ul>
@@ -3049,4 +3051,4 @@ tests/                   # Test suites
 <hr />
 <h2 id="conclusion">Conclusion</h2>
 <p>This document provides a <strong>complete</strong> specification of the Eshkol programming language version v1.3.5-evolve, documenting <strong>every</strong> feature, function, operator, and capability found in the implementation.</p>
-<p><strong>Total Coverage:</strong> (counts from <code>tests/coverage/language_surface.json</code> and <code>tests/coverage/coverage_policy.json</code>, the machine sources the coverage gate reads) - All 116 special forms and 113 parser AST operations - All 1,053 built-in functions (1,115 declared constructs in total) - 743 VM native-call IDs - 72-opcode bytecode VM with ESKB binary format - Complete type system (15+ types with 18+ heap subtypes) - Full memory management system (OALR arenas) - Entire standard library (40 modules) - Complete autodiff system (forward, reverse, symbolic, 83 AD node types declared in <code>inc/eshkol/ad_node_registry.def</code>) - Dual backend architecture (LLVM + bytecode VM) - Weight matrix transformer (3-way verified) - Module system with <code>require</code>, <code>provide</code>, <code>load</code> - REPL JIT with precompiled stdlib - Quantum RNG (8-qubit circuit simulation) - GPU dispatch (Metal SF64 + CUDA, forward and backward) - Compilation pipeline (LLVM 18-24; major pinned per build, default 21) - Runtime architecture - Exact arithmetic (bignum, rational, numeric tower) - Complex number type with overflow-safe division - First-class continuations, dynamic-wind, and exception handling - Consciousness engine (logic programming, active inference, global workspace) - Parallel execution model (thread pool, futures, memory safety) - GPU dispatch (Metal SF64, CUDA, cost model) - Signal processing (FFT, windows, filters, convolution)</p>
+<p><strong>Total Coverage:</strong> (counts from <code>tests/coverage/language_surface.json</code> and <code>tests/coverage/coverage_policy.json</code>, the machine sources the coverage gate reads) - All 116 special forms and 113 parser AST operations - All 1,056 built-in functions (1,115 declared constructs in total) - 743 VM native-call IDs - 72-opcode bytecode VM with ESKB binary format - Complete type system (15+ types with 18+ heap subtypes) - Full memory management system (OALR arenas) - Entire standard library (40 modules) - Complete autodiff system (forward, reverse, symbolic, 83 AD node types declared in <code>inc/eshkol/ad_node_registry.def</code>) - Dual backend architecture (LLVM + bytecode VM) - Weight matrix transformer (3-way verified) - Module system with <code>require</code>, <code>provide</code>, <code>load</code> - REPL JIT with precompiled stdlib - Quantum RNG (8-qubit circuit simulation) - GPU dispatch (Metal SF64 + CUDA, forward and backward) - Compilation pipeline (LLVM 18-24; major pinned per build, default 21) - Runtime architecture - Exact arithmetic (bignum, rational, numeric tower) - Complex number type with overflow-safe division - First-class continuations, dynamic-wind, and exception handling - Consciousness engine (logic programming, active inference, global workspace) - Parallel execution model (thread pool, futures, memory safety) - GPU dispatch (Metal SF64, CUDA, cost model) - Signal processing (FFT, windows, filters, convolution)</p>

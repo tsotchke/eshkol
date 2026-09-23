@@ -255,13 +255,10 @@ try {
 }</code></pre>
 <p>There is no timeout on <code>future_get</code>. For timed waits, <code>future_wait</code> (line 760) accepts a timeout in milliseconds and returns <code>false</code> if the deadline expires. The <code>future_wait_all</code> function (line 808) distributes a global timeout across multiple futures, computing remaining time for each successive wait. <code>future_wait_any</code> (line 790) polls all futures in a loop with 1 ms sleep intervals.</p>
 <h3 id="115-eshkol-runtime-errors">11.5 Eshkol Runtime Errors</h3>
-<p>Eshkol’s runtime <code>raise</code> function (used for Scheme-level errors like division by zero, type mismatches, or bounds violations) calls <code>longjmp</code> or <code>exit</code> depending on context. If a parallel worker triggers such an error, the behavior depends on the error path:</p>
-<ul>
-<li><code>eshkol_error</code> (logging): Writes to stderr and returns. The worker continues; the task result is whatever was computed before the error.</li>
-<li><code>exit()</code> or <code>abort()</code>: Terminates the entire process, including all worker threads.</li>
-<li><code>longjmp</code> to an error handler: Undefined behavior if the jump target is on a different thread’s stack. The parallel primitives do not install per-worker error handlers.</li>
-</ul>
-<p>This means that Scheme-level errors within parallel-mapped closures that call <code>error</code> or <code>raise</code> may terminate the process rather than gracefully reporting per-task failures.</p>
+<p>The exception-handler chain is thread-local, so a raise can only be handled on the thread that raised it. Every parallel primitive therefore runs each callback under an unwind boundary (<code>run_in_boundary</code> in <code>lib/backend/parallel_codegen.cpp</code>): a handler pushed on the thread that runs the callback, on a pool worker and on the calling thread alike. A raise the callback does not handle itself lands on that boundary with its dynamic-wind, region and AD state already unwound, and is recorded with its raised object.</p>
+<p>After the join, the entry point returns from its implementation (so no C++ frame is skipped by a <code>longjmp</code>) and re-raises the first recorded condition in element order on the calling thread, where the caller’s own <code>guard</code> sees the original object. An asynchronous future records the condition in the same way and re-raises it from <code>force</code>, leaving the future unforced. A refused pool submission runs that element on the calling thread instead of dropping it.</p>
+<p>Continuation escapes follow the same rule. Every native continuation invocation first calls <code>eshkol_continuation_transfer_check</code>. Inside a boundary, a continuation whose capture point is not in the callback’s own live extent on that thread (it belongs to the caller or to another thread) is not resumed there: the callback’s dynamic state is unwound to the boundary and the transfer is recorded, and the calling thread performs it after the join, in element order with any recorded raise.</p>
+<p>The bytecode VM applies the same rule differently: an isolated worker VM never transfers control. A failed worker run is re-evaluated on the calling interpreter after the join (<code>vm_parmap_settle_failed</code> and friends in <code>lib/backend/vm_parallel.c</code>), which reproduces the callback’s own condition in the caller’s handler chain.</p>
 <hr />
 <h2 id="12-ad-tape-isolation">12. AD Tape Isolation</h2>
 <h3 id="121-per-thread-tape-stack">12.1 Per-Thread Tape Stack</h3>

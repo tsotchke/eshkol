@@ -88,7 +88,7 @@
 <p>Code that tested a derivative with <code>inexact?</code>, or compared it with <code>eqv?</code> to a flonum, sees an exact number where it saw a flonum. Use <code>=</code> or <code>exact-&gt;inexact</code>.</p></li>
 <li><p><strong>Captures are resolved where the closure was made.</strong> A let-bound closure that captures a variable can be differentiated from inside a nested lambda, and a binding at the call site that shares a captured variable’s name does not disturb it. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/operators.md#where-a-capture-is-resolved" target="_blank" rel="noopener noreferrer">the AD capture rules</a>.</p></li>
 </ul>
-<p>The complete AD support matrix, including the nesting ceiling, is <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md" target="_blank" rel="noopener noreferrer">reference/ad/support-matrix.md</a>.</p>
+<p>The complete AD support matrix, including nesting, is <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md" target="_blank" rel="noopener noreferrer">reference/ad/support-matrix.md</a>.</p>
 <h2 id="5-library-behaviour">5. Library behaviour</h2>
 <ul>
 <li><code>json-get-in</code> takes an optional default, returned when the path is absent: <code>(json-get-in obj path default)</code>. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/json.md" target="_blank" rel="noopener noreferrer">the JSON reference</a>.</li>

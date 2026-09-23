@@ -62,7 +62,15 @@
 (swap! a b)
 ;; tmp is still 42 — the macro&#39;s tmp is distinct
 (display tmp)  ;; =&gt; 42</code></pre>
-<p>This is guaranteed by the R7RS specification. Eshkol’s macro expander renames internal variables to prevent capture.</p>
+<p>Hygiene also works in the other direction: a name the template uses but does not bind means what it meant where the macro was defined, even if the code that uses the macro binds the same name locally. The operand, on the other hand, is the caller’s code and sees the caller’s bindings:</p>
+<pre class="scheme"><code>(define (double x) (* 2 x))
+(define-syntax twice (syntax-rules () ((_ e) (double e))))
+
+(display (let ((double (lambda (x) 0))) (twice 21)))  ;; =&gt; 42
+(newline)
+(display (let ((car cdr)) (twice (length (car &#39;(5 6 7))))))  ;; =&gt; 4</code></pre>
+<p>In the second use the caller’s <code>car</code> is <code>cdr</code>, so the operand is <code>(length '(6 7))</code>, which is <code>2</code>; the template’s <code>double</code> is still the top-level procedure.</p>
+<p>Both directions hold for every binding form a template can contain and on every engine (JIT, AOT, bytecode VM). See the <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/macros.md" target="_blank" rel="noopener noreferrer">macro reference</a> for the full rules.</p>
 <hr />
 <h2 id="part-5-homoiconicity">Part 5: Homoiconicity</h2>
 <p>Every Eshkol function can display its own source code because the compiler preserves s-expression metadata:</p>

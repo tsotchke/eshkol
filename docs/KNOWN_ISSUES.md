@@ -670,7 +670,7 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
   `op:IMPORT` / `op:PROVIDE` / `op:REQUIRE` followed with the same-unit
   `define-library` fix (#402) — with no new waivers. The release
   differential gate (`scripts/run_vm_parity.sh`) is
-  <!-- release-record:vm-parity-figure -->**340/340**<!-- /release-record --> at the
+  <!-- release-record:vm-parity-figure -->**388/388**<!-- /release-record --> at the
   release commit, including the
   gap-canonicalization and arity-fatal checks; it supersedes the 338/338,
   194/194 and 188/188 figures and the "140/140" before them.

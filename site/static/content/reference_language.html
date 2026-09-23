@@ -105,6 +105,11 @@ eshkol-run file.esk -o binary # ahead-of-time (AOT) compile to a native binary</
 <td>Type annotations and the gradual checker: what is checked where, function types, branch joins, loop typing, diagnostics</td>
 <td><a href="/docs#page=guide_gradual_typing" data-url="/content/guide_gradual_typing.html">../../guide/GRADUAL_TYPING.md</a></td>
 </tr>
+<tr>
+<td>18</td>
+<td>Macros: <code>define-syntax</code>, <code>let-syntax</code>, <code>letrec-syntax</code>, <code>syntax-rules</code>, hygiene</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/macros.md" target="_blank" rel="noopener noreferrer">macros.md</a></td>
+</tr>
 </tbody>
 </table>
 <h2 id="known-issue-conventions">Known-issue conventions</h2>
@@ -125,10 +130,6 @@ eshkol-run file.esk -o binary # ahead-of-time (AOT) compile to a native binary</
 <tr>
 <td>ESH-0090</td>
 <td>A user <code>(define (raise …) …)</code> cannot shadow the builtin <code>raise</code>.</td>
-</tr>
-<tr>
-<td>SW-154</td>
-<td>Nested differentiation has a ceiling: <strong>two enclosing levels over a pass of order ≥ 2</strong> is not supported. On the inexact tier that shape currently answers <code>0</code> rather than raising; on the exact tier it raises. Everything below the ceiling composes exactly. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md#nesting-ceiling-sw-154" target="_blank" rel="noopener noreferrer">../ad/support-matrix.md</a>.</td>
 </tr>
 <tr>
 <td>—</td>
@@ -204,11 +205,16 @@ eshkol-run file.esk -o binary # ahead-of-time (AOT) compile to a native binary</
 <td><code>=&gt;</code> was parsed as a variable reference; <code>define-values</code> was unsupported.</td>
 <td>R7RS <code>=&gt;</code> clauses work in <code>cond</code> and <code>case</code> — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/control-flow.md" target="_blank" rel="noopener noreferrer">control-flow.md</a>; <code>(define-values (a b) (values 1 2))</code> binds both.</td>
 </tr>
+<tr>
+<td>SW-154</td>
+<td>Two enclosing differentiation levels over a pass of order ≥ 2 answered <code>0</code>, and two passes both of order ≥ 2 raised.</td>
+<td>Passes nest at any depth and order: <code>(derivative (lambda (a) (derivative (lambda (b) (derivative-n (lambda (c) (* a b c c)) 1.0 2)) 1.0)) 1.0)</code> → <code>2</code>. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md#nesting" target="_blank" rel="noopener noreferrer">../ad/support-matrix.md</a>.</td>
+</tr>
 </tbody>
 </table>
 <h2 id="see-also">See also</h2>
 <ul>
-<li><a href="/docs#page=reference_ad" data-url="/content/reference_ad.html">Automatic differentiation reference</a> — the AD operators, the exactness tier, and the <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md#nesting-ceiling-sw-154" target="_blank" rel="noopener noreferrer">nesting ceiling</a>.</li>
+<li><a href="/docs#page=reference_ad" data-url="/content/reference_ad.html">Automatic differentiation reference</a> — the AD operators, the exactness tier, and <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md#nesting" target="_blank" rel="noopener noreferrer">nesting</a>.</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">Certified enclosures</a> — <code>fl-next-up</code> / <code>fl-next-down</code> and the proof-backed interval and Taylor-model layer above them.</li>
 <li><a href="/docs#page=reference_runtime" data-url="/content/reference_runtime.html">Runtime reference</a> — <code>eshkol-run</code> and <code>eshkol-repl</code> (including the <strong>EREPL v1</strong> machine protocol), environment variables and the resource-limit contracts, the memory model, and the bytecode VM.</li>
 <li><a href="/docs#page=reference_tensors" data-url="/content/reference_tensors.html">Tensors</a> — the tensor carrier, element-wise dispatch and <code>tensor-scale</code>, and where a tensor differs from a Scheme vector.</li>
