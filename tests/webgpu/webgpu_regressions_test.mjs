@@ -144,7 +144,7 @@ async function testExecutionMarkerAndCPUFallback() {
         assert.equal(fallbackStatus, 0);
         assert.deepEqual(Array.from(new Float64Array(memory.buffer, 32, 2)), [4, 6]);
         assert.equal(backend.executionMarker, 1);
-        assert.equal(backend.lastPath, 'cpu:elem');
+        assert.equal(backend.lastPath, 'cpu:elementwise');
         assert.equal(backend.fallbackCount, 1);
 
         backend.elementwiseF64 = async () => {
@@ -172,6 +172,60 @@ async function testPromisingExports() {
     } finally {
         restore();
     }
+}
+
+async function testVmBridgeContracts() {
+    /* attachVm leaves the module untouched, with a reason, without a device
+     * or without JSPI; with both it installs the bridge and a wasm hook. */
+    const none = G.attachVm({}, null);
+    assert.equal(none.eshkolWebGPUStatus.ok, false);
+    assert.match(none.eshkolWebGPUStatus.reason, /no WebGPU backend/);
+    assert.equal(none.instantiateWasm, undefined);
+    assert.equal(none.eshkolWebGPUBridge, undefined);
+
+    const device = {};
+    const backend = new G.EshkolWebGPU(device, { threshold: 1 });
+    const oldSuspending = WebAssembly.Suspending;
+    delete WebAssembly.Suspending;
+    try {
+        const nojspi = G.attachVm({}, backend);
+        assert.equal(nojspi.eshkolWebGPUStatus.ok, false);
+        assert.match(nojspi.eshkolWebGPUStatus.reason, /JSPI unavailable/);
+        assert.equal(nojspi.instantiateWasm, undefined);
+    } finally {
+        if (oldSuspending !== undefined) WebAssembly.Suspending = oldSuspending;
+    }
+
+    const restore = installMockJSPI();
+    try {
+        const attached = G.attachVm({}, backend);
+        assert.equal(attached.eshkolWebGPUStatus.ok, true);
+        assert.equal(typeof attached.instantiateWasm, 'function');
+        const bridge = attached.eshkolWebGPUBridge;
+        assert.equal(bridge.deviceReady(), 1);
+        assert.equal(bridge.threshold(), 1);
+        assert.equal(bridge.hasFp64(), 1);
+        /* A refused op answers DECLINED (2), counted and explained once. */
+        assert.equal(await bridge.elementwise(0, 0, 0, 4, G.ELEM.EXP), 2);
+        assert.equal(backend.fallbackCount, 1);
+        assert.match(backend.diagnostics.join('\n'), /elementwise op 6 has no WebGPU kernel/);
+        bridge.noteFallback('softmax');
+        assert.equal(backend.fallbackCount, 2);
+        assert.equal(backend.lastPath, 'cpu:softmax');
+    } finally {
+        restore();
+    }
+
+    /* vmSerial runs one call at a time, in order, even when one throws. */
+    const vm = {};
+    const order = [];
+    const slow = G.vmSerial(vm, async () => {
+        await new Promise((r) => setTimeout(r, 20)); order.push('a'); throw new Error('x');
+    });
+    const fast = G.vmSerial(vm, async () => { order.push('b'); return 7; });
+    await assert.rejects(slow, /x/);
+    assert.equal(await fast, 7);
+    assert.deepEqual(order, ['a', 'b']);
 }
 
 function testIntegrationContracts() {
@@ -212,4 +266,5 @@ testHeadlessCpuPathFailsClosed();
 await testExecutionMarkerAndCPUFallback();
 await testPromisingExports();
 testIntegrationContracts();
+await testVmBridgeContracts();
 console.log('PASS webgpu regression contracts');

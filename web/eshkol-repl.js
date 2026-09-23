@@ -293,12 +293,8 @@ class EshkolRepl {
         const res = await G.create(opts || {});
         this._webgpuBackend = res.ok ? res.backend : null;
         this.__gpuEnv = null;
-        if (res.ok && typeof globalThis !== 'undefined') {
-            // gpu_memory_webgpu.cpp consults this ordinary backend seam from
-            // its EM_ASYNC_JS bridge. Keep the page-owned device visible to
-            // the linked wasm runtime before its first dispatch.
-            globalThis.eshkolWebGPUBackend = res.backend;
-        }
+        // The Emscripten-built VM shares this backend through
+        // EshkolWebGPU.attachVm(module, runtime.webgpuBackend) (ADR-0029).
         this._webgpuStatus = res;
         return res;
     }

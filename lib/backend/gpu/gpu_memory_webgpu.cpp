@@ -24,26 +24,21 @@
  * Metal, whose f64 is also emulated. Operations with no sf64 kernel (the
  * transcendentals) are refused by the JS backend and take the CPU fallback.
  *
- * ASYNC. WebGPU readback is unavoidably asynchronous (GPUBuffer.mapAsync).
- * Eshkol's runtime is synchronous C compiled to wasm32. The bridge is
- * EM_ASYNC_JS, which requires the module be built with -sASYNCIFY (or
- * -sJSPI on browsers that support the JavaScript Promise Integration
- * proposal). Without one of those the EM_ASYNC_JS calls cannot suspend and
- * the module will trap; a build that cannot enable either should compile
- * gpu_memory_stub.cpp instead.
+ * ASYNC (ADR-0029). WebGPU readback is asynchronous (GPUBuffer.mapAsync);
+ * this C code is synchronous. The boundary is JSPI, the same mechanism the
+ * compiled-WASM loaders use: the three compute imports below are declared as
+ * ordinary synchronous EM_JS functions that answer ESHKOL_WEBGPU_NO_DEVICE,
+ * and EshkolWebGPU.attachVm() (web/eshkol-webgpu.js) replaces them at
+ * instantiation with WebAssembly.Suspending wrappers of its bridge, and wraps
+ * the module's entry exports with WebAssembly.promising -- but only when the
+ * browser has both JSPI and a WebGPU device. No Asyncify instrumentation.
  *
- * PAGE CONTRACT. web/eshkol-webgpu.js publishes `globalThis.EshkolWebGPU` and
- * its `create()` resolves to a backend object. The page (or loader) must
- * publish that object where this file can find it, in the first of:
- *
- *   Module.eshkolWebGPUBackend
- *   globalThis.eshkolWebGPUBackend
- *   globalThis.EshkolWebGPU.backend
- *
- * When none of those is present, or the backend has lost its device, every
- * bridge function returns nonzero and the C side takes its CPU fallback — a
- * missing device is never a failed program, only a slower one.
- *
+ * PAGE CONTRACT. attachVm() publishes the bridge as Module.eshkolWebGPUBridge.
+ * Without it every query below reports "no device", eshkol_gpu_init() leaves
+ * the backend at ESHKOL_GPU_NONE, and every operation takes the CPU path: a
+ * missing device is never a failed program, only a slower one. The dispatch
+ * policy (tier admission, execution-marker verification, fallback accounting)
+ * lives once, in the bridge; nothing here duplicates it.
  */
 
 #ifdef __EMSCRIPTEN__
@@ -51,19 +46,13 @@
 #include <eshkol/backend/gpu/gpu_memory.h>
 #include <eshkol/logger.h>
 #include <emscripten.h>
-#include <webgpu/webgpu.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
 
-/* Including webgpu.h makes the Emscripten WebGPU port a build dependency. The
- * actual browser device is acquired by web/eshkol-webgpu.js before WASM
- * instantiation; the C API type is intentionally opaque at this seam. */
-/* Keep the Emscripten WebGPU type at this seam even though ownership belongs
- * to the page. The JS bridge is the only code that submits work; this handle
- * is an ABI marker for builds that enable the Emscripten Dawn WebGPU port. */
-static WGPUDevice g_webgpu_device_handle = nullptr;
+/* The GPUDevice is acquired and owned by the page (web/eshkol-webgpu.js);
+ * this file never touches the WebGPU C API, so it needs no Dawn port. */
 
 /* Forward declaration: dispatched matmul from blas_backend.cpp */
 extern "C" void eshkol_matmul_f64(const double*, const double*, double*,
@@ -106,131 +95,88 @@ enum {
     ESHKOL_WEBGPU_FLAG_EXTERNAL = 1u  /* bit 0: memory is externally owned */
 };
 
-/* Bridge status codes shared by every EM_ASYNC_JS body below.
- * 0 = the GPU served the call and the result is already in wasm memory.
- * Anything else means the C side must run its CPU fallback. */
+/* Bridge status codes. 0 = the GPU served the call and the result is already
+ * in wasm memory; anything else means the C side runs its CPU fallback. */
 enum {
     ESHKOL_WEBGPU_OK        = 0,
-    ESHKOL_WEBGPU_NO_DEVICE = 1,  /* no backend object, or its device is gone */
-    ESHKOL_WEBGPU_DECLINED  = 2,  /* backend refused: below threshold or no kernel for the op/tier */
-    ESHKOL_WEBGPU_THREW     = 3   /* kernel or readback raised */
+    ESHKOL_WEBGPU_NO_DEVICE = 1,  /* no bridge installed (no JSPI or no device) */
+    ESHKOL_WEBGPU_DECLINED  = 2,  /* bridge refused: no kernel for the op/tier */
+    ESHKOL_WEBGPU_THREW     = 3   /* kernel or readback failed */
 };
 
 // ============================================================================
-// JavaScript Bridge
+// JavaScript Bridge (ADR-0029)
 // ============================================================================
 
-/*
- * Synchronous queries. These never suspend: web/eshkol-webgpu.js acquires the
- * device before the wasm module is instantiated, so by the time C code runs
- * the answer is already known.
- */
+/* Synchronous queries. They never suspend: the device is acquired before the
+ * module is instantiated. */
 
-/** @brief Report whether the page published a WebGPU backend with a live
- *         device. Returns 1 when GPU dispatch is possible, 0 otherwise. */
+/** @brief 1 when attachVm() installed a bridge with a live device. */
 EM_JS(int, eshkol_webgpu_js_device_ready, (void), {
-    var be = (typeof Module !== "undefined" && Module["eshkolWebGPUBackend"]) ||
-             globalThis.eshkolWebGPUBackend ||
-             (globalThis.EshkolWebGPU && globalThis.EshkolWebGPU.backend);
-    return (be && be.device) ? 1 : 0;
+    var b = Module["eshkolWebGPUBridge"];
+    return b ? b.deviceReady() : 0;
 });
 
-/** @brief Push the C-side dispatch threshold into the JS backend so both
- *         sides agree on when the GPU is worth using. No-op without a
- *         backend. */
+/** @brief The page-configured dispatch threshold, or 0 without a bridge. */
+EM_JS(double, eshkol_webgpu_js_threshold, (void), {
+    var b = Module["eshkolWebGPUBridge"];
+    return b ? b.threshold() : 0;
+});
+
+/** @brief Push an explicit threshold (ESHKOL_GPU_THRESHOLD or
+ *         eshkol_gpu_set_threshold) into the backend. */
 EM_JS(void, eshkol_webgpu_js_set_threshold, (double threshold), {
-    var be = (typeof Module !== "undefined" && Module["eshkolWebGPUBackend"]) ||
-             globalThis.eshkolWebGPUBackend ||
-             (globalThis.EshkolWebGPU && globalThis.EshkolWebGPU.backend);
-    if (be && typeof be.setThreshold === "function") be.setThreshold(threshold);
+    var b = Module["eshkolWebGPUBridge"];
+    if (b) b.setThreshold(threshold);
 });
 
-/** @brief Mirror the JS operation-eligibility predicate. The C side cannot
- *         infer the selected precision tier; consulting the same backend object prevents C from reporting a GPU
- *         dispatch that the browser glue will immediately refuse. */
+/** @brief The backend's own admission predicate (tier and threshold). */
 EM_JS(int, eshkol_webgpu_js_should_use, (double num_elements), {
-    var be = (typeof Module !== "undefined" && Module["eshkolWebGPUBackend"]) ||
-             globalThis.eshkolWebGPUBackend ||
-             (globalThis.EshkolWebGPU && globalThis.EshkolWebGPU.backend);
-    return (be && typeof be.shouldUse === "function" && be.shouldUse(num_elements)) ? 1 : 0;
+    var b = Module["eshkolWebGPUBridge"];
+    return b ? b.shouldUse(num_elements) : 0;
 });
 
-/*
- * Asynchronous compute entry points. Each mirrors the matching method of the
- * EshkolWebGPU class in web/eshkol-webgpu.js one-for-one: pointers are wasm
- * heap byte offsets holding f64, dimensions are plain counts. The backend is
- * handed the live WebAssembly.Memory first, because a heap growth invalidates
- * any typed-array view it cached earlier.
- */
-
-/** @brief Bridge to EshkolWebGPU.matmulF64: C = A * B, row-major f64 at wasm
- *         heap byte offsets. Returns 0 on success, nonzero to request the
- *         CPU fallback. */
-EM_ASYNC_JS(int, eshkol_webgpu_js_matmul, (void* aPtr, void* bPtr, void* cPtr,
-                                           double M, double K, double N), {
-    var be = (typeof Module !== "undefined" && Module["eshkolWebGPUBackend"]) ||
-             globalThis.eshkolWebGPUBackend ||
-             (globalThis.EshkolWebGPU && globalThis.EshkolWebGPU.backend);
-    if (!be || !be.device) return 1;
-    if (typeof be.shouldUse === "function" && !be.shouldUse(M * N)) return 2;
-    if (typeof be.supportsOperation === "function" && !be.supportsOperation("matmul")) return 2;
-    try {
-        be.setMemory(wasmMemory);
-        var before = Number(be.executionMarker) || 0;
-        var marker = await be.matmulF64(aPtr, bPtr, cPtr, M, K, N);
-        return (Number.isSafeInteger(marker) && marker > before &&
-                be.executionMarker === marker && be.lastExecutionMarker === marker) ? 0 : 3;
-    } catch (e) {
-        if (be.diagnostics) be.diagnostics.push("gemm failed, CPU fallback: " + e);
-        return 3;
-    }
+/** @brief 1 while the backend runs an f64 (sf64) tier. */
+EM_JS(int, eshkol_webgpu_js_has_fp64, (void), {
+    var b = Module["eshkolWebGPUBridge"];
+    return b ? b.hasFp64() : 0;
 });
 
-/** @brief Bridge to EshkolWebGPU.elementwiseF64. `bPtr` may be 0 for unary
- *         ops. Returns 0 on success, nonzero to request the CPU fallback. */
-EM_ASYNC_JS(int, eshkol_webgpu_js_elementwise, (void* aPtr, void* bPtr,
-                                                void* outPtr, double n,
-                                                int op), {
-    var be = (typeof Module !== "undefined" && Module["eshkolWebGPUBackend"]) ||
-             globalThis.eshkolWebGPUBackend ||
-             (globalThis.EshkolWebGPU && globalThis.EshkolWebGPU.backend);
-    if (!be || !be.device) return 1;
-    if (typeof be.shouldUse === "function" && !be.shouldUse(n)) return 2;
-    if (typeof be.supportsOperation === "function" && !be.supportsOperation("elementwise", op)) return 2;
-    try {
-        be.setMemory(wasmMemory);
-        var before = Number(be.executionMarker) || 0;
-        var marker = await be.elementwiseF64(aPtr, bPtr, outPtr, n, op);
-        return (Number.isSafeInteger(marker) && marker > before &&
-                be.executionMarker === marker && be.lastExecutionMarker === marker) ? 0 : 3;
-    } catch (e) {
-        if (be.diagnostics) be.diagnostics.push("elementwise failed, CPU fallback: " + e);
-        return 3;
-    }
+/** @brief Record that an operation the dispatch selected for the GPU has no
+ *         WebGPU kernel and ran on the CPU (counted in fallbackCount and
+ *         explained in diagnostics). */
+EM_JS(void, eshkol_webgpu_js_note_fallback, (const char* what), {
+    var b = Module["eshkolWebGPUBridge"];
+    if (b) b.noteFallback(UTF8ToString(what));
 });
 
-/** @brief Bridge to EshkolWebGPU.reduceF64: full reduction of `n` f64
- *         elements to the single f64 at `outPtr`. Returns 0 on success,
- *         nonzero to request the CPU fallback. */
-EM_ASYNC_JS(int, eshkol_webgpu_js_reduce, (void* inPtr, void* outPtr,
-                                           double n, int op), {
-    var be = (typeof Module !== "undefined" && Module["eshkolWebGPUBackend"]) ||
-             globalThis.eshkolWebGPUBackend ||
-             (globalThis.EshkolWebGPU && globalThis.EshkolWebGPU.backend);
-    if (!be || !be.device) return 1;
-    if (typeof be.shouldUse === "function" && !be.shouldUse(n)) return 2;
-    if (typeof be.supportsOperation === "function" && !be.supportsOperation("reduce", op)) return 2;
-    try {
-        be.setMemory(wasmMemory);
-        var before = Number(be.executionMarker) || 0;
-        var marker = await be.reduceF64(inPtr, outPtr, n, op);
-        return (Number.isSafeInteger(marker) && marker > before &&
-                be.executionMarker === marker && be.lastExecutionMarker === marker) ? 0 : 3;
-    } catch (e) {
-        if (be.diagnostics) be.diagnostics.push("reduce failed, CPU fallback: " + e);
-        return 3;
-    }
+/* Compute imports. These synchronous bodies are what runs when no bridge is
+ * installed; attachVm() replaces each import, by name, with a
+ * WebAssembly.Suspending wrapper of the bridge method of the same role. */
+
+/** @brief C = A * B, row-major f64 at wasm heap byte offsets. */
+EM_JS(int, eshkol_webgpu_js_matmul, (void* aPtr, void* bPtr, void* cPtr,
+                                     double M, double K, double N), {
+    return 1;
 });
+
+/** @brief Elementwise op over f64 arrays; `bPtr` may be 0 for unary ops. */
+EM_JS(int, eshkol_webgpu_js_elementwise, (void* aPtr, void* bPtr,
+                                          void* outPtr, double n, int op), {
+    return 1;
+});
+
+/** @brief Full reduction of `n` f64 elements into the f64 at `outPtr`. */
+EM_JS(int, eshkol_webgpu_js_reduce, (void* inPtr, void* outPtr,
+                                     double n, int op), {
+    return 1;
+});
+
+/** @brief Report a selected-but-unsupported operation to the bridge. */
+static void webgpu_note_fallback(const char* what, size_t num_elements) {
+    if (g_active_backend == ESHKOL_GPU_WEBGPU && num_elements >= g_gpu_threshold)
+        eshkol_webgpu_js_note_fallback(what);
+}
 
 // ============================================================================
 // Device Management
@@ -246,19 +192,21 @@ int eshkol_gpu_init(void) {
         return (g_active_backend != ESHKOL_GPU_NONE) ? 1 : 0;
     }
 
-    /* Allow override of GPU dispatch threshold via environment variable.
-     * Under Emscripten getenv() reads the module's ENV object, so a page can
-     * set this the same way a shell would. */
-    if (const char* env = std::getenv("ESHKOL_GPU_THRESHOLD")) {
-        size_t val = static_cast<size_t>(std::atol(env));
-        if (val > 0) g_gpu_threshold = val;
-    }
-
     if (eshkol_webgpu_js_device_ready()) {
         g_active_backend = ESHKOL_GPU_WEBGPU;
         g_gpu_initialized = true;
-        /* Keep the JS-side predicate in step with the C-side threshold. */
-        eshkol_webgpu_js_set_threshold(static_cast<double>(g_gpu_threshold));
+        /* One threshold, owned by the backend object: an explicit
+         * ESHKOL_GPU_THRESHOLD (getenv reads the module's ENV) is pushed into
+         * it; otherwise the page's configured value is adopted here. */
+        const char* env = std::getenv("ESHKOL_GPU_THRESHOLD");
+        size_t val = env ? static_cast<size_t>(std::atol(env)) : 0;
+        if (val > 0) {
+            g_gpu_threshold = val;
+            eshkol_webgpu_js_set_threshold(static_cast<double>(val));
+        } else {
+            double t = eshkol_webgpu_js_threshold();
+            if (t >= 1) g_gpu_threshold = static_cast<size_t>(t);
+        }
         return 1;
     }
 
@@ -306,14 +254,6 @@ int eshkol_gpu_backend_available(EshkolGPUBackend backend) {
 int eshkol_gpu_supports_f64(void) {
     return 0;
 }
-
-/** @brief Report whether the page's backend runs an f64 tier (sf64). */
-EM_JS(int, eshkol_webgpu_js_has_fp64, (void), {
-    var be = (typeof Module !== "undefined" && Module["eshkolWebGPUBackend"]) ||
-             globalThis.eshkolWebGPUBackend ||
-             (globalThis.EshkolWebGPU && globalThis.EshkolWebGPU.backend);
-    return (be && typeof be.hasFp64 === "function" && be.hasFp64()) ? 1 : 0;
-});
 
 /** @brief Any correct f64 path, native or emulated: 1 while the WebGPU
  *         backend is active on the exact/high tier, whose sf64 kernels are
@@ -605,8 +545,11 @@ int eshkol_gpu_reduce_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
 int eshkol_gpu_reduce_axis_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                                 uint64_t rank, const uint64_t* shape,
                                 uint64_t axis, EshkolReduceOp op) {
-    (void)in; (void)out; (void)shape; (void)rank; (void)axis; (void)op;
-    return -1;  /* no certified WebGPU axis-reduction kernel */
+    (void)in; (void)out; (void)axis; (void)op;
+    uint64_t total = 1;
+    for (uint64_t i = 0; shape && i < rank; ++i) total *= shape[i];
+    webgpu_note_fallback("axis reduction", static_cast<size_t>(total));
+    return -1;  /* no WebGPU axis-reduction kernel */
 }
 
 /** @brief 2-D transpose of an f64 matrix. Refused until a WGSL kernel is
@@ -614,8 +557,9 @@ int eshkol_gpu_reduce_axis_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
  *  @return -1 while unsupported. */
 int eshkol_gpu_transpose_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                               uint64_t rows, uint64_t cols) {
-    (void)in; (void)out; (void)rows; (void)cols;
-    return -1;  /* no certified WebGPU transpose kernel */
+    (void)in; (void)out;
+    webgpu_note_fallback("transpose", static_cast<size_t>(rows * cols));
+    return -1;  /* no WebGPU transpose kernel */
 }
 
 // ============================================================================
@@ -627,8 +571,9 @@ int eshkol_gpu_transpose_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
  *  @return -1 while unsupported. */
 int eshkol_gpu_softmax_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                             uint64_t num_slices, uint64_t slice_len) {
-    (void)in; (void)out; (void)num_slices; (void)slice_len;
-    return -1;  /* no certified WebGPU softmax kernel */
+    (void)in; (void)out;
+    webgpu_note_fallback("softmax", static_cast<size_t>(num_slices * slice_len));
+    return -1;  /* no WebGPU softmax kernel */
 }
 
 /** @brief Layer normalisation over contiguous slices. Refused until a WGSL
@@ -637,9 +582,9 @@ int eshkol_gpu_softmax_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
 int eshkol_gpu_normalize_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                               uint64_t num_slices, uint64_t slice_len,
                               double gamma, double beta, double epsilon) {
-    (void)in; (void)out; (void)num_slices; (void)slice_len;
-    (void)gamma; (void)beta; (void)epsilon;
-    return -1;  /* no certified WebGPU normalization kernel */
+    (void)in; (void)out; (void)gamma; (void)beta; (void)epsilon;
+    webgpu_note_fallback("normalize", static_cast<size_t>(num_slices * slice_len));
+    return -1;  /* no WebGPU normalization kernel */
 }
 
 // ============================================================================
