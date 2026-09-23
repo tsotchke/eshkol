@@ -81,11 +81,11 @@ They print self-checking `PASS:` lines and finish with `RESULT: ALL PASS`.
 | **[mathematics_alphatensor_gf2.esk](mathematics_alphatensor_gf2.esk)** | Public rank-47 4x4 matrix multiplication over F2 by complete basis-pair expansion |
 | **[mathematics_funsearch_cap_set.esk](mathematics_funsearch_cap_set.esk)** | Public 512-point cap in AG(8,3), verified against every pair |
 
-## Mechanized mathematics: Navier-Stokes finite-time blowup
+## Mechanized mathematics: Navier-Stokes residuals and scaling laws
 
-Nine programs that compute the leading structure of a finite-time blowup
+Nine programs that compute the leading structure of a similarity-scaling
 construction for the three-dimensional Navier-Stokes equations, described in
-[Navier-Stokes blowup examples](../docs/NAVIER_STOKES_BLOWUP_EXAMPLES.md). They
+[Navier-Stokes examples](../docs/NAVIER_STOKES_EXAMPLES.md). They
 follow the same flat-file convention, print `PASS:` lines and `RESULT: ALL PASS`,
 and exit nonzero on any failed check.
 

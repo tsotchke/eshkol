@@ -33,7 +33,7 @@
 <p>The gradient is returned as a tensor (vector). Each component is the partial derivative with respect to the corresponding argument.</p>
 <hr />
 <h2 id="part-3-higher-order-derivatives">Part 3: Higher-Order Derivatives</h2>
-<p>Eshkol supports nested differentiation up to 32 levels deep. You can differentiate a derivative to get second derivatives:</p>
+<p>Eshkol supports nested differentiation at arbitrary depth, limited by available memory. You can differentiate a derivative to get second derivatives:</p>
 <pre class="scheme"><code>;; f(x) = x^3
 (define (cube x) (* x x x))
 

@@ -51,7 +51,7 @@
 ;;   5. The two special cases: M -> 1 gives |H^2(X; M)| |H^0| / |H^1| and
 ;;      1 -> N gives the Dijkgraaf-Witten count |Hom(pi_1 X, N)| / |N|.
 ;;
-;; DEFECT NOTES (routed around): as in the sibling examples.
+;; NOTE: as in the sibling examples, whose formerly-cited defects (LE-17/20/22/23, SW-153) are now closed.
 
 (require stdlib)
 

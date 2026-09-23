@@ -20,7 +20,7 @@
 ;; computed in its own tower Q(zeta_{2m})[c]/(c^d - p). F = f_1 g_1 + f_2 g_2
 ;; is verified as a polynomial identity before any support is read off.
 ;;
-;; DEFECT NOTES (routed around): as in the sibling examples.
+;; NOTE: as in the sibling examples, whose formerly-cited defects (LE-17/20/22/23, SW-153) are now closed.
 
 (require stdlib)
 

@@ -54,10 +54,15 @@
 ;; answer is rejected; a chain that is a boundary is recognized; the wrong
 ;; orientation signs break Z(S^3) = 1/|G|.
 ;;
-;; DEFECT NOTES (routed around, not fixed): `#(...)` literals promote to
-;; f64 tensors (all vectors built with `vector`/`make-vector`); integer
-;; powers by repeated multiplication; `make-vector` with a vector fill
-;; shares the fill, so matrix rows are allocated one by one.
+;; NOTE: `#(...)` literals of plain machine-representable numbers promote
+;; to f64 tensors by design (COMPLETE_LANGUAGE_SPECIFICATION.md section
+;; 4.10.1), so every vector below is built with `vector`/`make-vector`
+;; instead, which stays a genuine exact vector; a past defect that misread
+;; a rational/bignum element inside `#(...)` as garbage bits (SW-153) is
+;; closed, and probing it directly now returns the correct exact value.
+;; Integer powers are repeated multiplication rather than `expt`.
+;; `make-vector` with a vector fill shares the fill, so matrix rows are
+;; allocated one by one.
 
 (require stdlib)
 

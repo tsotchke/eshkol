@@ -1,8 +1,8 @@
-;; Navier-Stokes blowup construction -- deriving the scale exponents and the
+;; Navier-Stokes example -- deriving the scale exponents and the
 ;; leading profile equations, rather than asserting them.
 ;;
-;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
-;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Source: an external reference construction for the three-dimensional
+;; Navier-Stokes equations (2026), https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
 ;; Sections 2.1, 3.1 (scale laws) and 4.1 (similarity variables, the leading
 ;; tangential residual and the profile equations (4.9), (4.11), (4.13)).
 ;;

@@ -688,7 +688,7 @@ HEAP_SUBTYPE_I128           = 25,  // Native fixed-width 128-bit integer    [LEA
 <hr />
 <h2 id="v11-accelerate-feature-codegen">v1.1-accelerate Feature Codegen</h2>
 <h3 id="gpu-dispatch-simd---cblas---metal">GPU Dispatch (SIMD -&gt; cBLAS -&gt; Metal)</h3>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/blas_backend.cpp" target="_blank" rel="noopener noreferrer"><code>blas_backend.cpp</code></a> (1,316 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/gpu/gpu_memory.mm" target="_blank" rel="noopener noreferrer"><code>gpu_memory.mm</code></a> (4,485 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/blas_backend.cpp" target="_blank" rel="noopener noreferrer"><code>blas_backend.cpp</code></a>, <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/gpu/gpu_memory.mm" target="_blank" rel="noopener noreferrer"><code>gpu_memory.mm</code></a></p>
 <p>The cost model selects the optimal compute backend based on tensor dimensions:</p>
 <table>
 <colgroup>

@@ -2,11 +2,12 @@
 ;; Exact rational verification of the polynomial Keller map in Theorem 3.1,
 ;; its cubic fiber description, discriminant fiber counts, and Theorem 5.1.
 ;;
-;; SW-136: gradient with an exact-rational vector is currently silently wrong.
-;; The AD checks therefore use double vectors.  Exact rational checks use the
-;; explicit partial derivatives below.  TODO(SW-136): replace detJ-exact with
-;; exact AD once the tracked defect is fixed.  SW-135 (gradient through a
-;; closure factory) is avoided by keeping the differentiands named and direct.
+;; The Jacobian determinant below is computed with `gradient` through a
+;; closure factory (`comp-grad`), including directly on exact-rational
+;; vectors.  The hand-written partial derivatives further down are kept as
+;; an independent check, and also drive the exact-rational grid identity,
+;; which needs exact (not AD-carrier) arithmetic to hold as an equality
+;; rather than a numerical tolerance.
 
 (define pass-count 0)
 (define fail-count 0)
@@ -44,8 +45,18 @@
         (- (* (vref b 0) (vref c 2))
            (* (vref b 2) (vref c 0))))))
 
+;; Closure factory: each of gradP/gradQ/gradR is a closure returned by
+;; comp-grad that itself calls gradient on a lambda capturing the wrapped
+;; function value -- the nested-closure gradient shape.
+(define (comp-grad g)
+  (lambda (v) (gradient (lambda (u) (g (vref u 0) (vref u 1) (vref u 2))) v)))
+
+(define gradP (comp-grad P))
+(define gradQ (comp-grad Q))
+(define gradR (comp-grad R))
+
 (define (detJ-ad v)
-  (det3 (gradient Pv v) (gradient Qv v) (gradient Rv v)))
+  (det3 (gradP v) (gradQ v) (gradR v)))
 
 ;; Exact partials.  These are the same polynomial derivatives that AD returns.
 (define (Bx x y z)
@@ -122,17 +133,17 @@
             (= (fiber-count target-p target-q target-r) 3)))
 
 (define (ad-ok? x y z)
-  (and (close? (vref (gradient Pv (vector (exact->inexact x)
-                                          (exact->inexact y)
-                                          (exact->inexact z))) 0)
+  (and (close? (vref (gradP (vector (exact->inexact x)
+                                    (exact->inexact y)
+                                    (exact->inexact z))) 0)
                 (exact->inexact (Px x y z)))
-       (close? (vref (gradient Pv (vector (exact->inexact x)
-                                          (exact->inexact y)
-                                          (exact->inexact z))) 1)
+       (close? (vref (gradP (vector (exact->inexact x)
+                                    (exact->inexact y)
+                                    (exact->inexact z))) 1)
                 (exact->inexact (Py x y z)))
-       (close? (vref (gradient Pv (vector (exact->inexact x)
-                                          (exact->inexact y)
-                                          (exact->inexact z))) 2)
+       (close? (vref (gradP (vector (exact->inexact x)
+                                    (exact->inexact y)
+                                    (exact->inexact z))) 2)
                 (exact->inexact (Pz x y z)))))
 
 (check "reverse-mode AD agrees with exact partials at many points"
@@ -147,6 +158,14 @@
             (close? (detJ-ad (vector -1.0 1.5 6.5)) -2.0)
             (close? (detJ-ad (vector 2.5 -0.7 3.9)) -2.0)
             (close? (detJ-ad (vector -3.1 0.4 12.0)) -2.0)))
+
+;; The same closure-factory gradient applied directly to an exact-rational
+;; vector (no exact->inexact conversion): the carrier is inexact internally,
+;; so the result is compared with close? rather than exact equality.
+(check "AD determinant is -2 at exact-rational vectors"
+       (and (close? (detJ-ad witness-0) -2.0)
+            (close? (detJ-ad witness-1) -2.0)
+            (close? (detJ-ad witness-2) -2.0)))
 
 ;; Degree bounds for det(Jac F) in (x,y,z) are (8,7,2):
 ;; deg_x(P,Q,R) <= (3,3,3), deg_y(P,Q,R) <= (4,3,1), and
@@ -177,8 +196,8 @@
 
 ;; Theorem 5.1 family, checked at two parameter choices with exact rational
 ;; partials.  The base map above is the AD demonstration; this parameterized
-;; family is checked with exact rational evaluation so its determinant claim
-;; does not depend on the known closure-factory limitation.
+;; family is verified independently with exact rational evaluation, which
+;; also keeps the determinant claim exact rather than close-to.
 (define (FH-det-exact x y z lambda a c)
   (let* ((aa (+ lambda (* x y)))
          (w (+ (* c z) (+ x (* 2 y))))
