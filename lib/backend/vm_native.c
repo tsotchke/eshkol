@@ -10615,11 +10615,22 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value axis_val = vm_pop(vm), t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-reduce");
         if (!t) break;   /* raised: push nothing */
-        int axis = (int)as_number(axis_val);
+        /* SW-202: no axis (the prelude passes #f) is a FULL reduction to a
+         * number, as on native; an explicit axis, negative ones counted from
+         * the last, reduces that axis. -1 used to mean both, so a full
+         * reduction answered a 1-element tensor on a vector and a row of
+         * partial results on a matrix. */
+        int full = axis_val.type != VAL_INT && axis_val.type != VAL_FLOAT;
+        int axis = full ? -1 : (int)as_number(axis_val);
+        if (!full && axis < 0) axis += t->n_dims;
+        if (!full && (axis < 0 || axis >= t->n_dims)) {
+            vm_raise_error_msg(vm, "tensor-reduce: axis out of range");
+            break;
+        }
         /* Higher-order mapping can produce dual tensor elements even from a
          * plain input (a differentiable closure capture). Full reductions
          * must retain their complete scalar carrier through ordinary AD. */
-        if (t->dual_data && axis < 0 && (fid == 457 || fid == 458)) {
+        if (t->dual_data && full && (fid == 457 || fid == 458)) {
             VmDual* acc = vm_dual_make(&vm->heap.regions, 0.0, 0.0);
             for (int64_t i = 0; i < t->total && acc; ++i)
                 acc = vm_dual_add(&vm->heap.regions, acc, &t->dual_data[i]);
@@ -10631,23 +10642,33 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, vm_make_taylor_val(vm, acc));
             break;
         }
-        /* GPU dispatch only when the reduction the CPU path performs below
-         * covers every element (a rank-1 operand, or every other extent 1),
-         * so the GPU never changes which reduction is computed. axis -1 is
-         * the LAST axis to vm_tensor_reduce, not "all axes": treating it as
-         * a full reduction made (tensor-sum M) of a matrix answer per-row
-         * sums below the GPU threshold and the grand total above it. */
+        static const int gpu_reduce_ops[] = {0, 4, 3, 2}; /* sum=0, mean=4, max=3, min=2 */
+        if (full) {
+            static const VmReduceOp cpu_reduce_ops[] = {VM_REDUCE_SUM, VM_REDUCE_MEAN,
+                                                        VM_REDUCE_MAX, VM_REDUCE_MIN};
+            double r = vm_gpu_try_reduce(t, gpu_reduce_ops[fid - 457]);
+            if (isnan(r)) r = vm_tensor_reduce_all(t, cpu_reduce_ops[fid - 457]);
+            vm_push(vm, FLOAT_VAL(r));
+            break;
+        }
+        /* SW-243: an explicit axis goes to the GPU only when that axis covers
+         * every element (every other extent is 1), so the GPU never changes
+         * which reduction is computed. The GPU path used to treat axis -1 as
+         * "all axes" while vm_tensor_reduce reads it as the last axis. */
         VmTensor* out = NULL;
-        int reduce_axis = axis < 0 ? axis + t->n_dims : axis;
-        int covers_all = reduce_axis >= 0 && reduce_axis < t->n_dims;
+        int covers_all = 1;
         for (int d = 0; covers_all && d < t->n_dims; d++)
-            if (d != reduce_axis && t->shape[d] != 1) covers_all = 0;
+            if (d != axis && t->shape[d] != 1) covers_all = 0;
         if (covers_all) {
-            static const int gpu_reduce_ops[] = {0, 4, 3, 2}; /* sum=0, mean=4, max=3, min=2 */
             double gpu_result = vm_gpu_try_reduce(t, gpu_reduce_ops[fid - 457]);
             if (!isnan(gpu_result)) {
-                int64_t shape[1] = {1};
-                out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+                /* Same shape as vm_tensor_reduce: the axis removed, or [1]. */
+                int64_t shape[16];
+                int rank = 0;
+                for (int d = 0; d < t->n_dims && rank < 16; d++)
+                    if (d != axis) shape[rank++] = t->shape[d];
+                if (rank == 0) shape[rank++] = 1;
+                out = (t->n_dims <= 17) ? vm_tensor_zeros(&vm->heap.regions, shape, rank) : NULL;
                 if (out) {
                     out->data[0] = gpu_result;
                     out->dtype = t->dtype;

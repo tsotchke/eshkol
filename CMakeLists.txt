@@ -6796,6 +6796,33 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wa
     endif()
 endif()
 
+# SW-202 / SW-243: with no axis, tensor-sum/-mean/-max/-min reduce the whole
+# tensor to a number on every engine (native JIT, bytecode VM, and the browser
+# VM bundle driven by node), and max/min start from the infinities.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/tensor_full_reduction_test.esk")
+    add_test(NAME tensor_full_reduction_jit
+             COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+                     $<TARGET_FILE:eshkol-run> -r
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/tensor_full_reduction_test.esk")
+    add_test(NAME tensor_full_reduction_vm
+             COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/tensor_full_reduction_test.esk")
+    set(_esh_full_reduction_tests tensor_full_reduction_jit tensor_full_reduction_vm)
+    find_program(NODE_EXECUTABLE node)
+    if(NODE_EXECUTABLE)
+        add_test(NAME tensor_full_reduction_browser_vm
+                 COMMAND ${NODE_EXECUTABLE}
+                         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/lib/wasm_diff_runner.js"
+                         "${CMAKE_CURRENT_SOURCE_DIR}/site/static/eshkol-vm.js"
+                         "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/tensor_full_reduction_test.esk")
+        list(APPEND _esh_full_reduction_tests tensor_full_reduction_browser_vm)
+    endif()
+    set_tests_properties(${_esh_full_reduction_tests} PROPERTIES
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: tensor full reductions"
+        FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|fatal signal")
+endif()
+
 # WebGPU browser backend. The contract test needs only node; the live and
 # differential gates drive Chrome through Playwright and need a WebGPU device,
 # so they carry the `webgpu` label and are run by gpu-execution-gate.yml.
