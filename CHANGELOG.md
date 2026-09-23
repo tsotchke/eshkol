@@ -14,6 +14,30 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **Region promotion is all-or-nothing.** When a store's promotion out of a
+  region could not allocate its copy, the barrier logged, returned the
+  unpromoted pointer and the store published it; a parent copied before a
+  failed child left an older-arena object pointing into the region about to be
+  freed (SW-232, #713). A promotion is now one transaction: on failure nothing
+  is stored, the region and destination arena are unchanged, and a catchable
+  `region promotion: out of memory` error object is raised. Bulk vector and
+  tensor stores promote before they store. See ADR-0001's 2026-09-22
+  amendment.
+- **Runtime errors reach `guard` as error objects.** Conditions raised by the
+  runtime's type and range checks, such as `(car 5)`, were built without their
+  object header, so `error-object?` answered `#f` and `display` printed a pair
+  holding a pointer. Every raised condition now carries its header.
+- **Malformed tensor shapes raise on every engine (#550).** `(reshape v 1.5
+  2)` no longer fails to compile natively, the VM accepts the documented
+  variadic `(zeros d1 d2 ...)` and `(ones d1 d2 ...)` and validates their
+  shape, and indexing an empty tensor is refused before any arithmetic. The
+  `malformed_shape_matrix` test runs the issue's reproducers and the related
+  shape rules on the JIT, AOT, the VM and the browser VM.
+- **CUDA architectures follow the installed toolkit (#606).** The portable
+  default list is resolved against `nvcc --list-gpu-arch` (or the toolkit
+  version's documented range when nvcc cannot answer), so CUDA 13 configures
+  without SM72 and CUDA 12 keeps it. An explicit `CMAKE_CUDA_ARCHITECTURES` is
+  used as given.
 - **Every unary numeric builtin keeps a Taylor derivative.** `asin`, `acos`,
   `atan`, `asinh`, `acosh`, `atanh`, `log2`, `log10`, `exp2`, `cbrt`, `atan2`
   and the rounding functions returned their primal on a Taylor tower or level,

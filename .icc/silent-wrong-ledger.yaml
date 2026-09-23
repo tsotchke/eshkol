@@ -14813,3 +14813,52 @@ entries:
       tests/ad/vm_no_leaked_carrier_test.esk (ctest vm_no_leaked_carrier_vm/_browser_vm); tests/ad/division_pole_test.esk on the VM.
     caught_by: [v135f-coordinator-review]
     missed_by: [run_vm_parity]
+  - id: SW-232
+    bucket: SILENT-WRONG
+    subtag: memory-safety
+    family: runtime-regions/promotion-atomicity
+    status: fixed
+    closed_at: "5e5868cc1"
+    title: "region promotion published young pointers after an allocation failure (#713)"
+    repro: >-
+      tests/core/region_promotion_failure_test.cpp, reporter_case: a region-young
+      string stored through eshkol_region_write_barrier_into while the destination
+      arena is bounded at capacity. partial_graph_case: a young vector whose
+      32-byte copy fits and whose string child does not.
+    observed: >-
+      The barrier logged "region evacuate: failed to allocate", returned, and its
+      output held the original pointer into the region; the caller stored it. In
+      the partial case the published root was the older-arena copy of the vector
+      with its slot still pointing into the young region, and the half-built copy
+      stayed in the region's forwarding map, so the next successful promotion of
+      the same value reused it and still carried the young edge. The destination
+      arena kept the aborted bytes.
+    correct: >-
+      Either the whole reachable graph is promoted, or nothing is stored, the
+      region, its forwarding relation and the destination arena are unchanged,
+      and a catchable allocation error is raised.
+    root_cause: >-
+      evac_raw and evac_object handled an allocator NULL by returning the old
+      pointer, with no aggregate failure status, and every driver published its
+      result unconditionally. Parents enter the forwarding map before their
+      children are walked, and the range barrier fixed slots up after the bulk
+      copy had already stored the young values.
+    fix: >-
+      evac_transaction (lib/core/runtime_regions.cpp) runs every promotion as one
+      transaction: a scope mark on the destination, a journal of added forwarding
+      keys and of shared bytes rewritten in place, and on the first failed
+      allocation (bounded capacity, OS block refusal, bookkeeping bad_alloc) an
+      abort that restores all three and leaves the roots unchanged. Region-mode
+      drivers then raise eshkol_raise_allocation_failure, whose condition is
+      preallocated outside every arena; arena-span reclamation retains the span.
+      Vector and tensor stores stage, promote, then store. ADR-0001 amended.
+    evidence: >-
+      region_promotion_failure_test passes (release build and an
+      ESHKOL_ENABLE_ASAN=ON build); the same test linked against the pre-fix
+      runtime reports 15 failures across all five cases. Memory suite 37/37,
+      region/arena/vector ctest subset 39/39.
+    caught_by: [external-report]
+    missed_by: [ctest, icc-smoke, icc-readiness]
+    notes: >-
+      Reported as issue #713 with a deterministic bounded-arena reproducer. The VM
+      evacuator is a separate implementation and is not covered by this entry.
