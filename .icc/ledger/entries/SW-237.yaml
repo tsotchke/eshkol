@@ -1,0 +1,31 @@
+id: SW-237
+bucket: SILENT-WRONG
+subtag: io
+family: first-class-io/optional-port
+status: fixed
+closed_at: "dd2ed8f3e"
+title: "display and write used as values ignored their port argument; the VM newline wrote a non-port argument's newline to stdout"
+repro: >-
+  (let ((d display) (p (open-output-string))) (d "x" p) (get-output-string
+  p)); VM (newline 1)
+observed: >-
+  "" (the text went to the current output port); the VM printed a newline to
+  stdout.
+correct: >-
+  "x"; a type error for a non-port (R7RS 6.13.3: the optional argument is an
+  output port).
+root_cause: >-
+  The value form of display/write/newline was a hand-built arity-0 wrapper
+  that took one argument and never a port; the VM newline native fell back to
+  stdout for a non-port.
+fix: >-
+  display, write and newline are ByCount rows of the first-class builtin table
+  (each count lowered by codegenCall); StringIOCodegen::portFile checks the
+  direction bit of every port argument and raises a catchable type error; the
+  VM prelude joins display into one optional-port procedure and its port
+  natives raise the same condition.
+evidence: >-
+  tests/core/first_class_builtin_arity_test.esk and
+  tests/v1_2_edge_cases/first_class_io_test.esk on JIT, AOT, VM and VM ESKB.
+caught_by: [release-dry-run]
+missed_by: [vm_parity]

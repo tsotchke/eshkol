@@ -1,0 +1,27 @@
+id: SW-238
+bucket: SILENT-WRONG
+subtag: autodiff
+family: gradient/runtime-closure-arity
+status: fixed
+closed_at: "034dd9d1a"
+title: "gradient of a variadic callable reached at run time handed it the whole point as one vector and lost coordinates past its fixed parameters"
+repro: >-
+  (define (gw f p) (gradient f p)) (define (vtail a . rest) (* a (car rest)
+  (car (cdr rest)))) (gw vtail (list 2.0 5.0 3.0))
+observed: >-
+  the loss received #(2 5 3) as its one argument (no rest coordinates).
+correct: >-
+  #(15 6 10).
+root_cause: >-
+  The runtime-closure path chose between the single-vector form and spread
+  scalars from input_arity alone, which for a variadic closure is only the
+  fixed count.
+fix: >-
+  The reverse-mode entry gate and the out-of-line spread helper read
+  CLOSURE_FLAG_VARIADIC and spread max(n, fixed) coordinates into a variadic
+  callable.
+evidence: >-
+  tests/autodiff/runtime_closure_arity_spread_test.esk (53 checks, including
+  rest-only and fixed-plus-rest losses).
+caught_by: [release-dry-run]
+missed_by: [vm_parity]

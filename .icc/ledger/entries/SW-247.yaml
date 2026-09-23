@@ -1,0 +1,31 @@
+id: SW-247
+bucket: SILENT-WRONG
+subtag: vm
+family: vm-hash/equal-keys
+status: fixed
+closed_at: "23bac9091"
+title: "VM hash tables matched keys by raw payload and returned every value as an integer; hash-clear! did not clear"
+repro: >-
+  (define h (make-hash-table)) (hash-set! h "origin" (vector 0 0)) (hash-ref h
+  (list->string (string->list "origin")) #f); (hash-set! h 'k "s") (hash-ref h
+  'k #f)
+observed: >-
+  #f, then an integer; define_record_type_test aborted on the VM with vector-
+  ref: expected a vector or tensor.
+correct: >-
+  #(0 0) and "s" (equal? keys; the stored value unchanged), as on native.
+root_cause: >-
+  vm_native 660-664 stored key.as.i/value.as.i through void* (since 08d5d0db1)
+  and 661 pushed INT_VAL of the hit; hash-clear! mapped to the copy native
+  668. The abort appeared when f01071dd2 (SW-221) made vector-ref refuse a
+  non-vector.
+fix: >-
+  vm_hashtable.c takes hash and equality from the table; native 660 makes
+  tables of boxed Values hashed by vm_equal_hash and compared by
+  vm_deep_equal; region evacuation traces them exactly; hash-clear! maps to
+  669.
+evidence: >-
+  tests/core/hash_table_equal_keys_test.esk on JIT, AOT, VM and VM ESKB (ctest
+  hash_table_equal_keys_*); VM parity 374/374.
+caught_by: [release-dry-run]
+missed_by: [vm_parity]

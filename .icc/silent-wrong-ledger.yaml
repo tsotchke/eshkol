@@ -15323,3 +15323,179 @@ entries:
       tests/vm/toplevel_begin_define_test.esk (toplevel_begin_define_{jit,vm,browser_vm}).
     caught_by: [v135f-gates-lane]
     missed_by: [run_vm_parity]
+  - id: SW-231
+    bucket: SILENT-WRONG
+    subtag: frontend
+    family: macro-hygiene/renamed-binder-shadow
+    status: fixed
+    closed_at: "bffc9a697"
+    title: "a local binding of walk, unify, make-fact or another parser-lowered builtin did not shadow it after binder renaming"
+    repro: >-
+      (define (f) (define (make-fact . r) 'inner) (make-fact 1 2)) (f); (define
+      (g) (letrec ((unify (lambda (a b) 'mine))) (unify 1 1))) (g)
+    observed: >-
+      (1 2) and the builtin unify result: the builtin ran inside the local
+      binding's scope (builtin_shadow_test, named_let_capture_test,
+      shadowable_op_letrec_test).
+    correct: >-
+      inner and mine: R7RS 5.3.1, a use in a binder's scope calls that binding.
+    root_cause: >-
+      The parser lowers these names to their own operation nodes and codegen found
+      a user shadow by the binder name (hasUserShadow). ADR-0026 made the expander
+      rename every lexical binder to _v<n>.<name> (9d47e16a4, ea7677b6a), so the
+      name codegen looked up no longer existed.
+    fix: >-
+      The expander, which owns lexical scope, rewrites such a node into a call of
+      the local binding when a binder of that name is in scope
+      (macro_expander.cpp); codegen keeps only the top-level and REPL-batch
+      redirect. Both read one table, inc/eshkol/frontend/shadowable_ops.h.
+    evidence: >-
+      tests/core/first_class_builtin_arity_test.esk (inner define walk, let make-
+      fact, letrec unify) on JIT, AOT, VM and VM ESKB; v1_2_edge_cases
+      builtin_shadow_test, named_let_capture_test, shadowable_op_letrec_test pass.
+    caught_by: [release-dry-run]
+    missed_by: [vm_parity]
+  - id: SW-235
+    bucket: SILENT-WRONG
+    subtag: frontend
+    family: macro-hygiene/renamed-binder-spelling
+    status: fixed
+    closed_at: "bffc9a697"
+    title: "type diagnostics and the source form of a procedure showed the expander's _v<n>.<name> binder spelling"
+    repro: >-
+      (display (let ((h (lambda (x) x))) h)); a named-let accumulator type
+      warning; a linear-variable clone through a let* alias
+    observed: >-
+      (lambda (_v975.x) _v975.x); argument 2 of '_v972.loop'; linear variable
+      '_v973.b' (six typesystem tests failed to match the source name).
+    correct: >-
+      (lambda (x) x); argument 2 of 'loop'; linear variable 'b'.
+    root_cause: >-
+      ADR-0026 renames every lexical binder; the type checker, the shared
+      diagnostic sink and both S-expression builders printed the implementation
+      name.
+    fix: >-
+      syntax_color.h owns the fresh spelling in both directions
+      (ESHKOL_SYNTAX_FRESH_PREFIX, eshkol_syntax_source_spelling,
+      eshkol_syntax_source_text); TypeChecker::emitDiagnostic/addError,
+      eshkol_diagnostic_emit_v1, codegenQuotedAST and HomoiconicCodegen map
+      identifiers to their source spelling.
+    evidence: >-
+      ctest renamed_binder_source_form_smoke and
+      renamed_binder_diagnostic_spelling; typesystem suite 126/126.
+    caught_by: [release-dry-run]
+    missed_by: [vm_parity]
+  - id: SW-236
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: apply/arithmetic-reduction
+    status: fixed
+    closed_at: "dd2ed8f3e"
+    title: "(apply - '(5)) answered 5 and (apply / '(2)) answered 2; (apply - '()) answered 0"
+    repro: >-
+      (apply - (list 5)); (apply / (list 2)); (apply - '())
+    observed: >-
+      5, 2 and 0.
+    correct: >-
+      -5, 1/2 and an error: R7RS 6.2.6, one argument to - or / is its inverse and
+      - and / need at least one argument.
+    root_cause: >-
+      CallApplyCodegen::applyReduction folded from the first element for - and /
+      and gave them identities 0 and 1.
+    fix: >-
+      A single element is inverted (0 - x, 1 / x); only + and * have identities; -
+      and / of an empty list raise. The first-class + - * / values are variadic
+      closures over the same reduction.
+    evidence: >-
+      tests/core/first_class_builtin_arity_test.esk on JIT, AOT, VM and VM ESKB.
+    caught_by: [release-dry-run]
+    missed_by: [vm_parity]
+  - id: SW-237
+    bucket: SILENT-WRONG
+    subtag: io
+    family: first-class-io/optional-port
+    status: fixed
+    closed_at: "dd2ed8f3e"
+    title: "display and write used as values ignored their port argument; the VM newline wrote a non-port argument's newline to stdout"
+    repro: >-
+      (let ((d display) (p (open-output-string))) (d "x" p) (get-output-string
+      p)); VM (newline 1)
+    observed: >-
+      "" (the text went to the current output port); the VM printed a newline to
+      stdout.
+    correct: >-
+      "x"; a type error for a non-port (R7RS 6.13.3: the optional argument is an
+      output port).
+    root_cause: >-
+      The value form of display/write/newline was a hand-built arity-0 wrapper
+      that took one argument and never a port; the VM newline native fell back to
+      stdout for a non-port.
+    fix: >-
+      display, write and newline are ByCount rows of the first-class builtin table
+      (each count lowered by codegenCall); StringIOCodegen::portFile checks the
+      direction bit of every port argument and raises a catchable type error; the
+      VM prelude joins display into one optional-port procedure and its port
+      natives raise the same condition.
+    evidence: >-
+      tests/core/first_class_builtin_arity_test.esk and
+      tests/v1_2_edge_cases/first_class_io_test.esk on JIT, AOT, VM and VM ESKB.
+    caught_by: [release-dry-run]
+    missed_by: [vm_parity]
+  - id: SW-238
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: gradient/runtime-closure-arity
+    status: fixed
+    closed_at: "034dd9d1a"
+    title: "gradient of a variadic callable reached at run time handed it the whole point as one vector and lost coordinates past its fixed parameters"
+    repro: >-
+      (define (gw f p) (gradient f p)) (define (vtail a . rest) (* a (car rest)
+      (car (cdr rest)))) (gw vtail (list 2.0 5.0 3.0))
+    observed: >-
+      the loss received #(2 5 3) as its one argument (no rest coordinates).
+    correct: >-
+      #(15 6 10).
+    root_cause: >-
+      The runtime-closure path chose between the single-vector form and spread
+      scalars from input_arity alone, which for a variadic closure is only the
+      fixed count.
+    fix: >-
+      The reverse-mode entry gate and the out-of-line spread helper read
+      CLOSURE_FLAG_VARIADIC and spread max(n, fixed) coordinates into a variadic
+      callable.
+    evidence: >-
+      tests/autodiff/runtime_closure_arity_spread_test.esk (53 checks, including
+      rest-only and fixed-plus-rest losses).
+    caught_by: [release-dry-run]
+    missed_by: [vm_parity]
+  - id: SW-247
+    bucket: SILENT-WRONG
+    subtag: vm
+    family: vm-hash/equal-keys
+    status: fixed
+    closed_at: "23bac9091"
+    title: "VM hash tables matched keys by raw payload and returned every value as an integer; hash-clear! did not clear"
+    repro: >-
+      (define h (make-hash-table)) (hash-set! h "origin" (vector 0 0)) (hash-ref h
+      (list->string (string->list "origin")) #f); (hash-set! h 'k "s") (hash-ref h
+      'k #f)
+    observed: >-
+      #f, then an integer; define_record_type_test aborted on the VM with vector-
+      ref: expected a vector or tensor.
+    correct: >-
+      #(0 0) and "s" (equal? keys; the stored value unchanged), as on native.
+    root_cause: >-
+      vm_native 660-664 stored key.as.i/value.as.i through void* (since 08d5d0db1)
+      and 661 pushed INT_VAL of the hit; hash-clear! mapped to the copy native
+      668. The abort appeared when f01071dd2 (SW-221) made vector-ref refuse a
+      non-vector.
+    fix: >-
+      vm_hashtable.c takes hash and equality from the table; native 660 makes
+      tables of boxed Values hashed by vm_equal_hash and compared by
+      vm_deep_equal; region evacuation traces them exactly; hash-clear! maps to
+      669.
+    evidence: >-
+      tests/core/hash_table_equal_keys_test.esk on JIT, AOT, VM and VM ESKB (ctest
+      hash_table_equal_keys_*); VM parity 374/374.
+    caught_by: [release-dry-run]
+    missed_by: [vm_parity]

@@ -1,0 +1,32 @@
+id: SW-231
+bucket: SILENT-WRONG
+subtag: frontend
+family: macro-hygiene/renamed-binder-shadow
+status: fixed
+closed_at: "bffc9a697"
+title: "a local binding of walk, unify, make-fact or another parser-lowered builtin did not shadow it after binder renaming"
+repro: >-
+  (define (f) (define (make-fact . r) 'inner) (make-fact 1 2)) (f); (define
+  (g) (letrec ((unify (lambda (a b) 'mine))) (unify 1 1))) (g)
+observed: >-
+  (1 2) and the builtin unify result: the builtin ran inside the local
+  binding's scope (builtin_shadow_test, named_let_capture_test,
+  shadowable_op_letrec_test).
+correct: >-
+  inner and mine: R7RS 5.3.1, a use in a binder's scope calls that binding.
+root_cause: >-
+  The parser lowers these names to their own operation nodes and codegen found
+  a user shadow by the binder name (hasUserShadow). ADR-0026 made the expander
+  rename every lexical binder to _v<n>.<name> (9d47e16a4, ea7677b6a), so the
+  name codegen looked up no longer existed.
+fix: >-
+  The expander, which owns lexical scope, rewrites such a node into a call of
+  the local binding when a binder of that name is in scope
+  (macro_expander.cpp); codegen keeps only the top-level and REPL-batch
+  redirect. Both read one table, inc/eshkol/frontend/shadowable_ops.h.
+evidence: >-
+  tests/core/first_class_builtin_arity_test.esk (inner define walk, let make-
+  fact, letrec unify) on JIT, AOT, VM and VM ESKB; v1_2_edge_cases
+  builtin_shadow_test, named_let_capture_test, shadowable_op_letrec_test pass.
+caught_by: [release-dry-run]
+missed_by: [vm_parity]
