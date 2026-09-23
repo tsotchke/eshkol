@@ -17,7 +17,7 @@
  * SDNC weight-matrix gradient check from #335): aggregate L2 relative error
  *     ||num - ana||_2 / (||num||_2 + ||ana||_2)
  * over sampled input coordinates. Per-element ratios are avoided because they
- * blow up wherever the analytical gradient is ~0. Everything here is double
+ * diverge wherever the analytical gradient is ~0. Everything here is double
  * precision, so the finite-difference floor sits far below the 1e-6 bar the
  * SDNC gradient check already uses.
  *

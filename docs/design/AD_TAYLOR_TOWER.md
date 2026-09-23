@@ -37,7 +37,7 @@ Eshkol forward-mode AD uses a fixed **4-component jet**:
 
 So `derivative^n` / `gradient^n` return an exact **0** at order ≥ 3 (ESH-0118, found by the P6a depth oracle, PR #133). PR #138 extended the live jet to **8 components** (adding a third ε level) to fix reverse-over-nested-forward (ESH-0117), but 8 = 2³ is the **hyper-dual wall**: each additional order *doubles* the struct. It cannot scale to arbitrary order.
 
-We need exact derivatives to arbitrary order n, without exponential blowup, without regressing the order-≤2 hot path or the mixed-mode/reverse work in PRs #37/#39/#48/#84/#95/#113/#117/#138, and without the silent-wrong-nested-gradient trap (§5a).
+We need exact derivatives to arbitrary order n, without exponential growth, without regressing the order-≤2 hot path or the mixed-mode/reverse work in PRs #37/#39/#48/#84/#95/#113/#117/#138, and without the silent-wrong-nested-gradient trap (§5a).
 
 ---
 
@@ -705,7 +705,7 @@ Both confirmed by the POC run.
 | Reverse-over-tower bugs | isolated to P5, own oracle, AOT-verified, extra review |
 | Dispatch-surface growth | strict ordering; tower absent unless order ≥ 3 requested |
 | JET8 churn | subsumed only in P3 after parity, not preemptively |
-| Exact-coeff blowup (bignum size at high K) | opt-in `COEFF_RATIONAL`; predicate `taylor-exact?`; transcendental demotion to F64 |
+| Exact-coeff growth (bignum size at high K) | opt-in `COEFF_RATIONAL`; predicate `taylor-exact?`; transcendental demotion to F64 |
 | Tensor-tower memory/compute cost | shares tensor path + GPU dispatch; series loop on host |
 | Taylor-model unsoundness (remainder too tight) | outward-rounded interval arithmetic; grid-sampling containment gate |
 | Control-flow AD at kinks | default differentiability error unless branch derivatives agree through K or an explicit subgradient policy is requested |

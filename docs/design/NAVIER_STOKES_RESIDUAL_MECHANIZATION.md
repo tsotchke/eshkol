@@ -1,53 +1,43 @@
-# Mechanizing the finite-time Navier-Stokes blowup construction in Eshkol
+# Navier-Stokes residual and similarity-profile computations in Eshkol
 
 **Status:** design document. The capability ledger in Section 3 is the authority
 on what exists today; every gap below is a BUILD ITEM with a version and a gate,
 never a hedge.
 **Author:** tsotchke
-**Scope:** one published paper, and what it would take to obtain its
-construction inside Eshkol at every single step.
+**Scope:** computations, estimates, and available Eshkol operations corresponding
+to one published Navier-Stokes model.
 **Companion:** the `examples/mathematics_navier_stokes_*.esk` family and
 [docs/AI_MATHEMATICS_EXAMPLES.md](../AI_MATHEMATICS_EXAMPLES.md).
 
 ---
 
-## 1. Purpose and the theorem statement
+## 1. Purpose and reference equations
 
-This document is a step-by-step map from a specific published proof to Eshkol
-primitives. For every step of the construction it names the mathematical
+This document maps residuals, scaling laws, similarity profiles, and energy
+estimates in a published Navier-Stokes analysis to Eshkol primitives. For every row it names the mathematical
 operation, the Eshkol primitive that performs it today (verified against the
 tree), or the BUILD ITEM that will, and the gate that certifies the step. It is
-a blueprint for a capability, not a claim about a result.
+a record of computations and their current verification status.
 
-The source is *Finite Time Blowup for Navier-Stokes*, OpenAI, 2026
+The source is a 2026 Navier-Stokes analysis by OpenAI
 (<https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf>).
-All theorem, proposition, lemma and equation numbers below refer to that paper.
-Its main result, quoted:
+The numbered references below identify equations and statements in that paper.
+The model uses a force `f ∈ Cc∞(R³ × (0, ∞); R³)`, a compact set `K ⊂ R³`,
+and velocity and pressure fields `u, p` on `R³ × [0, 1)` with these conditions:
 
-> **Theorem 1.1.** For every `ν > 0` there exist a force `f ∈ Cc∞(R³ × (0, ∞); R³)`,
-> a compact set `K ⊂ R³`, and smooth velocity and pressure fields `u, p` on
-> `R³ × [0, 1)` satisfying
->
-> ```text
-> ∂t u + (u · ∇)u − ν Δu + ∇p = f ,    ∇ · u = 0 ,    u(·, 0) = 0        (1.1)
-> ```
->
-> such that `supp u(·, t) ∪ supp p(·, t) ⊂ K` for every `0 ≤ t < 1`,
->
-> ```text
-> sup_{0 ≤ t < 1} ‖u(t)‖_{L²(R³)} < ∞ ,      limsup_{t ↑ 1} ‖u(t)‖_{L∞(R³)} = ∞ .
-> ```
->
-> Consequently, there is no smooth solution `(u, P)` on `R³ × [0, ∞)` with the
-> same force and initial datum whose kinetic energy is uniformly bounded
-> `sup_{t ≥ 0} ½ ∫_{R³} |u(x, t)|² dx < ∞`.
+```text
+∂t u + (u · ∇)u − ν Δu + ∇p = f ,    ∇ · u = 0 ,    u(·, 0) = 0        (1.1)
+supp u(·, t) ∪ supp p(·, t) ⊂ K,                         0 ≤ t < 1
+sup_{0 ≤ t < 1} ‖u(t)‖_{L²(R³)} < ∞
+limsup_{t ↑ 1} ‖u(t)‖_{L∞(R³)} = ∞
+sup_{t ≥ 0} ½ ∫_{R³} |u(x, t)|² dx < ∞
+```
 
 The paper's Corollary 10.6 transports the same construction to the torus
 `T³ = R³/Z³`.
 
-The mechanization target is not "reproduce the estimates." It is the
-construction: the paper's proof is a *pipeline of explicit algebraic
-constructions* — similarity ansatz, coefficient recursions, finite moment
+The computational map follows the analysis's explicit algebraic operations:
+similarity ansatz, coefficient recursions, finite moment
 systems, a two-family stress solve, a residual-exponent ladder — punctuated by
 analytic estimates. The algebraic spine is exactly what a compiler with exact
 arithmetic, exact-coefficient Taylor towers and automatic differentiation is
@@ -57,7 +47,7 @@ operationally, and how to run what exists now.
 
 ---
 
-## 2. The proof as a pipeline
+## 2. Computational pipeline
 
 The paper's own structure is followed: the Section 3 outline first, then
 Sections 4-10 and Appendices A-C in the order the construction consumes them.
@@ -257,7 +247,7 @@ capability. It follows the flat `examples/*.esk` convention, so
 the files without further wiring, exactly as the existing AI-mathematics family
 does (`docs/AI_MATHEMATICS_EXAMPLES.md`).
 
-| Program | Proof steps | What it computes | Status | Version | Gate |
+| Program | Computation steps | What it computes | Status | Version | Gate |
 |---|---|---|---|---|---|
 | `mathematics_navier_stokes_viscosity_scaling.esk` | 9, 71, 83 | The exact viscosity-scaling identity through the AD residual operator: the rescaled fields are pushed through `∂t u + (u·∇)u − νΔu + ∇p` and the residual difference closes to exact zero, not to a tolerance | IN PROGRESS | v1.3.5 | `ns_viscosity_scaling_exact` |
 | `mathematics_navier_stokes_similarity_scales.esk` | 1, 2, 7, 8 | The similarity scale exponents `(A, D, ℓr, ℓz, E_core, D_core)` derived as a linear system solved exactly over rationals on the scalar exact tower, with the finite-energy condition `h < 1/6` verified exactly | IN PROGRESS | v1.3.5 | `ns_similarity_exponents_solved` |
@@ -288,7 +278,7 @@ does (`docs/AI_MATHEMATICS_EXAMPLES.md`).
 | **Rigorous compact-set bounds.** Supremum/infimum over a parameter box with adaptive subdivision on top of the two items above, so a compactness constant is produced rather than asserted | Steps 19, 30 (tail), 72, 77, 81 (tail) | v1.5.0-intelligence | `ns_cone_condition_equivalence` |
 | **Interval and Taylor-model tensor element types with AD.** Tensor element types whose entries are intervals or Taylor models, differentiable by the same operators — the composition of the shipped tensor towers with the shipped Taylor models, which today are separate | Steps 72, 77, 78, 80 | v1.6.0-reasoning | `ns_summation_flatness` |
 | **Graded coefficient classes.** A value type carrying an exponent grade whose product and derivative rules are checked by construction, so the paper's coefficient classes (Definitions 6.4-6.5, Proposition 6.6) are types rather than side conditions | Steps 54, 70 | v1.6.0-reasoning | `ns_residual_exponent_ladder` |
-| **Proof-object emission and an independent checker.** Every certified step emits a machine-readable certificate (the exact rational witnesses, the interval endpoints and their rounding direction, the derivation of each inequality), and a checker outside Eshkol re-verifies the certificate without trusting the compiler. This is the assurance-workstream (W2) machine-checked-invariants track applied to a construction rather than to the compiler | The whole of Section 2; without it "mechanized" means "Eshkol says so" | v1.7.0-synthesis | `ns_certificate_external_check` |
+| **Certificate emission and an independent checker.** Every certified step emits a machine-readable certificate (the exact rational witnesses, the interval endpoints and their rounding direction, the derivation of each inequality), and a checker outside Eshkol re-verifies the certificate without trusting the compiler. This is the assurance-workstream (W2) machine-checked-invariants track applied to a construction rather than to the compiler | The whole of Section 2; without it "mechanized" means "Eshkol says so" | v1.7.0-synthesis | `ns_certificate_external_check` |
 | **Incremental knowledge-base evaluation for search over ansatz families.** The DBSP spine plus the knowledge-base and inference surface, so an ansatz family is a query whose answer updates incrementally as constraints are added — the search half of the construction, as opposed to the verification half | Steps 21, 46, 75 as a search rather than a replay | v1.6.0-reasoning | `ns_ansatz_family_search` |
 
 ### 3.5 Known exactness and rigor boundaries
@@ -316,7 +306,7 @@ itself rather than inferred:
   the next derivative times a safety factor — both files say so in their own
   headers. Every "enclosure" in Section 2 is sound in practice and gated in CI
   (`scripts/run_ad_validated_bounds_gate.sh`), and becomes rigorous with the
-  build item above. No row in Section 2 should be read as a proof today.
+  build item above. Each row reports only the computation or bound stated in its status.
 - **Symbolic algebra means symbolic differentiation only.** `(diff expr var)`
   is real and returns a quoted S-expression, but there is no polynomial ring,
   no resultants, no series *values* — that is the v1.4.0-connection build item.
@@ -326,10 +316,9 @@ itself rather than inferred:
 
 ## 4. The end-to-end verification contract
 
-### 4.1 What "the construction is mechanized" means
+### 4.1 Verification levels for the computations
 
-Three conditions, in increasing strength. None of them is a claim about the
-theorem; they are claims about what a machine has checked.
+Three conditions, in increasing strength, describe what a machine has checked.
 
 1. **The residual closes to order `N` with exact coefficients.** For the
    leading field and for each background order `n`, the residual of the
@@ -340,7 +329,7 @@ theorem; they are claims about what a machine has checked.
    coefficient, or the test proves nothing (the pattern the example family of
    Section 3.2 already uses).
 
-2. **Every appendix lemma is certified.** Each numbered statement in
+2. **Each referenced bound has a certificate.** Each numbered statement in
    Appendices A, B and C that the construction consumes has an Eshkol-checkable
    form: an exact algebraic identity, an exactly solved finite linear system, or
    an inequality with explicit interval endpoints and a stated rounding
@@ -348,11 +337,11 @@ theorem; they are claims about what a machine has checked.
    Eshkol form is a bare floating-point comparison is not certified and must be
    recorded as an open BUILD ITEM rather than a pass; and an enclosure produced
    by the epsilon-widened intervals or the sampled Taylor-model remainder of
-   Section 3.5 is validated, not proved, and must be labelled as such until the
+   Section 3.5 is validated and must be labelled as such until the
    rigorous-enclosure build item lands.
 
 3. **Certificates are checkable outside Eshkol.** Each certified step emits a
-   proof object — the witnesses, the endpoints, the rounding mode, the
+   certificate — the witnesses, the endpoints, the rounding mode, the
    derivation chain — and an independent checker re-verifies it without running
    Eshkol. Until this exists, condition 2 rests on trusting the compiler, and
    the trust is not transferable. This is the `ns_certificate_external_check`
@@ -364,7 +353,7 @@ duals, exact linear algebra). Condition 2 needs the torus, rigorous-enclosure an
 compact-set items at v1.5.0-intelligence, and the proved Taylor-model remainder
 that ROADMAP.md already stages under Formal Verification. Condition 3 is the
 assurance-track deliverable and is what makes the result citable by someone who
-does not run this compiler.
+   does not run this compiler.
 
 **One property of the harness is part of the contract.** The examples suite is a
 compile-and-run smoke gate: it fails a program that crashes, not one that prints
@@ -374,7 +363,7 @@ proves nothing. Note also that Scheme fences inside `docs/design/` are outside
 the documentation-example extractor's scope, so the commands in Section 4.3 are
 the only executable contract this document has.
 
-### 4.2 The proposed oracle
+### 4.2 The computation oracle
 
 The gates named throughout Section 2 belong to one new completion oracle,
 `navier-stokes-mechanization`, added to
@@ -400,9 +389,8 @@ Criterion ids, in construction order:
 `ns_torus_corollary_scaling`, `ns_certificate_external_check`,
 `ns_ansatz_family_search`.
 
-The oracle is registered when its first criteria have traces to grade; an oracle
-with no evidence grades red by design, which is the correct reading of a
-construction that is not yet mechanized. Each criterion must ship with an
+The oracle grades only criteria backed by executable traces. A criterion
+without evidence grades red by design. Each criterion must ship with an
 `action:` that names a script which actually exists — the `ad-taylor-campaign`
 target already carries criteria whose actions resolve to no script in the tree
 even though the underlying capability is real and CTest-gated, and this oracle
@@ -449,8 +437,8 @@ A readiness verdict taken without regenerating traces is not evidence.
 
 Ready to paste; the release cut owns `RELEASE_NOTES.md`.
 
-> Eshkol now documents, step by step, how a published finite-time
-> Navier-Stokes blowup construction would be obtained inside the language. The
+> Eshkol documents residual, scaling, and similarity-profile computations
+> from a published Navier-Stokes analysis. The
 > new design note walks the paper's own structure — similarity coordinates and
 > the leading field, the cumulative radial moments, the admissible stress cone,
 > the heat exterior and the analytic axis profiles, the order-by-order

@@ -2,7 +2,7 @@
 ;;;
 ;;; Turns a candidate flow into its residual force (how far it is from
 ;;; solving the incompressible Navier-Stokes equations) and, for the
-;;; similarity-coordinate constructions used to search for blowup ansatze,
+;;; similarity-coordinate constructions used to evaluate similarity ansatze,
 ;;; its singular structure in tau = 1 - t. This lifts and generalizes the
 ;;; hand-rolled residual operator in
 ;;; examples/mathematics_navier_stokes_viscosity_scaling.esk and

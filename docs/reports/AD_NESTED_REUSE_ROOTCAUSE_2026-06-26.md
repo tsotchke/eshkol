@@ -27,7 +27,7 @@ on a fresh `eshkol-run` built from the PR #75 branch (`fix/nested-ad-perturbatio
   yields 196 = exactly **one** of the four product-rule cross terms (a1·b2 = 14·14),
   the other three vanish. So the two reads of `t` return **different** dual contents.
 
-## Why this is the Noesis named-let blow-up (Issue 1) AND the +/- symptom
+## Why this is the Noesis named-let growth (Issue 1) AND the +/- symptom
 - A named-let loop variable is a bound value re-read every iteration → same bug,
   compounded per iteration → `3.48e36`.
 - `(+ x 0.0)` / `(abs x)` produce a *computed* dual; when that intermediate is
@@ -66,7 +66,7 @@ on a fresh `eshkol-run` built from the PR #75 branch (`fix/nested-ad-perturbatio
 
 ## Verification gates for the fix (must all pass, `-r` AND AOT)
 - The table above: 2, 8, 2, 2, 2, **588**, **2**, **2**.
-- Noesis named-let: `post-loop'(0.05,k=1)` = -307.2; k=2..5 match finite-difference; no blow-up.
+- Noesis named-let: `post-loop'(0.05,k=1)` = -307.2; k=2..5 match finite-difference; no growth.
 - 50 000-iteration loop of a 2nd-order gradient: completes, no SIGILL/SIGBUS, bounded memory.
 - `tests/ad/nested_ad_test.esk` (10/10 from #75) still green; ad_input2/hessian/jacobian gates green.
 - Report ns/call before/after (target: µs-scale, no per-call growth).

@@ -35,7 +35,7 @@ calls `gradient` inside returns garbage instead of the true higher-order derivat
 The k=1 case is mathematically identical to the straight-line `post` above (which
 gives the exact -307.2), so the **named-let recursion is corrupting the perturbation
 tags** — the inner `gradient`'s tape/jet state appears to leak into the outer loop's
-higher-order tracking, compounding each iteration (note the blow-up grows with k).
+higher-order tracking, compounding each iteration (note the error grows with k).
 Straight-line code with the same math is exact. Minimal repro above.
 
 ## Issue 2 — STABILITY: iterated loop-nested AD SIGSEGV (interp) / SIGBUS (compiled)

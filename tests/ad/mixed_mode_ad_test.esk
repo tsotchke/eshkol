@@ -71,7 +71,7 @@
                                                    (derivative (lambda (x) (* x x)) 2.0)))
                                     (vector 3.0)) 0) 4.0))
 
-;; === bounded iteration: stability + no crash/leak blow-up over 1000 calls ===
+;; === bounded iteration: stability + no crash/leak growth over 1000 calls ===
 (define (loop-test i acc)
   (if (= i 1000)
       acc

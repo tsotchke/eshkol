@@ -12,7 +12,7 @@ What makes Eshkol's AD unusual:
 
 - **Arbitrary order.** Not just first and second derivatives — the *n*-th
   derivative for any *n*, computed by truncated-Taylor recurrences that cost
-  O(*n*²), never the 2ⁿ blow-up of nested dual numbers.
+  O(*n*²), never the 2ⁿ growth of nested dual numbers.
 - **Exact when it can be.** Differentiate a polynomial or rational function at
   an exact point and the derivative comes back as an exact `bignum` or
   `rational` — zero floating-point error. No double-only framework (JAX,
@@ -821,7 +821,7 @@ primitive operation has a closed recurrence that maps input coefficient arrays t
 output ones — Cauchy convolution for multiplication, coupled recurrences for
 `sin`/`cos`, divided recurrences for `/` and `log`, and so on. Because these
 recurrences are O(K²), high-order AD is *polynomial* in the order, not the 2ᴷ
-blow-up of stacking dual numbers. When the order `K` is a literal at the call
+growth of stacking dual numbers. When the order `K` is a literal at the call
 site (the common case in a compiler), an un-nested tower can be emitted as
 unrolled, stack-allocated IR. A nested pass uses a recursive level carrier;
 each level has its own **epoch tag**, and its coefficients can themselves carry
