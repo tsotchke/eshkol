@@ -441,7 +441,7 @@ static int vm_evac_walk_object(VM* vm, int32_t idx) {
      * are covered by the conservative block sweep, which is why this arm can
      * be a no-op without being a shallow leaf copy. */
     case HEAP_STRING:                 /* VmString: byte_len/char_len/char* data */
-    case HEAP_COMPLEX:                /* two doubles                            */
+    case HEAP_COMPLEX:                /* doubles plus optional dual carriers   */
     case HEAP_RATIONAL:               /* int64 pair, or two VmBignum*            */
     case HEAP_BIGNUM:                 /* sign/limbs/n_limbs/capacity             */
     /* HEAP_DUAL's exact halves (SW-85) are ARENA pointers, not heap indices,
@@ -771,6 +771,15 @@ static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
      * (old rational -> old bignum -> region-grown limbs) is not reachable by
      * scanning alone. */
     switch ((int)o->type) {
+    case HEAP_COMPLEX: {
+        const VmComplex* z = (const VmComplex*)p;
+        const VmDual* parts[2] = { z->creal, z->cimag };
+        for (int i = 0; i < 2; i++) if (parts[i]) {
+            vm_evac_retain_ptr(bs, (void*)parts[i]);
+            vm_evac_scan_range(bs, (void*)parts[i], sizeof(VmDual));
+        }
+        break;
+    }
     case HEAP_RATIONAL: {
         const VmRational* r = (const VmRational*)p;
         if (r->is_big) {
@@ -804,6 +813,9 @@ static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
             if (r->big_den) { vm_evac_retain_ptr(bs, r->big_den);
                               vm_evac_scan_range(bs, r->big_den, sizeof(VmBignum)); }
         }
+        /* Complex component carriers are arena objects reachable from a
+         * complex payload rather than heap indices; retain their full dual
+         * envelopes so nested Taylor state survives evacuation. */
         if (d->kind == VM_DUAL_KIND_TAYLOR) {
             if (d->coeff) {
                 vm_evac_retain_ptr(bs, d->coeff);

@@ -3273,6 +3273,57 @@ void eshkol_taylor_coeffs_list(arena_t* arena, const eshkol_tagged_value_t* tv,
     *out = acc;
 }
 
+/* Zip independently extracted real/imaginary coefficient carriers without
+ * erasing their enclosing derivatives. Both lists come from the same order. */
+void eshkol_complex_coefficients_zip(arena_t* arena,
+                                     const eshkol_tagged_value_t* real_list,
+                                     const eshkol_tagged_value_t* imag_list,
+                                     eshkol_tagged_value_t* out) {
+    if (!arena) arena = get_global_arena();
+    eshkol_tagged_value_t nil = {0};
+    nil.type = ESHKOL_VALUE_NULL;
+    *out = nil;
+    eshkol_tagged_value_t r = *real_list, i = *imag_list;
+    arena_tagged_cons_cell_t* tail = NULL;
+    while ((r.type & 0x0F) != ESHKOL_VALUE_NULL ||
+           (i.type & 0x0F) != ESHKOL_VALUE_NULL) {
+        if ((r.type & 0x0F) != ESHKOL_VALUE_HEAP_PTR ||
+            (i.type & 0x0F) != ESHKOL_VALUE_HEAP_PTR ||
+            !r.data.ptr_val || !i.data.ptr_val) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "complex Taylor coefficient lists disagree");
+            return;
+        }
+        const arena_tagged_cons_cell_t* rc = (const arena_tagged_cons_cell_t*)(uintptr_t)r.data.ptr_val;
+        const arena_tagged_cons_cell_t* ic = (const arena_tagged_cons_cell_t*)(uintptr_t)i.data.ptr_val;
+        eshkol_complex_carrier_t* value = (eshkol_complex_carrier_t*)arena_allocate(arena, sizeof(*value));
+        arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
+        if (!value || !cell) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "complex Taylor coefficient allocation failed");
+            return;
+        }
+        int32_t real_ok = 0, imag_ok = 0;
+        value->primal.real = eshkol_ad_seed_to_double(&rc->car, &real_ok);
+        value->primal.imag = eshkol_ad_seed_to_double(&ic->car, &imag_ok);
+        if (!real_ok || !imag_ok) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "complex Taylor coefficient is not numeric");
+            return;
+        }
+        value->real = rc->car;
+        value->imag = ic->car;
+        cell->car = eshkol_make_complex((uint64_t)(uintptr_t)value);
+        cell->car.flags |= ESHKOL_COMPLEX_CARRIER_FLAG;
+        cell->cdr = nil;
+        eshkol_tagged_value_t link = nil;
+        link.type = ESHKOL_VALUE_HEAP_PTR;
+        link.data.ptr_val = (uint64_t)(uintptr_t)cell;
+        if (tail) tail->cdr = link;
+        else *out = link;
+        tail = cell;
+        r = rc->cdr;
+        i = ic->cdr;
+    }
+}
+
 #ifdef __cplusplus
 }  /* extern "C" */
 #endif

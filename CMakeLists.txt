@@ -6224,6 +6224,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: hessian over parameter-capturing lambdas"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     if(NOT WIN32)
+        add_test(NAME site_scalar_hessian_jit
+            COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+                $<TARGET_FILE:eshkol-run> -r
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/site_scalar_hessian_test.esk")
+        add_test(NAME site_scalar_hessian_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/site_scalar_hessian_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/site_scalar_hessian_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/site_scalar_hessian_aot'")
+        add_test(NAME site_scalar_hessian_vm
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/site_scalar_hessian_test.esk")
+        set_tests_properties(site_scalar_hessian_jit site_scalar_hessian_aot site_scalar_hessian_vm
+            PROPERTIES TIMEOUT 120
+                PASS_REGULAR_EXPRESSION "site scalar Hessian PASS"
+                FAIL_REGULAR_EXPRESSION "ERROR:|FAIL:|fatal signal")
         add_test(
             NAME hessian_capture_scalar_vm_smoke
             COMMAND sh -c

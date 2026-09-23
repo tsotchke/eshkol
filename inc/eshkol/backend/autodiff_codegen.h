@@ -253,6 +253,7 @@ public:
     // ESH-0402: the seeding this pass would do if its point were an ordinary
     // value. seedForwardAndPush() wraps it with the nested-carrier probe.
     llvm::Value* seedForwardAndPushCore(llvm::Value* point_tagged, llvm::Value* level);
+    llvm::Value* seedForwardAndPushPlain(llvm::Value* point_tagged, llvm::Value** out_level);
     llvm::Value* seedForwardAndPushCorePlain(llvm::Value* point_tagged, llvm::Value* level);
     // POP (restore `level`) and extract the derivative w.r.t. this level's slot:
     // a scalar double at level 0, the e2-slice dual when nested.
@@ -265,8 +266,9 @@ public:
     // ESH-0402: the extraction this pass would do if its point had been an
     // ordinary value. popAndExtractForward() wraps it with the nested-carrier
     // arm selected by the route seedForwardAndPush() recorded.
-    llvm::Value* popAndExtractForwardCore(llvm::Value* result_tagged, llvm::Value* level);
-    llvm::Value* popAndExtractForwardCorePlain(llvm::Value* result_tagged, llvm::Value* level);
+    llvm::Value* popAndExtractForwardPlain(llvm::Value* result_tagged, llvm::Value* level, bool pop_context = true);
+    llvm::Value* popAndExtractForwardCore(llvm::Value* result_tagged, llvm::Value* level, bool pop_context = true);
+    llvm::Value* popAndExtractForwardCorePlain(llvm::Value* result_tagged, llvm::Value* level, bool pop_context = true);
     // ESH-0402: slot holding the packed nested-composition route returned by
     // eshkol_ad_nested_seed at the seed site, read at the matching extraction
     // site. Set by seedForwardAndPush, consumed (and cleared) by

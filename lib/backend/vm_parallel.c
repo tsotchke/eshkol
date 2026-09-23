@@ -559,7 +559,11 @@ static int vm_clone_object_at(VM* worker, VM* main_vm, int32_t idx,
             VmComplex* src_z = (VmComplex*)src->opaque.ptr;
             VmComplex* dst_z = src_z ? (VmComplex*)vm_alloc(&worker->heap.regions, sizeof(VmComplex)) : NULL;
             if (src_z && !dst_z) return 0;
-            if (src_z) *dst_z = *src_z;
+            if (src_z) {
+                *dst_z = *src_z;
+                if (src_z->creal) { dst_z->creal = (VmDual*)vm_alloc(&worker->heap.regions,sizeof(VmDual)); if (!dst_z->creal) return 0; *dst_z->creal=*src_z->creal; }
+                if (src_z->cimag) { dst_z->cimag = (VmDual*)vm_alloc(&worker->heap.regions,sizeof(VmDual)); if (!dst_z->cimag) return 0; *dst_z->cimag=*src_z->cimag; }
+            }
             dst->opaque.ptr = dst_z;
             return 1;
         }
@@ -900,7 +904,11 @@ static int vm_publish_object_locked(VM* main_vm, VM* worker, Value in,
             VmComplex* src_z = (VmComplex*)src->opaque.ptr;
             VmComplex* dst_z = src_z ? (VmComplex*)vm_alloc(&main_vm->heap.regions, sizeof(VmComplex)) : NULL;
             if (src_z && !dst_z) return 0;
-            if (src_z) *dst_z = *src_z;
+            if (src_z) {
+                *dst_z = *src_z;
+                if (src_z->creal) { dst_z->creal = (VmDual*)vm_alloc(&main_vm->heap.regions,sizeof(VmDual)); if (!dst_z->creal) return 0; *dst_z->creal=*src_z->creal; }
+                if (src_z->cimag) { dst_z->cimag = (VmDual*)vm_alloc(&main_vm->heap.regions,sizeof(VmDual)); if (!dst_z->cimag) return 0; *dst_z->cimag=*src_z->cimag; }
+            }
             dst->opaque.ptr = dst_z;
             return 1;
         }

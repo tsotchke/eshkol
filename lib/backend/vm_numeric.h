@@ -76,7 +76,10 @@
 #define VM_SUBTYPE_I128      27
 
 /* ── Complex Number ── */
-typedef struct {
+typedef struct VmDual VmDual;
+typedef struct VmBignum VmBignum;
+typedef struct VmRational VmRational;
+typedef struct VmComplex {
     double real;
     double imag;
     /* Forward-mode tangent of the value (ADR-0025): d(real) and d(imag) with
@@ -85,15 +88,20 @@ typedef struct {
      * doubles, so the heap walkers need no case for it. */
     double dreal;
     double dimag;
+    /* Optional nested forward carriers for the two real components.  These
+     * are arena-owned VmDual/Taylor objects; the legacy doubles above remain
+     * the fast first-order representation and ABI-visible payload. */
+    VmDual* creal;
+    VmDual* cimag;
 } VmComplex;
 
 /* ── Bignum (sign-magnitude, base 2^32 limbs, little-endian) ── */
-typedef struct {
+struct VmBignum {
     int sign;           /* -1, 0, or 1 */
     uint32_t* limbs;    /* arena-allocated */
     int n_limbs;
     int capacity;
-} VmBignum;
+};
 
 /* ── Rational Number (always normalized: gcd(|num|,denom)=1, denom>0) ──
  *
@@ -111,13 +119,13 @@ typedef struct {
  * The representation is CANONICAL: a value is stored big only when the reduced
  * pair genuinely does not fit int64, so equality and eqv? stay a field
  * comparison and every existing int64 fast path keeps working unchanged. */
-typedef struct {
+struct VmRational {
     int64_t num;        /* valid iff is_big == 0 */
     int64_t denom;      /* valid iff is_big == 0; > 0 */
     int32_t is_big;     /* 0 = int64 fast path, 1 = bignum path */
     VmBignum* big_num;  /* valid iff is_big == 1 */
     VmBignum* big_den;  /* valid iff is_big == 1; > 0 */
-} VmRational;
+};
 
 /* ── Dual Number (forward-mode AD: primal + tangent*epsilon) ──
  *
@@ -153,7 +161,7 @@ typedef struct {
 #define VM_DUAL_KIND_SCALAR  0u
 #define VM_DUAL_KIND_TAYLOR  1u
 
-typedef struct {
+struct VmDual {
     double primal;
     double tangent;
     VmRational* eprimal;   /* NULL = primal is inexact  */
@@ -174,7 +182,20 @@ typedef struct {
     VmRational** exact_tangent2_coeff;
     double* mixed_coeff;
     VmRational** exact_mixed_coeff;
-} VmDual;
+};
+
+VmDual* vm_dual_make(VmRegionStack*, double, double);
+VmDual* vm_dual_add(VmRegionStack*, const VmDual*, const VmDual*);
+VmDual* vm_dual_sub(VmRegionStack*, const VmDual*, const VmDual*);
+VmDual* vm_dual_mul(VmRegionStack*, const VmDual*, const VmDual*);
+VmDual* vm_dual_div(VmRegionStack*, const VmDual*, const VmDual*);
+VmDual* vm_dual_sin(VmRegionStack*, const VmDual*);
+VmDual* vm_dual_cos(VmRegionStack*, const VmDual*);
+VmDual* vm_dual_exp(VmRegionStack*, const VmDual*);
+VmDual* vm_dual_sinh(VmRegionStack*, const VmDual*);
+VmDual* vm_dual_cosh(VmRegionStack*, const VmDual*);
+VmDual* vm_dual_taylor_clone(VmRegionStack*, const VmDual*);
+VmDual* vm_dual_scale(VmRegionStack*, double, const VmDual*);
 
 /* ── Exact-arithmetic surface shared by the rational tower and the AD dual ──
  * (SW-85) These were file-static in vm_rational.c and reachable only from the
@@ -205,7 +226,10 @@ VmRational* vm_dual_exact_primal(const VmDual* d);
 VmDual*     vm_dual_make_exact_pair(VmRegionStack* rs,
                                     VmRational* primal, VmRational* tangent);
 VmDual*     vm_dual_make_taylor_scalar_seed(VmRegionStack* rs,
-                                             const VmDual* outer);
+                                            const VmDual* outer);
+VmDual*     vm_dual_make_taylor_scalar_seed_order(VmRegionStack* rs,
+                                                  const VmDual* outer,
+                                                  uint32_t order);
 VmDual*     vm_dual_make_taylor_seed(VmRegionStack* rs, VmRational* point,
                                      double point_value, uint32_t order,
                                      int exact, uint32_t epoch);
@@ -217,6 +241,8 @@ VmDual*     vm_dual_make_taylor_carry_seed(VmRegionStack* rs,
                                             uint32_t order);
 VmDual*     vm_dual_taylor_promote_tangent(VmRegionStack* rs,
                                            const VmDual* result);
+VmDual*     vm_dual_taylor_derivative_series(VmRegionStack* rs,
+                                              const VmDual* result);
 VmDual*     vm_dual_taylor_carry_result(VmRegionStack* rs,
                                          const VmDual* result,
                                          uint32_t order,

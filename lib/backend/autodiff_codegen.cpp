@@ -545,6 +545,45 @@ llvm::Function* getAdNestedUnsupportedFunc(CodegenContext& ctx) {
  * @return the seeded point as a tagged dual number or tower, ready to pass into the differentiated closure.
  */
 llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
+                                               llvm::Value** out_level) {
+    auto& b = ctx_.builder();
+    auto* fn = b.GetInsertBlock()->getParent();
+    llvm::Value* level = adPertLevelLoad();
+    if (out_level) *out_level = level;
+    llvm::IRBuilder<> entry(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    auto* result = entry.CreateAlloca(ctx_.taggedValueType(), nullptr, "complex_seed_result");
+    auto* route = entry.CreateAlloca(ctx_.int32Type(), nullptr, "complex_seed_route");
+    auto* complex_bb = llvm::BasicBlock::Create(ctx_.context(), "seed_complex", fn);
+    auto* scalar_bb = llvm::BasicBlock::Create(ctx_.context(), "seed_scalar", fn);
+    auto* done = llvm::BasicBlock::Create(ctx_.context(), "seed_join", fn);
+    b.CreateCondBr(b.CreateICmpEQ(tagged_.getBaseType(tagged_.getType(point_tagged)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX)), complex_bb, scalar_bb);
+
+    b.SetInsertPoint(complex_bb);
+    ComplexCodegen complex(ctx_, tagged_, mem_);
+    auto* real = complex.componentTagged(point_tagged, false);
+    auto* imag = complex.componentTagged(point_tagged, true);
+    // dz=1: seed only the real coordinate. The imaginary coordinate is a
+    // constant for this pass, retaining any enclosing carrier it already has.
+    auto* seeded_real = seedForwardAndPushPlain(real, nullptr);
+    b.CreateStore(b.CreateLoad(ctx_.int32Type(), nestedRouteSlot_), route);
+    auto* carrier = complex.packCarrierComplex(
+        adPointToDouble(real, "complex derivative real coordinate"),
+        adPointToDouble(imag, "complex derivative imaginary coordinate"), seeded_real, imag);
+    b.CreateStore(carrier, result);
+    b.CreateBr(done);
+
+    b.SetInsertPoint(scalar_bb);
+    auto* seeded_scalar = seedForwardAndPushPlain(point_tagged, nullptr);
+    b.CreateStore(b.CreateLoad(ctx_.int32Type(), nestedRouteSlot_), route);
+    b.CreateStore(seeded_scalar, result);
+    b.CreateBr(done);
+    b.SetInsertPoint(done);
+    nestedRouteSlot_ = route;
+    return b.CreateLoad(ctx_.taggedValueType(), result);
+}
+
+llvm::Value* AutodiffCodegen::seedForwardAndPushPlain(llvm::Value* point_tagged,
                                                  llvm::Value** out_level) {
     auto& b = ctx_.builder();
     llvm::Value* level = adPertLevelLoad();
@@ -635,35 +674,7 @@ llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
  */
 llvm::Value* AutodiffCodegen::seedForwardAndPushCore(llvm::Value* point_tagged,
                                                      llvm::Value* level) {
-    auto& b = ctx_.builder();
-    llvm::Function* fn = b.GetInsertBlock()->getParent();
-    llvm::AllocaInst* out = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "seed_out");
-    llvm::Value* is_complex = b.CreateICmpEQ(
-        tagged_.getBaseType(tagged_.getType(point_tagged)),
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
-    llvm::BasicBlock* cbb = llvm::BasicBlock::Create(ctx_.context(), "complex_seed", fn);
-    llvm::BasicBlock* pbb = llvm::BasicBlock::Create(ctx_.context(), "plain_seed", fn);
-    llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "seed_done", fn);
-    b.CreateCondBr(is_complex, cbb, pbb);
-    b.SetInsertPoint(cbb);
-    {
-        ComplexCodegen complex(ctx_, tagged_, mem_);
-        llvm::Value* zr = complex.componentTagged(point_tagged, false);
-        llvm::Value* zi = complex.componentTagged(point_tagged, true);
-        llvm::Value* r = tagged_.unpackDouble(zr);
-        llvm::Value* i = tagged_.unpackDouble(zi);
-        llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
-        llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-        llvm::Value* rd = packDualToTagged(makeDual8(ctx_, r, one, zero, zero, zero, zero, zero, zero));
-        llvm::Value* id = packDualToTagged(makeDual8(ctx_, i, zero, zero, zero, zero, zero, zero, zero));
-        b.CreateStore(complex.packCarrierComplex(r, i, rd, id), out);
-    }
-    b.CreateBr(done);
-    b.SetInsertPoint(pbb);
-    b.CreateStore(seedForwardAndPushCorePlain(point_tagged, level), out);
-    b.CreateBr(done);
-    b.SetInsertPoint(done);
-    return b.CreateLoad(ctx_.taggedValueType(), out, "seeded_value");
+    return seedForwardAndPushCorePlain(point_tagged, level);
 }
 
 llvm::Value* AutodiffCodegen::seedForwardAndPushCorePlain(llvm::Value* point_tagged,
@@ -753,7 +764,54 @@ llvm::Value* AutodiffCodegen::seedForwardAndPushCorePlain(llvm::Value* point_tag
  * @return the extracted derivative (or vector of derivatives), tagged.
  */
 llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
-                                                   llvm::Value* level) {
+                                                 llvm::Value* level) {
+    auto& b = ctx_.builder();
+    auto* fn = b.GetInsertBlock()->getParent();
+    auto* route = nestedRouteSlot_;
+    llvm::IRBuilder<> entry(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    auto* result = entry.CreateAlloca(ctx_.taggedValueType(), nullptr, "complex_extract_result");
+    auto* complex_bb = llvm::BasicBlock::Create(ctx_.context(), "extract_complex", fn);
+    auto* scalar_bb = llvm::BasicBlock::Create(ctx_.context(), "extract_scalar", fn);
+    auto* done = llvm::BasicBlock::Create(ctx_.context(), "extract_join", fn);
+    b.CreateCondBr(b.CreateICmpEQ(tagged_.getBaseType(tagged_.getType(result_tagged)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX)), complex_bb, scalar_bb);
+
+    b.SetInsertPoint(complex_bb);
+    ComplexCodegen complex(ctx_, tagged_, mem_);
+    auto* real = complex.componentTagged(result_tagged, false);
+    auto* imag = complex.componentTagged(result_tagged, true);
+    nestedRouteSlot_ = route;
+    auto* real_derivative = popAndExtractForwardPlain(real, level);
+    nestedRouteSlot_ = route;
+    auto* imag_derivative = popAndExtractForwardPlain(imag, level, false);
+    if (adTowerMode_ == TowerMode::COEFFS && adTowerOrder_) {
+        auto* rs = entry.CreateAlloca(ctx_.taggedValueType());
+        auto* is = entry.CreateAlloca(ctx_.taggedValueType());
+        b.CreateStore(real_derivative, rs);
+        b.CreateStore(imag_derivative, is);
+        auto zip = ctx_.module().getOrInsertFunction("eshkol_complex_coefficients_zip",
+            llvm::FunctionType::get(ctx_.voidType(),
+                {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false));
+        b.CreateCall(zip, {getArenaPtr(), rs, is, result});
+    } else {
+        b.CreateStore(complex.packCarrierComplex(
+            adPointToDouble(real_derivative, "complex real derivative"),
+            adPointToDouble(imag_derivative, "complex imaginary derivative"),
+            real_derivative, imag_derivative), result);
+    }
+    b.CreateBr(done);
+
+    b.SetInsertPoint(scalar_bb);
+    nestedRouteSlot_ = route;
+    b.CreateStore(popAndExtractForwardPlain(result_tagged, level), result);
+    b.CreateBr(done);
+    b.SetInsertPoint(done);
+    nestedRouteSlot_ = nullptr;
+    return b.CreateLoad(ctx_.taggedValueType(), result);
+}
+
+llvm::Value* AutodiffCodegen::popAndExtractForwardPlain(llvm::Value* result_tagged,
+                                                       llvm::Value* level, bool pop_context) {
     auto& b = ctx_.builder();
 
     // ── ESH-0402: nested-carrier extraction (ledger SW-03/SW-04) ────────────
@@ -788,7 +846,7 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
 
         b.SetInsertPoint(xnest_bb);
         adPertLevelStore(level);
-        if (adTowerMode_ != TowerMode::NONE && adTowerOrder_) towerCtxPop();
+        if (pop_context && adTowerMode_ != TowerMode::NONE && adTowerOrder_) towerCtxPop();
         b.CreateStore(result_tagged, xin_slot);
         llvm::Value* x_order = (adTowerMode_ != TowerMode::NONE && adTowerOrder_)
             ? adTowerOrder_ : llvm::ConstantInt::get(ctx_.int32Type(), 1);
@@ -798,14 +856,14 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
         b.CreateBr(xdone_bb);
 
         b.SetInsertPoint(xcore_bb);
-        llvm::Value* core_res = popAndExtractForwardCore(result_tagged, level);
+        llvm::Value* core_res = popAndExtractForwardCore(result_tagged, level, pop_context);
         b.CreateStore(core_res ? core_res : tagged_.packNull(), xres_slot);
         b.CreateBr(xdone_bb);
 
         b.SetInsertPoint(xdone_bb);
         return b.CreateLoad(ctx_.taggedValueType(), xres_slot, "nest_ex_sel");
     }
-    return popAndExtractForwardCore(result_tagged, level);
+    return popAndExtractForwardCore(result_tagged, level, pop_context);
 }
 
 /**
@@ -819,41 +877,12 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
  * @return the extracted derivative (or vector of derivatives), tagged.
  */
 llvm::Value* AutodiffCodegen::popAndExtractForwardCore(llvm::Value* result_tagged,
-                                                       llvm::Value* level) {
-    if (adTowerMode_ != TowerMode::NONE)
-        return popAndExtractForwardCorePlain(result_tagged, level);
-    auto& b = ctx_.builder();
-    llvm::Function* fn = b.GetInsertBlock()->getParent();
-    llvm::AllocaInst* out = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "deriv_out");
-    llvm::Value* is_complex = b.CreateICmpEQ(
-        tagged_.getBaseType(tagged_.getType(result_tagged)),
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
-    llvm::BasicBlock* cbb = llvm::BasicBlock::Create(ctx_.context(), "complex_deriv", fn);
-    llvm::BasicBlock* pbb = llvm::BasicBlock::Create(ctx_.context(), "plain_deriv", fn);
-    llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "deriv_done", fn);
-    b.CreateCondBr(is_complex, cbb, pbb);
-    b.SetInsertPoint(cbb);
-    adPertLevelStore(level);
-    {
-        ComplexCodegen complex(ctx_, tagged_, mem_);
-        llvm::Value* rr = complex.componentTagged(result_tagged, false);
-        llvm::Value* ri = complex.componentTagged(result_tagged, true);
-        llvm::Value* rd = safeUnpackDualFromTagged(rr);
-        llvm::Value* id = safeUnpackDualFromTagged(ri);
-        llvm::Value* real_deriv = dualField(ctx_, rd, 1);
-        llvm::Value* imag_deriv = dualField(ctx_, id, 1);
-        b.CreateStore(complex.packComplexToTagged(complex.createComplex(real_deriv, imag_deriv)), out);
-    }
-    b.CreateBr(done);
-    b.SetInsertPoint(pbb);
-    b.CreateStore(popAndExtractForwardCorePlain(result_tagged, level), out);
-    b.CreateBr(done);
-    b.SetInsertPoint(done);
-    return b.CreateLoad(ctx_.taggedValueType(), out, "derivative_value");
+                                                       llvm::Value* level, bool pop_context) {
+    return popAndExtractForwardCorePlain(result_tagged, level, pop_context);
 }
 
 llvm::Value* AutodiffCodegen::popAndExtractForwardCorePlain(llvm::Value* result_tagged,
-                                                            llvm::Value* level) {
+                                                            llvm::Value* level, bool pop_context) {
     auto& b = ctx_.builder();
     // Pop: restore the level the outer context expects.
     adPertLevelStore(level);
@@ -862,7 +891,7 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCorePlain(llvm::Value* result_
     // the differentiated function. DERIV_N -> f^(k)=k!*c[k] (a double); COEFFS
     // -> the K+1-element coefficient list. Short-circuits the jet R->Rⁿ logic. ──
     if (adTowerMode_ == TowerMode::DERIV_N && adTowerOrder_) {
-        towerCtxPop();     // leave the tower differentiation context
+        if (pop_context) towerCtxPop();
         llvm::Value* res_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_res");
         llvm::Value* out_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_extract_out");
         b.CreateStore(result_tagged, res_slot);
@@ -1041,7 +1070,7 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCorePlain(llvm::Value* result_
         return dres;
     }
     if (adTowerMode_ == TowerMode::COEFFS && adTowerOrder_) {
-        towerCtxPop();     // leave the tower differentiation context
+        if (pop_context) towerCtxPop();
         llvm::Value* res_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_res");
         llvm::Value* out_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_list_out");
         b.CreateStore(result_tagged, res_slot);

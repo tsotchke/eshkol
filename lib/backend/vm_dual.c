@@ -219,8 +219,15 @@ static VmDual* taylor_alloc_hyper(VmRegionStack* rs, uint32_t order, int exact) 
 
 VmDual* vm_dual_make_taylor_scalar_seed(VmRegionStack* rs,
                                         const VmDual* outer) {
-    if (!rs || !outer || outer->kind != VM_DUAL_KIND_SCALAR) return NULL;
-    VmDual* d = taylor_alloc(rs, 1, 0, 1);
+    return vm_dual_make_taylor_scalar_seed_order(rs, outer, 1);
+}
+
+VmDual* vm_dual_make_taylor_scalar_seed_order(VmRegionStack* rs,
+                                              const VmDual* outer,
+                                              uint32_t order) {
+    if (!rs || !outer || outer->kind != VM_DUAL_KIND_SCALAR || order < 1)
+        return NULL;
+    VmDual* d = taylor_alloc(rs, order, 0, 1);
     if (!d) return NULL;
     d->epoch = vm_dual_next_taylor_epoch();
     d->coeff[0] = outer->primal;
@@ -260,6 +267,24 @@ int vm_dual_is_taylor(const VmDual* d) {
 
 int vm_dual_taylor_is_exact(const VmDual* d) {
     return vm_dual_is_taylor(d) && d->exact_coeff != NULL;
+}
+
+/* Heap-local deep clone used when a Taylor component is split into another
+ * complex/carrier branch.  Rational sidecars are arena-owned and therefore
+ * intentionally retained by pointer; callers that cross rational heaps clone
+ * those sidecars before invoking this helper. */
+VmDual* vm_dual_taylor_clone(VmRegionStack *rs, const VmDual *src) {
+    if (!rs || !src || src->kind != VM_DUAL_KIND_TAYLOR) return NULL;
+    int exact=src->exact_coeff != NULL, hyper=src->tangent2_coeff != NULL || src->mixed_coeff != NULL;
+    VmDual *d=hyper?taylor_alloc_hyper(rs,src->order,exact):taylor_alloc(rs,src->order,exact,src->tangent_coeff!=NULL);
+    if (!d) return NULL;
+    d->epoch=src->epoch; d->tangent_epoch=src->tangent_epoch; d->tangent2_epoch=src->tangent2_epoch; d->primal_sign=src->primal_sign;
+    uint32_t n=src->order+1;
+    memcpy(d->coeff,src->coeff,(size_t)n*sizeof(double));
+    if (d->exact_coeff) memcpy(d->exact_coeff,src->exact_coeff,(size_t)n*sizeof(VmRational*));
+    if (d->tangent_coeff) { memcpy(d->tangent_coeff,src->tangent_coeff,(size_t)n*sizeof(double)); if(d->exact_tangent_coeff) memcpy(d->exact_tangent_coeff,src->exact_tangent_coeff,(size_t)n*sizeof(VmRational*)); }
+    if (hyper) { memcpy(d->tangent2_coeff,src->tangent2_coeff,(size_t)n*sizeof(double)); memcpy(d->mixed_coeff,src->mixed_coeff,(size_t)n*sizeof(double)); if(d->exact_tangent2_coeff) memcpy(d->exact_tangent2_coeff,src->exact_tangent2_coeff,(size_t)n*sizeof(VmRational*)); if(d->exact_mixed_coeff) memcpy(d->exact_mixed_coeff,src->exact_mixed_coeff,(size_t)n*sizeof(VmRational*)); }
+    d->primal=src->primal; d->tangent=src->tangent; return d;
 }
 
 double vm_dual_taylor_coeff(const VmDual* d, uint32_t n) {
@@ -475,6 +500,88 @@ static int vm_epoch_slot(uint32_t epoch, const uint32_t epochs[2]) {
     return epochs[0] == epoch ? 0 : (epochs[1] == epoch ? 1 : -1);
 }
 
+/* Double counterpart of vm_normalise_hyper_exact.  Keep all four lanes in
+ * coefficient (ordinary Taylor) form before applying an operation; this is
+ * important for mixed orders, where each lane is itself a series. */
+static void vm_normalise_hyper_double(const VmDual *d, uint32_t active_epoch,
+                                      const uint32_t epochs[2], double *v,
+                                      double *d1, double *d2, double *mixed,
+                                      uint32_t n) {
+    memset(v, 0, (size_t)n * sizeof(double));
+    memset(d1, 0, (size_t)n * sizeof(double));
+    memset(d2, 0, (size_t)n * sizeof(double));
+    memset(mixed, 0, (size_t)n * sizeof(double));
+    if (!d) return;
+    for (uint32_t k = 0; k < n; ++k)
+        v[k] = taylor_coeff_as_double_at(d, k, active_epoch);
+    if (d->kind != VM_DUAL_KIND_TAYLOR) {
+        int s = vm_epoch_slot(VM_TAYLOR_SEED_EPOCH, epochs);
+        if (s >= 0) (s ? d2 : d1)[0] = d->tangent;
+        return;
+    }
+    if (d->epoch != active_epoch && d->order >= 1) {
+        int s = vm_epoch_slot(d->epoch, epochs);
+        if (s >= 0) (s ? d2 : d1)[0] = d->coeff[1];
+    }
+    if (d->tangent_coeff) {
+        int s = vm_epoch_slot(d->tangent_epoch ? d->tangent_epoch
+                                               : VM_TAYLOR_SEED_EPOCH, epochs);
+        if (s >= 0) for (uint32_t k = 0; k <= d->order && k < n; ++k)
+            (s ? d2 : d1)[k] = d->tangent_coeff[k];
+    }
+    if (d->tangent2_coeff) {
+        int s = vm_epoch_slot(d->tangent2_epoch ? d->tangent2_epoch
+                                                : VM_TAYLOR_SEED_EPOCH, epochs);
+        if (s >= 0) for (uint32_t k = 0; k <= d->order && k < n; ++k)
+            (s ? d2 : d1)[k] = d->tangent2_coeff[k];
+    }
+    if (d->mixed_coeff && d->epoch == active_epoch)
+        for (uint32_t k = 0; k <= d->order && k < n; ++k) mixed[k] = d->mixed_coeff[k];
+}
+
+static VmDual *vm_taylor_hyper_binary_double(VmRegionStack *rs,
+                                              const VmDual *a, const VmDual *b,
+                                              char op, uint32_t active_epoch,
+                                              uint32_t order,
+                                              const uint32_t epochs[2]) {
+    uint32_t n = order + 1;
+    size_t bytes = (size_t)n * sizeof(double);
+    double *u = vm_alloc(rs, bytes), *u1 = vm_alloc(rs, bytes), *u2 = vm_alloc(rs, bytes), *u12 = vm_alloc(rs, bytes);
+    double *w = vm_alloc(rs, bytes), *w1 = vm_alloc(rs, bytes), *w2 = vm_alloc(rs, bytes), *w12 = vm_alloc(rs, bytes);
+    double *q = vm_alloc(rs, bytes), *q1 = vm_alloc(rs, bytes), *q2 = vm_alloc(rs, bytes), *q12 = vm_alloc(rs, bytes);
+    if (!u || !u1 || !u2 || !u12 || !w || !w1 || !w2 || !w12 || !q || !q1 || !q2 || !q12) return NULL;
+    vm_normalise_hyper_double(a, active_epoch, epochs, u, u1, u2, u12, n);
+    vm_normalise_hyper_double(b, active_epoch, epochs, w, w1, w2, w12, n);
+    for (uint32_t k = 0; k < n; ++k) {
+        if (op == '+' || op == '-') {
+            double s = op == '+' ? 1.0 : -1.0;
+            q[k]=u[k]+s*w[k]; q1[k]=u1[k]+s*w1[k]; q2[k]=u2[k]+s*w2[k]; q12[k]=u12[k]+s*w12[k];
+        } else if (op == '*') {
+            q[k]=q1[k]=q2[k]=q12[k]=0.0;
+            for (uint32_t i=0;i<=k;++i) { uint32_t j=k-i;
+                q[k]+=u[i]*w[j]; q1[k]+=u1[i]*w[j]+u[i]*w1[j];
+                q2[k]+=u2[i]*w[j]+u[i]*w2[j];
+                q12[k]+=u12[i]*w[j]+u1[i]*w2[j]+u2[i]*w1[j]+u[i]*w12[j];
+            }
+        } else {
+            q[k]=u[k]; q1[k]=u1[k]; q2[k]=u2[k]; q12[k]=u12[k];
+            for (uint32_t i=1;i<=k;++i) { uint32_t j=k-i;
+                q[k]-=w[i]*q[j]; q1[k]-=w1[i]*q[j]+w[i]*q1[j];
+                q2[k]-=w2[i]*q[j]+w[i]*q2[j];
+                q12[k]-=w12[i]*q[j]+w1[i]*q2[j]+w2[i]*q1[j]+w[i]*q12[j];
+            }
+            q[k]/=w[0];
+            q1[k]=(q1[k]-w1[0]*q[k])/w[0]; q2[k]=(q2[k]-w2[0]*q[k])/w[0];
+            q12[k]=(q12[k]-w12[0]*q[k]-w1[0]*q2[k]-w2[0]*q1[k])/w[0];
+        }
+    }
+    VmDual *out=taylor_alloc_hyper(rs, order, 0); if (!out) return NULL;
+    out->epoch=active_epoch; out->tangent_epoch=epochs[0]==VM_TAYLOR_SEED_EPOCH?0:epochs[0];
+    out->tangent2_epoch=epochs[1]==VM_TAYLOR_SEED_EPOCH?0:epochs[1];
+    for (uint32_t k=0;k<n;++k) { out->coeff[k]=q[k]; out->tangent_coeff[k]=q1[k]; out->tangent2_coeff[k]=q2[k]; out->mixed_coeff[k]=q12[k]; }
+    out->primal=q[0]; out->tangent=order?q[1]:0.0; return out;
+}
+
 static void vm_exact_zeros(VmRegionStack* rs, VmRational** out, uint32_t n) {
     VmRational* zero = vm_rational_from_int(vm_active_arena(rs), 0);
     for (uint32_t i = 0; i < n; ++i) out[i] = zero;
@@ -614,15 +721,34 @@ static VmDual* taylor_binary(VmRegionStack* rs, const VmDual* a,
                              const VmDual* b, char op) {
     uint32_t n = a->kind == VM_DUAL_KIND_TAYLOR ? a->order : 1;
     if (b->kind == VM_DUAL_KIND_TAYLOR && b->order > n) n = b->order;
+    /* The active polynomial is the highest-order input.  Epoch is only a
+     * deterministic tie-breaker; choosing the numerically newest epoch first
+     * would demote an older, higher-order series to a constant. */
     uint32_t active_epoch = taylor_epoch(a);
-    if (taylor_epoch(b) > active_epoch) active_epoch = taylor_epoch(b);
+    if (b->kind == VM_DUAL_KIND_TAYLOR &&
+        (a->kind != VM_DUAL_KIND_TAYLOR || b->order > a->order ||
+         (b->order == a->order && taylor_epoch(b) > active_epoch)))
+        active_epoch = taylor_epoch(b);
     uint32_t foreign_epochs[2] = {0u, 0u};
     int foreign_count = 0;
     vm_collect_epochs(a, active_epoch, foreign_epochs, &foreign_count);
     vm_collect_epochs(b, active_epoch, foreign_epochs, &foreign_count);
-    if (foreign_count >= 2)
-        return vm_taylor_hyper_binary(rs, a, b, op, active_epoch, n,
-                                      foreign_epochs);
+    if (foreign_count >= 2 ||
+        (a->kind == VM_DUAL_KIND_TAYLOR &&
+         (a->tangent2_coeff || a->mixed_coeff)) ||
+        (b->kind == VM_DUAL_KIND_TAYLOR &&
+         (b->tangent2_coeff || b->mixed_coeff))) {
+        int exact_hyper = dual_exact_operand(a) && dual_exact_operand(b) &&
+            (!a->tangent2_coeff || a->exact_tangent2_coeff) &&
+            (!a->mixed_coeff || a->exact_mixed_coeff) &&
+            (!b->tangent2_coeff || b->exact_tangent2_coeff) &&
+            (!b->mixed_coeff || b->exact_mixed_coeff);
+        if (exact_hyper)
+            return vm_taylor_hyper_binary(rs, a, b, op, active_epoch, n,
+                                          foreign_epochs);
+        return vm_taylor_hyper_binary_double(rs, a, b, op, active_epoch, n,
+                                             foreign_epochs);
+    }
     int exact = dual_exact_operand(a) && dual_exact_operand(b);
     /* Test exact denominators as exact values.  Very small nonzero rationals
      * round to 0.0, so a double comparison would silently discard exactness. */
@@ -773,7 +899,74 @@ static VmDual* taylor_binary(VmRegionStack* rs, const VmDual* a,
     return r;
 }
 
+static VmDual* taylor_unary(VmRegionStack*, const VmDual*, int);
+
+/* Unary chain rule for a complete hyper-Taylor carrier.  If A denotes the
+ * base Taylor series and A1/A2/A12 its three orthogonal lanes, then
+ * F(A)12 = F'(A) A12 + F''(A) A1 A2. */
+static VmDual *taylor_unary_hyper(VmRegionStack *rs, const VmDual *a, int op) {
+    uint32_t n=a->order+1, active=a->epoch, epochs[2]={0,0};
+    int count=0;
+    vm_collect_epochs(a, active, epochs, &count);
+    if (count < 2) return NULL;
+    size_t bytes=(size_t)n*sizeof(double);
+    double *v=vm_alloc(rs,bytes), *a1=vm_alloc(rs,bytes), *a2=vm_alloc(rs,bytes), *a12=vm_alloc(rs,bytes);
+    if (!v||!a1||!a2||!a12) return NULL;
+    vm_normalise_hyper_double(a,active,epochs,v,a1,a2,a12,n);
+    VmDual base={0}; base.kind=VM_DUAL_KIND_TAYLOR; base.order=a->order; base.epoch=active; base.coeff=v;
+    VmDual *value=taylor_unary(rs,&base,op); if (!value) return NULL;
+    VmDual *fp=NULL, *fpp=NULL;
+    if (op==3) fp=taylor_unary(rs,&base,3);
+    else if (op==4) fp=taylor_unary(rs,&base,5);
+    else if (op==5) {
+        fp=taylor_unary(rs,&base,4);
+        if (fp) for (uint32_t k=0;k<n;k++) fp->coeff[k] = -fp->coeff[k];
+    }
+    else if (op==6) {
+        VmDual one={0}; one.primal=1.0;
+        fp=taylor_binary(rs,&one,&base,'/');
+    } else if (op==10) fp=taylor_unary(rs,&base,11);
+    else if (op==11) fp=taylor_unary(rs,&base,10);
+    if (op==7) {
+        VmDual two={0}; two.primal=2.0;
+        VmDual *den=taylor_binary(rs,&two,value,'*');
+        VmDual one={0}; one.primal=1.0;
+        fp=den?taylor_binary(rs,&one,den,'/'):NULL;
+    }
+    if (!fp) return NULL;
+    if (op==3) fpp=fp;
+    else if (op==4) { fpp=taylor_unary(rs,&base,4); if (fpp) { for(uint32_t k=0;k<n;k++) fpp->coeff[k]=-fpp->coeff[k]; } }
+    else if (op==5) { fpp=taylor_unary(rs,&base,5); if (fpp) { for(uint32_t k=0;k<n;k++) fpp->coeff[k]=-fpp->coeff[k]; } }
+    else if (op==6) {
+        VmDual *sq=taylor_binary(rs,fp,fp,'*');
+        fpp=sq;
+        if(fpp) for(uint32_t k=0;k<n;k++) fpp->coeff[k]=-fpp->coeff[k];
+    } else if (op==10) fpp=taylor_unary(rs,&base,10);
+    else if (op==11) fpp=taylor_unary(rs,&base,11);
+    else { /* sqrt'' = -sqrt'/(2A) */
+        VmDual *num=fp;
+        VmDual *ratio=num?taylor_binary(rs,num,&base,'/'):NULL;
+        fpp=ratio; if(fpp) for(uint32_t k=0;k<n;k++) fpp->coeff[k]*=-0.5;
+    }
+    if (!fpp) return NULL;
+    VmDual *out=taylor_alloc_hyper(rs,a->order,0); if(!out) return NULL;
+    out->epoch=active; out->tangent_epoch=epochs[0]==VM_TAYLOR_SEED_EPOCH?0:epochs[0]; out->tangent2_epoch=epochs[1]==VM_TAYLOR_SEED_EPOCH?0:epochs[1];
+    for(uint32_t k=0;k<n;k++) {
+        out->coeff[k]=value->coeff[k];
+        double s1=0,s2=0,s12=0;
+        for(uint32_t i=0;i<=k;i++){uint32_t j=k-i; s1+=fp->coeff[i]*a1[j]; s2+=fp->coeff[i]*a2[j]; s12+=fp->coeff[i]*a12[j];}
+        s12=0; for(uint32_t i=0;i<=k;i++){uint32_t j=k-i; s12+=fp->coeff[i]*a12[j]; double p=0; for(uint32_t z=0;z<=j;z++) p+=a1[z]*a2[j-z]; s12+=fpp->coeff[i]*p;}
+        out->tangent_coeff[k]=s1; out->tangent2_coeff[k]=s2; out->mixed_coeff[k]=s12;
+    }
+    out->primal=out->coeff[0]; out->tangent=out->coeff[1]; return out;
+}
+
 static VmDual* taylor_unary(VmRegionStack* rs, const VmDual* a, int op) {
+    if (a && a->kind == VM_DUAL_KIND_TAYLOR &&
+        (a->tangent2_coeff || a->mixed_coeff) &&
+        (op == 3 || op == 4 || op == 5 || op == 6 || op == 7 ||
+         op == 10 || op == 11))
+        return taylor_unary_hyper(rs, a, op);
     uint32_t n = a->kind == VM_DUAL_KIND_TAYLOR ? a->order : 1;
     int exact = dual_exact_operand(a) && (op == 0 || op == 1 || op == 2);
     VmDual* r = taylor_alloc(rs, n, exact, a->tangent_coeff != NULL);
@@ -842,6 +1035,16 @@ static VmDual* taylor_unary(VmRegionStack* rs, const VmDual* a, int op) {
         taylor_sigmoid_coeffs(rs, sig, &scaled, n + 1);
         r->coeff[0] = 2.0 * sig[0] - 1.0;
         for (uint32_t k = 1; k <= n; k++) r->coeff[k] = 2.0 * sig[k];
+    } else if (op == 10 || op == 11) { /* cosh / sinh */
+        double *other=(double*)vm_alloc(rs,(size_t)(n+1)*sizeof(double));
+        if (!other) return NULL;
+        r->coeff[0]=op==10?cosh(u0):sinh(u0);
+        other[0]=op==10?sinh(u0):cosh(u0);
+        for (uint32_t k=1;k<=n;k++) {
+            double sum=0.0, osum=0.0;
+            for (uint32_t i=1;i<=k;i++) { sum+=i*taylor_coeff_as_double(a,i)*other[k-i]; osum+=i*taylor_coeff_as_double(a,i)*r->coeff[k-i]; }
+            r->coeff[k]=sum/k; other[k]=osum/k;
+        }
     } else { /* sqrt */
         r->coeff[0] = sqrt(u0);
         for (uint32_t k=1;k<=n;k++) {
@@ -996,6 +1199,37 @@ static VmDual* vm_dual_taylor_project_epoch_core(VmRegionStack* rs,
     if (!rs || !result || !vm_dual_is_taylor(result) || order > result->order)
         return NULL;
 
+    /* Hyper carriers expose the selected orthogonal lane as the new value
+     * series; the mixed lane is the surviving tangent of that projection. */
+    if (result->tangent2_coeff && result->mixed_coeff &&
+        selected_epoch == result->tangent2_epoch &&
+        selected_epoch != result->epoch) {
+        int exact = result->exact_tangent2_coeff && result->exact_mixed_coeff;
+        VmDual *d = taylor_alloc(rs, 1, 0, 1);
+        if (!d) return NULL;
+        double factor = coefficient ? 1.0 : 1.0;
+        for (uint32_t i=2; !coefficient && i<=order; ++i) factor *= (double)i;
+        d->epoch = selected_epoch; d->tangent_epoch = result->tangent_epoch;
+        d->coeff[0] = factor * result->tangent2_coeff[order];
+        d->coeff[1] = 0.0;
+        d->tangent_coeff[0] = factor * result->mixed_coeff[order];
+        d->tangent_coeff[1] = 0.0;
+        (void)exact; /* exact sidecars remain owned by the source carrier. */
+        d->primal=d->coeff[0]; d->tangent=d->tangent_coeff[0]; return d;
+    }
+    if (result->tangent2_coeff && result->mixed_coeff &&
+        selected_epoch == result->epoch && result->tangent_epoch != 0 &&
+        result->tangent2_epoch != 0) {
+        double factor = coefficient ? 1.0 : 1.0;
+        for (uint32_t i=2; !coefficient && i<=order; ++i) factor *= (double)i;
+        VmDual *d=taylor_alloc(rs,1,0,1); if(!d) return NULL;
+        d->epoch=result->epoch; d->tangent_epoch=result->tangent2_epoch;
+        d->coeff[0]=factor*result->coeff[order]; d->coeff[1]=factor*result->tangent_coeff[order];
+        d->tangent_coeff[0]=factor*result->tangent2_coeff[order];
+        d->tangent_coeff[1]=factor*result->mixed_coeff[order];
+        d->primal=d->coeff[0]; d->tangent=d->coeff[1]; return d;
+    }
+
     if (result->tangent_coeff && selected_epoch == result->tangent_epoch &&
         selected_epoch != result->epoch) {
         if (order > 1) return NULL;
@@ -1005,8 +1239,9 @@ static VmDual* vm_dual_taylor_project_epoch_core(VmRegionStack* rs,
             if (!d) return NULL;
             d->epoch = result->epoch;
             for (uint32_t k = 0; k <= result->order; ++k) {
-                d->coeff[k] = result->coeff[k];
-                if (exact) d->exact_coeff[k] = result->exact_coeff[k];
+                d->coeff[k] = result->tangent_coeff[k];
+                if (exact && result->exact_tangent_coeff)
+                    d->exact_coeff[k] = result->exact_tangent_coeff[k];
             }
             d->primal = d->coeff[0];
             d->tangent = d->order >= 1 ? d->coeff[1] : 0.0;
@@ -1122,7 +1357,39 @@ VmDual* vm_dual_taylor_project_coefficient(VmRegionStack* rs,
 VmDual* vm_dual_taylor_promote_tangent(VmRegionStack* rs,
                                        const VmDual* result) {
     if (!result || !result->tangent_coeff) return NULL;
+    /* A scalar outer carrier uses the sentinel tangent epoch (0).  Projecting
+     * that lane through the generic epoch machinery can demote it to a scalar
+     * dual, which loses the remaining Taylor coefficients needed by a second
+     * enclosing complex derivative.  Materialize the lane as a plain Taylor
+     * value series directly. */
+    if (!result->tangent2_coeff && !result->mixed_coeff) {
+        VmDual* d = vm_dual_make_taylor_seed(rs, NULL,
+                                             result->tangent_coeff[0],
+                                             result->order, 0, result->epoch);
+        if (!d) return NULL;
+        for (uint32_t k = 0; k <= result->order; ++k)
+            d->coeff[k] = result->tangent_coeff[k];
+        d->primal = d->coeff[0];
+        d->tangent = result->order >= 1 ? d->coeff[1] : 0.0;
+        return d;
+    }
     return vm_dual_taylor_project_epoch(rs, result, result->tangent_epoch, 1);
+}
+
+VmDual* vm_dual_taylor_derivative_series(VmRegionStack* rs,
+                                         const VmDual* result) {
+    if (!rs || !result || result->kind != VM_DUAL_KIND_TAYLOR ||
+        result->order < 1)
+        return NULL;
+    uint32_t order = result->order - 1;
+    VmDual* d = vm_dual_make_taylor_seed(rs, NULL, result->coeff[1], order,
+                                         0, result->epoch);
+    if (!d) return NULL;
+    for (uint32_t k = 0; k <= order; ++k)
+        d->coeff[k] = (double)(k + 1u) * result->coeff[k + 1u];
+    d->primal = d->coeff[0];
+    d->tangent = order >= 1 ? d->coeff[1] : 0.0;
+    return d;
 }
 
 VmDual* vm_dual_taylor_carry_result(VmRegionStack* rs,
@@ -1306,6 +1573,16 @@ VmDual* vm_dual_sqrt(VmRegionStack* rs, const VmDual* a) {
     if (vm_dual_is_taylor(a)) return taylor_unary(rs, a, 7);
     double sa = sqrt(a->primal);
     return vm_dual_new(rs, sa, a->tangent / (2.0 * sa));
+}
+
+VmDual* vm_dual_sinh(VmRegionStack* rs, const VmDual* a) {
+    if (vm_dual_is_taylor(a)) return taylor_unary(rs, a, 11);
+    return vm_dual_new(rs, sinh(a->primal), a->tangent * cosh(a->primal));
+}
+
+VmDual* vm_dual_cosh(VmRegionStack* rs, const VmDual* a) {
+    if (vm_dual_is_taylor(a)) return taylor_unary(rs, a, 10);
+    return vm_dual_new(rs, cosh(a->primal), a->tangent * sinh(a->primal));
 }
 
 /**
@@ -1668,6 +1945,60 @@ int main(void) {
         VmDual* y = vm_dual_scale(&rs, 3.0, x);
         CHECK("3*2 primal = 6", dual_near(y->primal, 6.0));
         CHECK("d/dx (3*x) = 3", dual_near(y->tangent, 3.0));
+    }
+
+    /* Inexact hyper-Taylor lanes: A + eB + fC + efD. */
+    {
+        VmDual *x = taylor_alloc_hyper(&rs, 1, 0);
+        x->epoch=11; x->tangent_epoch=22; x->tangent2_epoch=33;
+        x->coeff[0]=2.0; x->coeff[1]=0.25;
+        x->tangent_coeff[0]=3.0; x->tangent_coeff[1]=0.5;
+        x->tangent2_coeff[0]=5.0; x->tangent2_coeff[1]=0.75;
+        x->mixed_coeff[0]=7.0; x->mixed_coeff[1]=1.25;
+        VmDual *y=vm_dual_exp(&rs,x);
+        double e=exp(2.0);
+        CHECK("hyper exp preserves second tangent", dual_near(y->tangent2_coeff[0],5.0*e));
+        CHECK("hyper exp mixed lane", dual_near(y->mixed_coeff[0],22.0*e));
+        VmDual *z=vm_dual_mul(&rs,x,x);
+        CHECK("hyper multiply mixed lane", dual_near(z->mixed_coeff[0],2.0*2.0*7.0+2.0*3.0*5.0));
+        VmDual *p=vm_dual_taylor_project_epoch(&rs,x,x->epoch,0);
+        CHECK("hyper primary projection carries tangent2", p && dual_near(p->tangent_coeff[0],5.0));
+        CHECK("hyper primary projection carries mixed", p && dual_near(p->tangent_coeff[1],7.0));
+        VmDual *q=vm_dual_taylor_project_epoch(&rs,x,x->tangent2_epoch,0);
+        CHECK("hyper second-axis projection value", q && dual_near(q->primal,5.0));
+        CHECK("hyper second-axis projection mixed tangent", q && dual_near(q->tangent,7.0));
+        VmDual *c=vm_dual_taylor_clone(&rs,x);
+        CHECK("hyper clone has independent coefficient arrays", c && c->coeff != x->coeff && c->mixed_coeff != x->mixed_coeff);
+        if (c) { c->coeff[0]=99.0; CHECK("hyper clone mutation does not alias", !dual_near(x->coeff[0],99.0)); }
+        VmDual *sh=vm_dual_sinh(&rs,x), *ch=vm_dual_cosh(&rs,x);
+        double sx=sinh(2.0), cx=cosh(2.0);
+        CHECK("hyper sinh mixed lane", dual_near(sh->mixed_coeff[0],cx*7.0+sx*15.0));
+        CHECK("hyper cosh mixed lane", dual_near(ch->mixed_coeff[0],sx*7.0+cx*15.0));
+
+        VmDual *u=taylor_alloc_hyper(&rs,1,0), *v=taylor_alloc_hyper(&rs,1,0);
+        u->epoch=v->epoch=101; u->tangent_epoch=v->tangent_epoch=102;
+        u->tangent2_epoch=v->tangent2_epoch=103;
+        u->coeff[0]=4; u->tangent_coeff[0]=3; u->tangent2_coeff[0]=5; u->mixed_coeff[0]=7;
+        v->coeff[0]=2; v->tangent_coeff[0]=1; v->tangent2_coeff[0]=2; v->mixed_coeff[0]=3;
+        VmDual *si=vm_dual_sin(&rs,u), *co=vm_dual_cos(&rs,u), *lo=vm_dual_log(&rs,u), *sq=vm_dual_sqrt(&rs,u);
+        CHECK("nonunit sin mixed analytic", dual_near(si->mixed_coeff[0],cos(4.0)*7.0-sin(4.0)*15.0));
+        CHECK("nonunit cos mixed analytic", dual_near(co->mixed_coeff[0],-sin(4.0)*7.0-cos(4.0)*15.0));
+        CHECK("nonunit log mixed analytic", dual_near(lo->mixed_coeff[0],7.0/4.0-15.0/16.0));
+        CHECK("nonunit sqrt mixed analytic", dual_near(sq->mixed_coeff[0],7.0/4.0-15.0/32.0));
+        VmDual *dv=vm_dual_div(&rs,u,v);
+        CHECK("hyper division mixed analytic", dual_near(dv->mixed_coeff[0],-0.25));
+    }
+
+    /* A higher-order older polynomial remains active when paired with a
+     * newer first-order seed; projection of the new seed returns all A terms. */
+    {
+        VmDual *a=taylor_alloc(&rs,3,0,0), *b=taylor_alloc(&rs,1,0,0);
+        a->epoch=201; a->coeff[0]=1; a->coeff[1]=3; a->coeff[2]=3; a->coeff[3]=1;
+        b->epoch=202; b->coeff[0]=0; b->coeff[1]=1;
+        VmDual *m=vm_dual_mul(&rs,a,b), *d=vm_dual_taylor_project_epoch(&rs,m,b->epoch,0);
+        CHECK("older order-3 active through multiply", d && d->order==3 && dual_near(d->coeff[0],1) && dual_near(d->coeff[1],3) && dual_near(d->coeff[2],3) && dual_near(d->coeff[3],1));
+        VmDual *s=vm_dual_add(&rs,a,b), *sd=vm_dual_taylor_project_epoch(&rs,s,b->epoch,0);
+        CHECK("older order-3 preserved through addition", sd && sd->order==3 && dual_near(s->coeff[3],1) && dual_near(sd->coeff[0],1));
     }
 
     printf("\n%d passed, %d failed out of %d total\n", pass, fail, pass + fail);

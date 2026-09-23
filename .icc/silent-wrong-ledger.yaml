@@ -14046,3 +14046,30 @@ entries:
     notes: >-
       Open implementation item. Do not close by refusing nested complex
       differentiation; the owner requires carrier composition to produce 6+6i.
+  - id: SW-194
+    bucket: SILENT-WRONG
+    family: ad/scalar-hessian
+    status: in-progress
+    needs_decision: false
+    title: "browser VM scalar Hessian drops the second derivative of expt"
+    repro: >-
+      (display (hessian (lambda (x) (expt x 4)) 1/3))
+    observed: >-
+      The public browser VM prints 0 without diagnostics. The published AD guide
+      promises the exact result 4/3. Its scalar hyper-dual path coerces the seed
+      and loses the second derivative through scalar exponentiation.
+    correct: >-
+      4/3, exact, agreeing with derivative-n of order two. An inexact point
+      produces the corresponding inexact numerical result.
+    evidence: >-
+      Public WASM direct uninstrumented reproduction on 2026-09-20. Local fix
+      routes scalar Hessians through the shared Taylor application/extraction
+      path, preserving the original seed and nested-result protocol. New
+      site_scalar_hessian_jit, site_scalar_hessian_aot, and
+      site_scalar_hessian_vm CTests all pass (3/3).
+    caught_by: [published-site-browser-oracle-audit]
+    missed_by: [site_smoke, doc_audit]
+    notes: >-
+      Implementation is not yet committed, integrated into the release cut, or
+      deployed as browser WASM. Keep open until release qualification is complete;
+      a refusal or documentation waiver is not a resolution.
