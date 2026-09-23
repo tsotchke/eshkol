@@ -47,11 +47,13 @@
 ;;     order for the unknown coefficient field -- and the two tables agree
 ;;     term by term.
 ;;
-;; DEFECT NOTES (routed around, not fixed).
-;;  - `(expt r n)` on an exact rational returns inexact 0; integer powers
-;;    are repeated exact multiplication (`tpow`).
-;;  - `#(...)` literals promote to f64 tensors; every matrix/vector is built
-;;    with `vector`/`list->vector`.
+;; NOTES.
+;;  - A past defect made `(expt r n)` on an exact rational return an inexact
+;;    0; closed (probed directly: exact result now). Integer powers are
+;;    still computed by repeated exact multiplication (`tpow`), unchanged.
+;;  - `#(...)` literals of plain machine-representable numbers promote to
+;;    f64 tensors by design; every matrix/vector is built with
+;;    `vector`/`list->vector` instead, which stays a genuine exact value.
 ;;  - No named-let loop variable is captured by an AD differentiand: the one
 ;;    `taylor` call sits in the top-level helper `line-coeff`, whose lambda
 ;;    closes over that helper's own parameters only.
