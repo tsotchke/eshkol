@@ -794,6 +794,13 @@ class EshkolRepl {
                 fputs: () => 0,
                 fputc: () => 0,
                 strlen: () => 0n,
+                // Compiled tensor code clears buffers with memset (the
+                // tensor_matmul import surface); same semantics as the site
+                // runtime's.
+                memset: (ptr, val, n) => {
+                    if (this.memory) new Uint8Array(this.memory.buffer).fill(Number(val) & 0xFF, Number(ptr), Number(ptr) + Number(n));
+                    return ptr;
+                },
                 drand48: Math.random,
                 srand48: () => {},
                 time: () => BigInt(Math.floor(Date.now() / 1000)),
