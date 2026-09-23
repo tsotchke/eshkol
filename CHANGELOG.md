@@ -38,6 +38,82 @@ the source changes; the verification record for the tagged commit is the
   or other builtin the parser lowers to its own operation was ignored inside
   its scope once renamed, so the builtin ran instead; the expander now turns
   those uses into calls of the local binding.
+- **A top-level `begin` did not splice its definitions (SW-244).** Natively
+  `(begin (define tt 5) 1)` followed by `tt` failed with `Undefined variable`:
+  the parser rewrote every `begin` holding a definition into a scoped
+  `letrec`. At the top level a `begin` now splices its forms into the program
+  (R7RS 5.1), through nested `begin`s, a `begin` in a top-level `with-region`
+  body, and macros that expand to a `begin` of definitions, on the native
+  compiler and the bytecode VM.
+- **Region promotion is all-or-nothing.** When a store's promotion out of a
+  region could not allocate its copy, the barrier logged, returned the
+  unpromoted pointer and the store published it; a parent copied before a
+  failed child left an older-arena object pointing into the region about to be
+  freed (SW-232, #713). A promotion is now one transaction: on failure nothing
+  is stored, the region and destination arena are unchanged, and a catchable
+  `region promotion: out of memory` error object is raised. Bulk vector and
+  tensor stores promote before they store. See ADR-0001's 2026-09-22
+  amendment.
+- **Malformed tensor shapes raise on every engine (#550).** `(reshape v 1.5
+  2)` no longer fails to compile natively, the VM accepts the documented
+  variadic `(zeros d1 d2 ...)` and `(ones d1 d2 ...)` and validates their
+  shape, and indexing an empty tensor is refused before any arithmetic. The
+  `malformed_shape_matrix` test runs the issue's reproducers and the related
+  shape rules on the JIT, AOT, the VM and the browser VM.
+- **CUDA architectures follow the installed toolkit (#606).** The portable
+  default list is resolved against `nvcc --list-gpu-arch` (or the toolkit
+  version's documented range when nvcc cannot answer), so CUDA 13 configures
+  without SM72 and CUDA 12 keeps it. An explicit `CMAKE_CUDA_ARCHITECTURES` is
+  used as given.
+- **A caught condition printed an error anyway.** Natively the runtime wrote
+  `ERROR: Type error in vector-ref: ...` (and similar) to stderr before
+  unwinding to the `guard` that caught it. A condition is now reported only
+  when no handler is installed; a caught one prints nothing, on native JIT,
+  AOT and the VM. `string->symbol` of a non-string raises a catchable type
+  error on both engines (natively it faulted; the VM answered `#f`).
+- **A top-level `with-region` or `begin` lost the definitions in its body on
+  the VM (SW-240)**, and a `with-region` inside a procedure lost its internal
+  definitions (SW-239): the name then read an unrelated value, for example
+  `(begin (define tt 5) 1)` left `tt` as 1. Both now bind as natively.
+- **Number syntax is one grammar, complex numbers included (SW-223).** The
+  source parser split `1+1i` into `1` and `+1i`, the bytecode VM read it as a
+  call, `(string->number "1+1i")` answered `#f` while `read` returned a symbol,
+  `#i42` was exact and `#e1.5` was not a number. Every reader -- program
+  literals, `read` and `string->number`, on the native compiler and the VM --
+  now asks one recognizer for the full R7RS grammar: `a+bi`, `a-bi`, `+i`,
+  `-i`, `+bi`, polar `m@a`, `#e`/`#i` and `#b`/`#o`/`#d`/`#x` prefixes,
+  rational and infinite or NaN parts (ADR-0028). `1+0i` is the exact integer
+  1. `#e` on a non-real complex number, an infinity or a zero denominator is a
+  compile error in a program, a read error for `read`, and `#f` from
+  `string->number`. `string->number` accepts the R7RS radices 2, 8, 10 and 16
+  (it had accepted up to 36). A native
+  `read` of an integer past int64 had clamped to `INT64_MAX`; it is now the
+  exact bignum. A symbol spelled like a number is written with bars (`|+i|`).
+- **A container accessor read the wrong kind of container as its own
+  (SW-221).** `(vector-ref (list 1 2 3) 0)` answered `8` natively and `()` on
+  the bytecode VM; `(vector-length (list 1 2 3))` answered `4097` and `0`;
+  `string-ref` of a list answered a control character natively and NUL on the
+  VM; `(string-ref 5 0)` and `(tensor-ref (list 1 2) 0)` faulted natively. The
+  vector, string, bytevector and `tensor-ref` accessors now pass their operand
+  through one container check per engine (`TaggedValueCodegen::requireContainer`
+  natively, `vm_require_container` in the VM) and raise a catchable error for
+  any other kind. The VM's inline string opcodes and its first-class string
+  natives now share one implementation; the threaded copy indexed bytes, so
+  `(string-ref "héllo" 1)` answered a byte of `é` rather than the character.
+- **A condition the native runtime raised on its own was not an error object.**
+  `car` of a non-pair, an arithmetic type error, bignum and rational division
+  by zero, i128 overflow and a forward-referenced stub were built by a
+  header-less exception constructor, while `raise` hands every exception to a
+  handler as a heap object classified by its header. A `guard` clause therefore
+  saw garbage: `(guard (e (#t (error-object? e))) (car 5))` answered `#f` and
+  `e` displayed as a list of addresses, where the bytecode VM answered `#t`.
+  Every exception object now carries its header, built in one place.
+- **`apply` spreading too many elements into a fixed-arity procedure raised a
+  type error.** The refusal said `Type error in apply: expected fixed-arity
+  procedure, got procedure`. It is now an arity error rendered by the shared
+  formatter, `Arity mismatch: <procedure> expects 1 argument but got 3`.
+  Runtime error messages raised with no recorded source location also no longer
+  begin with stray bytes from an uninitialized location-prefix buffer.
 - **Every unary numeric builtin keeps a Taylor derivative.** `asin`, `acos`,
   `atan`, `asinh`, `acosh`, `atanh`, `log2`, `log10`, `exp2`, `cbrt`, `atan2`
   and the rounding functions returned their primal on a Taylor tower or level,
@@ -51,6 +127,15 @@ the source changes; the verification record for the tagged commit is the
   derivative a complex value carries.** `(derivative (lambda (w) (expt w 3))
   1+1i)` was 0 and `(derivative-n log 1+1i 1)` lost its imaginary part (SW-211).
   Every procedure with a plain complex kernel now has a carrier formula.
+- **Every math builtin is a first-class value.** `atan2` passed, stored or
+  returned was the raw C function (a crash) and `(apply atan2 ...)` did not
+  compile; a first-class `atan` or `round` dropped its second argument. The
+  math builtins now take one table-driven value route, with `atan` and `round`
+  dispatching on their argument count (SW-230).
+- **A raise or an escape out of a derivative leaves no AD state behind.** The
+  forward pass level stayed raised, so later derivatives lost exactness and
+  `(derivative (lambda (b) (/ 1 b)) 0)` answered `-inf.0` instead of raising
+  after an earlier raise (SW-229).
 - **Powers at a zero base have the closed form's derivatives.** On a Taylor
   tower `sqrt`, `expt` with a constant exponent and the inverse functions'
   derivative series answered NaN at `0.0`, because the power recurrence divides
@@ -1505,6 +1590,19 @@ the source changes; the verification record for the tagged commit is the
   special-case ride, carry and hyper-dual lanes are gone. `atan`, `asin`,
   `acos` and two-argument `atan` carry every order, and a derivative of a
   vector-, list- or complex-valued function is read element by element.
+- **Every AD operator nests on the VM, and the VM agrees with native at
+  poles (ADR-0027 section 3, SW-218, SW-219, SW-220, SW-224).** `jacobian`
+  returns the matrix native returns and nests; the vector-point `hessian`,
+  `divergence`, `curl`, `laplacian` and `directional-derivative` run as
+  level passes inside a live pass. `asinh`, `acosh`, `atanh`, `log2`,
+  `log10`, `exp2`, `cbrt`, `square`, `inexact` and `atan2` are first-class
+  VM values. Higher derivatives of the inverse trigonometric and hyperbolic
+  functions are no longer the first derivative. Exact division by exact
+  zero inside a derivative raises instead of answering an infinity. A zero
+  perturbation coefficient contributes nothing even against an infinity,
+  division takes the series step, and a zero base follows the power step's
+  pole rule, so a derivative through a pole is the closed form's IEEE value
+  and never surfaces as a carrier.
 - **Complex values on the VM keep exact parts and every derivative order
   (SW-199, SW-200, SW-203).** `(make-rectangular 1/2 1/3)` printed `+0i`;
   `real-part` and `imag-part` of a complex carrying a Taylor tower returned
@@ -1513,6 +1611,25 @@ the source changes; the verification record for the tagged commit is the
 - **VM full tensor reductions return a number (SW-202).** With no axis,
   `tensor-sum`, `tensor-mean`, `tensor-max` and `tensor-min` answered a
   1-element tensor for a vector and a row of partial results for a matrix.
+
+- **A derivative passes through a tensor on every engine, exactly at an exact
+  point (ledger SW-197, ADR-0020 amendment 2).** Through `(tensor ...)`, the
+  native exact tier stored its Taylor tower as 0, the native jet tier refused a
+  dual, and the VM kept only the primal, so `derivative`, `gradient`,
+  `derivative-n` and `taylor` through a tensor literal answered 0 with exit
+  status 0. Every tensor construction path now stores through the container
+  slot store boundary: a forward-mode carrier widens the tensor to a jet tensor
+  and is kept whole, and `tensor-ref` reads it back whole on native and VM
+  alike. `(derivative (lambda (x) (tensor-ref (tensor x (* x x)) 1)) 1/3)` is
+  `2/3` on the JIT, AOT and the VM. The exact tier declines a body that applies
+  a tensor kernel, which answers inexactly on a tensor's numbers. Lists,
+  vectors, `map`, `fold` and `parallel-map` keep an exact point exact. Test:
+  `tests/ad/exact_collection_intermediates_test.esk` on JIT, AOT, VM source and
+  VM ESKB, and parity corpus program 94. The same holds for the carrier of a
+  nested differentiation level (ADR-0027): `(derivative (lambda (a)
+  (derivative-n (lambda (b) (tensor-ref (tensor (* a b b) 5.0) 0)) 1.0 2)) 2.0)`
+  answered 0 and is 2, and `tensor-sum` over such a tensor folds its towers with
+  the language's own `+` (SW-212, `tests/ad/nested_level_through_tensor_test.esk`).
 
 - ESKM v1 scalar and empty tensor checkpoints retain their shapes and values
   across native and VM producers and consumers. Scalar observation is admitted

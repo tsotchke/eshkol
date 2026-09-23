@@ -325,6 +325,75 @@ llvm::Value* TaggedValueCodegen::resolveDenseTensorNode(llvm::Value* tagged) {
     return out;
 }
 
+llvm::Value* TaggedValueCodegen::requireContainer(llvm::Value* tagged, uint32_t accepted,
+                                                 const char* who, const char* expected) {
+    if (!tagged) return nullptr;
+    if (tagged->getType() != ctx_.taggedValueType()) {
+        // An operand lowered to a raw scalar is checked only when it is a
+        // literal: a constant number is never a container. A non-constant raw
+        // i64 may still be an untagged tensor pointer from an older lowering,
+        // and its representation is decided by its producer, not here.
+        if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(tagged)) {
+            tagged = packInt64(ctx_.builder().CreateSExtOrTrunc(ci, ctx_.int64Type()), true);
+        } else if (auto* cf = llvm::dyn_cast<llvm::ConstantFP>(tagged)) {
+            tagged = packDouble(ctx_.builder().CreateFPExt(cf, ctx_.doubleType()));
+        } else {
+            return nullptr;
+        }
+    }
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* header_bb = llvm::BasicBlock::Create(ctx_.context(), "container_header", fn);
+    llvm::BasicBlock* reject_bb = llvm::BasicBlock::Create(ctx_.context(), "container_reject", fn);
+    llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(ctx_.context(), "container_ok", fn);
+
+    // Only a non-null heap object has a header to read.
+    llvm::Value* bits = unpackInt64(tagged);
+    llvm::Value* is_heap = b.CreateAnd(
+        b.CreateICmpEQ(getBaseType(getType(tagged)),
+                       llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR)),
+        b.CreateICmpNE(bits, llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    b.CreateCondBr(is_heap, header_bb, reject_bb);
+
+    b.SetInsertPoint(header_bb);
+    llvm::Value* subtype = getSubtypeFromHeader(bits);
+    llvm::Value* ok = llvm::ConstantInt::getFalse(ctx_.context());
+    for (uint8_t s = 0; s < 32; ++s) {
+        if (accepted & containerBit(s)) {
+            ok = b.CreateOr(ok, b.CreateICmpEQ(subtype,
+                llvm::ConstantInt::get(ctx_.int8Type(), s)));
+        }
+    }
+    b.CreateCondBr(ok, ok_bb, reject_bb);
+
+    b.SetInsertPoint(reject_bb);
+    llvm::Function* type_error = ctx_.module().getFunction("eshkol_type_error_with_operand");
+    if (!type_error) {
+        type_error = llvm::Function::Create(
+            llvm::FunctionType::get(ctx_.voidType(),
+                {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false),
+            llvm::Function::ExternalLinkage, "eshkol_type_error_with_operand", &ctx_.module());
+        type_error->setDoesNotReturn();
+    }
+    llvm::Value* slot = createEntryAlloca("container_operand");
+    b.CreateStore(tagged, slot);
+    b.CreateCall(type_error, {b.CreateGlobalString(who ? who : "<accessor>"),
+                              b.CreateGlobalString(expected ? expected : "<container>"),
+                              slot});
+    b.CreateUnreachable();
+
+    b.SetInsertPoint(ok_bb);
+    return subtype;
+}
+
+llvm::Value* TaggedValueCodegen::resolveSequenceOperand(llvm::Value* tagged, const char* who) {
+    llvm::Value* resolved = resolveDenseTensorNode(tagged);
+    requireContainer(resolved,
+                     containerBit(HEAP_SUBTYPE_VECTOR) | containerBit(HEAP_SUBTYPE_TENSOR),
+                     who, "vector or tensor");
+    return resolved;
+}
+
 bool TaggedValueCodegen::storeConsSlot(llvm::Value* cell, bool is_cdr, llvm::Value* tagged) {
     if (!tagged || tagged->getType() != ctx_.taggedValueType()) return false;
     llvm::Value* cell_ptr = consCellAsPointer(ctx_, cell);

@@ -155,16 +155,15 @@ extern "C" void eshkol_get_raised_value(eshkol_tagged_value_t* out) {
 // Create a new exception object with object header (for consolidated HEAP_PTR type)
 extern "C" eshkol_exception_t* eshkol_make_exception_with_header(eshkol_exception_type_t type, const char* message) {
     arena_t* arena = __repl_shared_arena.load();
-    if (!arena) {
-        eshkol_error("No arena available for exception allocation");
-        return nullptr;
-    }
 
     size_t data_size = sizeof(eshkol_exception_t);
     size_t total = sizeof(eshkol_object_header_t) + data_size;
     total = (total + 7) & ~7;
 
-    uint8_t* mem = (uint8_t*)arena_allocate_aligned(arena, total, 8);
+    // Before the process arena exists (a failure during startup) the
+    // condition comes from the C heap; it is never freed, like any condition.
+    uint8_t* mem = arena ? (uint8_t*)arena_allocate_aligned(arena, total, 8)
+                         : (uint8_t*)std::malloc(total);
     if (!mem) {
         eshkol_error("Failed to allocate exception with header");
         return nullptr;
@@ -181,7 +180,7 @@ extern "C" eshkol_exception_t* eshkol_make_exception_with_header(eshkol_exceptio
     exc->type = type;
     if (message) {
         size_t len = strlen(message) + 1;
-        exc->message = (char*)arena_allocate(arena, len);
+        exc->message = arena ? (char*)arena_allocate(arena, len) : (char*)std::malloc(len);
         if (exc->message) {
             memcpy(exc->message, message, len - 1);
             exc->message[len - 1] = '\0';
@@ -198,46 +197,19 @@ extern "C" eshkol_exception_t* eshkol_make_exception_with_header(eshkol_exceptio
     return exc;
 }
 
-// Create a new exception object (legacy - no header)
+// Create a new exception object.
+//
+// There is one exception layout: header-prefixed. eshkol_raise publishes every
+// condition as a HEAP_PTR tagged value, and every reader of a HEAP_PTR --
+// error-object?, display, the region evacuator -- classifies it by the object
+// header eight bytes below the payload. This entry point used to allocate the
+// payload alone, so the header those readers consulted was whatever the arena
+// held before it: a runtime type error such as (car 5) reached a guard handler
+// as something error-object? rejected and display printed as a pair. The
+// header-less form had no reader that needed it, so it is gone rather than
+// kept beside the other.
 extern "C" eshkol_exception_t* eshkol_make_exception(eshkol_exception_type_t type, const char* message) {
-    arena_t* arena = __repl_shared_arena.load();
-    if (!arena) {
-        // Allocate from heap if no arena available
-        eshkol_exception_t* exc = (eshkol_exception_t*)malloc(sizeof(eshkol_exception_t));
-        if (!exc) return nullptr;
-
-        exc->type = type;
-        exc->message = message ? strdup(message) : nullptr;
-        exc->irritants = nullptr;
-        exc->num_irritants = 0;
-        exc->line = 0;
-        exc->column = 0;
-        exc->filename = nullptr;
-        return exc;
-    }
-
-    // Allocate from arena
-    eshkol_exception_t* exc = (eshkol_exception_t*)arena_allocate(arena, sizeof(eshkol_exception_t));
-    if (!exc) return nullptr;
-
-    exc->type = type;
-    if (message) {
-        size_t len = strlen(message) + 1;
-        exc->message = (char*)arena_allocate(arena, len);
-        if (exc->message) {
-            memcpy(exc->message, message, len - 1);
-            exc->message[len - 1] = '\0';
-        }
-    } else {
-        exc->message = nullptr;
-    }
-    exc->irritants = nullptr;
-    exc->num_irritants = 0;
-    exc->line = 0;
-    exc->column = 0;
-    exc->filename = nullptr;
-
-    return exc;
+    return eshkol_make_exception_with_header(type, message);
 }
 
 // Add an irritant to an exception
@@ -785,6 +757,17 @@ static char* eshkol_find_provider_file(const char* name) {
     return strdup(res.best_path.c_str());
 }
 
+// True when a raise now would be caught: a guard (or with-exception-handler)
+// frame with a landing point is installed. The runtime's own error sites ask
+// this before they print a report, so a condition a handler catches prints
+// nothing -- the handler decides what the program says -- while an uncaught
+// one is still reported before eshkol_raise prints "Unhandled exception" and
+// exits. The condition is a program value either way; only the report depends
+// on whether someone is listening.
+extern "C" int eshkol_raise_will_be_handled(void) {
+    return g_exception_handler_stack && g_exception_handler_stack->jmp_buf_ptr ? 1 : 0;
+}
+
 extern "C" void eshkol_raise(eshkol_exception_t* exception) {
     g_current_exception = exception;
 
@@ -848,6 +831,94 @@ extern "C" void eshkol_raise(eshkol_exception_t* exception) {
         fprintf(stderr, "\n");
         exit(1);
     }
+}
+
+// #713: the allocation-failure condition.
+//
+// Every other condition is built at raise time from the process arena. An
+// allocation failure is exactly the case where that allocation may fail too --
+// and where, if it succeeded inside an open region, the raise would have to
+// promote the condition out of that region under the same exhaustion. So each
+// thread reserves this one condition ahead of time, in a small private arena
+// that no region, scope rewind or loop reclamation ever touches: raising it
+// allocates nothing, and the region unwind that carries it to the handler finds
+// nothing to copy. The object is built by the canonical header allocator, so it
+// has whatever header layout the object ABI defines.
+//
+// The reservation is made when the thread first enters a region (region_push),
+// which is before any promotion can fail, and retried here if that did not
+// happen. A later failure on the same thread rewrites the message of a
+// condition a handler kept; the object stays valid for the thread's lifetime.
+namespace {
+
+constexpr size_t kAllocationFailureMessageBytes = 256;
+
+struct AllocationFailureReserve {
+    arena_t* arena = nullptr;
+    eshkol_exception_t* condition = nullptr;
+    char* message = nullptr;
+    ~AllocationFailureReserve() {
+        if (arena) arena_destroy(arena);
+    }
+};
+
+AllocationFailureReserve& allocation_failure_reserve() {
+    static thread_local AllocationFailureReserve reserve;
+    return reserve;
+}
+
+} // namespace
+
+extern "C" void eshkol_reserve_allocation_failure_condition(void) {
+    AllocationFailureReserve& r = allocation_failure_reserve();
+    if (r.condition) return;
+    arena_t* arena = arena_create(1024);
+    if (!arena) return;
+    auto* condition = (eshkol_exception_t*)arena_allocate_with_header(
+        arena, sizeof(eshkol_exception_t), HEAP_SUBTYPE_EXCEPTION, 0);
+    auto* message = (char*)arena_allocate(arena, kAllocationFailureMessageBytes);
+    if (!condition || !message) {
+        arena_destroy(arena);
+        return;
+    }
+    std::memset(condition, 0, sizeof(*condition));
+    condition->type = ESHKOL_EXCEPTION_ERROR;
+    message[0] = '\0';
+    condition->message = message;
+    r.arena = arena;
+    r.condition = condition;
+    r.message = message;
+}
+
+extern "C" void eshkol_raise_allocation_failure(const char* operation, size_t bytes) {
+    const char* what = (operation && operation[0]) ? operation : "allocation";
+    char text[kAllocationFailureMessageBytes];
+    if (bytes != 0) {
+        std::snprintf(text, sizeof(text),
+                      "%s: out of memory (could not allocate %zu bytes); nothing was stored",
+                      what, bytes);
+    } else {
+        std::snprintf(text, sizeof(text), "%s: out of memory; nothing was stored", what);
+    }
+
+    eshkol_reserve_allocation_failure_condition();
+    AllocationFailureReserve& r = allocation_failure_reserve();
+    if (!r.condition) {
+        // Not even the reservation could be made: stop here rather than let
+        // the caller continue past a promotion that did not happen.
+        std::fprintf(stderr, "Unhandled exception: %s\n", text);
+        std::exit(1);
+    }
+    std::memcpy(r.message, text, sizeof(text));
+    r.condition->type = ESHKOL_EXCEPTION_ERROR;
+    r.condition->message = r.message;
+    r.condition->irritants = nullptr;
+    r.condition->num_irritants = 0;
+    r.condition->line = 0;
+    r.condition->column = 0;
+    r.condition->filename = nullptr;
+    eshkol_raise(r.condition);
+    std::exit(1);   // eshkol_raise does not return; never continue past it
 }
 
 extern "C" void eshkol_raise_secondary_exception(eshkol_exception_t* original) {

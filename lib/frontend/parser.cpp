@@ -13,6 +13,7 @@
 #include <eshkol/frontend/node_identity.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/symbol_syntax.h>
+#include <eshkol/core/number_syntax.h>
 #include <eshkol/core/string_escape.h>
 #include <eshkol/logger.h>
 #include <eshkol/types/hott_types.h>
@@ -24,6 +25,7 @@
 #include <string.h>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdlib>
 #include <functional>
@@ -557,6 +559,13 @@ private:
                 // One token, whatever it contains — spaces, escapes, the lot.
                 return readVerticalLineSymbol();
             default:
+                // R7RS 7.1.1: a delimited token is a number exactly when the
+                // shared number-syntax recognizer says so (1+2i, +i, 1@2, .5,
+                // 1/3, -inf.0, ...), whatever character it starts with.
+                if (std::isdigit((unsigned char)ch) || ch == '+' || ch == '-' || ch == '.') {
+                    Token num;
+                    if (tryReadNumberToken(pos, tok_line, tok_col, &num)) return num;
+                }
                 // A standalone `->` is the function-type separator.  Symbols
                 // may legitimately begin with the same characters (`->foo`),
                 // so require a token boundary after the arrow instead of
@@ -600,6 +609,40 @@ private:
     }
     
 private:
+    // A number token ends where an identifier would: at whitespace, a
+    // parenthesis, a string or comment start, or a quotation character.
+    static bool isNumberTokenDelimiter(char c) {
+        return std::isspace((unsigned char)c) || c == '(' || c == ')' || c == '[' ||
+               c == ']' || c == '{' || c == '}' || c == '"' || c == ';' ||
+               c == '\'' || c == '`' || c == ',' || c == '|';
+    }
+
+    // Read the delimited token at `at` as a TOKEN_NUMBER when it is R7RS
+    // number syntax (inc/eshkol/core/number_syntax.h); leave the position
+    // untouched and return false otherwise. An exact integer is handed on as
+    // its decimal digits (`#xFF` -> "255"), the spelling the integer-only
+    // consumers of TOKEN_NUMBER (declaration modifiers, sizes) read; every
+    // other number keeps its source spelling for parse_atom.
+    bool tryReadNumberToken(size_t at, uint32_t tok_line, uint32_t tok_col, Token* out) {
+        size_t end = at;
+        while (end < length && !isNumberTokenDelimiter(input[end])) end++;
+        if (end == at) return false;
+        eshkol_numsyn_t syn;
+        eshkol_numsyn_status_t st =
+            eshkol_number_syntax_parse(input.data() + at, end - at, 10, &syn);
+        if (st == ESHKOL_NUMSYN_NOT_A_NUMBER) return false;
+        std::string value = input.substr(at, end - at);
+        if (st == ESHKOL_NUMSYN_OK) {
+            if (syn.form == ESHKOL_NUMSYN_REAL && syn.part[0].kind == ESHKOL_NUMSYN_INTEGER)
+                value = syn.part[0].text;
+            eshkol_number_syntax_free(&syn);
+        }
+        column_ += static_cast<uint32_t>(end - at);
+        pos = end;
+        *out = {TOKEN_NUMBER, value, at, tok_line, tok_col};
+        return true;
+    }
+
     void skipWhitespace() {
         while (pos < length) {
             // Skip whitespace
@@ -1084,111 +1127,15 @@ private:
             }
         }
 
-        // R7RS §7.1.1 radix + exactness literals:
-        //   #b / #o / #d / #x   — binary / octal / decimal / hex
-        //   #e / #i             — exact / inexact (integer radix is already
-        //                         exact, so these are pass-throughs)
-        //   Prefixes may chain: #e#xFF, #x#e10, #i#b1010.
-        //   A sign (+/-) may follow the prefix block.
-        // Convert to a decimal TOKEN_NUMBER so the rest of the parser
-        // treats it like any integer literal.
+        // R7RS 7.1.1 prefixed numbers: #b #o #d #x #e #i, alone or chained
+        // (#e#xFF, #x#e10), before any real or complex body -- decided by the
+        // shared number-syntax recognizer like every other number token.
         {
-            // Snapshot so we can bail cleanly if we don't find valid digits.
-            size_t snap_pos = pos;
-            uint32_t snap_col = column_;
-            int radix = 10;
-            bool seen_radix = false;
-            bool seen_exact = false;
-
-            auto consume_prefix = [&]() -> bool {
-                if (pos >= length) return false;
-                char c = input[pos];
-                if ((c == 'b' || c == 'B') && !seen_radix) { radix = 2;  seen_radix = true; pos++; column_++; return true; }
-                if ((c == 'o' || c == 'O') && !seen_radix) { radix = 8;  seen_radix = true; pos++; column_++; return true; }
-                if ((c == 'd' || c == 'D') && !seen_radix) { radix = 10; seen_radix = true; pos++; column_++; return true; }
-                if ((c == 'x' || c == 'X') && !seen_radix) { radix = 16; seen_radix = true; pos++; column_++; return true; }
-                if ((c == 'e' || c == 'E') && !seen_exact) { seen_exact = true; pos++; column_++; return true; }
-                if ((c == 'i' || c == 'I') && !seen_exact) { seen_exact = true; pos++; column_++; return true; }
-                return false;
-            };
-
-            if (consume_prefix()) {
-                // Optional second prefix (the other of radix/exactness), prefixed by '#'.
-                if (pos < length && input[pos] == '#') {
-                    pos++; column_++;
-                    if (!consume_prefix()) {
-                        // Second '#' with no valid prefix character — bail.
-                        pos = snap_pos; column_ = snap_col;
-                        goto not_radix;
-                    }
-                }
-
-                if (!seen_radix) {
-                    // Only exactness seen (e.g. `#e42` — still a decimal); continue.
-                    radix = 10;
-                }
-
-                // Optional sign.
-                size_t digit_start = pos;
-                if (pos < length && (input[pos] == '+' || input[pos] == '-')) {
-                    pos++; column_++;
-                }
-                size_t first_digit = pos;
-                auto is_radix_digit = [&](char c) {
-                    if (radix == 2)  return c == '0' || c == '1';
-                    if (radix == 8)  return c >= '0' && c <= '7';
-                    if (radix == 10) return c >= '0' && c <= '9';
-                    if (radix == 16) return (c >= '0' && c <= '9') ||
-                                            (c >= 'a' && c <= 'f') ||
-                                            (c >= 'A' && c <= 'F');
-                    return false;
-                };
-                while (pos < length && is_radix_digit(input[pos])) {
-                    pos++; column_++;
-                }
-
-                if (pos == first_digit) {
-                    // No digits after prefix — not a valid radix literal.
-                    pos = snap_pos; column_ = snap_col;
-                    goto not_radix;
-                }
-
-                std::string raw = input.substr(digit_start, pos - digit_start);
-                errno = 0;
-                char* endptr = nullptr;
-                long long val = std::strtoll(raw.c_str(), &endptr, radix);
-                std::string value;
-                if (errno == ERANGE) {
-                    // P1-22: the literal overflows int64. strtoll would silently
-                    // clamp to INT64_MAX; instead convert the radix digits to an
-                    // exact decimal string (string-bigint: dec = dec*radix + d) so
-                    // the downstream ESHKOL_BIGNUM_LITERAL path builds a correct
-                    // arbitrary-precision integer.
-                    bool neg = !raw.empty() && raw[0] == '-';
-                    size_t di = (!raw.empty() && (raw[0] == '-' || raw[0] == '+')) ? 1 : 0;
-                    std::vector<uint8_t> dec(1, 0);  // decimal digits, least-significant first
-                    for (; di < raw.size(); di++) {
-                        char c = raw[di];
-                        int dv;
-                        if (c >= '0' && c <= '9') dv = c - '0';
-                        else if (c >= 'a' && c <= 'f') dv = c - 'a' + 10;
-                        else if (c >= 'A' && c <= 'F') dv = c - 'A' + 10;
-                        else break;
-                        int carry = dv;
-                        for (size_t k = 0; k < dec.size(); k++) {
-                            int p = dec[k] * radix + carry;
-                            dec[k] = (uint8_t)(p % 10);
-                            carry = p / 10;
-                        }
-                        while (carry) { dec.push_back((uint8_t)(carry % 10)); carry /= 10; }
-                    }
-                    if (neg) value.push_back('-');
-                    for (size_t k = dec.size(); k-- > 0;) value.push_back((char)('0' + dec[k]));
-                } else {
-                    value = std::to_string((int64_t)val);
-                }
-                return {TOKEN_NUMBER, value, start, tok_line, tok_col};
-            }
+            Token num;
+            pos = start;
+            column_ = tok_col;
+            if (tryReadNumberToken(start, tok_line, tok_col, &num)) return num;
+            goto not_radix;
         }
     not_radix:
 
@@ -1943,111 +1890,94 @@ static ParserTask<eshkol_ast_t> parse_atom(const Token& token) {
         }
 
         case TOKEN_NUMBER: {
-            // R7RS special float literals
-            if (token.value == "+inf.0") {
-                eshkol_ast_make_double(&ast, std::numeric_limits<double>::infinity());
-                break;
-            }
-            if (token.value == "-inf.0") {
-                eshkol_ast_make_double(&ast, -std::numeric_limits<double>::infinity());
-                break;
-            }
-            if (token.value == "+nan.0" || token.value == "-nan.0") {
-                eshkol_ast_make_double(&ast, std::numeric_limits<double>::quiet_NaN());
+            // The token is R7RS number syntax; the shared recognizer
+            // (inc/eshkol/core/number_syntax.h) splits it into canonical
+            // parts -- the same decision `read`, string->number and the VM
+            // make. An exact integer becomes an int64 literal (or an
+            // ESHKOL_BIGNUM_LITERAL string, constructed at codegen, ESH-0123);
+            // an exact rational the `(make-rational n d)` desugar; an inexact
+            // real a double; a complex number the
+            // `(make-rectangular <double> <double>)` desugar, whose parts are
+            // always inexact.
+            eshkol_numsyn_t syn;
+            eshkol_numsyn_status_t st = eshkol_number_syntax_parse(
+                token.value.data(), token.value.size(), 10, &syn);
+            if (st != ESHKOL_NUMSYN_OK) {
+                PARSE_ERROR_AT(token, "invalid numeric literal %s: %s", token.value.c_str(),
+                               eshkol_number_syntax_status_message(st));
                 break;
             }
 
-            // Check if it's a rational literal (e.g., 1/3, 22/7, and
-            // bignum-magnitude forms like 100000000000000000000/3). Each side
-            // is emitted as an int64 literal when it fits, or an
-            // ESHKOL_BIGNUM_LITERAL (string payload, constructed at codegen)
-            // when it exceeds int64 range — ESH-0123.
-            if (token.value.find('/') != std::string::npos) {
-                size_t slash_pos = token.value.find('/');
-                std::string num_str = token.value.substr(0, slash_pos);
-                std::string den_str = token.value.substr(slash_pos + 1);
-
-                // Emit one operand node from a signed decimal-integer string.
-                // Returns false if the string is not a valid integer literal;
-                // sets *is_zero when the value is exactly 0 (int64 range only).
-                auto build_int_operand = [&](const std::string& s,
-                                             eshkol_ast_t* node,
-                                             bool* is_zero) -> bool {
-                    size_t i = 0;
-                    if (i < s.size() && (s[i] == '+' || s[i] == '-')) i++;
-                    if (i >= s.size()) return false;
-                    for (size_t j = i; j < s.size(); j++) {
-                        if (s[j] < '0' || s[j] > '9') return false;
-                    }
-                    *node = eshkol_ast_t{};
-                    stamp_node(*node, token.line, token.column);
-                    *is_zero = false;
-                    try {
-                        int64_t v = std::stoll(s);
-                        eshkol_ast_make_int64(node, v);
-                        if (v == 0) *is_zero = true;
-                    } catch (const std::out_of_range&) {
-                        // Too large for int64 — defer to bignum construction.
-                        node->type = ESHKOL_BIGNUM_LITERAL;
-                        size_t len = s.size();
-                        char* ptr = eshkol_ast_string_alloc(len + 1);
-                        memcpy(ptr, s.c_str(), len + 1);
-                        node->str_val.ptr = ptr;
-                        node->str_val.size = len + 1;
-                    } catch (...) {
-                        return false;
-                    }
-                    return true;
-                };
-
-                eshkol_ast_t* variables = new eshkol_ast_t[2];
-                bool num_zero = false, den_zero = false;
-                if (!build_int_operand(num_str, &variables[0], &num_zero) ||
-                    !build_int_operand(den_str, &variables[1], &den_zero)) {
-                    delete[] variables;
-                    PARSE_ERROR_AT(token, "invalid rational literal: %s", token.value.c_str());
-                    break;
+            // A signed decimal integer as an int64 or bignum literal node.
+            auto build_int = [&](const char* text, eshkol_ast_t* node) {
+                *node = eshkol_ast_t{};
+                stamp_node(*node, token.line, token.column);
+                errno = 0;
+                char* endptr = nullptr;
+                long long v = std::strtoll(text, &endptr, 10);
+                if (errno != ERANGE && endptr && *endptr == '\0') {
+                    eshkol_ast_make_int64(node, (int64_t)v);
+                    return;
                 }
-                if (den_zero) {
-                    delete[] variables;
-                    PARSE_ERROR_AT(token, "division by zero in rational literal");
-                    break;
+                node->type = ESHKOL_BIGNUM_LITERAL;
+                size_t len = std::strlen(text);
+                char* ptr = eshkol_ast_string_alloc(len + 1);
+                memcpy(ptr, text, len + 1);
+                node->str_val.ptr = ptr;
+                node->str_val.size = len + 1;
+            };
+            auto inexact_value = [](const eshkol_numsyn_part_t& p) -> double {
+                if (p.kind == ESHKOL_NUMSYN_INFNAN) {
+                    double v = p.text[1] == 'i' ? std::numeric_limits<double>::infinity()
+                                                : std::numeric_limits<double>::quiet_NaN();
+                    return p.text[0] == '-' ? -v : v;
                 }
-                // Create (make-rational num den) call AST
+                return std::strtod(p.text, nullptr);
+            };
+            auto make_call = [&](const char* callee, eshkol_ast_t* operands) {
                 ast.type = ESHKOL_OP;
                 ast.operation.op = ESHKOL_CALL_OP;
                 ast.operation.call_op.func = new eshkol_ast_t;
+                *ast.operation.call_op.func = eshkol_ast_t{};
                 ast.operation.call_op.func->type = ESHKOL_VAR;
-                ast.operation.call_op.func->variable.id = eshkol_ast_strdup("make-rational");
+                ast.operation.call_op.func->variable.id = eshkol_ast_strdup(callee);
                 ast.operation.call_op.func->variable.data = nullptr;
                 ast.operation.call_op.num_vars = 2;
-                ast.operation.call_op.variables = variables;
-                break;
-            }
-            // Check if it's a floating-point number (has '.' or scientific notation 'e'/'E')
-            if (token.value.find('.') != std::string::npos ||
-                token.value.find('e') != std::string::npos ||
-                token.value.find('E') != std::string::npos) {
-                char* endptr = nullptr;
-                double dval = strtod(token.value.c_str(), &endptr);
-                if (endptr == token.value.c_str()) {
-                    PARSE_ERROR_AT(token, "invalid numeric literal: %s", token.value.c_str());
-                    break;
+                ast.operation.call_op.variables = operands;
+            };
+
+            if (syn.form == ESHKOL_NUMSYN_REAL) {
+                const eshkol_numsyn_part_t& part = syn.part[0];
+                if (part.kind == ESHKOL_NUMSYN_INTEGER) {
+                    build_int(part.text, &ast);
+                } else if (part.kind == ESHKOL_NUMSYN_RATIONAL) {
+                    std::string text(part.text);
+                    size_t slash = text.find('/');
+                    eshkol_ast_t* operands = new eshkol_ast_t[2];
+                    build_int(text.substr(0, slash).c_str(), &operands[0]);
+                    build_int(text.substr(slash + 1).c_str(), &operands[1]);
+                    make_call("make-rational", operands);
+                } else {
+                    eshkol_ast_make_double(&ast, inexact_value(part));
                 }
-                eshkol_ast_make_double(&ast, dval);
             } else {
-                try {
-                    eshkol_ast_make_int64(&ast, std::stoll(token.value));
-                } catch (const std::out_of_range&) {
-                    // Integer literal too large for int64 — store as string for bignum construction at codegen
-                    ast.type = ESHKOL_BIGNUM_LITERAL;
-                    size_t _len = token.value.length();
-                    char* ptr = eshkol_ast_string_alloc(_len + 1);
-                    if (ptr) memcpy(ptr, token.value.c_str(), _len + 1);
-                    ast.str_val.ptr = ptr;
-                    ast.str_val.size = _len + 1;
+                double x = inexact_value(syn.part[0]);
+                double y = inexact_value(syn.part[1]);
+                if (syn.form == ESHKOL_NUMSYN_POLAR) {
+                    double m = x, a = y;
+                    x = m * std::cos(a);
+                    y = m * std::sin(a);
                 }
+                eshkol_ast_t* operands = new eshkol_ast_t[2];
+                operands[0] = eshkol_ast_t{};
+                operands[1] = eshkol_ast_t{};
+                stamp_node(operands[0], token.line, token.column);
+                stamp_node(operands[1], token.line, token.column);
+                eshkol_ast_make_double(&operands[0], x);
+                eshkol_ast_make_double(&operands[1], y);
+                make_call("make-rectangular", operands);
             }
+            eshkol_number_syntax_free(&syn);
             break;
         }
 
@@ -5261,8 +5191,43 @@ static ParserTask<eshkol_ast_t> parse_let_match_form(SchemeTokenizer& tokenizer,
  * treated as the callee expression and the remaining elements are parsed as
  * argument expressions, producing an ESHKOL_CALL_OP AST node.
  */
+// R7RS 5.1: a `begin` at the top level of a program splices its forms into
+// that top level, so its definitions are top-level definitions. The parser
+// learns a list is a top-level form from this flag, which the top-level entry
+// points set immediately before parsing a form and parse_list consumes on
+// entry, so it never reaches a nested list. A top-level `begin` and a
+// top-level `with-region` pass it on to their own forms, which is what makes
+// nested splices and a `begin` in a top-level region top-level too.
+static thread_local bool g_parse_toplevel_form = false;
+
+namespace eshkol {
+ToplevelFormParseScope::ToplevelFormParseScope() : previous_(g_parse_toplevel_form) {
+    g_parse_toplevel_form = true;
+}
+ToplevelFormParseScope::~ToplevelFormParseScope() { g_parse_toplevel_form = previous_; }
+
+static void splice_toplevel_form(const eshkol_ast_t& form, std::vector<eshkol_ast_t>& out) {
+    if (form.type == ESHKOL_OP && form.operation.op == ESHKOL_SEQUENCE_OP) {
+        for (uint64_t i = 0; i < form.operation.sequence_op.num_expressions; ++i)
+            splice_toplevel_form(form.operation.sequence_op.expressions[i], out);
+        return;
+    }
+    out.push_back(form);
+}
+
+void splice_toplevel_forms(std::vector<eshkol_ast_t>& forms) {
+    std::vector<eshkol_ast_t> spliced;
+    spliced.reserve(forms.size());
+    for (const auto& form : forms) splice_toplevel_form(form, spliced);
+    forms = std::move(spliced);
+}
+} // namespace eshkol
+
 static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
     eshkol_ast_t ast = {};  // Zero-initialize all fields
+    // Consume the top-level-form flag before anything nested is parsed.
+    const bool toplevel_form = g_parse_toplevel_form;
+    g_parse_toplevel_form = false;
     ast.type = ESHKOL_OP;
     std::vector<eshkol_ast_t> elements;
 
@@ -10300,6 +10265,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     // for every operator type (lambda, let, letrec, etc.) by
                     // way of zero-init + parse_expression.
                     tokenizer.pushBack(peek);
+                    g_parse_toplevel_form = toplevel_form;
                     eshkol_ast_t first_body = (co_await parse_list(tokenizer));
                     if (first_body.type == ESHKOL_INVALID) {
                         ast.type = ESHKOL_INVALID;
@@ -10322,7 +10288,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                         // quasiquote and #(...) vector tokens that the manual
                         // LPAREN/atom dispatch dropped (same family as #110/#229).
                         tokenizer.pushBack(token);
+                        g_parse_toplevel_form = toplevel_form;   // a top-level region's forms are top-level
                         eshkol_ast_t body_expr = (co_await parse_expression(tokenizer));
+                        g_parse_toplevel_form = false;
                         body_elements.push_back(body_expr);
                     }
 
@@ -10347,7 +10315,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 // quasiquote and #(...) vector tokens that the manual
                 // LPAREN/atom dispatch dropped (same family as #110/#229).
                 tokenizer.pushBack(token);
+                g_parse_toplevel_form = toplevel_form;   // a top-level region's forms are top-level
                 eshkol_ast_t body_expr = (co_await parse_expression(tokenizer));
+                g_parse_toplevel_form = false;
                 body_exprs.push_back(body_expr);
                 token = tokenizer.nextToken();
             }
@@ -10539,7 +10509,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 // quasiquote and #(...) vector tokens uniformly (the bolt-on
                 // TOKEN_QUOTE branch only covered ' and missed `/,/#(...)).
                 tokenizer.pushBack(token);
+                // A top-level begin's forms are top-level forms (R7RS 5.1).
+                g_parse_toplevel_form = toplevel_form;
                 eshkol_ast_t expr = (co_await parse_expression(tokenizer));
+                g_parse_toplevel_form = false;
 
                 if (expr.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;
@@ -10563,12 +10536,14 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 }
             }
 
-            if (has_defines) {
+            if (has_defines && !toplevel_form) {
                 // Transform internal defines to letrec - this handles nested function defines correctly
                 eshkol_debug("Transforming begin with internal defines to letrec");
                 co_return transformInternalDefinesToLetrec(begin_expressions);
             } else {
-                // No defines - create a simple sequence
+                // No defines, or a top-level begin: a sequence. At top level
+                // the sequence is spliced into the program, definitions
+                // included (eshkol_splice_toplevel_forms).
                 if (begin_expressions.size() == 1) {
                     co_return begin_expressions[0];
                 }
@@ -10867,10 +10842,13 @@ static bool is_tensor_unsafe_literal_element(const eshkol_ast_t& elem) {
     // branch above): a genuine exact rational, never safe to bit-coerce to
     // a tensor's f64 storage without silently losing exactness (or, before
     // this fix, reinterpreting the heap pointer as raw double bits).
+    // The complex-literal desugar (`1+2i` -> `(make-rectangular 1.0 2.0)`)
+    // has no f64 slot representation either.
     if (elem.type == ESHKOL_OP && elem.operation.op == ESHKOL_CALL_OP &&
         elem.operation.call_op.func && elem.operation.call_op.func->type == ESHKOL_VAR &&
         elem.operation.call_op.func->variable.id &&
-        strcmp(elem.operation.call_op.func->variable.id, "make-rational") == 0) {
+        (strcmp(elem.operation.call_op.func->variable.id, "make-rational") == 0 ||
+         strcmp(elem.operation.call_op.func->variable.id, "make-rectangular") == 0)) {
         return true;
     }
     return false;
@@ -11463,7 +11441,11 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
 
             g_parse_source = form_text.c_str();
             SchemeTokenizer tokenizer(form_text, form_line, form_column);
-            eshkol_ast_t result = parse_expression(tokenizer).run();
+            eshkol_ast_t result;
+            {
+                eshkol::ToplevelFormParseScope toplevel;
+                result = parse_expression(tokenizer).run();
+            }
             g_parse_source = NULL;
 
             /* Stamp the form's originating FILE. This is the one choke point

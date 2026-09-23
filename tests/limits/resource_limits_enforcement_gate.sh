@@ -173,17 +173,20 @@ check "a tensor ceiling above the tensor is inert" 0 "-" -- \
 # guard is emitted at every generated user-function entry. This case continues
 # to pin that ESHKOL_MAX_STACK is live where the software guard runs; the
 # deep native-byte hard gate is driven separately by
-# scripts/run_stack_overflow_diagnostic.sh.
+# scripts/run_stack_overflow_diagnostic.sh. The recursion is an internal
+# definition of a (let () ...) body, i.e. a lambda: a top-level `begin` no
+# longer scopes its definitions (it splices them into the program, R7RS 5.1),
+# so it cannot be what makes the procedure a lambda.
 
 unset_all_limits
 ESHKOL_MAX_STACK=100 \
 check "ESHKOL_MAX_STACK=100 terminates with 121" 121 "ESHKOL_MAX_STACK" -- \
-    "$ESHKOL_RUN" -e '(begin (define (down n) (if (= n 0) 0 (+ 1 (down (- n 1))))) (display (down 5000)))'
+    "$ESHKOL_RUN" -e '(let () (define (down n) (if (= n 0) 0 (+ 1 (down (- n 1))))) (display (down 5000)))'
 
 unset_all_limits
 ESHKOL_MAX_STACK=100000 \
 check "a stack ceiling above the recursion is inert" 0 "-" -- \
-    "$ESHKOL_RUN" -e '(begin (define (down n) (if (= n 0) 0 (+ 1 (down (- n 1))))) (display (down 5000)))'
+    "$ESHKOL_RUN" -e '(let () (define (down n) (if (= n 0) 0 (+ 1 (down (- n 1))))) (display (down 5000)))'
 
 # --- ESHKOL_VM_MAX_INSN (bytecode VM) ---------------------------------------
 

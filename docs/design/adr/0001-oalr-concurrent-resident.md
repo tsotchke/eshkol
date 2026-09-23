@@ -57,6 +57,44 @@
   evacuator (`lib/backend/vm_region_evac.c`, #461) is stronger: a per-tag
   table with compile-time and runtime totality asserts.
 
+### Amendment (2026-09-22, SW-232 / #713): all-or-nothing promotion in the eager evacuator
+
+Required semantics 8 ("All-or-nothing promotion") now holds for the eager
+evacuator the barrier still uses, ahead of the Phase D escape ledger. A failed
+allocation during deep evacuation used to log and return the unpromoted
+pointer, which the barrier stored; a parent copied before its child failed was
+published with an edge into the dying region and stayed in the region's
+forwarding map for later escapes to reuse. The protocol is now:
+
+1. **One transaction per promotion.** Every driver (write barrier, range
+   barrier, `with-region` result escape, region unwind, nursery recycle,
+   arena-span loop reclamation) runs `evac_transaction`
+   (`lib/core/runtime_regions.cpp`) over all roots of the operation with one
+   forwarding relation.
+2. **Mark, then copy.** The destination arena is marked with a scope before
+   the first copy (skipped where scope operations are commit-only; aborted
+   copies are then unreachable bytes, never published).
+3. **Journal what is not fresh.** Forwarding keys the transaction adds are
+   recorded; bytes the walk rewrites outside its own copies (buffers shared
+   with the original object, a parameter's malloc-owned binding stack) are
+   saved before they are written.
+4. **First failure aborts.** Every copy primitive becomes the identity, the
+   saved bytes are restored newest first, the added keys are erased, the
+   destination is rewound, and the roots are returned unchanged. Worklist and
+   map growth failures (`std::bad_alloc`) abort the same way.
+5. **Raise after returning.** Region-mode callers raise the preallocated
+   allocation-failure condition (`eshkol_raise_allocation_failure`) only after
+   the transaction's C++ frames are gone; the arena-span caller retains the
+   span instead.
+6. **Promote before store.** Stores stage their values, promote them, then
+   store; the range barrier no longer fixes slots up after a bulk copy.
+
+Verification: `region_promotion_failure_test` (issue reproducer, parent before
+child, every copy prefix of a shared cyclic graph, range barrier,
+backing-block failure), under ASan in the sanitizer build. This covers the
+"Failure atomicity" row of the verification matrix for header copy, raw
+buffer copy and worklist growth.
+
 ## Decision
 
 Eshkol will replace ambient, process-shared arena selection with an explicit **thread memory context**. Every OS thread gets its own lexical-region stack and private allocation domains. A lexical region is never concurrently bumped, rewound, or destroyed by another thread. Shared destinations are append-only/sharded or explicitly synchronized; they never carry a shared LIFO scope stack.

@@ -1,0 +1,30 @@
+id: SW-244
+bucket: LOUD-ERROR
+subtag: toplevel-begin
+family: cross-engine/toplevel-begin-splice
+status: fixed
+closed_at: 'f7b237ae972ad4ce1dce374e6c3310d7e48cbb07'
+title: "Native: a top-level (begin (define tt 5) 1) did not define tt (\"Undefined variable\"); R7RS 5.1 splices it"
+repro: >-
+  (begin (define tt 5) 1) (display tt) on eshkol-run -r and AOT.
+observed_before: >-
+  Compile error "Undefined variable: tt". Nested begins and a macro expanding
+  to (begin (define ...)) failed the same way. On the VM a nested begin
+  inside a top-level begin or with-region left its binding as ().
+observed_after: >-
+  5 on native JIT, AOT -O0/-O2, the VM and the browser VM, for nested begins,
+  a begin in a top-level with-region body, and macro expansions to begin.
+root_cause: >-
+  the parser rewrote every begin holding a definition into a scoped letrec,
+  the driver and codegen flattened only one level of top-level sequence, and
+  the VM classified a top-level form as a definition by spelling.
+fixed_by: >-
+  ToplevelFormParseScope + eshkol::splice_toplevel_forms (parser, driver,
+  codegen), MacroExpander::expandToplevelForm, and slot-based classification
+  in vm_compile_toplevel_sequence.
+evidence: >-
+  tests/bindings/toplevel_begin_splice_test.esk (ctest
+  toplevel_begin_splice_{jit,vm,browser_vm,aot_O0,aot_O2}) and
+  tests/vm/toplevel_begin_define_test.esk (toplevel_begin_define_{jit,vm,browser_vm}).
+caught_by: [v135f-gates-lane]
+missed_by: [run_vm_parity]

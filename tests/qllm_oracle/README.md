@@ -168,23 +168,43 @@ regenerate all nine `golden/*.json` files.
   (`build/eshkol-run`, unchanged between runs). SHA-256 of all nine
   `golden/*.json` files was identical byte-for-byte across both runs.
 
-### Regeneration provenance: `squared_distance.json` after series division
+### Regeneration provenance (2026-09-22): `squared_distance.json`
 
-Jet division became the series division recurrence instead of a reciprocal
-chain (SW-222). Three `squared_distance` cases changed in their last bits:
-`ball.d3.c1` component 1, all three `sphere.d3.c1` components (whose Gauss
-lemma and radial identities became exactly 0), and four components of
-`product.h2s2r2`. The byte gate went red, as designed, and the file was not
-refreshed until the new values were checked against an independent reference:
-50-digit mpmath evaluation of the closed forms (the Euclidean gradient of
-`acosh(1 + 2|x-y|^2/((1-|x|^2)(1-|y|^2)))^2` on the ball, `-2 log_x(y)` on
-the sphere, and their weighted sum for the product). Seven of the eight
-changed components moved closer to the true value (ball component 1: relative
-error 2.0e-16 to 1.7e-17; sphere and the product's spherical block: 1.4e-16,
-1.2e-16, 8.1e-17 to 9.4e-17, 3.2e-17, 5.9e-17). One moved away: the product's
-hyperbolic component 1, 1.7e-16 to 3.4e-16. Every value is within two units in
-the last place of the true one, the change comes from an intended algorithm
-change, so the candidate replaced the reference.
+`squared_distance.json` was regenerated after SW-222 (`6adb2890f`, the pole
+rule and the jet division recurrence) and SW-225 (`db05575c7`, the power step
+at a zero base) changed the last bit of some gradients. The
+`gauss_lemma_rel` and `radial_component` identities, which the exporter
+measures in binary64, went from about 1e-16 to 0. The new file was not
+certified by the code that produced it:
+`tests/qllm_oracle/certify_squared_distance.py` differentiates the same closed
+forms symbolically with sympy at the exact binary64 inputs and evaluates them
+to 50 digits. Error in ulps of the correctly rounded reference:
+
+| case | before: max / sum, correctly rounded | after: max / sum, correctly rounded |
+|---|---|---|
+| euclidean.d3 | 0 / 0, 3 of 3 | 0 / 0, 3 of 3 |
+| ball.d3.c1 | 1.334 / 2.660, 1 of 3 | 1.334 / 1.660, 2 of 3 |
+| sphere.d3.c1 | 1.411 / 2.926, 0 of 3 | 0.589 / 1.074, 2 of 3 |
+| product.h2s2r2 | 1.411 / 4.506, 2 of 7 | 2.011 / 3.653, 4 of 7 |
+| all 16 finite components | 10.093 total, 6 of 16 | 6.387 total, 11 of 16 |
+
+The identities, evaluated exactly on the stored doubles: ball
+`| |g|/lambda - 2d | / (1+2d)` 1.550e-16 before, 9.568e-17 after; sphere
+`| |g| - 2d | / (1+2d)` 5.208e-17 before, 5.149e-17 after; sphere radial
+`<g, x>` 1.688e-16 before, 5.320e-17 after. Every aggregate improved. One
+component, `product` coordinate 1, moved from 1.011 to 2.011 ulp.
+
+The change behind the drift is the quotient rule in the forward jet.
+`a * (1/b)` through a reciprocal chain became the division recurrence
+`q1 = (a1 - b1 q0) / b0`. `tests/qllm_oracle/division_step_accuracy.py`
+measures the two forms against exact rationals on 199,950 random operand
+sets. The reciprocal chain has mean error 2.437 ulp, median 0.551, p99 14.072.
+The division recurrence has mean 1.800, median 0.403, p99 8.821. The
+recurrence is more accurate in 77,873 cases and less accurate in 39,302. The
+new golden is therefore at least as accurate as the old one in aggregate and
+per identity; the single component that lost one ulp is within the
+distribution of a more accurate rule. The gate passes both lanes on the new
+file.
 
 ## The FD-vs-exact comparison
 

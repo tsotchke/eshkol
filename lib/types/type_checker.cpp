@@ -3,6 +3,7 @@
  * @brief Implementation of bidirectional type checking for Eshkol's HoTT type system
  */
 
+#include "../core/taylor_opcodes.h"
 #include "eshkol/types/type_checker.h"
 #include <eshkol/frontend/ast_strings.h>
 #include <eshkol/frontend/syntax_color.h>
@@ -1153,6 +1154,16 @@ TypeCheckResult TypeChecker::synthesizeVariable(eshkol_ast_t* expr) {
         // These R7RS variadic builtins are also procedures when referenced
         // as values. Keep the gradual Value result for constructors and for
         // error (which raises), rather than diagnosing valid aliases as unbound.
+        // SW-230: the math builtins are first-class values (codegen's
+        // isFirstClassMathBuiltin: the math dispatch's own table), numeric in
+        // and out, with `atan` and `round` taking one or two arguments.
+        if (eshkol_taylor_unary_opcode(name.c_str()) >= 0 ||
+            eshkol_taylor_binary_opcode(name.c_str()) >= 0 ||
+            name == "square" || name == "inexact" || name == "exact->inexact") {
+            return TypeCheckResult::ok(
+                env_.makeFunctionType({BuiltinTypes::Value}, BuiltinTypes::Value,
+                                      /*is_variadic=*/true));
+        }
         if (name == "error" || name == "list" || name == "vector" || name == "string") {
             return TypeCheckResult::ok(
                 env_.makeFunctionType({BuiltinTypes::Value}, BuiltinTypes::Value,

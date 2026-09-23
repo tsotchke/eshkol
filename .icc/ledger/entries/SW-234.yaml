@@ -1,0 +1,27 @@
+id: SW-234
+bucket: SILENT-WRONG
+subtag: containers
+family: cross-engine/container-accessor-boundary
+status: fixed
+closed_at: 'f01071dd29bfce422ffab0c0359848262c89025a'
+title: "Native (string-length 5) inside guard faulted instead of raising a catchable type error"
+repro: >-
+  (guard (e (#t 'caught)) (string-length 5)) on eshkol-run -r and AOT.
+observed_before: >-
+  SIGSEGV at 0xfffffffffffffffd; guard never ran. string-ref, vector-ref and
+  vector-length of a literal scalar faulted the same way.
+observed_after: >-
+  A catchable "Type error in string-length: expected string, got integer" on
+  JIT and AOT; the VM raises "string-length: expected a string".
+root_cause: >-
+  the accessors read their operand by container layout without checking its
+  kind (the SW-221 family); a literal scalar reached the lowering as a raw
+  constant rather than a tagged value.
+fixed_by: >-
+  TaggedValueCodegen::requireContainer (SW-221), which also checks a literal
+  scalar operand.
+evidence: >-
+  tests/error_handling/sw221_container_type_boundary_test.esk SW-234 cases
+  (ctest sw221_container_type_boundary_{jit,aot_o0,aot_o2,vm_src}_smoke).
+caught_by: [v135f-coordinator]
+missed_by: [builtins_first_class_audit]

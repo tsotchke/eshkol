@@ -424,6 +424,21 @@ bit 0 prevents deallocation of externally-owned memory.
 
 ## 8. Configuration
 
+### CUDA architectures
+
+`ESHKOL_CUDA_ARCHITECTURES` (default `72;75;80;86;89;90`) is the portable list
+of GPU generations a CUDA build targets. Configure resolves it against the
+installed toolkit (`cmake/EshkolCudaArchitectures.cmake`): it asks
+`nvcc --list-gpu-arch` which architectures the compiler accepts and, when nvcc
+cannot answer, uses the documented range of the toolkit version. Entries the
+toolkit does not support are dropped with a status message. CUDA 13 compiles
+only for compute capability 7.5 and newer, so a CUDA 13 build targets
+`75;80;86;89;90`; CUDA 12 and older keep SM72. If none of the entries is
+supported, configure stops and says so. An explicit
+`-DCMAKE_CUDA_ARCHITECTURES=...` is used exactly as given and never filtered.
+The toolkit's supported set is recorded as `ESHKOL_CUDA_SUPPORTED_ARCHITECTURES`,
+and `scripts/verify_gpu_backend.py` checks the configured list against it.
+
 ### Environment Variables
 
 **Dispatch control:**

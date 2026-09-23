@@ -270,6 +270,7 @@ llvm::Value* StringIOCodegen::stringLength(const eshkol_operations_t* op) {
     // Generate code for argument
     llvm::Value* arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!arg) return nullptr;
+    tagged_.requireContainer(arg, tagged_.containerBit(HEAP_SUBTYPE_STRING), "string-length", "string");  // SW-221
 
     // Extract string pointer from tagged value
     llvm::Value* ptr_int = tagged_.unpackInt64(arg);
@@ -310,6 +311,7 @@ llvm::Value* StringIOCodegen::stringByteLength(const eshkol_operations_t* op) {
     // Generate code for argument
     llvm::Value* arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!arg) return nullptr;
+    tagged_.requireContainer(arg, tagged_.containerBit(HEAP_SUBTYPE_STRING), "string-byte-length", "string");  // SW-221
 
     // Extract string pointer from tagged value
     llvm::Value* ptr_int = tagged_.unpackInt64(arg);
@@ -352,6 +354,7 @@ llvm::Value* StringIOCodegen::stringRef(const eshkol_operations_t* op) {
     // Get string argument
     llvm::Value* str_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!str_arg) return nullptr;
+    tagged_.requireContainer(str_arg, tagged_.containerBit(HEAP_SUBTYPE_STRING), "string-ref", "string");  // SW-221
 
     // Get index via typed AST
     void* idx_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
@@ -1244,6 +1247,7 @@ llvm::Value* StringIOCodegen::stringSet(const eshkol_operations_t* op) {
     // Get string argument
     llvm::Value* str_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!str_arg) return nullptr;
+    tagged_.requireContainer(str_arg, tagged_.containerBit(HEAP_SUBTYPE_STRING), "string-set!", "string");  // SW-221
 
     // Get index via typed AST
     void* idx_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);

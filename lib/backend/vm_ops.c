@@ -318,7 +318,7 @@ static void vm_exec_vec_ref(VM* vm) {
         vm_vecref_tensor_path(vm, vec_val, idx);
         return;
     }
-    if (vec_val.type != VAL_VECTOR) { vm_push(vm, NIL_VAL); return; }
+    if (!vm_require_container(vm, vec_val, VM_CONTAINER_VECTOR | VM_CONTAINER_TENSOR, "vector-ref", "a vector or tensor")) return;
     VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
     int i = (int)as_number(idx);
     if (!vec || i < 0 || i >= vec->len) {
@@ -330,6 +330,7 @@ static void vm_exec_vec_ref(VM* vm) {
 
 static void vm_exec_vec_set(VM* vm) {
     Value val = vm_pop(vm), idx = vm_pop(vm), vec_val = vm_pop(vm);
+    if (!vm_require_container(vm, vec_val, VM_CONTAINER_VECTOR | VM_CONTAINER_TENSOR, "vector-set!", "a vector or tensor")) return;
     if (vec_val.type == VAL_VECTOR) {
         VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
         int i = (int)as_number(idx);
@@ -347,13 +348,37 @@ static void vm_exec_vec_set(VM* vm) {
 
 static void vm_exec_vec_len(VM* vm) {
     Value vec_val = vm_pop(vm);
+    if (!vm_require_container(vm, vec_val, VM_CONTAINER_VECTOR | VM_CONTAINER_TENSOR, "vector-length", "a vector or tensor")) return;
     if (vec_val.type == VAL_VECTOR) {
         VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
         vm_push(vm, INT_VAL(vec ? vec->len : 0));
     } else if (vec_val.type == VAL_TENSOR) {
         /* SW-26 sibling gap. */
         vm_push(vm, INT_VAL(vm_veclen_tensor_path(vm, vec_val)));
-    } else vm_push(vm, INT_VAL(0));
+    }
+}
+
+/* string-ref / string-length: the one implementation behind both the inline
+ * opcodes (OP_STR_REF / OP_STR_LEN) and the first-class natives (551 / 550). */
+static void vm_exec_str_ref(VM* vm) {
+    Value idx = vm_pop(vm), str_val = vm_pop(vm);
+    if (!vm_require_container(vm, str_val, VM_CONTAINER_STRING, "string-ref", "a string")) return;
+    VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
+    int i = (int)as_number(idx);
+    /* R7RS 6.7 + parity contract: out of range is a catchable error. */
+    if (!s || i < 0 || i >= s->char_len) {
+        vm_raise_error_msg(vm, "string-ref: index out of bounds");
+        return;
+    }
+    /* R7RS string-ref returns a character, not its integer code. */
+    vm_push(vm, (Value){.type = VAL_CHAR, .as.i = vm_string_ref(s, i)});
+}
+
+static void vm_exec_str_len(VM* vm) {
+    Value str_val = vm_pop(vm);
+    if (!vm_require_container(vm, str_val, VM_CONTAINER_STRING, "string-length", "a string")) return;
+    VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
+    vm_push(vm, INT_VAL(s ? vm_string_length(s) : 0));
 }
 
 /* Unary negate / abs on a boxed numeric carrier, shared by the threaded

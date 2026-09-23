@@ -265,43 +265,22 @@ static void coll_raise(const char* message) {
     eshkol_raise(eshkol_make_exception_with_header(ESHKOL_EXCEPTION_ERROR, message));
 }
 
-/** @brief Coerce a leaf to the double the tensor stores.
+/** @brief Store one leaf of a nest into slot @p pos of the tensor under
+ *         construction, through the container slot store boundary (ADR-0020).
  *
- * MS-04 / SW-166: a tensor's elements are homogeneous IEEE 754 doubles
- * (docs/reference/tensors/creation.md: "tensor is homogeneous doubles"; no
- * exact-element tensor exists yet, that is a later item) — so an exact
- * bignum or rational leaf converts with the same correctly-rounded
- * nearest-double conversion every other numeric-tower exit point uses
- * (eshkol_bignum_to_double / eshkol_rational_to_double, the same calls
- * extractAsDouble makes on the native codegen side and coll_fill's nested-
- * tensor sibling already trusts for its stored double bit patterns). Before
- * this fix a non-collection HEAP_PTR unconditionally yielded 0.0 — silently
- * *wrong* for a nonzero exact value rather than merely imprecise:
- * `(tensor (vector 1/2 1/3))` stored `#(0 0)` with no diagnostic (MS-04).
- * `1/2` converts EXACTLY (0.5 is exact in binary); `1/3` converts to its
- * nearest double, same as `(inexact 1/3)` — never to zero.
- *
- * Any other non-collection HEAP_PTR (string, closure, …) is not a number at
- * all and has no double to report — raises a clean, catchable error rather
- * than fabricating a value, consistent with coll_fill's raises elsewhere in
- * this walker for a non-rectangular nest. */
-static double coll_leaf_double(const eshkol_tagged_value_t* e) {
-    if (e->type == ESHKOL_VALUE_DOUBLE) return e->data.double_val;
-    if (e->type == ESHKOL_VALUE_HEAP_PTR && e->data.ptr_val) {
-        const auto* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)e->data.ptr_val);
-        if (hdr) {
-            if (hdr->subtype == HEAP_SUBTYPE_BIGNUM) {
-                return eshkol_bignum_to_double(
-                    (const eshkol_bignum_t*)(uintptr_t)e->data.ptr_val);
-            }
-            if (hdr->subtype == HEAP_SUBTYPE_RATIONAL) {
-                return eshkol_rational_to_double((void*)(uintptr_t)e->data.ptr_val);
-            }
-        }
+ * Construction is one of the chokepoints ADR-0020 names, so it applies the
+ * boundary's rule rather than a copy of it: a real of any exactness is stored
+ * as `inexact` converts it (MS-04 / SW-166: `(tensor (vector 1/2 1/3))` is
+ * `#(0.5 0.333...)`, never `#(0 0)`); a reverse-mode node keeps its in-tensor
+ * encoding; a forward-mode carrier (a dual jet or a Taylor tower) widens the
+ * tensor to a jet tensor and is kept whole (ADR-0020 amendment 2), so a
+ * derivative that flows through `(tensor (list x ...))` is not read as its
+ * primal or as its pointer bits. Anything else is not a number and raises. */
+static void coll_store_leaf(eshkol_tensor_t* t, uint64_t pos,
+                            const eshkol_tagged_value_t* e) {
+    if (eshkol_tensor_slot_store(t, (int64_t)pos, e) != ESHKOL_SLOT_STORE_OK) {
         coll_raise("tensor: element is not a number");
-        return 0.0;  // not reached
     }
-    return (double)e->data.int_val;
 }
 
 /**
@@ -358,7 +337,7 @@ static bool coll_discover_shape(const eshkol_tagged_value_t* input,
  */
 static bool coll_fill(const eshkol_tagged_value_t* node,
                       const uint64_t* dims, int ndim, int level,
-                      int64_t* elements, uint64_t* pos, uint64_t total) {
+                      eshkol_tensor_t* out, uint64_t* pos, uint64_t total) {
     const coll_kind_t k = coll_classify(node);
 
     if (level == ndim) {
@@ -368,8 +347,7 @@ static bool coll_fill(const eshkol_tagged_value_t* node,
             return false;
         }
         if (*pos >= total) return true;  // defensive: never write past the buffer
-        const double d = coll_leaf_double(node);
-        std::memcpy(&elements[(*pos)++], &d, sizeof(double));
+        coll_store_leaf(out, (*pos)++, node);
         return true;
     }
 
@@ -389,8 +367,25 @@ static bool coll_fill(const eshkol_tagged_value_t* node,
                 return false;
             }
         }
+        // A numeric child's slots are already in the numeric encoding and are
+        // copied as they are while the result is numeric too (this keeps a
+        // reverse-mode node pointer's encoding). A jet child's slots are
+        // tagged values and go through the boundary, which widens the result.
+        const bool child_tagged = eshkol_tensor_dtype_is_tagged(t->dtype) != 0;
         for (uint64_t i = 0; i < t->total_elements && *pos < total; i++) {
-            elements[(*pos)++] = t->elements[i];  // already double bit patterns
+            if (!child_tagged && !eshkol_tensor_dtype_is_tagged(out->dtype)) {
+                out->elements[(*pos)++] = t->elements[i];
+                continue;
+            }
+            eshkol_tagged_value_t slot{};
+            if (child_tagged) {
+                slot = reinterpret_cast<const eshkol_tagged_value_t*>(t->elements)[i];
+            } else {
+                slot.type = ESHKOL_VALUE_DOUBLE;
+                slot.flags = ESHKOL_VALUE_INEXACT_FLAG;
+                std::memcpy(&slot.data.double_val, &t->elements[i], sizeof(double));
+            }
+            coll_store_leaf(out, (*pos)++, &slot);
         }
         return true;
     }
@@ -415,7 +410,7 @@ static bool coll_fill(const eshkol_tagged_value_t* node,
             arena_tagged_cons_cell_t* cell =
                 (arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
             const eshkol_tagged_value_t car = cell->car;
-            if (!coll_fill(&car, dims, ndim, level + 1, elements, pos, total)) return false;
+            if (!coll_fill(&car, dims, ndim, level + 1, out, pos, total)) return false;
             cur = cell->cdr;
         }
         return true;
@@ -423,7 +418,7 @@ static bool coll_fill(const eshkol_tagged_value_t* node,
 
     const eshkol_tagged_value_t* elems = coll_vector_elems(node);
     for (int64_t i = 0; i < len; i++) {
-        if (!coll_fill(&elems[i], dims, ndim, level + 1, elements, pos, total)) return false;
+        if (!coll_fill(&elems[i], dims, ndim, level + 1, out, pos, total)) return false;
     }
     return true;
 }
@@ -450,8 +445,7 @@ void* eshkol_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t*
         eshkol_tensor_t* t = arena_allocate_tensor_full(arena, 1, 1);
         if (!t) return nullptr;
         if (t->dimensions) t->dimensions[0] = 1;
-        const double d = coll_leaf_double(input);
-        std::memcpy(&t->elements[0], &d, sizeof(double));
+        coll_store_leaf(t, 0, input);
         return t;
     }
 
@@ -485,7 +479,7 @@ void* eshkol_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t*
     }
 
     uint64_t pos = 0;
-    if (total > 0 && !coll_fill(input, dims, ndim, 0, t->elements, &pos, total)) {
+    if (total > 0 && !coll_fill(input, dims, ndim, 0, t, &pos, total)) {
         return nullptr;  // coll_fill already raised
     }
     return t;

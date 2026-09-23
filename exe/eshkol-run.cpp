@@ -18,6 +18,7 @@
 #include <eshkol/llvm_backend.h>
 #include <eshkol/module_visibility.h>
 #include <eshkol/frontend/ast_strings.h>
+#include <eshkol/frontend/syntax_datum.h>
 #include "../lib/repl/repl_jit.h"
 #include "../lib/frontend/library_registry.h"
 
@@ -2491,20 +2492,7 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
 
 static void flatten_top_level_sequences(std::vector<eshkol_ast_t>& asts)
 {
-    std::vector<eshkol_ast_t> flattened;
-    flattened.reserve(asts.size());
-
-    for (auto& ast : asts) {
-        if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_SEQUENCE_OP) {
-            for (uint64_t i = 0; i < ast.operation.sequence_op.num_expressions; i++) {
-                flattened.push_back(ast.operation.sequence_op.expressions[i]);
-            }
-        } else {
-            flattened.push_back(ast);
-        }
-    }
-
-    asts = std::move(flattened);
+    eshkol::splice_toplevel_forms(asts);   // R7RS 5.1, one rule (syntax_datum.h)
 }
 
 // Process import statements in ASTs and load referenced files

@@ -1,0 +1,34 @@
+id: SW-215
+bucket: SILENT-WRONG
+subtag: exceptions
+family: native/exception-object-layout
+status: fixed
+closed_at: '175891e7dcaa3700074245ab0ac590171dd0ea0d'
+title: "Native runtime-raised conditions were header-less, so guard saw garbage: (guard (e (#t (error-object? e))) (car 5)) answered #f"
+repro: >-
+  (display (guard (e (#t (list (error-object? e) e))) (car 5))) on eshkol-run -r
+  and an AOT binary.
+observed_before: >-
+  (#f (4967685776)) with exit status 0: error-object? answered #f and the
+  condition displayed as a list of addresses; the bytecode VM answered #t with
+  the message. Messages raised with no recorded location also began with stray
+  stack bytes.
+observed_after: >-
+  (#t car: argument is not a pair) on JIT, AOT and the VM; the message has no
+  stray prefix.
+root_cause: >-
+  eshkol_make_exception (used by eshkol_runtime_fatal, bignum/rational
+  division by zero, i128 overflow, forward-reference stubs, Taylor refusals)
+  allocated no object header, while eshkol_raise hands every exception to a
+  handler as a HEAP_PTR classified by its header subtype;
+  eshkol_format_error_location_prefix left its buffer uninitialized when no
+  location was set.
+fixed_by: >-
+  one initializer builds every exception object with its header
+  (lib/core/runtime_exceptions_hosted.cpp); the prefix formatter always
+  terminates its buffer.
+evidence: >-
+  tests/error_handling/runtime_condition_error_object_test.esk (ctest
+  runtime_condition_error_object_jit_smoke, _aot_o0_smoke, _vm_src_smoke).
+caught_by: [v135f-gates-lane]
+missed_by: [run_vm_parity]

@@ -41,3 +41,6 @@ missed_by: [taylor-tower-self-test]
 notes: >-
   The VM does not agree yet: derivative-n of sqrt at 0.0 beyond order 1 prints
   <dual>, and (expt x 1.5) gives NaN; reported to the VM lane, so no VM test.
+vm_evidence: >-
+  VM mirror at 4689ba7e2a739d825c8c83a1038ea3ebe39417e4 (branch fix/v135f-vmtaylor2): tests/ad/division_pole_test.esk and
+  tests/ad/taylor_integral_family_test.esk pass on eshkol-vm-standalone-test and the browser VM.

@@ -12,6 +12,7 @@
 
 #include "eshkol/core/bignum.h"
 #include "eshkol/core/rational.h"
+#include "eshkol/core/number_syntax.h"
 #include "eshkol/eshkol.h"
 #include "arena_memory.h"
 #include <cstring>
@@ -19,6 +20,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <cerrno>
+#include <string>
 
 /* Arena functions declared in arena_memory.cpp (extern "C") */
 extern "C" {
@@ -1485,245 +1487,114 @@ void eshkol_bignum_pow_tagged(arena_t* arena,
 
 /* ===== String Conversion ===== */
 
-/* Parse a base-10 number (int64 / bignum / double / rational) from an
- * already-whitespace-trimmed, prefix-stripped string. Internal helper.
- * `start` must be non-NULL and non-empty. */
-/**
- * @brief Recognize R7RS `<infnan>` (7.1.1): exactly `+inf.0`, `-inf.0`,
- *        `+nan.0` or `-nan.0`, optionally followed by trailing blanks.
- *
- * Only these four spellings are numbers. The C library's `strtod` also accepts
- * `inf`, `infinity` and `nan(chars)`, none of which are Scheme numeric
- * literals, so the token must be matched explicitly rather than delegated —
- * and the sign is mandatory. Written to be byte-identical with the bytecode
- * VM's copy (vm_native.c, string->number), so a printed infinity reads back
- * the same on both substrates.
- *
- * @param s Candidate text, already past any radix prefix.
- * @param[out] out Parsed double, written only when the token matches.
- * @return true when @p s is an `<infnan>` token.
+/* ===== String Conversion ===== */
+/*
+ * One conversion for every native reader of number text: string->number
+ * (below) and the runtime reader (runtime_reader_hosted.cpp). The grammar is
+ * decided by eshkol_number_syntax_parse (inc/eshkol/core/number_syntax.h), the
+ * recognizer the source parser and the bytecode VM also use; this file only
+ * turns its canonical parts into tagged values.
  */
-static bool eshkol_s2n_infnan(const char* s, double* out) {
-    if (!s || (s[0] != '+' && s[0] != '-')) return false;
-    bool negative = (s[0] == '-');
-    double magnitude;
-    if      (std::strncmp(s + 1, "inf.0", 5) == 0) magnitude = HUGE_VAL;
-    else if (std::strncmp(s + 1, "nan.0", 5) == 0) magnitude = NAN;
-    else return false;
-    const char* rest = s + 6;
-    while (*rest == ' ' || *rest == '\t') rest++;
-    if (*rest != '\0') return false;
-    if (out) *out = negative ? -magnitude : magnitude;
+
+/* A canonical INTEGER part: int64 when it fits, else a bignum. */
+static bool eshkol_s2n_integer(arena_t* arena, const char* text, eshkol_tagged_value_t* out) {
+    char* endptr = nullptr;
+    errno = 0;
+    long long v = strtoll(text, &endptr, 10);
+    if (errno != ERANGE && endptr && *endptr == '\0') {
+        *out = eshkol_make_int64((int64_t)v, true);
+        return true;
+    }
+    eshkol_bignum_t* bn = eshkol_bignum_from_string(arena, text, strlen(text));
+    if (!bn) return false;
+    *out = eshkol_make_ptr((uint64_t)(void*)bn, ESHKOL_VALUE_HEAP_PTR);
+    out->flags = ESHKOL_VALUE_EXACT_FLAG;
     return true;
 }
 
-static void eshkol_s2n_decimal(arena_t* arena, const char* start,
-    eshkol_tagged_value_t* result) {
-    /* R7RS: string->number returns #f if the string is not a valid number.
-     * #f is represented as ESHKOL_VALUE_BOOL with data = 0. */
-    eshkol_tagged_value_t false_val = {};
-    false_val.type = ESHKOL_VALUE_BOOL;
-    false_val.flags = 0;
-    false_val.reserved = 0;
-    false_val.data.int_val = 0;
-
-    /* Scan for syntax markers: '/' (rational), '.', 'e'/'E' (float) */
-    bool is_float = false;
-    bool is_rational = false;
-    const char* slash_pos = nullptr;
-    const char* p = start;
-    if (*p == '-' || *p == '+') p++;
-    /* Must start with a digit (or . for floats) */
-    if (!(*p >= '0' && *p <= '9') && *p != '.') {
-        *result = false_val;
-        return;
+/* One canonical part as a tagged real. */
+static bool eshkol_s2n_part(arena_t* arena, const eshkol_numsyn_part_t* part,
+                            eshkol_tagged_value_t* out) {
+    switch (part->kind) {
+    case ESHKOL_NUMSYN_ZERO:
+        *out = eshkol_make_int64(0, true);
+        break;
+    case ESHKOL_NUMSYN_INTEGER:
+        if (!eshkol_s2n_integer(arena, part->text, out)) return false;
+        break;
+    case ESHKOL_NUMSYN_RATIONAL: {
+        const char* slash = std::strchr(part->text, '/');
+        std::string num(part->text, (size_t)(slash - part->text));
+        eshkol_tagged_value_t n, d;
+        if (!eshkol_s2n_integer(arena, num.c_str(), &n) ||
+            !eshkol_s2n_integer(arena, slash + 1, &d)) return false;
+        eshkol_rational_make_tagged((void*)arena, &n, &d, out);
+        break;
     }
-    while (*p) {
-        if (*p == '/' && !is_float) { is_rational = true; slash_pos = p; break; }
-        if (*p == '.' || *p == 'e' || *p == 'E') { is_float = true; break; }
-        if (!(*p >= '0' && *p <= '9')) { /* Non-digit, non-syntax char → not a number */
-            *result = false_val;
-            return;
-        }
-        p++;
+    case ESHKOL_NUMSYN_DECIMAL:
+        *out = eshkol_make_double(strtod(part->text, nullptr));
+        return true;
+    case ESHKOL_NUMSYN_INFNAN: {
+        double v = part->text[1] == 'i' ? HUGE_VAL : NAN;
+        *out = eshkol_make_double(part->text[0] == '-' ? -v : v);
+        return true;
     }
-
-    /* Rational syntax: "num/denom" */
-    if (is_rational && slash_pos) {
-        char* endptr = nullptr;
-        errno = 0;
-        long long num = strtoll(start, &endptr, 10);
-        if (endptr == slash_pos && errno != ERANGE) {
-            errno = 0;
-            long long denom = strtoll(slash_pos + 1, &endptr, 10);
-            if (*endptr == '\0' && errno != ERANGE && denom != 0) {
-                void* rat = eshkol_rational_create((void*)arena, (int64_t)num, (int64_t)denom);
-                if (rat) {
-                    *result = eshkol_make_ptr((uint64_t)(void*)rat, ESHKOL_VALUE_HEAP_PTR);
-                    result->flags = ESHKOL_VALUE_EXACT_FLAG;
-                    return;
-                }
-            }
-        }
-        *result = false_val;
-        return;
     }
-
-    if (is_float) {
-        /* Parse as double — MUST consume entire string */
-        char* endptr = nullptr;
-        double val = strtod(start, &endptr);
-        /* Skip trailing whitespace */
-        while (*endptr == ' ' || *endptr == '\t') endptr++;
-        if (*endptr != '\0' || endptr == start) {
-            *result = false_val;
-            return;
-        }
-        *result = eshkol_make_double(val);
-        return;
-    }
-
-    /* Try parsing as int64 — MUST consume entire string */
-    char* endptr = nullptr;
-    errno = 0;
-    long long val = strtoll(start, &endptr, 10);
-    /* Skip trailing whitespace */
-    while (*endptr == ' ' || *endptr == '\t') endptr++;
-
-    if (errno != ERANGE && endptr != start && *endptr == '\0') {
-        *result = eshkol_make_int64((int64_t)val, true);
-        return;
-    }
-
-    /* Overflow — try bignum */
-    if (errno == ERANGE) {
-        eshkol_bignum_t* bn = eshkol_bignum_from_string(arena, start, strlen(start));
-        if (bn) {
-            *result = eshkol_make_ptr((uint64_t)(void*)bn, ESHKOL_VALUE_HEAP_PTR);
-            result->flags = ESHKOL_VALUE_EXACT_FLAG;
-            return;
-        }
-    }
-
-    /* Not a valid number */
-    *result = false_val;
+    return true;
 }
 
-/* Parse an integer (optional sign) or rational a/b in a non-decimal radix
- * (2..36) from an already-trimmed, prefix-stripped string. R7RS: with an
- * explicit non-decimal radix only exact integers and rationals are valid
- * (no decimal-point / exponent floats). */
-static void eshkol_s2n_radix_int(arena_t* arena, const char* start, int radix,
-    eshkol_tagged_value_t* result) {
-    eshkol_tagged_value_t false_val = {};
-    false_val.type = ESHKOL_VALUE_BOOL;
-    false_val.flags = 0;
-    false_val.reserved = 0;
-    false_val.data.int_val = 0;
-
-    /* Locate an optional rational separator '/'. */
-    const char* slash = nullptr;
-    for (const char* q = start; *q; ++q) {
-        if (*q == '/') { slash = q; break; }
+eshkol_numsyn_status_t eshkol_number_from_syntax(arena_t* arena, const char* text, size_t len,
+                                                 int radix, eshkol_tagged_value_t* result) {
+    eshkol_numsyn_t syn;
+    eshkol_numsyn_status_t st = eshkol_number_syntax_parse(text, len, radix, &syn);
+    if (st != ESHKOL_NUMSYN_OK) return st;
+    eshkol_tagged_value_t a, b;
+    bool ok = eshkol_s2n_part(arena, &syn.part[0], &a);
+    if (ok && syn.form != ESHKOL_NUMSYN_REAL) ok = eshkol_s2n_part(arena, &syn.part[1], &b);
+    eshkol_number_syntax_free(&syn);
+    if (!ok) return ESHKOL_NUMSYN_NO_MEMORY;
+    if (syn.form == ESHKOL_NUMSYN_REAL) {
+        *result = a;
+        return ESHKOL_NUMSYN_OK;
     }
-
-    if (slash) {
-        /* Rational num/denom — both parsed in this radix. */
-        char* endptr = nullptr;
-        errno = 0;
-        long long num = strtoll(start, &endptr, radix);
-        if (endptr != slash || endptr == start || errno == ERANGE) {
-            *result = false_val;
-            return;
-        }
-        errno = 0;
-        long long denom = strtoll(slash + 1, &endptr, radix);
-        while (*endptr == ' ' || *endptr == '\t') endptr++;
-        if (endptr == slash + 1 || *endptr != '\0' || errno == ERANGE || denom == 0) {
-            *result = false_val;
-            return;
-        }
-        void* rat = eshkol_rational_create((void*)arena, (int64_t)num, (int64_t)denom);
-        if (rat) {
-            *result = eshkol_make_ptr((uint64_t)(void*)rat, ESHKOL_VALUE_HEAP_PTR);
-            result->flags = ESHKOL_VALUE_EXACT_FLAG;
-            return;
-        }
-        *result = false_val;
-        return;
+    /* A complex number's parts are inexact (DECIMAL or INFNAN, so doubles);
+     * the payload is the one make-rectangular allocates
+     * (complex_codegen.cpp packComplexToTagged). */
+    double x = a.data.double_val;
+    double y = b.data.double_val;
+    if (syn.form == ESHKOL_NUMSYN_POLAR) {
+        double m = x, t = y;
+        x = m * std::cos(t);
+        y = m * std::sin(t);
     }
-
-    /* Plain integer — MUST consume the entire string. */
-    char* endptr = nullptr;
-    errno = 0;
-    long long val = strtoll(start, &endptr, radix);
-    while (*endptr == ' ' || *endptr == '\t') endptr++;
-    if (endptr == start || *endptr != '\0' || errno == ERANGE) {
-        *result = false_val;
-        return;
-    }
-    *result = eshkol_make_int64((int64_t)val, true);
+    eshkol_complex_number_t* z = (eshkol_complex_number_t*)arena_allocate(
+        arena, eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_USER_NUMBER));
+    if (!z) return ESHKOL_NUMSYN_NO_MEMORY;
+    z->real = x;
+    z->imag = y;
+    *result = eshkol_make_complex((uint64_t)(uintptr_t)z);
+    return ESHKOL_NUMSYN_OK;
 }
 
-/* R7RS 6.2.6: (string->number string radix). Honors an explicit radix of
- * 2/8/10/16 (any 2..36 accepted), and the #b/#o/#d/#x prefixes (which
- * override the radix argument). Returns #f for malformed input. */
+/* R7RS 6.2.6: (string->number string [radix]). The radix (2, 8, 10 or 16) is
+ * the default a #b/#o/#d/#x prefix overrides. Returns #f for text that is not
+ * a number, and for number syntax that has no value (a zero denominator, #e
+ * on an infinity, an exact non-real complex). Surrounding blanks are ignored. */
 void eshkol_string_to_number_radix_tagged(arena_t* arena, const char* str,
     int64_t radix, eshkol_tagged_value_t* result) {
     eshkol_tagged_value_t false_val = {};
     false_val.type = ESHKOL_VALUE_BOOL;
-    false_val.flags = 0;
-    false_val.reserved = 0;
-    false_val.data.int_val = 0;
-
-    if (!str || !result) {
-        if (result) *result = false_val;
-        return;
-    }
-
-    /* Skip leading whitespace */
+    if (!result) return;
+    *result = false_val;
+    if (!str) return;
     const char* start = str;
     while (*start == ' ' || *start == '\t') start++;
-    if (*start == '\0') {
-        *result = false_val;
-        return;
-    }
-
-    /* Radix prefix #b/#o/#d/#x overrides the radix argument (R7RS 7.1.1). */
-    if (start[0] == '#' && start[1] != '\0') {
-        char c = (char)(start[1] | 0x20); /* lowercase */
-        if      (c == 'b') radix = 2;
-        else if (c == 'o') radix = 8;
-        else if (c == 'd') radix = 10;
-        else if (c == 'x') radix = 16;
-        else { *result = false_val; return; } /* #e/#i and unknown: unsupported here */
-        start += 2;
-        if (*start == '\0') { *result = false_val; return; }
-    }
-
-    if (radix < 2 || radix > 36) {
-        *result = false_val;
-        return;
-    }
-
-    /* R7RS 7.1.1 attaches <infnan> to <complex R> for EVERY radix R, so it is
-     * recognized here rather than inside the radix-10 path.  Without this the
-     * printer and the reader disagreed: (number->string (/ 1.0 0.0)) produces
-     * "+inf.0", which string->number then rejected — a printed value that
-     * could not be read back. */
-    {
-        double infnan = 0.0;
-        if (eshkol_s2n_infnan(start, &infnan)) {
-            *result = eshkol_make_double(infnan);
-            return;
-        }
-    }
-
-    if (radix == 10) {
-        eshkol_s2n_decimal(arena, start, result);
-    } else {
-        eshkol_s2n_radix_int(arena, start, (int)radix, result);
-    }
+    size_t len = strlen(start);
+    while (len > 0 && (start[len - 1] == ' ' || start[len - 1] == '\t')) len--;
+    if (radix != 2 && radix != 8 && radix != 10 && radix != 16) return;
+    eshkol_tagged_value_t value;
+    if (eshkol_number_from_syntax(arena, start, len, (int)radix, &value) == ESHKOL_NUMSYN_OK)
+        *result = value;
 }
 
 /**
@@ -1738,7 +1609,6 @@ void eshkol_string_to_number_radix_tagged(arena_t* arena, const char* str,
  */
 void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
     eshkol_tagged_value_t* result) {
-    /* 1-arg form: default radix 10, with #b/#o/#d/#x prefix support. */
     eshkol_string_to_number_radix_tagged(arena, str, 10, result);
 }
 

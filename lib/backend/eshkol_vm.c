@@ -921,6 +921,10 @@ static const BuiltinDef BUILTINS[] = {
     /* Math extensions — IDs 720-746 */
     {"cosh", 720, 1}, {"sinh", 721, 1}, {"tanh", 722, 1},
     {"sign", 743, 1}, {"linspace", 746, 3}, {"eye", 745, 1},
+    /* SW-220: IDs 731-738, and `inexact` is R7RS's name for exact->inexact */
+    {"asinh", 731, 1}, {"acosh", 732, 1}, {"atanh", 733, 1}, {"log2", 734, 1},
+    {"log10", 735, 1}, {"exp2", 736, 1}, {"cbrt", 737, 1}, {"square", 738, 1},
+    {"inexact", 213, 1}, {"atan2", 250, 2},
     /* Port predicates — IDs 728-730 */
     {"input-port?", 728, 1}, {"output-port?", 729, 1}, {"port?", 730, 1},
     /* ═══════════════════════════════════════════════════════════════

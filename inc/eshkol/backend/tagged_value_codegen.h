@@ -226,6 +226,42 @@ public:
      */
     llvm::Value* resolveDenseTensorNode(llvm::Value* tagged);
 
+    // === Container boundary (SW-221) ===
+    //
+    // An accessor that reads a container by its layout (vector-ref reads a
+    // length word and a slot array, string-ref a UTF-8 payload) must first
+    // establish that the operand IS that container. Each accessor used to
+    // classify its operand by hand and send everything it did not recognise
+    // down its default path: (vector-ref (list 1 2 3) 0) read a cons cell as a
+    // vector and answered 8, (vector-length (list 1 2 3)) answered 4097, and
+    // (string-ref 5 0) faulted. This is the one check they all use: the value
+    // must be a non-null HEAP_PTR whose header subtype is in @p accepted, or a
+    // catchable type error naming the accessor is raised
+    // (eshkol_type_error_with_operand, the same sink every other operand
+    // type check uses).
+
+    /** Bit for @p subtype in an accepted-container mask. */
+    static constexpr uint32_t containerBit(uint8_t subtype) { return 1u << subtype; }
+
+    /**
+     * Require @p tagged to be a heap object of one of the accepted subtypes.
+     * @param tagged   The operand (a non-tagged value is returned unchecked).
+     * @param accepted Mask of containerBit(HEAP_SUBTYPE_*) values.
+     * @param who      Public accessor name for the diagnostic.
+     * @param expected Human-readable accepted kinds ("vector or tensor").
+     * @return The operand's i8 header subtype, valid on the continuing path;
+     *         nullptr when @p tagged is not a tagged value.
+     */
+    llvm::Value* requireContainer(llvm::Value* tagged, uint32_t accepted,
+                                  const char* who, const char* expected);
+
+    /**
+     * The operand boundary of the vector accessor family: resolve a dense
+     * tensor AD node (ADR-0023), then require a Scheme vector or a tensor.
+     * @return The resolved operand.
+     */
+    llvm::Value* resolveSequenceOperand(llvm::Value* tagged, const char* who);
+
     /**
      * Pack a character (Unicode codepoint) into a tagged value.
      * @param char_val The LLVM i64 or smaller integer value
