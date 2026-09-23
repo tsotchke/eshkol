@@ -167,8 +167,14 @@ static int vm_head_user_rebound(FuncChunk* c, const Node* identifier);
 static void vm_compile_toplevel_sequence(FuncChunk* c, Node* node, int start) {
     for (int i = start; i < node->n_children; i++) {
         int is_last = (i == node->n_children - 1);
-        int is_def = vm_is_definition_form(node->children[i]);
+        int locals_before = c->n_locals;
         compile_expr(c, node->children[i], 0);
+        /* A form that bound top-level slots -- a definition, or a nested
+         * top-level begin / with-region / macro expansion holding one (whose
+         * own value vm_end_toplevel_sequence already dropped) -- leaves no
+         * value above its slots. Decided by the slots it bound, not by its
+         * spelling, so every splicing form nests. */
+        int is_def = c->n_locals > locals_before;
         if (is_last) {
             if (is_def) chunk_emit(c, OP_VOID, 0);
         } else if (!is_def) {

@@ -80,6 +80,23 @@ Evaluates each `expr` in order and returns the value of the last.
 ab
 ```
 
+At the top level of a program a `begin` splices its forms into the top level
+(R7RS 5.1): a definition inside it is a top-level definition, visible to the
+rest of the program. This holds for nested `begin`s, for a `begin` in the body
+of a top-level `with-region`, and for a macro that expands to a `begin` of
+definitions, on the native compiler and the bytecode VM alike.
+
+```scheme
+(begin (define a 5) (begin (define b 6)))
+(define-syntax define-pair
+  (syntax-rules () ((_ x y vx vy) (begin (define x vx) (define y vy)))))
+(define-pair c d 7 8)
+(display (list a b c d)) (newline)
+```
+```
+(5 6 7 8)
+```
+
 ## `let`
 
 ```

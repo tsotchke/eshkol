@@ -6492,7 +6492,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             "unary_numeric_builtin_carriers|tests/ad/unary_numeric_builtin_carriers_test.esk|PASS: unary_numeric_builtin_carriers|vm"
             "with_region_internal_define|tests/memory/with_region_internal_define_test.esk|PASS: with-region internal define|all"
             "with_region_toplevel_define|tests/memory/with_region_toplevel_define_test.esk|PASS: with-region top-level define|all"
-            "toplevel_begin_define|tests/vm/toplevel_begin_define_test.esk|PASS: top-level begin define|vm")
+            "toplevel_begin_define|tests/vm/toplevel_begin_define_test.esk|PASS: top-level begin define|all"
+            "toplevel_begin_splice|tests/bindings/toplevel_begin_splice_test.esk|PASS: top-level begin splice|all")
         foreach(_esh_spec IN LISTS _esh_vm_carrier_tests)
             string(REPLACE "|" ";" _esh_parts "${_esh_spec}")
             list(GET _esh_parts 0 _esh_name)
@@ -8749,6 +8750,18 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             TIMEOUT 180
             PASS_REGULAR_EXPRESSION "PASS: caught conditions are silent"
             FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|fatal signal|ERROR: VM terminated")
+    endif()
+
+    # SW-244: a top-level begin splices its definitions (R7RS 5.1); AOT axes.
+    if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bindings/toplevel_begin_splice_test.esk")
+        foreach(_splice_opt O0 O2)
+            add_test(NAME toplevel_begin_splice_aot_${_splice_opt}
+                COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' -${_splice_opt} '${CMAKE_CURRENT_SOURCE_DIR}/tests/bindings/toplevel_begin_splice_test.esk' -o '${CMAKE_CURRENT_BINARY_DIR}/toplevel_begin_splice_${_splice_opt}' && '${CMAKE_CURRENT_BINARY_DIR}/toplevel_begin_splice_${_splice_opt}'")
+            set_tests_properties(toplevel_begin_splice_aot_${_splice_opt} PROPERTIES
+                TIMEOUT 180
+                PASS_REGULAR_EXPRESSION "PASS: top-level begin splice"
+                FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|error:|fatal signal")
+        endforeach()
     endif()
 
     # Continuation region-pin budget boundary: native JIT/AOT and the

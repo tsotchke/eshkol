@@ -1,0 +1,36 @@
+; SW-244: R7RS 5.1 -- a begin at the top level of a program splices its forms
+; into the top level, so its definitions are top-level definitions. Natively
+; the parser rewrote every begin holding a definition into a scoped letrec, so
+; (begin (define tt 5) 1) followed by tt failed with "Undefined variable".
+; The bytecode VM follows the same rule (SW-240).
+
+(begin (define a 5) 1)
+
+; nested begins
+(begin (define b 6) (begin (define c 7) (begin (define (twice x) (* 2 x)))))
+
+; a begin inside a top-level with-region
+(with-region 'r (begin (define d 8)) 'done)
+
+; a macro that expands to begin with definitions
+(define-syntax define-pair
+  (syntax-rules ()
+    ((_ x y vx vy) (begin (define x vx) (define y vy)))))
+(define-pair e f 9 10)
+
+; a macro expanding to a macro that expands to begin
+(define-syntax define-three
+  (syntax-rules ()
+    ((_ x y z) (begin (define-pair x y 1 2) (define z 3)))))
+(define-three g h k)
+
+; a definition later in the program sees the spliced ones
+(define total (+ a b c (twice d) e f g h k))
+
+; an expression-position begin still evaluates to its last form
+(define last-value (begin 1 2 3))
+
+(if (and (= a 5) (= b 6) (= c 7) (= d 8) (= e 9) (= f 10)
+         (= g 1) (= h 2) (= k 3) (= total 59) (= last-value 3))
+    (display "PASS: top-level begin splice\n")
+    (display "FAIL: top-level begin splice\n"))

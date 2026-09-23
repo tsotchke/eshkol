@@ -14,6 +14,13 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **A top-level `begin` did not splice its definitions (SW-244).** Natively
+  `(begin (define tt 5) 1)` followed by `tt` failed with `Undefined variable`:
+  the parser rewrote every `begin` holding a definition into a scoped
+  `letrec`. At the top level a `begin` now splices its forms into the program
+  (R7RS 5.1), through nested `begin`s, a `begin` in a top-level `with-region`
+  body, and macros that expand to a `begin` of definitions, on the native
+  compiler and the bytecode VM.
 - **A caught condition printed an error anyway.** Natively the runtime wrote
   `ERROR: Type error in vector-ref: ...` (and similar) to stderr before
   unwinding to the `guard` that caught it. A condition is now reported only
