@@ -13581,6 +13581,9 @@ private:
                 "finite?", "infinite?", "nan?",
                 "zero?", "positive?", "negative?",
                 "even?", "odd?", "not",
+                // square's lowering reads operand 0 unguarded; with none it
+                // answered 0 (p8 square::warity).
+                "square",
             };
             const bool is_minimum = minimum_arity_builtins.count(func_name) != 0;
             const bool is_fixed = fixed_arity_builtins.count(func_name) != 0;
