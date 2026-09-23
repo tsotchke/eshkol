@@ -132,7 +132,7 @@ exactly. Round-tripping `(blc-encode (blc-U))` also returns `blc-U-bits`.
 **Step-cap note.** All demonstrations above reach normal form in well under
 100 reduction steps, far below `blc-max-steps`. `U` is a genuine general
 interpreter, so running it on programs that themselves loop, or on large
-inputs, can blow up term size and exceed the step cap — in which case
+inputs, can increase term size and exceed the step cap — in which case
 `blc-eval` signals `"no normal form within step bound"` rather than hanging,
 exactly as for any divergent term.
 

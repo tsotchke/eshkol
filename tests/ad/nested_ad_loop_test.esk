@@ -50,7 +50,7 @@
      (and (approx= (gradient (lambda (m) (post-loop m 1)) m0) -307.2 1e-6)
           (approx= (gradient (lambda (m) (post m)) m0) -307.2 1e-6)))
 
-;; (b) k=2..5 finite and matching finite-difference (no compounding blow-up)
+;; (b) k=2..5 finite and matching finite-difference (no compounding growth)
 (chk "named-let k=2 matches finite-difference"
      (approx= (gradient (lambda (m) (post-loop m 2)) m0) (fd-post-loop m0 2) 1e-3))
 (chk "named-let k=3 matches finite-difference"

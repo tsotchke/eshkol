@@ -3616,7 +3616,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
     endif()
 endif()
 
-# Navier-Stokes blowup mechanization examples.
+# Navier-Stokes residual mechanization examples.
 #
 # scripts/run_examples_tests.sh discovers examples/*.esk and is a compile-and-run
 # smoke gate: it fails a program that crashes, not one that prints a failing

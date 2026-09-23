@@ -221,6 +221,11 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **Navier-Stokes evidence scope (SW-251).** Public documentation, the ICC
+  oracle, and release text now describe residuals, similarity profiles,
+  scaling identities, and energy estimates. The renamed evidence ledger and
+  checker retain all 84 computational rows and their existing status counts.
+
 - On the bytecode VM, `tensor-sum`/`-mean`/`-max`/`-min` with no axis now
   reduce the whole tensor to a number, as on native (SW-202). The VM used to
   answer `#(0.75)` for `(tensor-sum (tensor 0.5 0.25))` and per-row sums for a
@@ -314,10 +319,10 @@ the source changes; the verification record for the tagged commit is the
   C and C++ consumers, and malformed-input checks. Public checkpoint I/O
   remains ESKM v1. (#699)
 
-- **Navier-Stokes blowup mechanization trajectory.** Added
-  `docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md`, a step-by-step map from
-  the 2026 OpenAI finite-time Navier-Stokes blowup construction to Eshkol
-  primitives: 84 numbered proof steps following the paper's own structure
+- **Navier-Stokes residual mechanization trajectory.** Added
+  `docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md`, a step-by-step map from
+  the 2026 OpenAI Navier-Stokes similarity-profile analysis to Eshkol
+  primitives: 84 numbered computational rows following the paper's own structure
   (similarity coordinates, cumulative radial moments, the admissible stress
   cone, heat exterior and analytic axis profiles, order-by-order background
   correction, auxiliary torus, the two-family stress solve, the residual
@@ -344,7 +349,7 @@ the source changes; the verification record for the tagged commit is the
   contagion whenever every input does. `torus-average`/`torus-average-2d`
   weight discrete samples on a circle / T² grid by an always-exact `1/n` /
   `1/(n*m)`. Supports the auxiliary-torus and two-family stress-solve steps
-  of the Navier-Stokes blowup mechanization trajectory above.
+  of the Navier-Stokes residual mechanization trajectory above.
   (#632)
 
 - **AI-driven mathematics examples.** Added four pure Eshkol programs that

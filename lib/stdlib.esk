@@ -125,7 +125,7 @@
 ;;; Navier-Stokes residual oracle - residual/divergence in cylindrical and
 ;;; Cartesian coordinates, rational-quadrature energy/dissipation,
 ;;; similarity-coordinate flow construction, and the tau-series/singular-order
-;;; tools a blowup-ansatz search compares against zero
+;;; tools a similarity-ansatz calculation compares against zero
 (require core.pde.ns-residual)
 ;;; Certified enclosures - directed-rounding interval arithmetic and
 ;;; rigorous Taylor models (re-exports core.ad.interval and

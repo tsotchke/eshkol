@@ -11687,7 +11687,7 @@ entries:
       ESH-0103 out-lines the whole numeric-tower dispatch into one
       `__eshkol_arith_{add,sub,mul,div}` helper per module, emitted at the first
       site of the operator and CALLED by every other, to avoid an O(n^2)
-      single-function blow-up. Its error branches recorded the location with
+      single-function growth. Its error branches recorded the location with
       `eshkol_set_error_location(file, line, col)` — from
       ArithmeticCodegen::emitSetErrorLocation and from
       TensorCodegen::unpackTensorOperandChecked — using
@@ -15986,3 +15986,35 @@ entries:
       and VM ESKB (ctest standard_port_parameters_*); VM parity 386/386.
     caught_by: [release-dry-run]
     missed_by: [vm_parity]
+  - id: SW-251
+    bucket: SILENT-WRONG
+    subtag: documentation
+    family: navier-stokes/evidence-scope
+    status: fixed
+    title: "Navier-Stokes documentation framed partial residual checks as a complete result"
+    repro: >-
+      Read the public Navier-Stokes design note, release changelog, and ICC oracle
+      labels while comparing them with the per-row evidence ledger.
+    observed: >-
+      Public names and prose described a singular outcome and a complete
+      mechanization trajectory, while the ledger recorded 25 exact rows and 59
+      analytic-only rows among 84 total rows. This made the scope of executable
+      evidence easy to misread.
+    correct: >-
+      Public wording describes residuals, similarity profiles, scaling identities,
+      and energy estimates. The ledger and checker identify which rows have
+      executable evidence and which remain analytic-only.
+    root_cause: >-
+      The document title, ledger name, checker name, ICC labels, release text, and
+      site copies shared outcome-oriented language. The consistency checker
+      verified row wiring but did not constrain public wording.
+    fix: >-
+      Rename the design note, evidence ledger, and checker; update all references
+      and ICC criterion IDs; retain every computational row, status, numerical
+      value, and test. Regenerate the aggregate ledger and site content.
+    evidence: >-
+      The evidence-ledger checker passes on 84 rows (25 EXACT, 0 VALIDATED,
+      59 ANALYTIC-ONLY); the repository wording scan leaves only unrelated AD
+      code-generation terminology; the release and ICC gates are run on this branch.
+    caught_by: [release-review]
+    missed_by: [documentation-review, icc-readiness]

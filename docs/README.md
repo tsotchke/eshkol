@@ -181,8 +181,8 @@ pages and lets them fan out to their siblings.
 - [ESKM v2 format decision](design/ESKM_V2_FORMAT_DECISION.md) — proposed extensible metadata envelope, compatibility rules, and implementation gates
 - [ESKM v1 scalar and empty-tensor VM materialization](design/ESKM_V1_VM_MATERIALIZATION.md) — the rank-0 / empty-tensor case native model loading materializes and VM model loading does not, and what closing it requires
 - [Tensor application shares ordinary callable dispatch](design/TENSOR_APPLY_CALLABLE_DISPATCH.md) — how `tensor-apply` was routed onto `codegenClosureCall` and `vm_enter_call`, and the four-engine gate that holds it there
-- [Navier-Stokes construction: proof ledger](design/NAVIER_STOKES_PROOF_LEDGER.md) — per-step record of what is exact, what is validated by enclosure, and what is analytic-only in the mechanization design note
-- [Incompressible porous media: local velocity expansion, proof ledger](design/IPM_LOCAL_EXPANSION_LEDGER.md) — the companion ledger for the local velocity expansion
+- [Navier-Stokes computations: evidence ledger](design/NAVIER_STOKES_EVIDENCE_LEDGER.md) — per-step record of what is exact, what is validated by enclosure, and what is analytic-only in the mechanization design note
+- [Incompressible porous media: local velocity expansion, evidence ledger](design/IPM_LOCAL_EXPANSION_LEDGER.md) — the companion ledger for the local velocity expansion
 
 Architecture Decision Records (`docs/design/adr/`) — design proposals and decisions, not all yet implemented. The [ADR index](design/adr/README.md) holds the full table (status, date, where each decision is implemented), the numbering rule, the status vocabulary and the registration steps. Every record has exactly one number; the status word on each line summarises the record's own `Status:` line:
 

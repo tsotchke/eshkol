@@ -4,7 +4,7 @@
 ;; Navier-Stokes equations (2026), https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
 ;; Section 8 (compactly supported mean corrections): Proposition 8.1, Lemma 8.2,
 ;; Proposition 8.3, Proposition 8.4, Corollary 8.5, Lemma 8.6, Lemma 8.7,
-;; Lemma 8.8.  docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md rows 64-70.
+;; Lemma 8.8.  docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md rows 64-70.
 ;;
 ;; Two independent facts are mechanized and then tied together.
 ;;

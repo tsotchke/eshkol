@@ -210,7 +210,7 @@ Each item below cites the file or measurement that grounds the claim.
 
 - **Arbitrary-order automatic differentiation.** A Taylor-tower engine (thirteen
   gated phases, P0-P12) computes every derivative up to an arbitrary order `k`
-  in one pass — `k+1` coefficients and O(k²) work, not the 2^k blow-up of nested
+  in one pass — `k+1` coefficients and O(k²) work, not the 2^k growth of nested
   dual numbers. When the seed point is exact and the function only uses
   exact-preserving operators, `derivative-n` and `taylor` return exact
   arbitrary-precision (bignum/rational) results rather than floating-point

@@ -27,7 +27,7 @@ root_cause: >-
   ESH-0103 out-lines the whole numeric-tower dispatch into one
   `__eshkol_arith_{add,sub,mul,div}` helper per module, emitted at the first
   site of the operator and CALLED by every other, to avoid an O(n^2)
-  single-function blow-up. Its error branches recorded the location with
+  single-function growth. Its error branches recorded the location with
   `eshkol_set_error_location(file, line, col)` — from
   ArithmeticCodegen::emitSetErrorLocation and from
   TensorCodegen::unpackTensorOperandChecked — using
