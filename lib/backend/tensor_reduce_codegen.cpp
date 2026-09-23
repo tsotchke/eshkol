@@ -2451,34 +2451,22 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
         ctx_.builder().CreateCondBr(tsum_is_dual, dsum_bb, tsum_normal_bb);
 
         ctx_.builder().SetInsertPoint(dsum_bb);
-        llvm::Value* dsum_acc = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "dsum_acc");
-        llvm::Value* dsum_i = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "dsum_i");
-        ctx_.builder().CreateStore(
-            tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0)), dsum_acc);
-        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), dsum_i);
-        llvm::BasicBlock* dsum_cond = llvm::BasicBlock::Create(ctx_.context(), "tsum_dual_cond", current_func);
-        llvm::BasicBlock* dsum_body = llvm::BasicBlock::Create(ctx_.context(), "tsum_dual_body", current_func);
-        llvm::BasicBlock* dsum_done = llvm::BasicBlock::Create(ctx_.context(), "tsum_dual_done", current_func);
-        ctx_.builder().CreateBr(dsum_cond);
-
-        ctx_.builder().SetInsertPoint(dsum_cond);
-        llvm::Value* dsum_iv = ctx_.builder().CreateLoad(ctx_.int64Type(), dsum_i);
-        ctx_.builder().CreateCondBr(ctx_.builder().CreateICmpULT(dsum_iv, src_total), dsum_body, dsum_done);
-
-        ctx_.builder().SetInsertPoint(dsum_body);
-        llvm::Value* dsum_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(),
-            ctx_.builder().CreateGEP(ctx_.taggedValueType(), typed_src_elements, dsum_iv));
-        llvm::Value* dsum_cur = ctx_.builder().CreateLoad(ctx_.taggedValueType(), dsum_acc);
-        llvm::Value* dsum_next = dualAwareScalarBinOp(dsum_cur, dsum_elem, "add");
-        ctx_.builder().CreateStore(dsum_next, dsum_acc);
-        // dualAwareScalarBinOp leaves the builder at its merge block; emit the
-        // increment/back-edge there.
-        ctx_.builder().CreateStore(
-            ctx_.builder().CreateAdd(dsum_iv, llvm::ConstantInt::get(ctx_.int64Type(), 1)), dsum_i);
-        ctx_.builder().CreateBr(dsum_cond);
-
-        ctx_.builder().SetInsertPoint(dsum_done);
-        dsum_result = ctx_.builder().CreateLoad(ctx_.taggedValueType(), dsum_acc);
+        // ADR-0020 amendment 2: a jet tensor's slots may hold dual jets or
+        // Taylor towers (the exact tier, derivative-n, a nested ADR-0027
+        // level). The runtime folds them with the language's own `+`, so a
+        // tower is summed as a tower rather than read as a double (SW-212).
+        llvm::Value* dsum_out = nullptr;
+        {
+            llvm::IRBuilder<> entry(&current_func->getEntryBlock(),
+                                    current_func->getEntryBlock().begin());
+            dsum_out = entry.CreateAlloca(ctx_.taggedValueType(), nullptr, "dsum_out");
+        }
+        llvm::FunctionCallee jet_sum = ctx_.module().getOrInsertFunction(
+            "eshkol_jet_tensor_sum",
+            llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_.context()),
+                {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false));
+        ctx_.builder().CreateCall(jet_sum, {ctx_.currentArena(), src_ptr, dsum_out});
+        dsum_result = ctx_.builder().CreateLoad(ctx_.taggedValueType(), dsum_out);
         ctx_.builder().CreateBr(sum_merge);
         dsum_exit_block = ctx_.builder().GetInsertBlock();
 

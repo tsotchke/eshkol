@@ -1527,6 +1527,25 @@ the source changes; the verification record for the tagged commit is the
   `tensor-sum`, `tensor-mean`, `tensor-max` and `tensor-min` answered a
   1-element tensor for a vector and a row of partial results for a matrix.
 
+- **A derivative passes through a tensor on every engine, exactly at an exact
+  point (ledger SW-197, ADR-0020 amendment 2).** Through `(tensor ...)`, the
+  native exact tier stored its Taylor tower as 0, the native jet tier refused a
+  dual, and the VM kept only the primal, so `derivative`, `gradient`,
+  `derivative-n` and `taylor` through a tensor literal answered 0 with exit
+  status 0. Every tensor construction path now stores through the container
+  slot store boundary: a forward-mode carrier widens the tensor to a jet tensor
+  and is kept whole, and `tensor-ref` reads it back whole on native and VM
+  alike. `(derivative (lambda (x) (tensor-ref (tensor x (* x x)) 1)) 1/3)` is
+  `2/3` on the JIT, AOT and the VM. The exact tier declines a body that applies
+  a tensor kernel, which answers inexactly on a tensor's numbers. Lists,
+  vectors, `map`, `fold` and `parallel-map` keep an exact point exact. Test:
+  `tests/ad/exact_collection_intermediates_test.esk` on JIT, AOT, VM source and
+  VM ESKB, and parity corpus program 94. The same holds for the carrier of a
+  nested differentiation level (ADR-0027): `(derivative (lambda (a)
+  (derivative-n (lambda (b) (tensor-ref (tensor (* a b b) 5.0) 0)) 1.0 2)) 2.0)`
+  answered 0 and is 2, and `tensor-sum` over such a tensor folds its towers with
+  the language's own `+` (SW-212, `tests/ad/nested_level_through_tensor_test.esk`).
+
 - ESKM v1 scalar and empty tensor checkpoints retain their shapes and values
   across native and VM producers and consumers. Scalar observation is admitted
   narrowly without relaxing arithmetic tensor metadata checks. (#698)

@@ -8,6 +8,11 @@ sources:
   - tests/vm_parity/corpus/85_container_slot_store.esk
   - inc/eshkol/backend/codegen_context.h
   - .icc/ledger/entries/SW-179.yaml
+  - .icc/ledger/entries/SW-197.yaml
+  - lib/core/runtime_list_helpers.cpp
+  - lib/core/runtime_tensor_alloc.cpp
+  - lib/backend/tensor_codegen.cpp
+  - lib/backend/vm_native.c
 ---
 # ADR-0020: One store boundary for every container slot
 
@@ -204,3 +209,79 @@ difference is loud on the side that differs and is checked per engine
 (`tests/core/container_slot_store_test.esk`, `tests/vm/tensor_slot_store_test.esk`)
 rather than in the parity corpus. Numeric `#(...)` literals — the case the
 engines actually disagreed about — agree exactly.
+
+---
+
+## Amendment 2 (v1.3.5): construction goes through the boundary, and a forward-mode carrier widens a tensor to a jet tensor
+
+**Ledger:** SW-197.
+
+**Context.** The rule above covered the mutators. Construction -- the other
+chokepoint the tensor reference names -- still had copies of its own: the
+`(tensor a b ...)` literal lowering, the `(tensor X)` collection walker, the
+`make-tensor` fill, the flat-collection coercion at the tensor operand check,
+and, on the VM, the `tensor` native and its nested walker. Each converted an
+element with its own rule, and none knew a derivative carrier:
+
+- natively, a first-order dual in a literal was refused ("build it with
+  `(vector ...)` instead"), while a Taylor tower -- the exact tier's carrier at
+  an exact point, and `derivative-n`'s -- was read as a number and stored as 0;
+- the collection walker read a dual as its pointer bits;
+- the VM stored only the primal, so a derivative, gradient or `derivative-n`
+  through `(tensor ...)` was 0 with exit status 0;
+- element reads rebuilt what they found: native `tensor-ref` read a tagged slot
+  as an f64, and the VM's `tensor-ref` rebuilt a scalar dual from primal and
+  tangent, dropping a tower's higher coefficients and its exactness.
+
+**Decision.**
+
+- Every construction path stores each element through the boundary: the
+  literal stores every element whose type is known at compile time (every
+  numeric constant) inline as a double, and hands the elements whose type is
+  decided at run time, with their indices, to `eshkol_tensor_store_indexed` in
+  one call; `eshkol_tensor_slot_store` serves the
+  collection walker and the operand coercion; `emitTensorFill` /
+  `eshkol_tensor_fill_slots` for `make-tensor`, and `vm_tensor_store_value` on
+  the VM.
+- A **forward-mode carrier** is a first-order dual jet or a Taylor tower. A
+  jet tensor (dtype `DUAL`) takes one whole, with its exact coefficients. A
+  carrier arriving at a numeric tensor **widens** it to a jet tensor
+  (`widen_tensor_for`); every existing element carries over as the number it
+  was. This applies to the tensor API as well as the vector API, because a jet
+  tensor is still a numeric tensor: it answers `tensor?`, and the kernels with a
+  forward rule accept it. A value that is not a number at all still widens only
+  through the vector API (amendment 1). A tensor that holds a reverse-mode node
+  pointer is not widened; the store is refused. A carrier of a nested level
+  (ADR-0027) is a Taylor tower like any other and is kept whole the same way
+  (SW-212).
+- Element reads return the slot whole: native `tensor-ref`/`vref` read a tagged
+  slot as the tagged value, and the VM has one element reader,
+  `vm_tensor_element_value`, used by `tensor-ref` and `vector-ref`.
+- The jet tensor's full `tensor-sum` folds its slots with the language's own
+  `+` (`eshkol_jet_tensor_sum`): a tower goes through the one generic Taylor
+  entry, so a tower or a nested level carrier is summed as itself. The other
+  kernels carry a first-order f64 jet at most and refuse a tower by name.
+- The exact tier declines a body that applies a tensor **kernel**
+  (`AutodiffCodegen::adExactTowerEligible`). Construction, `tensor-ref`,
+  `tensor-shape` and `tensor-length` move a tower whole; the kernels carry a
+  first-order f64 jet at most, and name the refusal if a tower reaches one. The
+  jet arm answers such a body with the same derivative, inexact, which is also
+  what the kernel computes on a tensor's numbers.
+
+**Consequences.**
+
+- `(derivative (lambda (x) (tensor-ref (tensor x (* x x)) 1)) 1/3)` is the exact
+  `2/3` on the JIT, an AOT binary and the VM; at `0.5` it is `1.0`; the gradient
+  and `derivative-n` through a tensor literal are correct on every engine.
+- A tensor built from exact numbers still holds doubles: the carrier is kept
+  whole, a number is converted as `inexact` converts it. A kernel over a jet
+  tensor at an exact point answers inexactly (`(derivative (lambda (x)
+  (tensor-sum (tensor x (* x x)))) 1/2)` is `2.0`).
+- A flat collection with exact elements passed where a tensor is expected,
+  `(tensor-sum (vector 1/2 1/3))`, now coerces (each element converts as it does
+  in the constructor) instead of raising.
+- `tests/ad/exact_collection_intermediates_test.esk` runs the list, vector,
+  tensor, nested and map/fold matrix on JIT, AOT, VM source and VM ESKB, and
+  `tests/vm_parity/corpus/94_derivative_through_tensor_carrier.esk` holds the
+  engines to one transcript. `tests/ad/nested_level_through_tensor_test.esk`
+  covers nested levels (SW-212) on all four routes.

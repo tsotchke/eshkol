@@ -1,7 +1,8 @@
 id: SW-197
 bucket: SILENT-WRONG
 family: ad/native-exact-tier
-status: open
+status: fixed
+closed_at: "d3d088e0a"
 needs_decision: false
 title: "native derivative loses exactness when a scalar body uses collection intermediates"
 repro: >-
@@ -26,5 +27,18 @@ evidence: >-
 caught_by: [release-ad-carrier-audit]
 missed_by: [vm_parity, exact_rational_derivative_runtime_smoke]
 notes: >-
-  Source is not yet committed to the release cut. Keep open until current-head
-  parity and final release qualification pass; no inexact fallback is a fix.
+  The list/vector/map/fold/parallel-map half closed with the value-producing
+  eligibility scan (9d47e16a4). Re-measured at d3d088e0a (cherry-pick of cc978a57a onto the ADR-0027 base) on the native JIT, an
+  AOT binary, the VM from source and the VM from ESKB: every list, vector and
+  map/fold case is exact (d/dx fold-left(+, 0, map(sq, [x x x x])) at 1/3 is
+  8/3; the 2^-2000 rational agrees exactly). The residual was TENSOR
+  intermediates: the native exact tier stored its Taylor tower in a tensor
+  literal as 0, the jet tier refused a dual, and the VM kept only the primal.
+  d3d088e0a routes every tensor construction path through the ADR-0020 slot
+  store boundary (amendment 2): a forward carrier widens the tensor to a jet
+  tensor and tensor-ref reads it back whole, so d/dx tensor-ref(tensor(x, x*x), 1)
+  at 1/3 is exact 2/3 on all four routes. A body that applies a tensor kernel
+  answers inexactly by design (a tensor holds doubles). Gate:
+  tests/ad/exact_collection_intermediates_test.esk (CTest
+  exact_collection_intermediates_{runtime,aot,vm,vm_eskb}_smoke) and parity
+  corpus 94_derivative_through_tensor_carrier.esk.

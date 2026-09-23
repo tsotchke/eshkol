@@ -935,6 +935,17 @@ int32_t eshkol_tensor_slot_store(void* tensor, int64_t index,
 // the carrier to the boxed representation instead of being refused.
 int32_t eshkol_vector_slot_store(void* tensor, int64_t index,
                                  const eshkol_tagged_value_t* value);
+// Construction fill for the tensor API (`make-tensor shape fill`): store one
+// value into every slot of a tensor object. A forward-mode derivative carrier
+// widens it to a jet tensor; a value that is not a number is refused.
+int32_t eshkol_tensor_fill_slots(void* tensor, const eshkol_tagged_value_t* value);
+// Construction: store values[k] into slot indices[k] of a tensor object, each
+// through the slot encoder (a forward-mode carrier widens it to a jet tensor).
+int32_t eshkol_tensor_store_indexed(void* tensor, const int64_t* indices,
+                                    const eshkol_tagged_value_t* values, int64_t n);
+// Is this value a real number of any exactness or a forward-mode derivative
+// carrier -- something a numeric tensor slot can hold? 1 or 0.
+int32_t eshkol_tensor_leaf_is_storable(const eshkol_tagged_value_t* value);
 // Store one value into every slot of a vector or tensor operand.
 int32_t eshkol_sequence_fill(const eshkol_tagged_value_t* sequence,
                              const eshkol_tagged_value_t* value);

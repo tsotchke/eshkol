@@ -98,6 +98,21 @@ to zero for a nonzero value:
 (make-tensor (list 2 2) 1/2) ;; every element is the double 0.5
 ```
 
+A derivative carrier is the one element that is not converted. Inside a
+differentiated body, an element that is a forward-mode carrier (a dual number,
+or the Taylor tower an exact point and `derivative-n` use) makes the tensor a
+jet tensor and is stored whole; `tensor-ref` returns it whole, so the
+derivative passes through the tensor:
+
+```scheme
+(derivative (lambda (x) (tensor-ref (tensor x (* x x)) 1)) 0.5)   ;; => 1.0
+(derivative (lambda (x) (tensor-ref (tensor x (* x x)) 1)) 1/3)   ;; => 2/3
+```
+
+Every construction path applies this one rule: the literal, `(tensor X)` over
+a collection, `make-tensor`'s fill, and a collection passed where a tensor is
+expected.
+
 This rule applies uniformly at every chokepoint that builds or mutates a
 tensor from a Scheme value: `tensor`, `make-tensor`, `tensor-set!`, and
 `vector->tensor`, on both the native and VM engines.
