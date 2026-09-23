@@ -510,7 +510,7 @@ ArithmeticCodegen depends on TensorCodegen, AutodiffCodegen, and ComplexCodegen 
 
 ### GPU Dispatch (SIMD -> cBLAS -> Metal)
 
-**Implementation:** [`blas_backend.cpp`](../../lib/backend/blas_backend.cpp) (1,316 lines), [`gpu_memory.mm`](../../lib/backend/gpu/gpu_memory.mm) (4,485 lines)
+**Implementation:** [`blas_backend.cpp`](../../lib/backend/blas_backend.cpp), [`gpu_memory.mm`](../../lib/backend/gpu/gpu_memory.mm)
 
 The cost model selects the optimal compute backend based on tensor dimensions:
 
