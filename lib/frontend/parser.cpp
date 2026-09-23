@@ -28,6 +28,7 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <sstream>
