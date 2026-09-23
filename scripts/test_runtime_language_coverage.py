@@ -209,12 +209,17 @@ class RuntimeInstrumentationTest(unittest.TestCase):
                     fields = raw.split("\t")
                     if fields[0] == "C" and fields[4] == "abs":
                         abs_sources.add(fields[1])
-            # A recorded path is a DISPLAY path (ADR-0021). Both files live in
-            # a temporary directory outside every root (ESHKOL_PATH, project
-            # root, working directory), so each records as its file name
-            # alone, never as an absolute host path. The imported module's
-            # site must carry the imported file's name, not the caller's.
-            self.assertEqual(abs_sources, {imported.name})
+            # A recorded path is a DISPLAY path (ADR-0021): relative to the
+            # working directory when the file lies under it (a TMPDIR inside
+            # the checkout, as the lane rules require), otherwise the file
+            # name alone -- never an absolute host path. The imported
+            # module's site must carry the imported file's own path, not the
+            # caller's.
+            try:
+                expected = str(imported.resolve().relative_to(pathlib.Path(REPO).resolve()))
+            except ValueError:
+                expected = imported.name
+            self.assertEqual(abs_sources, {expected})
             self.assertNotEqual(imported.name, caller.name)
 
     ONE_LINE_PROGRAM = '(display (+ 1 2))\n'
