@@ -101,7 +101,7 @@
 
                 // Call main if it exists
                 if (instance.exports.main) {
-                    instance.exports.main();
+                    await instance.exports.main();
                 }
 
                 // Remove status element since page will be rebuilt

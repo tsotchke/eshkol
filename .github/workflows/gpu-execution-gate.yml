@@ -49,6 +49,11 @@ on:
       - 'lib/backend/gpu/**'
       - 'lib/backend/vm_gpu_dispatch.h'
       - 'tests/gpu/gpu_correctness_gate.*'
+      - 'web/**'
+      - 'site/static/eshkol-webgpu.js'
+      - 'site/static/eshkol-runtime.js'
+      - 'scripts/lib/webgpu_diff_runner.mjs'
+      - 'tests/webgpu/webgpu_live_test.mjs'
       - '.github/workflows/gpu-execution-gate.yml'
 
 concurrency:
@@ -77,6 +82,36 @@ jobs:
         # GPU_GATE_TOL is intentionally left unset here so the gate uses
         # the script's own default (tests/gpu/gpu_correctness_gate.sh).
         run: ./tests/gpu/gpu_correctness_gate.sh
+
+      - name: Run browser WebGPU differential gate
+        shell: bash
+        # GPU_GATE_TOL unset: webgpu_diff_runner.mjs defaults to the same
+        # 1e-9 tolerance as tests/gpu/gpu_correctness_gate.sh.
+        run: |
+          set +e
+          node scripts/lib/webgpu_diff_runner.mjs
+          rc=$?
+          if [ "$rc" -eq 77 ]; then
+            echo 'webgpu_diff_runner: SKIP - browser WebGPU evidence is unavailable on this runner'
+            exit 0
+          fi
+          exit "$rc"
+
+      - name: Run live WebGPU Chrome contracts
+        shell: bash
+        run: node tests/webgpu/webgpu_live_test.mjs
+
+      - name: Run browser WebGPU dispatch regressions
+        shell: bash
+        run: |
+          set +e
+          node scripts/lib/webgpu_diff_runner.mjs --regressions
+          rc=$?
+          if [ "$rc" -eq 77 ]; then
+            echo 'webgpu_diff_runner: SKIP - browser WebGPU regression evidence is unavailable on this runner'
+            exit 0
+          fi
+          exit "$rc"
 
       - name: Upload gate logs
         if: always()

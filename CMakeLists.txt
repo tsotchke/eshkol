@@ -1679,10 +1679,13 @@ option(ESHKOL_GPU_ENABLED "Enable GPU acceleration for tensor operations" ON)
 option(ESHKOL_REQUIRE_GPU_BACKEND
     "Fail configuration when GPU acceleration is requested but no real backend is available"
     OFF)
+option(ESHKOL_WEBGPU_ASYNCIFY
+    "Enable Emscripten Asyncify for synchronous WASM calls into WebGPU"
+    ON)
 set(ESHKOL_CUDA_ARCHITECTURES "72;75;80;86;89;90" CACHE STRING
     "CUDA architectures for portable Eshkol GPU binaries")
 set(ESHKOL_GPU_BACKEND "NONE" CACHE INTERNAL
-    "Resolved Eshkol GPU backend (NONE, METAL, or CUDA)" FORCE)
+    "Resolved Eshkol GPU backend (NONE, METAL, CUDA, or WEBGPU)" FORCE)
 
 if(ESHKOL_REQUIRE_GPU_BACKEND AND NOT ESHKOL_GPU_ENABLED)
     message(FATAL_ERROR
@@ -1695,7 +1698,27 @@ if(ESHKOL_GPU_ENABLED)
     set(GPU_SOURCES "")
     set(ESHKOL_CUDA_RUNTIME_LINK_NAMES "")
 
-    if(APPLE)
+    if(EMSCRIPTEN)
+        # Browser WebGPU (wasm target). Compute is dispatched into
+        # web/eshkol-webgpu.js through EM_ASYNC_JS, so there is nothing to
+        # find — the "device" is whatever the hosting page published. The
+        # Emscripten WebGPU port supplies webgpu.h and the browser bindings;
+        # Asyncify is required because the C API remains synchronous. The
+        # browser-side direct WASM import path additionally requires JSPI and
+        # wraps every callable export with WebAssembly.promising.
+        set(GPU_FOUND TRUE)
+        set(ESHKOL_GPU_BACKEND "WEBGPU" CACHE INTERNAL
+            "Resolved Eshkol GPU backend (NONE, METAL, CUDA, or WEBGPU)" FORCE)
+        add_compile_definitions(ESHKOL_GPU_WEBGPU_ENABLED)
+        set(GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory_webgpu.cpp")
+        # Emscripten 4.x replaced -sUSE_WEBGPU=1 with the Dawn port. The port
+        # supplies webgpu/webgpu.h and the browser WebGPU bindings.
+        add_link_options("--use-port=emdawnwebgpu")
+        if(ESHKOL_WEBGPU_ASYNCIFY)
+            add_link_options("-sASYNCIFY")
+        endif()
+        message(STATUS "GPU: WebGPU (browser compute, wasm target)")
+    elseif(APPLE)
         # Use Apple Metal framework (macOS/iOS)
         find_library(METAL_FRAMEWORK Metal)
         find_library(MPS_FRAMEWORK MetalPerformanceShaders)
@@ -1704,7 +1727,7 @@ if(ESHKOL_GPU_ENABLED)
         if(METAL_FRAMEWORK AND MPS_FRAMEWORK)
             set(GPU_FOUND TRUE)
             set(ESHKOL_GPU_BACKEND "METAL" CACHE INTERNAL
-                "Resolved Eshkol GPU backend (NONE, METAL, or CUDA)" FORCE)
+                "Resolved Eshkol GPU backend (NONE, METAL, CUDA, or WEBGPU)" FORCE)
             set(GPU_LIBRARIES ${METAL_FRAMEWORK} ${MPS_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
             add_compile_definitions(ESHKOL_GPU_METAL_ENABLED)
             message(STATUS "GPU: Apple Metal (unified memory)")
@@ -1765,7 +1788,7 @@ if(ESHKOL_GPU_ENABLED)
 
             set(GPU_FOUND TRUE)
             set(ESHKOL_GPU_BACKEND "CUDA" CACHE INTERNAL
-                "Resolved Eshkol GPU backend (NONE, METAL, or CUDA)" FORCE)
+                "Resolved Eshkol GPU backend (NONE, METAL, CUDA, or WEBGPU)" FORCE)
             set(GPU_LIBRARIES CUDA::cudart CUDA::cublas)
             set(ESHKOL_CUDA_RUNTIME_LINK_NAMES cudart cublas)
             if(TARGET CUDA::cublasLt)
@@ -6777,6 +6800,29 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wa
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_broadcast_shape_test.js)
         set_tests_properties(wasm_broadcast_shape_test PROPERTIES
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
+endif()
+
+# WebGPU browser backend. The contract test needs only node; the live and
+# differential gates drive Chrome through Playwright and need a WebGPU device,
+# so they carry the `webgpu` label and are run by gpu-execution-gate.yml.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/webgpu/webgpu_regressions_test.mjs")
+    find_program(NODE_EXECUTABLE node)
+    if(NODE_EXECUTABLE)
+        add_test(NAME webgpu_regressions_test
+                 COMMAND ${NODE_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/webgpu/webgpu_regressions_test.mjs)
+        set_tests_properties(webgpu_regressions_test PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        add_test(NAME webgpu_live_test
+                 COMMAND ${NODE_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/webgpu/webgpu_live_test.mjs)
+        add_test(NAME webgpu_diff_gate
+                 COMMAND ${NODE_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/lib/webgpu_diff_runner.mjs)
+        set_tests_properties(webgpu_live_test webgpu_diff_gate PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            LABELS webgpu)
     endif()
 endif()
 

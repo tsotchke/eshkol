@@ -178,6 +178,28 @@ components:
     entry_points:
       - {path: scripts/language_coverage.py, symbol: main}
 
+  - id: gpu-path
+    role: backend
+    description: >
+      Ordinary GPU dispatch seam shared by generated tensor code, native Metal
+      and CUDA backends, and the WebGPU backend. The WGSL kernels live in one
+      place (web/eshkol-webgpu.js, mirrored byte-for-byte to site/static); the
+      JS glue and the Emscripten C backend both call into it. f64 tiers run
+      sf64 (IEEE binary64 on integer words, like Metal's metal_softfloat.h);
+      operations with no kernel for the active tier fall back to the CPU
+      explicitly.
+    modules:
+      - inc/eshkol/backend/gpu/gpu_memory.h
+      - lib/backend/gpu/gpu_memory.mm
+      - lib/backend/gpu/gpu_memory_cuda.cpp
+      - lib/backend/gpu/gpu_memory_stub.cpp
+      - lib/backend/gpu/gpu_memory_webgpu.cpp
+      - web/eshkol-webgpu.js
+      - site/static/eshkol-webgpu.js
+      - scripts/lib/webgpu_diff_runner.mjs
+    entry_points:
+      - {path: lib/backend/gpu/gpu_memory_webgpu.cpp, symbol: eshkol_matmul_dispatch}
+
   - id: wasm-path
     role: backend
     description: >
@@ -258,6 +280,18 @@ dataflows:
       JS glue stub in BOTH glue files (site/static/eshkol-runtime.js and
       web/eshkol-repl.js); a stub added to one but not the other is the drift
       that took the live site down.
+
+  - id: gpu_dispatch_seam
+    producer: llvm-codegen
+    consumer: gpu-path
+    produces: [gpu_dispatch_call]
+    consumes: [gpu_dispatch_call]
+    key_space: {kind: c_symbol, identifier: "eshkol_matmul_dispatch / eshkol_gpu_*"}
+    description: >
+      Generated tensor operations enter the same GPU dispatch symbols on every
+      target. WebGPU is selected by the target backend, not by a browser-only
+      codegen path; an unavailable adapter, or an operation with no kernel for
+      the active precision tier, falls back explicitly to CPU.
 
 # --------------------------------------------------------------------------
 # CAPABILITIES — feature -> entry points -> arming -> dependencies
