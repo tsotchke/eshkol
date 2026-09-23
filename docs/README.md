@@ -32,6 +32,7 @@ pages and lets them fan out to their siblings.
 - [Quick Reference](ESHKOL_QUICK_REFERENCE.md) — one-page cheat sheet over the 1,053-builtin surface
 - [API Reference](API_REFERENCE.md) — comprehensive function documentation
 - [Gradual typing guide](guide/GRADUAL_TYPING.md) — annotations, what is checked where, function types, branch joins, loop typing, reading a diagnostic
+- [WGSL artifact guide](guide/WGSL_ARTIFACT.md) — derive a bounded polynomial with AD and compose its standalone evaluator with browser WebGPU kernels
 - [Standard Library API index](reference/stdlib/INDEX.md) — module-by-function map of the standard library (63 modules)
 - [Standard Library API (v1.2 surface notes)](STDLIB_V1_2_API.md) — stdlib module surfaces, including infrastructure modules
 - [Design Document](DESIGN.md) — architecture and design rationale (last revised for v1.3.0-evolve)
