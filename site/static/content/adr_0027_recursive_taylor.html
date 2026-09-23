@@ -78,6 +78,51 @@
 <li>A nested pass allocates one tagged series per operation and its coefficient arithmetic is generic; un-nested passes keep their fast paths.</li>
 <li><code>tests/ad/nested_towers_matrix_test.esk</code> and <code>tests/ad/nested_operator_matrix_test.esk</code> are the acceptance matrices on native JIT, AOT and the VM.</li>
 </ul>
+<h2 id="v135-carrier-wip-reconciliation">v1.3.5 carrier WIP reconciliation</h2>
+<p>The unmerged <code>172c796d7</code> changes atop <code>2c2496240</code> predate this carrier. The release candidate retains their behavior through the following current facilities. Each listed repro passed on the native JIT and bytecode VM; <code>tests/ad/dense_tensor_operand_boundary_test.esk</code> additionally passed 29/29 native checks after the local standard library was built.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>WIP hunk family</th>
+<th>Current facility and repro</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>autodiff_codegen.h/.cpp</code> complex seed and extract; <code>runtime_taylor.c</code> coefficient zipping</td>
+<td>Per-level native seeding and extraction preserve each complex component’s enclosing carrier; <code>tests/ad/complex_nested_carrier_test.esk</code> passes 30 checks.</td>
+</tr>
+<tr>
+<td><code>llvm_codegen.cpp</code> duplicate math dispatch removal</td>
+<td>The shared numeric builtin dispatch remains the sole native path; <code>tests/ad/complex_nested_carrier_test.esk</code> and <code>tests/ad/vm_complex_intermediate_taylor_test.esk</code> cover composed complex math.</td>
+</tr>
+<tr>
+<td><code>vm_complex.c</code>, <code>vm_numeric.h</code>, <code>vm_native.c</code> complex carrier ingress, arithmetic and projection</td>
+<td><code>VmComplex</code> keeps component carriers and <code>VM_DUAL_KIND_LEVEL</code> represents nested passes; the same two complex tests and all 118 checks in <code>tests/ad/complex_carrier_math_test.esk</code> pass on the VM.</td>
+</tr>
+<tr>
+<td><code>vm_dual.c</code> hyper-Taylor allocation, algebra, projection and unary rules</td>
+<td>Recursive <code>lcoeff</code> arithmetic and <code>vm_dual_level_coefficient</code> replace fixed companion lanes; <code>tests/ad/site_scalar_hessian_test.esk</code> and <code>tests/ad/nested_carrier_orderings_test.esk</code> exercise exact order and nesting.</td>
+</tr>
+<tr>
+<td><code>vm_native.c</code> scalar Hessian path</td>
+<td>Shared level application and extraction preserve the exact point; <code>tests/ad/site_scalar_hessian_test.esk</code> returns exact <code>4/3</code> for <code>(expt x 4)</code> at <code>1/3</code>.</td>
+</tr>
+<tr>
+<td><code>vm_parallel.c</code>, <code>vm_region_evac.c</code> carrier ownership</td>
+<td>Worker cloning and region evacuation walk recursive level coefficients; <code>tests/vm_parity/corpus/parallel_ad_carrier_lifetime.esk</code> and <code>tests/memory/vm_region_evac_level_carrier_test.esk</code> pass.</td>
+</tr>
+<tr>
+<td>WIP CMake, two AD test files, and SW-194 ledger entry</td>
+<td>The release candidate already registers both tests, closes SW-193/SW-194, and includes the generated ledger entry.</td>
+</tr>
+</tbody>
+</table>
+<p>The focused parity repro is <code>(taylor (lambda (x) (* x 1)) 1/3 3)</code> = <code>(1/3 1 0 0)</code> and <code>(derivative (lambda (x) (tensor-ref (tensor x) 0)) 1/3)</code> = <code>1</code> on both engines. No WIP runtime hunk needs transplanting because its fixed-width carrier representation is superseded by the level carrier.</p>
 <h2 id="alternatives-rejected">Alternatives rejected</h2>
 <ul>
 <li><strong>More companion lanes.</strong> Each additional lane covers one more shape and the next nesting still fails; this is the path that produced SW-154.</li>

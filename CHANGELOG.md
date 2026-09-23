@@ -321,42 +321,6 @@ the source changes; the verification record for the tagged commit is the
   and `tests/coverage/coverage_policy.json`, and rebuilt
   `site/static/eshkol-site.wasm` so the deployed page carries the correction.
 
-- **The browser REPL answered nothing.** Every `repl_eval` call in the
-  WebAssembly bundle — the site's REPL pane and every runnable code block on
-  the docs pages — returned with no output at all; `(+ 1 2)` printed nothing
-  and the page rendered "error: could not parse expression". The VM was
-  computing the right answer the whole time.
-
-  The REPL's auto-print of the last expression was riding on `OP_PRINT`, which
-  is the lowering of `(display x)` and nothing else. When `OP_PRINT` was
-  corrected to match native `display` byte-for-byte — no trailing newline —
-  the REPL echo silently lost its line terminator along with it. On a terminal
-  that is only untidy; through Emscripten it is an outage, because stdout
-  reaches the embedder's `print` callback one COMPLETE LINE at a time, so an
-  unterminated answer is buffered indefinitely and the page never sees it.
-
-  The echo is now emitted by the session that owns the transcript, in
-  `repl_session_eval()`: the last expression leaves its value on the VM stack
-  and the session prints it with its terminator. The opcode keeps exactly one
-  meaning. `(display "hi")` in the REPL is now a fragment awaiting a
-  `(newline)`, exactly as it is under `eshkol-run -r`, instead of gaining a
-  newline the batch engine does not emit.
-
-- **The browser REPL bundle aborted on tensor programs.** Built from candidate
-  source with the recipe CONTRIBUTING.md carried, `(make-tensor (list 2 2)
-  1.0)` killed the whole WASM module with `Aborted(missing function:
-  eshkol_tensor_shape_total)`, taking every later evaluation with it. The
-  bundle's link needs `-s ERROR_ON_UNDEFINED_SYMBOLS=0` for a few leaf runtime
-  deps that genuinely have no WASM implementation, which also means a
-  translation unit missing from the source list does not fail the build —
-  emscripten substitutes an aborting stub. The hand-copied list had fallen
-  behind `lib/core/tensor_validation.cpp`.
-
-  The recipe is now `scripts/build-wasm-repl.sh`, which shares one source list
-  (`scripts/lib/wasm_vm_sources.sh`) with the CI execute-and-diff lane, so the
-  bundle users load and the module CI executes are the same link, and fails the
-  build on any undefined symbol outside a documented allowlist.
-
 ### Added
 
 - Private, experimental ESKM v2 preflight validation with exact-byte fixtures,
