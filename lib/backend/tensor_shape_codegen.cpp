@@ -1632,34 +1632,19 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
         if (value_type->isIntegerTy(64)) {
             return value;
         }
-        if (value_type->isIntegerTy()) {
+        // An i1 is a boolean, not a narrow integer: it goes to the check below.
+        if (value_type->isIntegerTy() && !value_type->isIntegerTy(1)) {
             return ctx_.builder().CreateSExtOrTrunc(value, ctx_.int64Type());
         }
 
+        // #550: any other representation (a double literal such as 1.5, a
+        // boolean, a pointer) is packed and checked by the one runtime rule
+        // below, which reports it as the operand it is. Emitting a separate
+        // unconditional error block here left the builder after its
+        // `unreachable`, so the dimension code that followed landed in a
+        // terminated block and the whole program failed LLVM verification.
         if (value_type != ctx_.taggedValueType()) {
-            llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
-            llvm::BasicBlock* err_block = llvm::BasicBlock::Create(
-                ctx_.context(), "reshape_dim_type_error", func);
-            ctx_.builder().CreateBr(err_block);
-            ctx_.builder().SetInsertPoint(err_block);
-            set_error_location();
-
-            llvm::Function* type_error_fn = ctx_.module().getFunction("eshkol_type_error");
-            if (!type_error_fn) {
-                llvm::FunctionType* ft = llvm::FunctionType::get(
-                    ctx_.builder().getVoidTy(),
-                    {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy()},
-                    false);
-                type_error_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                    "eshkol_type_error", &ctx_.module());
-                type_error_fn->setDoesNotReturn();
-            }
-
-            llvm::Value* proc = ctx_.builder().CreateGlobalString(proc_name, "struct_int_proc");
-            llvm::Value* expected = ctx_.builder().CreateGlobalString(expected_type, "struct_int_expected");
-            ctx_.builder().CreateCall(type_error_fn, {proc, expected});
-            ctx_.builder().CreateUnreachable();
-            return llvm::ConstantInt::get(ctx_.int64Type(), 0);
+            value = tagged_.ensureTagged(value);
         }
 
         llvm::Value* type_tag = tagged_.getType(value);

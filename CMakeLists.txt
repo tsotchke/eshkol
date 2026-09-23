@@ -1751,14 +1751,24 @@ if(ESHKOL_GPU_ENABLED)
                 CACHE INTERNAL "CUDA toolkit major used by this build" FORCE)
             if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR
                "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "")
-                set(_eshkol_cuda_architectures "${ESHKOL_CUDA_ARCHITECTURES}")
-                # CUDA 13 removed offline compilation for architectures below
-                # compute capability 7.5.  Keep SM72 in the portable default
-                # for older toolkits (notably the verified embedded-GPU path),
-                # but do not pass it to a compiler that no longer accepts it.
-                if(CUDAToolkit_VERSION VERSION_GREATER_EQUAL 13.0)
-                    list(REMOVE_ITEM _eshkol_cuda_architectures "72")
+                # #606: the portable default is resolved against what the
+                # installed nvcc compiles for (cmake/EshkolCudaArchitectures.cmake):
+                # SM72 stays for CUDA 12 and older (the verified embedded-GPU
+                # path), and is dropped where the toolkit no longer accepts
+                # it, such as CUDA 13. An explicit CMAKE_CUDA_ARCHITECTURES is
+                # never filtered.
+                include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EshkolCudaArchitectures.cmake")
+                set(_eshkol_nvcc "${CUDAToolkit_NVCC_EXECUTABLE}")
+                if(CMAKE_CUDA_COMPILER)
+                    set(_eshkol_nvcc "${CMAKE_CUDA_COMPILER}")
                 endif()
+                eshkol_resolve_cuda_architectures("${ESHKOL_CUDA_ARCHITECTURES}"
+                    "${_eshkol_nvcc}" "${CUDAToolkit_VERSION}"
+                    _eshkol_cuda_architectures _eshkol_cuda_supported)
+                set(ESHKOL_CUDA_SUPPORTED_ARCHITECTURES "${_eshkol_cuda_supported}"
+                    CACHE INTERNAL
+                    "CUDA architectures the toolkit compiles for (nvcc list, or RANGE;low;high)"
+                    FORCE)
                 set(CMAKE_CUDA_ARCHITECTURES "${_eshkol_cuda_architectures}"
                     CACHE STRING "CUDA architectures" FORCE)
             endif()
@@ -6493,7 +6503,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             "with_region_internal_define|tests/memory/with_region_internal_define_test.esk|PASS: with-region internal define|all"
             "with_region_toplevel_define|tests/memory/with_region_toplevel_define_test.esk|PASS: with-region top-level define|all"
             "toplevel_begin_define|tests/vm/toplevel_begin_define_test.esk|PASS: top-level begin define|all"
-            "toplevel_begin_splice|tests/bindings/toplevel_begin_splice_test.esk|PASS: top-level begin splice|all")
+            "toplevel_begin_splice|tests/bindings/toplevel_begin_splice_test.esk|PASS: top-level begin splice|all"
+            # #550: malformed tensor shapes raise error objects everywhere.
+            "malformed_shape_matrix|tests/tensor/malformed_shape_matrix_test.esk|PASS: malformed shape matrix|all")
         foreach(_esh_spec IN LISTS _esh_vm_carrier_tests)
             string(REPLACE "|" ";" _esh_parts "${_esh_spec}")
             list(GET _esh_parts 0 _esh_name)
@@ -6532,6 +6544,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                     FAIL_REGULAR_EXPRESSION "${_esh_fail}")
         endforeach()
     endif()
+    # #550: the malformed-shape matrix on the AOT engine (the JIT, VM and
+    # browser VM rows are registered with the engine matrix above).
+    add_test(
+        NAME malformed_shape_matrix_aot
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/malformed_shape_matrix_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/malformed_shape_matrix_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/malformed_shape_matrix_aot'"
+    )
+    set_tests_properties(malformed_shape_matrix_aot
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: malformed shape matrix"
+            FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|fatal signal")
     add_test(
         NAME i128_generic_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
@@ -7226,6 +7250,24 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     add_test(NAME runtime_closure_alloc_test COMMAND runtime_closure_alloc_test)
 endif()
 
+# #713: region promotion is all-or-nothing. Injects allocation failure at every
+# copy prefix of a shared/cyclic graph, in the range barrier, and on the
+# ordinary backing-block path, and checks that nothing is published, a
+# catchable allocation error is raised, and the destination is rewound. Runs
+# under ASan in the sanitizer build (the test sets allocator_may_return_null).
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/region_promotion_failure_test.cpp")
+    # Links only the generated-program runtime, which is the code under test.
+    find_package(Threads REQUIRED)
+    add_executable(region_promotion_failure_test tests/core/region_promotion_failure_test.cpp)
+    target_compile_features(region_promotion_failure_test PRIVATE cxx_std_17)
+    target_include_directories(region_promotion_failure_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(region_promotion_failure_test PRIVATE eshkol-runtime ${ESHKOL_EXTRA_LINK_LIBS} Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME region_promotion_failure_test COMMAND region_promotion_failure_test)
+    set_tests_properties(region_promotion_failure_test PROPERTIES
+        ENVIRONMENT "ESHKOL_ARENA_POISON=1"
+        PASS_REGULAR_EXPRESSION "PASS: region promotion is all-or-nothing")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_regions_test.cpp")
     add_executable(runtime_regions_test tests/core/runtime_regions_test.cpp)
     target_compile_features(runtime_regions_test PRIVATE cxx_std_17)
@@ -7753,6 +7795,18 @@ if(ESHKOL_BUILD_TESTS)
                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_windows_runtime_exports_validator.py"
         )
         set_tests_properties(windows_runtime_exports_validator_test PROPERTIES TIMEOUT 120)
+    endif()
+    # #606: the CUDA architecture policy, against mocked nvcc executables, so
+    # it is verified on hosts without a CUDA toolkit.
+    if(NOT WIN32)
+        add_test(
+            NAME cuda_architecture_policy_test
+            COMMAND ${CMAKE_COMMAND}
+                -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cuda_architecture_policy_test
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/cuda_architectures_test.cmake)
+        set_tests_properties(cuda_architecture_policy_test PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS: CUDA architecture policy")
     endif()
     if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_verify_gpu_backend.py")
         add_test(

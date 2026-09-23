@@ -878,11 +878,28 @@ void eshkol_iter_nursery_recycle(eshkol_region_t* region,
 void eshkol_region_write_barrier_into(eshkol_tagged_value_t* out,
                                       const void* dst,
                                       const eshkol_tagged_value_t* value);
-// Range form for bulk copies (vector-copy!): promotes each copied slot in
-// place. Fast path (no region) is a single thread-local load + branch.
+// Range form for bulk stores (vector-copy!, vector-fill!, tensor slots):
+// promotes n STAGED values in place, in one transaction, BEFORE the caller
+// stores them. Fast path (no region) is a single thread-local load + branch.
+//
+// Both forms are all-or-nothing (#713, ADR-0001 "All-or-nothing promotion"):
+// when any object the values reach cannot be copied, the outputs are left
+// untouched and a catchable allocation error is raised, so no store ever
+// publishes a pointer into a region that is about to be freed.
 void eshkol_region_write_barrier_range(const void* dst,
                                        eshkol_tagged_value_t* slots,
                                        uint64_t n);
+
+// Raise the runtime's catchable allocation-failure condition for @p operation,
+// which could not allocate @p bytes (0 when the size is not known). The
+// condition object is reserved per thread ahead of time
+// (eshkol_reserve_allocation_failure_condition, called on region entry) in a
+// private arena outside every region, so raising cannot itself fail under the
+// exhaustion being reported and a raise that crosses open regions needs no
+// promotion to carry it. Does not return: control transfers to the innermost
+// handler, or the process exits with the message when there is none.
+void eshkol_raise_allocation_failure(const char* operation, size_t bytes);
+void eshkol_reserve_allocation_failure_condition(void);
 
 // The container slot store boundary (docs/design/adr/0020-container-slot-store-boundary.md).
 //

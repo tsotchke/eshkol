@@ -279,6 +279,38 @@ so they survive `region_pop` even if mutated inside it (e.g. a hash table resize
 inside a region re-allocates its backing arrays in its home arena). Measured: peak
 RSS over 200k iterations dropped from ~3153 MB to ~42 MB.
 
+### Promotion is all-or-nothing
+
+Every promotion — the write barrier of a store into a longer-lived container,
+the result of a `with-region` body, the values a raise carries out of open
+regions, a nursery back edge — copies the whole graph a value reaches out of the
+region before anything is stored. When that copy cannot be allocated (a bounded
+destination arena at capacity, or the operating system refusing a new arena
+block), the promotion is abandoned as a unit:
+
+- nothing is stored: the container keeps its previous contents;
+- the region, its forwarding relation and every byte outside the aborted
+  copies are exactly as they were, and the destination arena is rewound;
+- a catchable error object is raised, with a message that begins
+  `region promotion: out of memory`.
+
+```scheme
+(define outer (make-vector 1 0))
+(guard (e ((error-object? e) (display (error-object-message e))))
+  (with-region
+    (vector-set! outer 0 (list 1 2 3))))   ; promoted, or nothing stored
+```
+
+The condition object for this error is preallocated per thread outside every
+arena, so raising it cannot itself fail under the exhaustion it reports, and a
+raise that crosses open regions needs no promotion to carry it. Bulk stores
+(`vector-copy!`, `vector-fill!`, tensor slot stores) promote every value of
+the store in one transaction before the first slot is written, so they are
+all-or-nothing too. Per-iteration loop reclamation treats a failed copy as a
+refusal and keeps the iteration's memory. The contract is ADR-0001's
+"All-or-nothing promotion"; `region_promotion_failure_test` exercises it at
+every copy prefix of a shared, cyclic graph (SW-232).
+
 ## Automatic per-iteration reclamation in resident loops (ESH-0214e)
 
 `with-region` is **no longer required** to keep a long-running loop's RSS flat.

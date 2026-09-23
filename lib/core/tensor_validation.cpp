@@ -62,7 +62,9 @@ extern "C" int eshkol_tensor_index_offset(const int64_t* dims,
     if (!dims || !indices || !offset || !slice_total || ndim <= 0 ||
         n_indices <= 0 || n_indices > ndim) return 0;
     const int64_t total = eshkol_tensor_shape_total(dims, ndim);
-    if (total < 0) return 0;
+    // An empty tensor has no element to address. Returning here also keeps a
+    // zero trailing dimension out of the overflow division below (#550).
+    if (total <= 0) return 0;
 
     int64_t linear = 0;
     for (int64_t i = 0; i < n_indices; ++i) {
