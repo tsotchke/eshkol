@@ -1511,6 +1511,12 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **Gradient of a rest-parameter procedure.** Natively, the gradient of an
+  inline variadic lambda such as `(lambda args (apply * args))` returned
+  `#(0 0)` with a cons-cell error, and `(lambda (a . r) ...)` failed to
+  compile; the point is now spread element by element on every route, as on
+  the VM. (SW-248)
+
 - **Variadic builtins are variadic values.** `+`, `-`, `*`, `/` and the
   numeric, string and char comparison chains passed as values used to be
   their 2-argument form natively, so `(apply f (append a m))` with `+` over

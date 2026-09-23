@@ -15613,3 +15613,33 @@ entries:
       tests/vm/toplevel_begin_define_test.esk (toplevel_begin_define_{jit,vm,browser_vm}).
     caught_by: [v135f-gates-lane]
     missed_by: [run_vm_parity]
+  - id: SW-248
+    bucket: SILENT-WRONG
+    family: native/ad-variadic-differentiand
+    status: fixed
+    closed_at: "bdbb1cb2f"
+    title: "native gradient of an inline rest-parameter lambda returns #(0 0) with a cons-cell error"
+    repro: >-
+      (display (gradient (lambda args (apply * args)) (list 2.0 5.0)))
+    observed_before: >-
+      eshkol-run -r prints "Attempted to get pointer from non-pointer cell" on
+      stderr and #(0 0) on stdout. (lambda (a . r) (* a (car r))) failed LLVM
+      module verification instead. The VM prints #(5 2); the same procedure
+      reached through a wrapper was already correct natively.
+    correct: >-
+      #(5 2): a rest-parameter procedure takes one argument per point element.
+    fix: >-
+      A differentiand known to take a rest list (an inline variadic lambda, or a
+      name recorded by the variadic registry) always takes the runtime-closure
+      gradient and its spread rule, skipping the exact-tower and static
+      per-parameter routes that treated the rest parameter as a capture
+      (AutodiffCodegen::differentiandIsVariadic in lib/backend/autodiff_codegen.cpp).
+    remeasured: >-
+      At bdbb1cb2f (fix/v135f-vmrt2): tests/vm_parity/corpus/variadic_gradient_matrix.esk
+      (inline, named, wrapped, rest-with-fixed; list and vector points; builtins;
+      fixed-arity controls) passes on JIT, AOT and the VM (ctest
+      variadic_gradient_matrix_jit/_aot/_vm) and native-vs-VM source and ESKB in
+      run_vm_parity.sh (386/0). Exact points agree: (list 2 5) gives #(5 2) and
+      (list 1/2 3) gives #(3 0.5) on both engines.
+    caught_by: [v135f-vmrt-probe]
+    missed_by: [vm_parity]
