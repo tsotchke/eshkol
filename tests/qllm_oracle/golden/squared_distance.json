@@ -24,7 +24,7 @@
       "curvature": 1,
       "inputs": {"x": [0.3, -0.2, 0.1], "y": [-0.15, 0.25, 0.4]},
       "primal_outputs": {"d2": 2.488583550322671, "d": 1.5775245007044014, "lambda_x": 2.3255813953488373},
-      "gradients": {"d_d2_d_x": [5.220650016932333, -4.738068922930185, -2.0326900626151105], "all_finite": true},
+      "gradients": {"d_d2_d_x": [5.220650016932333, -4.738068922930186, -2.0326900626151105], "all_finite": true},
       "identities": {"gauss_lemma_rel": 2.13758831580321e-16},
       "fd_cross_check": {"best_step": 1e-05, "best_rel_diff": 1.0393500062082036e-10, "fd_usable": true}
     },
@@ -35,9 +35,9 @@
       "curvature": 1,
       "inputs": {"x": [0.6, -0.8, 0], "y": [0.20628424925175867, 0.309426373877638, 0.9282791216329139]},
       "primal_outputs": {"d2": 2.872635450625902, "d": 1.6948850847847774},
-      "gradients": {"d_d2_d_x": [-0.9583573646009185, -0.7187680234506886, -3.171035397576568], "all_finite": true},
-      "identities": {"gauss_lemma_rel": 1.0116456960060129e-16, "radial_component": 1.1102230246251565e-16},
-      "fd_cross_check": {"best_step": 1e-05, "best_rel_diff": 2.6856256033044853e-11, "fd_usable": true}
+      "gradients": {"d_d2_d_x": [-0.9583573646009182, -0.7187680234506887, -3.1710353975765675], "all_finite": true},
+      "identities": {"gauss_lemma_rel": 0, "radial_component": 0},
+      "fd_cross_check": {"best_step": 1e-05, "best_rel_diff": 2.685614956326757e-11, "fd_usable": true}
     },
     {
       "id": "squared_distance.product.h2s2r2",
@@ -46,7 +46,7 @@
       "layout": "H2(c=1,w=1) x S2(ambient 3,c=1,w=2) x R2(w=0.5)",
       "inputs": {"x": [0.25, -0.1, 0.6, -0.8, 0, 1.5, 0.25], "y": [-0.3, 0.2, 0.20628424925175867, 0.309426373877638, 0.9282791216329139, -0.5, 1.75]},
       "primal_outputs": {"d2": 10.563201437978517, "d2_hyperbolic": 1.6929305367267136, "d2_spherical": 2.872635450625902, "d2_euclidean": 6.25},
-      "gradients": {"d_d2_d_x": [4.974407747741088, -2.596587685832792, -1.916714729201837, -1.4375360469013772, -6.342070795153136, 2, -1.5], "all_finite": true},
+      "gradients": {"d_d2_d_x": [4.974407747741088, -2.5965876858327923, -1.9167147292018365, -1.4375360469013774, -6.342070795153135, 2, -1.5], "all_finite": true},
       "identities": {"additivity_rel": 0},
       "fd_cross_check": {"best_step": 1e-05, "best_rel_diff": 7.746605301072222e-11, "fd_usable": true}
     },
