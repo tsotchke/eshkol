@@ -1044,6 +1044,12 @@ static int vm_call_closure_from_native_isolated(VM* main_vm, Value closure,
     VM* worker = (VM*)malloc(sizeof(VM));
     if (!worker) return 0;
     vm_init(worker);
+    if (!worker->frames) {
+        heap_destroy(&worker->heap);
+        free(worker->constants);
+        free(worker);
+        return 0;
+    }
     worker->isolated_worker = 1;
     worker->code = main_vm->code;
     worker->code_len = main_vm->code_len;
@@ -1058,6 +1064,7 @@ static int vm_call_closure_from_native_isolated(VM* main_vm, Value closure,
     if (!vm_ensure_const_cap(worker, main_vm->n_constants)) {
         heap_destroy(&worker->heap);
         free(worker->constants);
+        free(worker->frames);
         free(worker);
         return 0;
     }
@@ -1085,6 +1092,7 @@ static int vm_call_closure_from_native_isolated(VM* main_vm, Value closure,
     if (!ok) {
         heap_destroy(&worker->heap);
         free(worker->constants);
+        free(worker->frames);
         free(worker);
         return 0;
     }
@@ -1095,6 +1103,7 @@ static int vm_call_closure_from_native_isolated(VM* main_vm, Value closure,
     if (worker->error) {
         heap_destroy(&worker->heap);
         free(worker->constants);
+        free(worker->frames);
         free(worker);
         return 0;
     }
@@ -1105,6 +1114,7 @@ static int vm_call_closure_from_native_isolated(VM* main_vm, Value closure,
         if (!remap) {
             heap_destroy(&worker->heap);
             free(worker->constants);
+            free(worker->frames);
             free(worker);
             return 0;
         }
@@ -1119,6 +1129,7 @@ static int vm_call_closure_from_native_isolated(VM* main_vm, Value closure,
     free(remap);
     heap_destroy(&worker->heap);
     free(worker->constants);
+    free(worker->frames);
     free(worker);
     return ok;
 }

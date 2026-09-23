@@ -40,6 +40,7 @@ VM* vm_create(void) {
     VM* vm = (VM*)calloc(1, sizeof(VM));
     if (!vm) return NULL;
     vm_init(vm);
+    if (!vm->frames) { vm_free(vm); return NULL; }
     vm->code = (Instr*)calloc(4096, sizeof(Instr));
     if (!vm->code) { vm_free(vm); return NULL; }
     return vm;
@@ -65,6 +66,7 @@ void vm_free(VM* vm) {
     heap_destroy(&vm->heap);
     free(vm->code);
     free(vm->constants);
+    free(vm->frames);
     vm->constants = NULL;
     vm->const_cap = 0;
     /* The pooled Adam states themselves are VM-lifetime global-arena

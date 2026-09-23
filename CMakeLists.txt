@@ -2239,16 +2239,26 @@ set(ESHKOL_VM_HEAP_SIZE "65536" CACHE STRING
 set(ESHKOL_VM_STACK_SIZE "262144" CACHE STRING
     "Bytecode VM value stack slot count")
 set(ESHKOL_VM_MAX_FRAMES "256" CACHE STRING
-    "Bytecode VM call frame capacity")
+    "Bytecode VM initial call frame capacity")
+set(ESHKOL_VM_MAX_FRAMES_CEILING "65536" CACHE STRING
+    "Bytecode VM maximum call frame capacity")
 set(ESHKOL_VM_MAX_CONSTS "4096" CACHE STRING
     "Bytecode VM constant pool capacity")
 set(ESHKOL_VM_MAX_CODE "1000000" CACHE STRING
     "Bytecode VM decoded instruction capacity")
 
+if(ESHKOL_VM_MAX_FRAMES_CEILING LESS ESHKOL_VM_MAX_FRAMES)
+    message(FATAL_ERROR "ESHKOL_VM_MAX_FRAMES_CEILING must be >= ESHKOL_VM_MAX_FRAMES")
+endif()
+if(ESHKOL_VM_MAX_FRAMES_CEILING GREATER_EQUAL 2147483647)
+    message(FATAL_ERROR "ESHKOL_VM_MAX_FRAMES_CEILING must be less than INT_MAX")
+endif()
+
 foreach(_eshkol_vm_limit_name IN ITEMS
     ESHKOL_VM_HEAP_SIZE
     ESHKOL_VM_STACK_SIZE
     ESHKOL_VM_MAX_FRAMES
+    ESHKOL_VM_MAX_FRAMES_CEILING
     ESHKOL_VM_MAX_CONSTS
     ESHKOL_VM_MAX_CODE
 )
@@ -2264,6 +2274,7 @@ function(eshkol_apply_vm_limit_definitions target_name)
         ESHKOL_VM_HEAP_SIZE=${ESHKOL_VM_HEAP_SIZE}
         ESHKOL_VM_STACK_SIZE=${ESHKOL_VM_STACK_SIZE}
         ESHKOL_VM_MAX_FRAMES=${ESHKOL_VM_MAX_FRAMES}
+        ESHKOL_VM_MAX_FRAMES_CEILING=${ESHKOL_VM_MAX_FRAMES_CEILING}
         ESHKOL_VM_MAX_CONSTS=${ESHKOL_VM_MAX_CONSTS}
         ESHKOL_VM_MAX_CODE=${ESHKOL_VM_MAX_CODE}
     )
@@ -2295,6 +2306,7 @@ message(STATUS
   "VM limits: heap=${ESHKOL_VM_HEAP_SIZE}, "
   "stack=${ESHKOL_VM_STACK_SIZE}, "
   "frames=${ESHKOL_VM_MAX_FRAMES}, "
+  "frame_ceiling=${ESHKOL_VM_MAX_FRAMES_CEILING}, "
   "consts=${ESHKOL_VM_MAX_CONSTS}, "
   "code=${ESHKOL_VM_MAX_CODE}"
 )
@@ -8550,14 +8562,39 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
                 FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|LLVM module verification failed|fatal signal")
 
     if(TARGET eshkol-vm-standalone-test AND
-       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/frame_overflow_exit_status_test.py")
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/frame_growth_test.py")
         add_test(
-            NAME vm_frame_overflow_exit_status
+            NAME vm_frame_growth
             COMMAND python3
-                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/frame_overflow_exit_status_test.py"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/frame_growth_test.py"
                     $<TARGET_FILE:eshkol-vm-standalone-test>
-                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/found/frame_overflow_exit_zero.esk")
-        set_tests_properties(vm_frame_overflow_exit_status PROPERTIES TIMEOUT 120)
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/95_growable_call_frames.esk")
+        set_tests_properties(vm_frame_growth PROPERTIES TIMEOUT 120)
+    endif()
+    if(TARGET eshkol-vm-standalone-test AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/frame_ceiling_exit_status_test.py")
+        add_test(NAME vm_frame_ceiling_exit_status
+            COMMAND python3
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/frame_ceiling_exit_status_test.py"
+                $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${ESHKOL_VM_MAX_FRAMES_CEILING}")
+        set_tests_properties(vm_frame_ceiling_exit_status PROPERTIES TIMEOUT 120)
+    endif()
+    if(TARGET eshkol-vm-standalone-test)
+        foreach(_vm_cohomology_example IN ITEMS
+            mathematics_cohomology_rings_cup_products
+            mathematics_cohomology_rings_nonabelian
+            mathematics_group_cohomology_order_eight
+            mathematics_two_groups_postnikov)
+            add_test(NAME vm_${_vm_cohomology_example}
+                COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/examples/${_vm_cohomology_example}.esk")
+            set_tests_properties(vm_${_vm_cohomology_example} PROPERTIES
+                TIMEOUT 1800
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|FRAME OVERFLOW|ERROR:")
+        endforeach()
     endif()
     endif()
     # LE-20 VM lane: the same shape the native regression covers
