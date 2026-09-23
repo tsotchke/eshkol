@@ -1,5 +1,5 @@
 {
-  "commit": "4824b16794918bf4faa58508b5d5f028226ccf7b",
+  "commit": "bb874f33ed33c7696c3d083a88ddb494f54b51a4",
   "counts": {
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 33,
@@ -150,7 +150,7 @@
       "tests/core/abi_layout_pin_test.cpp": 1,
       "tests/core/model_io_test.cpp": 2,
       "tests/core/parameter_region_barrier_test.cpp": 1,
-      "tests/core/region_promotion_failure_test.cpp": 4,
+      "tests/core/region_promotion_failure_test.cpp": 6,
       "tests/core/runtime_closure_alloc_test.cpp": 2,
       "tests/core/runtime_deep_equal_test.cpp": 4,
       "tests/core/runtime_object_alloc_test.cpp": 10,
@@ -307,7 +307,7 @@
     "C_sizeof_header": 71,
     "D2_ir_field_offset": 10,
     "D_ir_const_offset": 47,
-    "E_alloc_with_header": 203,
+    "E_alloc_with_header": 205,
     "F_parallel_header_decl": 2,
     "G_header_field_write": 184,
     "H_wasm_glue": 34,
