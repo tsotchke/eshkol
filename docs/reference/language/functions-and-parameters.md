@@ -144,6 +144,30 @@ for `list` and `values`, a unary builtin for `vector` (`list->vector`) and
 `bytevector-append` — so a variadic builtin has one answer rather than one per
 call site.
 
+The arithmetic operators are variadic values as well: `+`, `-`, `*` and `/`
+passed as values compute `(apply <op> args)` with the same reduction `apply`
+uses, so `(+)` is `0`, `(*)` is `1`, a single argument to `-` or `/` is its
+inverse, and `-` or `/` with no argument is an error. The output procedures
+`display`, `write` and `newline` keep their optional port argument as values,
+and an argument in the port position that is not an output port raises a
+type error that `guard` can catch.
+
+```scheme
+(define (apply-to f args) (apply f args))
+(display (apply-to + (list 1 2 3 4))) (newline)
+(display (apply-to - (list 5))) (newline)
+(display (apply-to / (list 2))) (newline)
+(define p (open-output-string))
+(for-each display '(a b c) (list p p p))
+(display (get-output-string p)) (newline)
+```
+```
+10
+-5
+1/2
+abc
+```
+
 Every builtin's value-position behavior is asserted mechanically —
 generated from the language-surface manifest, not hand-picked — in
 `tests/core/builtins_first_class_test_*.esk`; special forms' refusal is

@@ -75,9 +75,26 @@
        "\"a\"\"b\"\"c\"")
 
 ;; ── newline as first-class ──────────────────────────────────────
-(check "for-each newline 3 times → 3 newlines"
-       (capture (lambda () (for-each newline '(1 2 3))))
+;; R7RS 6.13.3: newline's one optional argument is an output port. Each
+;; element for-each hands it is therefore a port; an integer there is an
+;; error, not a value to ignore.
+(check "for-each newline over 3 ports → 3 newlines"
+       (capture (lambda ()
+                  (let ((p (current-output-port)))
+                    (for-each newline (list p p p)))))
        "\n\n\n")
+(check "newline value rejects a non-port argument"
+       (guard (e (#t 'rejected))
+         (let ((nl newline)) (nl 1) 'accepted))
+       'rejected)
+(check "display value honours its port argument"
+       (capture (lambda ()
+                  (let ((d display) (p (current-output-port)))
+                    (d "to-port" p))))
+       "to-port")
+(check "apply over first-class display"
+       (capture (lambda () (apply display '(apply-ok))))
+       "apply-ok")
 
 ;; ── Lambda capturing display ─────────────────────────────────────
 (check "lambda+display closure"

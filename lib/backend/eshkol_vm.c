@@ -506,6 +506,10 @@ static const BuiltinDef BUILTINS[] = {
     {"number?", 206, 1}, {"string?", 207, 1}, {"boolean?", 208, 1},
     {"procedure?", 209, 1}, {"vector?", 210, 1},
     {"display", 211, 1}, {"_write1", 212, 1}, {"_write2", 618, 2},
+    /* The explicit-port form, so the prelude can join `display` into the one
+     * optional-port procedure a program passes as a value, as it does for
+     * `write` and `newline`. */
+    {"_display2", 2226, 2},  /* mirrors: display */
     {"exact->inexact", 213, 1}, {"inexact->exact", 214, 1},
     {"string->number", 215, 1},
     {"char->integer", 216, 1}, {"integer->char", 217, 1},

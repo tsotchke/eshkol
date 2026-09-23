@@ -262,6 +262,14 @@ public:
     llvm::Value* newline(const eshkol_operations_t* op);
 
     /**
+     * @brief The FILE* of a port argument of @p direction
+     *        (ESHKOL_PORT_INPUT_FLAG or ESHKOL_PORT_OUTPUT_FLAG); any other
+     *        value raises a catchable type error naming @p proc_name. Every
+     *        optional-port argument of an I/O builtin goes through here.
+     */
+    llvm::Value* portFile(llvm::Value* port_tagged, uint8_t direction, const char* proc_name);
+
+    /**
      * Read a line from input: (read-line port)
      * @param op The operation AST node
      * @return String or eof-object as tagged value

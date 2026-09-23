@@ -14,6 +14,18 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **Builtins used as values accept what their call form accepts.** `+ - * /`
+  as values were 2-argument closures, so a list `apply` through a variable
+  (`(define g +) (apply g '(1 2 3))`, and `partial`, `for-each`-style helpers
+  built on it) raised "expected fixed-arity procedure"; they are now variadic
+  closures over the reduction `apply` itself uses. That reduction answered 5
+  for `(apply - '(5))` and 2 for `(apply / '(2))`; a single argument is now
+  the inverse and `-` or `/` of no arguments is an error. `display`, `write`
+  and `newline` as values had arity 0 and ignored a port; they now take their
+  optional port on the native backend and the VM, and every output and input
+  builtin raises a catchable type error for an argument in the port position
+  that is not a port of the right direction, where `(newline 1)` used to
+  fault. `(procedure-arity +)` is 0, the fixed count of a variadic procedure.
 - **Renamed binders keep their source spelling, and a local binding shadows
   every builtin.** The hygienic expander renames every lexical binder, and the
   implementation name leaked: type diagnostics read ``argument 2 of

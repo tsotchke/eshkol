@@ -1,0 +1,97 @@
+;;; first_class_builtin_arity_test.esk
+;;;
+;;; A builtin used as a value must accept exactly the arguments its
+;;; call-position form accepts, on every route that calls it: a direct call,
+;;; `apply` over a list, and `for-each`. Each check is computed by hand.
+;;;
+;;; - `+ - * /` are variadic (R7RS 6.2.6). As values they were 2-ary
+;;;   closures, so a list `apply` of one of them through a variable refused
+;;;   `(apply g '(1 2 3))`, and `(apply - '(5))` answered 5 instead of -5.
+;;; - `display`, `write` and `newline` take an optional output port
+;;;   (R7RS 6.13.3). As values they had arity 0 and ignored a port; a
+;;;   non-port there was dereferenced as a FILE*.
+;;; - A local binding of a name the parser lowers to its own operation
+;;;   (`walk`, `make-fact`, ...) is what a use in its scope calls.
+;;; - A top-level `(define r (call/cc ...))` can be re-entered (R7RS 5.3.1:
+;;;   the second definition assigns the same location).
+
+(define failures 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "ok: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name)
+             (display " expected ") (write expected)
+             (display " got ") (write actual) (newline))))
+
+(define (apply-to f args) (apply f args))
+(define (call3 f) (f 7 2 1))
+
+;; Arithmetic operators as values.
+(check "apply + value, 5 args"   15  (apply-to + (list 1 2 3 4 5)))
+(check "apply * value, 5 args"   120 (apply-to * (list 1 2 3 4 5)))
+(check "apply - value, 3 args"   4   (apply-to - (list 7 2 1)))
+(check "apply / value, 3 args"   3   (apply-to / (list 12 2 2)))
+(check "apply + value, no args"  0   (apply-to + '()))
+(check "apply * value, no args"  1   (apply-to * '()))
+(check "apply - value, one arg"  -5  (apply-to - (list 5)))
+(check "apply / value, one arg"  1/2 (apply-to / (list 2)))
+(check "apply - named, one arg"  -5  (apply - (list 5)))
+(check "apply / named, one arg"  1/2 (apply / (list 2)))
+(check "direct call of - value"  4   (call3 -))
+(define plus +)
+(check "aliased + applied"       10  (apply plus (list 1 2 3 4)))
+(check "- value rejects no args" 'rejected
+       (guard (e (#t 'rejected)) (apply-to - '()) 'accepted))
+
+;; Output procedures as values. Every port here is explicit, so the check
+;; is the procedure's own contract and not `parameterize`'s.
+(check "for-each display over ports" "abc"
+       (let ((p (open-output-string)))
+         (for-each display '(a b c) (list p p p))
+         (get-output-string p)))
+(check "apply display value"     "x"
+       (let ((p (open-output-string)))
+         (apply-to display (list 'x p))
+         (get-output-string p)))
+(check "display value to a port" "to-port"
+       (let ((p (open-output-string)) (d display))
+         (d "to-port" p)
+         (get-output-string p)))
+(check "write value to a port"   "\"w\""
+       (let ((p (open-output-string)) (w write))
+         (w "w" p)
+         (get-output-string p)))
+(check "newline value over ports" "\n\n"
+       (let ((p (open-output-string)))
+         (for-each newline (list p p))
+         (get-output-string p)))
+(check "newline value rejects a non-port" 'rejected
+       (guard (e (#t 'rejected)) (let ((nl newline)) (nl 1) 'accepted)))
+
+;; A local binding shadows a builtin the parser lowered to an operation.
+(define (inner-define-walk)
+  (define (walk t) (list 'mine t))
+  (walk 1))
+(define (let-bound-make-fact)
+  (let ((make-fact (lambda args 'let-fact)))
+    (make-fact 1 2)))
+(define (letrec-unify)
+  (letrec ((unify (lambda (a b) (if (equal? a b) 'same 'different))))
+    (unify 1 1)))
+(check "inner define shadows walk"      '(mine 1) (inner-define-walk))
+(check "let binding shadows make-fact"  'let-fact (let-bound-make-fact))
+(check "letrec binding shadows unify"   'same     (letrec-unify))
+
+;; Re-entering a top-level definition's continuation.
+(define reentry-k #f)
+(define reentries 0)
+(define reentered (call/cc (lambda (k) (set! reentry-k k) 'first)))
+(set! reentries (+ reentries 1))
+(if (< reentries 2) (reentry-k 'second))
+(check "top-level define re-entered" '(second 2) (list reentered reentries))
+
+(if (= failures 0)
+    (begin (display "PASS: first-class builtin arity -- 0 failures") (newline))
+    (begin (display "FAIL: first-class builtin arity -- ")
+           (display failures) (display " failures") (newline)))

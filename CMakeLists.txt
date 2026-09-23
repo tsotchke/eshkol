@@ -9411,6 +9411,48 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
                 FAIL_REGULAR_EXPRESSION "^FAIL:|^<|^>")
     endif()
 
+    # A builtin used as a value accepts exactly what its call-position form
+    # accepts: variadic `+ - * /` through a list `apply` (and the unary
+    # inverses), `display`/`write`/`newline` with their optional port and a
+    # catchable error for a non-port, a local binding shadowing a builtin the
+    # parser lowers to an operation, and re-entry of a top-level
+    # `(define r (call/cc ...))`. Gated on the JIT, AOT, the VM from source
+    # and the VM from ESKB: each is a separate route to the same contract.
+    add_test(
+        NAME first_class_builtin_arity_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/core/first_class_builtin_arity_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    add_test(
+        NAME first_class_builtin_arity_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtin_arity_aot_o0' tests/core/first_class_builtin_arity_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtin_arity_aot_o0'"
+    )
+    set_tests_properties(first_class_builtin_arity_runtime_smoke
+                         first_class_builtin_arity_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: first-class builtin arity -- 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(
+            NAME first_class_builtin_arity_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/core/first_class_builtin_arity_test.esk"
+        )
+        add_test(
+            NAME first_class_builtin_arity_vm_eskb_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtin_arity.eskb' tests/core/first_class_builtin_arity_test.esk && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtin_arity.eskb'"
+        )
+        set_tests_properties(first_class_builtin_arity_vm_smoke
+                             first_class_builtin_arity_vm_eskb_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: first-class builtin arity -- 0 failures"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
+
     # ADR-0026 renames every lexical binder to a fresh implementation
     # spelling. Nothing a user reads may show it: the source form of a
     # procedure, and every checker diagnostic, name identifiers as written.

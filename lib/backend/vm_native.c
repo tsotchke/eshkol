@@ -16148,11 +16148,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value value = vm_pop(vm);
         VmPort* port = vm_value_as_port(vm, port_value);
         if (!port || port->dir != VM_PORT_OUTPUT) {
-            fprintf(stderr, "ERROR: write requires an open output port\n");
-            vm->error = 1;
-        } else {
-            vm_write_value_port(vm, value, port, 1);
+            /* Catchable, and the same condition native codegen raises
+             * (StringIOCodegen::portFile). */
+            vm_raise_error_msg(vm, "Type error in write: expected output port");
+            break;
         }
+        vm_write_value_port(vm, value, port, 1);
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
@@ -16171,18 +16172,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value value = vm_pop(vm);
         VmPort* port = vm_value_as_port(vm, port_value);
         if (!port || port->dir != VM_PORT_OUTPUT) {
-            fprintf(stderr, "ERROR: display requires an open output port\n");
-            vm->error = 1;
-        } else {
-            vm_write_value_port(vm, value, port, 0);
+            /* Catchable, and the same condition native codegen raises
+             * (StringIOCodegen::portFile). */
+            vm_raise_error_msg(vm, "Type error in display: expected output port");
+            break;
         }
+        vm_write_value_port(vm, value, port, 0);
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
     case 2230: { /* newline(port) */
         Value port_value = vm_pop(vm);
         VmPort* port = vm_value_as_port(vm, port_value);
-        vm_port_newline(port ? port : vm_port_current_output());
+        if (!port || port->dir != VM_PORT_OUTPUT) {
+            /* An argument that is not an output port is an error, as on the
+             * native backend -- never a silent fallback to stdout. */
+            vm_raise_error_msg(vm, "Type error in newline: expected output port");
+            break;
+        }
+        vm_port_newline(port);
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }

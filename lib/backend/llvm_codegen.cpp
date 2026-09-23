@@ -9849,17 +9849,13 @@ private:
         // eshkol_write_value / eshkol_newline helper. Unary (or nullary for
         // newline) with tagged_value → tagged_value ABI.
         if (var_name == "display" || var_name == "write" || var_name == "newline") {
-            Function* wrapper_func = createBuiltinIOFunction(var_name);
-            if (wrapper_func) {
-                Value* func_ptr_int = builder->CreatePtrToInt(wrapper_func, intptr_type);
-                Value* arena_ptr = getArenaPtr();
-                Value* packed_info = ConstantInt::get(int64_type, 0);
-                Value* sexpr_ptr = intPtrConst(0);
-                Value* return_type_info = intPtrConst(CLOSURE_RETURN_UNKNOWN);
-                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
-                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info, sexpr_ptr, return_type_info, closure_name});
-                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+            // The value is the builtin as the table describes it: an
+            // optional trailing port, each count lowered by codegenCall
+            // (VariadicRest::Optional). A hand-built wrapper here carried
+            // arity 0 and ignored a port argument.
+            if (const InlineBuiltinSpec* io_spec = lookupInlineBuiltin(var_name)) {
+                if (Value* io_value = makeVariadicBuiltinClosureValue(var_name, *io_spec))
+                    return io_value;
             }
         }
 
@@ -9946,27 +9942,28 @@ private:
             }
         }
 
-        // Arithmetic operators - wrap in closure for proper first-class function use
+        // Arithmetic operators as values. R7RS `+ - * /` take any number of
+        // arguments (`-` and `/` at least one), so the value is a genuine
+        // VARIADIC closure whose body is `(apply <op> rest)` -- the same
+        // applyReduction the call-position `apply` lowers to. A 2-ary closure
+        // here was a claim about arity the procedure does not have: the
+        // closure dispatcher had to guess it back with a function-pointer
+        // compare, and any path that believed the closure's arity (a list
+        // `apply`) rejected `(apply g '(1 2 3))` for `(define g +)`.
         if (var_name == "+" || var_name == "-" || var_name == "*" || var_name == "/") {
-            Function* builtin_func = createBuiltinArithmeticFunction(var_name, 2);
-            if (builtin_func) {
-                // Create closure for the arithmetic function (like math builtins above)
-                Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
+            if (Function* wrapper = getOrCreateVariadicArithmeticWrapper(var_name)) {
+                // Built by hand rather than makeVariadicClosureValueFor so the
+                // value keeps its (primitive <op>) source form.
+                Value* func_ptr_int = builder->CreatePtrToInt(wrapper, intptr_type);
                 Value* arena_ptr = getArenaPtr();
-                // Pack info: no captures, arity=2
-                uint64_t packed_info = 0 | (2ULL << 32);  // arity in bits 32-47
+                uint64_t packed_info = (uint64_t)1 << 63;   // 0 captures, 0 fixed, variadic
                 Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
-                // Create S-expression for homoiconicity: (primitive +)
                 Value* sexpr_cons = homoiconic_->builtinToSExpr(var_name);
-                Value* sexpr_ptr = toIntPtr(sexpr_cons);  // builtinToSExpr returns cons ptr as int
-                // Arithmetic builtins return scalars
-                uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
-                Value* return_type_info = intPtrConst(return_type_info_val);
+                Value* sexpr_ptr = toIntPtr(sexpr_cons);
+                Value* return_type_info = intPtrConst(CLOSURE_RETURN_SCALAR);
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
-                // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
-                // Pack as CALLABLE (subtype CLOSURE is in header)
+                    {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
                 return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
         }
@@ -10509,6 +10506,36 @@ private:
         return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
     }
 
+    /* `(rest) -> tagged` body for an arithmetic operator used as a value:
+     * `(apply <op> rest)`, lowered by the one reduction `apply` itself uses
+     * (CallApplyCodegen::applyReduction), so the value and the call position
+     * cannot disagree on any argument count. */
+    Function* getOrCreateVariadicArithmeticWrapper(const std::string& op) {
+        const std::string wrapper_name = "builtin_" + op + "_varargs";
+        if (Function* existing = module->getFunction(wrapper_name)) return existing;
+        FunctionType* wrap_ty =
+            FunctionType::get(tagged_value_type, {tagged_value_type}, false);
+        Function* wrap_fn = Function::Create(
+            wrap_ty,
+#ifdef _WIN32
+            Function::InternalLinkage,
+#else
+            Function::LinkOnceODRLinkage,
+#endif
+            wrapper_name, module.get());
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        Function* old_current_function = current_function;
+        current_function = wrap_fn;
+        builder->SetInsertPoint(BasicBlock::Create(*context, "entry", wrap_fn));
+        Value* rest = &*wrap_fn->arg_begin();
+        rest->setName("rest");
+        Value* list_int = unpackInt64FromTaggedValue(rest);
+        builder->CreateRet(call_apply_->applyReduction(op, list_int));
+        current_function = old_current_function;
+        if (old_point.isSet()) builder->restoreIP(old_point);
+        return wrap_fn;
+    }
+
     /* SW-173: materialise a VARIADIC builtin as a genuine variadic closure.
      *
      * Returns nullptr when the row declares no rest form, so the caller
@@ -10630,6 +10657,11 @@ private:
         if (Function* existing = module->getFunction(wrapper_name)) {
             return makeVariadicClosureValueFor(existing);
         }
+        if (spec.rest == VariadicRest::Optional) {
+            Function* wrap_fn = createOptionalArityBuiltinWrapper(
+                name, wrapper_name, spec.arity, spec.max_arity);
+            return wrap_fn ? makeVariadicClosureValueFor(wrap_fn) : nullptr;
+        }
 
         // Build what the body delegates to BEFORE opening our own body:
         // createInlineBuiltinWrapper re-enters codegenCall, which moves the
@@ -10677,6 +10709,80 @@ private:
         current_function = old_current_function;
         if (old_point.isSet()) builder->restoreIP(old_point);
         return makeVariadicClosureValueFor(wrap_fn);
+    }
+
+    /* `(rest) -> tagged` body for a builtin with optional trailing
+     * arguments (VariadicRest::Optional). Counts the rest list and calls the
+     * call-position lowering at exactly that count -- every arm is
+     * createInlineBuiltinWrapper, so none is a second implementation of the
+     * builtin. A count outside [min_arity, max_arity] raises an arity error. */
+    Function* createOptionalArityBuiltinWrapper(const std::string& name,
+                                                const std::string& wrapper_name,
+                                                size_t min_arity, size_t max_arity) {
+        if (max_arity < min_arity) return nullptr;
+        // Build the arms BEFORE opening our own body: createInlineBuiltinWrapper
+        // re-enters codegenCall, which moves the insertion point.
+        std::vector<Function*> arms(max_arity + 1, nullptr);
+        for (size_t k = min_arity; k <= max_arity; ++k) {
+            arms[k] = createInlineBuiltinWrapper(name, k);
+            if (!arms[k]) return nullptr;
+        }
+
+        FunctionType* wrap_ty =
+            FunctionType::get(tagged_value_type, {tagged_value_type}, false);
+        Function* wrap_fn = Function::Create(
+            wrap_ty,
+#ifdef _WIN32
+            Function::InternalLinkage,
+#else
+            Function::LinkOnceODRLinkage,
+#endif
+            wrapper_name, module.get());
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        Function* old_current_function = current_function;
+        current_function = wrap_fn;
+        builder->SetInsertPoint(BasicBlock::Create(*context, "entry", wrap_fn));
+        Value* rest = &*wrap_fn->arg_begin();
+        rest->setName("rest");
+
+        BasicBlock* arity_error = BasicBlock::Create(*context, "optional_arity_error", wrap_fn);
+        auto is_pair = [&](Value* tagged) {
+            return builder->CreateICmpEQ(getBaseType(getTaggedValueType(tagged)),
+                                         ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        };
+        std::vector<Value*> args;
+        Value* cur = rest;
+        for (size_t k = 0; k <= max_arity; ++k) {
+            // k arguments consumed so far; `cur` is the remaining list.
+            BasicBlock* call_k = k >= min_arity
+                ? BasicBlock::Create(*context, "optional_call_" + std::to_string(k), wrap_fn)
+                : arity_error;
+            BasicBlock* more = k < max_arity
+                ? BasicBlock::Create(*context, "optional_take_" + std::to_string(k), wrap_fn)
+                : arity_error;
+            builder->CreateCondBr(is_pair(cur), more, call_k);
+            if (k >= min_arity) {
+                builder->SetInsertPoint(call_k);
+                builder->CreateRet(builder->CreateCall(arms[k], args));
+            }
+            if (k == max_arity) break;
+            builder->SetInsertPoint(more);
+            Value* cell = unpackInt64FromTaggedValue(cur);
+            args.push_back(extractCarAsTaggedValue(cell));
+            cur = extractCdrAsTaggedValue(cell);
+        }
+
+        builder->SetInsertPoint(arity_error);
+        raiseBuiltinArityError(name + ": expects " +
+            (min_arity == max_arity
+                ? std::to_string(min_arity)
+                : std::to_string(min_arity) + " to " + std::to_string(max_arity)) +
+            " arguments through a first-class reference");
+        builder->CreateRet(packNullToTaggedValue());
+
+        current_function = old_current_function;
+        if (old_point.isSet()) builder->restoreIP(old_point);
+        return wrap_fn;
     }
 
     /* `(f a b c …)` == `(f (f (f a b) c) …)` for the associative variadic
@@ -10741,6 +10847,12 @@ private:
     }
 
     void raiseVariadicBuiltinZeroArgError(const std::string& name) {
+        raiseBuiltinArityError(
+            name + ": variadic builtin applied to zero arguments through a "
+                   "first-class reference");
+    }
+
+    void raiseBuiltinArityError(const std::string& message) {
         Function* make_exc = module->getFunction("eshkol_make_exception_with_header");
         if (!make_exc) {
             FunctionType* mt = FunctionType::get(
@@ -10758,9 +10870,7 @@ private:
                 "eshkol_raise", module.get());
             raise_fn->setDoesNotReturn();
         }
-        Value* msg = builder->CreateGlobalString(
-            name + ": variadic builtin applied to zero arguments through a "
-                   "first-class reference");
+        Value* msg = builder->CreateGlobalString(message);
         Value* exc = builder->CreateCall(make_exc, {
             ConstantInt::get(int32_type, ESHKOL_EXCEPTION_ARITY_ERROR), msg});
         builder->CreateCall(raise_fn, {exc});
@@ -14817,8 +14927,7 @@ private:
                 // write to port: (write obj port)
                 Value* port_arg = (co_await codegenASTTask(&op->call_op.variables[1]));
                 Value* port_tagged = ensureTaggedValue(port_arg);
-                Value* fp_int = builder->CreateExtractValue(port_tagged, {4});
-                Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
+                Value* fp = strio_->portFile(port_tagged, ESHKOL_PORT_OUTPUT_FLAG, func_name.c_str());
                 llvm::FunctionCallee write_func = module->getOrInsertFunction(
                     "eshkol_write_value_to_port",
                     FunctionType::get(Type::getVoidTy(*context),
@@ -14842,8 +14951,7 @@ private:
             if (op->call_op.num_vars >= 1) {
                 Value* port_arg = (co_await codegenASTTask(&op->call_op.variables[0]));
                 Value* port_tagged = ensureTaggedValue(port_arg);
-                Value* fp_int = builder->CreateExtractValue(port_tagged, {4});
-                fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
+                fp = strio_->portFile(port_tagged, ESHKOL_PORT_INPUT_FLAG, "read");
             } else {
                 fp = ConstantPointerNull::get(PointerType::getUnqual(*context));
             }
@@ -43970,6 +44078,11 @@ private:
      *              (`vector` is `list->vector`, `string` is `list->string`)
      *   LeftFold   left-fold the list with the builtin's BINARY form
      *              (`string-append`, `max`, `gcd`, `vector-append`, …)
+     *   Optional   the builtin takes `arity` required arguments and up to
+     *              `max_arity` in all (`display` and `write` take an optional
+     *              port): the rest list is counted and the call-position
+     *              lowering at exactly that count is called; any other
+     *              count raises an arity error
      *   None       the row is variadic but has no rest form, so a value
      *              reference still materialises at the row's fixed arity —
      *              the pre-existing compromise, recorded rather than
@@ -43978,7 +44091,7 @@ private:
      * Every one of these is built from the AUTHORITATIVE call-position
      * lowering (createInlineBuiltinWrapper re-enters codegenCall), so none
      * of them is a second implementation that can drift. */
-    enum class VariadicRest : uint8_t { None, Identity, RestUnary, LeftFold };
+    enum class VariadicRest : uint8_t { None, Identity, RestUnary, LeftFold, Optional };
 
     /* A row of the first-class builtin table.
      *
@@ -43992,6 +44105,7 @@ private:
         bool variadic = false;
         VariadicRest rest = VariadicRest::None;
         const char* rest_unary = nullptr;   // RestUnary only
+        size_t max_arity = 0;               // Optional only
     };
 
     /* A row's `arity` is what a use site gets when it names no arity of its
@@ -44008,6 +44122,10 @@ private:
      * variadic closure. */
     const InlineBuiltinSpec* lookupInlineBuiltin(const std::string& name) const {
         static const std::unordered_map<std::string, InlineBuiltinSpec> table = {
+            // Output — R7RS 6.13.3: an optional trailing port.
+            {"display", {1, true, VariadicRest::Optional, nullptr, 2}},
+            {"write",   {1, true, VariadicRest::Optional, nullptr, 2}},
+            {"newline", {0, true, VariadicRest::Optional, nullptr, 1}},
             // Strings — comparisons
             // R7RS comparison CHAINS: (string<? a b c) is legal, so these are
             // variadic rows. Marked so a use site that knows its arity gets a
