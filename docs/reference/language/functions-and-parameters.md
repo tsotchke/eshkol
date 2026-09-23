@@ -96,6 +96,12 @@ exactly once and every call site agrees with it by construction. A name that is
 genuinely undefined fails compilation with a real diagnostic; it never
 silently answers `()`.
 
+The spread list must fit the procedure. Spreading more elements than a
+fixed-arity procedure accepts is an arity error, never a call with the surplus
+dropped: `(apply (lambda (x) x) (list 1 2 3))` raises
+`Arity mismatch: <procedure> expects 1 argument but got 3`, a condition
+`guard` catches on both engines.
+
 `apply` also takes leading arguments before the list on both engines:
 `(apply + 1 2 (list 3 4 5))` answers `15`.
 

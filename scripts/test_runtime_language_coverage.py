@@ -208,14 +208,14 @@ class RuntimeInstrumentationTest(unittest.TestCase):
                 for raw in trace_path.read_text(encoding="utf-8").splitlines():
                     fields = raw.split("\t")
                     if fields[0] == "C" and fields[4] == "abs":
-                        # A recorded path is a DISPLAY path (ADR-0021), so it
-                        # is relative to the repository root unless it names a
-                        # file outside every root.
-                        recorded = pathlib.Path(fields[1])
-                        if not recorded.is_absolute():
-                            recorded = REPO / recorded
-                        abs_sources.add(recorded.resolve())
-            self.assertEqual(abs_sources, {imported.resolve()})
+                        abs_sources.add(fields[1])
+            # A recorded path is a DISPLAY path (ADR-0021). Both files live in
+            # a temporary directory outside every root (ESHKOL_PATH, project
+            # root, working directory), so each records as its file name
+            # alone, never as an absolute host path. The imported module's
+            # site must carry the imported file's name, not the caller's.
+            self.assertEqual(abs_sources, {imported.name})
+            self.assertNotEqual(imported.name, caller.name)
 
     ONE_LINE_PROGRAM = '(display (+ 1 2))\n'
 

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  *
  */
+#include <functional>
 #include <eshkol/core/ast_routing.h>
 #include <eshkol/util/continuation_task.h>
 #include <eshkol/backend/ir_builder.h>
@@ -9891,51 +9892,9 @@ private:
         // Handle builtin operators as first-class functions
         // Comparison operators - wrap in closure for proper first-class function use
         if (var_name == "<" || var_name == ">" || var_name == "<=" ||
-            var_name == ">=" || var_name == "=") {
-            Function* builtin_func = createBuiltinComparisonFunction(var_name);
-            if (builtin_func) {
-                // Create closure for the comparison function
-                Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
-                Value* arena_ptr = getArenaPtr();
-                // Pack info: no captures, arity=2
-                uint64_t packed_info = 0 | (2ULL << 32);  // arity in bits 32-47
-                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
-                Value* sexpr_ptr = intPtrConst(0);
-                // Comparison builtins return booleans
-                uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
-                Value* return_type_info = intPtrConst(return_type_info_val);
-                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
-                // Use with_header allocator for consolidated CALLABLE type
-                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
-                // Pack as CALLABLE (subtype CLOSURE is in header)
-                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
-            }
-        }
-
-        // Arithmetic operators - wrap in closure for proper first-class function use
-        if (var_name == "+" || var_name == "-" || var_name == "*" || var_name == "/") {
-            Function* builtin_func = createBuiltinArithmeticFunction(var_name, 2);
-            if (builtin_func) {
-                // Create closure for the arithmetic function (like math builtins above)
-                Value* func_ptr_int = builder->CreatePtrToInt(builtin_func, intptr_type);
-                Value* arena_ptr = getArenaPtr();
-                // Pack info: no captures, arity=2
-                uint64_t packed_info = 0 | (2ULL << 32);  // arity in bits 32-47
-                Value* packed_info_val = ConstantInt::get(int64_type, packed_info);
-                // Create S-expression for homoiconicity: (primitive +)
-                Value* sexpr_cons = homoiconic_->builtinToSExpr(var_name);
-                Value* sexpr_ptr = toIntPtr(sexpr_cons);  // builtinToSExpr returns cons ptr as int
-                // Arithmetic builtins return scalars
-                uint64_t return_type_info_val = CLOSURE_RETURN_SCALAR | (2 << 8);
-                Value* return_type_info = intPtrConst(return_type_info_val);
-                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
-                // Use with_header allocator for consolidated CALLABLE type
-                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
-                // Pack as CALLABLE (subtype CLOSURE is in header)
-                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
-            }
+            var_name == ">=" || var_name == "=" ||
+            var_name == "+" || var_name == "-" || var_name == "*" || var_name == "/") {
+            if (Value* v = makeVariadicOperatorClosureValue(var_name)) return v;
         }
 
         // Faculty-level builtins (AD tape ops, hash tables, etc.) — wrap any
@@ -10709,6 +10668,9 @@ private:
             // call, no arity ceiling, and the callee is itself generated
             // from the call-position lowering.
             builder->CreateRet(builder->CreateCall(rest_fn, {rest}));
+        } else if (spec.rest == VariadicRest::Chain) {
+            // R7RS comparison chains: (string<? a b c) is (and (string<? a b) (string<? b c)).
+            emitVariadicBuiltinChain(wrap_fn, name, rest, binary_fn);
         } else {
             emitVariadicBuiltinLeftFold(wrap_fn, name, rest, binary_fn);
         }
@@ -10725,7 +10687,9 @@ private:
      * that declare LeftFold. There is no argument-count ceiling — unlike a
      * fixed-arity wrapper, or a switch over unrolled arities. */
     void emitVariadicBuiltinLeftFold(Function* wrap_fn, const std::string& name,
-                                     Value* rest, Function* binary_fn) {
+                                     Value* rest, Function* binary_fn,
+                                     const std::function<Value*(Value*)>& unary = nullptr,
+                                     const std::function<Value*()>& nullary = nullptr) {
         BasicBlock* first_bb = BasicBlock::Create(*context, "fold_first", wrap_fn);
         BasicBlock* empty_bb = BasicBlock::Create(*context, "fold_empty", wrap_fn);
         BasicBlock* loop_bb  = BasicBlock::Create(*context, "fold_loop", wrap_fn);
@@ -10742,6 +10706,19 @@ private:
         Value* rest_i = unpackInt64FromTaggedValue(rest);
         Value* head = extractCarAsTaggedValue(rest_i);
         Value* tail = extractCdrAsTaggedValue(rest_i);
+        if (unary) {
+            // One argument has its own meaning for some builtins: (- x) is
+            // negation, (/ x) the reciprocal -- not the argument itself.
+            BasicBlock* one_bb = BasicBlock::Create(*context, "fold_one", wrap_fn);
+            BasicBlock* many_bb = BasicBlock::Create(*context, "fold_many", wrap_fn);
+            builder->CreateCondBr(
+                builder->CreateICmpEQ(getBaseType(getTaggedValueType(tail)),
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR)),
+                many_bb, one_bb);
+            builder->SetInsertPoint(one_bb);
+            builder->CreateRet(unary(head));
+            builder->SetInsertPoint(many_bb);
+        }
         BasicBlock* first_end = builder->GetInsertBlock();
         builder->CreateBr(loop_bb);
 
@@ -10775,8 +10752,112 @@ private:
         // lowering. Rather than invent one, raise: an explicit arity error,
         // never a silently wrong value.
         builder->SetInsertPoint(empty_bb);
+        if (nullary) {
+            builder->CreateRet(nullary());
+            return;
+        }
         raiseVariadicBuiltinZeroArgError(name);
         builder->CreateRet(packNullToTaggedValue());
+    }
+
+    /* `(f a b c …)` == `(and (f a b) (f b c) …)` for the R7RS comparison
+     * chains. Fewer than two arguments is an arity error. */
+    void emitVariadicBuiltinChain(Function* wrap_fn, const std::string& name,
+                                  Value* rest, Function* binary_fn) {
+        BasicBlock* first_bb = BasicBlock::Create(*context, "chain_first", wrap_fn);
+        BasicBlock* empty_bb = BasicBlock::Create(*context, "chain_empty", wrap_fn);
+        BasicBlock* loop_bb  = BasicBlock::Create(*context, "chain_loop", wrap_fn);
+        BasicBlock* body_bb  = BasicBlock::Create(*context, "chain_body", wrap_fn);
+        BasicBlock* next_bb  = BasicBlock::Create(*context, "chain_next", wrap_fn);
+        BasicBlock* false_bb = BasicBlock::Create(*context, "chain_false", wrap_fn);
+        BasicBlock* true_bb  = BasicBlock::Create(*context, "chain_true", wrap_fn);
+        auto is_pair = [&](Value* v) {
+            return builder->CreateICmpEQ(getBaseType(getTaggedValueType(v)),
+                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        };
+        builder->CreateCondBr(is_pair(rest), first_bb, empty_bb);
+        builder->SetInsertPoint(first_bb);
+        Value* rest_i = unpackInt64FromTaggedValue(rest);
+        Value* head = extractCarAsTaggedValue(rest_i);
+        Value* tail = extractCdrAsTaggedValue(rest_i);
+        // R7RS: a comparison chain takes two or more arguments.
+        BasicBlock* two_bb = BasicBlock::Create(*context, "chain_two", wrap_fn);
+        builder->CreateCondBr(is_pair(tail), two_bb, empty_bb);
+        builder->SetInsertPoint(two_bb);
+        BasicBlock* first_end = builder->GetInsertBlock();
+        builder->CreateBr(loop_bb);
+        builder->SetInsertPoint(loop_bb);
+        PHINode* prev = builder->CreatePHI(tagged_value_type, 2, "chain_prev");
+        PHINode* cur = builder->CreatePHI(tagged_value_type, 2, "chain_cur");
+        prev->addIncoming(head, first_end);
+        cur->addIncoming(tail, first_end);
+        builder->CreateCondBr(is_pair(cur), body_bb, true_bb);
+        builder->SetInsertPoint(body_bb);
+        Value* cur_i = unpackInt64FromTaggedValue(cur);
+        Value* elem = extractCarAsTaggedValue(cur_i);
+        Value* next = extractCdrAsTaggedValue(cur_i);
+        Value* r = builder->CreateCall(binary_fn, {prev, elem});
+        Value* r_false = builder->CreateAnd(
+            builder->CreateICmpEQ(getBaseType(getTaggedValueType(r)),
+                                  ConstantInt::get(int8_type, ESHKOL_VALUE_BOOL)),
+            builder->CreateICmpEQ(unpackInt64FromTaggedValue(r),
+                                  ConstantInt::get(int64_type, 0)));
+        builder->CreateCondBr(r_false, false_bb, next_bb);
+        builder->SetInsertPoint(next_bb);
+        prev->addIncoming(elem, next_bb);
+        cur->addIncoming(next, next_bb);
+        builder->CreateBr(loop_bb);
+        builder->SetInsertPoint(false_bb);
+        builder->CreateRet(packBoolToTaggedValue(ConstantInt::getFalse(*context)));
+        builder->SetInsertPoint(true_bb);
+        builder->CreateRet(packBoolToTaggedValue(ConstantInt::getTrue(*context)));
+        builder->SetInsertPoint(empty_bb);
+        raiseVariadicBuiltinZeroArgError(name);
+        builder->CreateRet(packNullToTaggedValue());
+    }
+
+    /* SW-241: the arithmetic operators and numeric comparisons as VALUES are
+     * the variadic R7RS procedures, not their 2-argument lowering. Built from
+     * the same polymorphic operations the call position uses. */
+    Value* makeVariadicOperatorClosureValue(const std::string& op) {
+        const bool arithmetic = op == "+" || op == "-" || op == "*" || op == "/";
+        const std::string wrapper_name = "builtin_op_" + inlineBuiltinSymbolSuffix(op) + "_varargs";
+        if (Function* existing = module->getFunction(wrapper_name))
+            return makeVariadicClosureValueFor(existing);
+        Function* binary_fn = arithmetic ? createBuiltinArithmeticFunction(op, 2)
+                                         : createBuiltinComparisonFunction(op);
+        if (!binary_fn) return nullptr;
+        Function* wrap_fn = Function::Create(
+            FunctionType::get(tagged_value_type, {tagged_value_type}, false),
+#ifdef _WIN32
+            Function::InternalLinkage,
+#else
+            Function::LinkOnceODRLinkage,
+#endif
+            wrapper_name, module.get());
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        Function* old_current_function = current_function;
+        current_function = wrap_fn;
+        builder->SetInsertPoint(BasicBlock::Create(*context, "entry", wrap_fn));
+        Value* rest = &*wrap_fn->arg_begin();
+        rest->setName("rest");
+        if (!arithmetic) {
+            emitVariadicBuiltinChain(wrap_fn, op, rest, binary_fn);
+        } else {
+            auto exact = [&](int64_t n) {
+                return packInt64ToTaggedValue(ConstantInt::get(int64_type, n), true);
+            };
+            std::function<Value*(Value*)> unary;
+            if (op == "-") unary = [&](Value* x) { return polymorphicSub(exact(0), x); };
+            if (op == "/") unary = [&](Value* x) { return polymorphicDiv(exact(1), x); };
+            std::function<Value*()> nullary;
+            if (op == "+") nullary = [&]() { return exact(0); };
+            if (op == "*") nullary = [&]() { return exact(1); };
+            emitVariadicBuiltinLeftFold(wrap_fn, op, rest, binary_fn, unary, nullary);
+        }
+        current_function = old_current_function;
+        if (old_point.isSet()) builder->restoreIP(old_point);
+        return makeVariadicClosureValueFor(wrap_fn);
     }
 
     void raiseVariadicBuiltinZeroArgError(const std::string& name) {
@@ -16775,6 +16856,7 @@ private:
             TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
             if (!tv.llvm_value) co_return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
+            tagged_->requireContainer(arg, eshkol::TaggedValueCodegen::containerBit(HEAP_SUBTYPE_BYTEVECTOR), "bytevector-length", "bytevector");  // SW-221
             Value* ptr = builder->CreateIntToPtr(
                 builder->CreateExtractValue(arg, {4}), PointerType::getUnqual(*context));
             Value* len = builder->CreateLoad(int64_type, ptr, "bv_len");
@@ -16786,6 +16868,7 @@ private:
             TypedValue idx_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
             if (!bv_tv.llvm_value || !idx_tv.llvm_value) co_return nullptr;
             Value* bv = typedValueToTaggedValue(bv_tv);
+            tagged_->requireContainer(bv, eshkol::TaggedValueCodegen::containerBit(HEAP_SUBTYPE_BYTEVECTOR), "bytevector-u8-ref", "bytevector");  // SW-221
             Value* idx = typedValueToTaggedValue(idx_tv);
             Value* ptr = builder->CreateIntToPtr(
                 builder->CreateExtractValue(bv, {4}), PointerType::getUnqual(*context));
@@ -16812,6 +16895,7 @@ private:
             TypedValue val_tv = (co_await codegenTypedASTTask(&op->call_op.variables[2]));
             if (!bv_tv.llvm_value || !idx_tv.llvm_value || !val_tv.llvm_value) co_return nullptr;
             Value* bv = typedValueToTaggedValue(bv_tv);
+            tagged_->requireContainer(bv, eshkol::TaggedValueCodegen::containerBit(HEAP_SUBTYPE_BYTEVECTOR), "bytevector-u8-set!", "bytevector");  // SW-221
             Value* idx = typedValueToTaggedValue(idx_tv);
             Value* val = typedValueToTaggedValue(val_tv);
             Value* ptr = builder->CreateIntToPtr(
@@ -17240,6 +17324,7 @@ private:
                 Value* va = (co_await codegenASTTask(&op->call_op.variables[a + 1]));
                 if (!va) co_return nullptr;
                 va = ensureTaggedValue(va);
+                va = tagged_->resolveSequenceOperand(va, "vector-for-each");  // SW-221
                 Value* vpi = unpackInt64FromTaggedValue(va);
                 Value* vp = builder->CreateIntToPtr(vpi, PointerType::getUnqual(*context));
                 Value* hdr = builder->CreateGEP(int8_type, vp, ConstantInt::get(int64_type, -8));
@@ -17335,6 +17420,7 @@ private:
                 Value* va = (co_await codegenASTTask(&op->call_op.variables[a + 1]));
                 if (!va) co_return nullptr;
                 va = ensureTaggedValue(va);
+                va = tagged_->resolveSequenceOperand(va, "vector-map");  // SW-221
                 Value* vpi = unpackInt64FromTaggedValue(va);
                 Value* vp = builder->CreateIntToPtr(vpi, PointerType::getUnqual(*context));
                 Value* hdr = builder->CreateGEP(int8_type, vp, ConstantInt::get(int64_type, -8));
@@ -25754,6 +25840,8 @@ private:
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
         if (!tv.llvm_value) return nullptr;
         Value* arg = typedValueToTaggedValue(tv);
+        tagged_->requireContainer(arg, eshkol::TaggedValueCodegen::containerBit(HEAP_SUBTYPE_STRING),
+                                  "string->symbol", "string");  // SW-221 boundary
 
         Value* ptr_int = unpackInt64FromTaggedValue(arg);
         Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
@@ -34953,8 +35041,6 @@ private:
 
         Value* is_callable = builder->CreateICmpEQ(input_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* is_heap_ptr = builder->CreateICmpEQ(input_base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* is_double = builder->CreateICmpEQ(input_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
         Value* is_int64 = builder->CreateICmpEQ(input_base_type,
@@ -34986,8 +35072,15 @@ private:
         BasicBlock* check_heap_ptr = BasicBlock::Create(*context, "vref_check_heap_ptr", current_func);
         builder->CreateCondBr(is_callable, ad_node_input, check_heap_ptr);
 
+        // Anything that is not a scalar or an AD node must be a Scheme vector
+        // or a tensor (SW-221): a list, string or other heap object used to
+        // fall through to the tensor path and fault reading a tensor header.
         builder->SetInsertPoint(check_heap_ptr);
-        builder->CreateCondBr(is_heap_ptr, heap_ptr_dispatch, tensor_input);
+        tagged_->requireContainer(vector_val,
+            eshkol::TaggedValueCodegen::containerBit(HEAP_SUBTYPE_VECTOR) |
+                eshkol::TaggedValueCodegen::containerBit(HEAP_SUBTYPE_TENSOR),
+            "tensor-ref", "tensor or vector");
+        builder->CreateBr(heap_ptr_dispatch);
 
         // HEAP_PTR dispatch: Read header subtype to distinguish vector vs tensor
         builder->SetInsertPoint(heap_ptr_dispatch);
@@ -37385,6 +37478,11 @@ private:
                 if (isQuotedRationalLiteralDesugar(op)) {
                     return codegenQuotedRationalLiteral(op);
                 }
+                // Likewise a complex literal (`1+2i` -> `(make-rectangular
+                // 1.0 2.0)`, parser.cpp): quoted, it is the complex number.
+                if (isQuotedComplexLiteralDesugar(op)) {
+                    return codegenMakeRectangular(op);
+                }
                 // Build list: (op arg1 arg2 ...) and wrap as tagged_value
                 Value* list_ptr = codegenQuotedList(op);
                 if (list_ptr == ConstantInt::get(int64_type, 0)) {
@@ -37751,6 +37849,20 @@ private:
             if (t != ESHKOL_INT64 && t != ESHKOL_BIGNUM_LITERAL) return false;
         }
         return true;
+    }
+
+    // True when `op` is exactly the complex-literal desugar the parser
+    // synthesizes (parser.cpp, parse_atom's TOKEN_NUMBER branch): a call to
+    // "make-rectangular" with two DOUBLE literal operands. A complex literal's
+    // parts are always inexact, so a variable or exact operand is a genuine
+    // call and stays list data under quote.
+    static bool isQuotedComplexLiteralDesugar(const eshkol_operations_t* op) {
+        if (!op || op->op != ESHKOL_CALL_OP) return false;
+        const auto& call = op->call_op;
+        if (!call.func || call.func->type != ESHKOL_VAR || !call.func->variable.id) return false;
+        if (std::string(call.func->variable.id) != "make-rectangular") return false;
+        if (call.num_vars != 2 || !call.variables) return false;
+        return call.variables[0].type == ESHKOL_DOUBLE && call.variables[1].type == ESHKOL_DOUBLE;
     }
 
     // Construct the actual rational VALUE for a quoted `n/d` literal
@@ -44081,7 +44193,7 @@ private:
      * Every one of these is built from the AUTHORITATIVE call-position
      * lowering (createInlineBuiltinWrapper re-enters codegenCall), so none
      * of them is a second implementation that can drift. */
-    enum class VariadicRest : uint8_t { None, Identity, RestUnary, LeftFold, ByCount };
+    enum class VariadicRest : uint8_t { None, Identity, RestUnary, LeftFold, ByCount, Chain };
 
     /* A row of the first-class builtin table.
      *
@@ -44117,10 +44229,10 @@ private:
             // variadic rows. Marked so a use site that knows its arity gets a
             // wrapper at that arity instead of the 2-argument default; at the
             // overwhelmingly common arity 2 the generated body is identical.
-            {"string=?",  {2, true}}, {"string<?",  {2, true}}, {"string>?",  {2, true}},
-            {"string<=?", {2, true}}, {"string>=?", {2, true}},
-            {"string-ci=?",  {2, true}}, {"string-ci<?",  {2, true}}, {"string-ci>?",  {2, true}},
-            {"string-ci<=?", {2, true}}, {"string-ci>=?", {2, true}},
+            {"string=?",  {2, true, VariadicRest::Chain}}, {"string<?",  {2, true, VariadicRest::Chain}}, {"string>?",  {2, true, VariadicRest::Chain}},
+            {"string<=?", {2, true, VariadicRest::Chain}}, {"string>=?", {2, true, VariadicRest::Chain}},
+            {"string-ci=?",  {2, true, VariadicRest::Chain}}, {"string-ci<?",  {2, true, VariadicRest::Chain}}, {"string-ci>?",  {2, true, VariadicRest::Chain}},
+            {"string-ci<=?", {2, true, VariadicRest::Chain}}, {"string-ci>=?", {2, true, VariadicRest::Chain}},
             // Strings — accessors and constructors
             {"string-append", {2, true, VariadicRest::LeftFold}},
             {"string-length", {1}}, {"string-ref", {2}},
@@ -44151,10 +44263,10 @@ private:
             // rediscovered.
             {"make-string", {2}},
             // Characters
-            {"char=?",  {2, true}}, {"char<?",  {2, true}}, {"char>?",  {2, true}},
-            {"char<=?", {2, true}}, {"char>=?", {2, true}},
-            {"char-ci=?",  {2, true}}, {"char-ci<?",  {2, true}}, {"char-ci>?",  {2, true}},
-            {"char-ci<=?", {2, true}}, {"char-ci>=?", {2, true}},
+            {"char=?",  {2, true, VariadicRest::Chain}}, {"char<?",  {2, true, VariadicRest::Chain}}, {"char>?",  {2, true, VariadicRest::Chain}},
+            {"char<=?", {2, true, VariadicRest::Chain}}, {"char>=?", {2, true, VariadicRest::Chain}},
+            {"char-ci=?",  {2, true, VariadicRest::Chain}}, {"char-ci<?",  {2, true, VariadicRest::Chain}}, {"char-ci>?",  {2, true, VariadicRest::Chain}},
+            {"char-ci<=?", {2, true, VariadicRest::Chain}}, {"char-ci>=?", {2, true, VariadicRest::Chain}},
             {"char->integer", {1}}, {"integer->char", {1}},
             {"char-alphabetic?", {1}}, {"char-numeric?", {1}},
             {"char-whitespace?", {1}}, {"char-upper-case?", {1}},

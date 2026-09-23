@@ -24,6 +24,7 @@
   "eshkol_arena_iter_scope_end",
   "eshkol_arena_iter_scope_finish",
   "eshkol_arena_loop_scope_begin",
+  "eshkol_arity_mismatch_error",
   "eshkol_bignum_binary_tagged",
   "eshkol_bignum_compare_tagged",
   "eshkol_bignum_from_int64",

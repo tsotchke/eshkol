@@ -7,7 +7,8 @@ arithmetic automatically promotes between:
 - **bignums** — arbitrary-precision integers (automatic on overflow),
 - **rationals** — exact `p/q` (written `1/3`),
 - **inexact reals** — IEEE-754 doubles (written `1.5`, `3.0`),
-- **complex** — `a+bi` (type tag 7, heap-allocated `{real, imag}`).
+- **complex** — `a+bi` (type tag 7, heap-allocated `{real, imag}`); see
+  [Number syntax](#number-syntax) for every literal spelling.
 
 > **Off the tower: `i128`.** Eshkol also provides a native fixed-width 128-bit
 > integer, [`i128`](i128.md). It is a *distinct type* that is **not** part of
@@ -323,6 +324,57 @@ default. See
 5
 +i
 ```
+
+A complex number's parts are inexact: `(exact? (make-rectangular 1 2))` is
+`#f`.
+
+## Number syntax
+
+Every reader of number text uses one grammar, the R7RS 7.1.1 `<number>`
+production: a literal in a program, `read`, and `string->number`, on the
+native compiler and the bytecode VM alike. A token is a number exactly when it
+matches the grammar, and an identifier otherwise.
+
+| Form | Examples | Value |
+|------|----------|-------|
+| integer, rational, decimal | `42`, `-3/4`, `1.5e2`, `.5`, `5.` | exact, exact, inexact |
+| infinity and NaN | `+inf.0`, `-inf.0`, `+nan.0` | inexact |
+| rectangular complex | `1+2i`, `1-2i`, `1/2+3/4i`, `+inf.0+nan.0i` | complex |
+| pure imaginary | `+i`, `-i`, `+2i`, `-2.5i` | complex |
+| polar complex | `2@1.5` (magnitude 2, angle 1.5) | complex |
+| radix prefix | `#b101`, `#o17`, `#d10`, `#xFF` | as the body spells |
+| exactness prefix | `#e1.5` (3/2), `#i1/4` (0.25) | forced exact / inexact |
+
+Prefixes combine in either order (`#e#x10`, `#x#e10`), and letters are
+case-insensitive (`#XFF`, `1E3`, `1+2I`). A pure imaginary number needs its
+sign: `+2i` is a number, `2i` is an identifier.
+
+```scheme
+(display (list 1+2i -i 1/2+3/4i 2@0 #e1.5 #i1/4 #xFF)) (newline)
+(display (list (string->number "1-2i") (string->number "#xff") (string->number "2i"))) (newline)
+(display (read (open-input-string "+i"))) (newline)
+```
+```
+(1+2i -i 0.5+0.75i 2 3/2 0.25 255)
+(1-2i 255 #f)
++i
+```
+
+A rectangular number whose imaginary part is an exact zero, and a polar number
+whose angle is an exact zero, is the real number: `1+0i` is the exact
+integer 1 and `#e1.5+0i` is 3/2. Because complex parts are inexact, `#e` on a
+non-real complex number (`#e1+2i`) has no value, and neither has `#e` on an
+infinity or NaN or a rational with a zero denominator (`1/0`). A program
+literal of that kind is a compile error, `read` raises a read error, and
+`string->number` answers `#f`. `#e` expands a decimal exponent of at most 4096
+digits.
+
+Natively `string->number` takes the radix 2, 8, 10 or 16 as its optional
+second argument, and a radix prefix in the text overrides it. The bytecode VM's
+`string->number` takes the string alone; write the radix as a prefix
+(`(string->number "#xff")`) for a call that runs on both engines. A symbol whose name is
+spelled like a number is written with bars, so it reads back as the symbol:
+`(write (string->symbol "+i"))` prints `|+i|`.
 
 ## Contagion (mixed-type arithmetic)
 

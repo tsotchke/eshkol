@@ -12,6 +12,7 @@
 
 #include <eshkol/core/arity_contract.h>
 #include <eshkol/core/runtime.h>
+#include <eshkol/core/arity_contract.h>
 #include <eshkol/eshkol.h>
 #include <eshkol/logger.h>
 #include <eshkol/exhaustive_dispatch.h>
@@ -84,9 +85,17 @@ void eshkol_clear_error_location(void) {
 
 /* Render the current "file:line:col: " prefix into `buf`. Returns the number
  * of bytes written (0 if no location is set). The trailing space is included
- * so callers can concatenate the message directly. */
+ * so callers can concatenate the message directly. `buf` is always a valid
+ * C string on return: callers format it with "%s" unconditionally, so the
+ * no-location path must leave it empty rather than uninitialized (it used to
+ * return without writing, and a message raised with no recorded location
+ * began with whatever bytes the caller's stack buffer held). */
 static size_t eshkol_format_error_location_prefix(char* buf, size_t buflen) {
-    if (g_error_loc_line == 0 || buflen == 0) {
+    if (buflen == 0) {
+        return 0;
+    }
+    buf[0] = '\0';
+    if (g_error_loc_line == 0) {
         return 0;
     }
     int n;
@@ -124,7 +133,7 @@ void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...) {
     std::vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
 
-    std::fprintf(stderr, "%s\n", buf);
+    if (!eshkol_raise_will_be_handled()) std::fprintf(stderr, "%s\n", buf);
 
     eshkol_exception_t* exc = eshkol_make_exception(type, buf);
     if (exc) {
@@ -149,9 +158,10 @@ void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...) {
  *                       "<type>" is substituted if NULL.
  */
 void eshkol_type_error(const char* proc_name, const char* expected_type) {
-    eshkol_error("Type error in %s: expected %s",
-                 proc_name ? proc_name : "<unknown>",
-                 expected_type ? expected_type : "<type>");
+    if (!eshkol_raise_will_be_handled())
+        eshkol_error("Type error in %s: expected %s",
+                     proc_name ? proc_name : "<unknown>",
+                     expected_type ? expected_type : "<type>");
 
     eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
                          "Type error in %s: expected %s",
@@ -181,11 +191,12 @@ void eshkol_type_error_with_value(const char* proc_name, const char* expected_ty
     char prefix[320];
     eshkol_format_error_location_prefix(prefix, sizeof(prefix));
 
-    eshkol_error("%sType error in %s: expected %s, got %s",
-                 prefix,
-                 proc_name ? proc_name : "<unknown>",
-                 expected_type ? expected_type : "<type>",
-                 actual_type ? actual_type : "<unknown>");
+    if (!eshkol_raise_will_be_handled())
+        eshkol_error("%sType error in %s: expected %s, got %s",
+                     prefix,
+                     proc_name ? proc_name : "<unknown>",
+                     expected_type ? expected_type : "<type>",
+                     actual_type ? actual_type : "<unknown>");
 
     eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
                          "%sType error in %s: expected %s, got %s",
@@ -241,8 +252,9 @@ void eshkol_shape_error(const char* proc_name,
     eshkol_format_shape(a_buf, sizeof(a_buf), a_dims, a_ndim);
     eshkol_format_shape(b_buf, sizeof(b_buf), b_dims, b_ndim);
 
-    eshkol_error("%sShape mismatch in %s: shapes %s and %s are not broadcast-compatible",
-                 prefix, proc_name ? proc_name : "<unknown>", a_buf, b_buf);
+    if (!eshkol_raise_will_be_handled())
+        eshkol_error("%sShape mismatch in %s: shapes %s and %s are not broadcast-compatible",
+                     prefix, proc_name ? proc_name : "<unknown>", a_buf, b_buf);
 
     eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
                          "%sShape mismatch in %s: shapes %s and %s are not broadcast-compatible",
@@ -359,6 +371,17 @@ void eshkol_type_error_with_operand(const char* proc_name,
                                  eshkol_format_value_type_tag(val));
 }
 
+/* Runtime arity-contract violation. The one formatter in
+ * <eshkol/core/arity_contract.h> renders the message, so it begins with the
+ * shared class marker and never with a location prefix, and the condition is
+ * raised as an arity error for `guard` to classify. */
+void eshkol_arity_mismatch_error(const char* proc_name, int64_t expected, int64_t got) {
+    char rendered[512];
+    eshkol_format_arity_mismatch(rendered, sizeof(rendered), proc_name,
+                                 (int)expected, (long long)got);
+    eshkol_runtime_fatal(ESHKOL_EXCEPTION_ARITY_ERROR, "%s", rendered);
+}
+
 /* Wrong-type argument at an `extern` pointer parameter (ESH-0363).
  *
  * Emitted by codegen on the rejecting branch of the FFI pointer-argument guard,
@@ -420,17 +443,19 @@ void eshkol_ffi_pointer_arg_type_error(const char* extern_name,
     eshkol_format_error_location_prefix(prefix, sizeof(prefix));
 
     if (distinct_symbol) {
-        eshkol_error("%sFFI type error in %s (C symbol %s): argument %d is declared "
-                     "`%s` and requires a string or pointer handle, but got %s",
-                     prefix, name, real_symbol, (int)arg_position, declared, value_text);
+        if (!eshkol_raise_will_be_handled())
+            eshkol_error("%sFFI type error in %s (C symbol %s): argument %d is declared "
+                         "`%s` and requires a string or pointer handle, but got %s",
+                         prefix, name, real_symbol, (int)arg_position, declared, value_text);
         eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
                              "%sFFI type error in %s (C symbol %s): argument %d is declared "
                              "`%s` and requires a string or pointer handle, but got %s",
                              prefix, name, real_symbol, (int)arg_position, declared, value_text);
     } else {
-        eshkol_error("%sFFI type error in %s: argument %d is declared `%s` and requires "
-                     "a string or pointer handle, but got %s",
-                     prefix, name, (int)arg_position, declared, value_text);
+        if (!eshkol_raise_will_be_handled())
+            eshkol_error("%sFFI type error in %s: argument %d is declared `%s` and requires "
+                         "a string or pointer handle, but got %s",
+                         prefix, name, (int)arg_position, declared, value_text);
         eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
                              "%sFFI type error in %s: argument %d is declared `%s` and requires "
                              "a string or pointer handle, but got %s",
@@ -458,15 +483,15 @@ extern "C" void eshkol_procedure_call_error(const eshkol_tagged_value_t* callee,
     /* The VM's closures carry no name, so both engines render the same
      * "<procedure>" and a program printing the message sees one answer. */
     const char* name = "<procedure>";
-    char msg[512];
-    if (variadic) {
-        std::snprintf(msg, sizeof(msg),
-                      ESHKOL_ARITY_MISMATCH_PREFIX
-                      "%s expects at least %lld argument%s but got %lld",
-                      name, (long long)expected, expected == 1 ? "" : "s",
-                      (long long)got);
-    } else {
-        eshkol_format_arity_mismatch(msg, sizeof(msg), name, (int)expected, got);
+    if (!variadic) {
+        eshkol_arity_mismatch_error(name, expected, got);   /* the one raiser */
+        std::exit(1);
     }
+    char msg[512];
+    std::snprintf(msg, sizeof(msg),
+                  ESHKOL_ARITY_MISMATCH_PREFIX
+                  "%s expects at least %lld argument%s but got %lld",
+                  name, (long long)expected, expected == 1 ? "" : "s",
+                  (long long)got);
     eshkol_runtime_fatal(ESHKOL_EXCEPTION_ARITY_ERROR, "%s", msg);
 }

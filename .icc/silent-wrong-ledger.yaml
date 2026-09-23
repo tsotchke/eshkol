@@ -14316,6 +14316,85 @@ entries:
     evidence: >-
       tests/ad/vm_nested_holomorphic_test.esk (ctest vm_nested_holomorphic_vm,
       vm_nested_holomorphic_browser_vm, vm_nested_holomorphic_jit).
+  - id: SW-201
+    bucket: LOUD-ERROR
+    family: native/parallel-callback-control
+    status: fixed
+    closed_at: "5895adefb"
+    title: "native parallel callbacks that raise exit the process instead of reaching the caller's handler"
+    repro: >-
+      (display (guard (e ((symbol? e) (list 'caught e)))
+        (parallel-map (lambda (x) (if (= x 6) (raise 'six) x)) '(1 2 3 4 5 6 7 8))))
+    observed_before: >-
+      eshkol-run -r prints "Unhandled exception: user exception" and exits 1;
+      nothing after the form runs. The exception-handler chain is thread-local, so
+      a raise on a pool worker found no handler; a raise on the calling thread
+      (small lists, the JIT warm-up element) longjmp'd through the scheduler's
+      C++ frames. docs/breakdown/PARALLEL_COMPUTING.md 11.5 described the process
+      exit as the behaviour. The VM answered (caught six).
+    correct: >-
+      (caught six): the callback's own raised object reaches the caller's
+      handler; a guard inside the callback resumes that callback.
+    fix: >-
+      One unwind boundary (run_in_boundary in lib/backend/parallel_codegen.cpp)
+      runs every callback of parallel-map, -filter, -for-each, -execute and async
+      futures under a handler on the thread that runs it. After the join the entry
+      point returns from its implementation and re-raises the first recorded
+      condition in element order on the calling thread. A future that raised
+      stays unforced and re-raises from force; a refused submission runs its
+      element on the calling thread.
+    remeasured: >-
+      At 5895adefb (fix/v135f-vmrt): tests/vm_parity/corpus/parallel_callback_raise.esk
+      is byte-identical on native JIT, VM source and ESKB (run_vm_parity.sh
+      373/0); ctest native_parallel_callback_raise_jit and
+      native_parallel_callback_raise_aot_repeat50 (50 consecutive AOT runs) pass.
+    caught_by: [v135f-vmrt-parity-probe]
+    missed_by: [vm_parity]
+  - id: SW-205
+    bucket: LOUD-ERROR
+    family: native/parallel-callback-control
+    status: fixed
+    closed_at: "747b6964d"
+    needs_decision: false
+    title: "native continuation escape from a parallel-map worker crashes the process"
+    repro: >-
+      (display (call-with-current-continuation
+        (lambda (k) (parallel-map (lambda (x) (if (= x 4) (k 'escaped) x))
+                                  '(1 2 3 4 5 6 7 8)))))
+    observed: >-
+      eshkol-run -r: "[Eshkol] fatal signal: SIGBUS" and exit 138. The invoke
+      sequence reroots dynamic-wind, promise and region state against marks that
+      belong to the capturing thread and then longjmps to a jmp_buf on that
+      thread's stack from a pool worker. The VM prints escaped.
+    correct: >-
+      escaped: the escape resumes the continuation's owning scope on its own
+      thread, as the VM does, e.g. by recording the foreign continuation at the
+      worker's unwind boundary and resuming it on the caller after the join.
+    evidence: >-
+      Found by the v135f-vmrt lane on 2026-09-22 after SW-201. Not silent: the
+      process dies with a signal.
+    caught_by: [v135f-vmrt-probe]
+    missed_by: [vm_parity]
+    notes: >-
+      Needs the invoke sequence in llvm_codegen (continuation_invoke_bb) to
+      detect a continuation captured on another thread before it touches
+      thread-local state; beyond the VM runtime lane's scope.
+    fix: >-
+      Every native continuation invocation calls eshkol_continuation_transfer_check
+      (lib/backend/parallel_codegen.cpp) after storing its value. Inside a parallel
+      callback's unwind boundary, a continuation whose capture point is not in the
+      callback's own live extent on that thread is not resumed there: the
+      callback's dynamic-wind, promise, region and AD state is unwound to the
+      boundary through the facility eshkol_raise uses
+      (eshkol_restore_state_for_handler, now shared), and the transfer is
+      recorded. The caller performs it after the join, in element order with any
+      recorded raise, on its own thread; an enclosing boundary defers it again.
+    remeasured: >-
+      At 747b6964d (fix/v135f-vmrt): the repro prints escaped and the program
+      continues, on native JIT and AOT. tests/vm_parity/corpus/parallel_continuation_escape.esk
+      (worker and calling-thread elements, parallel-execute, parallel-filter,
+      local continuations, dynamic-wind after-thunk) is byte-identical on native
+      and VM; native_parallel_continuation_escape_aot_repeat50 passes.
   - id: SW-206
     bucket: SILENT-WRONG
     subtag: autodiff
@@ -14769,6 +14848,147 @@ entries:
       pre-fix binary fails 22 of 24.
     caught_by: [direct-measurement]
     missed_by: [independent-review]
+  - id: SW-215
+    bucket: SILENT-WRONG
+    subtag: exceptions
+    family: native/exception-object-layout
+    status: fixed
+    closed_at: '175891e7dcaa3700074245ab0ac590171dd0ea0d'
+    title: "Native runtime-raised conditions were header-less, so guard saw garbage: (guard (e (#t (error-object? e))) (car 5)) answered #f"
+    repro: >-
+      (display (guard (e (#t (list (error-object? e) e))) (car 5))) on eshkol-run -r
+      and an AOT binary.
+    observed_before: >-
+      (#f (4967685776)) with exit status 0: error-object? answered #f and the
+      condition displayed as a list of addresses; the bytecode VM answered #t with
+      the message. Messages raised with no recorded location also began with stray
+      stack bytes.
+    observed_after: >-
+      (#t car: argument is not a pair) on JIT, AOT and the VM; the message has no
+      stray prefix.
+    root_cause: >-
+      eshkol_make_exception (used by eshkol_runtime_fatal, bignum/rational
+      division by zero, i128 overflow, forward-reference stubs, Taylor refusals)
+      allocated no object header, while eshkol_raise hands every exception to a
+      handler as a HEAP_PTR classified by its header subtype;
+      eshkol_format_error_location_prefix left its buffer uninitialized when no
+      location was set.
+    fixed_by: >-
+      one initializer builds every exception object with its header
+      (lib/core/runtime_exceptions_hosted.cpp); the prefix formatter always
+      terminates its buffer.
+    evidence: >-
+      tests/error_handling/runtime_condition_error_object_test.esk (ctest
+      runtime_condition_error_object_jit_smoke, _aot_o0_smoke, _vm_src_smoke).
+    caught_by: [v135f-gates-lane]
+    missed_by: [run_vm_parity]
+  - id: SW-216
+    bucket: SILENT-WRONG
+    family: native/closure-call-arity
+    status: fixed
+    closed_at: "98d0a9250"
+    title: "native closure calls through a procedure value silently drop surplus arguments and pad missing ones"
+    repro: >-
+      (define (h2 f a b) (f a b)) (display (h2 (lambda (x) x) 1 2))
+      (define (h1 f a) (f a)) (display (h1 (lambda (x y) x) 1))
+    observed_before: >-
+      Native prints 1 and 1, exit 0, no diagnostic: the closure dispatcher padded a
+      short call with null and dropped a surplus argument. A direct
+      ((lambda (x) x) 1 2) only warned at compile time. The VM refused both, but
+      fatally.
+    correct: >-
+      A catchable R7RS error: "Arity mismatch: <procedure> expects 1 argument but
+      got 2" (and "expects at least N" for a rest-parameter procedure's fixed
+      part), identical on both engines.
+    fix: >-
+      codegenClosureCall checks the recorded arity (exactly fixed_params, or at
+      least fixed_params when variadic) before dispatch and raises through
+      eshkol_procedure_call_error (lib/core/runtime_errors_hosted.cpp), replacing
+      the padding path and the apply-only overflow refusal. Producers that
+      recorded arity 0 now record the real one: first-class math and I/O builtins
+      use emitFunctionAsCallableValue, the curried derivative closure records its
+      parameter, and the make-vector value form takes its fill (as make-string
+      does). The first-class builtin probe for apply was itself a wrong-arity call
+      and is corrected in tests/coverage/builtins_first_class_known_args.json.
+    remeasured: >-
+      At 98d0a9250 (fix/v135f-vmrt): procedure_call_protocol.esk is
+      byte-identical on native and VM (surplus, missing, variadic minimum,
+      correct calls); ctest native_procedure_call_protocol_jit and _aot pass;
+      value_position_axis_sweep, first_class_builtins_* and the AD closure
+      suites pass. WASM glue carries eshkol_procedure_call_error
+      (wasm_flat_ad_import_test passes).
+    caught_by: [v135f-coordinator-audit]
+    missed_by: [vm_parity, value_position_axis_sweep]
+    notes: >-
+      Native error objects raised by the runtime satisfy error-object? only once
+      SW-215 (gates lane) is integrated; until then a guard catches the condition
+      but error-object? answers #f natively.
+  - id: SW-217
+    bucket: LOUD-ERROR
+    family: vm/closure-call-arity
+    status: fixed
+    closed_at: "98d0a9250"
+    title: "VM closure arity mismatch is fatal, cannot be caught by guard, and says \"arity mismatch:\" instead of the canonical \"Arity mismatch: \""
+    repro: >-
+      (display (guard (e (#t 'caught)) ((lambda (x) x) 1 2)))
+    observed_before: >-
+      eshkol-vm-standalone-test: "ERROR: arity mismatch: expected 1 argument, got
+      2" and a fatal exit; the guard never runs. Two duplicate checks
+      (vm_check_closure_arity, vm_validate_closure_arity) printed two wordings.
+    correct: >-
+      caught; the condition's message is "Arity mismatch: <procedure> expects 1
+      argument but got 2", as native raises it.
+    fix: >-
+      One admission check, vm_check_closure_arity (lib/backend/vm_core.c), raises
+      a catchable condition with the shared arity_contract.h wording; callers
+      resume dispatch at the handler. vm_validate_closure_arity is retired. A
+      rest-parameter procedure's minimum is enforced in its PACK_REST prologue.
+    remeasured: >-
+      At 98d0a9250 (fix/v135f-vmrt): tests/vm/closure_arity_catchable_regression.esk
+      prints "closure arity catchable PASS" (surplus, missing, direct, variadic
+      minimum, tail position, non-procedure); vm_first_class_builtin_arity_smoke
+      (updated to the canonical marker) passes; run_vm_parity.sh clean.
+    caught_by: [v135f-coordinator-audit]
+    missed_by: [vm_parity]
+  - id: SW-221
+    bucket: SILENT-WRONG
+    subtag: containers
+    family: cross-engine/container-accessor-boundary
+    status: fixed
+    closed_at: 'f01071dd29bfce422ffab0c0359848262c89025a'
+    title: "Container accessors read the wrong kind of container as their own: (vector-ref (list 1 2 3) 0) answered 8 natively and () on the VM"
+    repro: >-
+      (display (vector-ref (list 1 2 3) 0)), (vector-length (list 1 2 3)) and
+      (string-ref (list 1 2) 0) on eshkol-run -r, an -O0/-O2 AOT binary and
+      eshkol-vm-standalone-test.
+    observed_before: >-
+      Native: 8, 4097 and a control character, exit status 0; (string-ref 5 0),
+      (vector-ref 5 0) and (tensor-ref (list 1 2) 0) faulted with SIGSEGV;
+      bytevector-u8-ref and bytevector-length of a vector answered 1 and 4097.
+      VM: (), 0 and the NUL character; vector->list of a list was a fatal,
+      uncatchable refusal. The VM's threaded string-ref/string-length indexed
+      bytes, so (string-ref "héllo" 1) answered 195.
+    observed_after: >-
+      Every listed accessor raises a catchable error naming itself on native JIT,
+      AOT (-O0, -O2) and the VM, directly and as a first-class value; vectors,
+      tensors, strings, bytevectors and records still answer; the VM string
+      accessors index characters under both dispatch loops.
+    root_cause: >-
+      Each accessor classified its operand by hand and treated anything it did not
+      recognise as its own container (collection_codegen.cpp "assume legacy
+      vector"; vm_ops.c / vm_native.c pushing (), 0 or NUL), and the VM string
+      accessors had divergent threaded and switch copies.
+    fixed_by: >-
+      One container check per engine: TaggedValueCodegen::requireContainer and
+      resolveSequenceOperand natively, vm_require_container in the VM with the
+      vector and string accessors each one implementation shared by opcodes,
+      both dispatch loops and the first-class natives.
+    evidence: >-
+      tests/error_handling/sw221_container_type_boundary_test.esk (ctest
+      sw221_container_type_boundary_jit_smoke, _aot_o0_smoke, _aot_o2_smoke,
+      _vm_src_smoke).
+    caught_by: [v135f-coordinator]
+    missed_by: [builtins_first_class_audit, run_vm_parity]
   - id: SW-222
     bucket: SILENT-WRONG
     subtag: autodiff
@@ -14819,6 +15039,35 @@ entries:
     vm_evidence: >-
       VM mirror at 4689ba7e2a739d825c8c83a1038ea3ebe39417e4 (branch fix/v135f-vmtaylor2): tests/ad/division_pole_test.esk and
       tests/ad/taylor_integral_family_test.esk pass on eshkol-vm-standalone-test and the browser VM.
+  - id: SW-223
+    bucket: SILENT-WRONG
+    subtag: numeric-syntax
+    family: cross-engine/number-syntax
+    status: fixed
+    closed_at: 'e607df22a815967b6ef903689423739bae50af0c'
+    title: "Complex number syntax: string->number \"1+1i\" answered #f while read returned a symbol; the parser and VM misread 1+1i"
+    repro: >-
+      (display 1+1i), (string->number "1+1i") and (read (open-input-string "1+1i"))
+      on eshkol-run -r, AOT and eshkol-vm-standalone-test; also #i42, #e1.5.
+    observed_before: >-
+      Native parser: "expected closing parenthesis"/undefined +1i. VM: fatal
+      "display requires an open output port". string->number answered #f while read
+      returned a symbol; #i42 was exact; #e1.5 was not a number; native read of an
+      integer past int64 clamped to INT64_MAX.
+    observed_after: >-
+      1+i on every reader and engine; the full R7RS 7.1.1 grammar (a+bi, a-bi, +i,
+      -i, +bi, m@a, #e/#i and radix prefixes, rational and inf/nan parts) is read
+      identically by literals, read and string->number on JIT, AOT and the VM.
+    root_cause: >-
+      six readers each carried a partial copy of the number grammar.
+    fixed_by: >-
+      inc/eshkol/core/number_syntax.h, one recognizer used by the parser, the
+      runtime reader, string->number and the VM parser/reader/natives (ADR-0028).
+    evidence: >-
+      tests/complex/sw223_number_syntax_test.esk (ctest
+      sw223_number_syntax_jit_smoke, _aot_o0_smoke, _aot_o2_smoke, _vm_src_smoke).
+    caught_by: [v135f-coordinator]
+    missed_by: [run_vm_parity, builtins_first_class_audit]
   - id: SW-225
     bucket: SILENT-WRONG
     subtag: autodiff
@@ -14974,6 +15223,36 @@ entries:
     notes: >-
       Filed by the v1.3.5 exact-derivative lane; fixed on the integration branch by
       the VM Taylor lane (7c036631d).
+  - id: SW-226
+    bucket: LOUD-ERROR
+    family: native/map-arity
+    status: fixed
+    closed_at: "747b6964d"
+    title: "native (map (lambda (x y) x) '(1 2)) fails to compile with a module verification error"
+    repro: >-
+      (display (guard (e (#t 'caught)) (map (lambda (x y) x) '(1 2))))
+    observed_before: >-
+      eshkol-run -r: "Map: capture 'y' not found ... using null pointer" and
+      "LLVM module verification failed: Call parameter type does not match
+      function signature". The same for a named two-parameter procedure and for a
+      one-parameter procedure over two lists. The VM raises the catchable arity
+      error.
+    correct: >-
+      caught: the program compiles and the call raises "Arity mismatch:
+      <procedure> expects 2 arguments but got 1" at run time.
+    fix: >-
+      map's static fast path (lib/backend/map_codegen.cpp) is used only when the
+      procedure is known to take exactly one argument per list (an inline
+      non-variadic lambda with that many parameters, or a named procedure whose
+      declared parameters number that many). Every other procedure goes through
+      the runtime closure dispatcher, where the call protocol of SW-216 applies.
+    remeasured: >-
+      At 747b6964d (fix/v135f-vmrt): tests/vm_parity/corpus/map_arity_protocol.esk
+      (inline, named, surplus-list and for-each mismatches; unaffected exact and
+      rest-parameter maps) is byte-identical on native and VM;
+      native_map_arity_protocol_jit and _aot pass.
+    caught_by: [v135f-vmrt-probe]
+    missed_by: [vm_parity]
   - id: SW-227
     bucket: SILENT-WRONG
     subtag: autodiff
@@ -15109,180 +15388,86 @@ entries:
       its baseline untouched.
     caught_by: [value_position_axis_sweep, vm-taylor-lane-mirror]
     missed_by: [builtins_first_class_audit]
-  - id: SW-201
-    bucket: LOUD-ERROR
-    family: native/parallel-callback-control
-    status: fixed
-    closed_at: "5895adefb"
-    title: "native parallel callbacks that raise exit the process instead of reaching the caller's handler"
-    repro: >-
-      (display (guard (e ((symbol? e) (list 'caught e)))
-        (parallel-map (lambda (x) (if (= x 6) (raise 'six) x)) '(1 2 3 4 5 6 7 8))))
-    observed_before: >-
-      eshkol-run -r prints "Unhandled exception: user exception" and exits 1;
-      nothing after the form runs. The exception-handler chain is thread-local, so
-      a raise on a pool worker found no handler; a raise on the calling thread
-      (small lists, the JIT warm-up element) longjmp'd through the scheduler's
-      C++ frames. docs/breakdown/PARALLEL_COMPUTING.md 11.5 described the process
-      exit as the behaviour. The VM answered (caught six).
-    correct: >-
-      (caught six): the callback's own raised object reaches the caller's
-      handler; a guard inside the callback resumes that callback.
-    fix: >-
-      One unwind boundary (run_in_boundary in lib/backend/parallel_codegen.cpp)
-      runs every callback of parallel-map, -filter, -for-each, -execute and async
-      futures under a handler on the thread that runs it. After the join the entry
-      point returns from its implementation and re-raises the first recorded
-      condition in element order on the calling thread. A future that raised
-      stays unforced and re-raises from force; a refused submission runs its
-      element on the calling thread.
-    remeasured: >-
-      At 5895adefb (fix/v135f-vmrt): tests/vm_parity/corpus/parallel_callback_raise.esk
-      is byte-identical on native JIT, VM source and ESKB (run_vm_parity.sh
-      373/0); ctest native_parallel_callback_raise_jit and
-      native_parallel_callback_raise_aot_repeat50 (50 consecutive AOT runs) pass.
-    caught_by: [v135f-vmrt-parity-probe]
-    missed_by: [vm_parity]
-  - id: SW-205
-    bucket: LOUD-ERROR
-    family: native/parallel-callback-control
-    status: fixed
-    closed_at: "747b6964d"
-    needs_decision: false
-    title: "native continuation escape from a parallel-map worker crashes the process"
-    repro: >-
-      (display (call-with-current-continuation
-        (lambda (k) (parallel-map (lambda (x) (if (= x 4) (k 'escaped) x))
-                                  '(1 2 3 4 5 6 7 8)))))
-    observed: >-
-      eshkol-run -r: "[Eshkol] fatal signal: SIGBUS" and exit 138. The invoke
-      sequence reroots dynamic-wind, promise and region state against marks that
-      belong to the capturing thread and then longjmps to a jmp_buf on that
-      thread's stack from a pool worker. The VM prints escaped.
-    correct: >-
-      escaped: the escape resumes the continuation's owning scope on its own
-      thread, as the VM does, e.g. by recording the foreign continuation at the
-      worker's unwind boundary and resuming it on the caller after the join.
-    evidence: >-
-      Found by the v135f-vmrt lane on 2026-09-22 after SW-201. Not silent: the
-      process dies with a signal.
-    caught_by: [v135f-vmrt-probe]
-    missed_by: [vm_parity]
-    notes: >-
-      Needs the invoke sequence in llvm_codegen (continuation_invoke_bb) to
-      detect a continuation captured on another thread before it touches
-      thread-local state; beyond the VM runtime lane's scope.
-    fix: >-
-      Every native continuation invocation calls eshkol_continuation_transfer_check
-      (lib/backend/parallel_codegen.cpp) after storing its value. Inside a parallel
-      callback's unwind boundary, a continuation whose capture point is not in the
-      callback's own live extent on that thread is not resumed there: the
-      callback's dynamic-wind, promise, region and AD state is unwound to the
-      boundary through the facility eshkol_raise uses
-      (eshkol_restore_state_for_handler, now shared), and the transfer is
-      recorded. The caller performs it after the join, in element order with any
-      recorded raise, on its own thread; an enclosing boundary defers it again.
-    remeasured: >-
-      At 747b6964d (fix/v135f-vmrt): the repro prints escaped and the program
-      continues, on native JIT and AOT. tests/vm_parity/corpus/parallel_continuation_escape.esk
-      (worker and calling-thread elements, parallel-execute, parallel-filter,
-      local continuations, dynamic-wind after-thunk) is byte-identical on native
-      and VM; native_parallel_continuation_escape_aot_repeat50 passes.
-  - id: SW-216
+  - id: SW-234
     bucket: SILENT-WRONG
-    family: native/closure-call-arity
+    subtag: containers
+    family: cross-engine/container-accessor-boundary
     status: fixed
-    closed_at: "98d0a9250"
-    title: "native closure calls through a procedure value silently drop surplus arguments and pad missing ones"
+    closed_at: 'f01071dd29bfce422ffab0c0359848262c89025a'
+    title: "Native (string-length 5) inside guard faulted instead of raising a catchable type error"
     repro: >-
-      (define (h2 f a b) (f a b)) (display (h2 (lambda (x) x) 1 2))
-      (define (h1 f a) (f a)) (display (h1 (lambda (x y) x) 1))
+      (guard (e (#t 'caught)) (string-length 5)) on eshkol-run -r and AOT.
     observed_before: >-
-      Native prints 1 and 1, exit 0, no diagnostic: the closure dispatcher padded a
-      short call with null and dropped a surplus argument. A direct
-      ((lambda (x) x) 1 2) only warned at compile time. The VM refused both, but
-      fatally.
-    correct: >-
-      A catchable R7RS error: "Arity mismatch: <procedure> expects 1 argument but
-      got 2" (and "expects at least N" for a rest-parameter procedure's fixed
-      part), identical on both engines.
-    fix: >-
-      codegenClosureCall checks the recorded arity (exactly fixed_params, or at
-      least fixed_params when variadic) before dispatch and raises through
-      eshkol_procedure_call_error (lib/core/runtime_errors_hosted.cpp), replacing
-      the padding path and the apply-only overflow refusal. Producers that
-      recorded arity 0 now record the real one: first-class math and I/O builtins
-      use emitFunctionAsCallableValue, the curried derivative closure records its
-      parameter, and the make-vector value form takes its fill (as make-string
-      does). The first-class builtin probe for apply was itself a wrong-arity call
-      and is corrected in tests/coverage/builtins_first_class_known_args.json.
-    remeasured: >-
-      At 98d0a9250 (fix/v135f-vmrt): procedure_call_protocol.esk is
-      byte-identical on native and VM (surplus, missing, variadic minimum,
-      correct calls); ctest native_procedure_call_protocol_jit and _aot pass;
-      value_position_axis_sweep, first_class_builtins_* and the AD closure
-      suites pass. WASM glue carries eshkol_procedure_call_error
-      (wasm_flat_ad_import_test passes).
-    caught_by: [v135f-coordinator-audit]
-    missed_by: [vm_parity, value_position_axis_sweep]
-    notes: >-
-      Native error objects raised by the runtime satisfy error-object? only once
-      SW-215 (gates lane) is integrated; until then a guard catches the condition
-      but error-object? answers #f natively.
-  - id: SW-217
-    bucket: LOUD-ERROR
-    family: vm/closure-call-arity
+      SIGSEGV at 0xfffffffffffffffd; guard never ran. string-ref, vector-ref and
+      vector-length of a literal scalar faulted the same way.
+    observed_after: >-
+      A catchable "Type error in string-length: expected string, got integer" on
+      JIT and AOT; the VM raises "string-length: expected a string".
+    root_cause: >-
+      the accessors read their operand by container layout without checking its
+      kind (the SW-221 family); a literal scalar reached the lowering as a raw
+      constant rather than a tagged value.
+    fixed_by: >-
+      TaggedValueCodegen::requireContainer (SW-221), which also checks a literal
+      scalar operand.
+    evidence: >-
+      tests/error_handling/sw221_container_type_boundary_test.esk SW-234 cases
+      (ctest sw221_container_type_boundary_{jit,aot_o0,aot_o2,vm_src}_smoke).
+    caught_by: [v135f-coordinator]
+    missed_by: [builtins_first_class_audit]
+  - id: SW-239
+    bucket: SILENT-WRONG
+    subtag: vm-scope
+    family: vm/with-region-body-scope
     status: fixed
-    closed_at: "98d0a9250"
-    title: "VM closure arity mismatch is fatal, cannot be caught by guard, and says \"arity mismatch:\" instead of the canonical \"Arity mismatch: \""
+    closed_at: '7e73845c510d6b888619bb59945f6575cac0bfa5'
+    title: "VM: a define inside with-region within a procedure was dropped; later references read an unrelated slot"
     repro: >-
-      (display (guard (e (#t 'caught)) ((lambda (x) x) 1 2)))
+      (define (f) (with-region 'r (define (sq x) (* x x)) (define u (sq 3)) (+ u 1)))
+      (display (f)) on eshkol-vm-standalone-test.
     observed_before: >-
-      eshkol-vm-standalone-test: "ERROR: arity mismatch: expected 1 argument, got
-      2" and a fatal exit; the guard never runs. Two duplicate checks
-      (vm_check_closure_arity, vm_validate_closure_arity) printed two wordings.
-    correct: >-
-      caught; the condition's message is "Arity mismatch: <procedure> expects 1
-      argument but got 2", as native raises it.
-    fix: >-
-      One admission check, vm_check_closure_arity (lib/backend/vm_core.c), raises
-      a catchable condition with the shared arity_contract.h wording; callers
-      resume dispatch at the handler. vm_validate_closure_arity is retired. A
-      rest-parameter procedure's minimum is enforced in its PACK_REST prologue.
-    remeasured: >-
-      At 98d0a9250 (fix/v135f-vmrt): tests/vm/closure_arity_catchable_regression.esk
-      prints "closure arity catchable PASS" (surplus, missing, direct, variadic
-      minimum, tail position, non-procedure); vm_first_class_builtin_arity_smoke
-      (updated to the canonical marker) passes; run_vm_parity.sh clean.
-    caught_by: [v135f-coordinator-audit]
-    missed_by: [vm_parity]
-  - id: SW-226
-    bucket: LOUD-ERROR
-    family: native/map-arity
+      Wrong or fatal answers depending on the stray slot; in
+      tests/vm/factor_graph_infer_unobserved_surface_regression.esk
+      (vector-ref <slot> 0) answered () and fg-add-factor! ran on () with exit 0.
+      Native answers 10.
+    observed_after: >-
+      10 on the VM, the browser VM and native JIT.
+    root_cause: >-
+      compile_form_with_region compiled a body inside a procedure as bare
+      expressions, so an internal definition built its box and dropped it.
+    fixed_by: >-
+      the body compiles through vm_compile_scope_body, the helper let's body uses
+      (lib/backend/vm_compiler.c).
+    evidence: >-
+      tests/memory/with_region_internal_define_test.esk (ctest
+      with_region_internal_define_{vm,browser_vm,jit}).
+    caught_by: [v135f-gates-lane]
+    missed_by: [run_vm_parity]
+  - id: SW-240
+    bucket: SILENT-WRONG
+    subtag: vm-scope
+    family: vm/with-region-body-scope
     status: fixed
-    closed_at: "747b6964d"
-    title: "native (map (lambda (x y) x) '(1 2)) fails to compile with a module verification error"
+    closed_at: '15d760034bb6d86858104405d39dbb32cac81b00'
+    title: "VM: a top-level with-region or begin body popped the slot its definition had bound; the name then read another value"
     repro: >-
-      (display (guard (e (#t 'caught)) (map (lambda (x y) x) '(1 2))))
+      (with-region 'r (define tt 5) 1) (display tt), and (begin (define tt 5) 1)
+      (display tt), on eshkol-vm-standalone-test.
     observed_before: >-
-      eshkol-run -r: "Map: capture 'y' not found ... using null pointer" and
-      "LLVM module verification failed: Call parameter type does not match
-      function signature". The same for a named two-parameter procedure and for a
-      one-parameter procedure over two lists. The VM raises the catchable arity
-      error.
-    correct: >-
-      caught: the program compiles and the call raises "Arity mismatch:
-      <procedure> expects 2 arguments but got 1" at run time.
-    fix: >-
-      map's static fast path (lib/backend/map_codegen.cpp) is used only when the
-      procedure is known to take exactly one argument per list (an inline
-      non-variadic lambda with that many parameters, or a named procedure whose
-      declared parameters number that many). Every other procedure goes through
-      the runtime closure dispatcher, where the call protocol of SW-216 applies.
-    remeasured: >-
-      At 747b6964d (fix/v135f-vmrt): tests/vm_parity/corpus/map_arity_protocol.esk
-      (inline, named, surplus-list and for-each mismatches; unaffected exact and
-      rest-parameter maps) is byte-identical on native and VM;
-      native_map_arity_protocol_jit and _aot pass.
-    caught_by: [v135f-vmrt-probe]
-    missed_by: [vm_parity]
+      1 (and nothing at all for (with-region 'r (define tt 5) (display tt))
+      followed by (display tt)), exit 0; native prints 5.
+    observed_after: >-
+      5 on the VM and the browser VM; native JIT agrees for with-region.
+    root_cause: >-
+      the top-level body compile popped every non-last form, definitions
+      included, and a top-level definition's value IS its slot.
+    fixed_by: >-
+      vm_compile_toplevel_sequence / vm_end_toplevel_sequence in
+      lib/backend/vm_compiler.c, the one top-level body rule for with-region and
+      begin.
+    evidence: >-
+      tests/memory/with_region_toplevel_define_test.esk (ctest
+      with_region_toplevel_define_{vm,browser_vm,jit}) and
+      tests/vm/toplevel_begin_define_test.esk (ctest toplevel_begin_define_vm).
+    caught_by: [v135f-gates-lane]
+    missed_by: [run_vm_parity]

@@ -41,7 +41,12 @@ def main():
             src = Path(temp) / (name + '.esk')
             # Guard success is evidence of a language-level refusal, not merely
             # an abnormal subprocess exit or a compiler/linker failure.
-            src.write_text('(guard (e (#t (display "REFUSED") (newline)))\n'
+            # The handler prints the condition's message so the diagnostic's
+            # source location is checked on the condition itself: a caught
+            # condition writes nothing to stderr.
+            src.write_text('(guard (e (#t (display "REFUSED") (newline)\n'
+                           '             (if (error-object? e) (display (error-object-message e)))\n'
+                           '             (newline)))\n'
                            '  ' + expression + '\n'
                            '  (display "ACCEPTED") (newline))\n')
             cmd = [str(Path(args.runner).resolve())]
@@ -61,11 +66,12 @@ def main():
                        if x.strip() in ('REFUSED', 'ACCEPTED')]
             expected = 'REFUSED' if reject else 'ACCEPTED'
             if args.engine == 'jit' and name == 'fractional-list':
-                # The diagnostic names the DISPLAY path (ADR-0021), which for
+                # The condition's message carries the location. It names the
+                # DISPLAY path (ADR-0021), which for
                 # a file outside every root is its name alone -- never the
                 # build host's absolute path.
                 location = re.escape(src.name) + r":\d+:\d+: Type error in reshape"
-                if not re.search(location, r.stderr):
+                if not re.search(location, r.stdout):
                     failures.append(name + ': missing correct source location in diagnostic')
             hard_limit = (name == 'limit' and args.engine == 'jit' and
                           r.returncode == 122 and not markers and

@@ -508,34 +508,14 @@ void vm_run(VM* vm) {
 
     lbl_VEC_LEN: vm_exec_vec_len(vm); DISPATCH();
 
-    /* The threaded (computed-goto) bodies below and the switch-based fallback
-     * further down are the two halves of the same interpreter; the inline
-     * string accessor fast paths must enforce the same catchable
-     * out-of-range contract as the native codegen in BOTH.  See
-     * vm_raise_error_msg() in vm_native.c. */
-    lbl_STR_REF: {
-        Value idx = vm_pop(vm), str_val = vm_pop(vm);
-        if (str_val.type == VAL_STRING) {
-            VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
-            int i = (int)as_number(idx);
-            if (!s || i < 0 || i >= s->byte_len) {
-                vm_raise_error_msg(vm, "string-ref: index out of bounds");
-                DISPATCH();
-            }
-            /* R7RS string-ref returns a character, not its integer code. */
-            vm_push(vm, (Value){.type = VAL_CHAR, .as.i = (unsigned char)s->data[i]});
-        } else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
-        DISPATCH();
-    }
+    /* The threaded (computed-goto) bodies and the switch-based fallback below
+     * are the two halves of the same interpreter, so the string accessors are
+     * one implementation shared by both (vm_ops.c). The threaded copy used to
+     * index bytes where the switch copy indexed characters, so
+     * (string-ref "\u00e9t\u00e9" 1) depended on the dispatch mode. */
+    lbl_STR_REF: vm_exec_str_ref(vm); DISPATCH();
 
-    lbl_STR_LEN: {
-        Value str_val = vm_pop(vm);
-        if (str_val.type == VAL_STRING) {
-            VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
-            vm_push(vm, INT_VAL(s ? s->byte_len : 0));
-        } else vm_push(vm, INT_VAL(0));
-        DISPATCH();
-    }
+    lbl_STR_LEN: vm_exec_str_len(vm); DISPATCH();
 
     lbl_PAIR_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_PAIR)); DISPATCH(); }
     /* SW-31: number? is the WHOLE tower, not just fixnum/flonum. This single
@@ -949,29 +929,9 @@ vm_exit:
 
         case OP_VEC_LEN: vm_exec_vec_len(vm); break;
 
-        case OP_STR_REF: {
-            Value idx = vm_pop(vm), str_val = vm_pop(vm);
-            if (str_val.type == VAL_STRING) {
-                VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
-                int i = (int)as_number(idx);
-                if (!s || i < 0 || i >= s->char_len) {
-                    vm_raise_error_msg(vm, "string-ref: index out of bounds");
-                    break;
-                }
-                /* R7RS string-ref returns a character, not its integer code. */
-                vm_push(vm, (Value){.type = VAL_CHAR, .as.i = vm_string_ref(s, i)});
-            } else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
-            break;
-        }
+        case OP_STR_REF: vm_exec_str_ref(vm); break;
 
-        case OP_STR_LEN: {
-            Value str_val = vm_pop(vm);
-            if (str_val.type == VAL_STRING) {
-                VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
-                vm_push(vm, INT_VAL(s ? vm_string_length(s) : 0));
-            } else vm_push(vm, INT_VAL(0));
-            break;
-        }
+        case OP_STR_LEN: vm_exec_str_len(vm); break;
 
         case OP_PAIR_P: { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(v.type == VAL_PAIR)); break; }
         case OP_NUM_P:  { Value v = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_tag_is_number(v))); break; } /* SW-31 */

@@ -45,11 +45,12 @@
  * has, which is the property that matters -- `write` must emit something
  * `read` turns back into the same symbol:
  *
- *   - RESERVED SPELLINGS.  A handful of names satisfy the grammar above but
- *     are claimed by another token in Eshkol's lexer, so writing them bare
- *     would not read back as a symbol: `->` (the function-type arrow) and the
- *     four R7RS special reals `+inf.0` `-inf.0` `+nan.0` `-nan.0` (numbers,
- *     which R7RS also resolves in favour of the number). These force bars.
+ *   - RESERVED SPELLINGS.  Some names satisfy the grammar above but are
+ *     claimed by another token, so writing them bare would not read back as a
+ *     symbol: `->` (the function-type arrow) and every spelling that is R7RS
+ *     number syntax -- `+inf.0`, `+i`, `-i`, `+2i`, `+inf.0i` -- which R7RS
+ *     resolves in favour of the number (number_syntax.h decides, as it does
+ *     for every reader). These force bars.
  *
  *   - COLON.  R7RS lists `:` as a <special initial>, but Eshkol's tokenizer
  *     gives `:` a second job as the type-annotation separator: it ends a
@@ -85,6 +86,8 @@
 
 #include <stddef.h>
 #include <string.h>
+
+#include "number_syntax.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -155,11 +158,11 @@ static inline int eshkol_symbol_needs_bars(const char* name, size_t len) {
 
     if (!name || len == 0) return 1;  /* the empty symbol is only writable as || */
 
-    /* Spellings another Eshkol token would claim. */
+    /* Spellings another Eshkol token would claim: the arrow, and every name
+     * that is R7RS number syntax (+inf.0, +i, -i, +2i, 1+i ... -- the shared
+     * recognizer, number_syntax.h, decides, exactly as the readers do). */
     if (len == 2 && name[0] == '-' && name[1] == '>') return 1;
-    if (len == 6 && (name[0] == '+' || name[0] == '-') &&
-        (memcmp(name + 1, "inf.0", 5) == 0 || memcmp(name + 1, "nan.0", 5) == 0))
-        return 1;
+    if (eshkol_number_syntax_is_number(name, len, 10)) return 1;
 
     /* A leading ':' is read back whole (`:key`); ':' elsewhere splits. */
     if (name[0] == ':') {

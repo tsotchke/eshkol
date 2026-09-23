@@ -150,6 +150,41 @@ static int vm_is_definition_form(Node* node) {
 }
 static int vm_head_user_rebound(FuncChunk* c, const Node* identifier);
 
+/* A body sequence at the top level of a program -- the forms of a top-level
+ * `begin` or `with-region` -- whose definitions are top-level definitions
+ * (R7RS 5.1: a top-level `begin`'s forms are spliced into the program).
+ *
+ * A top-level definition binds a fresh stack slot and leaves it in place, so
+ * it is never popped; a non-definition's value is popped unless it is the
+ * last form. The sequence always ends with exactly one value on top: the
+ * last form's value, or VOID when the last form is a definition. When the
+ * body introduced slots, that value sits above them where the top-level
+ * driver (eshkol_vm.c), which pops nothing after a form that added locals,
+ * would leave it to shift every later slot, so the caller must drop it with
+ * vm_end_toplevel_sequence() once it has used it. Popping after a definition
+ * used to discard the slot the definition had just bound: after
+ * (begin (define tt 5) 1), tt read the value 1. */
+static void vm_compile_toplevel_sequence(FuncChunk* c, Node* node, int start) {
+    for (int i = start; i < node->n_children; i++) {
+        int is_last = (i == node->n_children - 1);
+        int is_def = vm_is_definition_form(node->children[i]);
+        compile_expr(c, node->children[i], 0);
+        if (is_last) {
+            if (is_def) chunk_emit(c, OP_VOID, 0);
+        } else if (!is_def) {
+            chunk_emit(c, OP_POP, 0);
+        }
+    }
+}
+
+static void vm_end_toplevel_sequence(FuncChunk* c, int locals_before) {
+    if (c->n_locals > locals_before) chunk_emit(c, OP_POP, 0);
+}
+
+static int vm_at_top_level(const FuncChunk* c) {
+    return c->enclosing == NULL && c->scope_depth == 0;
+}
+
 static int vm_tail_call_allowed(FuncChunk* c, Node* head, int tail) {
     if (!tail) return 0;
     if (c->guard_self_tail_only &&
@@ -4584,16 +4619,27 @@ static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
     chunk_emit(c, OP_NATIVE_CALL, VM_NATIVE_REGION_EVAC_PUSH);
     chunk_emit(c, OP_POP, 0);
 
-    for (int i = body_start; i < node->n_children; i++) {
-        if (i < node->n_children - 1) {
-            compile_expr(c, node->children[i], 0);
-            chunk_emit(c, OP_POP, 0);
-        } else {
-            compile_expr(c, node->children[i], 0);
-        }
+    int toplevel = vm_at_top_level(c);
+    int locals_before = c->n_locals;
+    if (toplevel) {
+        /* At top level a body definition is a top-level definition, visible
+         * after the region, as natively (SW-240). */
+        vm_compile_toplevel_sequence(c, node, body_start);
+    } else {
+        /* Inside a procedure the body is a scope, compiled like `let ()`'s,
+         * so an internal definition gets a local slot (boxed when captured).
+         * Compiled as bare expressions, `(define t ...)` built its box and
+         * dropped it, and every later reference to `t` read an unrelated
+         * slot: (vector-ref <that slot> 0) answered () and the body ran on
+         * it silently until SW-221 made the accessor refuse. */
+        int saved_locals = c->n_locals;
+        c->scope_depth++;
+        vm_compile_scope_body(c, node, body_start, saved_locals, 0);
+        c->scope_depth--;
     }
 
     chunk_emit(c, OP_NATIVE_CALL, VM_NATIVE_REGION_EVAC_POP);
+    if (toplevel) vm_end_toplevel_sequence(c, locals_before);
 }
 
 /**
@@ -5866,6 +5912,12 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* (begin e1 e2 ...) */
     if (is_sym(head, "begin")) {
+        if (vm_at_top_level(c) && node->n_children > 1) {
+            int locals_before = c->n_locals;
+            vm_compile_toplevel_sequence(c, node, 1);
+            vm_end_toplevel_sequence(c, locals_before);
+            return;
+        }
         for (int i = 1; i < node->n_children; i++) {
             if (i < node->n_children - 1) {
                 compile_expr(c, node->children[i], 0);

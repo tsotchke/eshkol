@@ -265,6 +265,20 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (max a . rest) (fold-left _max2 a rest))\n"
     "(define (min a . rest) (fold-left _min2 a rest))\n"
     "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
+    /* SW-241: the R7RS comparison chains as VALUES take two or more
+     * arguments; the call position keeps its own lowering. */
+    "(define (_chain2 f) (lambda (a b . rest) (let loop ((a a) (b b) (rest rest)) (if (f a b) (if (null? rest) #t (loop b (car rest) (cdr rest))) #f))))\n"
+    "(define _cmp2_0 <) (define < (_chain2 _cmp2_0))\n"
+    "(define _cmp2_1 >) (define > (_chain2 _cmp2_1))\n"
+    "(define _cmp2_2 <=) (define <= (_chain2 _cmp2_2))\n"
+    "(define _cmp2_3 >=) (define >= (_chain2 _cmp2_3))\n"
+    "(define _cmp2_4 =) (define = (_chain2 _cmp2_4))\n"
+    "(define _cmp2_5 string=?) (define string=? (_chain2 _cmp2_5))\n"
+    "(define _cmp2_6 string<?) (define string<? (_chain2 _cmp2_6))\n"
+    "(define _cmp2_10 string-ci=?) (define string-ci=? (_chain2 _cmp2_10))\n"
+    "(define _cmp2_15 char=?) (define char=? (_chain2 _cmp2_15))\n"
+    "(define _cmp2_16 char<?) (define char<? (_chain2 _cmp2_16))\n"
+    "(define _cmp2_17 char>?) (define char>? (_chain2 _cmp2_17))\n"
     /* SW-173: `list`, `vector` and `string` are compiled by head symbol in
      * CALL position (vm_compiler.c lowers `(list a b)` to a cons chain and
      * `(vector …)` to OP_VEC_CREATE before it ever looks a binding up), so

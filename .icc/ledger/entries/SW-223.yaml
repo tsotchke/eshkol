@@ -1,0 +1,29 @@
+id: SW-223
+bucket: SILENT-WRONG
+subtag: numeric-syntax
+family: cross-engine/number-syntax
+status: fixed
+closed_at: 'e607df22a815967b6ef903689423739bae50af0c'
+title: "Complex number syntax: string->number \"1+1i\" answered #f while read returned a symbol; the parser and VM misread 1+1i"
+repro: >-
+  (display 1+1i), (string->number "1+1i") and (read (open-input-string "1+1i"))
+  on eshkol-run -r, AOT and eshkol-vm-standalone-test; also #i42, #e1.5.
+observed_before: >-
+  Native parser: "expected closing parenthesis"/undefined +1i. VM: fatal
+  "display requires an open output port". string->number answered #f while read
+  returned a symbol; #i42 was exact; #e1.5 was not a number; native read of an
+  integer past int64 clamped to INT64_MAX.
+observed_after: >-
+  1+i on every reader and engine; the full R7RS 7.1.1 grammar (a+bi, a-bi, +i,
+  -i, +bi, m@a, #e/#i and radix prefixes, rational and inf/nan parts) is read
+  identically by literals, read and string->number on JIT, AOT and the VM.
+root_cause: >-
+  six readers each carried a partial copy of the number grammar.
+fixed_by: >-
+  inc/eshkol/core/number_syntax.h, one recognizer used by the parser, the
+  runtime reader, string->number and the VM parser/reader/natives (ADR-0028).
+evidence: >-
+  tests/complex/sw223_number_syntax_test.esk (ctest
+  sw223_number_syntax_jit_smoke, _aot_o0_smoke, _aot_o2_smoke, _vm_src_smoke).
+caught_by: [v135f-coordinator]
+missed_by: [run_vm_parity, builtins_first_class_audit]
