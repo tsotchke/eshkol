@@ -354,6 +354,149 @@ void backing_block_case() {
     region_pop();
 }
 
+// Case 6: parameter binding order (credit: Gabriel Kahen, #714). A parameter's
+// value stack is malloc-owned, so a young value bound there is promoted first.
+// When that promotion fails, the binding must not be published: `top` still
+// names the previous binding, and reading the parameter answers it.
+void parameter_case() {
+    arena_t* root = get_global_arena_shared();
+    eshkol_tagged_value_t base = int_value(11);
+    void* param = eshkol_make_parameter(root, base);
+    check(param != nullptr, "parameter: make-parameter outside a region failed");
+
+    eshkol_region_t* young = region_create("young", 4096);
+    region_push(young);
+    const eshkol_tagged_value_t value = heap_value(make_string(young->arena, "young binding"));
+
+    bool raised = false;
+    {
+        CapacityGuard cap(root, 0);
+        eshkol_push_exception_handler(&g_landing);
+        if (setjmp(g_landing) == 0) eshkol_parameter_push(param, value);
+        else raised = true;
+        eshkol_pop_exception_handler();
+    }
+    check(raised && raised_allocation_error(), "parameter: failed push did not raise");
+    const eshkol_tagged_value_t now = eshkol_parameter_ref(param);
+    check(now.type == ESHKOL_VALUE_INT64 && now.data.int_val == 11,
+          "parameter: a failed push published an unwritten binding");
+
+    raised = false;
+    {
+        CapacityGuard cap(root, 0);
+        eshkol_push_exception_handler(&g_landing);
+        if (setjmp(g_landing) == 0) (void)eshkol_make_parameter(root, value);
+        else raised = true;
+        eshkol_pop_exception_handler();
+    }
+    check(raised && raised_allocation_error(), "parameter: failed make-parameter did not raise");
+
+    // With capacity, the same push binds the promoted value.
+    eshkol_parameter_push(param, value);
+    const eshkol_tagged_value_t bound = eshkol_parameter_ref(param);
+    check(bound.type == ESHKOL_VALUE_HEAP_PTR &&
+              !arena_holds(young->arena, reinterpret_cast<void*>(bound.data.ptr_val)) &&
+              std::strcmp(reinterpret_cast<const char*>(bound.data.ptr_val), "young binding") == 0,
+          "parameter: push with capacity did not bind the promoted value");
+    region_pop();
+}
+
+// Case 7: the failpoint matrix (approach credit: Gabriel Kahen, #714). Every
+// allocation site a promotion depends on fails in turn, at every occurrence:
+// the destination copy, the OS providing a new arena block, the forwarding-map
+// insert, the saved-bytes record and the inserted-keys record. The graph has a
+// cycle, a shared edge, and a boxed tensor whose element buffer lives in the
+// OUTER arena and so is rewritten in place (a saved-bytes record). The
+// destination is unbounded with a full current block, so the first copy needs
+// a new block. Each failure must leave: no output, the destination's block
+// chain and bump pointer as they were, the forwarding relation as it was, the
+// shared buffer's bytes as they were, and a catchable allocation error.
+void failpoint_matrix_case() {
+    static const char* const kSiteName[ESHKOL_ALLOC_FAILPOINT_COUNT] = {
+        "destination copy", "arena block", "forwarding insert",
+        "saved-bytes record", "inserted-keys record"};
+
+    for (int site = 0; site < ESHKOL_ALLOC_FAILPOINT_COUNT; ++site) {
+        eshkol_region_t* outer = region_create("outer", 1 << 16);
+        region_push(outer);
+        eshkol_tagged_value_t* holder = make_vector(outer->arena, 1);
+        auto* shared_slots = static_cast<eshkol_tagged_value_t*>(
+            arena_allocate_aligned(outer->arena, 2 * sizeof(eshkol_tagged_value_t), 16));
+        eshkol_region_t* young = region_create("young", 1 << 14);
+        region_push(young);
+
+        char* token = make_string(young->arena, "token");
+        shared_slots[0] = heap_value(token);
+        shared_slots[1] = heap_value(make_string(young->arena, "element"));
+        eshkol_tensor_t* t = arena_allocate_tensor_with_header(young->arena);
+        auto* dims = static_cast<uint64_t*>(arena_allocate_aligned(young->arena, 8, 8));
+        dims[0] = 2;
+        t->dimensions = dims;
+        t->num_dimensions = 1;
+        t->elements = reinterpret_cast<int64_t*>(shared_slots);
+        t->total_elements = 2;
+        t->dtype = ESHKOL_TENSOR_DTYPE_BOXED;
+        eshkol_tagged_value_t* three = make_vector(young->arena, 3);
+        three[0] = heap_value(token);
+        three[1] = heap_value(t);
+        auto* cell = arena_allocate_cons_with_header(young->arena);
+        cell->car = heap_value(vector_of(three));
+        cell->cdr = heap_value(cell);
+        three[2] = heap_value(cell);
+        const eshkol_tagged_value_t value = heap_value(cell);
+        eshkol_tagged_value_t shared_before[2] = {shared_slots[0], shared_slots[1]};
+
+        size_t injected = 0;
+        bool completed = false;
+        for (uint64_t nth = 0; nth < 256 && !completed; ++nth) {
+            arena_t* dst = outer->arena;
+            const size_t used = dst->current_block->used;
+            dst->current_block->used = dst->current_block->size;   // next copy needs a block
+            arena_block_t* const block_before = dst->current_block;
+            const size_t full = block_before->used;
+            const size_t fwd_before = eshkol_region_forwarding_size(young);
+
+            eshkol_tagged_value_t output = int_value(-7);
+            eshkol_alloc_failpoint_arm(site, nth);
+            const bool raised = store_raises(&output, holder, &value);
+            const uint64_t hits = eshkol_alloc_failpoint_hits(site);
+            eshkol_alloc_failpoint_disarm();
+
+            if (raised) {
+                ++injected;
+                check(hits > nth, "failpoint: raised without reaching the armed site");
+                check(raised_allocation_error(), "failpoint: raised condition is not the allocation error");
+                check(output.type == ESHKOL_VALUE_INT64 && output.data.int_val == -7,
+                      "failpoint: barrier wrote its output after a failed promotion");
+                check(dst->current_block == block_before && block_before->used == full,
+                      "failpoint: destination not rewound");
+                check(eshkol_region_forwarding_size(young) == fwd_before,
+                      "failpoint: forwarding relation changed by a failed promotion");
+                check(std::memcmp(shared_slots, shared_before, sizeof(shared_before)) == 0,
+                      "failpoint: shared buffer not restored");
+                block_before->used = used;
+                continue;
+            }
+            // The armed occurrence was never reached: the site is exhausted.
+            completed = true;
+            check(hits <= nth, "failpoint: armed occurrence reached but nothing raised");
+            check(young_edges(output, young->arena) == 0,
+                  "failpoint: completed promotion still has a young edge");
+            holder[0] = output;
+        }
+        if (!completed || injected == 0) {
+            std::fprintf(stderr, "FAIL: failpoint site '%s': %zu injections, completed=%d\n",
+                         kSiteName[site], injected, (int)completed);
+            ++g_failures;
+        } else {
+            std::printf("failpoint %-22s %zu failing occurrences, then a complete promotion\n",
+                        kSiteName[site], injected);
+        }
+        region_pop();
+        region_pop();
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -362,6 +505,8 @@ int main() {
     every_prefix_case();
     range_case();
     backing_block_case();
+    parameter_case();
+    failpoint_matrix_case();
     if (g_failures) {
         std::fprintf(stderr, "region_promotion_failure_test: %d failure(s)\n", g_failures);
         return 1;

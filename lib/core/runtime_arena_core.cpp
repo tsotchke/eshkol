@@ -52,7 +52,47 @@ static size_t align_block_offset(const arena_block_t* block, size_t used, size_t
 }
 
 // Create a new arena block
+// ── Allocation failpoints (see arena_memory.h) ───────────────────────────
+namespace {
+struct AllocFailpoints {
+    int armed_site = -1;
+    uint64_t countdown = 0;
+    uint64_t hits[ESHKOL_ALLOC_FAILPOINT_COUNT] = {};
+};
+thread_local AllocFailpoints t_failpoints;
+}  // namespace
+
+extern "C" void eshkol_alloc_failpoint_arm(int site, uint64_t nth) {
+    t_failpoints = AllocFailpoints{};
+    if (site < 0 || site >= ESHKOL_ALLOC_FAILPOINT_COUNT) return;
+    t_failpoints.armed_site = site;
+    t_failpoints.countdown = nth;
+}
+
+extern "C" void eshkol_alloc_failpoint_disarm(void) {
+    t_failpoints.armed_site = -1;
+}
+
+extern "C" uint64_t eshkol_alloc_failpoint_hits(int site) {
+    if (site < 0 || site >= ESHKOL_ALLOC_FAILPOINT_COUNT) return 0;
+    return t_failpoints.hits[site];
+}
+
+extern "C" int eshkol_alloc_failpoint_fire(int site) {
+    AllocFailpoints& f = t_failpoints;
+    if (f.armed_site < 0) return 0;          // disarmed: the only cost
+    f.hits[site]++;
+    if (site != f.armed_site) return 0;
+    if (f.countdown > 0) { f.countdown--; return 0; }
+    f.armed_site = -1;                       // fire exactly once
+    return 1;
+}
+
 static arena_block_t* create_arena_block(size_t size) {
+    if (eshkol_alloc_failpoint_fire(ESHKOL_ALLOC_FAILPOINT_ARENA_BLOCK)) {
+        eshkol_error("Failed to allocate arena block memory of size %zu", size);
+        return nullptr;
+    }
     // SW-10: the process heap ceiling (ESHKOL_MAX_HEAP) is enforced here
     // because this is the ONE place the arena asks the OS for memory — every
     // other allocation is a bump of a pointer inside a block that already

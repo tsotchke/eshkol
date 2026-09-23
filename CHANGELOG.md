@@ -85,8 +85,12 @@ the source changes; the verification record for the tagged commit is the
   freed (SW-232, #713). A promotion is now one transaction: on failure nothing
   is stored, the region and destination arena are unchanged, and a catchable
   `region promotion: out of memory` error object is raised. Bulk vector and
-  tensor stores promote before they store. See ADR-0001's 2026-09-22
-  amendment.
+  tensor stores promote before they store. A parameter binding
+  (`make-parameter`, `parameterize`) is promoted before the binding is
+  published, so a failed promotion leaves the previous binding in force. A
+  failpoint matrix fails every allocation a promotion depends on, at every
+  occurrence, and checks that each failure leaves nothing behind. See ADR-0001's
+  2026-09-22 amendment.
 - **Malformed tensor shapes raise on every engine (#550).** `(reshape v 1.5
   2)` no longer fails to compile natively, the VM accepts the documented
   variadic `(zeros d1 d2 ...)` and `(ones d1 d2 ...)` and validates their
@@ -2971,6 +2975,9 @@ corpus (#596), the deterministic fuzz gate and malformed-checkpoint rejection
 (#601, #602), the four-engine cross-reader matrix (#615), the subsystem
 handoff record (#616), and the engine-parity realignment above (#620), with
 further ESKM hardening carried into this cut.
+
+Credits: the parameter-binding order fix and the allocation-failpoint approach
+to testing all-or-nothing region promotion come from Gabriel Kahen's #714.
 
 ## [1.3.4-evolve] - 2026-07-31
 

@@ -87,13 +87,22 @@ forwarding map for later escapes to reuse. The protocol is now:
    the transaction's C++ frames are gone; the arena-span caller retains the
    span instead.
 6. **Promote before store.** Stores stage their values, promote them, then
-   store; the range barrier no longer fixes slots up after a bulk copy.
+   store; the range barrier no longer fixes slots up after a bulk copy. A
+   parameter binding is promoted before `top` is published.
+7. **Record before insert.** A forwarding key is added to the transaction's
+   record before it enters the map, so a record that cannot grow never leaves
+   an unrecorded map entry pointing into the rewound destination.
 
 Verification: `region_promotion_failure_test` (issue reproducer, parent before
 child, every copy prefix of a shared cyclic graph, range barrier,
-backing-block failure), under ASan in the sanitizer build. This covers the
-"Failure atomicity" row of the verification matrix for header copy, raw
-buffer copy and worklist growth.
+backing-block failure, parameter binding order, and an allocation-failpoint
+matrix that fails every occurrence of each of the five allocation sites a
+promotion depends on -- destination copy, arena block, forwarding insert,
+saved-bytes record, inserted-keys record -- through the runtime-internal
+`eshkol_alloc_failpoint_*` hook), under ASan in the sanitizer build. This
+covers the "Failure atomicity" row of the verification matrix for header
+copy, raw buffer copy and worklist growth. The failpoint approach and the
+parameter-order finding come from #714.
 
 ## Decision
 

@@ -309,7 +309,10 @@ the store in one transaction before the first slot is written, so they are
 all-or-nothing too. Per-iteration loop reclamation treats a failed copy as a
 refusal and keeps the iteration's memory. The contract is ADR-0001's
 "All-or-nothing promotion"; `region_promotion_failure_test` exercises it at
-every copy prefix of a shared, cyclic graph (SW-232).
+every copy prefix of a shared, cyclic graph and at every occurrence of each
+allocation a promotion depends on (SW-232). A parameter binding is promoted
+before it is published, so a failed `parameterize` leaves the previous binding
+in force.
 
 ## Automatic per-iteration reclamation in resident loops (ESH-0214e)
 

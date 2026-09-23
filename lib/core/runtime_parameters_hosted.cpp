@@ -74,6 +74,16 @@ static eshkol_tagged_value_t eshkol_parameter_null_value() {
  * @return              Opaque parameter handle, or null if the arena allocation fails.
  */
 void* eshkol_make_parameter(void* arena, eshkol_tagged_value_t default_val) {
+    // Promote the default FIRST (SW-232): the barrier raises when the
+    // promotion cannot be completed, and it must do so before anything --
+    // the control block, the malloc'd stack, a published top -- exists to be
+    // left half-built. The value stack is a plain malloc'd buffer that lives
+    // independently of any region arena, so the barrier promotes all the way
+    // out (NULL destination = outside every region), the same treatment every
+    // other cross-region store (global set!, vector-set!, ...) gets.
+    eshkol_tagged_value_t promoted;
+    eshkol_region_write_barrier_into(&promoted, nullptr, &default_val);
+
     eshkol_param_t* param = (eshkol_param_t*)arena_allocate_with_header(
         arena, sizeof(eshkol_param_t), HEAP_SUBTYPE_PARAMETER, 0);
     if (!param) {
@@ -92,19 +102,8 @@ void* eshkol_make_parameter(void* arena, eshkol_tagged_value_t default_val) {
     }
 
     param->capacity = initial_capacity;
+    param->stack[0] = promoted;
     param->top = 0;
-    // The value stack is a plain malloc'd buffer that lives independently of
-    // any region arena (it is never itself region-allocated and outlives any
-    // region that may be active when the value is bound). If `default_val` is
-    // a heap/pointer-tagged value currently living inside an active region's
-    // arena, storing it here without promotion would leave a dangling pointer
-    // once that region pops. Route it through the region write barrier
-    // (ESH-0214c) so its reachable subgraph is evacuated out to the global
-    // arena first -- the same treatment every other cross-region store
-    // (global set!, vector-set!, ...) already gets. `dst` is the actual
-    // storage slot; it is never inside a region arena, so the barrier always
-    // promotes all the way out, exactly as intended.
-    eshkol_region_write_barrier_into(&param->stack[0], &param->stack[0], &default_val);
     return (void*)param;
 }
 
@@ -139,14 +138,18 @@ void eshkol_parameter_push(void* param_ptr, eshkol_tagged_value_t val) {
         param->capacity = new_capacity;
     }
 
-    param->top++;
     // Same region write barrier treatment as the constructor default (see
     // eshkol_make_parameter above): `val` may point into a region that is
     // still active on entry to this `parameterize` binding but pops before
     // the binding is popped/read again, so it must be promoted out of any
     // active region before landing in the malloc'd (never region-owned)
-    // value stack.
-    eshkol_region_write_barrier_into(&param->stack[param->top], &param->stack[param->top], &val);
+    // value stack. Promote, store, THEN publish the new top (SW-232): if the
+    // promotion raises, top still names the previous binding, not a slot
+    // that was never written.
+    eshkol_tagged_value_t promoted;
+    eshkol_region_write_barrier_into(&promoted, &param->stack[param->top + 1], &val);
+    param->stack[param->top + 1] = promoted;
+    param->top++;
 }
 
 /**
