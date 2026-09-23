@@ -168,6 +168,24 @@ regenerate all nine `golden/*.json` files.
   (`build/eshkol-run`, unchanged between runs). SHA-256 of all nine
   `golden/*.json` files was identical byte-for-byte across both runs.
 
+### Regeneration provenance: `squared_distance.json` after series division
+
+Jet division became the series division recurrence instead of a reciprocal
+chain (SW-222). Three `squared_distance` cases changed in their last bits:
+`ball.d3.c1` component 1, all three `sphere.d3.c1` components (whose Gauss
+lemma and radial identities became exactly 0), and four components of
+`product.h2s2r2`. The byte gate went red, as designed, and the file was not
+refreshed until the new values were checked against an independent reference:
+50-digit mpmath evaluation of the closed forms (the Euclidean gradient of
+`acosh(1 + 2|x-y|^2/((1-|x|^2)(1-|y|^2)))^2` on the ball, `-2 log_x(y)` on
+the sphere, and their weighted sum for the product). Seven of the eight
+changed components moved closer to the true value (ball component 1: relative
+error 2.0e-16 to 1.7e-17; sphere and the product's spherical block: 1.4e-16,
+1.2e-16, 8.1e-17 to 9.4e-17, 3.2e-17, 5.9e-17). One moved away: the product's
+hyperbolic component 1, 1.7e-16 to 3.4e-16. Every value is within two units in
+the last place of the true one, the change comes from an intended algorithm
+change, so the candidate replaced the reference.
+
 ## The FD-vs-exact comparison
 
 `poincare_maps.esk` prints a table sweeping `h` over
