@@ -16079,6 +16079,39 @@ entries:
       envelope, generation, convexity, deployed errors and final-only readback.
     caught_by: [track-a-acceptance]
     missed_by: [prototype-only-validation]
+  - id: SW-257
+    bucket: SILENT-WRONG
+    subtag: gpu
+    family: gpu-test-gate/verdict-and-differential
+    status: fixed
+    title: "GPU suite could report PASS from a one-sided workload or a missed failure marker"
+    observed: >-
+      The suite accepted a zero exit with a generic success token, while an
+      indented or bare FAIL could escape a colon-anchored check. It ran the
+      correctness payload once and could report PASS without comparing GPU and
+      CPU results. Some GPU-specific skips also printed PASS.
+    correct: >-
+      Each GPU test must exit zero and end with its named PASS, with any FAIL
+      marker taking precedence. Missing hardware must be SKIP, and GPU
+      correctness requires the live GPU-versus-CPU differential.
+    root_cause: >-
+      Verdict recognition accepted intermediate success markers as final results,
+      and the suite treated the differential payload as a standalone test instead
+      of running its driver. Skip guards emitted success markers for work they
+      did not execute; the CUDA Ozaki probe also ran on CPU fallback.
+    fix: >-
+      scripts/run_gpu_tests.sh uses one terminal verdict parser for compiled tests
+      and the differential driver. GPU-only programs emit terminal SKIP without a
+      PASS marker when the backend is unavailable; the CUDA Ozaki probe requires a
+      live CUDA backend and the suite selects the Ozaki kernel. The differential validates
+      both payload verdicts and numeric RESULT streams.
+    evidence: >-
+      scripts/run_gpu_tests.sh --self-test plants bare and indented FAIL,
+      incomplete output, misleading single-run output, a differential failure,
+      and an absent-GPU SKIP; tests/gpu/gpu_correctness_gate.sh --self-test
+      verifies trace, dispatch, a planted numeric mismatch, and missing probes.
+    caught_by: [icc-bus-report]
+    missed_by: [gpu-suite, gpu-correctness-gate]
   - id: SW-270
     bucket: SILENT-WRONG
     subtag: webgpu

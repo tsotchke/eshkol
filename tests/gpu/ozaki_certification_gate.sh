@@ -24,7 +24,7 @@ emit_trace() { # emit_trace <value> <reason>
 log() { printf '%s\n' "$*"; }
 skip() { log "SKIP: $*"; exit 0; }
 fail() { log "FAIL: $*"; emit_trace FAIL "$*"; exit 1; }
-pass() { log "PASS: $*"; emit_trace PASS "$*"; exit 0; }
+pass() { log "$*"; emit_trace PASS "$*"; log "PASS: ozaki_certification_gate.sh"; exit 0; }
 
 UNAME_S="$(uname -s)"
 [ "$UNAME_S" = "Darwin" ] || skip "Ozaki certification requires macOS/Metal"

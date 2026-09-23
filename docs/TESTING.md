@@ -831,13 +831,25 @@ consumer (ADR 0007) in the nightly `pgo-corpus-smoke` job.
 
 ### GPU correctness gate (#501)
 
-See [GPU_ACCELERATION.md](breakdown/GPU_ACCELERATION.md). The gate was vacuous
-before this wave; it now carries a must-fail canary
-(`tests/gpu/gate_canary_must_fail.esk`, which asserts something permanently
-false and turns the whole run red if it exits 0, fails to compile, is missing,
-or exits non-zero without a `FAIL:` marker) and a trace-contract self-test
-proving that a SKIP writes no trace record at all, so an absent GPU can never
-be credited as a pass.
+`scripts/run_gpu_tests.sh` requires every compiled GPU test to exit 0 and end
+with `PASS: <file stem>`. A bare or indented `FAIL` anywhere, a missing final
+marker, or a nonzero exit fails the suite. A final `SKIP:` is counted as skipped
+and never as passed. `gpu_correctness_gate.esk` is the workload for
+`tests/gpu/gpu_correctness_gate.sh`; the suite grades that shell gate's real
+GPU-versus-CPU numeric differential, rather than grading one execution of the
+workload as if it proved equivalence. The differential rejects missing,
+duplicate, malformed, or non-finite RESULT probes and requires the payload's
+terminal self-check verdict on both backends. The CUDA Ozaki test reports SKIP
+unless CUDA is the live backend; the suite selects its Ozaki kernel when it
+runs. Without a live GPU, the differential reports `SKIP:`, leaves no PASS
+trace, and the suite reports GPU execution as uncertified. Run `scripts/run_gpu_tests.sh --self-test` to plant bare FAIL,
+indented FAIL, missing-verdict, misleading single-run and differential failures
+and verify each is rejected; it also checks SKIP classification.
+
+The existing must-fail canary (`tests/gpu/gate_canary_must_fail.esk`) verifies
+that a deliberately wrong computation fails at runtime. The differential
+script's `--self-test` verifies its trace, live-dispatch, and numeric
+mismatch contracts without requiring a GPU.
 
 ### Release readiness on a self-hosted runner (#502)
 
