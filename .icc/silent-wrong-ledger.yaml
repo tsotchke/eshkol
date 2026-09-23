@@ -15159,3 +15159,59 @@ entries:
       (ctest sw221_container_type_boundary_{jit,aot_o0,aot_o2,vm_src}_smoke).
     caught_by: [v135f-coordinator]
     missed_by: [builtins_first_class_audit]
+  - id: SW-239
+    bucket: SILENT-WRONG
+    subtag: vm-scope
+    family: vm/with-region-body-scope
+    status: fixed
+    closed_at: '7e73845c510d6b888619bb59945f6575cac0bfa5'
+    title: "VM: a define inside with-region within a procedure was dropped; later references read an unrelated slot"
+    repro: >-
+      (define (f) (with-region 'r (define (sq x) (* x x)) (define u (sq 3)) (+ u 1)))
+      (display (f)) on eshkol-vm-standalone-test.
+    observed_before: >-
+      Wrong or fatal answers depending on the stray slot; in
+      tests/vm/factor_graph_infer_unobserved_surface_regression.esk
+      (vector-ref <slot> 0) answered () and fg-add-factor! ran on () with exit 0.
+      Native answers 10.
+    observed_after: >-
+      10 on the VM, the browser VM and native JIT.
+    root_cause: >-
+      compile_form_with_region compiled a body inside a procedure as bare
+      expressions, so an internal definition built its box and dropped it.
+    fixed_by: >-
+      the body compiles through vm_compile_scope_body, the helper let's body uses
+      (lib/backend/vm_compiler.c).
+    evidence: >-
+      tests/memory/with_region_internal_define_test.esk (ctest
+      with_region_internal_define_{vm,browser_vm,jit}).
+    caught_by: [v135f-gates-lane]
+    missed_by: [run_vm_parity]
+  - id: SW-240
+    bucket: SILENT-WRONG
+    subtag: vm-scope
+    family: vm/with-region-body-scope
+    status: fixed
+    closed_at: '15d760034bb6d86858104405d39dbb32cac81b00'
+    title: "VM: a top-level with-region or begin body popped the slot its definition had bound; the name then read another value"
+    repro: >-
+      (with-region 'r (define tt 5) 1) (display tt), and (begin (define tt 5) 1)
+      (display tt), on eshkol-vm-standalone-test.
+    observed_before: >-
+      1 (and nothing at all for (with-region 'r (define tt 5) (display tt))
+      followed by (display tt)), exit 0; native prints 5.
+    observed_after: >-
+      5 on the VM and the browser VM; native JIT agrees for with-region.
+    root_cause: >-
+      the top-level body compile popped every non-last form, definitions
+      included, and a top-level definition's value IS its slot.
+    fixed_by: >-
+      vm_compile_toplevel_sequence / vm_end_toplevel_sequence in
+      lib/backend/vm_compiler.c, the one top-level body rule for with-region and
+      begin.
+    evidence: >-
+      tests/memory/with_region_toplevel_define_test.esk (ctest
+      with_region_toplevel_define_{vm,browser_vm,jit}) and
+      tests/vm/toplevel_begin_define_test.esk (ctest toplevel_begin_define_vm).
+    caught_by: [v135f-gates-lane]
+    missed_by: [run_vm_parity]
