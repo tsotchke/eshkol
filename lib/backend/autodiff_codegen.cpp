@@ -4864,8 +4864,19 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                             ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(closure_val), ctx_.ptrType()),
                             ConstantInt::get(ctx_.int64Type(), 33))),
                     ctx_.int64Type());
-                Value* clo_arity_le1 = ctx_.builder().CreateICmpULE(clo_arity_val,
-                    ConstantInt::get(ctx_.int64Type(), 1));
+                // A variadic callable takes the point spread (SW-241), never the
+                // whole point as one tensor argument.
+                Value* clo_variadic_rt = ctx_.builder().CreateICmpNE(
+                    ctx_.builder().CreateAnd(
+                        ctx_.builder().CreateLoad(ctx_.int8Type(),
+                            ctx_.builder().CreateGEP(ctx_.int8Type(),
+                                ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(closure_val), ctx_.ptrType()),
+                                ConstantInt::get(ctx_.int64Type(), 34))),
+                        ConstantInt::get(ctx_.int8Type(), CLOSURE_FLAG_VARIADIC)),
+                    ConstantInt::get(ctx_.int8Type(), 0));
+                Value* clo_arity_le1 = ctx_.builder().CreateAnd(
+                    ctx_.builder().CreateICmpULE(clo_arity_val, ConstantInt::get(ctx_.int64Type(), 1)),
+                    ctx_.builder().CreateNot(clo_variadic_rt));
 
                 BasicBlock* grad_rt_scalar_fwd = BasicBlock::Create(
                     ctx_.context(), "grad_rt_scalar_fwd", current_func);
@@ -5756,8 +5767,22 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                 Value* clo_ptr = ctx_.builder().CreateIntToPtr(clo_ptr_i64, ctx_.ptrType());
                 Value* clo_arity_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), clo_ptr,
                     ConstantInt::get(ctx_.int64Type(), 33));
-                Value* clo_arity = ctx_.builder().CreateZExt(
+                Value* clo_arity_declared = ctx_.builder().CreateZExt(
                     ctx_.builder().CreateLoad(ctx_.int8Type(), clo_arity_ptr), ctx_.int64Type());
+                // A variadic procedure accepts one argument per point element
+                // (SW-241; the VM spreads the same way), so it is called with
+                // the point spread, not with the whole point as one argument.
+                Value* clo_is_variadic = ctx_.builder().CreateICmpNE(
+                    ctx_.builder().CreateAnd(
+                        ctx_.builder().CreateLoad(ctx_.int8Type(),
+                            ctx_.builder().CreateGEP(ctx_.int8Type(), clo_ptr,
+                                ConstantInt::get(ctx_.int64Type(), 34))),
+                        ConstantInt::get(ctx_.int8Type(), CLOSURE_FLAG_VARIADIC)),
+                    ConstantInt::get(ctx_.int8Type(), 0));
+                Value* clo_arity = ctx_.builder().CreateSelect(
+                    ctx_.builder().CreateAnd(clo_is_variadic,
+                        ctx_.builder().CreateICmpUGE(n, ConstantInt::get(ctx_.int64Type(), 2))),
+                    n, clo_arity_declared, "grad_call_arity");
 
                 /* Arity of a RUNTIME closure is only known at run time, so the
                  * point has to be spread into that many scalar arguments by a
