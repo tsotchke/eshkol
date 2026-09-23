@@ -721,7 +721,7 @@ x
 <p><strong>Stdlib directories:</strong> <code>core/</code>, <code>math/</code>, <code>signal/</code>, <code>ml/</code>, <code>random/</code>, <code>web/</code>, <code>tensor/</code>, <code>quantum/</code></p>
 <hr />
 <h2 id="macro-system">Macro System</h2>
-<p>Eshkol implements R7RS hygienic macros via <code>syntax-rules</code> pattern matching. The native compiler and the bytecode VM share one engine (<a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/frontend/syntax_rules_core.h" target="_blank" rel="noopener noreferrer">syntax_rules_core.h</a>) and one renaming rule (<a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0026-syntax-rules-one-engine-one-renaming-rule.md" target="_blank" rel="noopener noreferrer">ADR-0026</a>); the full rules are in the <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/macros.md" target="_blank" rel="noopener noreferrer">macro reference</a>.</p>
+<p>Eshkol implements R7RS hygienic macros via <code>syntax-rules</code> pattern matching. The native compiler and the bytecode VM share one engine (<a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/frontend/syntax_rules_core.h" target="_blank" rel="noopener noreferrer">syntax_rules_core.h</a>) and one renaming rule (<a href="/docs#page=adr_0026_macro_hygiene" data-url="/content/adr_0026_macro_hygiene.html">ADR-0026</a>); the full rules are in the <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/macros.md" target="_blank" rel="noopener noreferrer">macro reference</a>.</p>
 <pre class="scheme"><code>;; Pattern-based macros
 (define-syntax my-if
   (syntax-rules ()

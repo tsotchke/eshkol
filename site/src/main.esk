@@ -445,7 +445,7 @@
         (let ((title (create-text "h1" "The derivative is a compiler primitive." left)))
           (web-add-class title "hero-title"))
 
-        (let ((sub (create-text "p" "Eshkol is R7RS Scheme compiled to native code through LLVM 21. Gradient, Jacobian and Hessian lower to machine instructions the same way + does. They stay exact through closures, recursion and control flow. There is no tracing library in between. The same gradient runs byte-identically on the bytecode VM." left)))
+        (let ((sub (create-text "p" "Eshkol is R7RS Scheme compiled to native code through LLVM. Gradient, Jacobian and Hessian are compiler primitives. Native JIT and AOT compose exact derivatives at arbitrary nesting depth and order. The bytecode VM shares the language's hygienic macros, number grammar, and catchable call errors." left)))
           (web-add-class sub "hero-sub"))
 
         ;; Generated surface and ledger counts; runtime behavior is measured by release gates.
@@ -645,7 +645,7 @@
 (define (render-whats-new parent)
   (let ((section (create-section parent)))
     (section-heading section release-whats-new-heading)
-    (body-html section "<strong style='color:#a78bfa'>Sixteen thousand levels deep.</strong> Feed the compiler a source file sixteen thousand parentheses deep on an eight-megabyte stack and it compiles it, through the JIT and through AOT. That is not a metaphor for robustness. Parsing, type synthesis, and lowering run on an explicit continuation stack, so native stack use is independent of how deeply a program nests. The rest of the release applies that discipline to answers: dense tensor gradients, a bytecode VM that reclaims memory, multi-shot continuations on every engine, and a numeric tower that stays exact.")
+    (body-html section "<strong style='color:#a78bfa'>Sixteen thousand levels deep.</strong> Parsing, type synthesis, and lowering use explicit continuations through JIT and AOT under an 8 MiB stack limit. The gate compiles 16,000 levels. Recursive Taylor levels compose exact derivatives at arbitrary nesting depth and order. Hygienic macros, one R7RS number grammar, dense tensor gradients, multi-shot continuations, and VM region reclamation complete the language contract.")
 
     (let ((grid (create-grid-3 section)))
       (render-feature-card grid
@@ -685,6 +685,19 @@
       (render-feature-card grid3
         "Gates measured against deliberate mutations"
         "The assurance runner executes the closed-enum gate twelve times in an isolated source projection, with zero, one, and two dispatcher case labels removed. Every baseline passes and every treatment is rejected. At the release commit the gate finds 34 exhaustive AST operation switches, one callable dispatch site, and zero findings."))
+
+    (let ((grid4 (create-grid-3 section)))
+      (render-feature-card grid4
+        "Nested exact differentiation"
+        "Recursive Taylor levels carry enclosing derivative coefficients, so native JIT and AOT compose derivative and derivative-n at arbitrary depth and order. Exact rational coefficients remain exact through exact arithmetic; complex kernels retain their derivative values.")
+
+      (render-feature-card grid4
+        "One language grammar"
+        "Program literals, read, and string->number share the R7RS number recognizer, including complex rectangular and polar forms. Hygienic syntax-rules, top-level begin splicing, and catchable arity errors follow the same contracts on native and VM.")
+
+      (render-feature-card grid4
+        "Browser tensor dispatch"
+        "The browser VM uses the shared tensor GPU seam through WebGPU. Integer-word software floating point preserves the exact tier, and an unavailable adapter or unsupported kernel falls back to CPU execution."))
 
     section))
 
@@ -865,7 +878,7 @@
 
 (define (render-learn-page content)
   (let ((page (create-section content)))
-    (create-page-header page "Learn Eshkol" "From hello world to automatic differentiation — interactive code examples you can run in the browser.")
+    (create-page-header page "Learn Eshkol" "Run R7RS examples in the browser, from exact arithmetic and hygienic macros to tensors and automatic differentiation.")
 
     ;; Prerequisites note
     (let ((note (create-div page)))
@@ -874,7 +887,7 @@
       (let ((h (create-text "h3" "Before You Start" note)))
         (style! h "fontSize" "1.1rem")
         (style! h "marginBottom" "8px"))
-      (body-text note "All code examples below are runnable in the browser VM. Click the Run button to execute them. For native compilation with GPU acceleration and automatic differentiation, install Eshkol locally.")
+      (body-text note "The browser VM runs the examples below. It shares the R7RS number grammar, top-level definitions, and catchable conditions with native execution. Browser tensor calls use WebGPU when available. For nested Taylor differentiation at arbitrary depth and order, install Eshkol and use native JIT or AOT.")
       (let ((a (create-text "a" "Install Eshkol" note)))
         (web-add-class a "btn")
         (web-add-class a "btn-primary")
@@ -1191,6 +1204,7 @@
 (define (render-docs-page content)
   (let ((page (create-div content)))
     (style! page "paddingTop" "32px")
+    (body-text page "Start with the language guide, then use the sidebar for upgrading behavior, feature status, and design contracts for macros, nested differentiation, number syntax, and browser WebGPU.")
 
     ;; Docs layout: sidebar + content
     (let ((layout (create-div page)))
@@ -1425,7 +1439,7 @@
     (let ((stats (create-grid-4 page)))
       (let ((s1 (create-card stats)))
         (web-add-class s1 "text-center")
-        (let ((v (create-text "div" "297KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "299KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "Site WASM" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-card stats)))

@@ -1,0 +1,48 @@
+<h1 id="adr-0026-one-syntax-rules-engine-and-one-renaming-rule">ADR-0026: One <code>syntax-rules</code> engine and one renaming rule</h1>
+<p><strong>Status:</strong> Accepted <strong>Ledger:</strong> SW-192; SW-42 (referential transparency); the SW-30 residuals (<code>do</code> and internal <code>define</code> binders) <strong>Scope:</strong> Macro expansion on the native compiler (JIT, AOT, REPL) and the bytecode VM (hosted, ESKB, browser).</p>
+<h2 id="context">Context</h2>
+<p>R7RS 4.3.2 requires <code>syntax-rules</code> macros to be hygienic in both directions: an identifier a template binds can neither capture nor be captured by the caller’s code, and an identifier a template uses freely means what it meant where the macro was defined, whatever the caller has bound with the same spelling.</p>
+<p>Each engine had its own <code>syntax-rules</code> implementation, and neither met the requirement.</p>
+<ul>
+<li>The native expander matched patterns against the parser’s lowered AST and substituted into a template that had already been parsed as code. Every AST payload shape needed its own substitution and renaming case, and each missing case miscompiled silently: a <code>do</code> or <code>let-values</code> binder in a template was left unrenamed or its operand unsubstituted, a macro-defining macro lost its pattern variables, <code>(thunk 7)</code> failed to match because a library procedure’s formal named <code>thunk</code> did not shadow the keyword, and a continuation-passing macro was rejected as “circular”.</li>
+<li>The VM matched reader syntax but renamed only the binders of <code>lambda</code> and the <code>let</code> family, had no dotted-tail patterns, mishandled repeated structured patterns, expanded operands before their scope was known (so a caller’s local variable could not shadow a macro keyword), and did not see macros used before their definition.</li>
+</ul>
+<p>A previous attempt refused special-form macro bindings. The owner ruled that refusal is not completion (SW-192).</p>
+<h2 id="decision">Decision</h2>
+<ol type="1">
+<li><p><strong>One engine.</strong> <code>inc/eshkol/frontend/syntax_rules_core.h</code> is the only implementation of <code>syntax-rules</code> matching and instantiation. It works on a neutral tree of reader syntax and is header-only C, so the VM stays a single C translation unit for its browser and freestanding builds. The native expander (<code>lib/frontend/syntax_rules.cpp</code>) and the VM (<code>lib/backend/vm_macro.c</code>) are adapters that convert their reader syntax to that tree and back. It implements the full R7RS pattern language: literals, <code>_</code>, a custom ellipsis, an ellipsis followed by further patterns, dotted tails, vectors, nested ellipses, <code>(... ...)</code> escapes.</p></li>
+<li><p><strong>Macros operate on reader syntax.</strong> The native parser keeps the datum of every macro use and every transformer in side tables keyed by <code>NodeId</code> and by the definition record (<code>inc/eshkol/frontend/syntax_datum.h</code>), as ADR-0008 prescribes for per-node data. Every symbol-headed call keeps a reference into its tokenizer’s tape, so a call the parser could not know to be a macro use (a forward reference, a macro another module or another expansion defined) is re-read as syntax when the expander finds its keyword. An expansion is handed back to the parser, so a template means exactly what the same text means anywhere else in a program.</p></li>
+<li><p><strong>One renaming rule</strong> (<code>inc/eshkol/frontend/syntax_color.h</code>). Each expansion has a fresh color. Every identifier the template introduces, outside quoted data, is emitted with the color appended; pattern variables are the caller’s syntax and keep their spelling. A colored identifier is therefore a new name:</p>
+<ul>
+<li>a binder the template introduces binds the colored name, so it can neither capture caller code nor be captured by it, with no list of binding forms anywhere in the expander;</li>
+<li>a colored identifier that no binder of its expansion binds is free in the template and is resolved by removing its last color and looking the name up in the macro’s definition environment (a definition-site local, else the top-level binding), never among the caller’s locals. Colors nest for macro-defining macros; one is removed per definition environment.</li>
+<li>keywords are colored too. Each engine recognises keyword grammar by the uncolored spelling (<code>token_is_keyword</code> in the parser, <code>is_sym</code> and <code>eshkol_syntax_base_is</code> in the VM), so a template’s <code>if</code>, <code>else</code> or <code>=&gt;</code> keeps its meaning while a caller’s <code>(let ((else 1)) ...)</code> cannot capture it. Only the pattern markers <code>...</code> and <code>_</code> are never colored.</li>
+<li>a symbol that becomes data (quoted) never carries a color.</li>
+<li>a top-level definition of a colored name (<code>define</code>, <code>define-values</code>, <code>define-record-type</code>) defines the uncolored name, as definitions produced by templates always did on both engines.</li>
+</ul></li>
+<li><p><strong>Keyword scope.</strong> A macro keyword is shadowed by a lexical binding of the same spelling created after it (a caller’s <code>(let ((m ...)) (m ...))</code> calls the local); a top-level definition does not shadow syntax, on either engine. A template’s own macro keywords resolve in the definition environment: the native expander emits an alias for the definition-site transformer, the VM stamps the template with its definition scope.</p></li>
+<li><p><strong>Forward references.</strong> Every top-level <code>define-syntax</code> of a unit is visible to the whole unit on both engines.</p></li>
+</ol>
+<h2 id="alternatives-considered">Alternatives considered</h2>
+<ul>
+<li><strong>Fix each engine’s gaps in place.</strong> Rejected: two implementations of one specification diverge by construction, and the native one could only be made complete by teaching substitution and renaming every AST payload shape, the source of the defects.</li>
+<li><strong>A binder-aware renaming pass.</strong> Rejected: it needs a table of binding forms in the expander, which is a second copy of the language’s scoping rules and misses every form it does not list (<code>do</code>, <code>let-values</code>, <code>guard</code>, internal <code>define</code>, named <code>let</code>, <code>match</code> patterns were all missing at some point). Coloring gets binders right without knowing which forms bind.</li>
+<li><strong>Refuse special-form macro bindings</strong> (f646213d5, reverted in 01d887d91). Rejected by the owner: a documented refusal is not completion.</li>
+<li><strong>Compile the engine as C++ and link it into the VM.</strong> Rejected: the browser and freestanding VM builds compile no C++.</li>
+</ul>
+<h2 id="consequences">Consequences</h2>
+<ul>
+<li>A use whose operands do not match any rule is a syntax error on both engines. In particular <code>()</code> is the empty list, not a disguised <code>(list)</code>: a pattern <code>(x)</code> does not match it (tests/parser/bare_null_arg_test.esk was corrected).</li>
+<li>Macro operands are no longer parsed as expressions before expansion, so an operand only needs to be syntax the template makes sense of.</li>
+<li>A library procedure’s formal shadows a macro keyword of the same spelling inside its body.</li>
+<li>The VM expands each form when the compiler reaches it, in that form’s scope.</li>
+<li>The native expander gives every lexical binder a fresh spelling, <code>_v&lt;n&gt;.&lt;name&gt;</code>, so a colored free identifier can reach a definition-site local that a caller’s binding of the same name would otherwise shadow. That spelling is an implementation name and never reaches a user: <code>syntax_color.h</code> owns the format in both directions, and every checker diagnostic, every diagnostic record and the source form of a procedure (<code>(display (lambda (x) x))</code>) names identifiers as they were written. Identifiers of the form <code>_v&lt;n&gt;.&lt;name&gt;</code> are reserved for the expander.</li>
+<li>A builtin the parser lowers to its own operation node (<code>walk</code>, <code>unify</code>, <code>make-fact</code>, …; <code>shadowable_ops.h</code>) is an ordinary call of a local binder of the same name in that binder’s scope. The expander, which owns lexical scope, rewrites the node; after renaming no later pass could see the shadow. Codegen resolves only top-level and REPL-batch definitions of those names, from the same table.</li>
+<li>The legacy standalone <code>lib/backend/eshkol_compiler.c</code>, which no build target compiles, is not maintained against this change.</li>
+</ul>
+<h2 id="verification">Verification</h2>
+<ul>
+<li><code>tests/vm_parity/corpus/93_macro_hygiene_matrix.esk</code>: hand-computed checks run on native JIT, native AOT and the VM (ctest <code>macro_hygiene_matrix</code>) and in the VM parity corpus.</li>
+<li><code>tests/frontend/syntax_rules_core_test.c</code>: the engine compiled as plain C, against hand-computed expansions (ctest <code>syntax_rules_core_test</code>).</li>
+<li><code>tests/vm_parity/corpus/92_macro_definition_scope.esk</code>, the VM parity harness (vm-src and vm-eskb) and the existing macro suites.</li>
+</ul>

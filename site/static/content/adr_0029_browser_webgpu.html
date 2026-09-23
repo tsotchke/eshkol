@@ -1,0 +1,47 @@
+<h1 id="adr-0029-webgpu-dispatch-for-the-browser-vm-through-a-jspi-boundary">ADR-0029: WebGPU dispatch for the browser VM through a JSPI boundary</h1>
+<ul>
+<li><strong>Status:</strong> Accepted</li>
+<li><strong>Date:</strong> 2026-09-22</li>
+<li><strong>Decision owners:</strong> Eshkol GPU and WASM runtime</li>
+<li><strong>Applies to:</strong> the browser bytecode VM (<code>site/static/eshkol-vm.{js,wasm}</code>, built by <code>scripts/build-wasm-repl.sh</code>), the WASM execute-and-diff module, <code>lib/backend/gpu/gpu_memory_webgpu.cpp</code>, and <code>web/eshkol-webgpu.js</code></li>
+<li><strong>Relates to:</strong> the compiled-WASM WebGPU dispatch (<code>eshkol_matmul_dispatch</code> and <code>eshkol_gpu_*</code> served by <code>web/eshkol-webgpu.js</code>), ADR-0003 (codegen/VM parity)</li>
+</ul>
+<h2 id="context">Context</h2>
+<p>The VM’s tensor natives already call the ordinary GPU seam. <code>vm_native.c</code> tries <code>vm_gpu_try_matmul</code>, <code>vm_gpu_try_binary</code>, <code>vm_gpu_try_reduce</code>, <code>vm_gpu_try_softmax</code> and <code>vm_gpu_try_transpose</code> (<code>vm_gpu_dispatch.h</code>), which call <code>eshkol_gpu_*</code>: Metal or CUDA natively. The WASM build compiled that header without <code>ESHKOL_GPU_ENABLED</code>, so in the browser every attempt returned NULL and the VM never reached a GPU. Two further problems stood in the way:</p>
+<ol type="1">
+<li><code>vm_gpu_dispatch.h</code> kept its own copy of the dispatch threshold instead of asking the backend’s <code>eshkol_gpu_should_use()</code>, the selector every other caller uses.</li>
+<li>WebGPU readback (<code>GPUBuffer.mapAsync</code>) is asynchronous, but the VM is synchronous C. Something has to let the evaluation wait for the GPU.</li>
+</ol>
+<h2 id="decision">Decision</h2>
+<p><strong>One seam.</strong> The WASM VM links <code>gpu_memory_webgpu.cpp</code> and compiles with <code>ESHKOL_GPU_ENABLED</code>, like any other GPU build. <code>vm_gpu_should_dispatch()</code> delegates to <code>eshkol_gpu_should_use()</code>, so the VM uses the backend’s threshold and admission rules, and matmul uses the same size measure as <code>eshkol_matmul_dispatch</code> (output elements). In the browser the backend is the <code>EshkolWebGPU</code> object that the compiled-WASM loaders use, with the same sf64 kernels, tiers and policy. <code>gpuServe()</code> in <code>web/eshkol-webgpu.js</code> is the one place that decides GPU or CPU, verifies the execution marker, and counts and explains fallbacks, for both paths.</p>
+<p><strong>The async boundary is JSPI at the module boundary.</strong> <code>gpu_memory_webgpu.cpp</code> declares its three compute bridges (<code>eshkol_webgpu_js_matmul</code>, <code>_elementwise</code>, <code>_reduce</code>) as ordinary synchronous <code>EM_JS</code> imports that answer “no device”. <code>EshkolWebGPU.attachVm(moduleArg, backend)</code> installs an Emscripten <code>instantiateWasm</code> hook that:</p>
+<ul>
+<li>replaces those three imports with <code>WebAssembly.Suspending</code> wrappers of the bridge;</li>
+<li>wraps the entry exports that run Eshkol code (<code>repl_eval</code>, <code>run_program</code>) with <code>WebAssembly.promising</code>.</li>
+</ul>
+<p>It does this only when the browser has JSPI and a WebGPU device. This is the same mechanism the compiled-WASM loaders use (<code>makeImports</code> and <code>promisingExports</code>), so the browser has one suspension mechanism.</p>
+<p>JSPI cannot suspend across a JavaScript frame. The VM’s error recovery uses <code>setjmp</code>/<code>longjmp</code>, which Emscripten lowers by default to <code>invoke_*</code> trampolines that go through JavaScript, so a GPU readback inside any guarded evaluation trapped (“trying to suspend JS frames”). Both WASM VM builds therefore compile with native wasm exception handling (<code>-fwasm-exceptions -sSUPPORT_LONGJMP=wasm</code>, in <code>ESHKOL_WASM_VM_FLAGS</code> in <code>scripts/lib/wasm_vm_sources.sh</code>), which keeps the whole evaluation in wasm frames.</p>
+<p>While an evaluation is suspended it owns the VM’s shadow stack. Every call into a VM that may suspend is therefore serialised per module (<code>EshkolWebGPU.vmSerial</code> and <code>vmCall</code>). The site routes its REPL, its runnable code blocks and the <code>web_repl_eval</code> import through that queue.</p>
+<p><strong>Fallback is explicit.</strong> Without a device, <code>attachVm</code> sets <code>moduleArg.eshkolWebGPUStatus = {ok: false, reason}</code> and changes nothing else. Without JSPI it does the same. The C side then reports <code>ESHKOL_GPU_NONE</code> and the VM runs its CPU path, producing the same output. With a device, an operation that the dispatch selects but that has no WebGPU kernel (softmax, transpose, axis reduction, normalisation, and the transcendental elementwise ops) is counted in <code>fallbackCount</code> and explained in <code>diagnostics</code>. A WebGPU validation error is rethrown, never masked by the CPU.</p>
+<h2 id="alternatives-considered">Alternatives considered</h2>
+<p><strong>Asyncify.</strong> Rejected. It instruments every function that can be on the stack at a suspension point. For an interpreter that is essentially the whole VM, so every evaluation pays in code size and speed, including the vast majority that never touch the GPU. It would also be a second suspension mechanism beside the JSPI one the compiled-WASM path already uses. A restricted <code>ASYNCIFY_ONLY</code> list would have to name every frame between <code>repl_eval</code> and the bridge, including indirect calls through the native dispatch table: a list that silently breaks when the VM changes.</p>
+<p><strong>A staged submit/await boundary at the VM’s native-call seam.</strong> Rejected. The VM would return to JavaScript with a pending GPU operation and later resume the native call. Natives re-enter the interpreter on the C stack (a closure passed to <code>map</code>, a guard body, a tensor callback), so resuming would need a VM that can suspend and continue from any native frame: in effect, the interpreter rewritten as a resumable state machine. JSPI switches stacks in the engine for the same effect, without touching the VM.</p>
+<h2 id="consequences">Consequences</h2>
+<ul>
+<li>A browser user of the VM gets the same WebGPU kernels as compiled programs: matmul, elementwise add/sub/mul/div, and sum/mean/max/min reductions. Matmul and elementwise results are bit-identical to the CPU path.</li>
+<li><code>vmCall</code>, the promising entry exports and the evaluation queue make VM calls asynchronous when attached. Pages that call <code>repl_eval</code> synchronously through <code>cwrap</code> keep working unattached (for example the Node checkers), because attaching is opt-in.</li>
+<li>The browser VM requires wasm exception handling, which is supported by every browser that supports WebAssembly exceptions (Chrome 95+, Firefox 100+, Safari 15.2+).</li>
+<li>The GPU seam adds about 3 KB to <code>eshkol-vm.wasm</code>; <code>lib/core/logger.cpp</code>, which the backend reports allocation failures through, adds about 10 KB.</li>
+<li>The VM’s GPU elementwise path now requires identical operand shapes, not only equal element counts. Before this change, <code>[6] + [1,6]</code> would have produced a result with the wrong shape on any GPU backend.</li>
+</ul>
+<h2 id="verification">Verification</h2>
+<p><code>tests/webgpu/webgpu_vm_test.mjs</code> loads the shipped bundle in Chrome and runs <code>tests/webgpu/vm_tensor_ops.esk</code> attached and unattached. It requires:</p>
+<ul>
+<li>bit-identical matmul and elementwise output;</li>
+<li>reductions within <code>GPU_GATE_TOL</code>;</li>
+<li>exactly ten GPU dispatches;</li>
+<li>softmax reported as an explicit fallback;</li>
+<li>a guard that catches a raise after a suspended GPU call;</li>
+<li>an explicit reason and CPU-identical output with <code>navigator.gpu</code> or <code>WebAssembly.Suspending</code> hidden.</li>
+</ul>
+<p><code>--corrupt</code> serves a broken ADD kernel and must fail.</p>

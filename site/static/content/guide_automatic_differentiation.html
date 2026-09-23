@@ -381,7 +381,7 @@
 (derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1)
 (derivative   (lambda (a) (list-ref (taylor (lambda (b) (* a b)) 1.0 1) 1)) 2.0)
 ;; =&gt; 1, 1, 1</code></pre>
-<p>Nesting has no ceiling. A pass opened inside another live pass runs as a <strong>level</strong>: a truncated Taylor series in its own perturbation whose coefficients are numbers of the enclosing levels, so every enclosing perturbation is kept, at any depth and any order, through the evaluation point or a captured variable (<a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0027-recursive-taylor-level-carrier.md" target="_blank" rel="noopener noreferrer">ADR-0027</a>):</p>
+<p>Nesting has no ceiling. A pass opened inside another live pass runs as a <strong>level</strong>: a truncated Taylor series in its own perturbation whose coefficients are numbers of the enclosing levels, so every enclosing perturbation is kept, at any depth and any order, through the evaluation point or a captured variable (<a href="/docs#page=adr_0027_recursive_taylor" data-url="/content/adr_0027_recursive_taylor.html">ADR-0027</a>):</p>
 <pre class="scheme"><code>;; depth 3, all first order: d/dx d/dy d/dz (x^2 y^2 z^2) at (2,3,4)
 (display (derivative (lambda (x) (derivative (lambda (y) (derivative (lambda (z) (* x x y y z z)) 4.0)) 3.0)) 2.0)) (newline)
 ;; both passes of order 2: d2/da2 d2/db2 (a^3 b^3) at a=2, b=3

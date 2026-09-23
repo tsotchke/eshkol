@@ -7,10 +7,11 @@
 <li><a href="/docs#page=upgrading&amp;2-loop-accumulators-are-typed-by-what-they-carry" data-url="/content/upgrading.html">Loop accumulators are typed by what they carry</a></li>
 <li><a href="/docs#page=upgrading&amp;3-a-procedure-variable-means-its-current-value" data-url="/content/upgrading.html">A procedure variable means its current value</a></li>
 <li><a href="/docs#page=upgrading&amp;4-differentiation" data-url="/content/upgrading.html">Differentiation</a></li>
-<li><a href="/docs#page=upgrading&amp;5-library-behaviour" data-url="/content/upgrading.html">Library behaviour</a></li>
-<li><a href="/docs#page=upgrading&amp;6-building-eshkol" data-url="/content/upgrading.html">Building Eshkol</a></li>
-<li><a href="/docs#page=upgrading&amp;7-environment-variables" data-url="/content/upgrading.html">Environment variables</a></li>
-<li><a href="/docs#page=upgrading&amp;8-contributors" data-url="/content/upgrading.html">Contributors</a></li>
+<li><a href="/docs#page=upgrading&amp;5-language-and-error-behavior" data-url="/content/upgrading.html">Language and error behavior</a></li>
+<li><a href="/docs#page=upgrading&amp;6-library-behaviour" data-url="/content/upgrading.html">Library behaviour</a></li>
+<li><a href="/docs#page=upgrading&amp;7-building-eshkol" data-url="/content/upgrading.html">Building Eshkol</a></li>
+<li><a href="/docs#page=upgrading&amp;8-environment-variables" data-url="/content/upgrading.html">Environment variables</a></li>
+<li><a href="/docs#page=upgrading&amp;9-contributors" data-url="/content/upgrading.html">Contributors</a></li>
 </ol>
 <h2 id="1-the-type-checker-sees-more-of-your-program">1. The type checker sees more of your program</h2>
 <p>The optional static checker examines every evaluated position of every control form: the tests and bodies of <code>cond</code>, <code>case</code>, <code>match</code>, <code>when</code>, <code>unless</code> and <code>do</code>, <code>guard</code> bodies and handlers, <code>and</code>/<code>or</code> operands, <code>set!</code> values, quasiquote escapes, the thunks of <code>dynamic-wind</code> and <code>parameterize</code>, the parts of <code>call/cc</code>, <code>values</code>, <code>call-with-values</code> and <code>let-values</code>, <code>with-region</code> bodies, computed callees, the point of a calculus operator, and every expression of a body rather than only the last. A call in any of those places is checked against the callee’s annotations exactly as the same call at top level.</p>
@@ -89,7 +90,17 @@
 <li><p><strong>Captures are resolved where the closure was made.</strong> A let-bound closure that captures a variable can be differentiated from inside a nested lambda, and a binding at the call site that shares a captured variable’s name does not disturb it. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/operators.md#where-a-capture-is-resolved" target="_blank" rel="noopener noreferrer">the AD capture rules</a>.</p></li>
 </ul>
 <p>The complete AD support matrix, including nesting, is <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md" target="_blank" rel="noopener noreferrer">reference/ad/support-matrix.md</a>.</p>
-<h2 id="5-library-behaviour">5. Library behaviour</h2>
+<h2 id="5-language-and-error-behavior">5. Language and error behavior</h2>
+<ul>
+<li><strong>Arity is checked as an error.</strong> A call with too few or too many arguments raises a catchable arity condition on native and VM. This includes an <code>apply</code> call that spreads too many values into a fixed-arity procedure. Check calls that previously depended on an ignored argument or an implicit value; catch the condition with <code>guard</code> when the call is intentionally dynamic.</li>
+<li><strong>Macros use hygienic lexical bindings.</strong> <code>syntax-rules</code> renames introduced binders consistently. A local binding shadows a builtin with the same spelling, including names that have specialized lowering. Remove any workaround that depends on accidental capture; use an explicit parameter when a macro needs a caller binding.</li>
+<li><strong>The empty-list pattern matches only the empty list.</strong> A <code>syntax-rules</code> pattern <code>()</code> no longer matches a one-element list such as <code>(x)</code>. Add the intended one-element pattern if a macro accepted both shapes.</li>
+<li><strong>Top-level <code>begin</code> splices definitions.</strong> Definitions inside a top-level <code>begin</code>, including one emitted by a macro or nested in a top-level <code>with-region</code>, bind at the program level on native and VM. Rename a binding if it previously depended on being scoped to that <code>begin</code>.</li>
+<li><strong>Number input follows one R7RS grammar.</strong> Program literals, <code>read</code>, and <code>string-&gt;number</code> recognize the same rectangular and polar complex forms, radix and exactness prefixes, and rational parts. <code>string-&gt;number</code> accepts radices 2, 8, 10, and 16. Invalid exactness requests return <code>#f</code> through <code>string-&gt;number</code> and raise in program source or <code>read</code>; audit data files that relied on a formerly accepted nonstandard spelling or radix.</li>
+<li><strong>Caught conditions do not write to stderr.</strong> A <code>guard</code> handler owns its condition. If a program parsed the runtime’s former stderr line after a caught error, log the condition explicitly in the handler. An uncaught condition still reports an error.</li>
+</ul>
+<p>See the <a href="/docs#page=reference_language" data-url="/content/reference_language.html">language reference</a> and <a href="/docs#page=adr_0026_macro_hygiene" data-url="/content/adr_0026_macro_hygiene.html">ADR-0026</a>, <a href="/docs#page=adr_0028_number_syntax" data-url="/content/adr_0028_number_syntax.html">ADR-0028</a> for the exact rules.</p>
+<h2 id="6-library-behaviour">6. Library behaviour</h2>
 <ul>
 <li><code>json-get-in</code> takes an optional default, returned when the path is absent: <code>(json-get-in obj path default)</code>. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/json.md" target="_blank" rel="noopener noreferrer">the JSON reference</a>.</li>
 <li><code>tensor-apply</code> resolves its callable lexically: a local binding whose name is also a builtin’s is the one called. Pass the procedure you mean.</li>
@@ -99,7 +110,7 @@
 <li><code>make-vector</code> has one capacity limit and one diagnostic on every engine.</li>
 <li>The size variables (<code>ESHKOL_STACK_SIZE</code> and its siblings) accept <code>K</code>/<code>M</code>/<code>G</code> and <code>KiB</code>/<code>MiB</code>/<code>GiB</code>, and report a value they cannot parse.</li>
 </ul>
-<h2 id="6-building-eshkol">6. Building Eshkol</h2>
+<h2 id="7-building-eshkol">7. Building Eshkol</h2>
 <ul>
 <li><strong>Host compilers.</strong> v1.3.5-evolve is built and verified with GCC 13 and with Clang/LLVM 21. GCC 15 is not a supported host compiler in this release: where it is the system default, select a supported one (<code>CC=gcc-13 CXX=g++-13</code>, or Clang 21). See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/BUILD_NOTES.md#supported-host-compilers" target="_blank" rel="noopener noreferrer">Supported host compilers</a>.</li>
 <li><strong><code>roundeven</code>.</strong> Scheme <code>round</code> is ties-to-even. Where the platform C library lacks the C23 <code>roundeven</code>, the runtime supplies it; the configure step prints which one is used.</li>
@@ -107,7 +118,7 @@
 <li><strong>Deeply nested programs</strong> compile ahead of time within the default 8 MiB stack.</li>
 </ul>
 <p>Problems and their fixes are collected in <a href="/docs#page=troubleshooting" data-url="/content/troubleshooting.html">TROUBLESHOOTING.md</a>.</p>
-<h2 id="7-environment-variables">7. Environment variables</h2>
+<h2 id="8-environment-variables">8. Environment variables</h2>
 <p>Read by the compiler and runtime since v1.3.5. The full table, with defaults, is <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/environment-variables.md" target="_blank" rel="noopener noreferrer">the environment-variable reference</a>.</p>
 <table>
 <colgroup>
@@ -164,7 +175,7 @@
 </tbody>
 </table>
 <p>For evidence-producing scripts, a relative <code>TRACE_DIR</code> or <code>ICC_TRACE_DIR</code> means a path relative to the repository root.</p>
-<h2 id="8-contributors">8. Contributors</h2>
+<h2 id="9-contributors">9. Contributors</h2>
 <ul>
 <li><strong>Tutorial and guide examples are executed</strong> on the JIT and as AOT binaries by the documentation example gate. A page change that breaks an example fails CI; an example that cannot run carries an explicit marker. See <a href="/docs#page=documentation&amp;5-examples-are-executed" data-url="/content/documentation.html">DOCUMENTATION.md</a>.</li>
 <li><strong>Every merged pull request needs a home</strong>: a <code>CHANGELOG.md</code> reference, or a reasoned entry in <code>tests/coverage/changelog_no_user_facing_change.json</code>.</li>

@@ -1,0 +1,86 @@
+<h1 id="adr-0027-nested-differentiation-uses-one-recursive-taylor-level-carrier">ADR-0027: Nested differentiation uses one recursive Taylor level carrier</h1>
+<p><strong>Status:</strong> Accepted <strong>Ledger:</strong> SW-154; SW-193 and SW-194 are closed against the same carrier, and SW-206..SW-209 and SW-213 bring every operator onto it <strong>Scope:</strong> Native LLVM code generation (JIT and AOT), the bytecode VM, and the browser VM, which is the same VM compiled to WebAssembly.</p>
+<h2 id="context">Context</h2>
+<p><code>derivative</code>, <code>derivative-n</code> and <code>taylor</code> each open a <em>differentiation pass</em>. Programs nest passes in two ways: through the evaluation point (<code>(derivative (lambda (t) (derivative-n f (+ 1 t) 2)) 0.0)</code>) and through a captured variable (<code>(derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 2)) 2.0 2)</code>). Mathematically every such program is a truncated series in several independent perturbations.</p>
+<p>Before this decision each engine represented nesting with a fixed set of special cases on top of a flat carrier:</p>
+<ul>
+<li>The native Taylor tower held one value series and at most one first-order companion series (<code>ESH_TAYLOR_TANGENT_FLAG</code>, <code>carry_epoch</code>), plus a hyper-dual second companion for exact arithmetic. The routes <code>RIDE</code>, <code>CARRY_TWR</code> and <code>CARRY_JET</code> of <code>eshkol_ad_nested_seed</code> chose which pass rode the companion.</li>
+<li>The native 8-jet (<code>eshkol_dual_number_t</code>) holds three nilpotent directions (<code>e1</code>, <code>e2</code>, <code>ep</code>) and nests only with itself.</li>
+<li>The VM <code>VmDual</code> mirrored the tower with <code>tangent_coeff</code>, <code>tangent2_coeff</code> and <code>mixed_coeff</code> lanes and the same ride/carry seeds.</li>
+</ul>
+<p>Every shape outside those cases either raised (“both passes have order &gt;= 2”, “through a captured carrier”) or answered 0 with exit status 0: two enclosing first-order levels around an order-2 pass (SW-154), nested holomorphic complex derivatives (SW-193), and the browser VM’s scalar Hessian of <code>expt</code> (SW-194). The limit was the representation, not the mathematics.</p>
+<h2 id="decision">Decision</h2>
+<h3 id="1-the-level-carrier">1. The level carrier</h3>
+<p>A pass that is nested inside another live pass runs as a <strong>level</strong>. A level is identified by an <strong>epoch</strong>, a tag drawn from the process-wide epoch counter when the pass seeds, so a pass opened later always has a larger epoch than every pass enclosing it.</p>
+<p>A <strong>level carrier</strong> of epoch <code>E</code> and order <code>K</code> is the truncated series</p>
+<pre><code>c[0] + c[1] t_E + ... + c[K] t_E^K</code></pre>
+<p>in its own perturbation <code>t_E</code>, whose coefficients <code>c[i]</code> are <em>any number</em>:</p>
+<ul>
+<li>an exact integer, bignum or rational, or a flonum;</li>
+<li>a carrier of a strictly enclosing level (an epoch smaller than <code>E</code>);</li>
+<li>a native 8-jet or VM scalar dual, which is how the outermost first-order <code>derivative</code> carries its perturbation;</li>
+<li>a classic (non-level) Taylor tower of an enclosing pass.</li>
+</ul>
+<p>Invariant: a level carrier of epoch <code>E</code> never contains, at any depth, a carrier of epoch <code>&gt;= E</code>. Because coefficients are numbers of the enclosing levels, depth and per-level order are unbounded, and two perturbations are combined only when their epochs are equal, so perturbation confusion cannot occur.</p>
+<h3 id="2-arithmetic">2. Arithmetic</h3>
+<p>Every numeric primitive on carriers reaches one entry point per engine: <code>eshkol_taylor_binary_tagged</code> / <code>eshkol_taylor_unary_tagged</code> on native and the <code>vm_dual_*</code> operations on the VM. Each takes the <strong>level path</strong> when an operand is a level carrier, or when two operands are towers of different epochs. The level path:</p>
+<ol type="1">
+<li>picks the active epoch <code>E</code>, the largest epoch among the operands;</li>
+<li>reads an operand of epoch <code>E</code> as its coefficient series, and any other operand as the constant series <code>(operand, 0, 0, ...)</code> — the operand is kept whole, never reduced to its primal;</li>
+<li>runs the standard Taylor recurrences (Cauchy product, division, <code>exp</code>, <code>log</code>, coupled <code>sin</code>/<code>cos</code>, the constant-power recurrence, and the compositions <code>tan</code>, <code>sqrt</code>, <code>sinh</code>, <code>cosh</code>, <code>tanh</code>, <code>sigmoid</code>, <code>relu</code>, <code>abs</code>, <code>expt</code>) with every coefficient operation dispatched recursively through the same generic arithmetic.</li>
+</ol>
+<p>Exact arithmetic follows the numeric tower’s contagion: a coefficient is exact while every value it was computed from is exact. <code>expt</code> with an exact integer exponent is computed by repeated multiplication, so it stays exact and is defined at a zero base. Branches (<code>abs</code>, <code>relu</code>, comparisons) read the primal: <code>c[0]</code> taken recursively down to a plain number.</p>
+<p>A native 8-jet coefficient uses the 8-jet’s own algebra, implemented in the runtime: the product over subsets of <code>{e1, e2, ep}</code>, and a unary function as <code>f(x0 + n) = sum_k f^(k)(x0) / k! * n^k</code> for the nilpotent part <code>n</code>, with the <code>f^(k)(x0) / k!</code> taken from the same double recurrences. The VM scalar dual is already a <code>VmDual</code> and uses <code>vm_dual_*</code>.</p>
+<p>A complex value stays the outermost structure: its real and imaginary parts are carriers (ADR-0025), and complex arithmetic is carried out on the parts with the generic real arithmetic above.</p>
+<h3 id="3-when-a-pass-runs-as-a-level">3. When a pass runs as a level</h3>
+<p>At the seed site the engine decides:</p>
+<ul>
+<li>a <code>derivative-n</code>/<code>taylor</code> pass (and the exact-tier or chain-routed <code>derivative</code>, which run as order-<code>k</code> tower passes) runs as a level when any forward pass is live — the forward perturbation level is above 0 or a tower pass is open — or when its point is already a carrier;</li>
+<li>a first-order <code>derivative</code> pass runs as an order-1 level when a tower or level pass is open, its point is a tower or level carrier, or two jet levels are already live. Otherwise it keeps the 8-jet on native and the scalar dual on the VM, which is also what nests <code>derivative</code> inside <code>derivative</code>. The 8-jet holds two forward directions (<code>e1</code>, <code>e2</code>) and the reverse-seed slot <code>ep</code>; a third live jet level has no slot of its own, so it is a level.</li>
+</ul>
+<p>Every other operator reaches the same protocol:</p>
+<ul>
+<li><code>gradient</code> and <code>hessian</code> at a scalar point are the order-1 and order-2 tower passes whenever the point is exact or a pass is live; nested, they are levels.</li>
+<li><code>jacobian</code> met while a pass is live, or at a point carrying a carrier, computes each column as a forward pass of its own (seed one coordinate, extract the derivative of every output) and assembles a tensor of tagged numbers; the reverse tape, which carries one raw double per node, is used only when nothing encloses it.</li>
+<li>Each operator is its own pass: the tower mode of an enclosing pass, set while its differentiand is emitted, is cleared for the operator’s own emission.</li>
+</ul>
+<p>An un-nested pass seeds exactly as before: the classic F64 or exact tower on native, the jet, or the VM scalar dual. The fast paths are unchanged.</p>
+<p>The seed of a level of order <code>K</code> at point <code>p</code> is <code>(p, 1, 0, ..., 0)</code> with the unit exact when the primal of <code>p</code> is exact and <code>1.0</code> otherwise. Order 0 is evaluation: the point is passed through unchanged.</p>
+<h3 id="4-extraction">4. Extraction</h3>
+<p>When the level pass returns, the result <code>r</code> is read in the level’s own epoch:</p>
+<ul>
+<li><code>derivative-n</code> (and <code>derivative</code>) of order <code>k</code>: <code>k! * c[k]</code>, itself a number of the enclosing levels, so the enclosing pass keeps its perturbations;</li>
+<li><code>taylor</code> of order <code>K</code>: the list <code>(c[0] ... c[K])</code>;</li>
+<li>when <code>r</code> is not a carrier of epoch <code>E</code>, the function does not depend on this level: order 0 gives <code>r</code>, higher orders give 0 (exact when the point was exact, <code>0.0</code> otherwise).</li>
+</ul>
+<p>A structural zero produced by the recurrences is converted the same way, so exactness follows the point, as it does for an un-nested pass.</p>
+<h3 id="5-native-interface">5. Native interface</h3>
+<ul>
+<li><code>esh_taylor_t</code> with <code>ESH_TAYLOR_COEFF_CARRIER</code> (2) in the coefficient field is a level carrier: <code>c[]</code> holds <code>order_k + 1</code> <code>eshkol_tagged_value_t</code>, and <code>exact_c</code> points at the same storage. It carries no companion lanes.</li>
+<li><code>int32_t eshkol_ad_nested_seed(arena, point, order, pert_level, tower_pass, tower_depth, out)</code> returns <code>ESH_AD_NEST_NONE</code> (0) for an un-nested pass, or a packed route: <code>ESH_AD_NEST_LEVEL</code> (2) in bits 0-7, the level’s epoch in bits 8-23, and bit 24 set when the seed unit is inexact. Codegen passes the runtime forward level and the tower depth it maintains, and pushes the tower context for every level pass, jet arm included, so a pass nested inside a level sees it.</li>
+<li><code>void eshkol_ad_nested_extract(arena, result, route, order, want_list, out)</code> performs section 4; <code>want_list</code> selects the <code>taylor</code> form.</li>
+<li>Region evacuation walks a level carrier’s <code>c[]</code> like an exact tower’s.</li>
+</ul>
+<h3 id="6-vm-and-browser-interface">6. VM and browser interface</h3>
+<ul>
+<li><code>VmDual</code> gains the kind <code>VM_DUAL_KIND_LEVEL</code> (2) with <code>epoch</code>, <code>order</code> and <code>VmDual** lcoeff</code> (<code>order + 1</code> entries). Each coefficient is a <code>VmDual</code> of any kind; a plain number is a scalar <code>VmDual</code> with zero tangent, carrying its exact value in <code>eprimal</code>. The <code>primal</code>/<code>eprimal</code> fields of a level hold its primal, so every existing reader of a dual’s primal (comparisons, <code>as_number_vm</code>) sees the right value.</li>
+<li>Every <code>vm_dual_*</code> arithmetic entry dispatches to the level path first.</li>
+<li>A VM-wide count of live forward passes (<code>derivative</code>, <code>derivative-n</code>, <code>taylor</code>, and the operators built on them) drives the section 3 rule. <code>derivative</code> at a point that is already a dual, or while a pass is live, runs as an order-1 level instead of raising.</li>
+<li>Extraction returns a VM <code>Value</code>: a coefficient that is a scalar constant becomes its number, anything else a <code>VAL_DUAL</code>.</li>
+<li>Region evacuation walks <code>lcoeff</code> recursively.</li>
+<li>The browser VM is rebuilt from the same sources with <code>scripts/build-wasm-repl.sh</code>; <code>site/static/eshkol-vm.{js,wasm}</code> are those build outputs, and the browser differs from the VM in no carrier code.</li>
+</ul>
+<h3 id="7-retired-special-cases">7. Retired special cases</h3>
+<p>The level carrier replaces, on both engines: the <code>RIDE</code>, <code>CARRY_TWR</code> and <code>CARRY_JET</code> routes; the capture companion (<code>carry_epoch</code>, <code>eshkol_ad_tower_carry_result</code>, <code>eshkol_ad_jet_extract_tower</code>, <code>eshkol_ad_nested_capture_unsupported</code>); the hyper-dual second companion used for two foreign epochs; and the VM ride/carry seeds and the VM refusal of a nested <code>derivative</code>. The first-order companion series stays for exactly one purpose, reverse-over-Taylor (the reverse-seed tangent of <code>docs/design/AD_TAYLOR_TOWER.md</code> section 8), which is not a forward level.</p>
+<h2 id="consequences">Consequences</h2>
+<ul>
+<li>Nesting depth and the order of every level are limited only by memory, on every engine, with the same answers on native JIT, AOT, the VM and the browser.</li>
+<li>A nested pass allocates one tagged series per operation and its coefficient arithmetic is generic; un-nested passes keep their fast paths.</li>
+<li><code>tests/ad/nested_towers_matrix_test.esk</code> and <code>tests/ad/nested_operator_matrix_test.esk</code> are the acceptance matrices on native JIT, AOT and the VM.</li>
+</ul>
+<h2 id="alternatives-rejected">Alternatives rejected</h2>
+<ul>
+<li><strong>More companion lanes.</strong> Each additional lane covers one more shape and the next nesting still fails; this is the path that produced SW-154.</li>
+<li><strong>Nested hyper-duals (2^n components).</strong> Exponential in depth, and cannot carry orders above one per direction.</li>
+<li><strong>Pseudo-epochs for jet slots.</strong> Restating 8-jet slots as synthetic levels and back at extraction ties the carrier to the jet’s slot layout; keeping the jet as a coefficient with its own algebra needs no restatement.</li>
+</ul>
