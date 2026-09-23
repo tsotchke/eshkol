@@ -67,7 +67,28 @@
     /* Plain f32 has about seven decimal digits of relative precision. A
      * tolerance just above the df32 gate is not an honest f32 contract. */
     const FAST_GATE_TOL = 1e-6;
-    const PRECISION_TIERS = new Set(['exact', 'high', 'fast']);
+    /* This is the browser GPU admission policy, not merely a list of names
+     * accepted by configuration parsing. A tier must be present here AND be
+     * explicitly allowlisted below before either dispatch predicate can arm
+     * the GPU path. `high` remains recognized for diagnostics and CPU
+     * fallback, but has no certified browser implementation yet. */
+    const PRECISION_POLICY = Object.freeze({
+        exact: Object.freeze({ gpu: false }),
+        high: Object.freeze({ gpu: false }),
+        fast: Object.freeze({ gpu: true, minimumTolerance: FAST_GATE_TOL })
+    });
+    const PRECISION_TIERS = Object.freeze(Object.keys(PRECISION_POLICY));
+    const GPU_PRECISION_ALLOWLIST = Object.freeze(['fast']);
+
+    function precisionPolicy(precision) {
+        return typeof precision === 'string' &&
+            Object.prototype.hasOwnProperty.call(PRECISION_POLICY, precision)
+            ? PRECISION_POLICY[precision] : null;
+    }
+
+    function gemmWorkgroups(elements) {
+        return Math.ceil(elements / GEMM_TILE);
+    }
 
     /* ===================== WGSL ===================== */
 
@@ -342,7 +363,7 @@ fn main() {
                 deviceLimit > 0 ? deviceLimit : 65535;
             const requestedPrecision = o.precision === undefined ? 'high' : o.precision;
             this.precision = requestedPrecision;
-            this.precisionKnown = PRECISION_TIERS.has(requestedPrecision);
+            this.precisionKnown = precisionPolicy(requestedPrecision) !== null;
             this.gateTolerance = (typeof o.gateTolerance === 'number' &&
                                   Number.isFinite(o.gateTolerance) &&
                                   o.gateTolerance > 0) ? o.gateTolerance : GPU_GATE_TOL;
@@ -360,8 +381,10 @@ fn main() {
             this.log = o.log || function () {};
             this.diagnostics = [];
             if (!this.precisionKnown) {
-                this.diagnostics.push('UNSUPPORTED: unknown WebGPU precision tier ' +
-                                       String(requestedPrecision));
+                this.diagnostics.push(this.gpuPrecisionReason());
+                this.log('[WebGPU] ' + this.diagnostics[this.diagnostics.length - 1]);
+            } else if (this.gpuPrecisionReason()) {
+                this.diagnostics.push(this.gpuPrecisionReason());
                 this.log('[WebGPU] ' + this.diagnostics[this.diagnostics.length - 1]);
             } else if (this.precision === 'fast') {
                 const optIn = 'explicit reduced-precision opt-in: fast tier, ' +
@@ -471,41 +494,46 @@ fn main() {
         setThreshold(t) { if (t > 0) this.threshold = t; }
         getThreshold() { return this.threshold; }
 
+        gpuPrecisionReason() {
+            const policy = precisionPolicy(this.precision);
+            if (!policy) {
+                return 'UNSUPPORTED: unknown WebGPU precision tier ' + String(this.precision);
+            }
+            if (!GPU_PRECISION_ALLOWLIST.includes(this.precision) || !policy.gpu) {
+                return 'UNSUPPORTED: WebGPU precision tier ' + String(this.precision) +
+                    ' is not on the certified GPU allowlist';
+            }
+            if (policy.minimumTolerance !== undefined &&
+                (!Number.isFinite(this.gateTolerance) ||
+                 this.gateTolerance < policy.minimumTolerance)) {
+                return 'UNSUPPORTED: WebGPU precision tier fast requires gateTolerance >= ' +
+                    policy.minimumTolerance;
+            }
+            return null;
+        }
+
+        gpuPrecisionAllowed() {
+            return this.gpuPrecisionReason() === null;
+        }
+
         fastAdmitted() {
-            return this.precision === 'fast' && this.precisionKnown &&
-                this.gateTolerance >= FAST_GATE_TOL;
+            return this.precision === 'fast' && this.gpuPrecisionAllowed();
         }
 
         /* Mirrors eshkol_gpu_should_use(): active backend AND at or above the
          * element-count threshold. The `exact` tier has no WGSL implementation,
          * so it reports false and the caller takes the CPU path. */
         shouldUse(numElements) {
-            if (!this.device || !this.precisionKnown || this.precision === 'exact') return false;
-            /* The checked-in df32 shader is intentionally fail-closed until
-             * the browser differential gate certifies its compensation path.
-             * Selection and operation support must agree: neither may claim
-             * that the unverified high tier is GPU-capable. */
-            if (this.precision === 'high') return false;
-            if (this.precision === 'fast' && !this.fastAdmitted()) return false;
-            return numElements >= this.threshold;
+            return !!this.device && this.gpuPrecisionAllowed() &&
+                numElements >= this.threshold;
         }
 
         supportsOperation(kind, op) {
-            if (!this.device || !this.precisionKnown || this.precision === 'exact') return false;
-            if (this.precision === 'high') return false;
-            if (this.precision === 'fast') {
-                /* f32 is never admitted to the 1e-9 gate. It is available only
-                 * when the caller explicitly opts into a contract no tighter
-                 * than the f32 floor, and
-                 * reductions remain unsupported because their kernel is df32. */
-                return this.fastAdmitted() &&
-                    ['matmul', 'elementwise'].includes(kind);
-            }
-            if (kind === 'elementwise') return Number(op) <= ELEM.ABS;
-            if (kind === 'reduce') {
-                return [REDUCE.SUM, REDUCE.MIN, REDUCE.MAX, REDUCE.MEAN].includes(Number(op));
-            }
-            return kind === 'matmul';
+            if (!this.device || !this.gpuPrecisionAllowed()) return false;
+            /* The only currently certified browser tier is f32. Reductions
+             * stay disabled because their implementation is df32. */
+            return this.precision === 'fast' &&
+                ['matmul', 'elementwise'].includes(kind);
         }
 
         supportsF64() { return false; }   /* no native hardware f64 in WGSL */
@@ -645,8 +673,8 @@ fn main() {
                 const pipe = this._pipeline(df ? 'gemm_df32' : 'gemm_f32',
                                             df ? WGSL_GEMM_DF32 : WGSL_GEMM_F32);
                 const layout = pipe.getBindGroupLayout(0);
-                const groupsX = Math.ceil(N / GEMM_TILE);
-                const groupsY = Math.ceil(M / GEMM_TILE);
+                const groupsX = gemmWorkgroups(N);
+                const groupsY = gemmWorkgroups(M);
                 const limit = this.maxComputeWorkgroupsPerDimension;
                 for (let baseY = 0; baseY < groupsY; baseY += limit) {
                     const y = Math.min(limit, groupsY - baseY);
@@ -1065,6 +1093,15 @@ fn main() {
         return fn;
     }
 
+    /* Function-table entries are browser callback entry points, not exports.
+     * Keep this wrapper at the WebGPU seam so every loader applies the same
+     * JSPI boundary before a callback can reach a suspending GPU import. */
+    function promisingTableEntry(table, index) {
+        const fn = table && table.get(index);
+        if (typeof fn !== 'function') throw new Error('missing WASM callback ' + index);
+        return promisingEntry(fn);
+    }
+
     /* A WebAssembly.Instance exports object is not replaceable in place. Build
      * a public export facade so every synchronous wasm entry that can reach a
      * suspending GPU import is paired with WebAssembly.promising. Keeping the
@@ -1089,6 +1126,7 @@ fn main() {
         create: EshkolWebGPU.create,
         makeImports,
         promisingEntry,
+        promisingTableEntry,
         promisingExports,
         jspiAvailable,
         cpu,
@@ -1097,6 +1135,9 @@ fn main() {
         DEFAULT_THRESHOLD,
         GPU_GATE_TOL,
         FAST_GATE_TOL,
-        ESHKOL_GPU_WEBGPU
+        ESHKOL_GPU_WEBGPU,
+        GEMM_TILE,
+        PRECISION_TIERS,
+        GPU_PRECISION_ALLOWLIST
     };
 });
