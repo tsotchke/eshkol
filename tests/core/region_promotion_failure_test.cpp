@@ -196,7 +196,7 @@ void partial_graph_case() {
     const eshkol_tagged_value_t value = heap_value(vector_of(parent));
     eshkol_tagged_value_t output = int_value(7);
 
-    // Parent: 8-byte header + 8-byte length + one 16-byte slot = 32 bytes.
+    // Room for the one-slot parent vector (32 bytes) and nothing more.
     bool raised;
     {
         CapacityGuard cap(outer->arena, 32);

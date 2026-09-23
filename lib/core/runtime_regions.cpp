@@ -560,6 +560,11 @@ void region_push(eshkol_region_t* region) {
     region->parent = (__region_stack_depth > 0) ?
         __region_stack[__region_stack_depth - 1] : nullptr;
 
+    // #713: a promotion out of this region can fail only while a region is
+    // open, so the thread's allocation-failure condition is reserved now,
+    // while memory is available (a no-op after the first region).
+    eshkol_reserve_allocation_failure_condition();
+
     // ESH-0214c: capture the arena that outlives this region NOW, before the
     // with-region codegen overwrites the __global_arena allocation slot with
     // this region's arena. At this instant that slot still holds the true

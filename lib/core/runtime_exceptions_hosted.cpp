@@ -11,7 +11,6 @@
 #include "../../inc/eshkol/eshkol.h"
 
 #include <cctype>
-#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -825,49 +824,89 @@ extern "C" void eshkol_raise(eshkol_exception_t* exception) {
 
 // #713: the allocation-failure condition.
 //
-// Every other condition is built with eshkol_make_exception_with_header, which
-// allocates from the process arena. An allocation failure is exactly the case
-// where that allocation may fail too -- and where, if it succeeded inside an
-// open region, the raise would have to promote the condition out of that region
-// under the same exhaustion. So this one condition is preallocated per thread,
-// outside every arena: raising it allocates nothing, and the region unwind that
-// carries it to the handler finds nothing to copy.
+// Every other condition is built at raise time from the process arena. An
+// allocation failure is exactly the case where that allocation may fail too --
+// and where, if it succeeded inside an open region, the raise would have to
+// promote the condition out of that region under the same exhaustion. So each
+// thread reserves this one condition ahead of time, in a small private arena
+// that no region, scope rewind or loop reclamation ever touches: raising it
+// allocates nothing, and the region unwind that carries it to the handler finds
+// nothing to copy. The object is built by the canonical header allocator, so it
+// has whatever header layout the object ABI defines.
 //
-// Consequence: a later allocation failure on the same thread overwrites the
-// message of an earlier one that a handler kept. The object stays valid.
-extern "C" void eshkol_raise_allocation_failure(const char* operation, size_t bytes) {
-    struct alignas(16) AllocationFailureCondition {
-        eshkol_object_header_t header;
-        eshkol_exception_t exception;
-        char message[256];
-    };
-    static_assert(offsetof(AllocationFailureCondition, exception) ==
-                      sizeof(eshkol_object_header_t),
-                  "the condition payload must follow its header directly");
-    static thread_local AllocationFailureCondition condition;
+// The reservation is made when the thread first enters a region (region_push),
+// which is before any promotion can fail, and retried here if that did not
+// happen. A later failure on the same thread rewrites the message of a
+// condition a handler kept; the object stays valid for the thread's lifetime.
+namespace {
 
+constexpr size_t kAllocationFailureMessageBytes = 256;
+
+struct AllocationFailureReserve {
+    arena_t* arena = nullptr;
+    eshkol_exception_t* condition = nullptr;
+    char* message = nullptr;
+    ~AllocationFailureReserve() {
+        if (arena) arena_destroy(arena);
+    }
+};
+
+AllocationFailureReserve& allocation_failure_reserve() {
+    static thread_local AllocationFailureReserve reserve;
+    return reserve;
+}
+
+} // namespace
+
+extern "C" void eshkol_reserve_allocation_failure_condition(void) {
+    AllocationFailureReserve& r = allocation_failure_reserve();
+    if (r.condition) return;
+    arena_t* arena = arena_create(1024);
+    if (!arena) return;
+    auto* condition = (eshkol_exception_t*)arena_allocate_with_header(
+        arena, sizeof(eshkol_exception_t), HEAP_SUBTYPE_EXCEPTION, 0);
+    auto* message = (char*)arena_allocate(arena, kAllocationFailureMessageBytes);
+    if (!condition || !message) {
+        arena_destroy(arena);
+        return;
+    }
+    std::memset(condition, 0, sizeof(*condition));
+    condition->type = ESHKOL_EXCEPTION_ERROR;
+    message[0] = '\0';
+    condition->message = message;
+    r.arena = arena;
+    r.condition = condition;
+    r.message = message;
+}
+
+extern "C" void eshkol_raise_allocation_failure(const char* operation, size_t bytes) {
     const char* what = (operation && operation[0]) ? operation : "allocation";
+    char text[kAllocationFailureMessageBytes];
     if (bytes != 0) {
-        std::snprintf(condition.message, sizeof(condition.message),
-                      "%s: out of memory (could not allocate %zu bytes); "
-                      "nothing was stored",
+        std::snprintf(text, sizeof(text),
+                      "%s: out of memory (could not allocate %zu bytes); nothing was stored",
                       what, bytes);
     } else {
-        std::snprintf(condition.message, sizeof(condition.message),
-                      "%s: out of memory; nothing was stored", what);
+        std::snprintf(text, sizeof(text), "%s: out of memory; nothing was stored", what);
     }
-    condition.header.subtype = HEAP_SUBTYPE_EXCEPTION;
-    condition.header.flags = 0;
-    condition.header.ref_count = 0;
-    condition.header.size = (uint32_t)sizeof(eshkol_exception_t);
-    condition.exception.type = ESHKOL_EXCEPTION_ERROR;
-    condition.exception.message = condition.message;
-    condition.exception.irritants = nullptr;
-    condition.exception.num_irritants = 0;
-    condition.exception.line = 0;
-    condition.exception.column = 0;
-    condition.exception.filename = nullptr;
-    eshkol_raise(&condition.exception);
+
+    eshkol_reserve_allocation_failure_condition();
+    AllocationFailureReserve& r = allocation_failure_reserve();
+    if (!r.condition) {
+        // Not even the reservation could be made: stop here rather than let
+        // the caller continue past a promotion that did not happen.
+        std::fprintf(stderr, "Unhandled exception: %s\n", text);
+        std::exit(1);
+    }
+    std::memcpy(r.message, text, sizeof(text));
+    r.condition->type = ESHKOL_EXCEPTION_ERROR;
+    r.condition->message = r.message;
+    r.condition->irritants = nullptr;
+    r.condition->num_irritants = 0;
+    r.condition->line = 0;
+    r.condition->column = 0;
+    r.condition->filename = nullptr;
+    eshkol_raise(r.condition);
     std::exit(1);   // eshkol_raise does not return; never continue past it
 }
 
