@@ -127,7 +127,7 @@ async function testExecutionMarkerAndCPUFallback() {
             async elementwiseF64() {
                 const marker = ++this.executionMarker;
                 this.lastExecutionMarker = marker;
-                return marker;
+                return { marker, path: 'webgpu:elem_sf64' };
             }
         };
         const imports = G.makeImports(backend, () => memory);
