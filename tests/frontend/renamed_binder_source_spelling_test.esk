@@ -1,0 +1,31 @@
+;;; renamed_binder_source_spelling_test.esk
+;;;
+;;; The macro expander gives every lexical binder a fresh implementation
+;;; spelling (ADR-0026). What a program can observe -- the source form of a
+;;; procedure -- still names each identifier as it was written.
+
+(define (source-form proc)
+  (let ((p (open-output-string)))
+    (display proc p)
+    (get-output-string p)))
+
+(define (make-adder) (let ((h (lambda (x) (+ x 1)))) h))
+(define (make-pair-maker) (lambda (a b) (let ((s (+ a b))) (* s a))))
+
+(define failures 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "ok: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name)
+             (display " expected ") (write expected)
+             (display " got ") (write actual) (newline))))
+
+(check "lambda parameter and reference" "(lambda (x) (+ x 1))" (source-form (make-adder)))
+(check "let binder inside a lambda body"
+       "(lambda (a b) (let ((s (+ a b))) (* s a)))"
+       (source-form (make-pair-maker)))
+
+(if (= failures 0)
+    (begin (display "PASS: renamed binders keep their source spelling -- 0 failures") (newline))
+    (begin (display "FAIL: renamed binders keep their source spelling") (newline)))

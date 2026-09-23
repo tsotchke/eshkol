@@ -8,6 +8,7 @@
 
 #include <eshkol/core/ast_routing.h>
 #include <eshkol/backend/homoiconic_codegen.h>
+#include <eshkol/frontend/syntax_color.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -15,6 +16,14 @@
 #include <llvm/IR/Constants.h>
 
 using namespace llvm;
+
+namespace {
+/* The source form of a procedure names every identifier as the user wrote
+ * it, never by the expander's fresh binder spelling (syntax_color.h). */
+std::string sourceIdentifier(const char* id) {
+    return eshkol_syntax_source_name(id);
+}
+} // namespace
 
 namespace eshkol {
 
@@ -95,7 +104,7 @@ Value* HomoiconicCodegen::quoteAST(const eshkol_ast_t* ast) {
         case ESHKOL_VAR:
             // Return symbol as string - use STRING_PTR type for symbols
             return tagged_.packPtr(
-                string_io_.createStringWithHeader(ast->variable.id),
+                string_io_.createStringWithHeader(sourceIdentifier(ast->variable.id).c_str()),
                 ESHKOL_VALUE_HEAP_PTR);
 
         case ESHKOL_BOOL:
@@ -349,7 +358,7 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
                     Value* var;
                     if (var_ast->type == ESHKOL_VAR && var_ast->variable.id) {
                         var = tagged_.packPtr(
-                            string_io_.createStringWithHeader(var_ast->variable.id),
+                            string_io_.createStringWithHeader(sourceIdentifier(var_ast->variable.id).c_str()),
                             ESHKOL_VALUE_HEAP_PTR);
                     } else {
                         var = quoteAST(var_ast);
@@ -402,7 +411,7 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
             Value* define_sym = tagged_.packPtr(
                 string_io_.createStringWithHeader("define"), ESHKOL_VALUE_HEAP_PTR);
             Value* name = tagged_.packPtr(
-                string_io_.createStringWithHeader(op->define_op.name), ESHKOL_VALUE_HEAP_PTR);
+                string_io_.createStringWithHeader(sourceIdentifier(op->define_op.name).c_str()), ESHKOL_VALUE_HEAP_PTR);
 
             if (op->define_op.is_function) {
                 // Build (define (name params...) body)
@@ -410,7 +419,7 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
                 Value* name_params = packNull();
                 for (int64_t i = op->define_op.num_params - 1; i >= 0; i--) {
                     Value* param = tagged_.packPtr(
-                        string_io_.createStringWithHeader(op->define_op.parameters[i].variable.id),
+                        string_io_.createStringWithHeader(sourceIdentifier(op->define_op.parameters[i].variable.id).c_str()),
                         ESHKOL_VALUE_HEAP_PTR);
                     Value* cons_int = consFromTagged(param, name_params);
                     name_params = tagged_.packPtr(
@@ -550,7 +559,7 @@ Value* HomoiconicCodegen::quoteList(const eshkol_operations_t* op) {
             return result_int;
         }
 
-        Value* op_string = string_io_.createStringWithHeader(op->call_op.func->variable.id);
+        Value* op_string = string_io_.createStringWithHeader(sourceIdentifier(op->call_op.func->variable.id).c_str());
         Value* op_tagged = tagged_.packPtr(op_string, ESHKOL_VALUE_HEAP_PTR);
 
         Value* result_tagged;
@@ -597,7 +606,7 @@ Value* HomoiconicCodegen::buildParameterList(const eshkol_ast_t* params,
         if (params[i].type != ESHKOL_VAR || !params[i].variable.id) continue;
 
         // Create parameter symbol string
-        Value* param_name = string_io_.createStringWithHeader(params[i].variable.id);
+        Value* param_name = string_io_.createStringWithHeader(sourceIdentifier(params[i].variable.id).c_str());
         Value* param_tagged = tagged_.packPtr(param_name, ESHKOL_VALUE_HEAP_PTR);
 
         // Get rest of list as tagged value

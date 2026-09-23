@@ -203,6 +203,8 @@ static llvm::Function* getOrDeclareFputc(CodegenContext& ctx);
 static llvm::Function* getOrDeclareFgetc(CodegenContext& ctx);
 static llvm::Function* getOrDeclareUngetc(CodegenContext& ctx);
 static llvm::Function* getOrDeclareDisplayToPort(CodegenContext& ctx);
+static llvm::Value* portFileOrRaise(CodegenContext& ctx, llvm::Value* port_tagged,
+                                   uint8_t direction, const char* proc_name);
 static llvm::Function* getOrDeclareStdoutStream(CodegenContext& ctx);
 static llvm::Function* getOrDeclareStdinStream(CodegenContext& ctx);
 
@@ -222,8 +224,7 @@ llvm::Value* StringIOCodegen::newline(const eshkol_operations_t* op) {
         if (port_tv) {
             llvm::Value* port_tagged = typed_to_tagged_callback_(port_tv, callback_context_);
             if (port_tagged) {
-                llvm::Value* file_ptr_int = ctx_.builder().CreateExtractValue(port_tagged, {4});
-                file_ptr = ctx_.builder().CreateIntToPtr(file_ptr_int, ctx_.ptrType());
+                file_ptr = portFileOrRaise(ctx_, port_tagged, ESHKOL_PORT_OUTPUT_FLAG, "newline");
             } else {
                 file_ptr = getStdout(ctx_);
             }
@@ -2148,8 +2149,7 @@ llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
         if (port_tv) {
             llvm::Value* port_tagged = typed_to_tagged_callback_(port_tv, callback_context_);
             if (port_tagged) {
-                llvm::Value* file_ptr_int = ctx_.builder().CreateExtractValue(port_tagged, {4});
-                port_file_ptr = ctx_.builder().CreateIntToPtr(file_ptr_int, ctx_.ptrType());
+                port_file_ptr = portFileOrRaise(ctx_, port_tagged, ESHKOL_PORT_OUTPUT_FLAG, "display");
             }
         }
     }
@@ -2375,6 +2375,56 @@ static llvm::Value* getStdin(CodegenContext& ctx) {
 // `parameterize ((current-output-port p)) (display x)` actually writes into
 // `p` instead of stdout. The runtime falls back to real stdout if the cell
 // is unset, so behaviour is unchanged when the user doesn't parameterize.
+llvm::Value* StringIOCodegen::portFile(llvm::Value* port_tagged, uint8_t direction,
+                                      const char* proc_name) {
+    return portFileOrRaise(ctx_, port_tagged, direction, proc_name);
+}
+
+/**
+ * @brief The FILE* behind a port argument, or a raised type error.
+ *
+ * Every optional-port argument of the textual and binary I/O builtins reaches
+ * its FILE* here. A value is a port of @p direction when its type byte is
+ * HEAP_PTR with that direction bit set (the binary bit may accompany it).
+ * Anything else raises "Type error in <proc>: expected <direction> port",
+ * which `guard` can catch; before this check a non-port argument was
+ * dereferenced as a FILE* (`(newline 1)` faulted at address 0x69).
+ */
+static llvm::Value* portFileOrRaise(CodegenContext& ctx, llvm::Value* port_tagged,
+                                   uint8_t direction, const char* proc_name) {
+    auto& b = ctx.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::Value* type_byte = b.CreateExtractValue(port_tagged, {0});
+    llvm::Value* without_binary = b.CreateAnd(type_byte,
+        llvm::ConstantInt::get(ctx.int8Type(), (uint8_t)~ESHKOL_PORT_BINARY_FLAG));
+    llvm::Value* is_port = b.CreateICmpEQ(without_binary,
+        llvm::ConstantInt::get(ctx.int8Type(), ESHKOL_VALUE_HEAP_PTR | direction));
+    llvm::BasicBlock* bad = llvm::BasicBlock::Create(ctx.context(), "port_arg_bad", fn);
+    llvm::BasicBlock* ok = llvm::BasicBlock::Create(ctx.context(), "port_arg_ok", fn);
+    b.CreateCondBr(is_port, ok, bad);
+
+    b.SetInsertPoint(bad);
+    llvm::Module& m = ctx.module();
+    llvm::Function* raise = m.getFunction("eshkol_type_error_with_operand");
+    if (!raise) {
+        raise = llvm::Function::Create(
+            llvm::FunctionType::get(b.getVoidTy(),
+                {b.getPtrTy(), b.getPtrTy(), b.getPtrTy()}, false),
+            llvm::Function::ExternalLinkage, "eshkol_type_error_with_operand", &m);
+        raise->setDoesNotReturn();
+    }
+    llvm::Value* slot = b.CreateAlloca(ctx.taggedValueType(), nullptr, "port_arg");
+    b.CreateStore(port_tagged, slot);
+    b.CreateCall(raise, {
+        b.CreateGlobalString(proc_name),
+        b.CreateGlobalString(direction == ESHKOL_PORT_INPUT_FLAG ? "input port" : "output port"),
+        slot});
+    b.CreateUnreachable();
+
+    b.SetInsertPoint(ok);
+    return b.CreateIntToPtr(b.CreateExtractValue(port_tagged, {4}), ctx.ptrType());
+}
+
 static llvm::Value* getStdout(CodegenContext& ctx) {
     auto* ft = llvm::FunctionType::get(ctx.ptrType(), {}, false);
     auto callee = ctx.module().getOrInsertFunction(
@@ -2827,8 +2877,7 @@ llvm::Value* StringIOCodegen::readString(const eshkol_operations_t* op) {
         if (!port_tv) return nullptr;
         llvm::Value* port_tagged = typed_to_tagged_callback_(port_tv, callback_context_);
         if (!port_tagged) return nullptr;
-        llvm::Value* port_int = ctx_.builder().CreateExtractValue(port_tagged, {4});
-        file_ptr = ctx_.builder().CreateIntToPtr(port_int, ctx_.ptrType());
+        file_ptr = portFileOrRaise(ctx_, port_tagged, ESHKOL_PORT_INPUT_FLAG, "read-string");
     } else {
         file_ptr = getStdin(ctx_);
     }
@@ -3013,8 +3062,7 @@ llvm::Value* StringIOCodegen::writeString(const eshkol_operations_t* op) {
         llvm::Value* port_tagged = typed_to_tagged_callback_(port_tv, callback_context_);
         if (!port_tagged) return nullptr;
 
-        llvm::Value* file_ptr_int = ctx_.builder().CreateExtractValue(port_tagged, {4});
-        file_ptr = ctx_.builder().CreateIntToPtr(file_ptr_int, ctx_.ptrType());
+        file_ptr = portFileOrRaise(ctx_, port_tagged, ESHKOL_PORT_OUTPUT_FLAG, "write-string");
     } else {
         // Write to stdout
         file_ptr = getStdout(ctx_);
@@ -3066,9 +3114,7 @@ llvm::Value* StringIOCodegen::writeLine(const eshkol_operations_t* op) {
         llvm::Value* tagged_port = typed_to_tagged_callback_(port_tv_ptr, callback_context_);
         if (!tagged_port) return nullptr;
 
-        file_ptr = ctx_.builder().CreateIntToPtr(
-            tagged_.unpackInt64(tagged_port),
-            ctx_.ptrType());
+        file_ptr = portFileOrRaise(ctx_, tagged_port, ESHKOL_PORT_OUTPUT_FLAG, "write-line");
     } else {
         // Write to stdout
         file_ptr = getStdout(ctx_);
@@ -3130,9 +3176,7 @@ llvm::Value* StringIOCodegen::writeChar(const eshkol_operations_t* op) {
         llvm::Value* tagged_port = typed_to_tagged_callback_(port_tv_ptr, callback_context_);
         if (!tagged_port) return nullptr;
 
-        file_ptr = ctx_.builder().CreateIntToPtr(
-            tagged_.unpackInt64(tagged_port),
-            ctx_.ptrType());
+        file_ptr = portFileOrRaise(ctx_, tagged_port, ESHKOL_PORT_OUTPUT_FLAG, "write-char");
     } else {
         // Write to stdout
         file_ptr = getStdout(ctx_);
@@ -3729,8 +3773,7 @@ llvm::Value* StringIOCodegen::writeU8(const eshkol_operations_t* op) {
         if (!port_ptr) return nullptr;
         llvm::Value* port_tagged = typed_to_tagged_callback_(port_ptr, callback_context_);
         if (!port_tagged) return nullptr;
-        file_ptr = ctx_.builder().CreateIntToPtr(
-            ctx_.builder().CreateExtractValue(port_tagged, {4}), ctx_.ptrType());
+        file_ptr = portFileOrRaise(ctx_, port_tagged, ESHKOL_PORT_OUTPUT_FLAG, "write-u8");
     } else {
         file_ptr = getStdout(ctx_);
     }
@@ -3773,8 +3816,7 @@ llvm::Value* StringIOCodegen::readBytevector(const eshkol_operations_t* op) {
         if (!port_ptr) return nullptr;
         llvm::Value* port_tagged = typed_to_tagged_callback_(port_ptr, callback_context_);
         if (!port_tagged) return nullptr;
-        file_ptr = ctx_.builder().CreateIntToPtr(
-            ctx_.builder().CreateExtractValue(port_tagged, {4}), ctx_.ptrType());
+        file_ptr = portFileOrRaise(ctx_, port_tagged, ESHKOL_PORT_INPUT_FLAG, "read-bytevector");
     } else {
         file_ptr = getStdin(ctx_);
     }
@@ -3889,8 +3931,7 @@ llvm::Value* StringIOCodegen::writeBytevector(const eshkol_operations_t* op) {
         if (!port_tv) return nullptr;
         llvm::Value* port_tagged = typed_to_tagged_callback_(port_tv, callback_context_);
         if (!port_tagged) return nullptr;
-        file_ptr = ctx_.builder().CreateIntToPtr(
-            ctx_.builder().CreateExtractValue(port_tagged, {4}), ctx_.ptrType());
+        file_ptr = portFileOrRaise(ctx_, port_tagged, ESHKOL_PORT_OUTPUT_FLAG, "write-bytevector");
     } else {
         file_ptr = getStdout(ctx_);
     }

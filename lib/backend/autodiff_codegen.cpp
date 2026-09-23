@@ -5791,9 +5791,11 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                                 ConstantInt::get(ctx_.int64Type(), 34))),
                         ConstantInt::get(ctx_.int8Type(), CLOSURE_FLAG_VARIADIC)),
                     ConstantInt::get(ctx_.int8Type(), 0));
+                // Every coordinate, including a one-coordinate point: the
+                // spread helper never hands a variadic callable the vector form.
                 Value* clo_arity = ctx_.builder().CreateSelect(
                     ctx_.builder().CreateAnd(clo_is_variadic,
-                        ctx_.builder().CreateICmpUGE(n, ConstantInt::get(ctx_.int64Type(), 2))),
+                        ctx_.builder().CreateICmpUGE(n, clo_arity_declared)),
                     n, clo_arity_declared, "grad_call_arity");
 
                 /* Arity of a RUNTIME closure is only known at run time, so the

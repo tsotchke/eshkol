@@ -7162,9 +7162,15 @@ The `define-record-type` form defines:
 
 **Implementation:** Parser transforms `define-record-type` into vector operations
 (`ESHKOL_DEFINE_RECORD_TYPE_OP` branch in
-[lib/frontend/parser.cpp](../lib/frontend/parser.cpp)). The constructor creates a tagged
-vector with a unique type identifier, the predicate checks this identifier, and
-accessors/mutators map to `vector-ref` / `vector-set!`.
+[lib/frontend/parser.cpp](../lib/frontend/parser.cpp)); the bytecode VM compiles the same
+definitions (`compile_form_define_record_type` in `lib/backend/vm_compiler.c`). The
+constructor creates a vector whose element 0 is the type name as a symbol, followed by the
+fields in constructor order. The predicate is true only for a non-empty vector tagged with
+that symbol, so it tells record types apart and rejects plain vectors. An accessor or
+mutator applied to anything that fails the predicate raises
+`"<accessor>: not a <type> record"`. A record is still a vector: `vector?` answers `#t`
+for it, and a vector built by hand with the same tag symbol in element 0 passes the
+predicate.
 
 ### Examples
 

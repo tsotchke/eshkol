@@ -1,0 +1,49 @@
+;;; record_type_identity_test.esk
+;;;
+;;; A define-record-type predicate recognizes exactly its own records, an
+;;; accessor reads the field its name says whatever order the constructor
+;;; lists fields in, and an accessor or mutator applied to anything else
+;;; raises. Checked on the JIT, AOT, the VM from source and the VM from ESKB.
+;;; The VM's predicate was `vector?`, its tag a string and its field index
+;;; the declaration order (SW-249).
+
+(define failures 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "ok: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name)
+             (display " expected ") (write expected)
+             (display " got ") (write actual) (newline))))
+
+(define-record-type cat (make-cat name) cat? (name cat-name))
+(define-record-type dog (make-dog name) dog? (name dog-name set-dog-name!))
+;; constructor order differs from field declaration order
+(define-record-type pair2 (make-pair2 second first) pair2? (first p-first) (second p-second))
+
+(define c (make-cat "whiskers"))
+(define d (make-dog "rex"))
+(define q (make-pair2 2 1))
+
+(check "cat? of a cat"             #t (cat? c))
+(check "cat? of a dog"             #f (cat? d))
+(check "dog? of a cat"             #f (dog? c))
+(check "cat? of a plain vector"    #f (cat? (vector 1 2 3)))
+(check "cat? of an empty vector"   #f (cat? (vector)))
+(check "cat? of a number"          #f (cat? 7))
+(check "field by name, ctor order" 1 (p-first q))
+(check "second field"              2 (p-second q))
+(check "accessor on another type raises" 'raised
+       (guard (e (#t 'raised)) (cat-name d)))
+(check "accessor on a plain vector raises" 'raised
+       (guard (e (#t 'raised)) (cat-name (vector 1 2 3))))
+(set-dog-name! d "max")
+(check "mutator"                   "max" (dog-name d))
+(check "mutator on another type raises" 'raised
+       (guard (e (#t 'raised)) (set-dog-name! c "no")))
+(check "the tag is the type symbol" 'cat (vector-ref c 0))
+
+(if (= failures 0)
+    (begin (display "PASS: record types are told apart -- 0 failures") (newline))
+    (begin (display "FAIL: record types are told apart -- ")
+           (display failures) (display " failures") (newline)))

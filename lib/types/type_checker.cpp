@@ -6,6 +6,7 @@
 #include "../core/taylor_opcodes.h"
 #include "eshkol/types/type_checker.h"
 #include <eshkol/frontend/ast_strings.h>
+#include <eshkol/frontend/syntax_color.h>
 #include "eshkol/types/type_relation.h"
 #include "../../lib/core/arena_memory.h"
 #include <cstdio>
@@ -4689,7 +4690,9 @@ TypeId TypeChecker::resolveType(const hott_type_expr_t* type_expr) {
  * @brief Append a plain error TypeCheckResult (@p msg at @p line:@p col) to the recorded error list.
  */
 void TypeChecker::addError(const std::string& msg, int line, int col) {
-    errors_.push_back(TypeCheckResult::error(msg, line, col));
+    // A diagnostic names identifiers as the user wrote them, never by the
+    // expander's fresh binder spelling (syntax_color.h).
+    errors_.push_back(TypeCheckResult::error(eshkol_syntax_source_text(msg), line, col));
 }
 
 /**
@@ -4753,7 +4756,10 @@ void TypeChecker::reportTypeIssue(const std::string& msg, const eshkol_ast_t* no
  * what it held; the pass that does releases it, in order, once no enclosing
  * speculative pass remains.
  */
-void TypeChecker::emitDiagnostic(const std::string& line) {
+void TypeChecker::emitDiagnostic(const std::string& raw_line) {
+    // Every checker diagnostic passes here (deferred ones included), so this
+    // is where identifiers get their source spelling back (syntax_color.h).
+    const std::string line = eshkol_syntax_source_text(raw_line);
     if (speculation_depth_ > 0) {
         deferred_diagnostics_.push_back(line);
         return;

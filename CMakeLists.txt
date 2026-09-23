@@ -9755,6 +9755,147 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
                 FAIL_REGULAR_EXPRESSION "^FAIL:|^<|^>")
     endif()
 
+    # SW-249: define-record-type predicates tell record types apart and
+    # accessors/mutators check their operand, on every engine.
+    add_test(
+        NAME record_type_identity_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/core/record_type_identity_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    add_test(
+        NAME record_type_identity_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/record_type_identity_aot_o0' tests/core/record_type_identity_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/record_type_identity_aot_o0'"
+    )
+    set_tests_properties(record_type_identity_runtime_smoke
+                         record_type_identity_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: record types are told apart -- 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(
+            NAME record_type_identity_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/core/record_type_identity_test.esk"
+        )
+        add_test(
+            NAME record_type_identity_vm_eskb_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/record_type_identity.eskb' tests/core/record_type_identity_test.esk && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/record_type_identity.eskb'"
+        )
+        set_tests_properties(record_type_identity_vm_smoke
+                             record_type_identity_vm_eskb_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: record types are told apart -- 0 failures"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
+
+    # SW-247: make-hash-table finds keys by equal? and returns the stored
+    # value unchanged, on every engine. The VM table keyed on a Value's raw
+    # payload and returned every value as an integer.
+    add_test(
+        NAME hash_table_equal_keys_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/core/hash_table_equal_keys_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    add_test(
+        NAME hash_table_equal_keys_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/hash_table_equal_keys_aot_o0' tests/core/hash_table_equal_keys_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/hash_table_equal_keys_aot_o0'"
+    )
+    set_tests_properties(hash_table_equal_keys_runtime_smoke
+                         hash_table_equal_keys_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: hash tables compare keys by equal\\? -- 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(
+            NAME hash_table_equal_keys_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/core/hash_table_equal_keys_test.esk"
+        )
+        add_test(
+            NAME hash_table_equal_keys_vm_eskb_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/hash_table_equal_keys.eskb' tests/core/hash_table_equal_keys_test.esk && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/hash_table_equal_keys.eskb'"
+        )
+        set_tests_properties(hash_table_equal_keys_vm_smoke
+                             hash_table_equal_keys_vm_eskb_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: hash tables compare keys by equal\\? -- 0 failures"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
+
+    # A builtin used as a value accepts exactly what its call-position form
+    # accepts: variadic `+ - * /` through a list `apply` (and the unary
+    # inverses), `display`/`write`/`newline` with their optional port and a
+    # catchable error for a non-port, a local binding shadowing a builtin the
+    # parser lowers to an operation, and re-entry of a top-level
+    # `(define r (call/cc ...))`. Gated on the JIT, AOT, the VM from source
+    # and the VM from ESKB: each is a separate route to the same contract.
+    add_test(
+        NAME first_class_builtin_arity_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/core/first_class_builtin_arity_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    add_test(
+        NAME first_class_builtin_arity_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtin_arity_aot_o0' tests/core/first_class_builtin_arity_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtin_arity_aot_o0'"
+    )
+    set_tests_properties(first_class_builtin_arity_runtime_smoke
+                         first_class_builtin_arity_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: first-class builtin arity -- 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(
+            NAME first_class_builtin_arity_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/core/first_class_builtin_arity_test.esk"
+        )
+        add_test(
+            NAME first_class_builtin_arity_vm_eskb_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtin_arity.eskb' tests/core/first_class_builtin_arity_test.esk && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/first_class_builtin_arity.eskb'"
+        )
+        set_tests_properties(first_class_builtin_arity_vm_smoke
+                             first_class_builtin_arity_vm_eskb_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: first-class builtin arity -- 0 failures"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
+
+    # ADR-0026 renames every lexical binder to a fresh implementation
+    # spelling. Nothing a user reads may show it: the source form of a
+    # procedure, and every checker diagnostic, name identifiers as written.
+    add_test(
+        NAME renamed_binder_source_form_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/frontend/renamed_binder_source_spelling_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(renamed_binder_source_form_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: renamed binders keep their source spelling -- 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+    add_test(
+        NAME renamed_binder_diagnostic_spelling
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' tests/typesystem/named_let_numeric_accumulator_string_reject_test.esk -o '${CMAKE_CURRENT_BINARY_DIR}/renamed_binder_diag.out' -L'${CMAKE_CURRENT_BINARY_DIR}' 2>&1; '$<TARGET_FILE:eshkol-run>' tests/typesystem/qubit_clone_via_alias_chain_test.esk -o '${CMAKE_CURRENT_BINARY_DIR}/renamed_binder_diag2.out' -L'${CMAKE_CURRENT_BINARY_DIR}' 2>&1; true"
+    )
+    set_tests_properties(renamed_binder_diagnostic_spelling
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "argument 2 of 'loop': expected Int64, got String.*linear variable 'b' was consumed more than once"
+            FAIL_REGULAR_EXPRESSION "_v[0-9]+\\.")
+
     # SW-27: REST-ARG procedures as first-class values. Gated on the JIT and
     # both AOT levels because the failure mode differed by axis and by
     # procedure: silent wrong answer (`(h append '(1) '(2))` -> 1), a raised

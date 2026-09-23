@@ -14,6 +14,45 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **Record predicates tell record types apart on the VM, and accessors check
+  their operand on both engines.** The VM's record predicate was `vector?`, so
+  a plain vector passed it and `cat?` of a dog was `#t`; its tag was a string
+  and it indexed fields in declaration order, not constructor order (SW-249).
+  The VM now compiles the native lowering: a type-symbol tag, a predicate that
+  checks it, and fields in constructor order. On both engines an accessor or
+  mutator applied to a value that fails the predicate raises
+  `"<accessor>: not a <type> record"` instead of reading the vector.
+- **VM hash tables find keys by `equal?` and return what was stored.** The
+  bytecode VM's table keyed on a Value's raw payload and returned every value
+  as an integer, so `(hash-ref h "origin" #f)` missed a key spelled by another
+  string, a stored record came back as its heap slot number (an accessor on it
+  then raised), and `hash-clear!` returned an empty copy instead of clearing
+  (SW-247). Keys and values are now boxed Values hashed and compared by
+  `equal?`, as on the native backend.
+- **Builtins used as values accept what their call form accepts.** `+ - * /`
+  as values were 2-argument closures, so a list `apply` through a variable
+  (`(define g +) (apply g '(1 2 3))`, and `partial`, `for-each`-style helpers
+  built on it) raised "expected fixed-arity procedure"; they are now variadic
+  closures over the reduction `apply` itself uses. That reduction answered 5
+  for `(apply - '(5))` and 2 for `(apply / '(2))`; a single argument is now
+  the inverse and `-` or `/` of no arguments is an error. `display`, `write`
+  and `newline` as values had arity 0 and ignored a port; they now take their
+  optional port on the native backend and the VM, and every output and input
+  builtin raises a catchable type error for an argument in the port position
+  that is not a port of the right direction, where `(newline 1)` used to
+  fault. `(procedure-arity +)` is 0, the fixed count of a variadic procedure.
+  `gradient` of a variadic callable reached at run time spreads every
+  coordinate of the point across its fixed parameters and rest list; a
+  `(a . rest)` loss used to receive the whole point as one vector.
+- **Renamed binders keep their source spelling, and a local binding shadows
+  every builtin.** The hygienic expander renames every lexical binder, and the
+  implementation name leaked: type diagnostics read ``argument 2 of
+  '_v972.loop'`` and ``linear variable '_v973.b'``, and `(display (lambda (x)
+  x))` printed `(lambda (_v975.x) _v975.x)`. Diagnostics and procedure source
+  forms now name identifiers as written. A local `walk`, `unify`, `make-fact`
+  or other builtin the parser lowers to its own operation was ignored inside
+  its scope once renamed, so the builtin ran instead; the expander now turns
+  those uses into calls of the local binding.
 - **A top-level `begin` did not splice its definitions (SW-244).** Natively
   `(begin (define tt 5) 1)` followed by `tt` failed with `Undefined variable`:
   the parser rewrote every `begin` holding a definition into a scoped

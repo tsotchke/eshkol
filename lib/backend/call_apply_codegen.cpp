@@ -638,16 +638,16 @@ Value* CallApplyCodegen::applyReduction(const std::string& op, Value* list_int) 
     Function* cons_get_ptr = getTaggedConsGetPtrFunc();
     if (!cons_get_ptr) return tagged_.packNull();
 
-    // Identity elements for ops that have them. min/max have no identity:
-    // applying them to an empty list is a type error in R7RS.
-    const bool has_identity = (op == "+" || op == "-" || op == "*" || op == "/");
+    // R7RS 6.2.6: (+) is 0 and (*) is 1. `-`, `/`, `min` and `max` take at
+    // least one argument, so applying them to an empty list is an error, and
+    // a single argument to `-` or `/` is the additive or multiplicative
+    // inverse -- (- x) is -x, (/ x) is 1/x -- not x.
+    const bool has_identity = (op == "+" || op == "*");
+    const bool unary_inverts = (op == "-" || op == "/");
     Value* identity = nullptr;
     if (has_identity) {
-        if (op == "+" || op == "-") {
-            identity = tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 0), true);
-        } else { // "*" or "/"
-            identity = tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 1), true);
-        }
+        identity = tagged_.packInt64(
+            ConstantInt::get(ctx_.int64Type(), op == "+" ? 0 : 1), true);
     }
 
     Value* is_empty = ctx_.builder().CreateICmpEQ(list_int,
@@ -686,6 +686,19 @@ Value* CallApplyCodegen::applyReduction(const std::string& op, Value* list_int) 
     Value* current_ptr = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "apply_current");
     ctx_.builder().CreateStore(rest_list, current_ptr);
 
+    if (unary_inverts) {
+        // One element: the accumulator is its inverse and the (empty) tail
+        // leaves the loop at once.
+        BasicBlock* unary_block = BasicBlock::Create(ctx_.context(), "apply_red_unary", current_func);
+        ctx_.builder().CreateCondBr(
+            ctx_.builder().CreateICmpEQ(rest_list, ConstantInt::get(ctx_.int64Type(), 0)),
+            unary_block, loop_cond);
+        ctx_.builder().SetInsertPoint(unary_block);
+        Value* inverse = (op == "-")
+            ? arith_.sub(tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 0), true), first_elem)
+            : arith_.div(tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 1), true), first_elem);
+        ctx_.builder().CreateStore(inverse, accum_ptr);
+    }
     ctx_.builder().CreateBr(loop_cond);
 
     ctx_.builder().SetInsertPoint(loop_cond);

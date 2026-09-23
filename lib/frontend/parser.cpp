@@ -8252,6 +8252,45 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 defines.push_back(def);
             }
 
+            // An accessor or mutator applied to anything but a record of this
+            // type raises, on both engines (SW-249): the body becomes
+            //   (if (pred? obj) <body> (error "<name>: not a <type> record" obj))
+            // A record is a tagged vector, so without the check a plain vector
+            // or another record type was read silently.
+            auto guardWithPredicate = [&](eshkol_ast_t* body, const std::string& proc) -> eshkol_ast_t* {
+                if (pred_name.empty()) return body;
+                auto var = [](const char* name) {
+                    eshkol_ast_t v = {};
+                    v.type = ESHKOL_VAR;
+                    v.variable.id = eshkol_ast_strdup(name);
+                    v.variable.data = nullptr;
+                    return v;
+                };
+                auto call = [](eshkol_ast_t func, std::vector<eshkol_ast_t> args) {
+                    eshkol_ast_t c = {};
+                    c.type = ESHKOL_OP;
+                    c.operation.op = ESHKOL_CALL_OP;
+                    c.operation.call_op.func = new eshkol_ast_t(func);
+                    c.operation.call_op.num_vars = args.size();
+                    c.operation.call_op.variables = new eshkol_ast_t[args.size()];
+                    for (size_t i = 0; i < args.size(); i++) c.operation.call_op.variables[i] = args[i];
+                    return c;
+                };
+                eshkol_ast_t message = {};
+                const std::string text = proc + ": not a " + type_name + " record";
+                eshkol_ast_make_string(&message, eshkol_ast_string_copy(text), text.size() + 1);
+                eshkol_ast_t* guarded = new eshkol_ast_t{};
+                guarded->type = ESHKOL_OP;
+                guarded->operation.op = ESHKOL_IF_OP;
+                guarded->operation.call_op.func = nullptr;
+                guarded->operation.call_op.num_vars = 3;
+                guarded->operation.call_op.variables = new eshkol_ast_t[3];
+                guarded->operation.call_op.variables[0] = call(var(pred_name.c_str()), {var("obj")});
+                guarded->operation.call_op.variables[1] = *body;
+                guarded->operation.call_op.variables[2] = call(var("error"), {message, var("obj")});
+                return guarded;
+            };
+
             // Build accessor defines
             for (const auto& fs : fields) {
                 if (fs.accessor.empty()) continue;
@@ -8297,7 +8336,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 body->operation.call_op.variables[0].variable.data = nullptr;
                 eshkol_ast_make_int64(&body->operation.call_op.variables[1], actual_index);
 
-                def.operation.define_op.value = body;
+                def.operation.define_op.value = guardWithPredicate(body, fs.accessor);
                 defines.push_back(def);
 
                 // Build mutator if present
@@ -8339,7 +8378,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     mut_body->operation.call_op.variables[2].variable.id = eshkol_ast_strdup("val");
                     mut_body->operation.call_op.variables[2].variable.data = nullptr;
 
-                    mut_def.operation.define_op.value = mut_body;
+                    mut_def.operation.define_op.value = guardWithPredicate(mut_body, fs.mutator);
                     defines.push_back(mut_def);
                 }
             }

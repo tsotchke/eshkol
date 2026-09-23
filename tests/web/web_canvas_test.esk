@@ -34,8 +34,8 @@
 
 ;; Main drawing function
 (define (main)
-  (let ((canvas (web-get-element-by-id "canvas"))
-        (ctx (web-get-context-2d canvas)))
+  (let* ((canvas (web-get-element-by-id "canvas"))
+         (ctx (web-get-context-2d canvas)))
     (draw-rect ctx 10.0 10.0 100.0 50.0 "#ff0000")
     (draw-circle ctx 200.0 100.0 40.0 "#00ff00")
     0))

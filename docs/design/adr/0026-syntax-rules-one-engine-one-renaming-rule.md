@@ -5,6 +5,7 @@ owner-area: language
 since: v1.3.5
 sources:
   - inc/eshkol/frontend/syntax_color.h
+  - inc/eshkol/frontend/shadowable_ops.h
   - inc/eshkol/frontend/syntax_rules_core.h
   - inc/eshkol/frontend/syntax_datum.h
   - lib/frontend/syntax_rules.cpp
@@ -132,6 +133,20 @@ refusal is not completion (SW-192).
 - A library procedure's formal shadows a macro keyword of the same spelling
   inside its body.
 - The VM expands each form when the compiler reaches it, in that form's scope.
+- The native expander gives every lexical binder a fresh spelling,
+  `_v<n>.<name>`, so a colored free identifier can reach a definition-site
+  local that a caller's binding of the same name would otherwise shadow. That
+  spelling is an implementation name and never reaches a user:
+  `syntax_color.h` owns the format in both directions, and every checker
+  diagnostic, every diagnostic record and the source form of a procedure
+  (`(display (lambda (x) x))`) names identifiers as they were written.
+  Identifiers of the form `_v<n>.<name>` are reserved for the expander.
+- A builtin the parser lowers to its own operation node (`walk`, `unify`,
+  `make-fact`, ...; `shadowable_ops.h`) is an ordinary call of a local binder
+  of the same name in that binder's scope. The expander, which owns lexical
+  scope, rewrites the node; after renaming no later pass could see the
+  shadow. Codegen resolves only top-level and REPL-batch definitions of those
+  names, from the same table.
 - The legacy standalone `lib/backend/eshkol_compiler.c`, which no build target
   compiles, is not maintained against this change.
 

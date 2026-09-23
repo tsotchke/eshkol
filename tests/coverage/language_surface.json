@@ -15,9 +15,9 @@
     }
   },
   "counts": {
-    "builtins_total": 1053,
+    "builtins_total": 1054,
     "builtins_in_native_closure_table": 435,
-    "builtins_in_vm_table": 751,
+    "builtins_in_vm_table": 752,
     "builtins_in_llvm_aot_dispatch": 797,
     "builtins_aot_only": 263,
     "quantum_agent_ffi_builtins": 22,
@@ -34,7 +34,7 @@
     "list_pair": 53,
     "io_port": 52,
     "string_char": 42,
-    "misc": 38,
+    "misc": 39,
     "consciousness": 37,
     "vector": 23,
     "hash": 22,
@@ -368,6 +368,19 @@
         "vm"
       ],
       "category": "numeric"
+    },
+    {
+      "name": "_display2",
+      "ids": [
+        2226
+      ],
+      "arity": 2,
+      "min_arity": 2,
+      "backends": [
+        "vm"
+      ],
+      "category": "misc",
+      "mirrors": "display"
     },
     {
       "name": "_emit-event",
@@ -5321,7 +5334,8 @@
     {
       "name": "hash-clear!",
       "ids": [
-        668
+        668,
+        669
       ],
       "arity": 1,
       "min_arity": 1,
@@ -5441,7 +5455,7 @@
     {
       "name": "hash-table-clear!",
       "ids": [
-        668
+        669
       ],
       "arity": 1,
       "min_arity": 1,
