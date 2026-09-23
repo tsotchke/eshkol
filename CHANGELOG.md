@@ -39,13 +39,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The VM's GPU reduction path treated an axis of -1 as "all axes", while the
-  CPU path (and the compiled path) reads it as the last axis. `(tensor-sum M)`
-  of a matrix therefore returned per-row sums below the GPU threshold and the
-  grand total above it. The GPU now serves only reductions that cover every
-  element, so it never changes which reduction is computed.
+- On the bytecode VM, `tensor-sum`/`-mean`/`-max`/`-min` with no axis now
+  reduce the whole tensor to a number, as on native (SW-202). The VM used to
+  answer `#(0.75)` for `(tensor-sum (tensor 0.5 0.25))` and per-row sums for a
+  matrix, because "no axis" and "last axis" were both -1; `gpu-reduce` had the
+  same problem. VM max/min now start from the infinities, so the max of an
+  all `-inf.0` tensor is `-inf.0`, not `-1.797e308`.
 
-- The VM's GPU elementwise path required only equal element counts, so
+- The VM's GPU reduction path read an axis of -1 as "all axes" while its CPU
+  path reads the last axis, so a matrix reduction changed answer at the GPU
+  threshold (SW-243). The GPU now serves a reduction only when it computes the
+  same one as the CPU path.
+
+- The VM's GPU elementwise path (SW-245) required only equal element counts, so
   `[6] + [1,6]` would have produced a `[6]` result on a GPU backend instead of
   the broadcast `[1,6]`. It now requires identical shapes, and the VM's GPU
   size test is the backend's `eshkol_gpu_should_use()` instead of a private
