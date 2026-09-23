@@ -37,6 +37,13 @@
 (report "string-ref vector" (rejects? (lambda () (string-ref a-vector 0))))
 (report "string-ref integer" (rejects? (lambda () (string-ref five 0))))
 (report "string-length list" (rejects? (lambda () (string-length a-list))))
+; SW-234: a literal scalar operand faulted natively before the check.
+(report "string-length literal integer" (rejects? (lambda () (string-length 5))))
+(report "string-length integer" (rejects? (lambda () (string-length five))))
+(report "string-length double" (rejects? (lambda () (string-length 1.5))))
+(report "vector-length character" (rejects? (lambda () (vector-length #\a))))
+(report "vector-ref literal integer" (rejects? (lambda () (vector-ref 5 0))))
+(report "string-ref literal integer" (rejects? (lambda () (string-ref 5 0))))
 (report "bytevector-u8-ref list" (rejects? (lambda () (bytevector-u8-ref a-list 0))))
 (report "bytevector-u8-ref vector" (rejects? (lambda () (bytevector-u8-ref a-vector 0))))
 (report "bytevector-length vector" (rejects? (lambda () (bytevector-length a-vector))))
