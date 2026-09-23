@@ -4584,13 +4584,24 @@ static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
     chunk_emit(c, OP_NATIVE_CALL, VM_NATIVE_REGION_EVAC_PUSH);
     chunk_emit(c, OP_POP, 0);
 
-    for (int i = body_start; i < node->n_children; i++) {
-        if (i < node->n_children - 1) {
+    if (c->enclosing == NULL && c->scope_depth == 0) {
+        /* At top level a body definition is a top-level definition, visible
+         * after the region, as natively. */
+        for (int i = body_start; i < node->n_children; i++) {
             compile_expr(c, node->children[i], 0);
-            chunk_emit(c, OP_POP, 0);
-        } else {
-            compile_expr(c, node->children[i], 0);
+            if (i < node->n_children - 1) chunk_emit(c, OP_POP, 0);
         }
+    } else {
+        /* Inside a procedure the body is a scope, compiled like `let ()`'s,
+         * so an internal definition gets a local slot (boxed when captured).
+         * Compiled as bare expressions, `(define t ...)` built its box and
+         * dropped it, and every later reference to `t` read an unrelated
+         * slot: (vector-ref <that slot> 0) answered () and the body ran on
+         * it silently until SW-221 made the accessor refuse. */
+        int saved_locals = c->n_locals;
+        c->scope_depth++;
+        vm_compile_scope_body(c, node, body_start, saved_locals, 0);
+        c->scope_depth--;
     }
 
     chunk_emit(c, OP_NATIVE_CALL, VM_NATIVE_REGION_EVAC_POP);

@@ -6395,7 +6395,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             "tensor_full_reduction|tests/tensor/tensor_full_reduction_test.esk|PASS: tensor full reductions|all"
             "complex_negate_abs|tests/complex/complex_negate_abs_test.esk|PASS: complex negate and abs|all"
             "vm_region_evac_level_carrier|tests/memory/vm_region_evac_level_carrier_test.esk|PASS: VM region-evac level carrier|vm"
-            "division_pole|tests/ad/division_pole_test.esk|PASS: division_pole|vm")
+            "division_pole|tests/ad/division_pole_test.esk|PASS: division_pole|vm"
+            "with_region_internal_define|tests/memory/with_region_internal_define_test.esk|PASS: with-region internal define|all")
         foreach(_esh_spec IN LISTS _esh_vm_carrier_tests)
             string(REPLACE "|" ";" _esh_parts "${_esh_spec}")
             list(GET _esh_parts 0 _esh_name)
