@@ -1147,6 +1147,11 @@ class EshkolRuntime {
                 // a constant 0), so no result here can ever be a tangent-carrying
                 // tower and 0 is the faithful answer, not a degradation.
                 eshkol_ad_jet_extract_tower:    () => 0,
+                // Same contract as web/eshkol-repl.js: no enclosing tower level
+                // in the browser, so carrying a result reports 0 (not handled)
+                // and the nested-capture diagnostic is a no-op.
+                eshkol_ad_tower_carry_result:   () => 0,
+                eshkol_ad_nested_capture_unsupported: () => {},
 
                 // Newly-surfaced runtime env imports the wasm backend can emit
                 // (ESH-0224). Degrade like the sibling stubs above: allocators
