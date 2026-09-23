@@ -656,6 +656,9 @@ class EshkolRuntime {
                 eshkol_ad_mixed_record: () => 0,
                 eshkol_ad_seed_flag: () => 0,
                 eshkol_tensor_operand_checked: () => 0,
+                // Same lite-glue contract as eshkol_tensor_operand_checked: the
+                // browser glue has no tensor runtime (docs/FEATURE_MATRIX.md).
+                eshkol_tensor_operand_carrier_checked: () => 0,
                 eshkol_tensor_destination_checked: () => 0,
                 eshkol_tensor_matrix_operand_checked: () => 0,
                 eshkol_tensor_counts_checked: () => {},
