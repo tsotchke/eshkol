@@ -717,7 +717,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         /* C = A * B, all row-major, pointers are byte offsets into wasm memory
          * holding f64. Mirrors eshkol_gpu_matmul_f64 / eshkol_matmul_dispatch. */
-        async matmulF64(aPtr, bPtr, cPtr, M, K, N, memory) {
+        async matmulF64(aPtr, bPtr, cPtr, M, K, N, memory = this.memory) {
             if (!this.supportsOperation('matmul')) {
                 throw new Error('UNSUPPORTED: WebGPU matmul is not admitted for precision tier ' + this.precision);
             }
@@ -775,7 +775,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         /* ---------------- elementwise ---------------- */
 
-        async elementwiseF64(aPtr, bPtr, outPtr, n, op, memory) {
+        async elementwiseF64(aPtr, bPtr, outPtr, n, op, memory = this.memory) {
             if (!this.supportsOperation('elementwise', op)) {
                 throw new Error('UNSUPPORTED: WebGPU elementwise op ' + op +
                                 ' has no kernel for precision tier ' + this.precision);
@@ -835,7 +835,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         /* ---------------- reduction ---------------- */
 
-        async reduceF64(inPtr, outPtr, n, op, memory) {
+        async reduceF64(inPtr, outPtr, n, op, memory = this.memory) {
             if (!this.supportsOperation('reduce', op)) {
                 throw new Error('UNSUPPORTED: WebGPU reduction op ' + op +
                                 ' has no kernel for precision tier ' + this.precision);
