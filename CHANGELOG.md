@@ -221,6 +221,12 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- The GPU suite now requires a terminal named PASS, rejects any FAIL marker,
+  counts hardware absence as SKIP, and grades the GPU-versus-CPU differential
+  rather than a single execution of its workload (SW-251). A planted-failure
+  self-test covers bare and indented failures, incomplete output, and false
+  differential passes. CUDA Ozaki checks now skip without a live CUDA backend.
+
 - On the bytecode VM, `tensor-sum`/`-mean`/`-max`/`-min` with no axis now
   reduce the whole tensor to a number, as on native (SW-202). The VM used to
   answer `#(0.75)` for `(tensor-sum (tensor 0.5 0.25))` and per-row sums for a

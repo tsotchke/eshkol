@@ -80,25 +80,10 @@
 (display "GATE-DONE") (newline)
 
 ;; ─────────────────────────────────────────────────────────────────
-;; Self-check invariants — verdict grammar (see scripts/run_gpu_tests.sh
-;; header for the full contract).
-;;
-;; Before this fix, everything above was this file's entire content: a
-;; fixed sequence of `RESULT <label> <value>` lines and nothing else. That
-;; is sufficient for tests/gpu/gpu_correctness_gate.sh's CPU-vs-GPU
-;; differential (it diffs the two RESULT streams itself), but
-;; scripts/run_gpu_tests.sh runs this file directly, ONCE, through
-;; whichever single build it is testing — it never performs that diff. A
-;; run through that harness printed zero PASS/FAIL/error/mismatch-shaped
-;; output no matter what the GPU kernel actually computed, so a
-;; correctness regression on the only build under test was invisible:
-;; the file could not fail on its own.
-;;
-;; These checks are backend-independent invariants — true on a correct
-;; result regardless of whether this run went through CPU, Metal, or
-;; CUDA — so they give the file real, self-contained teeth without
-;; duplicating the differential that gpu_correctness_gate.sh already
-;; owns.
+;; Self-check invariants for both GPU and CPU executions. The differential
+;; driver requires these checks to pass before comparing RESULT streams.
+;; Backend-independent invariants catch local corruption; the driver owns
+;; the cross-backend numeric verdict.
 (define gate-failures 0)
 (define (verify! ok? label)
   (if ok?
@@ -140,5 +125,5 @@
 (if (= gate-failures 0)
     (begin (display "PASS: gpu_correctness_gate self-checks") (newline) (exit 0))
     (begin (display "FAIL: gpu_correctness_gate self-checks (")
-           (display gate-failures) (display " of 10 failed)") (newline)
+           (display gate-failures) (display " of 11 failed)") (newline)
            (exit 1)))
