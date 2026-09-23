@@ -17091,8 +17091,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 185: { /* string->symbol: preserve immutable spelling, change Scheme tag */
         Value a = vm_pop(vm);
-        if (a.type == VAL_STRING && vm_value_as_string(vm, a)) a.type = VAL_SYMBOL;
-        else a = BOOL_VAL(0);
+        /* A non-string operand is refused, as natively; it used to answer
+         * #f, which a caller cannot tell from a symbol-producing call. */
+        if (!vm_require_container(vm, a, VM_CONTAINER_STRING, "string->symbol", "a string")) break;
+        a.type = VAL_SYMBOL;
         vm_push(vm, a);
         break;
     }

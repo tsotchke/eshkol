@@ -165,10 +165,15 @@ catches it and reads its message:
 car: argument is not a pair
 ```
 
+A condition that a handler catches prints nothing: the runtime reports a
+condition to stderr only when no `guard` or `with-exception-handler` is there
+to receive it, just before the program exits with `Unhandled exception: ...`.
+
 A container accessor applied to the wrong kind of container is one of those
 conditions. `vector-ref`, `vector-set!`, `vector-length`, `vector->list`,
 `vector-copy`, `vector-append`, `vector-map` and `vector-for-each` accept a
-vector or a tensor; `string-ref`, `string-set!` and `string-length` a string;
+vector or a tensor; `string-ref`, `string-set!`, `string-length` and
+`string->symbol` a string;
 the `bytevector-` accessors a bytevector; `tensor-ref` a tensor, a vector, or a
 scalar. Anything else raises instead of answering:
 

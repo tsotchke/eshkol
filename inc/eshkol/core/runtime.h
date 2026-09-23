@@ -368,6 +368,16 @@ void eshkol_type_error_with_operand(const char* proc_name,
 void eshkol_arity_mismatch_error(const char* proc_name, int64_t expected, int64_t got);
 
 /**
+ * @brief True when a condition raised now would be caught by an installed
+ *        handler (`guard` / `with-exception-handler`).
+ *
+ * Runtime error sites report to stderr only when this is false: a caught
+ * condition prints nothing, an uncaught one is reported before the process
+ * exits.
+ */
+int eshkol_raise_will_be_handled(void);
+
+/**
  * @brief Raise a shape error for an element-wise binary operation whose two
  * operands cannot be broadcast against one another.
  *

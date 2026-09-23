@@ -50,6 +50,8 @@
 (report "bytevector-u8-set! list" (rejects? (lambda () (bytevector-u8-set! a-list 0 1))))
 (report "tensor-ref list" (rejects? (lambda () (tensor-ref a-list 0))))
 (report "tensor-ref string" (rejects? (lambda () (tensor-ref a-string 0))))
+(report "string->symbol integer" (rejects? (lambda () (string->symbol five))))
+(report "string->symbol literal" (rejects? (lambda () (string->symbol 5))))
 
 ; The accessors as first-class values run the same check.
 (define (h1 f a) (f a))
@@ -68,6 +70,7 @@
 (report "vector->list vector" (equal? (vector->list a-vector) '(1 2 3)))
 (report "string-ref string" (char=? (string-ref a-string 1) #\b))
 (report "string-length string" (= (string-length a-string) 3))
+(report "string->symbol string" (eq? (string->symbol a-string) (quote abc)))
 (report "bytevector-u8-ref bytevector" (= (bytevector-u8-ref a-bytevector 1) 8))
 (report "bytevector-length bytevector" (= (bytevector-length a-bytevector) 3))
 (report "tensor-ref literal" (= (tensor-ref #(1.5 2.5) 1) 2.5))

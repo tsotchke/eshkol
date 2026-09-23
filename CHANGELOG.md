@@ -14,6 +14,16 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **A caught condition printed an error anyway.** Natively the runtime wrote
+  `ERROR: Type error in vector-ref: ...` (and similar) to stderr before
+  unwinding to the `guard` that caught it. A condition is now reported only
+  when no handler is installed; a caught one prints nothing, on native JIT,
+  AOT and the VM. `string->symbol` of a non-string raises a catchable type
+  error on both engines (natively it faulted; the VM answered `#f`).
+- **A top-level `with-region` or `begin` lost the definitions in its body on
+  the VM (SW-240)**, and a `with-region` inside a procedure lost its internal
+  definitions (SW-239): the name then read an unrelated value, for example
+  `(begin (define tt 5) 1)` left `tt` as 1. Both now bind as natively.
 - **Number syntax is one grammar, complex numbers included (SW-223).** The
   source parser split `1+1i` into `1` and `+1i`, the bytecode VM read it as a
   call, `(string->number "1+1i")` answered `#f` while `read` returned a symbol,

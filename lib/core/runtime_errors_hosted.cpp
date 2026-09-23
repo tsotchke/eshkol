@@ -132,7 +132,7 @@ void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...) {
     std::vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
 
-    std::fprintf(stderr, "%s\n", buf);
+    if (!eshkol_raise_will_be_handled()) std::fprintf(stderr, "%s\n", buf);
 
     eshkol_exception_t* exc = eshkol_make_exception(type, buf);
     if (exc) {
@@ -157,9 +157,10 @@ void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...) {
  *                       "<type>" is substituted if NULL.
  */
 void eshkol_type_error(const char* proc_name, const char* expected_type) {
-    eshkol_error("Type error in %s: expected %s",
-                 proc_name ? proc_name : "<unknown>",
-                 expected_type ? expected_type : "<type>");
+    if (!eshkol_raise_will_be_handled())
+        eshkol_error("Type error in %s: expected %s",
+                     proc_name ? proc_name : "<unknown>",
+                     expected_type ? expected_type : "<type>");
 
     eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
                          "Type error in %s: expected %s",
@@ -189,11 +190,12 @@ void eshkol_type_error_with_value(const char* proc_name, const char* expected_ty
     char prefix[320];
     eshkol_format_error_location_prefix(prefix, sizeof(prefix));
 
-    eshkol_error("%sType error in %s: expected %s, got %s",
-                 prefix,
-                 proc_name ? proc_name : "<unknown>",
-                 expected_type ? expected_type : "<type>",
-                 actual_type ? actual_type : "<unknown>");
+    if (!eshkol_raise_will_be_handled())
+        eshkol_error("%sType error in %s: expected %s, got %s",
+                     prefix,
+                     proc_name ? proc_name : "<unknown>",
+                     expected_type ? expected_type : "<type>",
+                     actual_type ? actual_type : "<unknown>");
 
     eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
                          "%sType error in %s: expected %s, got %s",
@@ -249,8 +251,9 @@ void eshkol_shape_error(const char* proc_name,
     eshkol_format_shape(a_buf, sizeof(a_buf), a_dims, a_ndim);
     eshkol_format_shape(b_buf, sizeof(b_buf), b_dims, b_ndim);
 
-    eshkol_error("%sShape mismatch in %s: shapes %s and %s are not broadcast-compatible",
-                 prefix, proc_name ? proc_name : "<unknown>", a_buf, b_buf);
+    if (!eshkol_raise_will_be_handled())
+        eshkol_error("%sShape mismatch in %s: shapes %s and %s are not broadcast-compatible",
+                     prefix, proc_name ? proc_name : "<unknown>", a_buf, b_buf);
 
     eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
                          "%sShape mismatch in %s: shapes %s and %s are not broadcast-compatible",
@@ -439,17 +442,19 @@ void eshkol_ffi_pointer_arg_type_error(const char* extern_name,
     eshkol_format_error_location_prefix(prefix, sizeof(prefix));
 
     if (distinct_symbol) {
-        eshkol_error("%sFFI type error in %s (C symbol %s): argument %d is declared "
-                     "`%s` and requires a string or pointer handle, but got %s",
-                     prefix, name, real_symbol, (int)arg_position, declared, value_text);
+        if (!eshkol_raise_will_be_handled())
+            eshkol_error("%sFFI type error in %s (C symbol %s): argument %d is declared "
+                         "`%s` and requires a string or pointer handle, but got %s",
+                         prefix, name, real_symbol, (int)arg_position, declared, value_text);
         eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
                              "%sFFI type error in %s (C symbol %s): argument %d is declared "
                              "`%s` and requires a string or pointer handle, but got %s",
                              prefix, name, real_symbol, (int)arg_position, declared, value_text);
     } else {
-        eshkol_error("%sFFI type error in %s: argument %d is declared `%s` and requires "
-                     "a string or pointer handle, but got %s",
-                     prefix, name, (int)arg_position, declared, value_text);
+        if (!eshkol_raise_will_be_handled())
+            eshkol_error("%sFFI type error in %s: argument %d is declared `%s` and requires "
+                         "a string or pointer handle, but got %s",
+                         prefix, name, (int)arg_position, declared, value_text);
         eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
                              "%sFFI type error in %s: argument %d is declared `%s` and requires "
                              "a string or pointer handle, but got %s",

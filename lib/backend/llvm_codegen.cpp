@@ -25739,6 +25739,8 @@ private:
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
         if (!tv.llvm_value) return nullptr;
         Value* arg = typedValueToTaggedValue(tv);
+        tagged_->requireContainer(arg, eshkol::TaggedValueCodegen::containerBit(HEAP_SUBTYPE_STRING),
+                                  "string->symbol", "string");  // SW-221 boundary
 
         Value* ptr_int = unpackInt64FromTaggedValue(arg);
         Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());

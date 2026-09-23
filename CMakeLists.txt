@@ -8733,6 +8733,24 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal runtime error")
     endif()
 
+    # A caught condition writes nothing to stderr (native JIT, AOT and VM):
+    # each wrapper fails when the program's stderr, less the tools' own
+    # banner lines, is not empty.
+    if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/caught_condition_silent_test.esk")
+        set(_esh_silent_filter "grep -v -e '^\\[REPL\\]' -e '^=== ' -e '^\\[ESKB\\]'")
+        add_test(NAME caught_condition_silent_jit
+            COMMAND sh -c "err=$('$<TARGET_FILE:eshkol-run>' -r '${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/caught_condition_silent_test.esk' 2>&1 >/dev/null | ${_esh_silent_filter}); '$<TARGET_FILE:eshkol-run>' -r '${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/caught_condition_silent_test.esk' 2>/dev/null; if [ -n \"$err\" ]; then echo \"FAIL: stderr: $err\"; fi")
+        add_test(NAME caught_condition_silent_aot_o0
+            COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' -O0 '${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/caught_condition_silent_test.esk' -o '${CMAKE_CURRENT_BINARY_DIR}/caught_condition_silent_o0' >/dev/null 2>&1 && err=$('${CMAKE_CURRENT_BINARY_DIR}/caught_condition_silent_o0' 2>&1 >/dev/null); '${CMAKE_CURRENT_BINARY_DIR}/caught_condition_silent_o0' 2>/dev/null; if [ -n \"$err\" ]; then echo \"FAIL: stderr: $err\"; fi")
+        add_test(NAME caught_condition_silent_vm
+            COMMAND sh -c "err=$(ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/caught_condition_silent_test.esk' 2>&1 >/dev/null | ${_esh_silent_filter}); ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_SOURCE_DIR}/tests/error_handling/caught_condition_silent_test.esk' 2>/dev/null; if [ -n \"$err\" ]; then echo \"FAIL: stderr: $err\"; fi")
+        set_tests_properties(caught_condition_silent_jit caught_condition_silent_aot_o0
+                             caught_condition_silent_vm PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: caught conditions are silent"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|fatal signal|ERROR: VM terminated")
+    endif()
+
     # Continuation region-pin budget boundary: native JIT/AOT and the
     # standalone VM must reject a capture once the bounded cumulative pin
     # budget is reached, while the ordinary continuation fixtures retain
