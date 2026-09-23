@@ -1692,7 +1692,7 @@ option(ESHKOL_REQUIRE_GPU_BACKEND
 set(ESHKOL_CUDA_ARCHITECTURES "72;75;80;86;89;90" CACHE STRING
     "CUDA architectures for portable Eshkol GPU binaries")
 set(ESHKOL_GPU_BACKEND "NONE" CACHE INTERNAL
-    "Resolved Eshkol GPU backend (NONE, METAL, or CUDA)" FORCE)
+    "Resolved Eshkol GPU backend (NONE, METAL, CUDA, or WEBGPU)" FORCE)
 
 if(ESHKOL_REQUIRE_GPU_BACKEND AND NOT ESHKOL_GPU_ENABLED)
     message(FATAL_ERROR
@@ -1705,7 +1705,23 @@ if(ESHKOL_GPU_ENABLED)
     set(GPU_SOURCES "")
     set(ESHKOL_CUDA_RUNTIME_LINK_NAMES "")
 
-    if(APPLE)
+    if(EMSCRIPTEN)
+        # Browser WebGPU (wasm target). Compute is dispatched into
+        # web/eshkol-webgpu.js through imports that EshkolWebGPU.attachVm()
+        # replaces with JSPI-suspending bridges when the page has a device
+        # (ADR-0029), so there is nothing to find and no Dawn port or
+        # Asyncify. JSPI cannot suspend across JavaScript frames, so
+        # setjmp/longjmp and C++ exceptions must use native wasm exception
+        # handling rather than Emscripten's invoke_* trampolines.
+        set(GPU_FOUND TRUE)
+        set(ESHKOL_GPU_BACKEND "WEBGPU" CACHE INTERNAL
+            "Resolved Eshkol GPU backend (NONE, METAL, CUDA, or WEBGPU)" FORCE)
+        add_compile_definitions(ESHKOL_GPU_WEBGPU_ENABLED)
+        set(GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory_webgpu.cpp")
+        add_compile_options(-fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
+        add_link_options(-fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
+        message(STATUS "GPU: WebGPU (browser compute, wasm target)")
+    elseif(APPLE)
         # Use Apple Metal framework (macOS/iOS)
         find_library(METAL_FRAMEWORK Metal)
         find_library(MPS_FRAMEWORK MetalPerformanceShaders)
@@ -1714,7 +1730,7 @@ if(ESHKOL_GPU_ENABLED)
         if(METAL_FRAMEWORK AND MPS_FRAMEWORK)
             set(GPU_FOUND TRUE)
             set(ESHKOL_GPU_BACKEND "METAL" CACHE INTERNAL
-                "Resolved Eshkol GPU backend (NONE, METAL, or CUDA)" FORCE)
+                "Resolved Eshkol GPU backend (NONE, METAL, CUDA, or WEBGPU)" FORCE)
             set(GPU_LIBRARIES ${METAL_FRAMEWORK} ${MPS_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
             add_compile_definitions(ESHKOL_GPU_METAL_ENABLED)
             message(STATUS "GPU: Apple Metal (unified memory)")
@@ -1785,7 +1801,7 @@ if(ESHKOL_GPU_ENABLED)
 
             set(GPU_FOUND TRUE)
             set(ESHKOL_GPU_BACKEND "CUDA" CACHE INTERNAL
-                "Resolved Eshkol GPU backend (NONE, METAL, or CUDA)" FORCE)
+                "Resolved Eshkol GPU backend (NONE, METAL, CUDA, or WEBGPU)" FORCE)
             set(GPU_LIBRARIES CUDA::cudart CUDA::cublas)
             set(ESHKOL_CUDA_RUNTIME_LINK_NAMES cudart cublas)
             if(TARGET CUDA::cublasLt)
@@ -7643,6 +7659,59 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wa
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_broadcast_shape_test.js)
         set_tests_properties(wasm_broadcast_shape_test PROPERTIES
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
+endif()
+
+# SW-202 / SW-243: with no axis, tensor-sum/-mean/-max/-min reduce the whole
+# tensor to a number on every engine (native JIT, bytecode VM, and the browser
+# VM bundle driven by node), and max/min start from the infinities.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/tensor_full_reduction_test.esk")
+    add_test(NAME tensor_full_reduction_jit
+             COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+                     $<TARGET_FILE:eshkol-run> -r
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/tensor_full_reduction_test.esk")
+    add_test(NAME tensor_full_reduction_vm
+             COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/tensor_full_reduction_test.esk")
+    set(_esh_full_reduction_tests tensor_full_reduction_jit tensor_full_reduction_vm)
+    find_program(NODE_EXECUTABLE node)
+    if(NODE_EXECUTABLE)
+        add_test(NAME tensor_full_reduction_browser_vm
+                 COMMAND ${NODE_EXECUTABLE}
+                         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/lib/wasm_diff_runner.js"
+                         "${CMAKE_CURRENT_SOURCE_DIR}/site/static/eshkol-vm.js"
+                         "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/tensor_full_reduction_test.esk")
+        list(APPEND _esh_full_reduction_tests tensor_full_reduction_browser_vm)
+    endif()
+    set_tests_properties(${_esh_full_reduction_tests} PROPERTIES
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: tensor full reductions"
+        FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|fatal signal")
+endif()
+
+# WebGPU browser backend. The contract test needs only node; the live and
+# differential gates drive Chrome through Playwright and need a WebGPU device,
+# so they carry the `webgpu` label and are run by gpu-execution-gate.yml.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/webgpu/webgpu_regressions_test.mjs")
+    find_program(NODE_EXECUTABLE node)
+    if(NODE_EXECUTABLE)
+        add_test(NAME webgpu_regressions_test
+                 COMMAND ${NODE_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/webgpu/webgpu_regressions_test.mjs)
+        set_tests_properties(webgpu_regressions_test PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        add_test(NAME webgpu_live_test
+                 COMMAND ${NODE_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/webgpu/webgpu_live_test.mjs)
+        add_test(NAME webgpu_diff_gate
+                 COMMAND ${NODE_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/lib/webgpu_diff_runner.mjs)
+        add_test(NAME webgpu_vm_test
+                 COMMAND ${NODE_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/webgpu/webgpu_vm_test.mjs)
+        set_tests_properties(webgpu_live_test webgpu_diff_gate webgpu_vm_test PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            LABELS webgpu)
     endif()
 endif()
 

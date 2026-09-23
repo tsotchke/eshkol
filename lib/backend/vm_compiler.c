@@ -4982,7 +4982,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int native_id = gpu_reduce_native_id(node->children[1]);
         if (native_id >= 0) {
             compile_expr(c, node->children[2], 0);
-            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(-1)));
+            /* gpu-reduce is a FULL reduction to a number, as on native: pass
+             * #f ("no axis"), not -1, which names the last axis (SW-202). */
+            chunk_emit(c, OP_CONST, chunk_add_const(c, BOOL_VAL(0)));
             chunk_emit(c, OP_NATIVE_CALL, native_id);
             return;
         }

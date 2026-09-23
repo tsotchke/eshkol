@@ -4,26 +4,31 @@ family: vm/tensor-reduction-shape
 status: fixed
 closed_at: "7c036631d"
 needs_decision: false
-title: "VM tensor-sum without an axis returns a one-element tensor instead of a number"
+title: "VM tensor-sum without an axis returns a one-element tensor, or per-row partial results, instead of a number"
 repro: >-
-  (display (tensor-sum (tensor 0.5 0.25))) and
-  (display (number? (tensor-sum (tensor 0.5 0.25)))) on the bytecode VM
-  (eshkol-vm-standalone-test), against the native JIT.
+  (display (tensor-sum (tensor 0.5 0.25))),
+  (display (number? (tensor-sum (tensor 0.5 0.25)))) and
+  (display (tensor-sum (reshape (tensor 1.0 2.0 3.0 4.0) 2 2))) on the bytecode
+  VM (eshkol-vm-standalone-test) and the browser VM, against the native JIT.
 observed: >-
-  The VM prints #(0.75) and #f; native prints 0.75 and #t. Arithmetic on the VM
-  result, (+ 1 (tensor-sum (tensor 0.5 0.25))), is a fatal runtime error. A
-  vector operand behaves the same, and a list operand raises "tensor-reduce:
-  expected a tensor or numeric vector operand" where native coerces it.
+  The VM printed #(0.75), #f and #(3 7); native prints 0.75, #t and 10.
+  Arithmetic on the VM result, (+ 1 (tensor-sum (tensor 0.5 0.25))), was a
+  fatal runtime error. The prelude passed -1 for "no axis", and -1 also names
+  the last axis. (gpu-reduce + M) lowered the same way.
 correct: >-
-  A full reduction (no axis) returns the scalar on every engine, as native and
-  the VM's own dual-carrier branch of the same native (case 457) already do.
+  A full reduction (no axis) returns the scalar on every engine, as native
+  does; an explicit axis, negative ones counted from the last, reduces that
+  axis.
 evidence: >-
-  Found while building the SW-197 regression matrix. Fixed by the VM Taylor
-  lane in 7c036631d: the prelude passes #f for "no axis", so a full reduction
-  returns the scalar on the VM as it does natively. Gate:
-  tests/tensor/tensor_full_reduction_test.esk.
+  Fixed by the VM Taylor lane in 7c036631d: the prelude passes #f for "no
+  axis" and the dispatcher treats a non-number axis as a full reduction.
+  gpu-reduce, which lowered with -1 as well, was fixed on master in 72a41917f
+  and arrives here with the master sync. Gate:
+  tests/tensor/tensor_full_reduction_test.esk on the native JIT, the bytecode
+  VM and the browser VM bundle (ctest tensor_full_reduction_{jit,vm,browser_vm}).
 caught_by: [sw197-exact-collection-matrix]
 missed_by: [vm_parity]
 notes: >-
-  Filed by the v1.3.5 exact-derivative lane; fixed on the integration branch by
-  the VM Taylor lane (7c036631d).
+  Filed by the v1.3.5 exact-derivative lane; fixed on the integration branch
+  in 7c036631d and ported to master by the WebGPU VM lane in 72a41917f, which
+  also fixed the gpu-reduce lowering.
