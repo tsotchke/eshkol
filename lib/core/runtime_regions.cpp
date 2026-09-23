@@ -2498,16 +2498,23 @@ static bool region_promote_for_store(const void* dst, eshkol_tagged_value_t* val
     // FAST PATH: no active region -> nothing can dangle.
     if (__region_stack_depth == 0 || !vals || n == 0) return true;
 
-    const int dst_idx = region_index_owning(dst);   // -1 when dst is outer/global
-    bool any = false;
-    for (uint64_t i = 0; i < n && !any; ++i) {
+    // Locate the values first and the destination only if some value lives in
+    // a region. Both probes walk region arenas block by block, and most stores
+    // (every integer or float written into a vector inside a loop's nursery)
+    // carry no pointer at all: probing dst unconditionally made each of them
+    // pay a full arena walk (a 25x slowdown of a vector-heavy example).
+    int youngest = -1;   // innermost region owning any stored value
+    for (uint64_t i = 0; i < n; ++i) {
         const eshkol_tagged_value_t& v = vals[i];
         if (!region_value_carries_pointer(v.type) || v.data.ptr_val == 0) continue;
-        // A value that lives at least as long as dst (same or an enclosing
-        // region, or outside every region) is stored unchanged.
-        any = region_index_owning((const void*)(uintptr_t)v.data.ptr_val) > dst_idx;
+        const int idx = region_index_owning((const void*)(uintptr_t)v.data.ptr_val);
+        if (idx > youngest) youngest = idx;
     }
-    if (!any) return true;
+    if (youngest < 0) return true;                  // every value outer/global
+    const int dst_idx = region_index_owning(dst);   // -1 when dst is outer/global
+    // A value that lives at least as long as dst (same or an enclosing region,
+    // or outside every region) is stored unchanged.
+    if (youngest <= dst_idx) return true;
 
     // Where the promoted subgraph lands: the destination's own region arena
     // when dst lives in an active region, otherwise the TRUE global arena. The
