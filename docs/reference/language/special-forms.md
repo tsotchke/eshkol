@@ -46,6 +46,22 @@ are *consecutive* at the start of the body.
   Avoid libc names for top-level globals. See
   [binding-mutation-and-scope.md](binding-mutation-and-scope.md).
 
+## `define-record-type`
+
+```scheme
+(define-record-type point
+  (make-point x y) point?
+  (x point-x) (y point-y))
+```
+
+The constructor stores fields in its declared argument order. The predicate
+recognizes this record type and rejects records of other types and ordinary
+vectors. An accessor or mutator applied to a value that fails the predicate
+raises a catchable error. Records use a vector representation with a type
+symbol in element zero, so a vector built by hand with that tag can pass the
+predicate. `tests/core/record_type_identity_test.esk` checks constructor order,
+type identity, and accessor and mutator errors on native and VM execution.
+
 ## `lambda`
 
 ```
