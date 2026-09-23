@@ -270,7 +270,7 @@ if [ "$need_build" -eq 1 ]; then
             -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","FS"]' \
             -s EXPORTED_FUNCTIONS='["_run_program","_repl_init","_repl_reset","_repl_eval","_eshkol_tensor_shape_total","_fflush","_malloc","_free"]' \
             -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=67108864 -s STACK_SIZE=8388608 \
-            -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM -DESHKOL_VM_TEST_MODULES \
+            "${ESHKOL_WASM_VM_FLAGS[@]}" -DESHKOL_VM_TEST_MODULES \
             -I"$REPO_ROOT/inc" -I"$BUILD_DIR/generated" -I"$REPO_ROOT/lib/backend" "${WASM_VM_SOURCES[@]}" \
             -o "$WASM_MODULE" -lm 2> "$WASM_DIFF_DIR/emcc.log"; then
         echo "run_wasm_differential.sh: emcc build FAILED:" >&2

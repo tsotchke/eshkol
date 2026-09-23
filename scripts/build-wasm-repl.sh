@@ -86,9 +86,10 @@ echo "== building browser REPL bundle (emcc) -> $OUT"
 if ! emcc -O2 -ffp-contract=off \
         -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
         -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
-        -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
+        -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString","stringToNewUTF8"]' \
+        -s EXPORTED_FUNCTIONS='["_malloc","_free"]' \
         -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=67108864 -s STACK_SIZE=8388608 \
-        -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
+        "${ESHKOL_WASM_VM_FLAGS[@]}" \
         -I "$REPO_ROOT/inc" -I "$BUILD_DIR/generated" -I "$REPO_ROOT/lib/backend" \
         "${ESHKOL_WASM_VM_SOURCES[@]}" \
         -o "$OUT" -lm 2> "$LOG"; then
