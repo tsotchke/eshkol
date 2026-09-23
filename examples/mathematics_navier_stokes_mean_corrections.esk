@@ -1,7 +1,7 @@
-;; Navier-Stokes blowup construction -- compactly supported mean corrections.
+;; Navier-Stokes example -- compactly supported mean corrections.
 ;;
-;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
-;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Source: an external reference construction for the three-dimensional
+;; Navier-Stokes equations (2026), https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
 ;; Section 8 (compactly supported mean corrections): Proposition 8.1, Lemma 8.2,
 ;; Proposition 8.3, Proposition 8.4, Corollary 8.5, Lemma 8.6, Lemma 8.7,
 ;; Lemma 8.8.  docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md rows 64-70.
@@ -34,19 +34,18 @@
 ;; Vandermonde elimination and its nonsingularity check are exact rational
 ;; arithmetic end to end, per docs/reference/stdlib/exact_linalg.md.
 ;;
-;; DEFECT NOTES (routed around, not fixed).
-;;  - `derivative` returns 0 at an exact non-integer rational reaching a named
-;;    multi-argument function; every derivative below uses `derivative-n`.
-;;  - `derivative-n` returns an INEXACT 0 when the differentiand is constant in
-;;    the seed variable at an exact rational point; `dn` below snaps that back
-;;    to the exact zero.
-;;  - Nested `derivative-n` calls are unreliable for exact rational work,  so
-;;    no derivative call below is built from a differentiand that itself
-;;    contains another derivative call: the "curl" of the potential is instead
-;;    computed by hand once (an ordinary, checkable calculus step) into
-;;    closed-form component functions, and AD is used only to CHECK that
-;;    closed form against a single-level derivative of the potential, and to
-;;    compute the single-level divergence of the closed-form components.
+;; Three AD defects this file used to route around are fixed: `derivative`
+;; returning 0 at an exact non-integer rational reaching a named
+;; multi-argument function (SW-148); `derivative-n` returning an inexact 0
+;; when the differentiand is constant in the seed variable at an exact
+;; rational point (SW-149); and nested `derivative-n` calls being unreliable
+;; for exact rational work (all probed directly against this file's own
+;; shapes -- constant differentiand, and a differentiand that itself calls
+;; `derivative-n` -- and confirmed exact). Every derivative below still uses
+;; `derivative-n`, and the "curl" of the potential is still computed by hand
+;; once into closed-form component functions with AD used only to check it,
+;; as originally written -- that is an independent check, not a route-around.
+;; `dn` (below) still snaps an inexact 0 back to the exact zero, defensively.
 ;;  - Matrices and vectors are built with the `vector` PROCEDURE, never a
 ;;    `#(...)` literal, which the reader auto-promotes to an f64 tensor.
 
@@ -87,14 +86,13 @@
 ;; is taken AFTER the cutoff product, so incompressibility is an identity, not
 ;; an estimate (row 47 of the mechanization table).
 
-;; NEW DEFECT, found while building this program (routed around, not fixed;
-;; minimal repro under .scratch/ns_defect_conditional_derivative.esk):
-;; `derivative`, `derivative-n` and `taylor` all return 0 for a differentiand
-;; whose top-level expression is a conditional (`if`/`cond`) at an exact
-;; rational seed -- regardless of which branch is taken and regardless of
-;; that branch's true derivative. Every AD call below therefore differentiates
-;; an UNGUARDED polynomial core; the guarded, genuinely compactly supported
-;; form is used only for plain evaluation, never as a differentiand.
+;; A defect found while building this program, that once made `derivative`,
+;; `derivative-n` and `taylor` all return 0 for a differentiand whose
+;; top-level expression is a conditional (`if`/`cond`) at an exact rational
+;; seed, is fixed. Every AD call below still differentiates an unguarded
+;; polynomial core, as originally written; the guarded, genuinely compactly
+;; supported form is used only for plain evaluation, never as a
+;; differentiand -- that reflects what is being checked, not a route-around.
 
 ;; Unguarded polynomial core -- a plain quartic, never branches.
 (define (Braw t c w) (* (- (* w w) (* (- t c) (- t c))) (- (* w w) (* (- t c) (- t c)))))

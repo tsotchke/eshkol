@@ -1,8 +1,8 @@
-;; Navier-Stokes blowup construction -- the azimuthal heat exterior and its
+;; Navier-Stokes example -- the azimuthal heat exterior and its
 ;; radial moment matching.
 ;;
-;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
-;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Source: an external reference construction for the three-dimensional
+;; Navier-Stokes equations (2026), https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
 ;; Section 2.3 ("Exterior flow and localization") and Appendix A ("Matching
 ;; radial moments and constructing the heat exterior"), Lemma A.1.
 ;;
@@ -39,17 +39,15 @@
 ;; PART C mechanizes the smooth-limit claim: v and both its r- and
 ;; t-derivatives stay finite at t = 1 (trivial for a polynomial, but
 ;; contrasted against a deliberately wrong candidate exterior carrying the
-;; INNER profile's own q^{-A} blowup factor, which does not).
+;; INNER profile's own q^{-A} divergent factor, which does not).
 ;;
-;; AD surface note.  Every top-level constant (nu, c2, c1_0, c0_0) that
-;; flows into a `derivative` call is inlined as a literal in the
-;; differentiand's own body (examples/mathematics_navier_stokes_stress_cone.esk's
-;; AD surface note); every differentiand is bound to a variable before being
-;; passed to `derivative`, and every point argument is bound to a variable
-;; before being passed to `derivative`, even when it looks like a literal
-;; already (examples/mathematics_navier_stokes_pulse_growth.esk's AD surface
-;; note) -- both route around distinct exactness leaks in the AD operators,
-;; documented in .scratch/, not fixed here.
+;; AD surface note.  Earlier rounds of this family found several exactness
+;; leaks in `derivative`/`derivative-n`/`taylor` (a top-level constant vs. an
+;; inline literal in the differentiand, an un-bound differentiand or point
+;; argument, and a several-deep composed differentiand -- see
+;; examples/mathematics_navier_stokes_stress_cone.esk's AD surface note for
+;; the fullest account). All are now fixed and no longer reproduce; the
+;; `derivative` calls below are written directly, with no route-around.
 
 (define pass-count 0)
 (define fail-count 0)
@@ -75,7 +73,7 @@
 
 ;; ---------------------------------------------------------------------------
 ;; PART A.  The heat exterior, exactly.  nu = 1/10, c2 = 1/5, c1_0 = 1/3,
-;; c0_0 = 1 -- all inlined below (AD surface note).
+;; c0_0 = 1 -- all inlined below.
 ;;   c1(t) = c1_0 + 24 nu c2 t         = 1/3 + (12/25) t
 ;;   c0(t) = c0_0 + 8 nu c1_0 t + 96 nu^2 c2 t^2  = 1 + (4/15) t + (24/125) t^2
 ;; ---------------------------------------------------------------------------
@@ -86,8 +84,6 @@
      (* 1/5 r r r r r)))
 
 ;; The residual d_t v - nu (d_r^2 v + (1/r) d_r v - v/r^2), at a fixed (r, t).
-;; Every differentiand is let-bound before being passed to `derivative`
-;; (route-around); every point argument is let-bound too.
 (define (heat-residual r t)
   (let* ((vt-fn (lambda (s) (v-of r s)))
          (dvt (derivative vt-fn t))
@@ -100,21 +96,15 @@
 (define sample-rt
   (list (list 1 0) (list 2 1/2) (list 3/2 1) (list 5/2 3/10)))
 
-;; `d_t v` and `d_r v` above come back inexact -- v-of is a 3-term sum of
-;; 2-4-way products, deep enough to hit the SAME composition-depth
-;; exactness leak documented in
-;; examples/mathematics_navier_stokes_stress_cone.esk's AD surface note and
-;; .scratch/ns_derivative_composition_exactness_repro.esk (the raw second
-;; derivative `derivative-n vr-fn r 2` stays exact; the two first
-;; derivatives do not). The residual value itself is still correct to
-;; float roundoff (~1e-15), so this is checked to a tight numerical
-;; tolerance rather than an exact zero, exactly as stress_cone.esk's Q_s
-;; check is.
-(check "the heat exterior solves the curvature-corrected radial heat equation to numerical tolerance (composition-depth exactness leak, not asserted exact)"
+;; The composition-depth exactness leak that used to make `d_t v` and `d_r v`
+;; come back inexact here (v-of is a 3-term sum of 2-4-way products) is fixed;
+;; every derivative below, including the residual itself, comes back an exact
+;; rational zero.
+(check "the heat exterior solves the curvature-corrected radial heat equation exactly"
        (let loop ((ps sample-rt))
          (cond ((null? ps) #t)
                ((let* ((p (car ps)) (r (car p)) (t (car (cdr p))) (res (heat-residual r t)))
-                  (< (abs res) 1e-9))
+                  (and (exact? res) (= res 0)))
                 (loop (cdr ps)))
                (else #f))))
 
@@ -230,7 +220,7 @@
 
 ;; ---------------------------------------------------------------------------
 ;; PART C.  The smooth limit as t -> 1, contrasted with a deliberately wrong
-;; candidate exterior carrying the inner profile's q^{-A} blowup factor.
+;; candidate exterior carrying the inner profile's q^{-A} divergent factor.
 ;; ---------------------------------------------------------------------------
 
 (define r-fixed 2)
@@ -249,13 +239,13 @@
               (< (abs (derivative vr-fn r-fixed)) 100))))
 
 ;; The wrong candidate: divide by (1 - t) (the inner profile's own
-;; q^{-A}-type blowup factor, in a contrasting exponent chosen only to make
-;; the blowup obvious at these sample times) -- this diverges as t -> 1 at
+;; q^{-A}-type divergent factor, in a contrasting exponent chosen only to make
+;; the divergence obvious at these sample times) -- this diverges as t -> 1 at
 ;; fixed r, which is exactly what Section 2.3 says the heat exterior must
 ;; NOT do.
 (define (v-wrong r t) (/ (v-of r t) (- 1.0 t)))
 
-(check "negative control -- a candidate exterior carrying an inner-profile blowup factor is NOT bounded near t = 1"
+(check "negative control -- a candidate exterior carrying an inner-profile divergent factor is NOT bounded near t = 1"
        (let ((far (abs (v-wrong r-fixed 0.9)))
              (near (abs (v-wrong r-fixed 0.999999))))
          (> near (* 10.0 far))))

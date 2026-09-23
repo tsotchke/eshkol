@@ -1,8 +1,8 @@
-;; Navier-Stokes blowup construction -- residual improvement and the local
+;; Navier-Stokes example -- residual improvement and the local
 ;; field.
 ;;
-;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
-;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Source: an external reference construction for the three-dimensional
+;; Navier-Stokes equations (2026), https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
 ;; Section 9 (residual improvement and the local field): Proposition 9.1,
 ;; Proposition 9.3, Definition 9.4, Proposition 9.5, Proposition 9.6, (9.8),
 ;; (9.18).  docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md rows 71-78.
@@ -34,17 +34,15 @@
 ;; recover the coefficients that annihilate it" idiom as
 ;; mathematics_navier_stokes_first_principles.esk Part B.
 ;;
-;; DEFECT NOTES (routed around, not fixed).
-;;  - `derivative` (not `derivative-n`/`taylor`) returns 0 at an exact
-;;    non-integer rational reaching a named multi-argument function; every
-;;    coefficient extraction below uses `taylor`, and always at the exact
-;;    integer seed q = 0, which is the pattern the existing NS examples use
-;;    to stay clear of the defect.
-;;  - No named-let loop variable is ever captured by an inline differentiand
-;;    (the SW-151 pattern): each rung is a separate top-level `define`, and
-;;    every quantity that feeds a `taylor`/`derivative-n` call is passed as an
-;;    explicit parameter of that top-level function, never closed over from a
-;;    `let loop`.
+;; Every coefficient extraction below uses `taylor`, at the exact integer
+;; seed q = 0. `derivative` returning 0 at an exact non-integer rational
+;; reaching the differentiand was SW-148, closed; probing it directly against
+;; this file's own multi-argument `Res`/`Wfn` no longer reproduces. No
+;; named-let loop variable is ever captured by an inline differentiand (the
+;; SW-151 pattern, also closed): each rung is a separate top-level `define`,
+;; and every quantity that feeds a `taylor`/`derivative-n` call is passed as
+;; an explicit parameter of that top-level function, never closed over from a
+;; `let loop`.
 
 (define pass-count 0)
 (define fail-count 0)
