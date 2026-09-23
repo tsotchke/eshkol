@@ -263,7 +263,7 @@ Adaptive dispatch system with cost model calibration:
 | cBLAS (Apple Accelerate AMX) | 1,100 GFLOPS | 5 us | 17 to ~1B elements |
 | Metal GPU (SF64 software float64) | 200 GFLOPS | 200 us | >1B elements |
 
-**SF64 (Software Float64):** Metal GPUs lack native float64 — SF64 emulates double precision using double-double arithmetic (two 32-bit mantissas combined for ~100-bit effective precision). Implemented in [metal_softfloat.h](../../lib/backend/gpu/metal_softfloat.h) (4,499 lines) and [gpu_memory.mm](../../lib/backend/gpu/gpu_memory.mm) (4,485 lines).
+**SF64 (Software Float64):** Metal GPUs lack native float64. The exact tier implements binary64 operations on integer words in [metal_softfloat.h](../../lib/backend/gpu/metal_softfloat.h) and [gpu_memory.mm](../../lib/backend/gpu/gpu_memory.mm). The browser WebGPU backend uses the same representation in WGSL; see [GPU acceleration](GPU_ACCELERATION.md).
 
 **Cost model dispatch** ([blas_backend.cpp](../../lib/backend/blas_backend.cpp)): Automatically selects the optimal backend based on tensor size and compute intensity. Configurable via environment variables (`ESHKOL_GPU_PRECISION`, `ESHKOL_BLAS_PEAK_GFLOPS`, `ESHKOL_GPU_PEAK_GFLOPS`).
 
