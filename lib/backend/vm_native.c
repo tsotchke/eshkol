@@ -10631,9 +10631,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, vm_make_taylor_val(vm, acc));
             break;
         }
-        /* GPU dispatch for full-tensor reductions (axis=-1 or axis covers all) */
+        /* GPU dispatch only when the reduction the CPU path performs below
+         * covers every element (a rank-1 operand, or every other extent 1),
+         * so the GPU never changes which reduction is computed. axis -1 is
+         * the LAST axis to vm_tensor_reduce, not "all axes": treating it as
+         * a full reduction made (tensor-sum M) of a matrix answer per-row
+         * sums below the GPU threshold and the grand total above it. */
         VmTensor* out = NULL;
-        if (axis < 0 || t->n_dims == 1) {
+        int reduce_axis = axis < 0 ? axis + t->n_dims : axis;
+        int covers_all = reduce_axis >= 0 && reduce_axis < t->n_dims;
+        for (int d = 0; covers_all && d < t->n_dims; d++)
+            if (d != reduce_axis && t->shape[d] != 1) covers_all = 0;
+        if (covers_all) {
             static const int gpu_reduce_ops[] = {0, 4, 3, 2}; /* sum=0, mean=4, max=3, min=2 */
             double gpu_result = vm_gpu_try_reduce(t, gpu_reduce_ops[fid - 457]);
             if (!isnan(gpu_result)) {

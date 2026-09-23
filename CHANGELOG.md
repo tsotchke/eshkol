@@ -39,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The VM's GPU reduction path treated an axis of -1 as "all axes", while the
+  CPU path (and the compiled path) reads it as the last axis. `(tensor-sum M)`
+  of a matrix therefore returned per-row sums below the GPU threshold and the
+  grand total above it. The GPU now serves only reductions that cover every
+  element, so it never changes which reduction is computed.
+
 - The VM's GPU elementwise path required only equal element counts, so
   `[6] + [1,6]` would have produced a `[6]` result on a GPU backend instead of
   the broadcast `[1,6]`. It now requires identical shapes, and the VM's GPU
