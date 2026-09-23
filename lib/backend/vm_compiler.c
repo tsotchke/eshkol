@@ -167,8 +167,14 @@ static int vm_head_user_rebound(FuncChunk* c, const Node* identifier);
 static void vm_compile_toplevel_sequence(FuncChunk* c, Node* node, int start) {
     for (int i = start; i < node->n_children; i++) {
         int is_last = (i == node->n_children - 1);
-        int is_def = vm_is_definition_form(node->children[i]);
+        int locals_before = c->n_locals;
         compile_expr(c, node->children[i], 0);
+        /* A form that bound top-level slots -- a definition, or a nested
+         * top-level begin / with-region / macro expansion holding one (whose
+         * own value vm_end_toplevel_sequence already dropped) -- leaves no
+         * value above its slots. Decided by the slots it bound, not by its
+         * spelling, so every splicing form nests. */
+        int is_def = c->n_locals > locals_before;
         if (is_last) {
             if (is_def) chunk_emit(c, OP_VOID, 0);
         } else if (!is_def) {
@@ -5008,6 +5014,22 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_CONS, 0);
         }
         chunk_emit(c, OP_NATIVE_CALL, 415);
+        return;
+    }
+
+    /* #550: (zeros d1 d2 ...) / (ones d1 d2 ...), the documented variadic
+     * form (docs/API_REFERENCE.md). Their BUILTINS-table entries are fixed
+     * 1-arg (shape) closures, so -- exactly as for reshape above -- the
+     * dimensions are packed into the shape list the native reads, and that
+     * native validates the shape. Through the generic call path a 2-arg call
+     * was an arity error, so the malformed-shape check never ran. */
+    if ((is_sym(head, "zeros") || is_sym(head, "ones")) && node->n_children >= 3) {
+        chunk_emit(c, OP_NIL, 0);
+        for (int i = node->n_children - 1; i >= 1; i--) {
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_CONS, 0);
+        }
+        chunk_emit(c, OP_NATIVE_CALL, is_sym(head, "zeros") ? 417 : 418);
         return;
     }
 

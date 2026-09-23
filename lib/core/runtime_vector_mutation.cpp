@@ -21,6 +21,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <new>
+#include <vector>
 
 // Defined in runtime_autodiff.cpp: is `bits` a live reverse-mode node pointer?
 extern "C" int eshkol_ad_node_probe(const arena_t* arena, uint64_t bits, int32_t expect_type);
@@ -28,6 +30,58 @@ extern "C" int eshkol_ad_node_probe(const arena_t* arena, uint64_t bits, int32_t
 extern "C" int eshkol_is_taylor_tagged(const eshkol_tagged_value_t* tv);
 
 namespace {
+
+// ── #713: the order of a tagged store ────────────────────────────────────
+//
+// Stage, promote, then store. A value bound for a slot that outlives the
+// value's region is promoted by the region write barrier BEFORE it reaches the
+// slot, and the barrier is all-or-nothing: when the promotion cannot complete
+// it raises with the staged values unchanged, so the store below it never runs
+// and the destination keeps its previous contents. Storing first and fixing the
+// slot up afterwards -- the order these helpers replace -- left the young
+// pointer in the destination whenever the fix-up failed.
+
+// One tagged value into one slot.
+void store_tagged_value(const void* dst_object, eshkol_tagged_value_t* slot,
+                        const eshkol_tagged_value_t& value) {
+    eshkol_tagged_value_t staged;
+    eshkol_region_write_barrier_into(&staged, dst_object, &value);
+    *slot = staged;
+}
+
+// Stage n values bound for @p dst_object and promote them in ONE transaction,
+// so structure they share stays shared and either all of them are promoted or
+// the call raises. Returns the promoted values: @p src itself when no region is
+// active (nothing can need promotion), otherwise a per-thread staging buffer
+// that stays valid until the next store on this thread (a store never
+// re-enters another store).
+const eshkol_tagged_value_t* promote_staged(const void* dst_object,
+                                            const eshkol_tagged_value_t* src,
+                                            size_t n) {
+    if (n == 0 || __region_stack_depth == 0) return src;
+    static thread_local std::vector<eshkol_tagged_value_t> staging;
+    bool grown = true;
+    try {
+        if (staging.size() < n) staging.resize(n);
+    } catch (const std::bad_alloc&) {
+        grown = false;
+    }
+    if (!grown) {
+        eshkol_raise_allocation_failure("vector store", n * sizeof(eshkol_tagged_value_t));
+    }
+    std::memcpy(staging.data(), src, n * sizeof(eshkol_tagged_value_t));
+    eshkol_region_write_barrier_range(dst_object, staging.data(), n);
+    return staging.data();
+}
+
+// n tagged values into n slots, with memmove semantics (src and dst may
+// overlap): either all of them are stored, promoted, or none is.
+void store_tagged_values(const void* dst_object, eshkol_tagged_value_t* dst,
+                         const eshkol_tagged_value_t* src, size_t n) {
+    if (n == 0) return;
+    const eshkol_tagged_value_t* values = promote_staged(dst_object, src, n);
+    std::memmove(dst, values, n * sizeof(eshkol_tagged_value_t));
+}
 
 uint8_t subtype_of(const void* ptr) {
     if (!ptr) return 0xFF;
@@ -206,17 +260,17 @@ void encode_tensor_slot(eshkol_tensor_t* tensor, int64_t index,
                         const eshkol_tagged_value_t& value) {
     if (tensor->dtype == ESHKOL_TENSOR_DTYPE_BOXED) {
         auto* slots = reinterpret_cast<eshkol_tagged_value_t*>(tensor->elements);
-        slots[index] = value;
-        eshkol_region_write_barrier_range(tensor, slots + index, 1);
+        store_tagged_value(tensor, slots + index, value);
         return;
     }
     if (tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
         auto* slots = reinterpret_cast<eshkol_tagged_value_t*>(tensor->elements);
         double numeric = 0.0;
-        slots[index] = is_forward_jet(value)
-            ? value
-            : (tagged_real_to_double(value, &numeric), tagged_double(numeric));
-        eshkol_region_write_barrier_range(tensor, slots + index, 1);
+        const eshkol_tagged_value_t encoded =
+            is_forward_jet(value)
+                ? value
+                : (tagged_real_to_double(value, &numeric), tagged_double(numeric));
+        store_tagged_value(tensor, slots + index, encoded);
         return;
     }
     double numeric = 0.0;
@@ -273,9 +327,7 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
     if (dst_subtype == HEAP_SUBTYPE_VECTOR && src_subtype == HEAP_SUBTYPE_VECTOR) {
         auto* dst_values = vector_elements(dst) + at;
         const auto* src_values = vector_elements(src) + start;
-        std::memmove(dst_values, src_values,
-                     static_cast<size_t>(count) * sizeof(eshkol_tagged_value_t));
-        eshkol_region_write_barrier_range(dst, dst_values, static_cast<uint64_t>(count));
+        store_tagged_values(dst, dst_values, src_values, static_cast<size_t>(count));
         return ESHKOL_SLOT_STORE_OK;
     }
 
@@ -297,9 +349,9 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
             if (dst_tagged) {
                 auto* dst_values = reinterpret_cast<eshkol_tagged_value_t*>(dst_tensor->elements);
                 const auto* src_values = reinterpret_cast<const double*>(src_tensor->elements);
+                // Plain doubles carry no pointer: nothing to promote.
                 for (int64_t i = 0; i < count; ++i)
                     dst_values[at + i] = tagged_double(src_values[start + i]);
-                eshkol_region_write_barrier_range(dst, dst_values + at, (uint64_t)count);
                 return ESHKOL_SLOT_STORE_OK;
             }
             return ESHKOL_SLOT_STORE_VALUE;
@@ -309,10 +361,7 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
             auto* dst_values = reinterpret_cast<eshkol_tagged_value_t*>(dst_tensor->elements) + at;
             const auto* src_values =
                 reinterpret_cast<const eshkol_tagged_value_t*>(src_tensor->elements) + start;
-            std::memmove(dst_values, src_values,
-                         static_cast<size_t>(count) * sizeof(eshkol_tagged_value_t));
-            eshkol_region_write_barrier_range(
-                dst, dst_values, static_cast<uint64_t>(count));
+            store_tagged_values(dst, dst_values, src_values, static_cast<size_t>(count));
             return ESHKOL_SLOT_STORE_OK;
         }
         if (dst_tensor->dtype == src_tensor->dtype) {
@@ -335,15 +384,14 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
         if (eshkol_tensor_dtype_is_tagged(src_tensor->dtype)) {
             const auto* src_values =
                 reinterpret_cast<const eshkol_tagged_value_t*>(src_tensor->elements) + start;
-            std::memcpy(dst_values, src_values,
-                        static_cast<size_t>(count) * sizeof(eshkol_tagged_value_t));
+            store_tagged_values(dst, dst_values, src_values, static_cast<size_t>(count));
         } else {
+            // Plain doubles carry no pointer: nothing to promote.
             const auto* src_values = reinterpret_cast<const double*>(src_tensor->elements);
             for (int64_t i = 0; i < count; ++i) {
                 dst_values[i] = tagged_double(src_values[start + i]);
             }
         }
-        eshkol_region_write_barrier_range(dst, dst_values, static_cast<uint64_t>(count));
         return ESHKOL_SLOT_STORE_OK;
     }
 
@@ -351,10 +399,7 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
     const auto* src_values = vector_elements(src) + start;
     if (dst_tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
         auto* dst_values = reinterpret_cast<eshkol_tagged_value_t*>(dst_tensor->elements) + at;
-        std::memcpy(dst_values, src_values,
-                    static_cast<size_t>(count) * sizeof(eshkol_tagged_value_t));
-        eshkol_region_write_barrier_range(
-            dst, dst_values, static_cast<uint64_t>(count));
+        store_tagged_values(dst, dst_values, src_values, static_cast<size_t>(count));
         return ESHKOL_SLOT_STORE_OK;
     }
     // Validate the complete source range before mutating the destination so a
@@ -370,8 +415,12 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
             return ESHKOL_SLOT_STORE_VALUE;
         }
     }
+    // Promote the whole source range before the first slot is written, so a
+    // failed promotion leaves the destination exactly as it was.
+    const eshkol_tagged_value_t* values =
+        promote_staged(dst_tensor, src_values, static_cast<size_t>(count));
     for (int64_t i = 0; i < count; ++i) {
-        encode_tensor_slot(dst_tensor, at + i, src_values[i]);
+        encode_tensor_slot(dst_tensor, at + i, values[i]);
     }
     return ESHKOL_SLOT_STORE_OK;
 }
@@ -416,9 +465,7 @@ extern "C" int32_t eshkol_sequence_slot_store(const eshkol_tagged_value_t* seque
     }
     const int64_t length = sequence_length(object, subtype);
     if (index < 0 || index >= length) return ESHKOL_SLOT_STORE_BOUNDS;
-    auto* slot = vector_elements(object) + index;
-    *slot = *value;
-    eshkol_region_write_barrier_range(object, slot, 1);
+    store_tagged_value(object, vector_elements(object) + index, *value);
     return ESHKOL_SLOT_STORE_OK;
 }
 
@@ -484,10 +531,10 @@ extern "C" int32_t eshkol_sequence_fill(const eshkol_tagged_value_t* sequence,
         for (int64_t i = 0; i < length; ++i) encode_tensor_slot(tensor, i, *value);
         return ESHKOL_SLOT_STORE_OK;
     }
+    // One value fills every slot: promote it once, then store it everywhere.
+    eshkol_tagged_value_t staged;
+    eshkol_region_write_barrier_into(&staged, object, value);
     auto* slots = vector_elements(object);
-    for (int64_t i = 0; i < length; ++i) slots[i] = *value;
-    if (length > 0) {
-        eshkol_region_write_barrier_range(object, slots, static_cast<uint64_t>(length));
-    }
+    for (int64_t i = 0; i < length; ++i) slots[i] = staged;
     return ESHKOL_SLOT_STORE_OK;
 }

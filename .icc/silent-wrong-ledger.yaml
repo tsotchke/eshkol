@@ -15388,6 +15388,55 @@ entries:
       its baseline untouched.
     caught_by: [value_position_axis_sweep, vm-taylor-lane-mirror]
     missed_by: [builtins_first_class_audit]
+  - id: SW-232
+    bucket: SILENT-WRONG
+    subtag: memory-safety
+    family: runtime-regions/promotion-atomicity
+    status: fixed
+    closed_at: "5e5868cc1"
+    title: "region promotion published young pointers after an allocation failure (#713)"
+    repro: >-
+      tests/core/region_promotion_failure_test.cpp, reporter_case: a region-young
+      string stored through eshkol_region_write_barrier_into while the destination
+      arena is bounded at capacity. partial_graph_case: a young vector whose
+      32-byte copy fits and whose string child does not.
+    observed: >-
+      The barrier logged "region evacuate: failed to allocate", returned, and its
+      output held the original pointer into the region; the caller stored it. In
+      the partial case the published root was the older-arena copy of the vector
+      with its slot still pointing into the young region, and the half-built copy
+      stayed in the region's forwarding map, so the next successful promotion of
+      the same value reused it and still carried the young edge. The destination
+      arena kept the aborted bytes.
+    correct: >-
+      Either the whole reachable graph is promoted, or nothing is stored, the
+      region, its forwarding relation and the destination arena are unchanged,
+      and a catchable allocation error is raised.
+    root_cause: >-
+      evac_raw and evac_object handled an allocator NULL by returning the old
+      pointer, with no aggregate failure status, and every driver published its
+      result unconditionally. Parents enter the forwarding map before their
+      children are walked, and the range barrier fixed slots up after the bulk
+      copy had already stored the young values.
+    fix: >-
+      evac_transaction (lib/core/runtime_regions.cpp) runs every promotion as one
+      transaction: a scope mark on the destination, a journal of added forwarding
+      keys and of shared bytes rewritten in place, and on the first failed
+      allocation (bounded capacity, OS block refusal, bookkeeping bad_alloc) an
+      abort that restores all three and leaves the roots unchanged. Region-mode
+      drivers then raise eshkol_raise_allocation_failure, whose condition is
+      preallocated outside every arena; arena-span reclamation retains the span.
+      Vector and tensor stores stage, promote, then store. ADR-0001 amended.
+    evidence: >-
+      region_promotion_failure_test passes (release build and an
+      ESHKOL_ENABLE_ASAN=ON build); the same test linked against the pre-fix
+      runtime reports 15 failures across all five cases. Memory suite 37/37,
+      region/arena/vector ctest subset 39/39.
+    caught_by: [external-report]
+    missed_by: [ctest, icc-smoke, icc-readiness]
+    notes: >-
+      Reported as issue #713 with a deterministic bounded-arena reproducer. The VM
+      evacuator is a separate implementation and is not covered by this entry.
   - id: SW-234
     bucket: SILENT-WRONG
     subtag: containers
@@ -15505,3 +15554,62 @@ entries:
       three lists); native_variadic_builtin_values_jit and _aot pass.
     caught_by: [v135f-coordinator-probe]
     missed_by: [vm_parity, value_position_axis_sweep]
+  - id: SW-242
+    bucket: SILENT-WRONG
+    subtag: containers
+    family: cross-engine/container-accessor-boundary
+    status: fixed
+    closed_at: '0bcbc36d1a8d1b6ec8526ea5ec81e30d34a5e63b'
+    title: "VM (string->symbol 5) answered #f silently; native faulted"
+    repro: >-
+      (display (guard (e (#t 'caught)) (string->symbol 5))) on
+      eshkol-vm-standalone-test and eshkol-run -r.
+    observed_before: >-
+      VM: #f with exit 0 (indistinguishable from a returned value). Native:
+      SIGSEGV.
+    observed_after: >-
+      caught on both engines: a catchable "string->symbol: expected a string"
+      (VM) / "Type error in string->symbol: expected string, got integer"
+      (native).
+    root_cause: >-
+      the VM native 185 answered #f for a non-string operand; the native lowering
+      read the operand's bytes without checking its kind.
+    fixed_by: >-
+      both go through the SW-221 container boundary (vm_require_container /
+      TaggedValueCodegen::requireContainer).
+    evidence: >-
+      tests/error_handling/sw221_container_type_boundary_test.esk string->symbol
+      cases (ctest sw221_container_type_boundary_{jit,aot_o0,aot_o2,vm_src}_smoke)
+      and tests/error_handling/caught_condition_silent_test.esk.
+    caught_by: [v135f-gates-lane]
+    missed_by: [builtins_first_class_audit, run_vm_parity]
+  - id: SW-244
+    bucket: LOUD-ERROR
+    subtag: toplevel-begin
+    family: cross-engine/toplevel-begin-splice
+    status: fixed
+    closed_at: 'f7b237ae972ad4ce1dce374e6c3310d7e48cbb07'
+    title: "Native: a top-level (begin (define tt 5) 1) did not define tt (\"Undefined variable\"); R7RS 5.1 splices it"
+    repro: >-
+      (begin (define tt 5) 1) (display tt) on eshkol-run -r and AOT.
+    observed_before: >-
+      Compile error "Undefined variable: tt". Nested begins and a macro expanding
+      to (begin (define ...)) failed the same way. On the VM a nested begin
+      inside a top-level begin or with-region left its binding as ().
+    observed_after: >-
+      5 on native JIT, AOT -O0/-O2, the VM and the browser VM, for nested begins,
+      a begin in a top-level with-region body, and macro expansions to begin.
+    root_cause: >-
+      the parser rewrote every begin holding a definition into a scoped letrec,
+      the driver and codegen flattened only one level of top-level sequence, and
+      the VM classified a top-level form as a definition by spelling.
+    fixed_by: >-
+      ToplevelFormParseScope + eshkol::splice_toplevel_forms (parser, driver,
+      codegen), MacroExpander::expandToplevelForm, and slot-based classification
+      in vm_compile_toplevel_sequence.
+    evidence: >-
+      tests/bindings/toplevel_begin_splice_test.esk (ctest
+      toplevel_begin_splice_{jit,vm,browser_vm,aot_O0,aot_O2}) and
+      tests/vm/toplevel_begin_define_test.esk (toplevel_begin_define_{jit,vm,browser_vm}).
+    caught_by: [v135f-gates-lane]
+    missed_by: [run_vm_parity]

@@ -5191,8 +5191,43 @@ static ParserTask<eshkol_ast_t> parse_let_match_form(SchemeTokenizer& tokenizer,
  * treated as the callee expression and the remaining elements are parsed as
  * argument expressions, producing an ESHKOL_CALL_OP AST node.
  */
+// R7RS 5.1: a `begin` at the top level of a program splices its forms into
+// that top level, so its definitions are top-level definitions. The parser
+// learns a list is a top-level form from this flag, which the top-level entry
+// points set immediately before parsing a form and parse_list consumes on
+// entry, so it never reaches a nested list. A top-level `begin` and a
+// top-level `with-region` pass it on to their own forms, which is what makes
+// nested splices and a `begin` in a top-level region top-level too.
+static thread_local bool g_parse_toplevel_form = false;
+
+namespace eshkol {
+ToplevelFormParseScope::ToplevelFormParseScope() : previous_(g_parse_toplevel_form) {
+    g_parse_toplevel_form = true;
+}
+ToplevelFormParseScope::~ToplevelFormParseScope() { g_parse_toplevel_form = previous_; }
+
+static void splice_toplevel_form(const eshkol_ast_t& form, std::vector<eshkol_ast_t>& out) {
+    if (form.type == ESHKOL_OP && form.operation.op == ESHKOL_SEQUENCE_OP) {
+        for (uint64_t i = 0; i < form.operation.sequence_op.num_expressions; ++i)
+            splice_toplevel_form(form.operation.sequence_op.expressions[i], out);
+        return;
+    }
+    out.push_back(form);
+}
+
+void splice_toplevel_forms(std::vector<eshkol_ast_t>& forms) {
+    std::vector<eshkol_ast_t> spliced;
+    spliced.reserve(forms.size());
+    for (const auto& form : forms) splice_toplevel_form(form, spliced);
+    forms = std::move(spliced);
+}
+} // namespace eshkol
+
 static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
     eshkol_ast_t ast = {};  // Zero-initialize all fields
+    // Consume the top-level-form flag before anything nested is parsed.
+    const bool toplevel_form = g_parse_toplevel_form;
+    g_parse_toplevel_form = false;
     ast.type = ESHKOL_OP;
     std::vector<eshkol_ast_t> elements;
 
@@ -10230,6 +10265,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     // for every operator type (lambda, let, letrec, etc.) by
                     // way of zero-init + parse_expression.
                     tokenizer.pushBack(peek);
+                    g_parse_toplevel_form = toplevel_form;
                     eshkol_ast_t first_body = (co_await parse_list(tokenizer));
                     if (first_body.type == ESHKOL_INVALID) {
                         ast.type = ESHKOL_INVALID;
@@ -10252,7 +10288,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                         // quasiquote and #(...) vector tokens that the manual
                         // LPAREN/atom dispatch dropped (same family as #110/#229).
                         tokenizer.pushBack(token);
+                        g_parse_toplevel_form = toplevel_form;   // a top-level region's forms are top-level
                         eshkol_ast_t body_expr = (co_await parse_expression(tokenizer));
+                        g_parse_toplevel_form = false;
                         body_elements.push_back(body_expr);
                     }
 
@@ -10277,7 +10315,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 // quasiquote and #(...) vector tokens that the manual
                 // LPAREN/atom dispatch dropped (same family as #110/#229).
                 tokenizer.pushBack(token);
+                g_parse_toplevel_form = toplevel_form;   // a top-level region's forms are top-level
                 eshkol_ast_t body_expr = (co_await parse_expression(tokenizer));
+                g_parse_toplevel_form = false;
                 body_exprs.push_back(body_expr);
                 token = tokenizer.nextToken();
             }
@@ -10469,7 +10509,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 // quasiquote and #(...) vector tokens uniformly (the bolt-on
                 // TOKEN_QUOTE branch only covered ' and missed `/,/#(...)).
                 tokenizer.pushBack(token);
+                // A top-level begin's forms are top-level forms (R7RS 5.1).
+                g_parse_toplevel_form = toplevel_form;
                 eshkol_ast_t expr = (co_await parse_expression(tokenizer));
+                g_parse_toplevel_form = false;
 
                 if (expr.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;
@@ -10493,12 +10536,14 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 }
             }
 
-            if (has_defines) {
+            if (has_defines && !toplevel_form) {
                 // Transform internal defines to letrec - this handles nested function defines correctly
                 eshkol_debug("Transforming begin with internal defines to letrec");
                 co_return transformInternalDefinesToLetrec(begin_expressions);
             } else {
-                // No defines - create a simple sequence
+                // No defines, or a top-level begin: a sequence. At top level
+                // the sequence is spliced into the program, definitions
+                // included (eshkol_splice_toplevel_forms).
                 if (begin_expressions.size() == 1) {
                     co_return begin_expressions[0];
                 }
@@ -11396,7 +11441,11 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
 
             g_parse_source = form_text.c_str();
             SchemeTokenizer tokenizer(form_text, form_line, form_column);
-            eshkol_ast_t result = parse_expression(tokenizer).run();
+            eshkol_ast_t result;
+            {
+                eshkol::ToplevelFormParseScope toplevel;
+                result = parse_expression(tokenizer).run();
+            }
             g_parse_source = NULL;
 
             /* Stamp the form's originating FILE. This is the one choke point

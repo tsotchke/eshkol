@@ -506,12 +506,18 @@ int main(int argc, char** argv) {
                              "generated links do not inherit new MSVC generic-path helper imports") &&
          expect_contains(gpu_backend_verifier, "gpu_cuda_kernels.cu",
                          "GPU verifier requires compiled CUDA kernels") &&
-         (expect_contains(gpu_backend_verifier,
-                          "required_arches = (\"75\", \"86\") if cuda_major >= 13 else (\"72\", \"86\")",
-                          "CUDA assets select portable architectures by toolkit") ||
-          expect_contains(gpu_backend_verifier,
-                          "for required_arch in (\"72\", \"86\")",
-                          "CUDA assets cover legacy and RTX-class GPUs")) &&
+         // #606: the portable floor is derived from the toolkit's recorded
+         // supported set (cmake/EshkolCudaArchitectures.cmake), SM72 where the
+         // toolkit still compiles it and SM75 otherwise, plus RTX-class SM86.
+         expect_contains(gpu_backend_verifier,
+                         "ESHKOL_CUDA_SUPPORTED_ARCHITECTURES",
+                         "CUDA assets select portable architectures by toolkit") &&
+         expect_contains(gpu_backend_verifier,
+                         "floor = \"72\" if arch_supported(\"72\") else \"75\"",
+                         "CUDA assets cover legacy and RTX-class GPUs") &&
+         expect_contains(gpu_backend_verifier,
+                         "required_arches = (floor, \"86\")",
+                         "CUDA assets require the portable floor and RTX-class GPUs") &&
          expect_contains(gpu_backend_verifier, "gpu_memory_stub.cpp",
                          "GPU verifier rejects the fallback stub");
 

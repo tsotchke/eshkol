@@ -1,0 +1,29 @@
+id: SW-242
+bucket: SILENT-WRONG
+subtag: containers
+family: cross-engine/container-accessor-boundary
+status: fixed
+closed_at: '0bcbc36d1a8d1b6ec8526ea5ec81e30d34a5e63b'
+title: "VM (string->symbol 5) answered #f silently; native faulted"
+repro: >-
+  (display (guard (e (#t 'caught)) (string->symbol 5))) on
+  eshkol-vm-standalone-test and eshkol-run -r.
+observed_before: >-
+  VM: #f with exit 0 (indistinguishable from a returned value). Native:
+  SIGSEGV.
+observed_after: >-
+  caught on both engines: a catchable "string->symbol: expected a string"
+  (VM) / "Type error in string->symbol: expected string, got integer"
+  (native).
+root_cause: >-
+  the VM native 185 answered #f for a non-string operand; the native lowering
+  read the operand's bytes without checking its kind.
+fixed_by: >-
+  both go through the SW-221 container boundary (vm_require_container /
+  TaggedValueCodegen::requireContainer).
+evidence: >-
+  tests/error_handling/sw221_container_type_boundary_test.esk string->symbol
+  cases (ctest sw221_container_type_boundary_{jit,aot_o0,aot_o2,vm_src}_smoke)
+  and tests/error_handling/caught_condition_silent_test.esk.
+caught_by: [v135f-gates-lane]
+missed_by: [builtins_first_class_audit, run_vm_parity]

@@ -171,10 +171,15 @@ std::vector<eshkol_ast_t> MacroExpander::expandAll(const std::vector<eshkol_ast_
             // Macro definitions don't produce runtime code
             continue;
         }
-        result.push_back(expand(ast));
+        result.push_back(expandToplevelForm(ast));
     }
 
     return result;
+}
+
+eshkol_ast_t MacroExpander::expandToplevelForm(const eshkol_ast_t& ast) {
+    toplevel_form_ = true;
+    return expandNode(ast);
 }
 
 /**
@@ -213,6 +218,9 @@ eshkol_ast_t MacroExpander::expand(const eshkol_ast_t& ast) {
  * @return The fully macro-expanded AST for this node and its subtree.
  */
 eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
+    // Whether this node is a top-level form; nothing nested inherits it.
+    const bool toplevel = toplevel_form_;
+    toplevel_form_ = false;
     if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_QUASIQUOTE_OP)
         return expandQuasiquoted(ast, 0);
     // Use iterative re-expansion for macro calls to prevent unbounded recursion.
@@ -320,7 +328,13 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                                      func_name.c_str(), kMaxExpansionSteps);
                         return current;
                     }
-                    eshkol_ast_t expanded = tryExpandMacroCall(current);
+                    eshkol_ast_t expanded;
+                    if (toplevel) {
+                        eshkol::ToplevelFormParseScope toplevel_parse;
+                        expanded = tryExpandMacroCall(current);
+                    } else {
+                        expanded = tryExpandMacroCall(current);
+                    }
                     if (expanded.node_id == current.node_id && expanded.type == current.type &&
                         expanded.type == ESHKOL_OP && expanded.operation.op == ESHKOL_CALL_OP &&
                         expanded.operation.call_op.func == current.operation.call_op.func)
@@ -331,14 +345,39 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 // The parser read this use as macro syntax, but here the
                 // keyword is shadowed by a value binding (or was never
                 // bound): it is an ordinary call.
-                if (eshkol::syntax_use_unparsed(current.node_id))
-                    current = reparseAsCall(current);
+                if (eshkol::syntax_use_unparsed(current.node_id)) {
+                    if (toplevel) {
+                        eshkol::ToplevelFormParseScope toplevel_parse;
+                        current = reparseAsCall(current);
+                    } else {
+                        current = reparseAsCall(current);
+                    }
+                }
             }
 
         }
 
         // Not a macro call — break out to do tree traversal
         break;
+    }
+
+    // A top-level begin (a sequence) and a top-level with-region pass their
+    // top-level status to their forms (R7RS 5.1), so a macro use among them
+    // expands in top-level mode too.
+    if (toplevel && current.type == ESHKOL_OP &&
+        (current.operation.op == ESHKOL_SEQUENCE_OP ||
+         current.operation.op == ESHKOL_WITH_REGION_OP)) {
+        eshkol_ast_t result = copyAst(current);
+        const bool is_sequence = current.operation.op == ESHKOL_SEQUENCE_OP;
+        const uint64_t n = is_sequence ? current.operation.sequence_op.num_expressions
+                                       : current.operation.with_region_op.num_body_exprs;
+        const eshkol_ast_t* items = is_sequence ? current.operation.sequence_op.expressions
+                                                : current.operation.with_region_op.body;
+        eshkol_ast_t* fresh = n ? new eshkol_ast_t[n] : nullptr;
+        for (uint64_t i = 0; i < n; ++i) fresh[i] = expandToplevelForm(items[i]);
+        if (is_sequence) result.operation.sequence_op.expressions = fresh;
+        else result.operation.with_region_op.body = fresh;
+        return result;
     }
 
     // Recursively expand sub-expressions (tree depth is bounded by input nesting)

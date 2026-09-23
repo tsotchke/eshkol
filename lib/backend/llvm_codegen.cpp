@@ -12,6 +12,7 @@
 #include <eshkol/llvm_backend.h>
 #include <eshkol/abi_fingerprint.h>
 #include <eshkol/frontend/ast_strings.h>
+#include <eshkol/frontend/syntax_datum.h>
 #include <eshkol/frontend/source_paths.h>
 #include <eshkol/frontend/node_identity.h>
 #include <eshkol/frontend/semantic_identity.h>
@@ -2343,20 +2344,7 @@ public:
             // — even though the record-type machinery runs fine at
             // top-level statement order. Flatten once, right after macro
             // expansion, so every downstream pass sees a clean flat list.
-            {
-                std::vector<eshkol_ast_t> flattened;
-                flattened.reserve(expanded_asts.size());
-                for (auto& a : expanded_asts) {
-                    if (a.type == ESHKOL_OP && a.operation.op == ESHKOL_SEQUENCE_OP) {
-                        for (uint64_t si = 0; si < a.operation.sequence_op.num_expressions; si++) {
-                            flattened.push_back(a.operation.sequence_op.expressions[si]);
-                        }
-                    } else {
-                        flattened.push_back(a);
-                    }
-                }
-                expanded_asts = std::move(flattened);
-            }
+            eshkol::splice_toplevel_forms(expanded_asts);   // R7RS 5.1: recursive
 
             // Resolve the expanded unit against the shared NodeId-keyed
             // semantic substrate before backend-specific lowering. The result
