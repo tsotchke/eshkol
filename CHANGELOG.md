@@ -221,6 +221,8 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- Added Colin's requested bounded WGSL strain-energy artifact example: a native/VM-verified AD generator, sealed manifest and f32 evaluator, and a Chrome three-kernel resident-buffer demo with measured error evidence.
+
 - On the bytecode VM, `tensor-sum`/`-mean`/`-max`/`-min` with no axis now
   reduce the whole tensor to a number, as on native (SW-202). The VM used to
   answer `#(0.75)` for `(tensor-sum (tensor 0.5 0.25))` and per-row sums for a

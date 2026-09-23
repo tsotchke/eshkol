@@ -1,0 +1,29 @@
+id: SW-251
+bucket: SILENT-WRONG
+subtag: webgpu-artifact
+family: wgsl-artifact/envelope-and-generation
+status: fixed
+title: "an unbounded polynomial evaluator could return plausible values outside its fitted envelope or after a coefficient refit"
+repro: >-
+  Evaluate the prototype Taylor polynomial at strain 0.3, beyond its declared
+  radius 0.2, or reuse an output from a prior coefficient generation.
+observed: >-
+  The prototype exposed a scalar WGSL function and a comment describing the
+  envelope, but no batch output status or generation field for consumers.
+correct: >-
+  A bounded evaluator returns a status and generation with each sample;
+  outside-envelope samples have no usable numerical output.
+root_cause: >-
+  The prototype generated only expression functions. It did not define a
+  storage-buffer ABI that can carry domain validity and coefficient generation
+  through ordinary resident WebGPU kernels.
+fix: >-
+  The generated WGSL batch kernel checks finite input and radius, bounds each
+  invocation by count and both buffer lengths, returns status and generation,
+  and embeds immutable coefficients in a sealed artifact set.
+evidence: >-
+  examples/wgsl_artifact/build_artifact.py requires byte-identical native and
+  VM output and the demo/run.mjs Chrome producer-evaluator-consumer chain checks
+  envelope, generation, convexity, deployed errors and final-only readback.
+caught_by: [track-a-acceptance]
+missed_by: [prototype-only-validation]
