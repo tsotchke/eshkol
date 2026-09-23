@@ -2484,6 +2484,11 @@ set(ESHKOL_BACKEND_RUNTIME_SRC
   lib/backend/tensor_conv_kernel.cpp
 )
 
+option(ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2 "Build provisional hosted ESKM v2 reader/writer" OFF)
+if(ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2)
+  add_compile_definitions(ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2=1)
+endif()
+
 set(ESHKOL_RUNTIME_SUPPORT_SRC
   # Forward half of the Eshkol <-> qLLM bridge (inc/eshkol/bridge/qllm_bridge.h).
   # Creates the AD_NODE_TENSOR_* / geometric nodes that lib/bridge/tensor_backward.cpp
@@ -2517,6 +2522,10 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/quantum/quantum_rng.c
   lib/quantum/quantum_rng_wrapper.c
 )
+
+if(ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2)
+  list(APPEND ESHKOL_RUNTIME_SUPPORT_SRC lib/core/eskm_v2_preflight.c)
+endif()
 
 list(REMOVE_ITEM ESHKOL_NON_RUNTIME_SRC
   ${ESHKOL_BACKEND_RUNTIME_SRC}
@@ -12173,4 +12182,40 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-s
         TIMEOUT 180 LABELS "ad;parity;regression"
         PASS_REGULAR_EXPRESSION "variadic gradient matrix PASS"
         FAIL_REGULAR_EXPRESSION "FAIL:|ERROR|Unhandled exception|fatal signal|verification failed")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2 AND UNIX)
+    # These hosted fault-injection tests use POSIX environment and GNU linker wrapping.
+    add_executable(eskm_v2_backend_test tests/core/eskm_v2_backend_test.c lib/core/eskm_v2_preflight.c)
+    target_compile_options(eskm_v2_backend_test PRIVATE -UNDEBUG)
+    add_test(NAME eskm_v2_backend_test COMMAND eskm_v2_backend_test)
+    foreach(test IN ITEMS eskm_v2_runtime_test eskm_v2_vm_allocation_test)
+        if(test STREQUAL "eskm_v2_runtime_test")
+            add_executable(${test} tests/core/eskm_v2_runtime_test.cpp)
+            target_compile_features(${test} PRIVATE cxx_std_20)
+        else()
+            add_executable(${test} tests/backend/eskm_v2_vm_allocation_test.c)
+            eshkol_apply_vm_limit_definitions(${test})
+        endif()
+        target_compile_options(${test} PRIVATE -UNDEBUG)
+        target_include_directories(${test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_BINARY_DIR}/generated)
+        eshkol_target_llvm_includes(${test})
+        target_link_directories(${test} PRIVATE ${LLVM_LIBRARY_DIRS})
+        target_link_libraries(${test} PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    endforeach()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_compile_definitions(eskm_v2_runtime_test PRIVATE ESKM_V2_MALLOC_INJECTION=1)
+        target_link_options(eskm_v2_runtime_test PRIVATE -Wl,--wrap=malloc)
+    endif()
+    add_test(NAME eskm_v2_runtime_test COMMAND eskm_v2_runtime_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/core/fixtures/eskm-v2/annotations-scalar.eskm)
+    add_test(NAME eskm_v2_vm_allocation_test COMMAND eskm_v2_vm_allocation_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2 AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    add_test(NAME eskm_v2_engine_parity_test
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskm_v2_engine_parity.py
+            $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test> --self-test)
+    set_tests_properties(eskm_v2_engine_parity_test PROPERTIES TIMEOUT 180)
 endif()
