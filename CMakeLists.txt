@@ -9713,6 +9713,43 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
                 FAIL_REGULAR_EXPRESSION "^FAIL:|^<|^>")
     endif()
 
+    # SW-249: define-record-type predicates tell record types apart and
+    # accessors/mutators check their operand, on every engine.
+    add_test(
+        NAME record_type_identity_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/core/record_type_identity_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    add_test(
+        NAME record_type_identity_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/record_type_identity_aot_o0' tests/core/record_type_identity_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/record_type_identity_aot_o0'"
+    )
+    set_tests_properties(record_type_identity_runtime_smoke
+                         record_type_identity_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: record types are told apart -- 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(
+            NAME record_type_identity_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/core/record_type_identity_test.esk"
+        )
+        add_test(
+            NAME record_type_identity_vm_eskb_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/record_type_identity.eskb' tests/core/record_type_identity_test.esk && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/record_type_identity.eskb'"
+        )
+        set_tests_properties(record_type_identity_vm_smoke
+                             record_type_identity_vm_eskb_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: record types are told apart -- 0 failures"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
+
     # SW-247: make-hash-table finds keys by equal? and returns the stored
     # value unchanged, on every engine. The VM table keyed on a Value's raw
     # payload and returned every value as an integer.

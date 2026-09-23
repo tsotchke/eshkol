@@ -2339,18 +2339,7 @@ static void compile_form_define_library(FuncChunk* c, Node* node, int tail) {
     if (c->n_locals == locals_at_start) chunk_emit(c, OP_NIL, 0);
 }
 
-/**
- * @brief Compile a `(define-record-type name (constructor field...) pred?
- *        (field accessor [mutator])...)` special form. Records are
- *        represented as tagged vectors (element 0 = the type name string,
- *        packed the same way compile_symbol_literal() does; elements
- *        1..N = field values). Compiles a small standalone closure for
- *        the constructor, the predicate (currently a simplified `vector?`
- *        check rather than a full type-tag comparison), and each field's
- *        accessor/mutator, inlining each closure's bytecode into @p c's
- *        chunk (remapping its local constant-pool indices and internal
- *        jump targets) and binding it as a local.
- */
+/** @brief Strip syntax colors from every symbol of @p node (ADR-0026). */
 static void vm_decolor_tree(Node* node) {
     if (!node) return;
     if (node->type == N_SYMBOL)
@@ -2358,191 +2347,135 @@ static void vm_decolor_tree(Node* node) {
     for (int i = 0; i < node->n_children; ++i) vm_decolor_tree(node->children[i]);
 }
 
+/* Append formatted text to a growing heap buffer; returns 0 on failure. */
+static int vm_record_src_append(char** buf, size_t* len, size_t* cap, const char* fmt, ...) {
+    va_list ap;
+    for (;;) {
+        va_start(ap, fmt);
+        int n = vsnprintf(*buf + *len, *cap - *len, fmt, ap);
+        va_end(ap);
+        if (n < 0) return 0;
+        if (*len + (size_t)n < *cap) { *len += (size_t)n; return 1; }
+        size_t ncap = (*cap) * 2 + (size_t)n + 64;
+        char* nb = (char*)realloc(*buf, ncap);
+        if (!nb) return 0;
+        *buf = nb; *cap = ncap;
+    }
+}
+
+/* Compile one generated definition written as source text. */
+static void vm_compile_generated_define(FuncChunk* c, const char* source) {
+    Node* def = parse_sexp_from_string(source);
+    if (!def) {
+        vm_compile_error("define-record-type: internal lowering did not parse", NULL);
+        return;
+    }
+    compile_expr(c, def, 0);
+    free_node(def);
+}
+
+/*
+ * `(define-record-type type (ctor field ...) pred (field accessor [mutator]) ...)`
+ * is the native lowering, spelled as definitions (parser.cpp, R7RS wave 3):
+ *
+ *   (define (ctor f ...) (vector 'type f ...))
+ *   (define (pred obj) (if (vector? obj)
+ *                          (if (> (vector-length obj) 0)
+ *                              (equal? (vector-ref obj 0) 'type) #f) #f))
+ *   (define (accessor obj) (if (pred obj) (vector-ref obj i)
+ *                              (error "accessor: not a type record" obj)))
+ *   (define (mutator obj v) (if (pred obj) (vector-set! obj i v)
+ *                               (error "mutator: not a type record" obj)))
+ *
+ * where i is the field's position in the constructor plus one (index 0 is
+ * the tag). The VM used to tag with a string, answer `vector?` for the
+ * predicate and index fields by their declaration order (SW-249), so a
+ * plain vector passed the predicate, two record types could not be told
+ * apart, and a constructor listing fields in another order read the wrong
+ * slot.
+ */
 static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) {
-    Node* head = node->children[0];
-    (void)head; (void)tail;
+    (void)tail;
     /* define-record-type defines names, and a definition a template
      * introduces defines the name as written (ADR-0026). */
     for (int i = 1; i < node->n_children; ++i) vm_decolor_tree(node->children[i]);
-    const char* type_name = node->children[1]->symbol;
-    (void)type_name; /* used conceptually as type tag */
-    Node* ctor = node->children[2]; /* (constructor f1 f2 ...) */
-    const char* pred_name = node->children[3]->symbol;
-
-    /* --- Constructor --- */
-    if (ctor->type == N_LIST && ctor->n_children >= 1) {
-        const char* ctor_name = ctor->children[0]->symbol;
-        int n_fields = ctor->n_children - 1;
-
-        /* Compile constructor as a closure that creates a tagged vector */
-        FuncChunk func; chunk_init_arrays(&func);
-        func.enclosing = c;
-        func.param_count = n_fields;
-        for (int i = 0; i < n_fields; i++)
-            add_local(&func, ctor->children[i + 1]->symbol);
-
-        /* Body: push type tag (as symbol), then all fields, create vector */
-        /* Use type_name as a string constant for the tag */
-        int len = (int)strlen(node->children[1]->symbol);
-        int n_packs = (len + 7) / 8;
-        chunk_emit(&func, OP_CONST, chunk_add_const(&func, INT_VAL(len)));
-        for (int p = 0; p < n_packs; p++) {
-            uint64_t pack = 0;
-            for (int b = 0; b < 8 && p * 8 + b < len; b++) {
-                pack |= ((uint64_t)(unsigned char)node->children[1]->symbol[p * 8 + b]) << (b * 8);
-            }
-            chunk_emit(&func, OP_CONST, chunk_add_const(&func, INT_VAL((int64_t)pack)));
-        }
-        chunk_emit(&func, OP_NATIVE_CALL,
-                   ESHKOL_VM_PACKED_STRING_FID_BASE + n_packs);
-        for (int i = 0; i < n_fields; i++)
-            chunk_emit(&func, OP_GET_LOCAL, i);
-        chunk_emit(&func, OP_VEC_CREATE, n_fields + 1); /* +1 for type tag */
-        chunk_emit(&func, OP_RETURN, 0);
-
-        /* Inline func body into parent chunk */
-        int cfunc = chunk_add_const(c, INT_VAL(0));
-        int jover = placeholder(c);
-        int func_start = c->code_len;
-        c->constants[cfunc].as.i = func_start;
-        int* const_map = vm_alloc_const_map(func.n_constants);
-        if (!const_map) {
-            vm_compile_error("unable to allocate closure constant map", NULL);
-            chunk_free_arrays(&func);
-            return;
-        }
-        for (int i = 0; i < func.n_constants; i++)
-            const_map[i] = chunk_add_const(c, func.constants[i]);
-        for (int i = 0; i < func.code_len; i++) {
-            Instr fi = func.code[i];
-            if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
-            if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
-                fi.operand += func_start;
-            chunk_emit_instr(c, fi);
-        }
-        patch(c, jover, OP_JUMP, c->code_len);
-        chunk_emit_closure(c, cfunc, 0);
-        add_local(c, ctor_name);
-        free(const_map);
-        chunk_free_arrays(&func);
+    Node* type_node = node->children[1];
+    const char* type_name =
+        type_node->type == N_SYMBOL ? type_node->symbol :
+        (type_node->type == N_LIST && type_node->n_children > 0 &&
+         type_node->children[0]->type == N_SYMBOL) ? type_node->children[0]->symbol : NULL;
+    Node* ctor = node->children[2];
+    Node* pred = node->children[3];
+    const char* pred_name = pred->type == N_SYMBOL ? pred->symbol : NULL;
+    if (!type_name) {
+        vm_compile_error("define-record-type: the type name must be an identifier", node);
+        return;
     }
 
-    /* --- Predicate --- */
-    {
-        FuncChunk func; chunk_init_arrays(&func);
-        func.enclosing = c;
-        func.param_count = 1;
-        add_local(&func, "v");
-        /* Check: (and (vector? v) (> (vector-length v) 0) (equal? (vector-ref v 0) type-name)) */
-        chunk_emit(&func, OP_GET_LOCAL, 0);
-        chunk_emit(&func, OP_VEC_P, 0);
-        chunk_emit(&func, OP_RETURN, 0); /* simplified: just vector? check */
+    size_t cap = 256, len = 0;
+    char* src = (char*)malloc(cap);
+    if (!src) { vm_compile_error("define-record-type: out of memory", node); return; }
+#define REC_SRC(...) do { len = 0; src[0] = '\0'; \
+        if (!vm_record_src_append(&src, &len, &cap, __VA_ARGS__)) goto oom; } while (0)
+#define REC_ADD(...) do { if (!vm_record_src_append(&src, &len, &cap, __VA_ARGS__)) goto oom; } while (0)
 
-        int cfunc = chunk_add_const(c, INT_VAL(0));
-        int jover = placeholder(c);
-        int func_start = c->code_len;
-        c->constants[cfunc].as.i = func_start;
-        int* const_map = vm_alloc_const_map(func.n_constants);
-        if (!const_map) {
-            vm_compile_error("unable to allocate closure constant map", NULL);
-            chunk_free_arrays(&func);
-            return;
-        }
-        for (int i = 0; i < func.n_constants; i++)
-            const_map[i] = chunk_add_const(c, func.constants[i]);
-        for (int i = 0; i < func.code_len; i++) {
-            Instr fi = func.code[i];
-            if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
-            chunk_emit_instr(c, fi);
-        }
-        patch(c, jover, OP_JUMP, c->code_len);
-        chunk_emit_closure(c, cfunc, 0);
-        add_local(c, pred_name);
-        free(const_map);
-        chunk_free_arrays(&func);
+    /* Constructor. */
+    if (ctor->type == N_LIST && ctor->n_children >= 1 && ctor->children[0]->type == N_SYMBOL) {
+        REC_SRC("(define (%s", ctor->children[0]->symbol);
+        for (int i = 1; i < ctor->n_children; i++) REC_ADD(" %s", ctor->children[i]->symbol);
+        REC_ADD(") (vector '%s", type_name);
+        for (int i = 1; i < ctor->n_children; i++) REC_ADD(" %s", ctor->children[i]->symbol);
+        REC_ADD("))");
+        vm_compile_generated_define(c, src);
     }
 
-    /* --- Accessors (and optional mutators) --- */
+    /* Predicate. */
+    if (pred_name) {
+        REC_SRC("(define (%s obj) (if (vector? obj) (if (> (vector-length obj) 0)"
+                " (equal? (vector-ref obj 0) '%s) #f) #f))", pred_name, type_name);
+        vm_compile_generated_define(c, src);
+    }
+
+    /* Accessors and mutators. */
     for (int i = 4; i < node->n_children; i++) {
-        Node* field_spec = node->children[i];
-        if (field_spec->type != N_LIST || field_spec->n_children < 2) continue;
-        int field_idx = i - 4 + 1; /* +1 because index 0 is the type tag */
-
-        /* Accessor */
-        {
-            const char* acc_name = field_spec->children[1]->symbol;
-            FuncChunk func; chunk_init_arrays(&func);
-            func.enclosing = c;
-            func.param_count = 1;
-            add_local(&func, "v");
-            chunk_emit(&func, OP_GET_LOCAL, 0);
-            chunk_emit(&func, OP_CONST, chunk_add_const(&func, INT_VAL(field_idx)));
-            chunk_emit(&func, OP_VEC_REF, 0);
-            chunk_emit(&func, OP_RETURN, 0);
-
-            int cfunc = chunk_add_const(c, INT_VAL(0));
-            int jover = placeholder(c);
-            int func_start = c->code_len;
-            c->constants[cfunc].as.i = func_start;
-            int* const_map = vm_alloc_const_map(func.n_constants);
-            if (!const_map) {
-                vm_compile_error("unable to allocate closure constant map", NULL);
-                chunk_free_arrays(&func);
-                return;
-            }
-            for (int i2 = 0; i2 < func.n_constants; i2++)
-                const_map[i2] = chunk_add_const(c, func.constants[i2]);
-            for (int i2 = 0; i2 < func.code_len; i2++) {
-                Instr fi = func.code[i2];
-                if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
-                chunk_emit_instr(c, fi);
-            }
-            patch(c, jover, OP_JUMP, c->code_len);
-            chunk_emit_closure(c, cfunc, 0);
-            add_local(c, acc_name);
-            free(const_map);
-            chunk_free_arrays(&func);
+        Node* spec = node->children[i];
+        if (spec->type != N_LIST || spec->n_children < 2 || spec->children[0]->type != N_SYMBOL)
+            continue;
+        const char* field = spec->children[0]->symbol;
+        int index = -1;
+        if (ctor->type == N_LIST)
+            for (int k = 1; k < ctor->n_children; k++)
+                if (ctor->children[k]->type == N_SYMBOL &&
+                    strcmp(ctor->children[k]->symbol, field) == 0) { index = k; break; }
+        if (index < 0) index = i - 4 + 1;   /* not a constructor field */
+        if (spec->children[1]->type == N_SYMBOL) {
+            const char* acc = spec->children[1]->symbol;
+            if (pred_name)
+                REC_SRC("(define (%s obj) (if (%s obj) (vector-ref obj %d)"
+                        " (error \"%s: not a %s record\" obj)))",
+                        acc, pred_name, index, acc, type_name);
+            else
+                REC_SRC("(define (%s obj) (vector-ref obj %d))", acc, index);
+            vm_compile_generated_define(c, src);
         }
-
-        /* Mutator (optional, at children[2]) */
-        if (field_spec->n_children >= 3) {
-            const char* mut_name = field_spec->children[2]->symbol;
-            FuncChunk func; chunk_init_arrays(&func);
-            func.enclosing = c;
-            func.param_count = 2;
-            add_local(&func, "v");
-            add_local(&func, "val");
-            chunk_emit(&func, OP_GET_LOCAL, 0);   /* vector */
-            chunk_emit(&func, OP_CONST, chunk_add_const(&func, INT_VAL(field_idx)));
-            chunk_emit(&func, OP_GET_LOCAL, 1);   /* new value */
-            chunk_emit(&func, OP_VEC_SET, 0);
-            chunk_emit(&func, OP_RETURN, 0);
-
-            int cfunc = chunk_add_const(c, INT_VAL(0));
-            int jover = placeholder(c);
-            int func_start = c->code_len;
-            c->constants[cfunc].as.i = func_start;
-            int* const_map = vm_alloc_const_map(func.n_constants);
-            if (!const_map) {
-                vm_compile_error("unable to allocate closure constant map", NULL);
-                chunk_free_arrays(&func);
-                return;
-            }
-            for (int i2 = 0; i2 < func.n_constants; i2++)
-                const_map[i2] = chunk_add_const(c, func.constants[i2]);
-            for (int i2 = 0; i2 < func.code_len; i2++) {
-                Instr fi = func.code[i2];
-                if (fi.op == OP_CONST) fi.operand = const_map[fi.operand];
-                chunk_emit_instr(c, fi);
-            }
-            patch(c, jover, OP_JUMP, c->code_len);
-            chunk_emit_closure(c, cfunc, 0);
-            add_local(c, mut_name);
-            free(const_map);
-            chunk_free_arrays(&func);
+        if (spec->n_children >= 3 && spec->children[2]->type == N_SYMBOL) {
+            const char* mut = spec->children[2]->symbol;
+            if (pred_name)
+                REC_SRC("(define (%s obj val) (if (%s obj) (vector-set! obj %d val)"
+                        " (error \"%s: not a %s record\" obj)))",
+                        mut, pred_name, index, mut, type_name);
+            else
+                REC_SRC("(define (%s obj val) (vector-set! obj %d val))", mut, index);
+            vm_compile_generated_define(c, src);
         }
     }
+#undef REC_SRC
+#undef REC_ADD
+    free(src);
     return;
+oom:
+    free(src);
+    vm_compile_error("define-record-type: out of memory", node);
 }
 
 /** @brief Compile a `(parameterize ((param value)...) body...)` special

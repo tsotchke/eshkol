@@ -14,6 +14,14 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **Record predicates tell record types apart on the VM, and accessors check
+  their operand on both engines.** The VM's record predicate was `vector?`, so
+  a plain vector passed it and `cat?` of a dog was `#t`; its tag was a string
+  and it indexed fields in declaration order, not constructor order (SW-249).
+  The VM now compiles the native lowering: a type-symbol tag, a predicate that
+  checks it, and fields in constructor order. On both engines an accessor or
+  mutator applied to a value that fails the predicate raises
+  `"<accessor>: not a <type> record"` instead of reading the vector.
 - **VM hash tables find keys by `equal?` and return what was stored.** The
   bytecode VM's table keyed on a Value's raw payload and returned every value
   as an integer, so `(hash-ref h "origin" #f)` missed a key spelled by another
