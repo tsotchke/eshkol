@@ -14,6 +14,13 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **VM hash tables find keys by `equal?` and return what was stored.** The
+  bytecode VM's table keyed on a Value's raw payload and returned every value
+  as an integer, so `(hash-ref h "origin" #f)` missed a key spelled by another
+  string, a stored record came back as its heap slot number (an accessor on it
+  then raised), and `hash-clear!` returned an empty copy instead of clearing
+  (SW-247). Keys and values are now boxed Values hashed and compared by
+  `equal?`, as on the native backend.
 - **Builtins used as values accept what their call form accepts.** `+ - * /`
   as values were 2-argument closures, so a list `apply` through a variable
   (`(define g +) (apply g '(1 2 3))`, and `partial`, `for-each`-style helpers

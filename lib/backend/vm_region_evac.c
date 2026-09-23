@@ -217,7 +217,7 @@ static const VmEvacSpec vm_evac_subtype_table[VM_EVAC_TYPE_COUNT] = {
     [HEAP_AD_TAPE]      = { "ad-tape",      VM_EVAC_WALK, "payload only (AdNode array holds no Values)" },
     [HEAP_PROMISE]      = { "promise",      VM_EVAC_WALK, "VmVector.items[0..3): forced flag, thunk, cached" },
     [HEAP_CONTINUATION] = { "continuation", VM_EVAC_WALK, "promise_mark + saved stack/handlers/winds/parameter arrays" },
-    [HEAP_HASH]         = { "hash-table",   VM_EVAC_WALK, "keys/values are raw scalars; marked CONSERVATIVELY" },
+    [HEAP_HASH]         = { "hash-table",   VM_EVAC_WALK, "keys/values are boxed Values; traced exactly" },
     [HEAP_ERROR]        = { "error-object", VM_EVAC_WALK, "message/type inline; Value irritant list head is walked" },
     [HEAP_BYTEVECTOR]   = { "bytevector",   VM_EVAC_WALK, "payload only (VmBytevector.data)" },
     [HEAP_PARAMETER]    = { "parameter",    VM_EVAC_WALK, "current_value, converter, save_stack[0..stack_depth)" },
@@ -541,13 +541,12 @@ static int vm_evac_walk_object(VM* vm, int32_t idx) {
         VmHashTable* ht = (VmHashTable*)o->opaque.ptr;
         if (!ht) return 1;
         if (ht->capacity < 0 || (ht->capacity > 0 && (!ht->keys || !ht->values))) return 0;
-        /* `hash-set!` stores key.as.i / value.as.i through a void*, discarding
-         * the ValType, so a reference here is indistinguishable from an
-         * integer. Mark both halves conservatively (see
-         * vm_evac_mark_conservative_word). */
+        /* Every live slot holds pointers to boxed Values (native 662), so
+         * both halves are traced exactly. */
         for (int i = 0; i < ht->capacity; i++) {
-            if (!vm_evac_mark_conservative_word(h, (uintptr_t)ht->keys[i]) ||
-                !vm_evac_mark_conservative_word(h, (uintptr_t)ht->values[i])) return 0;
+            if (ht->hashes[i] <= HT_TOMBSTONE) continue;
+            if (ht->keys[i] && !vm_evac_mark_value(h, *(Value*)ht->keys[i])) return 0;
+            if (ht->values[i] && !vm_evac_mark_value(h, *(Value*)ht->values[i])) return 0;
         }
         return 1;
     }

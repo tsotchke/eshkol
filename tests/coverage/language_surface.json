@@ -5334,7 +5334,8 @@
     {
       "name": "hash-clear!",
       "ids": [
-        668
+        668,
+        669
       ],
       "arity": 1,
       "min_arity": 1,
@@ -5454,7 +5455,7 @@
     {
       "name": "hash-table-clear!",
       "ids": [
-        668
+        669
       ],
       "arity": 1,
       "min_arity": 1,

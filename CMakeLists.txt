@@ -9713,6 +9713,44 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
                 FAIL_REGULAR_EXPRESSION "^FAIL:|^<|^>")
     endif()
 
+    # SW-247: make-hash-table finds keys by equal? and returns the stored
+    # value unchanged, on every engine. The VM table keyed on a Value's raw
+    # payload and returned every value as an integer.
+    add_test(
+        NAME hash_table_equal_keys_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/core/hash_table_equal_keys_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    add_test(
+        NAME hash_table_equal_keys_aot_o0_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/hash_table_equal_keys_aot_o0' tests/core/hash_table_equal_keys_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/hash_table_equal_keys_aot_o0'"
+    )
+    set_tests_properties(hash_table_equal_keys_runtime_smoke
+                         hash_table_equal_keys_aot_o0_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: hash tables compare keys by equal\\? -- 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(
+            NAME hash_table_equal_keys_vm_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/core/hash_table_equal_keys_test.esk"
+        )
+        add_test(
+            NAME hash_table_equal_keys_vm_eskb_smoke
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/hash_table_equal_keys.eskb' tests/core/hash_table_equal_keys_test.esk && ESHKOL_VM_NO_DISASM=1 '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/hash_table_equal_keys.eskb'"
+        )
+        set_tests_properties(hash_table_equal_keys_vm_smoke
+                             hash_table_equal_keys_vm_eskb_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: hash tables compare keys by equal\\? -- 0 failures"
+                FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
+
     # A builtin used as a value accepts exactly what its call-position form
     # accepts: variadic `+ - * /` through a list `apply` (and the unary
     # inverses), `display`/`write`/`newline` with their optional port and a

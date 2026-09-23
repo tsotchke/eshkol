@@ -879,7 +879,7 @@ static const BuiltinDef BUILTINS[] = {
     {"hash-values", 666, 1}, {"hash-table-values", 666, 1},
     {"hash-count", 667, 1}, {"hash-table-size", 667, 1},
     {"hash-table/count", 667, 1},
-    {"hash-clear!", 668, 1}, {"hash-table-clear!", 668, 1},
+    {"hash-clear!", 669, 1}, {"hash-table-clear!", 669, 1},
     {"hash-table?", 670, 1},
     /* ═══════════════════════════════════════════════════════════════
      * Character operations — IDs 680-691

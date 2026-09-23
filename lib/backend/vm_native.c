@@ -7155,6 +7155,91 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ * Scheme hash-table keys: hashed and compared by `equal?`
+ *
+ * A VM hash table stores pointers to boxed Values (vm_hash_box) and is made
+ * with vm_hash_key_hash / vm_hash_key_equal (native 660). The hash is a
+ * function of exactly what vm_deep_equal compares, so keys that are equal?
+ * always hash alike: a string key is found by its characters, not by the
+ * heap slot that holds it. Compound and exact-number keys hash by a coarse
+ * class (length for sequences) and are told apart by vm_deep_equal.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static uint64_t vm_hash_mix(uint64_t h, uint64_t v) {
+    h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    return h;
+}
+
+static uint64_t vm_equal_hash(VM* vm, Value v, int depth) {
+    uint64_t h = vm_hash_mix(1469598103934665603ULL, (uint64_t)v.type);
+    switch ((int)v.type) {
+        case VAL_NIL:  return h;
+        case VAL_BOOL: return vm_hash_mix(h, (uint64_t)(v.as.b != 0));
+        case VAL_INT:
+        case VAL_CHAR: return vm_hash_mix(h, (uint64_t)v.as.i);
+        case VAL_FLOAT: {
+            double f = v.as.f == 0.0 ? 0.0 : v.as.f;   /* -0.0 == 0.0 */
+            uint64_t bits;
+            memcpy(&bits, &f, sizeof(bits));
+            return vm_hash_mix(h, bits);
+        }
+        case VAL_STRING:
+        case VAL_SYMBOL: {
+            VmString* str = vm_value_as_string(vm, v);
+            if (!str) return h;
+            for (int64_t i = 0; i < str->byte_len; i++)
+                h = (h ^ (uint8_t)str->data[i]) * 1099511628211ULL;
+            return h;
+        }
+        case VAL_PAIR: {
+            /* The first few elements of the spine, recursively to a small
+             * depth: a pure function of the content vm_deep_equal walks. */
+            int n = 0;
+            while (v.type == VAL_PAIR && n < 8 && depth < 4) {
+                HeapObject* o = vm->heap.objects[v.as.ptr];
+                if (!o || o->type != HEAP_CONS) break;
+                h = vm_hash_mix(h, vm_equal_hash(vm, o->cons.car, depth + 1));
+                v = o->cons.cdr;
+                n++;
+            }
+            return vm_hash_mix(h, (uint64_t)n);
+        }
+        case VAL_VECTOR:
+        case VAL_TENSOR: {
+            /* equal? also relates a vector to a 1-D tensor, so both hash in
+             * one class, by element count. */
+            HeapObject* o = vm->heap.objects[v.as.ptr];
+            int64_t len = -1;
+            if (o && o->opaque.ptr) {
+                if (v.type == VAL_VECTOR) len = ((VmVector*)o->opaque.ptr)->len;
+                else len = ((VmTensor*)o->opaque.ptr)->total;
+            }
+            return vm_hash_mix(vm_hash_mix(1469598103934665603ULL, 0x5e9ULL), (uint64_t)len);
+        }
+        case VAL_BIGNUM:
+        case VAL_RATIONAL:
+        case VAL_I128:
+            return h;
+        default:
+            return vm_hash_mix(h, (uint64_t)(uint32_t)v.as.ptr);   /* identity */
+    }
+}
+
+static uint64_t vm_hash_key_hash(void* ctx, const void* key) {
+    return vm_equal_hash((VM*)ctx, *(const Value*)key, 0);
+}
+
+static int vm_hash_key_equal(void* ctx, const void* a, const void* b) {
+    return vm_deep_equal((VM*)ctx, *(const Value*)a, *(const Value*)b);
+}
+
+/** @brief Box a Value for storage in a VM hash table (keys and values). */
+static Value* vm_hash_box(VM* vm, Value v) {
+    Value* box = (Value*)vm_alloc(&vm->heap.regions, sizeof(Value));
+    if (box) *box = v;
+    return box;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
  * Bignum-aware arithmetic helpers
  *
  * The base VM's arithmetic/comparison opcodes and native builtins coerced
@@ -15431,8 +15516,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Hash Table Operations (660-670)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 660: { /* make-hash-table */
-        VmHashTable* ht = vm_ht_make(&vm->heap.regions);
+    case 660: { /* make-hash-table: keys compared by equal? */
+        VmHashTable* ht = vm_ht_make_keyed(&vm->heap.regions, vm_hash_key_hash,
+                                           vm_hash_key_equal, vm);
         if (!ht) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_HEAP_OPAQUE(vm, HEAP_HASH, VAL_HASH, ht);
         break;
@@ -15441,8 +15527,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value dflt = vm_pop(vm), key = vm_pop(vm), ht_val = vm_pop(vm);
         if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
-            void* result = vm_ht_ref(ht, (void*)(uintptr_t)key.as.i, (void*)(uintptr_t)dflt.as.i);
-            vm_push(vm, INT_VAL((int64_t)(intptr_t)result));
+            Value* result = (Value*)vm_ht_ref(ht, &key, NULL);
+            vm_push(vm, result ? *result : dflt);
         } else vm_push(vm, dflt);
         break;
     }
@@ -15450,7 +15536,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value val = vm_pop(vm), key = vm_pop(vm), ht_val = vm_pop(vm);
         if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
-            vm_ht_set(&vm->heap.regions, ht, (void*)(uintptr_t)key.as.i, (void*)(uintptr_t)val.as.i);
+            Value* stored = (Value*)vm_ht_ref(ht, &key, NULL);
+            if (stored) {
+                *stored = val;   /* same key: replace the value in place */
+            } else {
+                Value* kbox = vm_hash_box(vm, key);
+                Value* vbox = vm_hash_box(vm, val);
+                if (kbox && vbox) vm_ht_set(&vm->heap.regions, ht, kbox, vbox);
+            }
         }
         vm_push(vm, NIL_VAL);
         break;
@@ -15459,7 +15552,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value key = vm_pop(vm), ht_val = vm_pop(vm);
         if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
-            vm_ht_remove(ht, (void*)(uintptr_t)key.as.i);
+            vm_ht_remove(ht, &key);
         }
         vm_push(vm, NIL_VAL);
         break;
@@ -15468,7 +15561,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value key = vm_pop(vm), ht_val = vm_pop(vm);
         if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
-            vm_push(vm, BOOL_VAL(vm_ht_has_key(ht, (void*)(uintptr_t)key.as.i)));
+            vm_push(vm, BOOL_VAL(vm_ht_has_key(ht, &key)));
         } else vm_push(vm, BOOL_VAL(0));
         break;
     }
@@ -15529,21 +15622,6 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
             vm_push(vm, INT_VAL(ht ? vm_ht_count(ht) : 0));
         } else vm_push(vm, INT_VAL(0));
-        break;
-    }
-    case 668: { /* hash-table-copy(ht) — shallow copy of hash table */
-        Value ht_val = vm_pop(vm);
-        if (is_heap_type(vm, ht_val, HEAP_HASH)) {
-            VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
-            if (ht) {
-                VmHashTable* copy = vm_ht_make(&vm->heap.regions);
-                if (copy) {
-                    VM_PUSH_HEAP_OPAQUE(vm, HEAP_HASH, VAL_HASH, copy);
-                    break;
-                }
-            }
-        }
-        vm_push(vm, NIL_VAL);
         break;
     }
     case 669: { /* hash-clear! */
