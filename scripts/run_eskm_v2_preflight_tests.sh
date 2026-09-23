@@ -10,11 +10,11 @@ cxx="${CXX:-c++}"
 python="${PYTHON:-python3}"
 nm="${NM:-nm}"
 flags=(-Wall -Wextra -Werror -pedantic -I"$root/lib/core")
-sanitizers=()
+compile_flags=("${flags[@]}")
 case "${ESKM_V2_SANITIZE:-0}" in
     0) ;;
-    1) sanitizers=(-fsanitize=address,undefined -fno-omit-frame-pointer
-                   -fno-sanitize-recover=all) ;;
+    1) compile_flags+=(-fsanitize=address,undefined -fno-omit-frame-pointer
+                       -fno-sanitize-recover=all) ;;
     *) echo 'ESKM_V2_SANITIZE must be 0 or 1' >&2; exit 2 ;;
 esac
 
@@ -38,12 +38,12 @@ for line in Path(sys.argv[1]).read_text().splitlines():
 print("PASS: parser object has no allocator or Eshkol runtime imports")
 PY
 
-"$cc" -std=c17 "${flags[@]}" "${sanitizers[@]-}" -O1 -g \
+"$cc" -std=c17 "${compile_flags[@]}" -O1 -g \
     -c "$root/lib/core/eskm_v2_preflight.c" -o "$work/parser.o"
-"$cc" -std=c17 "${flags[@]}" "${sanitizers[@]-}" -O1 -g \
+"$cc" -std=c17 "${compile_flags[@]}" -O1 -g \
     "$root/tests/core/eskm_v2_preflight_test.c" "$work/parser.o" \
     -o "$work/preflight-test"
-"$cxx" -std=c++17 "${flags[@]-}" "${sanitizers[@]-}" -O1 -g \
+"$cxx" -std=c++17 "${compile_flags[@]}" -O1 -g \
     "$root/tests/core/eskm_v2_preflight_cpp_test.cpp" "$work/parser.o" \
     -o "$work/cpp-test"
 
