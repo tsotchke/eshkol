@@ -1,30 +1,32 @@
 id: SW-235
 bucket: SILENT-WRONG
 subtag: frontend
-family: macro-hygiene/renamed-binder-spelling
+family: macro-hygiene/renamed-binder-shadow
 status: fixed
 closed_at: "bffc9a697"
-title: "type diagnostics and the source form of a procedure showed the expander's _v<n>.<name> binder spelling"
+title: "a local binding of walk, unify, make-fact or another parser-lowered builtin did not shadow it after binder renaming"
 repro: >-
-  (display (let ((h (lambda (x) x))) h)); a named-let accumulator type
-  warning; a linear-variable clone through a let* alias
+  (define (f) (define (make-fact . r) 'inner) (make-fact 1 2)) (f); (define
+  (g) (letrec ((unify (lambda (a b) 'mine))) (unify 1 1))) (g)
 observed: >-
-  (lambda (_v975.x) _v975.x); argument 2 of '_v972.loop'; linear variable
-  '_v973.b' (six typesystem tests failed to match the source name).
+  (1 2) and the builtin unify result: the builtin ran inside the local
+  binding's scope (builtin_shadow_test, named_let_capture_test,
+  shadowable_op_letrec_test).
 correct: >-
-  (lambda (x) x); argument 2 of 'loop'; linear variable 'b'.
+  inner and mine: R7RS 5.3.1, a use in a binder's scope calls that binding.
 root_cause: >-
-  ADR-0026 renames every lexical binder; the type checker, the shared
-  diagnostic sink and both S-expression builders printed the implementation
-  name.
+  The parser lowers these names to their own operation nodes and codegen found
+  a user shadow by the binder name (hasUserShadow). ADR-0026 made the expander
+  rename every lexical binder to _v<n>.<name> (9d47e16a4, ea7677b6a), so the
+  name codegen looked up no longer existed.
 fix: >-
-  syntax_color.h owns the fresh spelling in both directions
-  (ESHKOL_SYNTAX_FRESH_PREFIX, eshkol_syntax_source_spelling,
-  eshkol_syntax_source_text); TypeChecker::emitDiagnostic/addError,
-  eshkol_diagnostic_emit_v1, codegenQuotedAST and HomoiconicCodegen map
-  identifiers to their source spelling.
+  The expander, which owns lexical scope, rewrites such a node into a call of
+  the local binding when a binder of that name is in scope
+  (macro_expander.cpp); codegen keeps only the top-level and REPL-batch
+  redirect. Both read one table, inc/eshkol/frontend/shadowable_ops.h.
 evidence: >-
-  ctest renamed_binder_source_form_smoke and
-  renamed_binder_diagnostic_spelling; typesystem suite 126/126.
+  tests/core/first_class_builtin_arity_test.esk (inner define walk, let make-
+  fact, letrec unify) on JIT, AOT, VM and VM ESKB; v1_2_edge_cases
+  builtin_shadow_test, named_let_capture_test, shadowable_op_letrec_test pass.
 caught_by: [release-dry-run]
 missed_by: [vm_parity]

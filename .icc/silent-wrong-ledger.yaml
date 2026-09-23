@@ -15325,6 +15325,41 @@ entries:
     missed_by: [run_vm_parity]
   - id: SW-231
     bucket: SILENT-WRONG
+    subtag: codegen
+    family: first-class-builtins/apply-arity
+    status: fixed
+    closed_at: "dd2ed8f3e"
+    title: "a builtin used as a value declared an arity it does not have, so a list apply through a variable refused or mis-called it"
+    repro: >-
+      (define g +) (apply g (list 1 2 3)); (define (partial f . a) (lambda b
+      (apply f (append a b)))) ((partial + 1 2 3) 4 5); (for-each display '(a b
+      c)); (apply display (list 'x))
+    observed: >-
+      'Type error in apply: expected fixed-arity procedure, got procedure' for
+      each (sweep_a_regressions_test, pointer_consolidation_comprehensive_test,
+      first_class_io_test on every lite release lane). + - * / values were 2-ary
+      closures whose surplus arguments only the direct-call dispatcher recovered
+      by a function-pointer compare; display/write/newline values had arity 0.
+    correct: >-
+      6, 15, abc, x: a builtin value accepts the argument counts its call form
+      accepts (R7RS 6.2.6, 6.13.3).
+    root_cause: >-
+      9d47e16a4 made the list apply trust a closure's declared arity (fixed-arity
+      overflow check in codegenClosureListCall); the hand-built builtin value
+      closures declared arities that were not the procedures' own.
+    fix: >-
+      The arithmetic operators are variadic closures (kept on the integration
+      route, makeVariadicOperatorClosureValue, SW-241); display, write and newline
+      are ByCount rows of the first-class builtin table with their optional port
+      (dd2ed8f3e, merged onto SW-230's ByCount); every port argument is checked by
+      StringIOCodegen::portFile.
+    evidence: >-
+      tests/core/first_class_builtin_arity_test.esk on JIT, AOT, VM and VM ESKB
+      (ctest first_class_builtin_arity_*); the three lite-lane programs pass.
+    caught_by: [release-dry-run]
+    missed_by: [vm_parity]
+  - id: SW-235
+    bucket: SILENT-WRONG
     subtag: frontend
     family: macro-hygiene/renamed-binder-shadow
     status: fixed
@@ -15355,7 +15390,7 @@ entries:
       builtin_shadow_test, named_let_capture_test, shadowable_op_letrec_test pass.
     caught_by: [release-dry-run]
     missed_by: [vm_parity]
-  - id: SW-235
+  - id: SW-236
     bucket: SILENT-WRONG
     subtag: frontend
     family: macro-hygiene/renamed-binder-spelling
@@ -15385,7 +15420,7 @@ entries:
       renamed_binder_diagnostic_spelling; typesystem suite 126/126.
     caught_by: [release-dry-run]
     missed_by: [vm_parity]
-  - id: SW-236
+  - id: SW-237
     bucket: SILENT-WRONG
     subtag: numeric
     family: apply/arithmetic-reduction
@@ -15410,7 +15445,7 @@ entries:
       tests/core/first_class_builtin_arity_test.esk on JIT, AOT, VM and VM ESKB.
     caught_by: [release-dry-run]
     missed_by: [vm_parity]
-  - id: SW-237
+  - id: SW-238
     bucket: SILENT-WRONG
     subtag: io
     family: first-class-io/optional-port
@@ -15439,33 +15474,6 @@ entries:
     evidence: >-
       tests/core/first_class_builtin_arity_test.esk and
       tests/v1_2_edge_cases/first_class_io_test.esk on JIT, AOT, VM and VM ESKB.
-    caught_by: [release-dry-run]
-    missed_by: [vm_parity]
-  - id: SW-238
-    bucket: SILENT-WRONG
-    subtag: autodiff
-    family: gradient/runtime-closure-arity
-    status: fixed
-    closed_at: "034dd9d1a"
-    title: "gradient of a variadic callable reached at run time handed it the whole point as one vector and lost coordinates past its fixed parameters"
-    repro: >-
-      (define (gw f p) (gradient f p)) (define (vtail a . rest) (* a (car rest)
-      (car (cdr rest)))) (gw vtail (list 2.0 5.0 3.0))
-    observed: >-
-      the loss received #(2 5 3) as its one argument (no rest coordinates).
-    correct: >-
-      #(15 6 10).
-    root_cause: >-
-      The runtime-closure path chose between the single-vector form and spread
-      scalars from input_arity alone, which for a variadic closure is only the
-      fixed count.
-    fix: >-
-      The reverse-mode entry gate and the out-of-line spread helper read
-      CLOSURE_FLAG_VARIADIC and spread max(n, fixed) coordinates into a variadic
-      callable.
-    evidence: >-
-      tests/autodiff/runtime_closure_arity_spread_test.esk (53 checks, including
-      rest-only and fixed-plus-rest losses).
     caught_by: [release-dry-run]
     missed_by: [vm_parity]
   - id: SW-247
