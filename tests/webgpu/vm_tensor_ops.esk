@@ -1,0 +1,37 @@
+;; Browser-VM WebGPU payload for tests/webgpu/webgpu_vm_test.mjs: matmul,
+;; the four elementwise ops, the four full reductions, and softmax (which has
+;; no WebGPU kernel and must fall back explicitly). Inputs are non-trivial
+;; fractions so a wrong kernel cannot agree with the CPU by accident.
+(define (fill n scale shift)
+  (let loop ((i 0) (acc '()))
+    (if (= i n) (list->vector (reverse acc))
+        (loop (+ i 1) (cons (+ (/ (- (modulo i 7) shift) 8.0) (/ i scale) (* 1e-3 (sin i))) acc)))))
+(define A (reshape (fill 600 1024.0 3) 24 25))
+(define B (reshape (fill 400 640.0 2) 25 16))
+(define C (matmul A B))
+(define (show-all t r c)
+  (let loop ((i 0))
+    (if (< i r)
+        (begin
+          (let lj ((j 0))
+            (if (< j c) (begin (display (tensor-get t i j)) (display " ") (lj (+ j 1)))))
+          (newline) (loop (+ i 1))))))
+(show-all C 24 16)
+(define X (reshape (fill 600 300.0 1) 24 25))
+(show-all (tensor-add A X) 24 25)
+(show-all (tensor-sub A X) 24 25)
+(show-all (tensor-mul A X) 24 25)
+(show-all (tensor-div A X) 24 25)
+(define V (fill 5000 97.0 3))
+(define T (reshape V 5000))
+(display (tensor-sum T)) (newline)
+(display (tensor-mean T)) (newline)
+(display (tensor-max T)) (newline)
+(display (tensor-min T)) (newline)
+(display (tensor-get (softmax (reshape (fill 8 4.0 2) 8)) 3)) (newline)
+;; A GPU dispatch inside a guarded evaluation, then a raise: the handler must
+;; still unwind correctly after the evaluation suspended on the readback.
+(display (guard (e (#t (list 'caught (tensor-get C 0 0))))
+  (matmul A B)
+  (raise 'boom)))
+(newline)

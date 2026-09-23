@@ -390,8 +390,8 @@ static VmTensor* vm_tensor_reduce(VmRegionStack* rs, const VmTensor* t,
         switch (op) {
             case VM_REDUCE_SUM:  out->data[i] = 0.0; break;
             case VM_REDUCE_MEAN: out->data[i] = 0.0; break;
-            case VM_REDUCE_MAX:  out->data[i] = -DBL_MAX; break;
-            case VM_REDUCE_MIN:  out->data[i] = DBL_MAX; break;
+            case VM_REDUCE_MAX:  out->data[i] = -INFINITY; break;
+            case VM_REDUCE_MIN:  out->data[i] = INFINITY; break;
             case VM_REDUCE_PROD: out->data[i] = 1.0; break;
         }
     }
@@ -457,8 +457,8 @@ static double vm_tensor_reduce_all(const VmTensor* t, VmReduceOp op) {
     switch (op) {
         case VM_REDUCE_SUM:  acc = 0.0; break;
         case VM_REDUCE_MEAN: acc = 0.0; break;
-        case VM_REDUCE_MAX:  acc = -DBL_MAX; break;
-        case VM_REDUCE_MIN:  acc = DBL_MAX; break;
+        case VM_REDUCE_MAX:  acc = -INFINITY; break;
+        case VM_REDUCE_MIN:  acc = INFINITY; break;
         case VM_REDUCE_PROD: acc = 1.0; break;
         default:             acc = 0.0; break;
     }

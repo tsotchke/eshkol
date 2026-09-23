@@ -35,6 +35,26 @@ ESHKOL_WASM_VM_SOURCES=(
     "$REPO_ROOT/lib/core/model_io_atomic.c"
     "$REPO_ROOT/lib/core/tensor_validation.cpp"
     "$REPO_ROOT/lib/core/tensor_cross_entropy.c"
+    # The GPU seam for the wasm target (ADR-0029): the VM's tensor natives
+    # reach eshkol_gpu_* exactly as on native; in the browser the WebGPU
+    # bridge serves them, and without it every call takes the CPU path.
+    "$REPO_ROOT/lib/backend/gpu/gpu_memory_webgpu.cpp"
+    # eshkol_printf, which the GPU backend reports allocation failures through.
+    "$REPO_ROOT/lib/core/logger.cpp"
+)
+
+# Compile/link flags every WASM VM build uses (both consumers above).
+#   -fwasm-exceptions -sSUPPORT_LONGJMP=wasm: the VM's error recovery uses
+#     setjmp/longjmp. Emscripten's default lowers that to invoke_* calls that
+#     round-trip through JavaScript, and JSPI cannot suspend across a JS frame,
+#     so a GPU readback inside a guarded evaluation would trap. Native wasm
+#     exception handling keeps the whole evaluation in wasm frames (ADR-0029).
+ESHKOL_WASM_VM_FLAGS=(
+    -DESHKOL_VM_WASM
+    -DESHKOL_VM_NO_DISASM
+    -DESHKOL_GPU_ENABLED
+    -fwasm-exceptions
+    -sSUPPORT_LONGJMP=wasm
 )
 
 # Leaf runtime dependencies with no WASM implementation.  These become

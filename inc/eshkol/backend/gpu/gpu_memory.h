@@ -4,6 +4,7 @@
  * Provides unified interface for GPU memory management across:
  * - Metal (macOS/iOS) with unified memory architecture
  * - CUDA (Linux/Windows) with discrete GPU memory
+ * - WebGPU (Emscripten/wasm) with staged browser buffers
  *
  * Design principles:
  * - Zero-copy for unified memory (Metal on Apple Silicon)
@@ -11,8 +12,6 @@
  * - Automatic device selection and fallback
  * - Integration with Eshkol's OALR memory model
  *
- * Copyright (C) tsotchke
- * SPDX-License-Identifier: MIT
  */
 
 #ifndef ESHKOL_GPU_MEMORY_H
@@ -34,7 +33,11 @@ typedef enum {
     ESHKOL_GPU_NONE = 0,    // CPU only
     ESHKOL_GPU_METAL = 1,   // Apple Metal (unified memory)
     ESHKOL_GPU_CUDA = 2,    // NVIDIA CUDA
-    ESHKOL_GPU_VULKAN = 3   // Vulkan compute (future)
+    ESHKOL_GPU_VULKAN = 3,  // Vulkan compute (future)
+    // Browser WebGPU (wasm target). Compute runs in WGSL, which has no f64,
+    // so the f64 entry points are served by the df32 (~48-bit) tier or fall
+    // back to CPU — see lib/backend/gpu/gpu_memory_webgpu.cpp.
+    ESHKOL_GPU_WEBGPU = 4
 } EshkolGPUBackend;
 
 typedef enum {
@@ -73,7 +76,7 @@ typedef struct EshkolGPUBuffer {
  * Initialize GPU subsystem and detect available backends.
  * Call once at program startup. Idempotent — subsequent calls are no-ops.
  *
- * @return 1 if a GPU backend (Metal or CUDA) was initialised and is now
+ * @return 1 if a GPU backend (Metal, CUDA, or WebGPU) was initialised and is now
  *         active, 0 if no GPU is available (library falls back to CPU).
  *
  * NOTE: This is a BOOLEAN return, not a device count. The convention is
@@ -142,7 +145,9 @@ int eshkol_gpu_supports_f64(void);
  * `ESHKOL_GPU_PRECISION=default` in the precision-tier docs. On CUDA
  * this returns 1 (same as `eshkol_gpu_supports_f64`). On Metal this
  * returns 1 whenever GPU init succeeded (SF64 is always available).
- * Returns 0 only when no GPU backend is active at all.
+ * WebGPU returns 0 because WGSL has no correct-to-ULP f64 path; it is a
+ * compute backend for the explicitly gated df32/fast tiers, not an fp64
+ * capability. Other backends return 0 when no fp64 path is active.
  *
  * @return 1 if any fp64 path is usable (native or emulated), 0 otherwise.
  */
@@ -155,6 +160,7 @@ int eshkol_gpu_has_fp64(void);
  *
  * For Metal: Uses MTLBuffer with shared storage mode (unified memory).
  * For CUDA: Uses cudaMallocHost (pinned) or cudaMalloc (device).
+ * For WebGPU: Uses a wasm-heap view; the JS bridge stages it into GPUBuffer.
  *
  * @param size_bytes Size to allocate
  * @param mem_type Type of memory to allocate

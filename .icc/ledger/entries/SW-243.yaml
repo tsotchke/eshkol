@@ -1,0 +1,33 @@
+id: SW-243
+bucket: SILENT-WRONG
+family: vm/gpu-dispatch
+status: fixed
+closed_at: "2faf99cd4"
+needs_decision: false
+title: "VM GPU reduction treated axis -1 as all axes while the CPU path reads it as the last axis"
+repro: >-
+  (define M (reshape (fill 262144 ...) 512 512)) then (tensor-sum M) on the
+  bytecode VM with a GPU backend, run once with ESHKOL_GPU_THRESHOLD=1 and
+  once with the threshold above the tensor size (tests/gpu/gpu_correctness_gate.esk
+  payload on the native VM with Metal).
+observed: >-
+  Above the GPU threshold the VM returned the grand total (#(135255870.36...));
+  below it, the per-row sums (a 512-element tensor). The answer depended on
+  the tensor's size. vm_native.c sent axis < 0 to vm_gpu_try_reduce as a full
+  reduction, while vm_tensor_reduce reads -1 as the last axis.
+correct: >-
+  The GPU is used only when it computes the same reduction as the CPU path:
+  a full reduction (no axis, SW-202), or an explicit axis whose other extents
+  are all 1, returned with the CPU result's shape.
+evidence: >-
+  Fixed in 2faf99cd4, refined in 72a41917f. After the fix the native VM gate
+  payload agrees between Metal and CPU: reduce-sum-A 263348.73874376056 vs
+  263348.7387437591, reduce-max-A identical. Gate: tests/webgpu/webgpu_vm_test.mjs
+  (reductions within GPU_GATE_TOL, attached vs unattached browser VM) and
+  tests/tensor/tensor_full_reduction_test.esk.
+caught_by: [webgpu-vm-lane-gate-payload-diff]
+missed_by: [vm_parity, gpu_correctness_gate]
+notes: >-
+  Latent on every GPU backend the VM links (Metal, CUDA); surfaced when the
+  browser VM gained WebGPU dispatch (ADR-0029). gpu_correctness_gate.sh
+  compares native GPU and CPU builds, never the VM's own two paths.

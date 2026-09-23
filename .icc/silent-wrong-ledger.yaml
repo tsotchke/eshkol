@@ -15200,29 +15200,34 @@ entries:
     status: fixed
     closed_at: "7c036631d"
     needs_decision: false
-    title: "VM tensor-sum without an axis returns a one-element tensor instead of a number"
+    title: "VM tensor-sum without an axis returns a one-element tensor, or per-row partial results, instead of a number"
     repro: >-
-      (display (tensor-sum (tensor 0.5 0.25))) and
-      (display (number? (tensor-sum (tensor 0.5 0.25)))) on the bytecode VM
-      (eshkol-vm-standalone-test), against the native JIT.
+      (display (tensor-sum (tensor 0.5 0.25))),
+      (display (number? (tensor-sum (tensor 0.5 0.25)))) and
+      (display (tensor-sum (reshape (tensor 1.0 2.0 3.0 4.0) 2 2))) on the bytecode
+      VM (eshkol-vm-standalone-test) and the browser VM, against the native JIT.
     observed: >-
-      The VM prints #(0.75) and #f; native prints 0.75 and #t. Arithmetic on the VM
-      result, (+ 1 (tensor-sum (tensor 0.5 0.25))), is a fatal runtime error. A
-      vector operand behaves the same, and a list operand raises "tensor-reduce:
-      expected a tensor or numeric vector operand" where native coerces it.
+      The VM printed #(0.75), #f and #(3 7); native prints 0.75, #t and 10.
+      Arithmetic on the VM result, (+ 1 (tensor-sum (tensor 0.5 0.25))), was a
+      fatal runtime error. The prelude passed -1 for "no axis", and -1 also names
+      the last axis. (gpu-reduce + M) lowered the same way.
     correct: >-
-      A full reduction (no axis) returns the scalar on every engine, as native and
-      the VM's own dual-carrier branch of the same native (case 457) already do.
+      A full reduction (no axis) returns the scalar on every engine, as native
+      does; an explicit axis, negative ones counted from the last, reduces that
+      axis.
     evidence: >-
-      Found while building the SW-197 regression matrix. Fixed by the VM Taylor
-      lane in 7c036631d: the prelude passes #f for "no axis", so a full reduction
-      returns the scalar on the VM as it does natively. Gate:
-      tests/tensor/tensor_full_reduction_test.esk.
+      Fixed by the VM Taylor lane in 7c036631d: the prelude passes #f for "no
+      axis" and the dispatcher treats a non-number axis as a full reduction.
+      gpu-reduce, which lowered with -1 as well, was fixed on master in 72a41917f
+      and arrives here with the master sync. Gate:
+      tests/tensor/tensor_full_reduction_test.esk on the native JIT, the bytecode
+      VM and the browser VM bundle (ctest tensor_full_reduction_{jit,vm,browser_vm}).
     caught_by: [sw197-exact-collection-matrix]
     missed_by: [vm_parity]
     notes: >-
-      Filed by the v1.3.5 exact-derivative lane; fixed on the integration branch by
-      the VM Taylor lane (7c036631d).
+      Filed by the v1.3.5 exact-derivative lane; fixed on the integration branch
+      in 7c036631d and ported to master by the WebGPU VM lane in 72a41917f, which
+      also fixed the gpu-reduce lowering.
   - id: SW-226
     bucket: LOUD-ERROR
     family: native/map-arity
@@ -15736,6 +15741,39 @@ entries:
       and tests/error_handling/caught_condition_silent_test.esk.
     caught_by: [v135f-gates-lane]
     missed_by: [builtins_first_class_audit, run_vm_parity]
+  - id: SW-243
+    bucket: SILENT-WRONG
+    family: vm/gpu-dispatch
+    status: fixed
+    closed_at: "2faf99cd4"
+    needs_decision: false
+    title: "VM GPU reduction treated axis -1 as all axes while the CPU path reads it as the last axis"
+    repro: >-
+      (define M (reshape (fill 262144 ...) 512 512)) then (tensor-sum M) on the
+      bytecode VM with a GPU backend, run once with ESHKOL_GPU_THRESHOLD=1 and
+      once with the threshold above the tensor size (tests/gpu/gpu_correctness_gate.esk
+      payload on the native VM with Metal).
+    observed: >-
+      Above the GPU threshold the VM returned the grand total (#(135255870.36...));
+      below it, the per-row sums (a 512-element tensor). The answer depended on
+      the tensor's size. vm_native.c sent axis < 0 to vm_gpu_try_reduce as a full
+      reduction, while vm_tensor_reduce reads -1 as the last axis.
+    correct: >-
+      The GPU is used only when it computes the same reduction as the CPU path:
+      a full reduction (no axis, SW-202), or an explicit axis whose other extents
+      are all 1, returned with the CPU result's shape.
+    evidence: >-
+      Fixed in 2faf99cd4, refined in 72a41917f. After the fix the native VM gate
+      payload agrees between Metal and CPU: reduce-sum-A 263348.73874376056 vs
+      263348.7387437591, reduce-max-A identical. Gate: tests/webgpu/webgpu_vm_test.mjs
+      (reductions within GPU_GATE_TOL, attached vs unattached browser VM) and
+      tests/tensor/tensor_full_reduction_test.esk.
+    caught_by: [webgpu-vm-lane-gate-payload-diff]
+    missed_by: [vm_parity, gpu_correctness_gate]
+    notes: >-
+      Latent on every GPU backend the VM links (Metal, CUDA); surfaced when the
+      browser VM gained WebGPU dispatch (ADR-0029). gpu_correctness_gate.sh
+      compares native GPU and CPU builds, never the VM's own two paths.
   - id: SW-244
     bucket: LOUD-ERROR
     subtag: toplevel-begin
@@ -15766,6 +15804,64 @@ entries:
       tests/vm/toplevel_begin_define_test.esk (toplevel_begin_define_{jit,vm,browser_vm}).
     caught_by: [v135f-gates-lane]
     missed_by: [run_vm_parity]
+  - id: SW-245
+    bucket: SILENT-WRONG
+    family: vm/gpu-dispatch
+    status: fixed
+    closed_at: "32738038f"
+    needs_decision: false
+    title: "VM GPU elementwise path checked only element counts, not shapes"
+    repro: >-
+      On the bytecode VM with a GPU backend and ESHKOL_GPU_THRESHOLD=1:
+      (tensor-add (tensor 1.0 2.0 3.0 4.0 5.0 6.0)
+                  (reshape (tensor 1.0 2.0 3.0 4.0 5.0 6.0) 1 6)).
+    observed: >-
+      vm_gpu_try_binary accepted the operands because their totals matched and
+      built the result with the first operand's shape, [6], where broadcasting
+      gives [1,6]; the CPU path returns [1,6]. The result's shape depended on
+      whether the GPU was used.
+    correct: >-
+      The GPU elementwise path runs only for operands of identical shape;
+      everything else takes the broadcasting CPU path.
+    evidence: >-
+      Fixed in 32738038f (vm_gpu_dispatch.h). Gate: tests/webgpu/webgpu_vm_test.mjs
+      (elementwise output bit-identical to the unattached VM).
+    caught_by: [webgpu-vm-lane-review]
+    missed_by: [vm_parity]
+    notes: >-
+      Latent on every GPU backend the VM links; found while wiring the browser VM
+      to WebGPU (ADR-0029).
+  - id: SW-246
+    bucket: SILENT-WRONG
+    family: vm/tensor-reduction-identity
+    status: fixed
+    closed_at: "72a41917f"
+    needs_decision: false
+    title: "VM max/min reductions started from -DBL_MAX/DBL_MAX, so an all-infinite tensor reduced to a finite number"
+    repro: >-
+      (display (tensor-max (tensor -inf.0 -inf.0))) and
+      (display (tensor-min (tensor +inf.0))) on the bytecode VM
+      (eshkol-vm-standalone-test) and the browser VM, against the native JIT.
+    observed: >-
+      The VM printed -1.7976931348623157e+308 and 1.7976931348623157e+308;
+      native prints -inf.0 and +inf.0, and so does the VM's WebGPU reduction
+      path, so the VM's answer also changed at the GPU threshold. Both the full
+      reduction (vm_tensor_reduce_all) and the axis reduction (vm_tensor_reduce)
+      seeded max/min with the largest finite double.
+    correct: >-
+      Max starts from -infinity and min from +infinity, so a reduction over
+      infinite elements returns the infinity, on every engine and on both sides
+      of the GPU threshold.
+    evidence: >-
+      Fixed in 72a41917f (lib/backend/vm_tensor_ops.c). Gate:
+      tests/tensor/tensor_full_reduction_test.esk ("tensor-max of -inf",
+      "tensor-min of +inf", "tensor-max axis of -inf") on the native JIT, the
+      bytecode VM and the browser VM bundle.
+    caught_by: [webgpu-vm-lane-review]
+    missed_by: [vm_parity]
+    notes: >-
+      Found while porting SW-202 to master for the browser-VM WebGPU lane. Still
+      present on the release integration branch.
   - id: SW-247
     bucket: SILENT-WRONG
     subtag: vm

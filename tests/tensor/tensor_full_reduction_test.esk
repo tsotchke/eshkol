@@ -38,6 +38,13 @@
 (check-equal "tensor-sum axis 1" (tensor-sum m 1) (tensor 3.0 7.0))
 (check-equal "tensor-sum axis -1 is the last axis" (tensor-sum m -1) (tensor 3.0 7.0))
 (check-equal "tensor-mean axis 1" (tensor-mean m 1) (tensor 1.5 3.5))
+;; max/min start from the infinities, not from +-DBL_MAX
+(check-equal "tensor-max of -inf" (tensor-max (tensor -inf.0 -inf.0)) -inf.0)
+(check-equal "tensor-min of +inf" (tensor-min (tensor +inf.0)) +inf.0)
+(check-equal "tensor-max axis of -inf" (tensor-max (reshape (tensor -inf.0 -inf.0) 1 2) 1) (tensor -inf.0))
+;; gpu-reduce is a full reduction too
+(check "gpu-reduce + matrix" (gpu-reduce + m) 10.0)
+(check "gpu-reduce max matrix" (gpu-reduce max m) 4.0)
 (newline)
 (if (= failures 0)
     (begin (display "PASS: tensor full reductions") (newline) (exit 0))
