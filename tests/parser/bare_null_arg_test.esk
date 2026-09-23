@@ -73,18 +73,22 @@
            flatten2-bare-result)
 
 ;; ============================================================
-;; () used as a call head does not crash the parser or codegen. This
-;; project does not statically reject a non-callable operator position, so
-;; calling the empty-list value degrades to a gracefully-typed runtime nil
-;; rather than a hard error either before or after this fix — the point of
-;; this check is only that control flow continues normally, i.e. that
-;; normalizing bare ()'s datum-position lowering did not turn a call-head
-;; () into something that hangs, aborts, or corrupts later execution.
+;; () used as a call head parses and compiles, and calling it is an error.
+;; R7RS 4.1.3: the operator must evaluate to a procedure, and applying
+;; anything else is an error. Under the call protocol (SW-204/216) both
+;; engines raise a catchable type error rather than answering a value, so
+;; the check is that the raise happens, that `guard` catches it, and that
+;; execution continues normally afterwards.
 ;; ============================================================
+(define call-head-result
+  (guard (e (#t 'raised))
+    (() 1 2)
+    'no-raise))
+(test-case "() as a call head raises a catchable error"
+           'raised call-head-result)
 (define call-head-marker 'not-reached)
-(() 1 2)
 (set! call-head-marker 'reached)
-(test-case "() as a call head does not abort execution"
+(test-case "execution continues after the caught error"
            'reached call-head-marker)
 
 ;; ============================================================
