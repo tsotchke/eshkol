@@ -15986,3 +15986,56 @@ entries:
       and VM ESKB (ctest standard_port_parameters_*); VM parity 386/386.
     caught_by: [release-dry-run]
     missed_by: [vm_parity]
+  - id: SW-270
+    bucket: SILENT-WRONG
+    subtag: webgpu
+    family: browser-webgpu/shared-backend-concurrency
+    status: fixed
+    title: "concurrent browser VMs sharing a WebGPU backend could write results into the wrong VM memory"
+    repro: >-
+      Attach two browser VMs to one WebGPU backend and evaluate 1x1 or 8x8
+      matmuls concurrently with Promise.all.
+    observed: >-
+      The first VM printed zero instead of 6 or 48; the second printed 20 or 160.
+    correct: >-
+      Each VM receives its own matmul result: 6 and 20, or 48 and 160.
+    root_cause: >-
+      attachVm replaced a shared backend.memory field, while asynchronous
+      readback decoded through that field after another VM had attached.
+    fix: >-
+      Each operation captures its destination memory across asynchronous work;
+      backend diagnostics and dispatch accounting remain shared and coherent.
+    evidence: >-
+      tests/webgpu/shared_backend_race_test.mjs checks concurrent 1x1 and 8x8
+      matmuls on a shared backend against serial and separate-backend controls.
+    caught_by: [hardware-reproduction]
+    missed_by: [webgpu_vm_test]
+  - id: SW-271
+    bucket: SILENT-WRONG
+    subtag: vm
+    family: numeric/inexact-tensor-division
+    status: fixed
+    title: "VM tensor division and native broadcasting returned zero for zero denominators"
+    repro: >-
+      Divide inexact tensors containing 1.0 and 0.0 by tensors containing
+      positive or negative zero, with and without WebGPU dispatch.
+    observed: >-
+      The unattached browser VM returned zero for 1.0/0.0 and 0.0/0.0;
+      native broadcasting also returned zero, while WebGPU and native same-shape
+      codegen returned positive infinity and NaN.
+    correct: >-
+      Inexact division returns signed infinity for a nonzero numerator over
+      signed zero and NaN for zero over zero; exact rational division by exact
+      zero continues to raise.
+    root_cause: >-
+      vm_op_div and the native broadcast helper replaced every zero-denominator
+      result with 0.0, unlike native fdiv and WebGPU sf64 division.
+    fix: >-
+      vm_op_div and the native broadcast helper perform ordinary floating-point
+      division for every tensor element.
+    evidence: >-
+      tests/numeric/tensor_division_parity_test.py on native and VM, and
+      tests/webgpu/division_parity_test.mjs on CPU and WebGPU browser VMs
+      across dispatch thresholds.
+    caught_by: [hardware-reproduction]
+    missed_by: [webgpu_vm_test]

@@ -7682,10 +7682,28 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/webgpu/webgp
         add_test(NAME webgpu_vm_test
                  COMMAND ${NODE_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/webgpu/webgpu_vm_test.mjs)
-        set_tests_properties(webgpu_live_test webgpu_diff_gate webgpu_vm_test PROPERTIES
+        add_test(NAME webgpu_shared_backend_race_test
+                 COMMAND ${NODE_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/webgpu/shared_backend_race_test.mjs)
+        add_test(NAME webgpu_division_parity_test
+                 COMMAND ${NODE_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/webgpu/division_parity_test.mjs)
+        set_tests_properties(webgpu_live_test webgpu_diff_gate webgpu_vm_test
+            webgpu_shared_backend_race_test webgpu_division_parity_test PROPERTIES
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
             LABELS webgpu)
     endif()
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/numeric/tensor_division_parity_test.py")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME tensor_division_parity_test
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/numeric/tensor_division_parity_test.py
+                     ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(tensor_division_parity_test PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        TIMEOUT 300)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_tagged_cons_test.cpp")

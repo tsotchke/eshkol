@@ -221,6 +221,15 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **Shared browser WebGPU backends keep concurrent VMs isolated (SW-270).**
+  An asynchronous readback could write through another VM's memory, yielding
+  zeros in the first VM's matmul result. Each operation now retains its own
+  destination context. Reported by Colin with hardware reproductions.
+- **Inexact tensor division follows IEEE 754 across engines (SW-271).** The
+  VM and native broadcast helper previously returned zero for a zero
+  denominator, while native same-shape codegen and WebGPU returned signed
+  infinity or NaN. Reported by Colin with hardware reproductions.
+
 - On the bytecode VM, `tensor-sum`/`-mean`/`-max`/`-min` with no axis now
   reduce the whole tensor to a number, as on native (SW-202). The VM used to
   answer `#(0.75)` for `(tensor-sum (tensor 0.5 0.25))` and per-row sums for a

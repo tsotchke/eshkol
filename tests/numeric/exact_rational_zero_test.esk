@@ -1,0 +1,2 @@
+;; Exact rational division by exact zero must raise rather than print a value.
+(display (/ 1/2 0)) (newline)
