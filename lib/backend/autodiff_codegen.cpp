@@ -3409,6 +3409,18 @@ llvm::Value* AutodiffCodegen::loadNodeInput2(llvm::Value* node_ptr) {
  * Emits at the CURRENT insert point: the differentiand must be evaluated where
  * the AD form appears, exactly once, before any wrapper function is created.
  */
+// Whether the differentiand is known at compile time to take a rest list: an
+// inline (lambda args ...) / (lambda (a . r) ...), or a name bound by
+// (define (f . args) ...) / (define f (lambda args ...)).
+bool AutodiffCodegen::differentiandIsVariadic(const eshkol_ast_t* func_ast) const {
+    if (!func_ast) return false;
+    if (func_ast->type == ESHKOL_OP && func_ast->operation.op == ESHKOL_LAMBDA_OP)
+        return func_ast->operation.lambda_op.is_variadic != 0;
+    if (func_ast->type == ESHKOL_VAR && func_ast->variable.id && variadic_lookup_callback_)
+        return variadic_lookup_callback_(func_ast->variable.id, callback_context_);
+    return false;
+}
+
 llvm::Value* AutodiffCodegen::resolveDifferentiandClosure(const eshkol_ast_t* func_ast,
                                                           const char* what) {
     using namespace llvm;
@@ -5886,7 +5898,10 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
  */
 llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     PassModeScope pass_scope(*this);   // ADR-0027: this operator is its own pass
-    if (op && op->gradient_op.function && op->gradient_op.point) {
+    // SW-248: a rest-parameter differentiand always takes the runtime-closure
+    // spread rule (gradientJetPath), never a static per-parameter route.
+    if (op && op->gradient_op.function && op->gradient_op.point &&
+        !differentiandIsVariadic(op->gradient_op.function)) {
         if (llvm::Value* exact = tryExactTowerRoute(
                 op->gradient_op.function, op->gradient_op.point, /*order=*/1,
                 [&]() { return gradientJetPath(op); }, "gradient"))
@@ -5914,6 +5929,24 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
         "eshkol_ad_count_primal",
         FunctionType::get(ctx_.voidType(), {}, false)), {});
+
+    // SW-248: a rest-parameter differentiand takes one argument per point
+    // element. Its compiled function has a fixed parameter list plus a rest
+    // list, which the static path cannot fill, so it goes through the
+    // runtime-closure gradient, whose spread rule gives a variadic callable
+    // the point element-wise (the same rule, whether it is written inline,
+    // named, or reached through a wrapper).
+    if (differentiandIsVariadic(op->gradient_op.function)) {
+        Value* closure_val = resolveDifferentiandClosure(op->gradient_op.function, "gradient");
+        if (!closure_val) return nullptr;
+        Value* point_val = codegen_ast_callback_(op->gradient_op.point, callback_context_);
+        if (!point_val) return nullptr;
+        if (point_val->getType() != ctx_.taggedValueType()) {
+            if (point_val->getType()->isDoubleTy()) point_val = tagged_.packDouble(point_val);
+            else if (point_val->getType()->isIntegerTy(64)) point_val = tagged_.packInt64(point_val, true);
+        }
+        return emitRuntimeClosureGradient(closure_val, point_val);
+    }
 
     // Resolve function (lambda or function reference)
     Value* func = resolve_lambda_callback_(op->gradient_op.function, 0, callback_context_);

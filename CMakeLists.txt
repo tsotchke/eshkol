@@ -11907,3 +11907,20 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run)
         PASS_REGULAR_EXPRESSION "variadic builtin values PASS"
         FAIL_REGULAR_EXPRESSION "Unhandled exception|fatal signal|verification failed")
 endif()
+
+# SW-248: gradient of a rest-parameter procedure on JIT, AOT and VM.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    set(_eshkol_var_grad "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/variadic_gradient_matrix.esk")
+    add_test(NAME variadic_gradient_matrix_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> -r "${_eshkol_var_grad}")
+    add_test(NAME variadic_gradient_matrix_aot
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/variadic_gradient_matrix_aot' '${_eshkol_var_grad}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/variadic_gradient_matrix_aot'")
+    add_test(NAME variadic_gradient_matrix_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test> "${_eshkol_var_grad}")
+    set_tests_properties(variadic_gradient_matrix_jit variadic_gradient_matrix_aot variadic_gradient_matrix_vm PROPERTIES
+        ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+        TIMEOUT 180 LABELS "ad;parity;regression"
+        PASS_REGULAR_EXPRESSION "variadic gradient matrix PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|ERROR|Unhandled exception|fatal signal|verification failed")
+endif()

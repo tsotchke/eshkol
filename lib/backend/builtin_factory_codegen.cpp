@@ -635,6 +635,7 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         autodiff_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTTypedWrapper, this);
         // Set up lambda resolution callback
         autodiff_->setResolveLambdaCallback(ControlFlowCallbacks::resolveLambdaWrapper);
+        autodiff_->setVariadicLookupCallback(ControlFlowCallbacks::variadicLookupWrapper);
         // Calculus extraction: wire closure call, arity table, captures, closure alloc
         autodiff_->setClosureCallCallback(ControlFlowCallbacks::closureCallWithInfoWrapper);
         autodiff_->setGradientSpreadCallCallback(ControlFlowCallbacks::gradientSpreadCallWrapper);
