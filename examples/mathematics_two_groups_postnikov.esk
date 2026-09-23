@@ -49,9 +49,10 @@
 ;; with pi_1 = pi_2 = Z/2 have the same H^1 and the same number of
 ;; 1-simplices per vertex label, so degree 1 cannot tell them apart.
 ;;
-;; DEFECT NOTES (routed around): all tables computed before loops, no
-;; allocation inside closures inside loops (LE-17); phases integral;
-;; regions around large eliminations (SW-164).
+;; DEFECT NOTES: LE-17's closure-in-loop compiler crash and SW-164's
+;; exact-rational loop growth are fixed. Tables are still computed before
+;; loops and phases stay integral for bounded working sets; regions around
+;; large eliminations are intentional memory scopes.
 
 (require stdlib)
 

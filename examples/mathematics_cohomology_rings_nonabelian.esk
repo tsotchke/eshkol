@@ -28,8 +28,9 @@
 ;; Negative controls: the relation of one group fails in the other; a
 ;; coboundary is recognized; a random 2-cochain is not a cocycle.
 ;;
-;; DEFECT NOTES (routed around): as in the sibling examples; large rank
-;; computations sit in `with-region` (SW-164).
+;; DEFECT NOTES: numeric literal exactness and exact-rational loop reclamation
+;; are fixed (SW-153, SW-166, SW-164). Large rank computations remain inside
+;; `with-region` as an intentional bound on their working set.
 
 (require stdlib)
 
