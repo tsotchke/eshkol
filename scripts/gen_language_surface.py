@@ -293,6 +293,29 @@ def extract_prelude_defs():
     return sorted(names)
 
 
+# --- the bytecode VM's own prelude (lib/backend/vm_prelude_source.h) --------
+VM_PRELUDE_H = os.path.join(REPO, "lib", "backend", "vm_prelude_source.h")
+
+
+def extract_vm_prelude_defs():
+    """Top-level names the VM prelude defines -- the VM's second vehicle.
+
+    The VM reaches some public names only through Scheme definitions compiled
+    into every VM program (`write`, `newline`, `swish`, the standard port
+    parameters, ...). A name defined there IS on the VM, so it counts as a VM
+    backend for a construct already on the surface; the prelude never adds a
+    construct of its own.
+    """
+    names = set()
+    with open(VM_PRELUDE_H, encoding="utf-8", errors="replace") as fh:
+        text = fh.read()
+    for literal in re.findall(r'"((?:[^"\\]|\\.)*)"', text):
+        for name in re.findall(r'^\(define \(?([^\s()]+)', literal):
+            if not name.startswith("_"):
+                names.add(name)
+    return names
+
+
 def extract_agent_module_provides(path):
     """Extract the flat public API from an agent module's `(provide ...)` form.
 
@@ -568,6 +591,7 @@ def build_manifest():
     ops = extract_ast_ops()
     forms = extract_special_forms()
     prelude = extract_prelude_defs()
+    vm_prelude = extract_vm_prelude_defs()
 
     # AOT-dispatched names that are also declared special forms are syntax, not
     # builtins — keep them out of the builtin set (they appear under forms).
@@ -593,7 +617,7 @@ def build_manifest():
     for name in names:
         member_names = [name] + aliases_by_canonical.get(name, [])
         in_c = any(m in comp for m in member_names)
-        in_v = any(m in vm for m in member_names)
+        in_v = any(m in vm or m in vm_prelude for m in member_names)
         in_a = any(m in aot_builtins for m in member_names)
         ids = sorted(set().union(*(set(comp.get(m, {}).get("ids", []))
                                    for m in member_names),

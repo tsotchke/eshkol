@@ -635,6 +635,8 @@ static const BuiltinDef BUILTINS[] = {
     {"linear-solve", 472, 2},
     {"gpu-transpose", 416, 1},
     {"relu", 462, 1}, {"softmax", 463, 1}, {"gpu-softmax", 463, 1}, {"sigmoid", 464, 1},
+    /* The unit-beta tensor kernel behind the prelude's `swish`. */
+    {"_swish-tensor", 469, 1},  /* mirrors: swish */
     {"cross-entropy-loss", 480, 2},
     {"eye", 745, 1}, {"linspace", 746, 3},
     {"model-save", 800, 2}, {"model-load", 801, 1},
@@ -948,7 +950,7 @@ static const BuiltinDef BUILTINS[] = {
     {"current-error-port", 1714, 0},
     /* The prelude binds current-input-port, current-output-port and
      * current-error-port to the parameter objects this returns. */
-    {"_std-port-parameter", 2242, 1},
+    {"_std-port-parameter", 2242, 1},  /* mirrors: current-output-port */
     {"getenv", 1715, 1}, {"get-environment-variable", 1715, 1},
     /* ═══════════════════════════════════════════════════════════════
      * Path Manipulation — IDs 1720-1739

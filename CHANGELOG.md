@@ -14,6 +14,9 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **`swish` on the VM.** `(swish x [beta])` was a native-only builtin; the VM
+  now defines it with the native semantics (`x * sigmoid(beta * x)`, a number
+  or a tensor like `x`, differentiable through the number case).
 - **`make-string` checks its arguments and repeats any character.** Natively
   `(make-string "xyz")` read the string's address as a length and faulted, and a
   non-ASCII fill was cut to one byte (`(make-string 2 #\λ)` had length 0); the

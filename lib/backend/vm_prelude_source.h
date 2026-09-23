@@ -319,6 +319,17 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define current-input-port (_std-port-parameter 0))\n"
     "(define current-output-port (_std-port-parameter 1))\n"
     "(define current-error-port (_std-port-parameter 2))\n"
+    /* (swish x [beta]) = x * sigmoid(beta * x), a number or a tensor like x,
+     * as the native activation family lowers it (codegenActivationFamily):
+     * the unit-beta tensor case is the SiLU kernel, another beta scales the
+     * tensor by a one-element tensor, and a number goes through sigmoid so
+     * derivatives follow. */
+    "(define (swish x . b)\n"
+    "  (let ((beta (if (null? b) 1.0 (car b))))\n"
+    "    (if (or (vector? x) (tensor? x))\n"
+    "        (if (null? b) (_swish-tensor x)\n"
+    "            (tensor-mul x (sigmoid (tensor-mul x (make-tensor (list 1) beta)))))\n"
+    "        (* x (sigmoid (* beta x))))))\n"
     "(define _display1 display)\n"
     "(define (display value . args)\n"
     "  (cond ((null? args) (_display1 value))\n"
