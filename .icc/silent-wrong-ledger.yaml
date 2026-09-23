@@ -15827,3 +15827,35 @@ entries:
       (list 1/2 3) gives #(3 0.5) on both engines.
     caught_by: [v135f-vmrt-probe]
     missed_by: [vm_parity]
+  - id: SW-249
+    bucket: SILENT-WRONG
+    subtag: vm
+    family: vm-records/type-identity
+    status: fixed
+    closed_at: "523d4766d"
+    title: "the VM record predicate was vector?, so a plain vector or another record type passed it; VM accessors read fields by declaration order"
+    repro: >-
+      (define-record-type cat (make-cat name) cat? (name cat-name))
+      (define-record-type dog (make-dog name) dog? (name dog-name))
+      (cat? (make-dog "rex")) (cat? (vector 1 2 3))
+    observed: >-
+      #t and #t on the VM (define_record_type_test: 3 FAILs); native #f and #f.
+    correct: >-
+      #f and #f.
+    root_cause: >-
+      vm_compiler.c compiled define-record-type by hand with a string tag, a
+      predicate that emitted only OP_VEC_P, and accessor indices in field
+      declaration order instead of constructor order.
+    fix: >-
+      The VM compiles the native lowering (type-symbol tag, tag-checking
+      predicate, constructor-position indices) through the ordinary define path;
+      on both engines accessors and mutators raise for a value that fails the
+      predicate.
+    evidence: >-
+      tests/core/record_type_identity_test.esk on JIT, AOT, VM and VM ESKB (ctest
+      record_type_identity_*); define_record_type_test 26/26 on JIT and VM.
+    notes: >-
+      Records remain tagged vectors on both engines: vector? is #t for a record
+      and a hand-built vector carrying the tag symbol passes the predicate.
+    caught_by: [coordinator-review]
+    missed_by: [vm_parity]
