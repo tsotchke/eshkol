@@ -65,7 +65,7 @@ static int vm_enter_call(VM* vm, int argc, int32_t return_pc) {
     HeapObject* cl = vm_callable_closure(vm, func, argc);
     if (!cl) return -1;
 
-    if (vm->frame_count >= MAX_FRAMES) { fprintf(stderr, "FRAME OVERFLOW\n"); vm->error = 1; return -1; }
+    if (!vm_ensure_frame_capacity(vm, vm->frame_count + 1)) return -1;
     vm->frames[vm->frame_count].return_pc = return_pc;
     vm->frames[vm->frame_count].return_fp = vm->fp;
     vm->frames[vm->frame_count].func_pc = cl->closure.func_pc;
@@ -540,7 +540,7 @@ void vm_run(VM* vm) {
             DISPATCH();
         }
         /* Validate bounds before capture */
-        if (vm->sp > STACK_SIZE || vm->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
+        if (vm->sp > STACK_SIZE || vm->frame_count > vm->frame_cap) { vm->error = 1; goto vm_exit; }
         int32_t cont_ptr = heap_alloc(&vm->heap);
         if (cont_ptr < 0) { vm->error = 1; goto vm_exit; }
         vm->heap.objects[cont_ptr]->type = HEAP_CONTINUATION;
@@ -565,7 +565,7 @@ void vm_run(VM* vm) {
         vm_push(vm, cont_val);
         /* Set up call frame for proc(k) */
         HeapObject* cl_cc = vm->heap.objects[proc.as.ptr];
-        if (vm->frame_count >= MAX_FRAMES) { vm->error = 1; goto vm_exit; }
+        if (!vm_ensure_frame_capacity(vm, vm->frame_count + 1)) goto vm_exit;
         vm->frames[vm->frame_count].return_pc = vm->pc;
         vm->frames[vm->frame_count].return_fp = vm->fp;
         vm->frames[vm->frame_count].func_pc = cl_cc->closure.func_pc;
@@ -969,7 +969,7 @@ vm_exit:
             Value cont_val = (Value){.type = VAL_CONTINUATION, .as.ptr = cont_ptr};
             vm_push(vm, proc); vm_push(vm, cont_val);
             HeapObject* cl_cc = vm->heap.objects[proc.as.ptr];
-            if (vm->frame_count >= MAX_FRAMES) { vm->error = 1; break; }
+            if (!vm_ensure_frame_capacity(vm, vm->frame_count + 1)) break;
             vm->frames[vm->frame_count].return_pc = vm->pc;
             vm->frames[vm->frame_count].return_fp = vm->fp;
             vm->frames[vm->frame_count].func_pc = cl_cc->closure.func_pc;

@@ -37,6 +37,7 @@
 </ul>
 <h3 id="fixed">Fixed</h3>
 <ul>
+<li><p>The bytecode VM now grows its call-frame array for non-tail recursion, bounded by <code>ESHKOL_VM_MAX_FRAMES_CEILING</code>, instead of failing at the initial 256-frame allocation. Continuation restoration uses the same capacity gate. Four cohomology and two-group examples now complete on the VM, and exhausting the configured ceiling still exits with <code>FRAME OVERFLOW</code>.</p></li>
 <li><p>On the bytecode VM, <code>tensor-sum</code>/<code>-mean</code>/<code>-max</code>/<code>-min</code> with no axis now reduce the whole tensor to a number, as on native (SW-202). The VM used to answer <code>#(0.75)</code> for <code>(tensor-sum (tensor 0.5 0.25))</code> and per-row sums for a matrix, because “no axis” and “last axis” were both -1; <code>gpu-reduce</code> had the same problem.</p></li>
 <li><p>VM max/min reductions now start from the infinities, so the max of an all <code>-inf.0</code> tensor is <code>-inf.0</code>, as on native and on the GPU path, not <code>-1.797e308</code> (SW-246).</p></li>
 <li><p>The VM’s GPU reduction path read an axis of -1 as “all axes” while its CPU path reads the last axis, so a matrix reduction changed answer at the GPU threshold (SW-243). The GPU now serves a reduction only when it computes the same one as the CPU path.</p></li>

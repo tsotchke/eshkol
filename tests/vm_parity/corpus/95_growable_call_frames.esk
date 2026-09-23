@@ -1,0 +1,3 @@
+; Non-tail recursion crosses the VM's initial frame allocation repeatedly.
+(define (depth n) (if (= n 0) 0 (+ 1 (depth (- n 1)))))
+(display (depth 1200)) (newline)

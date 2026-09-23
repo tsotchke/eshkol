@@ -656,8 +656,12 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
 - LE-04: both VM prelude consumers use `(sort list comparator)`, with accepted
   and reverse-order rejection covered by
   `tests/vm_parity/corpus/72_sort_argument_order.esk`.
-- LE-07: VM frame overflow reports a diagnostic and returns a nonzero process
-  status, covered by `tests/vm_parity/frame_overflow_exit_status_test.py`.
+- LE-07: VM call frames grow from an initial capacity of 256 to a configurable
+  ceiling. Exhausting that ceiling reports `FRAME OVERFLOW` and returns a
+  nonzero process status; `tests/vm_parity/frame_ceiling_exit_status_test.py`,
+  `tests/vm_parity/frame_growth_test.py`, and
+  `tests/vm_parity/corpus/95_growable_call_frames.esk` cover growth and
+  exhaustion.
 - PR-07: `inexact->exact` uses the same bignum-capable exact decomposition on
   native and VM, including large finite values and subnormals.
 - PR-08: complex display uses one canonical representation on native and VM;
@@ -842,16 +846,11 @@ The following v1.3.5 parity audit items are resolved at their shared roots:
 
 **VM tail positions**
 
-- **On the bytecode VM, `when` / `unless` / `and` / `or` bodies and
-  local-allocating `let` bodies are not tail positions**, so a tail call there
-  dies at `ESHKOL_VM_MAX_FRAMES` (`inc/eshkol/backend/vm_limits.h`) — roughly
-  depth 300. R7RS 3.5 makes all of them tail positions exactly as much as the
-  branches of `if`. The native engine gained every one of these spellings this
-  release (#478, #483); the VM did not. The failure prints `FRAME OVERFLOW` to
-  stderr and then exits 0 with empty stdout, so it is silent to any caller
-  that checks only the exit status. Tracked as LE-13 and LE-07, both open.
-  Reproducers: `tests/vm_parity/found/when_tail_call_no_tco.esk`,
-  `vm_tail_let_locals_no_tco.esk`, `vm_tail_indirect_ok.esk`.
+- The bytecode VM propagates tail position through `when`, `unless`, `and`,
+  `or`, and local-allocating `let` bodies (LE-13). Its frame array grows for
+  non-tail calls and stops at the configured ceiling with a nonzero exit
+  (LE-07). `tests/vm_parity/corpus/73_vm_tail_position_forms.esk` and
+  `95_growable_call_frames.esk` cover both paths.
 
 **Vector calculus**
 

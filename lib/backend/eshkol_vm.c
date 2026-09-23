@@ -2356,7 +2356,7 @@ int eshkol_vm_get_profile_limits(EshkolVmProfileLimits* out) {
     if (!out) return -1;
     out->heap_objects = ESHKOL_VM_HEAP_SIZE;
     out->stack_slots = ESHKOL_VM_STACK_SIZE;
-    out->max_frames = ESHKOL_VM_MAX_FRAMES;
+    out->max_frames = ESHKOL_VM_MAX_FRAMES_CEILING;
     /* The constant pool's INITIAL capacity is ESHKOL_VM_MAX_CONSTS; it grows on
      * demand, so the figure a profile must advertise as its limit is the
      * ceiling the growth stops at. */

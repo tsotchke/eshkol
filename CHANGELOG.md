@@ -221,6 +221,12 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- The bytecode VM now grows its call-frame array for non-tail recursion,
+  bounded by `ESHKOL_VM_MAX_FRAMES_CEILING`, instead of failing at the initial
+  256-frame allocation. Continuation restoration uses the same capacity gate.
+  Four cohomology and two-group examples now complete on the VM, and
+  exhausting the configured ceiling still exits with `FRAME OVERFLOW`.
+
 - On the bytecode VM, `tensor-sum`/`-mean`/`-max`/`-min` with no axis now
   reduce the whole tensor to a number, as on native (SW-202). The VM used to
   answer `#(0.75)` for `(tensor-sum (tensor 0.5 0.25))` and per-row sums for a

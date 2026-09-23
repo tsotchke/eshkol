@@ -793,7 +793,8 @@ typedef struct VM {
     int32_t sp;           /* stack pointer (next free slot) */
 
     /* Call frames */
-    CallFrame frames[MAX_FRAMES];
+    CallFrame* frames;
+    int frame_cap;
     int32_t fp;           /* frame pointer (base of current frame's locals) */
     int frame_count;
     uint64_t next_frame_generation;
@@ -1308,6 +1309,9 @@ static void vm_init(VM* vm) {
     vm->constants = NULL;
     vm->const_cap = 0;
     (void)vm_ensure_const_cap(vm, MAX_CONSTS);
+    vm->frame_cap = MAX_FRAMES;
+    vm->frames = (CallFrame*)calloc((size_t)vm->frame_cap, sizeof(CallFrame));
+    if (!vm->frames) vm->frame_cap = 0;
     vm->handler_cap = VM_INITIAL_HANDLER_CAP;
     vm->handler_stack = (VmExceptionHandler*)calloc(
         (size_t)vm->handler_cap, sizeof(*vm->handler_stack));
@@ -1315,6 +1319,39 @@ static void vm_init(VM* vm) {
     vm->native_policy = ESHKOL_VM_NATIVE_POLICY_DESKTOP;
     vm->active_tape = NULL;
     memset(vm->ad_node_map, -1, sizeof(vm->ad_node_map));
+}
+
+/* All frame pushes and continuation restores use this single capacity gate.
+ * Frame indices remain stable when the allocation moves. */
+static int vm_ensure_frame_capacity(VM* vm, int need) {
+    if (!vm || need < 0) return 0;
+    if (need <= vm->frame_cap) return 1;
+    if (need > ESHKOL_VM_MAX_FRAMES_CEILING) {
+        fprintf(stderr, "FRAME OVERFLOW: frame ceiling %d reached\n",
+                (int)ESHKOL_VM_MAX_FRAMES_CEILING);
+        vm->error = 1;
+        return 0;
+    }
+    int cap = vm->frame_cap > 0 ? vm->frame_cap : MAX_FRAMES;
+    while (cap < need) {
+        if (cap > ESHKOL_VM_MAX_FRAMES_CEILING / 2) {
+            cap = ESHKOL_VM_MAX_FRAMES_CEILING;
+            break;
+        }
+        cap *= 2;
+    }
+    CallFrame* grown = (CallFrame*)realloc(vm->frames,
+                                           (size_t)cap * sizeof(CallFrame));
+    if (!grown) {
+        fprintf(stderr, "ERROR: call frame growth to %d entries failed\n", cap);
+        vm->error = 1;
+        return 0;
+    }
+    memset(grown + vm->frame_cap, 0,
+           (size_t)(cap - vm->frame_cap) * sizeof(CallFrame));
+    vm->frames = grown;
+    vm->frame_cap = cap;
+    return 1;
 }
 
 /** @brief Bounds-check a heap object index against the live-object range
