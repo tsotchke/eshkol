@@ -263,6 +263,13 @@ the source changes; the verification record for the tagged commit is the
   self-test covers bare and indented failures, incomplete output, and false
   differential passes. CUDA Ozaki checks now skip without a live CUDA backend.
 
+- The v1.3.5 recursive Taylor carrier also covers the unmerged AD carrier
+  work from `172c796d7`: nested complex derivatives, exact scalar Hessians,
+  Taylor and tensor identities, parallel carrier transfer, and region
+  evacuation agree on native and VM. The existing SW-193/SW-194 regressions
+  and the level-carrier tests cover these cases without restoring the retired
+  hyper-dual companion lanes (ADR-0027).
+
 - On the bytecode VM, `tensor-sum`/`-mean`/`-max`/`-min` with no axis now
   reduce the whole tensor to a number, as on native (SW-202). The VM used to
   answer `#(0.75)` for `(tensor-sum (tensor 0.5 0.25))` and per-row sums for a
