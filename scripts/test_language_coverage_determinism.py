@@ -241,14 +241,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--eshkol-run", required=True)
     parser.add_argument("--lib-dir", required=True)
-    parser.add_argument("--work-dir", default=None,
-                        help="parent for the fresh run directories")
+    parser.add_argument("--work-dir",
+                        default=str(REPO / ".scratch" / "language-coverage-determinism"),
+                        help="in-checkout parent for the fresh run directories")
     args, unittest_args = parser.parse_known_args()
     LanguageCoverageDeterminismTest.eshkol_run = os.path.abspath(args.eshkol_run)
     LanguageCoverageDeterminismTest.lib_dir = os.path.abspath(args.lib_dir)
-    if args.work_dir:
-        os.makedirs(args.work_dir, exist_ok=True)
-        LanguageCoverageDeterminismTest.work_root = os.path.abspath(args.work_dir)
+    os.makedirs(args.work_dir, exist_ok=True)
+    LanguageCoverageDeterminismTest.work_root = os.path.abspath(args.work_dir)
     unittest.main(argv=[__file__] + unittest_args)
 
 

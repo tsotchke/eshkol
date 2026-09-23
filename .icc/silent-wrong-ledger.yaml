@@ -15986,3 +15986,35 @@ entries:
       and VM ESKB (ctest standard_port_parameters_*); VM parity 386/386.
     caught_by: [release-dry-run]
     missed_by: [vm_parity]
+  - id: SW-252
+    bucket: LOUD-ERROR
+    family: assurance/language-coverage-source-location
+    status: fixed
+    title: "the release language-coverage determinism gate inspected no readable source locations"
+    repro: >-
+      Run scripts/test_language_coverage_determinism.py with its corpus under an
+      ambient temporary directory outside the checkout, or under a nested project
+      root, then inspect both JIT and AOT assertions.
+    observed_before: >-
+      Coverage records existed, but their display paths were basenames relative
+      to the temporary source root. The gate resolved those names under the
+      checkout, skipped every unreadable path, and reported zero checked records.
+    correct: >-
+      Both execution modes record deterministic source locations that the gate
+      can reopen and check for valid line and column ranges.
+    root_cause: >-
+      The coverage runner omitted the determinism harness work directory, so the
+      harness chose the ambient temporary directory. CTest used a build-relative
+      root that could also lie outside the checkout. The display-path policy
+      correctly removes host directory prefixes, leaving no checkout-relative
+      name for those temporary source files.
+    fix: >-
+      Direct runs, the coverage runner, and CTest use an in-checkout scratch
+      parent for the corpus. Fresh per-run subdirectories remain isolated and
+      the source-location assertions are unchanged.
+    evidence: >-
+      scripts/test_language_coverage_determinism.py passes both JIT and AOT with
+      TMPDIR pointed at a nested project root; ctest language_coverage_determinism_test
+      and the coverage and language CTest selection pass.
+    caught_by: [release-dry-run]
+    missed_by: [language_coverage_determinism_test]

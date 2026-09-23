@@ -6,6 +6,14 @@
 
 ## Resolved in v1.3.5-evolve
 
+- **The release language-coverage determinism gate could inspect zero source
+  locations (SW-252).** Its direct and release-runner invocations put the
+  generated corpus under the ambient temporary directory. Source display
+  paths there collapsed to a basename, while the gate resolved relative names
+  against the checkout. The corpus now lives under an in-checkout scratch
+  parent for every launcher, so both JIT and AOT records name source files the
+  gate can read and validate.
+
 - **The bytecode VM accepts a call that omits a documented optional argument.**
   `(substring "hello" 1)`, `(make-vector 3)`, `(make-string 3)`,
   `(read-line)`, `(append lst)` and `(hash-ref table key)` all ran on native and

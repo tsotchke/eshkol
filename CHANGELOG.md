@@ -221,6 +221,14 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- Language-coverage determinism runs now create their source corpus under the
+  checkout for direct invocation, CTest, and the release coverage runner
+  (SW-252). The display-path writer correctly shortened files in a system
+  temporary directory to their basename, which the gate could not reopen
+  relative to the checkout; both JIT and AOT then failed without checking any
+  source locations. The gate still requires readable sources, in-range
+  locations, and identical records across runs.
+
 - On the bytecode VM, `tensor-sum`/`-mean`/`-max`/`-min` with no axis now
   reduce the whole tensor to a number, as on native (SW-202). The VM used to
   answer `#(0.75)` for `(tensor-sum (tensor 0.5 0.25))` and per-row sums for a

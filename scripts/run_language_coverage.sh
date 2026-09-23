@@ -264,7 +264,8 @@ python3 scripts/test_language_coverage_hook_guard.py \
 # and no record naming a position outside its source file.
 python3 scripts/test_language_coverage_determinism.py \
     --eshkol-run "$ESHKOL_RUN" \
-    --lib-dir "$BUILD_DIR_PATH"
+    --lib-dir "$BUILD_DIR_PATH" \
+    --work-dir "$REPO_ROOT/.scratch/language-coverage-determinism"
 rc=0
 python3 scripts/language_coverage.py \
     "${RUNTIME_ARGS[@]}" \

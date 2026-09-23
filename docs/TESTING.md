@@ -448,6 +448,11 @@ The determinism property rests on the frontend rule that every AST node is
 born with the location of the form it came from, and on the reader keeping
 its position per input stream; see
 [ESHKOL_V1_ARCHITECTURE.md](ESHKOL_V1_ARCHITECTURE.md#source-locations-and-node-identity).
+The corpus lives under the checkout's `.scratch/language-coverage-determinism`
+directory for direct and release-coverage runs. CTest uses the same parent,
+including when its build directory is outside the checkout. This keeps the
+recorded display paths repository-relative so the gate can reopen the actual
+source files and check their line and column ranges (SW-252).
 
 ---
 

@@ -7900,7 +7900,7 @@ if(ESHKOL_BUILD_TESTS)
                     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_language_coverage_determinism.py"
                     --eshkol-run $<TARGET_FILE:eshkol-run>
                     --lib-dir "${CMAKE_BINARY_DIR}"
-                    --work-dir "${CMAKE_BINARY_DIR}/test-work/language-coverage-determinism"
+                    --work-dir "${CMAKE_CURRENT_SOURCE_DIR}/.scratch/language-coverage-determinism"
         )
         set_tests_properties(language_coverage_determinism_test PROPERTIES
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
