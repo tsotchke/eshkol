@@ -73,6 +73,13 @@ exactly once and every call site agrees with it by construction. A name that is
 genuinely undefined fails compilation with a real diagnostic; it never
 silently answers `()`.
 
+The spread list must fit the procedure. Spreading more elements than a
+fixed-arity procedure accepts is an arity error, never a call with the surplus
+dropped: `(apply (lambda (x) x) (list 1 2 3))` raises
+`Arity mismatch: <procedure> expects 1 argument but got 3`. Natively the
+condition is an error object that `guard` catches; the bytecode VM refuses the
+call with a fatal `arity mismatch` error.
+
 > **Engine difference — apply's leading-args form is native-only.** The
 > bytecode VM supports the plain `(apply proc arg-list)` form. It does **not**
 > support leading arguments before the list, for any operator: under the VM,

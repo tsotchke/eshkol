@@ -197,10 +197,10 @@ For models with multiple parameters, use `gradient`:
 (define (mse w0 w1 data)
   (if (null? data)
       0.0
-      (let ((x (car (car data)))
-            (y (car (cdr (car data))))
-            (pred (predict w0 w1 x))
-            (err (- pred y)))
+      (let* ((x (car (car data)))
+             (y (car (cdr (car data))))
+             (pred (predict w0 w1 x))
+             (err (- pred y)))
         (+ (* err err) (mse w0 w1 (cdr data))))))
 
 ;; Compute gradient with respect to (w0, w1)

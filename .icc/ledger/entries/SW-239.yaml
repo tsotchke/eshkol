@@ -1,0 +1,28 @@
+id: SW-239
+bucket: SILENT-WRONG
+subtag: vm-scope
+family: vm/with-region-body-scope
+status: fixed
+closed_at: '7e73845c510d6b888619bb59945f6575cac0bfa5'
+title: "VM: a define inside with-region within a procedure was dropped; later references read an unrelated slot"
+repro: >-
+  (define (f) (with-region 'r (define (sq x) (* x x)) (define u (sq 3)) (+ u 1)))
+  (display (f)) on eshkol-vm-standalone-test.
+observed_before: >-
+  Wrong or fatal answers depending on the stray slot; in
+  tests/vm/factor_graph_infer_unobserved_surface_regression.esk
+  (vector-ref <slot> 0) answered () and fg-add-factor! ran on () with exit 0.
+  Native answers 10.
+observed_after: >-
+  10 on the VM, the browser VM and native JIT.
+root_cause: >-
+  compile_form_with_region compiled a body inside a procedure as bare
+  expressions, so an internal definition built its box and dropped it.
+fixed_by: >-
+  the body compiles through vm_compile_scope_body, the helper let's body uses
+  (lib/backend/vm_compiler.c).
+evidence: >-
+  tests/memory/with_region_internal_define_test.esk (ctest
+  with_region_internal_define_{vm,browser_vm,jit}).
+caught_by: [v135f-gates-lane]
+missed_by: [run_vm_parity]

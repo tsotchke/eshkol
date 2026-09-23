@@ -1,0 +1,33 @@
+; apply spreads a runtime list into a procedure value. When the procedure has
+; fixed arity and the list is longer, the call is an arity-contract violation:
+; it must raise a catchable arity error in the shared "Arity mismatch: " class
+; (never drop the surplus elements and answer, and never report a type error),
+; in operator position and when apply itself is passed as a value. A message
+; raised with no recorded source location must begin with the class marker, not
+; with stray bytes from the runtime's location-prefix buffer.
+
+(define (h2 f a b) (f a b))
+
+(define (message-of thunk)
+  (guard (e (#t (if (error-object? e) (error-object-message e) 'non-error-object)))
+    (thunk)
+    'no-error))
+
+(define (arity-message? m)
+  (and (string? m)
+       (>= (string-length m) 16)
+       (string=? (substring m 0 16) "Arity mismatch: ")))
+
+(define direct (message-of (lambda () (apply (lambda (x) x) (list 1 2 3)))))
+(define as-value (message-of (lambda () (h2 apply (lambda (x) x) (list 1 2 3)))))
+(define exact-fit (apply (lambda (x y z) (list z y x)) (list 1 2 3)))
+(define exact-fit-value (h2 apply (lambda (x y z) (list z y x)) (list 1 2 3)))
+
+(display direct) (newline)
+(display as-value) (newline)
+(if (and (arity-message? direct)
+         (arity-message? as-value)
+         (equal? exact-fit '(3 2 1))
+         (equal? exact-fit-value '(3 2 1)))
+    (display "PASS: apply surplus arguments raise an arity error\n")
+    (display "FAIL: apply surplus arguments raise an arity error\n"))

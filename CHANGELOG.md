@@ -23,10 +23,6 @@ the source changes; the verification record for the tagged commit is the
   `region promotion: out of memory` error object is raised. Bulk vector and
   tensor stores promote before they store. See ADR-0001's 2026-09-22
   amendment.
-- **Runtime errors reach `guard` as error objects.** Conditions raised by the
-  runtime's type and range checks, such as `(car 5)`, were built without their
-  object header, so `error-object?` answered `#f` and `display` printed a pair
-  holding a pointer. Every raised condition now carries its header.
 - **Malformed tensor shapes raise on every engine (#550).** `(reshape v 1.5
   2)` no longer fails to compile natively, the VM accepts the documented
   variadic `(zeros d1 d2 ...)` and `(ones d1 d2 ...)` and validates their
@@ -38,6 +34,55 @@ the source changes; the verification record for the tagged commit is the
   version's documented range when nvcc cannot answer), so CUDA 13 configures
   without SM72 and CUDA 12 keeps it. An explicit `CMAKE_CUDA_ARCHITECTURES` is
   used as given.
+- **A caught condition printed an error anyway.** Natively the runtime wrote
+  `ERROR: Type error in vector-ref: ...` (and similar) to stderr before
+  unwinding to the `guard` that caught it. A condition is now reported only
+  when no handler is installed; a caught one prints nothing, on native JIT,
+  AOT and the VM. `string->symbol` of a non-string raises a catchable type
+  error on both engines (natively it faulted; the VM answered `#f`).
+- **A top-level `with-region` or `begin` lost the definitions in its body on
+  the VM (SW-240)**, and a `with-region` inside a procedure lost its internal
+  definitions (SW-239): the name then read an unrelated value, for example
+  `(begin (define tt 5) 1)` left `tt` as 1. Both now bind as natively.
+- **Number syntax is one grammar, complex numbers included (SW-223).** The
+  source parser split `1+1i` into `1` and `+1i`, the bytecode VM read it as a
+  call, `(string->number "1+1i")` answered `#f` while `read` returned a symbol,
+  `#i42` was exact and `#e1.5` was not a number. Every reader -- program
+  literals, `read` and `string->number`, on the native compiler and the VM --
+  now asks one recognizer for the full R7RS grammar: `a+bi`, `a-bi`, `+i`,
+  `-i`, `+bi`, polar `m@a`, `#e`/`#i` and `#b`/`#o`/`#d`/`#x` prefixes,
+  rational and infinite or NaN parts (ADR-0028). `1+0i` is the exact integer
+  1. `#e` on a non-real complex number, an infinity or a zero denominator is a
+  compile error in a program, a read error for `read`, and `#f` from
+  `string->number`. `string->number` accepts the R7RS radices 2, 8, 10 and 16
+  (it had accepted up to 36). A native
+  `read` of an integer past int64 had clamped to `INT64_MAX`; it is now the
+  exact bignum. A symbol spelled like a number is written with bars (`|+i|`).
+- **A container accessor read the wrong kind of container as its own
+  (SW-221).** `(vector-ref (list 1 2 3) 0)` answered `8` natively and `()` on
+  the bytecode VM; `(vector-length (list 1 2 3))` answered `4097` and `0`;
+  `string-ref` of a list answered a control character natively and NUL on the
+  VM; `(string-ref 5 0)` and `(tensor-ref (list 1 2) 0)` faulted natively. The
+  vector, string, bytevector and `tensor-ref` accessors now pass their operand
+  through one container check per engine (`TaggedValueCodegen::requireContainer`
+  natively, `vm_require_container` in the VM) and raise a catchable error for
+  any other kind. The VM's inline string opcodes and its first-class string
+  natives now share one implementation; the threaded copy indexed bytes, so
+  `(string-ref "héllo" 1)` answered a byte of `é` rather than the character.
+- **A condition the native runtime raised on its own was not an error object.**
+  `car` of a non-pair, an arithmetic type error, bignum and rational division
+  by zero, i128 overflow and a forward-referenced stub were built by a
+  header-less exception constructor, while `raise` hands every exception to a
+  handler as a heap object classified by its header. A `guard` clause therefore
+  saw garbage: `(guard (e (#t (error-object? e))) (car 5))` answered `#f` and
+  `e` displayed as a list of addresses, where the bytecode VM answered `#t`.
+  Every exception object now carries its header, built in one place.
+- **`apply` spreading too many elements into a fixed-arity procedure raised a
+  type error.** The refusal said `Type error in apply: expected fixed-arity
+  procedure, got procedure`. It is now an arity error rendered by the shared
+  formatter, `Arity mismatch: <procedure> expects 1 argument but got 3`.
+  Runtime error messages raised with no recorded source location also no longer
+  begin with stray bytes from an uninitialized location-prefix buffer.
 - **Every unary numeric builtin keeps a Taylor derivative.** `asin`, `acos`,
   `atan`, `asinh`, `acosh`, `atanh`, `log2`, `log10`, `exp2`, `cbrt`, `atan2`
   and the rounding functions returned their primal on a Taylor tower or level,
@@ -51,6 +96,15 @@ the source changes; the verification record for the tagged commit is the
   derivative a complex value carries.** `(derivative (lambda (w) (expt w 3))
   1+1i)` was 0 and `(derivative-n log 1+1i 1)` lost its imaginary part (SW-211).
   Every procedure with a plain complex kernel now has a carrier formula.
+- **Every math builtin is a first-class value.** `atan2` passed, stored or
+  returned was the raw C function (a crash) and `(apply atan2 ...)` did not
+  compile; a first-class `atan` or `round` dropped its second argument. The
+  math builtins now take one table-driven value route, with `atan` and `round`
+  dispatching on their argument count (SW-230).
+- **A raise or an escape out of a derivative leaves no AD state behind.** The
+  forward pass level stayed raised, so later derivatives lost exactness and
+  `(derivative (lambda (b) (/ 1 b)) 0)` answered `-inf.0` instead of raising
+  after an earlier raise (SW-229).
 - **Powers at a zero base have the closed form's derivatives.** On a Taylor
   tower `sqrt`, `expt` with a constant exponent and the inverse functions'
   derivative series answered NaN at `0.0`, because the power recurrence divides

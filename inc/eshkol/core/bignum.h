@@ -50,6 +50,8 @@ typedef struct eshkol_bignum {
 /* Access limbs array (immediately after the struct) */
 #define BIGNUM_LIMBS(bn) ((uint64_t*)((uint8_t*)(bn) + sizeof(eshkol_bignum_t)))
 
+#include "eshkol/core/number_syntax.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -431,10 +433,19 @@ void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
     eshkol_tagged_value_t* result);
 
 /* Parse a string to a tagged number in an explicit radix (R7RS 6.2.6,
- * (string->number string radix)). Radix 2..36; #b/#o/#d/#x prefixes
- * override `radix`. Result is #f for malformed input. */
+ * (string->number string radix)). Radix 2, 8, 10 or 16; #b/#o/#d/#x prefixes
+ * override `radix`. The full R7RS <number> grammar is accepted, complex
+ * numbers included (inc/eshkol/core/number_syntax.h). Result is #f for text
+ * that is not a number. */
 void eshkol_string_to_number_radix_tagged(arena_t* arena, const char* str,
     int64_t radix, eshkol_tagged_value_t* result);
+
+/* Convert number text through the shared R7RS number-syntax recognizer:
+ * ESHKOL_NUMSYN_OK with *result the number; NOT_A_NUMBER when the text is not
+ * number syntax (a reader makes it an identifier); another status when it is
+ * number syntax with no value (a reader reports it). */
+eshkol_numsyn_status_t eshkol_number_from_syntax(arena_t* arena, const char* text, size_t len,
+                                                 int radix, eshkol_tagged_value_t* result);
 
 /* ===== Display ===== */
 

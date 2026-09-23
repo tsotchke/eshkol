@@ -757,6 +757,17 @@ static char* eshkol_find_provider_file(const char* name) {
     return strdup(res.best_path.c_str());
 }
 
+// True when a raise now would be caught: a guard (or with-exception-handler)
+// frame with a landing point is installed. The runtime's own error sites ask
+// this before they print a report, so a condition a handler catches prints
+// nothing -- the handler decides what the program says -- while an uncaught
+// one is still reported before eshkol_raise prints "Unhandled exception" and
+// exits. The condition is a program value either way; only the report depends
+// on whether someone is listening.
+extern "C" int eshkol_raise_will_be_handled(void) {
+    return g_exception_handler_stack && g_exception_handler_stack->jmp_buf_ptr ? 1 : 0;
+}
+
 extern "C" void eshkol_raise(eshkol_exception_t* exception) {
     g_current_exception = exception;
 

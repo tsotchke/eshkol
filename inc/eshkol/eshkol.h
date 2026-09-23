@@ -1745,6 +1745,11 @@ extern ESHKOL_RUNTIME_THREAD_LOCAL eshkol_exception_handler_t* g_exception_handl
  * @param type Exception type code.
  * @param message Human-readable error message; copied/owned by the runtime arena.
  * @return Newly allocated eshkol_exception_t, with no irritants and no location set.
+ *         Always preceded by its object header (subtype HEAP_SUBTYPE_EXCEPTION),
+ *         exactly as eshkol_make_exception_with_header() builds it, because
+ *         eshkol_raise() hands every raised exception to a handler as a
+ *         HEAP_PTR value. Before the runtime arena exists the object comes
+ *         from the C heap.
  */
 eshkol_exception_t* eshkol_make_exception(eshkol_exception_type_t type, const char* message);
 /**

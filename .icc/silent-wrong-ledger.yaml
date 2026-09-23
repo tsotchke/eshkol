@@ -14690,6 +14690,79 @@ entries:
       pre-fix binary fails 22 of 24.
     caught_by: [direct-measurement]
     missed_by: [independent-review]
+  - id: SW-215
+    bucket: SILENT-WRONG
+    subtag: exceptions
+    family: native/exception-object-layout
+    status: fixed
+    closed_at: '175891e7dcaa3700074245ab0ac590171dd0ea0d'
+    title: "Native runtime-raised conditions were header-less, so guard saw garbage: (guard (e (#t (error-object? e))) (car 5)) answered #f"
+    repro: >-
+      (display (guard (e (#t (list (error-object? e) e))) (car 5))) on eshkol-run -r
+      and an AOT binary.
+    observed_before: >-
+      (#f (4967685776)) with exit status 0: error-object? answered #f and the
+      condition displayed as a list of addresses; the bytecode VM answered #t with
+      the message. Messages raised with no recorded location also began with stray
+      stack bytes.
+    observed_after: >-
+      (#t car: argument is not a pair) on JIT, AOT and the VM; the message has no
+      stray prefix.
+    root_cause: >-
+      eshkol_make_exception (used by eshkol_runtime_fatal, bignum/rational
+      division by zero, i128 overflow, forward-reference stubs, Taylor refusals)
+      allocated no object header, while eshkol_raise hands every exception to a
+      handler as a HEAP_PTR classified by its header subtype;
+      eshkol_format_error_location_prefix left its buffer uninitialized when no
+      location was set.
+    fixed_by: >-
+      one initializer builds every exception object with its header
+      (lib/core/runtime_exceptions_hosted.cpp); the prefix formatter always
+      terminates its buffer.
+    evidence: >-
+      tests/error_handling/runtime_condition_error_object_test.esk (ctest
+      runtime_condition_error_object_jit_smoke, _aot_o0_smoke, _vm_src_smoke).
+    caught_by: [v135f-gates-lane]
+    missed_by: [run_vm_parity]
+  - id: SW-221
+    bucket: SILENT-WRONG
+    subtag: containers
+    family: cross-engine/container-accessor-boundary
+    status: fixed
+    closed_at: 'f01071dd29bfce422ffab0c0359848262c89025a'
+    title: "Container accessors read the wrong kind of container as their own: (vector-ref (list 1 2 3) 0) answered 8 natively and () on the VM"
+    repro: >-
+      (display (vector-ref (list 1 2 3) 0)), (vector-length (list 1 2 3)) and
+      (string-ref (list 1 2) 0) on eshkol-run -r, an -O0/-O2 AOT binary and
+      eshkol-vm-standalone-test.
+    observed_before: >-
+      Native: 8, 4097 and a control character, exit status 0; (string-ref 5 0),
+      (vector-ref 5 0) and (tensor-ref (list 1 2) 0) faulted with SIGSEGV;
+      bytevector-u8-ref and bytevector-length of a vector answered 1 and 4097.
+      VM: (), 0 and the NUL character; vector->list of a list was a fatal,
+      uncatchable refusal. The VM's threaded string-ref/string-length indexed
+      bytes, so (string-ref "héllo" 1) answered 195.
+    observed_after: >-
+      Every listed accessor raises a catchable error naming itself on native JIT,
+      AOT (-O0, -O2) and the VM, directly and as a first-class value; vectors,
+      tensors, strings, bytevectors and records still answer; the VM string
+      accessors index characters under both dispatch loops.
+    root_cause: >-
+      Each accessor classified its operand by hand and treated anything it did not
+      recognise as its own container (collection_codegen.cpp "assume legacy
+      vector"; vm_ops.c / vm_native.c pushing (), 0 or NUL), and the VM string
+      accessors had divergent threaded and switch copies.
+    fixed_by: >-
+      One container check per engine: TaggedValueCodegen::requireContainer and
+      resolveSequenceOperand natively, vm_require_container in the VM with the
+      vector and string accessors each one implementation shared by opcodes,
+      both dispatch loops and the first-class natives.
+    evidence: >-
+      tests/error_handling/sw221_container_type_boundary_test.esk (ctest
+      sw221_container_type_boundary_jit_smoke, _aot_o0_smoke, _aot_o2_smoke,
+      _vm_src_smoke).
+    caught_by: [v135f-coordinator]
+    missed_by: [builtins_first_class_audit, run_vm_parity]
   - id: SW-222
     bucket: SILENT-WRONG
     subtag: autodiff
@@ -14740,6 +14813,35 @@ entries:
     vm_evidence: >-
       VM mirror at 4689ba7e2a739d825c8c83a1038ea3ebe39417e4 (branch fix/v135f-vmtaylor2): tests/ad/division_pole_test.esk and
       tests/ad/taylor_integral_family_test.esk pass on eshkol-vm-standalone-test and the browser VM.
+  - id: SW-223
+    bucket: SILENT-WRONG
+    subtag: numeric-syntax
+    family: cross-engine/number-syntax
+    status: fixed
+    closed_at: 'e607df22a815967b6ef903689423739bae50af0c'
+    title: "Complex number syntax: string->number \"1+1i\" answered #f while read returned a symbol; the parser and VM misread 1+1i"
+    repro: >-
+      (display 1+1i), (string->number "1+1i") and (read (open-input-string "1+1i"))
+      on eshkol-run -r, AOT and eshkol-vm-standalone-test; also #i42, #e1.5.
+    observed_before: >-
+      Native parser: "expected closing parenthesis"/undefined +1i. VM: fatal
+      "display requires an open output port". string->number answered #f while read
+      returned a symbol; #i42 was exact; #e1.5 was not a number; native read of an
+      integer past int64 clamped to INT64_MAX.
+    observed_after: >-
+      1+i on every reader and engine; the full R7RS 7.1.1 grammar (a+bi, a-bi, +i,
+      -i, +bi, m@a, #e/#i and radix prefixes, rational and inf/nan parts) is read
+      identically by literals, read and string->number on JIT, AOT and the VM.
+    root_cause: >-
+      six readers each carried a partial copy of the number grammar.
+    fixed_by: >-
+      inc/eshkol/core/number_syntax.h, one recognizer used by the parser, the
+      runtime reader, string->number and the VM parser/reader/natives (ADR-0028).
+    evidence: >-
+      tests/complex/sw223_number_syntax_test.esk (ctest
+      sw223_number_syntax_jit_smoke, _aot_o0_smoke, _aot_o2_smoke, _vm_src_smoke).
+    caught_by: [v135f-coordinator]
+    missed_by: [run_vm_parity, builtins_first_class_audit]
   - id: SW-225
     bucket: SILENT-WRONG
     subtag: autodiff
@@ -14895,6 +14997,141 @@ entries:
     notes: >-
       Filed by the v1.3.5 exact-derivative lane; fixed on the integration branch by
       the VM Taylor lane (7c036631d).
+  - id: SW-227
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/unary-route-coverage
+    status: fixed
+    closed_at: "7c9ceca04"
+    title: "(derivative (lambda (x) (inexact x)) 1/3) answered 0 natively (VM 1)"
+    repro: >-
+      (derivative (lambda (x) (inexact x)) 1/3), and the same through a passed,
+      stored, mapped or applied inexact / exact->inexact.
+    observed: >-
+      0 natively, as the VM Taylor lane measured it; exact->inexact read a
+      derivative carrier as a double and dropped the derivative.
+    correct: >-
+      1.0 on every path.
+    root_cause: >-
+      The carrier rule for inexact/exact->inexact was missing: a jet or a tower,
+      exact-point towers included, went to extractAsDouble.
+    fix: >-
+      edf532399 (SW-214) gives inexact of a carrier or a complex its product with
+      an inexact 1, so each carrier applies its own contagion. The first-class
+      wrappers re-enter the same call-position lowering, and 7c9ceca04 makes every value
+      route (passed, stored, mapped, applied) go through that wrapper; on the
+      integration head 1e468f279 every path measured 1.0 on JIT and AOT.
+    evidence: >-
+      tests/ad/unary_numeric_builtin_carriers_test.esk section SW-227/SW-228:
+      inexact and exact->inexact at the exact point 1/3 in call position,
+      passed, stored, mapped, applied, at order 2 and for exactness of the
+      result; ctest unary_numeric_builtin_carriers_jit and _aot pass (42 checks).
+    caught_by: [vm-taylor-lane-mirror]
+    missed_by: [value_position_axis_sweep]
+  - id: SW-228
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: builtins/first-class-parity
+    status: fixed
+    closed_at: "7c9ceca04"
+    title: "native square printed pointer bits for complex and rational arguments on value paths"
+    repro: >-
+      (map square (list 1/2 (make-rectangular 1.0 2.0))); (apply square (list
+      1/3)); ((lambda (f) (f 2/3)) square); square in AOT.
+    observed: >-
+      Pointer bits such as 4657922831851813440 for a rational and
+      2379617646309622784 for a complex, as the VM Taylor lane measured it.
+    correct: >-
+      1/4, -3+4i, 1/9, 4/9.
+    root_cause: >-
+      square multiplied payload bits inline on a flonum or fixnum arm, in the one
+      lowering every route shares.
+    fix: >-
+      edf532399 (SW-214) makes square the polymorphic product at that one
+      lowering; the first-class wrappers are generated from it, and 7c9ceca04 routes
+      every value position through the generic wrapper. On 1e468f279 every path
+      measured correct on JIT and AOT.
+    evidence: >-
+      tests/ad/unary_numeric_builtin_carriers_test.esk section SW-227/SW-228:
+      square passed, stored, applied, mapped and vector-mapped over rationals and
+      complex numbers, and under derivative and a complex carrier; JIT and AOT;
+      tests/ad/first_class_math_builtins_test.esk covers square among every math
+      builtin.
+    caught_by: [vm-taylor-lane-mirror]
+    missed_by: [value_position_axis_sweep]
+  - id: SW-229
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: autodiff/dynamic-state-unwind
+    status: fixed
+    closed_at: "7c9ceca04"
+    title: "a raise or escape out of a derivative left the forward pass level raised: later derivatives lost exactness and exact division by 0 answered -inf.0"
+    repro: >-
+      (guard (e (#t 'raised)) (derivative (lambda (b) (/ 1 b)) 0)) followed by
+      (guard (e (#t 'raised)) (let ((r (derivative (lambda (b) (/ 1 b)) 0))) r))
+      and (derivative (lambda (b) (* b b)) 3).
+    observed: >-
+      raised, then -inf.0 (no raise), then 6 inexact. Which form raised depended
+      only on whether an earlier derivative had been exited by a raise.
+    correct: >-
+      raised, raised, exact 6.
+    root_cause: >-
+      A derivative/derivative-n pass raises __ad_pert_level (and the Taylor
+      context __ad_tower_active/__ad_tower_order) on entry and lowers it on its
+      normal exit; a longjmp from a raise or an escaping continuation skipped the
+      exit. The runtime unwinder's eshkol_ad_state_restore cannot reach them:
+      they are module globals, internal to an AOT module. Every later pass
+      believed it was nested, declined the exact tier and used the inexact jet.
+    fix: >-
+      lib/backend/llvm_codegen.cpp: snapshotAdForwardState/restoreAdForwardStateAt;
+      guard, with-exception-handler and call/cc (every setjmp site) save the three
+      globals before setjmp and store them back first on the landing block.
+    evidence: >-
+      tests/ad/ad_state_after_raise_test.esk (12 checks: guard, a let under guard,
+      with-exception-handler, escaping continuations from a derivative and a
+      Taylor pass, exactness afterwards) passes on JIT and AOT;
+      tests/ad/vm_exact_division_by_zero_test.esk is registered natively as
+      vm_exact_division_by_zero_jit and _aot and passes.
+    caught_by: [vm-taylor-lane-mirror]
+    missed_by: [vm_exact_division_by_zero_vm]
+  - id: SW-230
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: builtins/first-class-parity
+    status: fixed
+    closed_at: "7c9ceca04"
+    title: "atan2 was not a first-class value natively (raw libm function); first-class atan and round dropped a second argument"
+    repro: >-
+      (define f atan2) (f 1.0 2.0); (apply atan2 (list 1.0 2.0));
+      ((lambda (f) (f 1.0 2.0)) atan); (map atan ys xs)
+    observed: >-
+      SIGSEGV (the raw double(double,double) C function called through the
+      tagged closure ABI); invalid IR under apply; atan(1.0) = 0.785 instead of
+      atan2(1, 2) = 0.4636. value_position_axis_sweep: builtins/atan2::passed|
+      stored|returned::jit.
+    correct: >-
+      0.4636476090008061 on every path.
+    root_cause: >-
+      Two hand-kept name sets decided which math builtins got a first-class
+      wrapper; atan2 was in neither and fell to the function_table's raw libm
+      declaration, and apply called any same-named module function. atan and
+      round materialised at a fixed arity 1.
+    fix: >-
+      isFirstClassMathBuiltin (the math dispatch's Taylor table plus a first-class
+      table row) replaces both sets in codegenVariable and resolveLambdaFunction;
+      the table gains the math rows, with atan and round as VariadicRest::ByCount
+      (a variadic closure dispatching on the argument count to the wrapper at that
+      arity, an arity error otherwise). apply evaluates a name whose module
+      function is a raw C declaration as a value. The type checker types the
+      same names as procedures.
+    evidence: >-
+      tests/ad/first_class_math_builtins_test.esk (133 checks, every math builtin
+      passed, mapped, applied and differentiated through a value; atan2 passed,
+      stored, returned, mapped, applied; atan and round with two arguments; the
+      arity error) passes on JIT and AOT; value_position_axis_sweep passes with
+      its baseline untouched.
+    caught_by: [value_position_axis_sweep, vm-taylor-lane-mirror]
+    missed_by: [builtins_first_class_audit]
   - id: SW-232
     bucket: SILENT-WRONG
     subtag: memory-safety
@@ -14944,3 +15181,86 @@ entries:
     notes: >-
       Reported as issue #713 with a deterministic bounded-arena reproducer. The VM
       evacuator is a separate implementation and is not covered by this entry.
+  - id: SW-234
+    bucket: SILENT-WRONG
+    subtag: containers
+    family: cross-engine/container-accessor-boundary
+    status: fixed
+    closed_at: 'f01071dd29bfce422ffab0c0359848262c89025a'
+    title: "Native (string-length 5) inside guard faulted instead of raising a catchable type error"
+    repro: >-
+      (guard (e (#t 'caught)) (string-length 5)) on eshkol-run -r and AOT.
+    observed_before: >-
+      SIGSEGV at 0xfffffffffffffffd; guard never ran. string-ref, vector-ref and
+      vector-length of a literal scalar faulted the same way.
+    observed_after: >-
+      A catchable "Type error in string-length: expected string, got integer" on
+      JIT and AOT; the VM raises "string-length: expected a string".
+    root_cause: >-
+      the accessors read their operand by container layout without checking its
+      kind (the SW-221 family); a literal scalar reached the lowering as a raw
+      constant rather than a tagged value.
+    fixed_by: >-
+      TaggedValueCodegen::requireContainer (SW-221), which also checks a literal
+      scalar operand.
+    evidence: >-
+      tests/error_handling/sw221_container_type_boundary_test.esk SW-234 cases
+      (ctest sw221_container_type_boundary_{jit,aot_o0,aot_o2,vm_src}_smoke).
+    caught_by: [v135f-coordinator]
+    missed_by: [builtins_first_class_audit]
+  - id: SW-239
+    bucket: SILENT-WRONG
+    subtag: vm-scope
+    family: vm/with-region-body-scope
+    status: fixed
+    closed_at: '7e73845c510d6b888619bb59945f6575cac0bfa5'
+    title: "VM: a define inside with-region within a procedure was dropped; later references read an unrelated slot"
+    repro: >-
+      (define (f) (with-region 'r (define (sq x) (* x x)) (define u (sq 3)) (+ u 1)))
+      (display (f)) on eshkol-vm-standalone-test.
+    observed_before: >-
+      Wrong or fatal answers depending on the stray slot; in
+      tests/vm/factor_graph_infer_unobserved_surface_regression.esk
+      (vector-ref <slot> 0) answered () and fg-add-factor! ran on () with exit 0.
+      Native answers 10.
+    observed_after: >-
+      10 on the VM, the browser VM and native JIT.
+    root_cause: >-
+      compile_form_with_region compiled a body inside a procedure as bare
+      expressions, so an internal definition built its box and dropped it.
+    fixed_by: >-
+      the body compiles through vm_compile_scope_body, the helper let's body uses
+      (lib/backend/vm_compiler.c).
+    evidence: >-
+      tests/memory/with_region_internal_define_test.esk (ctest
+      with_region_internal_define_{vm,browser_vm,jit}).
+    caught_by: [v135f-gates-lane]
+    missed_by: [run_vm_parity]
+  - id: SW-240
+    bucket: SILENT-WRONG
+    subtag: vm-scope
+    family: vm/with-region-body-scope
+    status: fixed
+    closed_at: '15d760034bb6d86858104405d39dbb32cac81b00'
+    title: "VM: a top-level with-region or begin body popped the slot its definition had bound; the name then read another value"
+    repro: >-
+      (with-region 'r (define tt 5) 1) (display tt), and (begin (define tt 5) 1)
+      (display tt), on eshkol-vm-standalone-test.
+    observed_before: >-
+      1 (and nothing at all for (with-region 'r (define tt 5) (display tt))
+      followed by (display tt)), exit 0; native prints 5.
+    observed_after: >-
+      5 on the VM and the browser VM; native JIT agrees for with-region.
+    root_cause: >-
+      the top-level body compile popped every non-last form, definitions
+      included, and a top-level definition's value IS its slot.
+    fixed_by: >-
+      vm_compile_toplevel_sequence / vm_end_toplevel_sequence in
+      lib/backend/vm_compiler.c, the one top-level body rule for with-region and
+      begin.
+    evidence: >-
+      tests/memory/with_region_toplevel_define_test.esk (ctest
+      with_region_toplevel_define_{vm,browser_vm,jit}) and
+      tests/vm/toplevel_begin_define_test.esk (ctest toplevel_begin_define_vm).
+    caught_by: [v135f-gates-lane]
+    missed_by: [run_vm_parity]

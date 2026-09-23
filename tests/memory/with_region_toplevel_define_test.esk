@@ -1,0 +1,14 @@
+; SW-240: a definition in a top-level with-region body is a top-level
+; definition, visible after the region. On the bytecode VM the body's forms
+; were popped like expressions, so a definition followed by another form lost
+; its slot: after (with-region 'r (define tt 5) (display tt)), tt printed
+; nothing, and after (with-region 'r (define tt 5) 1), tt read 1.
+
+(with-region 'r (define a 5) 'ignored)
+(with-region 'r (define b 6))
+(with-region ('r 512) (define c (* 2 a)) (define d (+ c b)))
+(define e (with-region 'r (+ a b)))
+
+(if (and (= a 5) (= b 6) (= c 10) (= d 16) (= e 11))
+    (display "PASS: with-region top-level define\n")
+    (display "FAIL: with-region top-level define\n"))
