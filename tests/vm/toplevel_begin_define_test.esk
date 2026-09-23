@@ -1,0 +1,9 @@
+; SW-240 (same facility): a top-level begin's definitions are top-level
+; definitions (R7RS 5.1). The VM popped the slot a definition had just bound:
+; after (begin (define tt 5) 1), tt read 1.
+(begin (define tt 5) 1)
+(begin (define u 2) (define v 3))
+(define w 4)
+(if (equal? (list tt u v w (begin 7 8)) '(5 2 3 4 8))
+    (display "PASS: top-level begin define\n")
+    (display "FAIL: top-level begin define\n"))

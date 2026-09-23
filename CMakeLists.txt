@@ -6490,7 +6490,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             "taylor_integral_family|tests/ad/taylor_integral_family_test.esk|PASS: taylor_integral_family|vm"
             "complex_carrier_math|tests/ad/complex_carrier_math_test.esk|PASS: complex_carrier_math|vm"
             "unary_numeric_builtin_carriers|tests/ad/unary_numeric_builtin_carriers_test.esk|PASS: unary_numeric_builtin_carriers|vm"
-            "with_region_internal_define|tests/memory/with_region_internal_define_test.esk|PASS: with-region internal define|all")
+            "with_region_internal_define|tests/memory/with_region_internal_define_test.esk|PASS: with-region internal define|all"
+            "with_region_toplevel_define|tests/memory/with_region_toplevel_define_test.esk|PASS: with-region top-level define|all"
+            "toplevel_begin_define|tests/vm/toplevel_begin_define_test.esk|PASS: top-level begin define|vm")
         foreach(_esh_spec IN LISTS _esh_vm_carrier_tests)
             string(REPLACE "|" ";" _esh_parts "${_esh_spec}")
             list(GET _esh_parts 0 _esh_name)
