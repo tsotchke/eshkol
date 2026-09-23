@@ -308,9 +308,9 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (make-fact . args) (_make-fact1 (if (and (not (null? args)) (null? (cdr args)) (pair? (car args))) (car args) args)))\n"
     "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n"
     /* ── Tensor reduction wrappers ────────────────────────────────────── */
-    "(define (tensor-sum t . args) (if (null? args) (_tensor-reduce-sum t -1) (_tensor-reduce-sum t (car args))))\n"
-    "(define (tensor-mean t . args) (if (null? args) (_tensor-reduce-mean t -1) (_tensor-reduce-mean t (car args))))\n"
-    "(define (tensor-max t . args) (if (null? args) (_tensor-reduce-max t -1) (_tensor-reduce-max t (car args))))\n"
-    "(define (tensor-min t . args) (if (null? args) (_tensor-reduce-min t -1) (_tensor-reduce-min t (car args))))\n";
+    "(define (tensor-sum t . args) (if (null? args) (_tensor-reduce-sum t #f) (_tensor-reduce-sum t (car args))))\n"
+    "(define (tensor-mean t . args) (if (null? args) (_tensor-reduce-mean t #f) (_tensor-reduce-mean t (car args))))\n"
+    "(define (tensor-max t . args) (if (null? args) (_tensor-reduce-max t #f) (_tensor-reduce-max t (car args))))\n"
+    "(define (tensor-min t . args) (if (null? args) (_tensor-reduce-min t #f) (_tensor-reduce-min t (car args))))\n";
 
 #endif /* ESHKOL_VM_PRELUDE_SOURCE_H */

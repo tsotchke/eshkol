@@ -968,6 +968,45 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     };
 
+    /* ===================== dispatch policy =====================
+     *
+     * The one policy every browser caller of the GPU seam uses -- the
+     * compiled-WASM imports below and the Emscripten VM bridge (attachVm).
+     * Returns 'gpu' when the kernel ran and its execution marker verifies,
+     * 'refused' when the active tier has no kernel for the operation (the
+     * caller runs the CPU path; counted and explained here), 'failed' when a
+     * kernel or readback raised. A WebGPU validation error is rethrown: it is
+     * a defect in a kernel launch, never a reason to quietly use the CPU. */
+    async function gpuServe(backend, memory, kind, op, fn) {
+        if (!backend.supportsOperation(kind, op)) {
+            backend.fallbackCount++;
+            backend.lastPath = 'cpu:' + kind;
+            backend.diagnostics.push('CPU fallback: ' + kind +
+                (op === undefined ? '' : ' op ' + op) +
+                ' has no WebGPU kernel for precision tier ' + backend.precision);
+            return 'refused';
+        }
+        backend.setMemory(memory);
+        const before = backend.executionMarker;
+        try {
+            const marker = await fn();
+            if (Number.isSafeInteger(marker) && marker > before &&
+                backend.executionMarker === marker &&
+                backend.lastExecutionMarker === marker) return 'gpu';
+            throw new Error('missing WebGPU execution marker');
+        } catch (e) {
+            if (e && e.webgpuValidation) {
+                backend.diagnostics.push(e.message);
+                backend.lastPath = 'webgpu:error';
+                throw e;
+            }
+            backend.fallbackCount++;
+            backend.lastPath = 'cpu:' + kind;
+            backend.diagnostics.push(kind + ' failed, CPU fallback: ' + e);
+            return 'failed';
+        }
+    }
+
     /* ===================== import installation =====================
      *
      * Produces the `env` entries the generated wasm imports. Call this from
@@ -981,17 +1020,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
      */
     function makeImports(backend, memoryRef) {
         const jspi = jspiAvailable();
-        const mem = () => (backend && backend.memory) || memoryRef();
+        /* The loader's live memory first: one backend can serve several
+         * modules on a page (the site runtime and the VM share a device). */
+        const mem = () => memoryRef() || (backend && backend.memory);
 
         function sync(fn) { return fn; }
         function suspending(fn) {
             return jspi ? new WebAssembly.Suspending(fn) : null;
-        }
-
-        function verified(marker, before) {
-            return Number.isSafeInteger(marker) && marker > before &&
-                   backend.executionMarker === marker &&
-                   backend.lastExecutionMarker === marker;
         }
 
         /* Each entry: if the GPU can serve this call, suspend into the async
@@ -1006,52 +1041,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             entries.eshkol_matmul_dispatch = suspending(
                 async (aPtr, bPtr, cPtr, M, K, N, dtype) => {
                     M = Number(M); K = Number(K); N = Number(N);
-                    backend.setMemory(mem());
-                    if (backend.shouldUse(M * N) && backend.supportsOperation('matmul')) {
-                        const before = backend.executionMarker;
-                        try {
-                            const marker = await backend.matmulF64(aPtr, bPtr, cPtr, M, K, N);
-                            if (verified(marker, before)) return 0;
-                            throw new Error('missing WebGPU execution marker');
-                        }
-                        catch (e) {
-                            if (e && e.webgpuValidation) {
-                                backend.diagnostics.push(e.message);
-                                backend.lastPath = 'webgpu:error';
-                                throw e;
-                            }
-                            backend.diagnostics.push('gemm failed, CPU fallback: ' + e);
-                        }
-                    }
-                    if (backend.shouldUse(M * N) && !backend.supportsOperation('matmul')) backend.diagnostics.push('CPU fallback: matmul has no WebGPU kernel for precision tier ' + backend.precision);
-                    backend.fallbackCount++;
-                    backend.lastPath = 'cpu:gemm';
+                    if (backend.shouldUse(M * N) &&
+                        await gpuServe(backend, mem(), 'matmul', undefined,
+                            () => backend.matmulF64(aPtr, bPtr, cPtr, M, K, N)) === 'gpu') return;
+                    if (!backend.shouldUse(M * N)) { backend.fallbackCount++; backend.lastPath = 'cpu:matmul'; }
                     cpu.matmul(mem(), aPtr, bPtr, cPtr, M, K, N);
                 });
 
             entries.eshkol_gpu_elementwise_f64 = suspending(
                 async (aPtr, bPtr, outPtr, n, op) => {
                     n = Number(n); op = Number(op);
-                    backend.setMemory(mem());
-                    if (backend.shouldUse(n) && backend.supportsOperation('elementwise', op)) {
-                        const before = backend.executionMarker;
-                        try {
-                            const marker = await backend.elementwiseF64(aPtr, bPtr, outPtr, n, op);
-                            if (verified(marker, before)) return 0;
-                            throw new Error('missing WebGPU execution marker');
-                        }
-                        catch (e) {
-                            if (e && e.webgpuValidation) {
-                                backend.diagnostics.push(e.message);
-                                backend.lastPath = 'webgpu:error';
-                                throw e;
-                            }
-                            backend.diagnostics.push('elementwise failed, CPU fallback: ' + e);
-                        }
-                    }
-                    if (backend.shouldUse(n) && !backend.supportsOperation('elementwise', op)) backend.diagnostics.push('CPU fallback: elementwise op ' + op + ' has no WebGPU kernel for precision tier ' + backend.precision);
-                    backend.fallbackCount++;
-                    backend.lastPath = 'cpu:elem';
+                    if (backend.shouldUse(n) &&
+                        await gpuServe(backend, mem(), 'elementwise', op,
+                            () => backend.elementwiseF64(aPtr, bPtr, outPtr, n, op)) === 'gpu') return 0;
+                    if (!backend.shouldUse(n)) { backend.fallbackCount++; backend.lastPath = 'cpu:elementwise'; }
                     cpu.elementwise(mem(), aPtr, bPtr, outPtr, n, op);
                     return 0;
                 });
@@ -1059,26 +1062,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             entries.eshkol_gpu_reduce_f64 = suspending(
                 async (inPtr, outPtr, n, op) => {
                     n = Number(n); op = Number(op);
-                    backend.setMemory(mem());
-                    if (backend.shouldUse(n) && backend.supportsOperation('reduce', op)) {
-                        const before = backend.executionMarker;
-                        try {
-                            const marker = await backend.reduceF64(inPtr, outPtr, n, op);
-                            if (verified(marker, before)) return 0;
-                            throw new Error('missing WebGPU execution marker');
-                        }
-                        catch (e) {
-                            if (e && e.webgpuValidation) {
-                                backend.diagnostics.push(e.message);
-                                backend.lastPath = 'webgpu:error';
-                                throw e;
-                            }
-                            backend.diagnostics.push('reduce failed, CPU fallback: ' + e);
-                        }
-                    }
-                    if (backend.shouldUse(n) && !backend.supportsOperation('reduce', op)) backend.diagnostics.push('CPU fallback: reduction op ' + op + ' has no WebGPU kernel for precision tier ' + backend.precision);
-                    backend.fallbackCount++;
-                    backend.lastPath = 'cpu:reduce';
+                    if (backend.shouldUse(n) &&
+                        await gpuServe(backend, mem(), 'reduce', op,
+                            () => backend.reduceF64(inPtr, outPtr, n, op)) === 'gpu') return 0;
+                    if (!backend.shouldUse(n)) { backend.fallbackCount++; backend.lastPath = 'cpu:reduce'; }
                     cpu.reduce(mem(), inPtr, outPtr, n, op);
                     return 0;
                 });
@@ -1123,6 +1110,138 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return entries;
     }
 
+
+    /* ===================== Emscripten-built VM (ADR-0029) =====================
+     *
+     * The bytecode VM's tensor natives call the ordinary GPU seam
+     * (lib/backend/vm_gpu_dispatch.h -> eshkol_gpu_*), which the wasm build
+     * implements in lib/backend/gpu/gpu_memory_webgpu.cpp. That file's compute
+     * imports are synchronous "no device" stubs; attachVm() installs this
+     * bridge in their place, as WebAssembly.Suspending imports, and wraps the
+     * VM's entry exports with WebAssembly.promising -- the same JSPI boundary
+     * the compiled-WASM loaders use. Without JSPI or a device nothing is
+     * replaced, the status says why, and the VM runs its CPU path unchanged. */
+
+    /* C import name -> bridge method. */
+    const VM_COMPUTE_IMPORTS = {
+        eshkol_webgpu_js_matmul: 'matmul',
+        eshkol_webgpu_js_elementwise: 'elementwise',
+        eshkol_webgpu_js_reduce: 'reduce'
+    };
+    /* Exports that run Eshkol code and so may reach a suspending import. */
+    const VM_ENTRY_EXPORTS = ['repl_eval', 'run_program'];
+    /* Bridge status codes, gpu_memory_webgpu.cpp. */
+    const VM_OK = 0, VM_DECLINED = 2, VM_THREW = 3;
+
+    function makeVmBridge(backend, memoryRef) {
+        const code = async (kind, op, fn) => {
+            const r = await gpuServe(backend, memoryRef(), kind, op, fn);
+            return r === 'gpu' ? VM_OK : r === 'refused' ? VM_DECLINED : VM_THREW;
+        };
+        return {
+            backend,
+            deviceReady: () => (backend.device ? 1 : 0),
+            threshold: () => backend.threshold,
+            setThreshold: (t) => backend.setThreshold(Number(t)),
+            shouldUse: (n) => (backend.shouldUse(Number(n)) ? 1 : 0),
+            hasFp64: () => (backend.hasFp64() ? 1 : 0),
+            noteFallback: (what) => {
+                backend.fallbackCount++;
+                backend.lastPath = 'cpu:' + what;
+                backend.diagnostics.push('CPU fallback: ' + what + ' has no WebGPU kernel');
+            },
+            matmul: (a, b, c, M, K, N) => code('matmul', undefined,
+                () => backend.matmulF64(a, b, c, Number(M), Number(K), Number(N))),
+            elementwise: (a, b, o, n, op) => code('elementwise', Number(op),
+                () => backend.elementwiseF64(a, b, o, Number(n), Number(op))),
+            reduce: (i, o, n, op) => code('reduce', Number(op),
+                () => backend.reduceF64(i, o, Number(n), Number(op)))
+        };
+    }
+
+    /* Prepare an Emscripten module argument (the object passed to the
+     * EshkolVM factory) so the VM dispatches to `backend`. Returns the same
+     * object; `moduleArg.eshkolWebGPUStatus` is { ok, reason } either way.
+     * opts.wasmUrl overrides where the .wasm is fetched from. */
+    function attachVm(moduleArg, backend, opts) {
+        const o = opts || {};
+        const m = moduleArg || {};
+        if (!backend || !backend.device) {
+            m.eshkolWebGPUStatus = { ok: false, reason: backend
+                ? 'WebGPU device lost' : 'no WebGPU backend (navigator.gpu, adapter or device unavailable)' };
+            return m;
+        }
+        if (!jspiAvailable()) {
+            m.eshkolWebGPUStatus = { ok: false,
+                reason: 'JSPI unavailable (WebAssembly.Suspending missing); the VM runs on the CPU' };
+            return m;
+        }
+        let memory = null;
+        const bridge = makeVmBridge(backend, () => memory);
+        const wasmUrl = o.wasmUrl ||
+            (typeof m.locateFile === 'function' ? m.locateFile('eshkol-vm.wasm', '') : 'eshkol-vm.wasm');
+        m.eshkolWebGPUBridge = bridge;
+        m.eshkolWebGPUStatus = { ok: true, reason: '' };
+        m.instantiateWasm = (imports, receive) => {
+            const env = imports.env || {};
+            for (const [name, method] of Object.entries(VM_COMPUTE_IMPORTS)) {
+                if (!(name in env)) {
+                    throw new Error('eshkol-vm.wasm has no ' + name +
+                                    ' import; rebuild it with scripts/build-wasm-repl.sh');
+                }
+                env[name] = new WebAssembly.Suspending(bridge[method]);
+            }
+            const bytes = m.wasmBinary ? Promise.resolve(m.wasmBinary)
+                : fetch(wasmUrl).then((r) => {
+                    if (!r.ok) throw new Error('fetch ' + wasmUrl + ': HTTP ' + r.status);
+                    return r.arrayBuffer();
+                });
+            bytes.then((b) => WebAssembly.instantiate(b, imports)).then(({ instance, module }) => {
+                memory = instance.exports.memory;
+                const exports = Object.assign({}, instance.exports);
+                for (const name of VM_ENTRY_EXPORTS) {
+                    if (typeof exports[name] === 'function') {
+                        exports[name] = WebAssembly.promising(exports[name]);
+                    }
+                }
+                receive({ exports }, module);
+            }).catch((e) => {
+                if (typeof m.onAbort === 'function') m.onAbort(e);
+                else console.error('eshkol-vm instantiation failed:', e);
+            });
+            return {};
+        };
+        return m;
+    }
+
+    /* Call a VM export with one string argument (or none). Returns a Promise
+     * of its string result (repl_eval) or undefined. Unqueued: use it inside
+     * vmSerial, or use vmCall. */
+    async function vmInvoke(vm, name, source) {
+        if (source === undefined) return vm['_' + name]();
+        const ptr = vm.stringToNewUTF8(String(source));
+        try {
+            const result = await vm['_' + name](ptr);
+            return (typeof result === 'number' && result) ? vm.UTF8ToString(result) :
+                   (name === 'repl_eval' ? '' : undefined);
+        } finally {
+            vm._free(ptr);
+        }
+    }
+
+    /* Run `fn` with exclusive use of the VM. A suspended evaluation owns the
+     * VM's shadow stack until it resumes, so every call into a VM that may
+     * suspend is serialised through this per-module queue. */
+    function vmSerial(vm, fn) {
+        const next = (vm.__eshkolVmQueue || Promise.resolve()).then(fn, fn);
+        vm.__eshkolVmQueue = next.catch(() => {});
+        return next;
+    }
+
+    function vmCall(vm, name, source) {
+        return vmSerial(vm, () => vmInvoke(vm, name, source));
+    }
+
     /* Wrap an instantiated module's entry export so JSPI can suspend inside
      * it. Without this the suspending imports throw on first call. */
     function promisingEntry(fn) {
@@ -1155,6 +1274,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         EshkolWebGPU,
         create: EshkolWebGPU.create,
         makeImports,
+        makeVmBridge,
+        attachVm,
+        vmCall,
+        vmInvoke,
+        vmSerial,
         promisingEntry,
         promisingExports,
         jspiAvailable,

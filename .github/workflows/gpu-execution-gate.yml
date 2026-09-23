@@ -101,6 +101,10 @@ jobs:
         shell: bash
         run: node tests/webgpu/webgpu_live_test.mjs
 
+      - name: Run browser-VM WebGPU gate
+        shell: bash
+        run: node tests/webgpu/webgpu_vm_test.mjs
+
       - name: Run browser WebGPU dispatch regressions
         shell: bash
         run: |

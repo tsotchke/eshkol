@@ -24,7 +24,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and proves itself red on five kernel corruptions. See
   `docs/breakdown/GPU_ACCELERATION.md`, "Enabling WebGPU in a page".
 
+- **WebGPU for the browser bytecode VM.** The VM's tensor natives already call
+  the ordinary GPU seam; the WASM VM build now links it
+  (`gpu_memory_webgpu.cpp`), and `EshkolWebGPU.attachVm()` connects it to the
+  page's WebGPU backend through JSPI. Its compute imports become suspending,
+  and `repl_eval`/`run_program` become promising, only when the browser has
+  JSPI and a device (ADR-0029). The VM's matmul, same-shape elementwise
+  arithmetic and full reductions run on the same sf64 kernels as compiled
+  programs. Without WebGPU or JSPI the VM runs on the CPU and reports why. The
+  site's REPL and runnable examples use it. The VM builds with native wasm
+  exceptions, because JSPI cannot suspend across Emscripten's JavaScript
+  `setjmp`/`longjmp` trampolines. `tests/webgpu/webgpu_vm_test.mjs` gates it in
+  Chrome.
+
 ### Fixed
+
+- On the bytecode VM, `tensor-sum`/`-mean`/`-max`/`-min` with no axis now
+  reduce the whole tensor to a number, as on native (SW-202). The VM used to
+  answer `#(0.75)` for `(tensor-sum (tensor 0.5 0.25))` and per-row sums for a
+  matrix, because "no axis" and "last axis" were both -1; `gpu-reduce` had the
+  same problem.
+
+- VM max/min reductions now start from the infinities, so the max of an all
+  `-inf.0` tensor is `-inf.0`, as on native and on the GPU path, not
+  `-1.797e308` (SW-246).
+
+- The VM's GPU reduction path read an axis of -1 as "all axes" while its CPU
+  path reads the last axis, so a matrix reduction changed answer at the GPU
+  threshold (SW-243). The GPU now serves a reduction only when it computes the
+  same one as the CPU path.
+
+- The VM's GPU elementwise path (SW-245) required only equal element counts, so
+  `[6] + [1,6]` would have produced a `[6]` result on a GPU backend instead of
+  the broadcast `[1,6]`. It now requires identical shapes, and the VM's GPU
+  size test is the backend's `eshkol_gpu_should_use()` instead of a private
+  copy of the threshold.
 
 - The browser WASM glue now implements `eshkol_tensor_shape_total`,
   `eshkol_matmul_shape_valid` and `eshkol_unwrap_list_index` with their native

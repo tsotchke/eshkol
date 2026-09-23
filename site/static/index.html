@@ -143,21 +143,20 @@
             output.style.display = 'block';
             output.textContent = 'Running\u2026';
             if (window._eshkolVM) {
-              try {
-                window._vmOutput = '';
-                window._vmStderr = '';
-                window._eshkolVM.ccall('repl_reset', null, [], []);
-                window._eshkolVM.cwrap('repl_eval', 'string', ['string'])(code);
-                if (window._vmStderr) {
-                  output.textContent = window._vmStderr.replace(/^WARNING: /gm, 'error: ');
-                } else if (window._vmOutput) {
-                  output.textContent = window._vmOutput;
-                } else {
-                  output.textContent = '(no output)';
+              (async () => {
+                try {
+                  const r = await window._eshkolVmEval(code, true);
+                  if (r.err) {
+                    output.textContent = r.err.replace(/^WARNING: /gm, 'error: ');
+                  } else if (r.out) {
+                    output.textContent = r.out;
+                  } else {
+                    output.textContent = '(no output)';
+                  }
+                } catch(err) {
+                  output.textContent = 'error: ' + err.message;
                 }
-              } catch(err) {
-                output.textContent = 'error: ' + err.message;
-              }
+              })();
             } else {
               output.textContent = 'VM loading \u2014 try again in a moment.';
             }
@@ -213,6 +212,22 @@
         });
 
         // ─── Bytecode VM for browser REPL ──────────────────────────────
+        // One evaluation at a time (EshkolWebGPU.vmSerial): with WebGPU
+        // attached an evaluation can suspend on a GPU readback, and it owns
+        // the VM and the captured output until it resumes.
+        window._eshkolVmEval = (source, reset) => {
+          const vm = window._eshkolVM;
+          const G = window.EshkolWebGPU;
+          const run = async () => {
+            if (reset) vm.ccall('repl_reset', null, [], []);
+            window._vmOutput = '';
+            window._vmStderr = '';
+            if (G && G.vmInvoke) await G.vmInvoke(vm, 'repl_eval', source);
+            else vm.cwrap('repl_eval', 'string', ['string'])(source);
+            return { out: window._vmOutput, err: window._vmStderr };
+          };
+          return G && G.vmSerial ? G.vmSerial(vm, run) : run();
+        };
         window._vmOutput = '';
         window._vmStderr = '';
         if (typeof EshkolVM !== 'undefined') {
@@ -221,7 +236,11 @@
           // final output is visible and cannot leak into the next evaluation.
           const stdoutDecoder = new TextDecoder();
           const stderrDecoder = new TextDecoder();
-          EshkolVM({
+          // WebGPU for the VM's tensor ops (ADR-0029): attachVm shares the
+          // runtime's device when the browser has WebGPU and JSPI, and
+          // otherwise leaves the VM on its CPU path with the reason recorded.
+          const webgpu = window.EshkolWebGPU;
+          const vmArg = {
             stdout: (byte) => {
               if (byte != null) window._vmOutput += stdoutDecoder.decode(Uint8Array.of(byte), {stream: true});
             },
@@ -233,7 +252,13 @@
               window._vmStderr += text + '\n';
               console.warn('[VM]', text);
             }
-          }).then(vm => {
+          };
+          EshkolVM(webgpu && webgpu.attachVm
+            ? webgpu.attachVm(vmArg, runtime.webgpuBackend || null)
+            : vmArg).then(vm => {
+            if (vmArg.eshkolWebGPUStatus && !vmArg.eshkolWebGPUStatus.ok) {
+              console.info('Eshkol VM GPU: CPU path -', vmArg.eshkolWebGPUStatus.reason);
+            }
             runtime._eshkolVM = vm;
             vm.ccall('repl_init', null, [], []);
             console.log('Eshkol VM REPL ready (bytecode interpreter)');
@@ -255,20 +280,21 @@
             historyIdx = -1;
             output.textContent += 'eshkol> ' + source + '\n';
             if (window._eshkolVM) {
-              try {
-                window._vmOutput = '';
-                window._vmStderr = '';
-                window._eshkolVM.cwrap('repl_eval', 'string', ['string'])(source);
-                if (window._vmStderr) {
-                  output.textContent += window._vmStderr.replace(/^WARNING: /gm, 'error: ');
-                } else if (window._vmOutput) {
-                  output.textContent += window._vmOutput;
-                } else {
-                  output.textContent += 'error: could not parse expression\n';
+              (async () => {
+                try {
+                  const r = await window._eshkolVmEval(source, false);
+                  if (r.err) {
+                    output.textContent += r.err.replace(/^WARNING: /gm, 'error: ');
+                  } else if (r.out) {
+                    output.textContent += r.out;
+                  } else {
+                    output.textContent += 'error: could not parse expression\n';
+                  }
+                } catch(err) {
+                  output.textContent += 'error: ' + err.message + '\n';
                 }
-              } catch(err) {
-                output.textContent += 'error: ' + err.message + '\n';
-              }
+                output.scrollTop = output.scrollHeight;
+              })();
             } else {
               output.textContent += 'VM loading...\n';
             }

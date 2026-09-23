@@ -53,10 +53,10 @@ WebGPU is part of the same `eshkol_gpu_*` and `eshkol_matmul_dispatch` seam as
 Metal and CUDA. Generated code calls the same symbols on every target; in the
 browser they are provided by `web/eshkol-webgpu.js`, which both WASM loaders
 (`web/eshkol-repl.js`, `site/static/eshkol-runtime.js`) install as env imports.
-For Emscripten builds CMake selects `gpu_memory_webgpu.cpp`, enables the Dawn
-WebGPU port with `--use-port=emdawnwebgpu`, and enables `-sASYNCIFY` through
-`ESHKOL_WEBGPU_ASYNCIFY` for the C-side `EM_ASYNC_JS` bridge; that bridge calls
-the same JS backend object, so there is one set of kernels.
+Emscripten builds, including the browser bytecode VM, link
+`gpu_memory_webgpu.cpp`, whose bridge imports `EshkolWebGPU.attachVm()` connects
+to the same backend object, so there is one set of kernels and one dispatch
+policy (see "The browser VM" below and ADR-0029).
 
 WebGPU readback is asynchronous and Eshkol code is synchronous. The loaders
 bridge the two with JSPI: the GPU imports are `WebAssembly.Suspending` and the
@@ -106,6 +106,26 @@ exact tier must match bit for bit (reductions within `GPU_GATE_TOL`, default
 JSPI suspension in Chrome; `tests/webgpu/webgpu_regressions_test.mjs` checks the
 tier and fallback contracts without a browser.
 
+### The browser VM
+
+The bytecode VM's tensor natives (`vm_gpu_dispatch.h`) call the same seam, and
+their size test is the backend's `eshkol_gpu_should_use()`. The WASM VM build
+(`scripts/build-wasm-repl.sh`, flags in `scripts/lib/wasm_vm_sources.sh`) links
+`gpu_memory_webgpu.cpp` with `ESHKOL_GPU_ENABLED`. `EshkolWebGPU.attachVm()`
+replaces its three compute imports with JSPI-suspending bridges and makes
+`repl_eval`/`run_program` promising, only when the browser has JSPI and a
+device. The VM is built with native wasm exceptions
+(`-fwasm-exceptions -sSUPPORT_LONGJMP=wasm`), because JSPI cannot suspend
+across the JavaScript `invoke_*` frames Emscripten otherwise uses for
+`setjmp`/`longjmp`.
+
+On the GPU in the VM: `matmul`, `tensor-add`/`-sub`/`-mul`/`-div` on
+same-shape operands, and full `tensor-sum`/`-mean`/`-max`/`-min`. Softmax,
+transpose, axis reductions and normalisation have no WebGPU kernel; when the
+dispatch selects them they run on the CPU and are counted in `fallbackCount`
+with a reason in `diagnostics`. `tests/webgpu/webgpu_vm_test.mjs` gates this
+path in Chrome against an unattached run of the same bundle.
+
 ### Enabling WebGPU in a page
 
 Load the backend before the runtime and acquire the device before the WASM
@@ -136,6 +156,25 @@ module is instantiated:
   `fallbackCount`, `lastPath` and `diagnostics`.
 - `EshkolRepl` in `web/eshkol-repl.js` has the same `initWebGPU()`; its
   `instantiate()` calls it automatically when `eshkol-webgpu.js` is loaded.
+
+For the bytecode VM, attach it to the same backend and call it through
+`vmCall` (evaluations may suspend, so they are asynchronous and serialised):
+
+```html
+<script src="eshkol-webgpu.js"></script>
+<script src="eshkol-vm.js"></script>
+<script>
+(async () => {
+  const gpu = await EshkolWebGPU.create();          // or runtime.webgpuBackend
+  const arg = { print: (t) => console.log(t) };
+  EshkolWebGPU.attachVm(arg, gpu.ok ? gpu.backend : null);
+  if (!arg.eshkolWebGPUStatus.ok) console.info('VM GPU: CPU path -', arg.eshkolWebGPUStatus.reason);
+  const vm = await EshkolVM(arg);
+  vm.ccall('repl_init', null, [], []);
+  await EshkolWebGPU.vmCall(vm, 'repl_eval', '(display (tensor-sum (matmul A B)))');
+})();
+</script>
+```
 
 ---
 

@@ -1,0 +1,32 @@
+id: SW-202
+bucket: SILENT-WRONG
+family: vm/tensor-reduction-shape
+status: fixed
+closed_at: "72a41917f"
+needs_decision: false
+title: "VM tensor-sum without an axis returns a one-element tensor, or per-row partial results, instead of a number"
+repro: >-
+  (display (tensor-sum (tensor 0.5 0.25))),
+  (display (number? (tensor-sum (tensor 0.5 0.25)))) and
+  (display (tensor-sum (reshape (tensor 1.0 2.0 3.0 4.0) 2 2))) on the bytecode
+  VM (eshkol-vm-standalone-test) and the browser VM, against the native JIT.
+observed: >-
+  The VM printed #(0.75), #f and #(3 7); native prints 0.75, #t and 10.
+  Arithmetic on the VM result, (+ 1 (tensor-sum (tensor 0.5 0.25))), was a
+  fatal runtime error. The prelude passed -1 for "no axis", and -1 also names
+  the last axis. (gpu-reduce + M) lowered the same way.
+correct: >-
+  A full reduction (no axis) returns the scalar on every engine, as native
+  does; an explicit axis, negative ones counted from the last, reduces that
+  axis.
+evidence: >-
+  Fixed on master by porting the integration-branch fix (7c036631d): the
+  prelude passes #f for "no axis" and the dispatcher treats a non-number axis
+  as a full reduction; gpu-reduce lowers to #f too. Gate:
+  tests/tensor/tensor_full_reduction_test.esk on the native JIT, the bytecode
+  VM and the browser VM bundle (ctest tensor_full_reduction_{jit,vm,browser_vm}).
+caught_by: [sw197-exact-collection-matrix]
+missed_by: [vm_parity]
+notes: >-
+  Filed by the v1.3.5 exact-derivative lane; fixed on the integration branch
+  in 7c036631d and ported to master by the WebGPU VM lane in 72a41917f.

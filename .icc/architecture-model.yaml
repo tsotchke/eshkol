@@ -196,6 +196,8 @@ components:
       - lib/backend/gpu/gpu_memory_webgpu.cpp
       - web/eshkol-webgpu.js
       - site/static/eshkol-webgpu.js
+      - lib/backend/vm_gpu_dispatch.h
+      - scripts/lib/wasm_vm_sources.sh
       - scripts/lib/webgpu_diff_runner.mjs
     entry_points:
       - {path: lib/backend/gpu/gpu_memory_webgpu.cpp, symbol: eshkol_matmul_dispatch}

@@ -353,12 +353,8 @@ class EshkolRuntime {
         const res = await G.create(opts || {});
         this._webgpuBackend = res.ok ? res.backend : null;
         this.__gpuEnv = null;
-        if (res.ok && typeof globalThis !== 'undefined') {
-            // gpu_memory_webgpu.cpp consults this ordinary backend seam from
-            // its EM_ASYNC_JS bridge. Publish the page-owned device before
-            // the linked wasm runtime performs its first dispatch.
-            globalThis.eshkolWebGPUBackend = res.backend;
-        }
+        // The Emscripten-built VM shares this backend through
+        // EshkolWebGPU.attachVm(module, runtime.webgpuBackend) (ADR-0029).
         this._webgpuStatus = res;
         return res;
     }
@@ -1610,13 +1606,15 @@ class EshkolRuntime {
                     const source = rt.readString(sourcePtr);
                     const target = rt.handles.get(resultHandle);
                     if (target && rt._eshkolVM) {
-                        try {
-                            const evalFn = rt._eshkolVM.cwrap('repl_eval', 'string', ['string']);
-                            const result = evalFn(source);
-                            target.textContent += result;
-                        } catch (e) {
-                            target.textContent += 'Error: ' + e.message + '\n';
-                        }
+                        // The VM may suspend on a WebGPU readback (ADR-0029),
+                        // so its result is appended when it resolves.
+                        const G = (typeof globalThis !== 'undefined') && globalThis.EshkolWebGPU;
+                        const done = G && G.vmCall
+                            ? G.vmCall(rt._eshkolVM, 'repl_eval', source)
+                            : Promise.resolve().then(() =>
+                                rt._eshkolVM.cwrap('repl_eval', 'string', ['string'])(source));
+                        done.then((result) => { target.textContent += result; },
+                                  (e) => { target.textContent += 'Error: ' + e.message + '\n'; });
                     }
                     return 0;
                 },
