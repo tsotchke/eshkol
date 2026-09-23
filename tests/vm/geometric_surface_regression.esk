@@ -117,7 +117,12 @@
 (adaptive-curvature-step h curv-pairs)
 (manifold-handle-type h)
 (manifold-dim h)
-(manifold-dimension h)
+;; `manifold-dimension` is not a handle accessor: since 5bd4d14f8 it is
+;; lib/core/manifold.esk's record accessor, which a raw handle is not, and
+;; `manifold-dim` above is the handle's own. Applying the record accessor to
+;; the handle only "worked" while vector-ref answered () for a non-vector;
+;; since SW-221 it raises, so the probe calls each accessor on its own type.
+(manifold-dimension (make-euclidean-manifold 2))
 (manifold-destroy! h)
 
 (display "PASS: geometric builtin surface is registered and stack-safe")
