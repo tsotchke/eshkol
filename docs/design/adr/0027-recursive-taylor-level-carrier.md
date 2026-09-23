@@ -219,6 +219,29 @@ purpose, reverse-over-Taylor (the reverse-seed tangent of
   `tests/ad/nested_operator_matrix_test.esk` are the acceptance matrices on
   native JIT, AOT and the VM.
 
+## v1.3.5 carrier WIP reconciliation
+
+The unmerged `172c796d7` changes atop `2c2496240` predate this carrier.
+The release candidate retains their behavior through the following current
+facilities. Each listed repro passed on the native JIT and bytecode VM;
+`tests/ad/dense_tensor_operand_boundary_test.esk` additionally passed 29/29
+native checks after the local standard library was built.
+
+| WIP hunk family | Current facility and repro |
+| --- | --- |
+| `autodiff_codegen.h/.cpp` complex seed and extract; `runtime_taylor.c` coefficient zipping | Per-level native seeding and extraction preserve each complex component's enclosing carrier; `tests/ad/complex_nested_carrier_test.esk` passes 30 checks. |
+| `llvm_codegen.cpp` duplicate math dispatch removal | The shared numeric builtin dispatch remains the sole native path; `tests/ad/complex_nested_carrier_test.esk` and `tests/ad/vm_complex_intermediate_taylor_test.esk` cover composed complex math. |
+| `vm_complex.c`, `vm_numeric.h`, `vm_native.c` complex carrier ingress, arithmetic and projection | `VmComplex` keeps component carriers and `VM_DUAL_KIND_LEVEL` represents nested passes; the same two complex tests and all 118 checks in `tests/ad/complex_carrier_math_test.esk` pass on the VM. |
+| `vm_dual.c` hyper-Taylor allocation, algebra, projection and unary rules | Recursive `lcoeff` arithmetic and `vm_dual_level_coefficient` replace fixed companion lanes; `tests/ad/site_scalar_hessian_test.esk` and `tests/ad/nested_carrier_orderings_test.esk` exercise exact order and nesting. |
+| `vm_native.c` scalar Hessian path | Shared level application and extraction preserve the exact point; `tests/ad/site_scalar_hessian_test.esk` returns exact `4/3` for `(expt x 4)` at `1/3`. |
+| `vm_parallel.c`, `vm_region_evac.c` carrier ownership | Worker cloning and region evacuation walk recursive level coefficients; `tests/vm_parity/corpus/parallel_ad_carrier_lifetime.esk` and `tests/memory/vm_region_evac_level_carrier_test.esk` pass. |
+| WIP CMake, two AD test files, and SW-194 ledger entry | The release candidate already registers both tests, closes SW-193/SW-194, and includes the generated ledger entry. |
+
+The focused parity repro is `(taylor (lambda (x) (* x 1)) 1/3 3)` =
+`(1/3 1 0 0)` and `(derivative (lambda (x) (tensor-ref (tensor x) 0))
+1/3)` = `1` on both engines. No WIP runtime hunk needs transplanting because
+its fixed-width carrier representation is superseded by the level carrier.
+
 ## Alternatives rejected
 
 - **More companion lanes.** Each additional lane covers one more shape and the

@@ -14079,8 +14079,9 @@ entries:
     caught_by: [published-site-browser-oracle-audit]
     missed_by: [site_smoke, doc_audit]
     notes: >-
-      Not yet committed to the release cut or deployed. Final artifact and
-      release qualification remain required; a refusal is not a resolution.
+      Integrated into the v1.3.5 release candidate with the ADR-0027 carrier.
+      Release qualification and publication of the browser artifact remain
+      separate from this source-level fix.
     closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
     fixed_by: "ADR-0027 level carrier, VM half; site/static/eshkol-vm.{js,wasm} rebuilt with scripts/build-wasm-repl.sh"
     observed_after: >-
