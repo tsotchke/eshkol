@@ -325,6 +325,7 @@ class EshkolRepl {
                 arena_allocate_ad_node_with_header: (arena) => 0,
                 arena_allocate_cons_with_header: (arena) => 0,
                 arena_allocate_string_with_header: (arena, size) => 0,
+                eshkol_make_string_checked: (arena, k, fill) => 0,
                 arena_allocate_closure_with_header: (arena, a, b, c, d) => 0,
                 arena_allocate_tape: (arena, size) => 0,
                 arena_hash_table_create: (arena) => 0,

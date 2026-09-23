@@ -1131,99 +1131,40 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
  * `char` (default space) via memset, and NUL-terminates it.
  */
 llvm::Value* StringIOCodegen::makeString(const eshkol_operations_t* op) {
-    if (!codegen_typed_ast_callback_ || !codegen_ast_callback_) {
+    if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::makeString - callbacks not set");
         return tagged_.packNull();
     }
 
     if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
-        eshkol_warn("make-string requires 1 or 2 arguments");
+        eshkol_arity_error_current("make-string requires 1 or 2 arguments");
         return nullptr;
     }
 
-    // Get length via typed AST
-    void* len_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
-    if (!len_tv_ptr) return nullptr;
-
-    llvm::Value* len = *reinterpret_cast<llvm::Value**>(len_tv_ptr);
-    if (!len) return nullptr;
-
-    // Ensure length is i64 — may arrive as tagged value struct or raw int
-    if (len->getType() == ctx_.taggedValueType()) {
-        // Extract int64 data field from tagged value
-        len = tagged_.unpackInt64(len);
-    } else if (!len->getType()->isIntegerTy(64)) {
-        len = ctx_.builder().CreateZExt(len, ctx_.int64Type());
-    }
-
-    // Guard against a negative length. `len` flows into memset as a size_t;
-    // a negative value wraps to an enormous unsigned count, hanging/OOMing the
-    // process (make-string requires a non-negative k in R7RS). Raise instead.
-    {
-        llvm::Value* neg_len = ctx_.builder().CreateICmpSLT(len,
-            llvm::ConstantInt::get(ctx_.int64Type(), 0));
-        llvm::Function* ms_func = ctx_.builder().GetInsertBlock()->getParent();
-        llvm::BasicBlock* ms_ok = llvm::BasicBlock::Create(ctx_.context(), "mkstr_len_ok", ms_func);
-        llvm::BasicBlock* ms_fail = llvm::BasicBlock::Create(ctx_.context(), "mkstr_len_fail", ms_func);
-        ctx_.builder().CreateCondBr(neg_len, ms_fail, ms_ok);
-
-        ctx_.builder().SetInsertPoint(ms_fail);
-        {
-            llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
-            if (!raise_func) {
-                llvm::FunctionType* raise_type = llvm::FunctionType::get(
-                    ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
-                raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
-                    "eshkol_raise", &ctx_.module());
-                raise_func->setDoesNotReturn();
-            }
-            llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
-            if (!make_exc_func) {
-                llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
-                    {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
-                make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
-                    "eshkol_make_exception_with_header", &ctx_.module());
-            }
-            llvm::Value* err_msg = ctx_.builder().CreateGlobalString(
-                "make-string: length must be non-negative");
-            llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
-            llvm::Value* exception = ctx_.builder().CreateCall(make_exc_func, {exc_type, err_msg});
-            ctx_.builder().CreateCall(raise_func, {exception});
-            ctx_.builder().CreateUnreachable();
-        }
-
-        ctx_.builder().SetInsertPoint(ms_ok);
-    }
-
-    // Get the fill character (default to space, ASCII 32)
-    llvm::Value* fill_char;
+    // The length and fill are checked, and the string built, by the one
+    // runtime implementation (eshkol_make_string_checked, runtime_string.cpp):
+    // an inexact, negative or non-numeric length and a non-character fill raise
+    // a catchable type error, and a non-ASCII fill is repeated as UTF-8.
+    auto tagged_arg = [&](const eshkol_ast_t* ast) -> llvm::Value* {
+        void* tv = codegen_typed_ast_callback_(ast, callback_context_);
+        return tv ? typed_to_tagged_callback_(tv, callback_context_) : nullptr;
+    };
+    llvm::Value* k = tagged_arg(&op->call_op.variables[0]);
+    if (!k) return nullptr;
+    llvm::Value* fill_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+    llvm::Value* k_slot = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "mkstr_k");
+    ctx_.builder().CreateStore(k, k_slot);
     if (op->call_op.num_vars == 2) {
-        llvm::Value* char_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
-        if (!char_arg) return nullptr;
-        fill_char = tagged_.unpackInt64(char_arg);
-        fill_char = ctx_.builder().CreateTrunc(fill_char, ctx_.int8Type());
-    } else {
-        fill_char = llvm::ConstantInt::get(ctx_.int8Type(), ' ');
+        llvm::Value* fill = tagged_arg(&op->call_op.variables[1]);
+        if (!fill) return nullptr;
+        fill_ptr = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "mkstr_fill");
+        ctx_.builder().CreateStore(fill, fill_ptr);
     }
-
-    // Allocate buffer with header. `arena_allocate_string_with_header`
-    // already reserves an extra byte for the NUL terminator (data_size
-    // = length + 1), so we must pass the caller-visible character
-    // count `len`, NOT `len + 1` — the previous code double-counted,
-    // yielding header->size = len + 2 and a string-length of len + 1.
-    llvm::Value* arena_ptr = ctx_.currentArena();
-    llvm::Value* buf = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, len});
-
-    // Fill with the character using memset
-    llvm::Function* memset_func = ctx_.funcs().getMemset();
-    llvm::Value* fill_char_i32 = ctx_.builder().CreateZExt(fill_char, ctx_.int32Type());
-    ctx_.builder().CreateCall(memset_func, {buf, fill_char_i32, len});
-
-    // Add null terminator
-    llvm::Value* term_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), buf, len);
-    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), term_ptr);
-
+    llvm::FunctionCallee make = ctx_.module().getOrInsertFunction(
+        "eshkol_make_string_checked",
+        llvm::FunctionType::get(ctx_.ptrType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false));
+    llvm::Value* buf = ctx_.builder().CreateCall(make, {ctx_.currentArena(), k_slot, fill_ptr});
     return tagged_.packHeapPtr(buf);
 }
 

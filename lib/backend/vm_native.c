@@ -16902,16 +16902,41 @@ static void vm_dispatch_native(VM* vm, int fid) {
         while (h != 0) { int64_t t = h; h = g % h; g = t; }
         vm_push(vm, INT_VAL(x / g * y)); break;
     }
-    case 226: { /* make-string(n, char) */
+    case 226: { /* make-string(k [char]) -- the rules and messages of the
+                 * native runtime (eshkol_make_string_checked): k an exact
+                 * non-negative integer, the fill a character written as
+                 * UTF-8, a space when absent. */
         Value ch = vm_pop(vm), n = vm_pop(vm);
-        int sz = (int)as_number(n), c = (int)as_number(ch);
-        if (sz < 0) sz = 0; if (sz > 65536) sz = 65536;
-        char* buf = (char*)vm_alloc(&vm->heap.regions, (size_t)(sz + 1));
-        if (buf) { memset(buf, c > 0 && c < 128 ? c : ' ', sz); buf[sz] = 0;
-            VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
-            if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+        if (n.type != VAL_INT || n.as.i < 0) {
+            vm_raise_error_msg(vm, "Type error in make-string: expected non-negative exact integer");
+            break;
         }
-        vm_push(vm, NIL_VAL); break;
+        int cp = ' ';
+        if (!vm_native_absent(ch)) {
+            if (ch.type != VAL_CHAR || ch.as.i < 0 || ch.as.i > 0x10FFFF ||
+                (ch.as.i >= 0xD800 && ch.as.i <= 0xDFFF)) {
+                vm_raise_error_msg(vm, "Type error in make-string: expected character");
+                break;
+            }
+            cp = (int)ch.as.i;
+        }
+        char enc[4];
+        int width = vm_utf8_encode(cp, enc);
+        if (width <= 0) { width = 1; enc[0] = ' '; }
+        if ((uint64_t)n.as.i > (UINT32_MAX - 1u) / (uint64_t)width) {
+            vm_raise_error_msg(vm, "make-string: length is too large for a string");
+            break;
+        }
+        size_t bytes = (size_t)n.as.i * (size_t)width;
+        char* buf = (char*)malloc(bytes + 1);
+        if (!buf) { vm_raise_error_msg(vm, "make-string: cannot allocate the string"); break; }
+        for (size_t i = 0; i < (size_t)n.as.i; i++) memcpy(buf + i * (size_t)width, enc, (size_t)width);
+        buf[bytes] = 0;
+        VmString* s = vm_string_new(&vm->heap.regions, buf, (int)bytes);
+        free(buf);
+        if (!s) { vm_raise_error_msg(vm, "make-string: cannot allocate the string"); break; }
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s);
+        break;
     }
 
     case 152: { /* close a closure's open upvalue slots.

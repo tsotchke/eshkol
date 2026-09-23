@@ -34,6 +34,81 @@ const char* eshkol_runtime_ffi_surface_bytes(void) {
 
 extern void* arena_allocate_string_with_header(void* arena, uint64_t byte_len);
 
+/* Raising entry points, declared here to keep this translation unit's include
+ * surface small (as runtime_tensor_alloc.cpp does). ABI-stable symbols. */
+void eshkol_type_error_with_operand(const char* proc_name,
+                                    const char* expected_type,
+                                    const eshkol_tagged_value_t* actual);
+extern void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
+
+/** Base type of a tagged value's type byte (TaggedValueCodegen::getBaseType). */
+static uint8_t eshkol_string_base_type(uint8_t type) {
+    return type >= 8 ? type : (uint8_t)(type & 0x0F);
+}
+
+/**
+ * @brief `(make-string k [char])` (R7RS 6.7): a string of @p k copies of
+ *        @p fill (a space when @p fill is NULL), the one implementation behind
+ *        every native call site.
+ *
+ * @p k must be an exact non-negative integer and @p fill a character; anything
+ * else raises a catchable type error naming make-string. The fill is written as
+ * its UTF-8 encoding, so a non-ASCII character is repeated whole. A length whose
+ * byte count the string header cannot hold raises a range error. The bytecode VM
+ * applies the same rules and messages (vm_native.c, native 226).
+ */
+void* eshkol_make_string_checked(void* arena, const eshkol_tagged_value_t* k,
+                                 const eshkol_tagged_value_t* fill) {
+    if (!k || eshkol_string_base_type(k->type) != ESHKOL_VALUE_INT64 || k->data.int_val < 0) {
+        eshkol_type_error_with_operand("make-string", "non-negative exact integer", k);
+        return nullptr;
+    }
+    uint32_t cp = ' ';
+    if (fill) {
+        if (eshkol_string_base_type(fill->type) != ESHKOL_VALUE_CHAR ||
+            fill->data.int_val < 0 || fill->data.int_val > 0x10FFFF ||
+            (fill->data.int_val >= 0xD800 && fill->data.int_val <= 0xDFFF)) {
+            eshkol_type_error_with_operand("make-string", "character", fill);
+            return nullptr;
+        }
+        cp = static_cast<uint32_t>(fill->data.int_val);
+    }
+    char enc[4];
+    uint64_t width;
+    if (cp < 0x80) { enc[0] = (char)cp; width = 1; }
+    else if (cp < 0x800) { enc[0] = (char)(0xC0 | (cp >> 6)); enc[1] = (char)(0x80 | (cp & 0x3F)); width = 2; }
+    else if (cp < 0x10000) {
+        enc[0] = (char)(0xE0 | (cp >> 12)); enc[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        enc[2] = (char)(0x80 | (cp & 0x3F)); width = 3;
+    } else {
+        enc[0] = (char)(0xF0 | (cp >> 18)); enc[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        enc[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); enc[3] = (char)(0x80 | (cp & 0x3F)); width = 4;
+    }
+    const uint64_t count = static_cast<uint64_t>(k->data.int_val);
+    // The string header records the byte size (+1 for the terminator) in 32 bits.
+    if (count > (UINT32_MAX - 1u) / width) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_RANGE_ERROR,
+                             "make-string: length %llu is too large for a string",
+                             static_cast<unsigned long long>(count));
+        return nullptr;
+    }
+    const uint64_t byte_len = count * width;
+    char* buf = static_cast<char*>(arena_allocate_string_with_header(arena, byte_len));
+    if (!buf) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "make-string: cannot allocate a string of %llu bytes",
+                             static_cast<unsigned long long>(byte_len));
+        return nullptr;
+    }
+    if (width == 1) {
+        std::memset(buf, enc[0], static_cast<size_t>(byte_len));
+    } else {
+        for (uint64_t i = 0; i < count; ++i) std::memcpy(buf + i * width, enc, width);
+    }
+    buf[byte_len] = '\0';
+    return buf;
+}
+
 /** Copy a temporary C buffer into Eshkol's canonical header-tagged string shape. */
 void* eshkol_runtime_copy_string(void* arena, const char* source) {
     if (!arena || !source) return nullptr;

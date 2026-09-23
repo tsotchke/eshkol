@@ -111,6 +111,7 @@
   "eshkol_make_continuation_state_flags",
   "eshkol_make_exception_with_header",
   "eshkol_make_parameter_ptr",
+  "eshkol_make_string_checked",
   "eshkol_memctx_current",
   "eshkol_open_output_string",
   "eshkol_parallel_map_sret",

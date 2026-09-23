@@ -474,6 +474,33 @@ class EshkolRuntime {
                 arena_tape_get_node: () => 0,
                 arena_tape_get_node_count: () => 0,
                 arena_allocate_string_with_header: (arena, len) => rt._bump(Number(len) + 9) + 8,
+                // (make-string k [char]): the rules of the native runtime's
+                // eshkol_make_string_checked -- k an exact non-negative
+                // integer (tag 1), the fill a character (tag 4) written as
+                // UTF-8, a space when the fill pointer is null.
+                eshkol_make_string_checked: (arena, kPtr, fillPtr) => {
+                    const dv = new DataView(rt.memory.buffer);
+                    const base = (t) => (t >= 8 ? t : (t & 0x0F));
+                    const kType = base(dv.getUint8(Number(kPtr)));
+                    const k = dv.getBigInt64(Number(kPtr) + 8, true);
+                    if (kType !== 1 || k < 0n) throw new Error('Type error in make-string: expected non-negative exact integer');
+                    let cp = 32;
+                    if (Number(fillPtr) !== 0) {
+                        const fType = base(dv.getUint8(Number(fillPtr)));
+                        const c = Number(dv.getBigInt64(Number(fillPtr) + 8, true));
+                        if (fType !== 4 || c < 0 || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF))
+                            throw new Error('Type error in make-string: expected character');
+                        cp = c;
+                    }
+                    const enc = new TextEncoder().encode(String.fromCodePoint(cp));
+                    const count = Number(k);
+                    const len = count * enc.length;
+                    const buf = rt._bump(len + 9) + 8;
+                    const mem = new Uint8Array(rt.memory.buffer);
+                    for (let i = 0; i < count; i++) mem.set(enc, Number(buf) + i * enc.length);
+                    mem[Number(buf) + len] = 0;
+                    return buf;
+                },
                 arena_allocate_closure_with_header: () => rt._bump(64),
                 arena_tagged_cons_get_int64: () => 0n,
                 arena_tagged_cons_get_double: () => 0.0,

@@ -14,6 +14,14 @@ and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+- **`make-string` checks its arguments and repeats any character.** Natively
+  `(make-string "xyz")` read the string's address as a length and faulted, and a
+  non-ASCII fill was cut to one byte (`(make-string 2 #\λ)` had length 0); the
+  VM answered `""` for a non-integer or negative length, filled a non-ASCII or
+  non-character fill with spaces, and silently capped the length at 65536. Both
+  engines now raise a catchable type error unless the length is an exact
+  non-negative integer and the fill a character, and repeat the fill's UTF-8
+  encoding.
 - **The standard ports are parameter objects on the VM.** On the bytecode VM
   `current-output-port` was an undefined variable, so
   `(parameterize ((current-output-port p)) ...)` failed, and `current-input-port`
