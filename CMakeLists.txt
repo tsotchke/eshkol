@@ -1751,14 +1751,24 @@ if(ESHKOL_GPU_ENABLED)
                 CACHE INTERNAL "CUDA toolkit major used by this build" FORCE)
             if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR
                "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "")
-                set(_eshkol_cuda_architectures "${ESHKOL_CUDA_ARCHITECTURES}")
-                # CUDA 13 removed offline compilation for architectures below
-                # compute capability 7.5.  Keep SM72 in the portable default
-                # for older toolkits (notably the verified embedded-GPU path),
-                # but do not pass it to a compiler that no longer accepts it.
-                if(CUDAToolkit_VERSION VERSION_GREATER_EQUAL 13.0)
-                    list(REMOVE_ITEM _eshkol_cuda_architectures "72")
+                # #606: the portable default is resolved against what the
+                # installed nvcc compiles for (cmake/EshkolCudaArchitectures.cmake):
+                # SM72 stays for CUDA 12 and older (the verified embedded-GPU
+                # path), and is dropped where the toolkit no longer accepts
+                # it, such as CUDA 13. An explicit CMAKE_CUDA_ARCHITECTURES is
+                # never filtered.
+                include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EshkolCudaArchitectures.cmake")
+                set(_eshkol_nvcc "${CUDAToolkit_NVCC_EXECUTABLE}")
+                if(CMAKE_CUDA_COMPILER)
+                    set(_eshkol_nvcc "${CMAKE_CUDA_COMPILER}")
                 endif()
+                eshkol_resolve_cuda_architectures("${ESHKOL_CUDA_ARCHITECTURES}"
+                    "${_eshkol_nvcc}" "${CUDAToolkit_VERSION}"
+                    _eshkol_cuda_architectures _eshkol_cuda_supported)
+                set(ESHKOL_CUDA_SUPPORTED_ARCHITECTURES "${_eshkol_cuda_supported}"
+                    CACHE INTERNAL
+                    "CUDA architectures the toolkit compiles for (nvcc list, or RANGE;low;high)"
+                    FORCE)
                 set(CMAKE_CUDA_ARCHITECTURES "${_eshkol_cuda_architectures}"
                     CACHE STRING "CUDA architectures" FORCE)
             endif()
@@ -7696,6 +7706,18 @@ if(ESHKOL_BUILD_TESTS)
                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_windows_runtime_exports_validator.py"
         )
         set_tests_properties(windows_runtime_exports_validator_test PROPERTIES TIMEOUT 120)
+    endif()
+    # #606: the CUDA architecture policy, against mocked nvcc executables, so
+    # it is verified on hosts without a CUDA toolkit.
+    if(NOT WIN32)
+        add_test(
+            NAME cuda_architecture_policy_test
+            COMMAND ${CMAKE_COMMAND}
+                -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cuda_architecture_policy_test
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/cuda_architectures_test.cmake)
+        set_tests_properties(cuda_architecture_policy_test PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS: CUDA architecture policy")
     endif()
     if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_verify_gpu_backend.py")
         add_test(
