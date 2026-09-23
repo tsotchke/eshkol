@@ -893,7 +893,8 @@ void eshkol_region_write_barrier_range(const void* dst,
 // Raise the runtime's catchable allocation-failure condition for @p operation,
 // which could not allocate @p bytes (0 when the size is not known). The
 // condition object is reserved per thread ahead of time
-// (eshkol_reserve_allocation_failure_condition, called on region entry) in a
+// (eshkol_reserve_allocation_failure_condition, called on region entry and
+// before installing an exception handler) in a
 // private arena outside every region, so raising cannot itself fail under the
 // exhaustion being reported and a raise that crosses open regions needs no
 // promotion to carry it. Does not return: control transfers to the innermost

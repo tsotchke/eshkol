@@ -1,0 +1,11 @@
+;; Exercise the reservation ABI and generated allocation-failure call via both
+;; JIT and AOT. Failure injection lives in the linked native/AOT fixtures.
+(extern i64 reserve-exception-handlers i64
+  :real eshkol_runtime_reserve_exception_handlers_v1)
+
+(if (not (= (reserve-exception-handlers 0) 0)) (exit 1))
+(if (not (= (reserve-exception-handlers -1) -1)) (exit 2))
+(if (not (= (reserve-exception-handlers 3) 0)) (exit 3))
+(guard (condition (else (exit 4)))
+  (if (not (= (vector-ref (vector 42) 0) 42)) (exit 5))
+  (if (not (= (car (cons 7 8)) 7)) (exit 6)))

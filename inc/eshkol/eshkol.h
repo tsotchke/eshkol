@@ -1830,6 +1830,13 @@ void eshkol_error_object_irritants(const eshkol_tagged_value_t* obj, eshkol_tagg
  * @param jmp_buf_ptr Pointer to the setjmp buffer to longjmp to on raise.
  */
 void eshkol_push_exception_handler(void* jmp_buf_ptr);
+/** Reserve at least free_count inactive handler frames on this runtime thread.
+ * Returns zero on success, -1 for a negative or size-overflowing count without
+ * mutation. Allocation failure raises to the previously active handler; any
+ * partial reservation remains reusable. Covers simultaneous pushes, not replay
+ * snapshot buffers. Reservation and active exception state are thread-local.
+ */
+int64_t eshkol_runtime_reserve_exception_handlers_v1(int64_t free_count);
 /**
  * @brief Pop the innermost exception handler frame, restoring the previous one.
  */
