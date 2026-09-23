@@ -1,6 +1,6 @@
 # Automatic Differentiation in Eshkol
 
-*A user guide to the v1.3.5-evolve Taylor-tower AD system.*
+*A user guide to Taylor-tower automatic differentiation.*
 
 Eshkol differentiates programs, not just formulas. `derivative`, `gradient`,
 `jacobian` and friends are **compiler primitives** — you write ordinary Scheme
@@ -541,9 +541,9 @@ Output:
 
 `g(v)` is the 3rd `t`-derivative of `sin(v·t)`, which analytically is
 `−v³cos(v·t)`; at v=0.6, t=0.4 that is `−0.209809`. Wrapping it in `gradient`
-differentiates *that* with respect to `v`, giving `−1.02851`. Before v1.3 this
-returned a flat 0 (the reverse tape "swallowed" the tower); the seed-tangent
-dual tower fixes it. This is exact, not finite-difference.
+differentiates *that* with respect to `v`, giving `−1.02851`. The seed-tangent
+dual tower retains the dependence through the reverse pass. This is exact,
+not finite-difference.
 
 ### Checkpointed reverse for deep graphs
 

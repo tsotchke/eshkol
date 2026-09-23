@@ -1,7 +1,7 @@
 # Automatic Differentiation — Operator Reference
 
 Every operator, signature, accepted point type, binding form, and capture rule
-below is verified by running it on the v1.3.5-evolve compiler. Outputs are pasted
+below is verified by running it on the compiler. Outputs are pasted
 exactly as printed by `eshkol-run` (JIT `-r` and AOT agree unless noted). Open
 cells are marked with their ledger id — see
 [support-matrix.md](support-matrix.md).
@@ -533,7 +533,7 @@ capturing a local parameter.
 ### Where a capture is resolved
 
 A capture is resolved **where the closure was created**, never by looking its
-name up again at the differentiation site (since v1.3.5). A named differentiand
+name up again at the differentiation site. A named differentiand
 (a `define`d, `let`-bound or parameter-bound procedure) has its captures read
 from the closure object the name evaluates to; an inline `lambda`, created at
 the differentiation site, resolves its captures in that scope. The rule holds
@@ -633,19 +633,18 @@ See `tests/ad/complex_carrier_math_test.esk`,
 | Composition | Status | Note |
 |-------------|--------|------|
 | `derivative` of `derivative` (scalar 2nd order) | Yes | exact, 2 perturbation slots |
-| `derivative` of a **variable-bound** derivative closure — the curried spelling `(define df (derivative f))` … `(derivative df)` | Yes | exact to 3rd order (v1.3.4, ESH-0369). The closure returned by `(derivative f)` seeds and extracts *this* perturbation level, so it is dual-transparent and differentiates like any other function. `(derivative (derivative f))` and `(derivative (car fs))` — differentiands with no name to look up — resolve too. Every spelling of the k-th derivative of `f` agrees: `(derivative-n f x k)`, nested-lambda, curried-named, curried-unnamed. See [tests/ad/curried_higher_order_derivative_test.esk](../../../tests/ad/curried_higher_order_derivative_test.esk) |
+| `derivative` of a **variable-bound** derivative closure — the curried spelling `(define df (derivative f))` … `(derivative df)` | Yes | The closure returned by `(derivative f)` seeds and extracts *this* perturbation level, so it is dual-transparent and differentiates like any other function. `(derivative (derivative f))` and `(derivative (car fs))` — differentiands with no name to look up — resolve too. Every spelling of the k-th derivative of `f` agrees: `(derivative-n f x k)`, nested-lambda, curried-named, curried-unnamed. See [tests/ad/curried_higher_order_derivative_test.esk](../../../tests/ad/curried_higher_order_derivative_test.esk) |
 | `derivative-n` / `taylor` applied to a **derivative closure** — `(define df (derivative f))` then `(derivative-n df x k)` | Yes | exact (fixed, **ESH-0402**). `(derivative df x)` and `(derivative (lambda (x) (df x)) x0)` answer exactly as well, and all three agree with `(derivative-n f x k)` on the base function. This was the closure-side view of one carrier-boundary defect, not a separate limitation. Gated by [tests/ad/ad_carrier_nesting_test.esk](../../../tests/ad/ad_carrier_nesting_test.esk) |
 | `gradient` of scalar `derivative`, scalar point | Yes | forward-fast-path |
-| `gradient` (vector point) over inner `derivative` — **mixed reverse-over-forward** | Yes | fixed in v1.3 (#113, ESH-0093); see [tests/ad/mixed_mode_ad_test.esk](../../../tests/ad/mixed_mode_ad_test.esk), 15/15 |
+| `gradient` (vector point) over inner `derivative` — **mixed reverse-over-forward** | Yes | see [tests/ad/mixed_mode_ad_test.esk](../../../tests/ad/mixed_mode_ad_test.esk), 15/15 |
 | `gradient` of `gradient`, **scalar** point | Yes | e.g. `L''` returns correct value |
 | `gradient` of `gradient`, **vector** point | Yes | returns the true second derivative — `#(12)` for the 1-D case, `#(8 6)` for the 2-D one (formerly **ESH-0096**) |
 | `gradient` of a **named** inner function | Yes | returns `18`, matching the inline-lambda form (formerly **ESH-0078**) |
 | `gradient`/`jacobian` of a **curried** `gradient` closure — `(define g (gradient f))` then `(jacobian g pt)` | Refuses | raises `unsupported nested differentiation` rather than answering. A loud refusal, not a silent zero. Use `(hessian f pt)`, which is exact on the same build (**ESH-0096**) |
 | AD inside a bounded loop (reuse) | Yes | stable over 1000+ iterations |
 
-Mixed reverse-over-forward (an outer vector `gradient` over an inner
-`derivative` that depends on captured tape parameters) is the headline v1.3 AD
-fix. Verified:
+Mixed reverse-over-forward means an outer vector `gradient` differentiates an
+inner `derivative` that depends on captured tape parameters. For example:
 
 ```scheme
 ;; f(x;p0)=p0·x², ∂/∂p0 [ d/dx f @2 ] = 4

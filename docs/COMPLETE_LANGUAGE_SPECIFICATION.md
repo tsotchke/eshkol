@@ -1,7 +1,5 @@
 # Eshkol Language - Complete Technical Specification
 
-**Version:** v1.3.5
-**Generated:** 2026-09-07
 **Status:** Comprehensive implementation documentation from source code
 
 ---
@@ -33,8 +31,8 @@
 23. [Complete Language Capabilities Summary](#23-complete-language-capabilities-summary)
 24. [Compiler Capabilities](#24-compiler-capabilities)
 25. [Implementation Details](#25-implementation-details)
-26. [Version Information](#26-version-information)
-27. [File Organization](#27-file-organization)
+26. [File Organization](#26-file-organization)
+27. [Bytecode VM and ESKB Format](#27-bytecode-vm-and-eskb-format)
 
 ---
 
@@ -104,7 +102,7 @@ These types store data directly in the `eshkol_tagged_value_t` struct (no heap a
 
 #### 2.1.6 `SYMBOL` (Interned Symbol)
 - **Type Tag:** `ESHKOL_VALUE_SYMBOL` (5)
-- **Syntax:** `'foo`, `'hello-world`, `'+`, and as of v1.3.5 (#462) the R7RS
+- **Syntax:** `'foo`, `'hello-world`, `'+`, and the R7RS
   7.1.1 third `<identifier>` production, `<vertical line> <symbol
   element>* <vertical line>` — `'|weird sym|`, `'||` (the empty symbol),
   `'|\x48;i|` (inline hex escape, reads as `Hi`)
@@ -788,7 +786,7 @@ passed to a unary receiver procedure:
 `(1 ,@(list 2 3) 4)  ; => (1 2 3 4)
 ```
 
-**Quasiquoted vector literals** (v1.3.0-evolve): `unquote`/`unquote-splicing`
+**Quasiquoted vector literals**: `unquote`/`unquote-splicing`
 also work inside a `#(...)` vector literal under quasiquote:
 ```scheme
 `#(1 ,(+ 1 1) 3)        ; => #(1 2 3)
@@ -937,7 +935,7 @@ The rules below are normative for the checker; the
 examples, and [ADR 0013](design/adr/0013-gradual-type-relation.md) records the
 decision.
 
-1. **Every evaluated subexpression is checked** (since v1.3.5). A call is
+1. **Every evaluated subexpression is checked.** A call is
    checked against the callee's annotations wherever it is written: in every
    expression of a `begin` or body; in the tests, keys, scrutinee and branch
    bodies of `if`, `cond`, `case`, `match`, `when` and `unless`; in every
@@ -964,7 +962,7 @@ decision.
    branch types, plus `#f` for a `cond`, `case`, `when` or `unless` that may run
    no branch. `if` and the equivalent `cond` have the same type. Branches with
    nothing more specific in common have type `Value`.
-5. **Loop parameters are typed by what the loop carries** (since v1.3.5). An
+5. **Loop parameters are typed by what the loop carries.** An
    unannotated named-`let` parameter has the join of its initial value and of
    every argument the loop passes back to it, found by iterating the body to a
    fixpoint. A join that reaches `Value` is not adopted: the parameter keeps its
@@ -1278,7 +1276,7 @@ Alias for `require` with automatic path conversion. Slashes are converted to dot
      (if test (begin expr ...)))))
 ```
 
-**Nested ellipsis** (v1.3.0-evolve): a pattern variable bound at ellipsis
+**Nested ellipsis**: a pattern variable bound at ellipsis
 depth N is followed by N ellipses in the template to flatten one level per
 extra ellipsis. Pattern matching tracks ellipsis depth explicitly, so
 `(x ... ...)`-style templates over a list-of-lists now expand correctly:
@@ -1688,7 +1686,7 @@ with a diagnostic, never a silent `()`.
 
 #### 4.7.2 String Access
 - `(string-length str)` - Codepoint (character) count
-- `(string-byte-length str)` - UTF-8 byte count (v1.3.0-evolve; differs from
+- `(string-byte-length str)` - UTF-8 byte count (differs from
   `string-length` for any multibyte-UTF-8 string)
 - `(string-ref str k)` - Get character at index k
 - `(string-set! str k char)` - Set character at index k
@@ -1746,7 +1744,7 @@ with a diagnostic, never a silent `()`.
 - `(vector-copy vec)` / `(vector-copy vec start)` / `(vector-copy vec start end)` -
   Fresh (shallow) copy of `vec`, or of the `[start,end)` slice. Also accepts
   a tensor-backed `#(...)` vector literal, not just `(vector ...)`-allocated
-  vectors (v1.3.0-evolve).
+  vectors.
 - `(vector-copy! to at from)` / `(vector-copy! to at from start end)` -
   In-place copy into `to` starting at index `at`
 
@@ -2725,7 +2723,8 @@ struct ad_tape {
 - `__current_ad_tape` - Current tape for graph recording
 
 #### Nested Gradients
-Supports arbitrary nesting depth via tape stack:
+Nested differentiation uses recursive Taylor levels, with depth limited by
+available memory. The reverse-mode tape stack has 32 slots:
 ```scheme
 (gradient 
   (lambda (x)
@@ -2736,7 +2735,7 @@ Supports arbitrary nesting depth via tape stack:
 ; Computes ∂/∂x[∂/∂y(xy²)]
 ```
 
-### 8.5 Arbitrary-Order AD: Taylor Towers (v1.3.0-evolve)
+### 8.5 Arbitrary-Order AD: Taylor Towers
 
 A second, orthogonal AD engine computes every derivative up to an arbitrary
 order `k` in a single pass. Full detail: the
@@ -4601,60 +4600,7 @@ Keep original name (exported via `provide`)
 
 ---
 
-## 26. Version Information
-
-**Current Version:** v1.3.5
-
-**Version History:**
-- v1.3.5-evolve - Compiler/VM semantics, nested and exact AD, validated ESKM persistence, and release-assurance integration. Released 2026-09-22; verification is bound to the tagged commit.
-- v1.3.4-evolve - Consumer-hardening correctness wave: automatic per-iteration
-  memory reclamation on the native engine that matches explicit `with-region`,
-  race-free
-  `parallel-map`, exact gradients through every callable form and at exact
-  (rational/bignum) points, R7RS-correct exactness contagion on both the native
-  and bytecode-VM numeric paths, same-unit `define-library`/`import` resolution
-  on all three back ends, an emitted error diagnostic that prevents artifact
-  emission, a portable event-loop primitive, a fixed-point/i128
-  exact-accumulation engine, and the high-precision numerics wave (Ozaki-II
-  exact and reduced-precision GEMM tiers, mixed-precision `linear-solve`,
-  native `i128`). See [CHANGELOG.md](../CHANGELOG.md).
-- v1.3.3-evolve - Opt-in differentiable quantum computing (Moonlab VQE/CHSH),
-  ML-KEM post-quantum cryptography, `core.dbsp` incremental dataflow, real
-  `make-parameter`/`parameterize` dynamic parameters, and bignum-capable exact
-  rationals. See [CHANGELOG.md](../CHANGELOG.md).
-- v1.3.2-evolve - Thread-safe regions and deeper region-escape evacuation
-  (ESH-0214d subtype coverage), plus the nine-cluster architectural research
-  ADRs. See [CHANGELOG.md](../CHANGELOG.md).
-- v1.3.1 - Robustness for long-running, resident programs: per-iteration
-  arena reclamation for define-loops guarded by a catch-all handler, an
-  iterative reader so large persisted structures load without native stack
-  overflow, and comprehensive C-API documentation. See
-  [CHANGELOG.md](../CHANGELOG.md).
-- v1.3.0-evolve - Arbitrary-order automatic differentiation (Taylor towers,
-  phases P0-P12: exact bignum/rational coefficients, no-heap
-  monomorphization, GUW multivariate mixed partials, reverse-over-Taylor,
-  tensor towers, validated Taylor models, sparse high-order tensors,
-  differentiable control flow, checkpointed reverse-mode, tower-based
-  numerics), full R7RS conformance on the portable differential corpus
-  (34/34 vs. chibi-scheme), closure/TCO/memory robustness hardening
-  (mutual tail calls, named-let TCO in every position, 16->64 capture
-  ceiling, bounded-RSS long-running loops), and a permanent multi-pillar
-  adversarial-testing infrastructure. See [CHANGELOG.md](../CHANGELOG.md).
-- v1.2.0-scale - Production readiness: model serialization, stable C ABI + Python bindings, per-thread arenas, 512 MB main-thread stack on Darwin, image I/O, plotting stdlib, actionable error messages with file:line:col + caret, JSON Schema validator (Draft 7 subset), R7RS-compliant scoping for stdlib redefines, --wasm self-contained emit, AD scalar derivative on inline lambdas, value-typed-capture LLVM verification, variadic-info hygiene on user redefines, 62-test edge-case suite + ASan/UBSan CI lane, 7 hardening fixes (subprocess injection, FFI AST injection, integer overflows, path traversal, ReDoS).
-- v1.1.13-accelerate - Windows ARM64 native support, 16-lane release matrix, two VM closure bug fixes (named-let nested closure PC + native 252 upvalue relay), Windows setjmp hardening for x64 and ARM64, mobile-responsive website, REPL error display
-- v1.1.12-accelerate - LLVM 21 toolchain unification, Windows VS 2022/ClangCL, ARM64 ABI fix, clean URL routing
-- v1.1.11-accelerate - Exact arithmetic, continuations, consciousness engine, parallelism, GPU dispatch, signal processing
-- v1.0.0-foundation - Initial stable release
-  - Core Scheme compatibility
-  - Automatic differentiation system
-  - HoTT type system foundation
-  - Arena memory management
-  - Module system
-  - REPL with JIT
-
----
-
-## 27. File Organization
+## 26. File Organization
 
 ### Source Code Structure
 ```
@@ -4690,7 +4636,7 @@ tests/                   # Test suites
 
 ---
 
-## 28. Bytecode VM and ESKB Format
+## 27. Bytecode VM and ESKB Format
 
 Eshkol provides a dual backend architecture: the primary LLVM compilation path and a complementary bytecode VM for the qLLM/transformer weight pipeline and portable execution.
 
@@ -4747,7 +4693,7 @@ Dynamic binding of parameter objects. Parameters created with `make-parameter` a
 
 ## Conclusion
 
-This document provides a **complete** specification of the Eshkol programming language version v1.3.5-evolve, documenting **every** feature, function, operator, and capability found in the implementation.
+This document provides a **complete** specification of the Eshkol programming language, documenting **every** feature, function, operator, and capability found in the implementation.
 
 **Total Coverage:** (counts from `tests/coverage/language_surface.json` and `tests/coverage/coverage_policy.json`, the machine sources the coverage gate reads)
 - All 116 special forms and 113 parser AST operations
