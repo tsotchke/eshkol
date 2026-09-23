@@ -1,0 +1,35 @@
+;; tests/ad/vm_exact_division_by_zero_test.esk
+;; Ledger SW-219: exact division by exact zero inside a derivative raises, as
+;; the exact numeric tower does un-nested. The VM answered -inf.0 for
+;; (derivative-n (lambda (b) (/ 1 b)) 0 1) and +nan.0 for the nested cell.
+;; An inexact operand keeps IEEE semantics.
+
+(define failures 0)
+(define (fail name got want)
+  (set! failures (+ failures 1))
+  (display "FAIL: ") (display name)
+  (display " got=") (display got) (display " want=") (display want) (newline))
+(define (raises? thunk) (eq? (guard (e (#t 'raised)) (thunk) 'no) 'raised))
+(define (check-raises name thunk)
+  (if (raises? thunk)
+      (begin (display "  ok   ") (display name) (newline))
+      (fail name "no raise" "raised")))
+
+(check-raises "derivative-n order 1 at exact 0"
+              (lambda () (derivative-n (lambda (b) (/ 1 b)) 0 1)))
+(check-raises "derivative-n order 3 at exact 0"
+              (lambda () (derivative-n (lambda (b) (/ 1 b)) 0 3)))
+(check-raises "derivative at exact 0"
+              (lambda () (derivative (lambda (b) (/ 1 b)) 0)))
+(check-raises "nested exact division by exact zero"
+              (lambda () (derivative-n (lambda (a) (derivative-n (lambda (b) (/ a b)) 0 1)) 1 1)))
+(check-raises "taylor at exact 0"
+              (lambda () (taylor (lambda (b) (/ 2 b)) 0 2)))
+(if (raises? (lambda () (derivative (lambda (b) (/ 1.0 b)) 0.0)))
+    (fail "inexact division keeps IEEE semantics" "raised" "no raise")
+    (begin (display "  ok   inexact division keeps IEEE semantics") (newline)))
+
+(newline)
+(if (= failures 0)
+    (begin (display "PASS: exact division by zero raises") (newline) (exit 0))
+    (begin (display "FAIL: exact division by zero raises") (newline) (exit 1)))

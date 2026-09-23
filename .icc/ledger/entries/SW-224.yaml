@@ -1,0 +1,20 @@
+id: SW-224
+bucket: SILENT-WRONG
+subtag: autodiff
+family: vm/carrier-leak
+status: fixed
+closed_at: '4689ba7e2a739d825c8c83a1038ea3ebe39417e4'
+title: "VM derivative through a pole printed a carrier (<dual>) instead of the IEEE value"
+repro: >-
+  (derivative-n (lambda (x) (/ 1.0 x)) 0.0 2) on eshkol-vm-standalone-test.
+observed_before: >-
+  printed #<value:13> (a dual) instead of +inf.0.
+observed_after: >-
+  +inf.0; no extraction result is a carrier anywhere in the nested matrices' shapes or at poles.
+root_cause: >-
+  0 * inf in the extracted coefficient's tangent left a non-constant scalar dual, returned as a VAL_DUAL with no pass live.
+fixed_by: "the SW-222 pole rule on every VM kernel, and vm_ad_coeff_value, the one extraction exit, answers the primal when no forward pass is live"
+evidence: >-
+  tests/ad/vm_no_leaked_carrier_test.esk (ctest vm_no_leaked_carrier_vm/_browser_vm); tests/ad/division_pole_test.esk on the VM.
+caught_by: [v135f-coordinator-review]
+missed_by: [run_vm_parity]

@@ -225,6 +225,14 @@ public:
                              bool promote_on_non_numeric = false);
 
     /**
+     * Construction fill (`make-tensor shape fill`): store @p tagged_value into
+     * every slot of the tensor @p tensor_ptr (payload pointer) through the
+     * runtime encoder. A forward-mode derivative carrier widens the tensor to
+     * a jet tensor; a value that is not a number raises, named after @p who.
+     */
+    void emitTensorFill(llvm::Value* tensor_ptr, llvm::Value* tagged_value, const char* who);
+
+    /**
      * Branch on an eshkol_slot_store_status_t returned by a runtime half of
      * the boundary: continue on OK, otherwise raise the one diagnostic for that
      * status, named after @p who. Leaves the insert point on the success path.

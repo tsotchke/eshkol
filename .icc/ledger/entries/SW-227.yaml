@@ -1,0 +1,31 @@
+id: SW-227
+bucket: SILENT-WRONG
+subtag: autodiff
+family: runtime-taylor/unary-route-coverage
+status: fixed
+closed_at: "7c9ceca04"
+title: "(derivative (lambda (x) (inexact x)) 1/3) answered 0 natively (VM 1)"
+repro: >-
+  (derivative (lambda (x) (inexact x)) 1/3), and the same through a passed,
+  stored, mapped or applied inexact / exact->inexact.
+observed: >-
+  0 natively, as the VM Taylor lane measured it; exact->inexact read a
+  derivative carrier as a double and dropped the derivative.
+correct: >-
+  1.0 on every path.
+root_cause: >-
+  The carrier rule for inexact/exact->inexact was missing: a jet or a tower,
+  exact-point towers included, went to extractAsDouble.
+fix: >-
+  edf532399 (SW-214) gives inexact of a carrier or a complex its product with
+  an inexact 1, so each carrier applies its own contagion. The first-class
+  wrappers re-enter the same call-position lowering, and 7c9ceca04 makes every value
+  route (passed, stored, mapped, applied) go through that wrapper; on the
+  integration head 1e468f279 every path measured 1.0 on JIT and AOT.
+evidence: >-
+  tests/ad/unary_numeric_builtin_carriers_test.esk section SW-227/SW-228:
+  inexact and exact->inexact at the exact point 1/3 in call position,
+  passed, stored, mapped, applied, at order 2 and for exactness of the
+  result; ctest unary_numeric_builtin_carriers_jit and _aot pass (42 checks).
+caught_by: [vm-taylor-lane-mirror]
+missed_by: [value_position_axis_sweep]

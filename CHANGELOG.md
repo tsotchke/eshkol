@@ -27,6 +27,15 @@ the source changes; the verification record for the tagged commit is the
   derivative a complex value carries.** `(derivative (lambda (w) (expt w 3))
   1+1i)` was 0 and `(derivative-n log 1+1i 1)` lost its imaginary part (SW-211).
   Every procedure with a plain complex kernel now has a carrier formula.
+- **Every math builtin is a first-class value.** `atan2` passed, stored or
+  returned was the raw C function (a crash) and `(apply atan2 ...)` did not
+  compile; a first-class `atan` or `round` dropped its second argument. The
+  math builtins now take one table-driven value route, with `atan` and `round`
+  dispatching on their argument count (SW-230).
+- **A raise or an escape out of a derivative leaves no AD state behind.** The
+  forward pass level stayed raised, so later derivatives lost exactness and
+  `(derivative (lambda (b) (/ 1 b)) 0)` answered `-inf.0` instead of raising
+  after an earlier raise (SW-229).
 - **Powers at a zero base have the closed form's derivatives.** On a Taylor
   tower `sqrt`, `expt` with a constant exponent and the inverse functions'
   derivative series answered NaN at `0.0`, because the power recurrence divides
@@ -1515,6 +1524,19 @@ the source changes; the verification record for the tagged commit is the
   special-case ride, carry and hyper-dual lanes are gone. `atan`, `asin`,
   `acos` and two-argument `atan` carry every order, and a derivative of a
   vector-, list- or complex-valued function is read element by element.
+- **Every AD operator nests on the VM, and the VM agrees with native at
+  poles (ADR-0027 section 3, SW-218, SW-219, SW-220, SW-224).** `jacobian`
+  returns the matrix native returns and nests; the vector-point `hessian`,
+  `divergence`, `curl`, `laplacian` and `directional-derivative` run as
+  level passes inside a live pass. `asinh`, `acosh`, `atanh`, `log2`,
+  `log10`, `exp2`, `cbrt`, `square`, `inexact` and `atan2` are first-class
+  VM values. Higher derivatives of the inverse trigonometric and hyperbolic
+  functions are no longer the first derivative. Exact division by exact
+  zero inside a derivative raises instead of answering an infinity. A zero
+  perturbation coefficient contributes nothing even against an infinity,
+  division takes the series step, and a zero base follows the power step's
+  pole rule, so a derivative through a pole is the closed form's IEEE value
+  and never surfaces as a carrier.
 - **Complex values on the VM keep exact parts and every derivative order
   (SW-199, SW-200, SW-203).** `(make-rectangular 1/2 1/3)` printed `+0i`;
   `real-part` and `imag-part` of a complex carrying a Taylor tower returned
@@ -1523,6 +1545,25 @@ the source changes; the verification record for the tagged commit is the
 - **VM full tensor reductions return a number (SW-202).** With no axis,
   `tensor-sum`, `tensor-mean`, `tensor-max` and `tensor-min` answered a
   1-element tensor for a vector and a row of partial results for a matrix.
+
+- **A derivative passes through a tensor on every engine, exactly at an exact
+  point (ledger SW-197, ADR-0020 amendment 2).** Through `(tensor ...)`, the
+  native exact tier stored its Taylor tower as 0, the native jet tier refused a
+  dual, and the VM kept only the primal, so `derivative`, `gradient`,
+  `derivative-n` and `taylor` through a tensor literal answered 0 with exit
+  status 0. Every tensor construction path now stores through the container
+  slot store boundary: a forward-mode carrier widens the tensor to a jet tensor
+  and is kept whole, and `tensor-ref` reads it back whole on native and VM
+  alike. `(derivative (lambda (x) (tensor-ref (tensor x (* x x)) 1)) 1/3)` is
+  `2/3` on the JIT, AOT and the VM. The exact tier declines a body that applies
+  a tensor kernel, which answers inexactly on a tensor's numbers. Lists,
+  vectors, `map`, `fold` and `parallel-map` keep an exact point exact. Test:
+  `tests/ad/exact_collection_intermediates_test.esk` on JIT, AOT, VM source and
+  VM ESKB, and parity corpus program 94. The same holds for the carrier of a
+  nested differentiation level (ADR-0027): `(derivative (lambda (a)
+  (derivative-n (lambda (b) (tensor-ref (tensor (* a b b) 5.0) 0)) 1.0 2)) 2.0)`
+  answered 0 and is 2, and `tensor-sum` over such a tensor folds its towers with
+  the language's own `+` (SW-212, `tests/ad/nested_level_through_tensor_test.esk`).
 
 - ESKM v1 scalar and empty tensor checkpoints retain their shapes and values
   across native and VM producers and consumers. Scalar observation is admitted

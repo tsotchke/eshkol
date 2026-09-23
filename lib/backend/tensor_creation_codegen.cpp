@@ -597,20 +597,19 @@ llvm::Value* TensorCodegen::makeTensorImpl(const eshkol_operations_t* op) {
         llvm::StructType* tensor_type = ctx_.tensorType();
         llvm::Value* s_elems_field = builder.CreateStructGEP(tensor_type, scalar_tensor, 2);
         llvm::Value* s_elems = builder.CreateLoad(ctx_.ptrType(), s_elems_field);
-        // Store shape_arg as element 0
-        llvm::Value* e0_double;
-        if (shape_arg->getType() == ctx_.taggedValueType()) {
-            e0_double = extractAsDouble(shape_arg);
-        } else if (shape_arg->getType() == ctx_.doubleType()) {
-            e0_double = shape_arg;
-        } else {
-            e0_double = builder.CreateSIToFP(shape_arg, ctx_.doubleType());
-        }
-        builder.CreateStore(builder.CreateBitCast(e0_double, ctx_.int64Type()),
-            builder.CreateGEP(ctx_.int64Type(), s_elems, llvm::ConstantInt::get(ctx_.int64Type(), 0)));
-        // Store fill_arg as element 1
-        builder.CreateStore(fill_bits,
-            builder.CreateGEP(ctx_.int64Type(), s_elems, llvm::ConstantInt::get(ctx_.int64Type(), 1)));
+        (void)s_elems;
+        // Both elements go through the container slot store boundary
+        // (ADR-0020): a forward-mode derivative carrier widens the tensor to a
+        // jet tensor instead of being read as its primal.
+        auto asTagged = [&](llvm::Value* v) -> llvm::Value* {
+            if (v->getType() == ctx_.taggedValueType()) return v;
+            if (v->getType() == ctx_.doubleType()) return tagged_.packDouble(v);
+            return tagged_.packDouble(builder.CreateSIToFP(v, ctx_.doubleType()));
+        };
+        ctx_.emitTensorSlotStore(scalar_tensor, llvm::ConstantInt::get(ctx_.int64Type(), 0),
+                                 asTagged(shape_arg), "make-tensor");
+        ctx_.emitTensorSlotStore(scalar_tensor, llvm::ConstantInt::get(ctx_.int64Type(), 1),
+                                 asTagged(fill_arg), "make-tensor");
     }
     llvm::BasicBlock* final_merge = llvm::BasicBlock::Create(ctx_.context(), "mt_final", current_func);
     builder.CreateBr(final_merge);
@@ -733,6 +732,30 @@ llvm::Value* TensorCodegen::makeTensorImpl(const eshkol_operations_t* op) {
     result->addIncoming(mt_list_tensor, mt_list_direct_exit);
     result->addIncoming(vector_tensor, vector_exit);
     result->addIncoming(shape_tensor, shape_exit);
+
+    // A shaped fill whose value is not a plain double or fixnum -- an exact
+    // rational or bignum, or a forward-mode derivative carrier -- is refilled
+    // through the slot store boundary (ADR-0020 amendment 2): the carrier
+    // widens the tensor to a jet tensor rather than being read as its primal.
+    if (fill_arg->getType() == ctx_.taggedValueType()) {
+        llvm::PHINode* is_fill = builder.CreatePHI(builder.getInt1Ty(), 4, "mt_is_fill");
+        is_fill->addIncoming(builder.getFalse(), scalar_exit);
+        is_fill->addIncoming(builder.getTrue(), mt_list_direct_exit);
+        is_fill->addIncoming(builder.getTrue(), vector_exit);
+        is_fill->addIncoming(builder.getTrue(), shape_exit);
+        llvm::Value* fill_type = tagged_.getBaseType(tagged_.getType(fill_arg));
+        llvm::Value* plain = builder.CreateOr(
+            builder.CreateICmpEQ(fill_type, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE)),
+            builder.CreateICmpEQ(fill_type, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64)));
+        llvm::Function* fn = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* refill = llvm::BasicBlock::Create(ctx_.context(), "mt_refill", fn);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_.context(), "mt_refill_done", fn);
+        builder.CreateCondBr(builder.CreateAnd(is_fill, builder.CreateNot(plain)), refill, done);
+        builder.SetInsertPoint(refill);
+        ctx_.emitTensorFill(result, fill_arg, "make-tensor");
+        builder.CreateBr(done);
+        builder.SetInsertPoint(done);
+    }
 
     return tagged_.packHeapPtr(result);
 }

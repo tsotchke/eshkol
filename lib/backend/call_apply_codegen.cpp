@@ -304,6 +304,20 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
 
         // Try to find function by name in the module
         Function* named_func = dynamic_binding ? nullptr : ctx_.module().getFunction(func_name);
+        // SW-230: a function of this name that does not speak the tagged-value
+        // ABI is a raw C declaration (libm `atan`, `atan2`, ...), never the
+        // Scheme procedure: calling it with tagged arguments was invalid IR.
+        // The name is then evaluated as a value -- the first-class builtin --
+        // and applied as a callable.
+        auto raw_c = [&](Function* f) { return f && f->getReturnType() != ctx_.taggedValueType(); };
+        auto apply_as_value = [&]() -> Value* {
+            Value* resolved = codegen_ast_callback_ ? codegen_ast_callback_(func_arg, callback_context_) : nullptr;
+            return resolved ? applyCallable(resolved, list_int) : nullptr;
+        };
+        if (raw_c(named_func)) {
+            if (Value* v = apply_as_value()) return v;
+            named_func = nullptr;
+        }
         if (named_func) {
             return applyUserFunction(named_func, list_int);
         }
@@ -412,6 +426,9 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             auto ft_it = function_table_->find(func_name);
             if (ft_it != function_table_->end() && ft_it->second) {
                 Function* tf = ft_it->second;
+                if (raw_c(tf)) {                                     // SW-230
+                    if (Value* v = apply_as_value()) return v;
+                }
                 bool has_captures = false;
                 for (auto& arg : tf->args()) {
                     if (arg.getType()->isPointerTy()) { has_captures = true; break; }

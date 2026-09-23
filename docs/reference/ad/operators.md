@@ -378,6 +378,24 @@ in value and in exactness. Gated by `tests/ad/exact_point_ad_test.esk`
 (JIT + AOT in CTest) and the `exactpoint` family of
 `tests/ad_adversarial/gen_ad_adversarial.py`.
 
+**Through collections.** The carrier -- and at an exact point its exactness --
+survives values passing through lists, vectors and tensors inside the body.
+Lists and vectors hold any value. A tensor holds a derivative carrier whole in
+a jet tensor, so construction and element reads keep it; a tensor *kernel*
+computes on the tensor's numbers, which are inexact, so a body that applies one
+answers the same derivative inexactly:
+
+```scheme
+(derivative (lambda (x) (fold-left + 0 (map (lambda (y) (* y y)) (list x x x x)))) 1/3)
+;; => 8/3
+(derivative (lambda (x) (tensor-ref (tensor x (* x x)) 1)) 1/3)   ;; => 2/3
+(derivative-n (lambda (x) (tensor-ref (tensor x (* x x x)) 1)) 1/3 2) ;; => 2
+(derivative (lambda (x) (tensor-sum (tensor x (* x x)))) 1/2)     ;; => 2.0
+```
+
+Gated on the JIT, AOT, the VM and VM ESKB by
+`tests/ad/exact_collection_intermediates_test.esk`.
+
 Three properties hold for every operator and every point form:
 
 - **An exact seed never disagrees with the same operator applied at

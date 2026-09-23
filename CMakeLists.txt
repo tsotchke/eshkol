@@ -4461,12 +4461,15 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     # derivative a complex value carries. SW-214: square, inexact and
     # magnitude of a real carrier did the same. SW-222: a derivative through a
     # simple pole of a quotient was NaN natively (division_pole also runs on
-    # both VMs, in the ADR-0027 table). JIT and AOT.
+    # both VMs, in the ADR-0027 table). SW-229: forward AD state after a raise
+    # or an escape. SW-230: every math builtin first-class. JIT and AOT.
     foreach(_carrier_test
             taylor_integral_family:tests/ad/taylor_integral_family_test.esk
             complex_carrier_math:tests/ad/complex_carrier_math_test.esk
             unary_numeric_builtin_carriers:tests/ad/unary_numeric_builtin_carriers_test.esk
-            division_pole:tests/ad/division_pole_test.esk)
+            division_pole:tests/ad/division_pole_test.esk
+            first_class_math_builtins:tests/ad/first_class_math_builtins_test.esk
+            ad_state_after_raise:tests/ad/ad_state_after_raise_test.esk)
         string(REPLACE ":" ";" _carrier_parts "${_carrier_test}")
         list(GET _carrier_parts 0 _carrier_name)
         list(GET _carrier_parts 1 _carrier_src)
@@ -4493,6 +4496,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: ${_carrier_name}"
                 FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Unhandled exception")
     endforeach()
+    # SW-229: the VM's exact-division-by-zero program, natively (JIT, AOT).
+    add_test(NAME vm_exact_division_by_zero_jit
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/vm_exact_division_by_zero_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME vm_exact_division_by_zero_aot
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/vm_exact_division_by_zero_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/vm_exact_division_by_zero_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/vm_exact_division_by_zero_aot'")
+    set_tests_properties(vm_exact_division_by_zero_jit vm_exact_division_by_zero_aot
+        PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+            PASS_REGULAR_EXPRESSION "PASS: exact division by zero raises"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Unhandled exception")
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
         # Every builtin the math dispatch lowers has a Taylor recurrence, and
@@ -5758,6 +5775,74 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 900
             PASS_REGULAR_EXPRESSION "PASS: Jacobian counterexample"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # SW-197: a derivative keeps its carrier -- and at an exact point its
+    # exactness -- through list, vector and tensor intermediates (ADR-0020
+    # amendment 2: a forward-mode carrier stored into a tensor makes it a jet
+    # tensor and is read back whole). One self-checking matrix on all four
+    # routes: native JIT, AOT, VM from source, VM from ESKB.
+    add_test(
+        NAME exact_collection_intermediates_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    add_test(
+        NAME exact_collection_intermediates_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates_aot'"
+    )
+    add_test(
+        NAME exact_collection_intermediates_vm_smoke
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk"
+    )
+    add_test(
+        NAME exact_collection_intermediates_vm_eskb_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates.eskb'"
+    )
+    set_tests_properties(
+        exact_collection_intermediates_runtime_smoke
+        exact_collection_intermediates_aot_smoke
+        exact_collection_intermediates_vm_smoke
+        exact_collection_intermediates_vm_eskb_smoke
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: exact derivative through collection intermediates"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
+    # SW-212: a nested differentiation level's carrier (ADR-0027) survives a
+    # tensor literal, tensor-ref and tensor-sum (ADR-0020 amendment 2), on the
+    # native JIT, AOT, the VM from source and the VM from ESKB.
+    add_test(
+        NAME nested_level_through_tensor_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    add_test(
+        NAME nested_level_through_tensor_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor_aot'"
+    )
+    add_test(
+        NAME nested_level_through_tensor_vm_smoke
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk"
+    )
+    add_test(
+        NAME nested_level_through_tensor_vm_eskb_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor.eskb'"
+    )
+    set_tests_properties(
+        nested_level_through_tensor_runtime_smoke
+        nested_level_through_tensor_aot_smoke
+        nested_level_through_tensor_vm_smoke
+        nested_level_through_tensor_vm_eskb_smoke
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: nested level carrier through tensors"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
     # ESH-0394: the exact-coefficient Taylor tier is the ORACLE the exact tier
     # routes `derivative`/`gradient`/`hessian` to at an exact point, so a
     # regression in it is a regression in all three. It was unwired -- nothing in
@@ -6383,7 +6468,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         # (site/static/eshkol-vm.js, the same sources compiled to WebAssembly,
         # driven by node); the ones whose native answers are already in force
         # also run on the native JIT. Ledger: SW-154 (the two matrices),
-        # SW-193, SW-194, SW-199, SW-200, SW-202, SW-203.
+        # SW-193, SW-194, SW-199, SW-200, SW-202, SW-203, SW-218, SW-219, SW-220,
+        # SW-222, SW-224, SW-225.
         find_program(ESHKOL_VM_CARRIER_NODE node)
         set(_esh_vm_carrier_tests
             "nested_towers_matrix|tests/ad/nested_towers_matrix_test.esk|PASS: nested towers matrix|vm"
@@ -6395,7 +6481,15 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             "tensor_full_reduction|tests/tensor/tensor_full_reduction_test.esk|PASS: tensor full reductions|all"
             "complex_negate_abs|tests/complex/complex_negate_abs_test.esk|PASS: complex negate and abs|all"
             "vm_region_evac_level_carrier|tests/memory/vm_region_evac_level_carrier_test.esk|PASS: VM region-evac level carrier|vm"
-            "division_pole|tests/ad/division_pole_test.esk|PASS: division_pole|vm")
+            "nested_operator_levels|tests/ad/nested_operator_levels_test.esk|PASS: nested operator levels|vm"
+            "vm_inverse_trig_orders|tests/ad/vm_inverse_trig_orders_test.esk|PASS: inverse trig orders|vm"
+            "vm_exact_division_by_zero|tests/ad/vm_exact_division_by_zero_test.esk|PASS: exact division by zero raises|vm"
+            "vm_math_first_class|tests/ad/vm_math_first_class_test.esk|PASS: VM first-class math|vm"
+            "division_pole|tests/ad/division_pole_test.esk|PASS: division_pole|vm"
+            "vm_no_leaked_carrier|tests/ad/vm_no_leaked_carrier_test.esk|PASS: no leaked carrier|vm"
+            "taylor_integral_family|tests/ad/taylor_integral_family_test.esk|PASS: taylor_integral_family|vm"
+            "complex_carrier_math|tests/ad/complex_carrier_math_test.esk|PASS: complex_carrier_math|vm"
+            "unary_numeric_builtin_carriers|tests/ad/unary_numeric_builtin_carriers_test.esk|PASS: unary_numeric_builtin_carriers|vm")
         foreach(_esh_spec IN LISTS _esh_vm_carrier_tests)
             string(REPLACE "|" ";" _esh_parts "${_esh_spec}")
             list(GET _esh_parts 0 _esh_name)
