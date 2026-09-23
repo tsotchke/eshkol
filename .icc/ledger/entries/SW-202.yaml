@@ -1,0 +1,29 @@
+id: SW-202
+bucket: SILENT-WRONG
+family: vm/tensor-reduction-shape
+status: fixed
+closed_at: "7c036631d"
+needs_decision: false
+title: "VM tensor-sum without an axis returns a one-element tensor instead of a number"
+repro: >-
+  (display (tensor-sum (tensor 0.5 0.25))) and
+  (display (number? (tensor-sum (tensor 0.5 0.25)))) on the bytecode VM
+  (eshkol-vm-standalone-test), against the native JIT.
+observed: >-
+  The VM prints #(0.75) and #f; native prints 0.75 and #t. Arithmetic on the VM
+  result, (+ 1 (tensor-sum (tensor 0.5 0.25))), is a fatal runtime error. A
+  vector operand behaves the same, and a list operand raises "tensor-reduce:
+  expected a tensor or numeric vector operand" where native coerces it.
+correct: >-
+  A full reduction (no axis) returns the scalar on every engine, as native and
+  the VM's own dual-carrier branch of the same native (case 457) already do.
+evidence: >-
+  Found while building the SW-197 regression matrix. Fixed by the VM Taylor
+  lane in 7c036631d: the prelude passes #f for "no axis", so a full reduction
+  returns the scalar on the VM as it does natively. Gate:
+  tests/tensor/tensor_full_reduction_test.esk.
+caught_by: [sw197-exact-collection-matrix]
+missed_by: [vm_parity]
+notes: >-
+  Filed by the v1.3.5 exact-derivative lane; fixed on the integration branch by
+  the VM Taylor lane (7c036631d).
