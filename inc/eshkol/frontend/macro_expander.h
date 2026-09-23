@@ -148,6 +148,12 @@ private:
      */
     eshkol_ast_t expandNode(const eshkol_ast_t& ast);
 
+    /** Expand a top-level form (R7RS 5.1): a macro use there expands in
+     *  top-level parse mode, so an expansion to (begin (define ...) ...)
+     *  splices its definitions into the program, and a top-level `begin` or
+     *  `with-region` passes the status on to its forms. */
+    eshkol_ast_t expandToplevelForm(const eshkol_ast_t& ast);
+
     /**
      * Expand one macro use: match its reader syntax against the transformer,
      * instantiate the template, and parse the expansion. Returns @p call
@@ -163,6 +169,8 @@ private:
      * Deep copy an AST node.
      */
     eshkol_ast_t copyAst(const eshkol_ast_t& ast);
+    /** The next expandNode call expands a top-level form. Consumed on entry. */
+    bool toplevel_form_ = false;
 };
 
 } // namespace eshkol

@@ -118,6 +118,33 @@ eshkol_ast_t parse_syntax_datum(const SyntaxDatum& datum,
                                 const std::set<std::string>& macro_names);
 
 /**
+ * While alive, the next form parsed is a top-level form of a program
+ * (R7RS 5.1): a `begin` there splices its forms, definitions included, into
+ * the top level instead of scoping them, and passes the same status to its own
+ * forms, as a top-level `with-region` does. The parser's top-level entry
+ * points and the macro expander (for the expansion of a top-level macro use)
+ * open one. Implemented by the parser (lib/frontend/parser.cpp).
+ */
+class ToplevelFormParseScope {
+public:
+    ToplevelFormParseScope();
+    ~ToplevelFormParseScope();
+    ToplevelFormParseScope(const ToplevelFormParseScope&) = delete;
+    ToplevelFormParseScope& operator=(const ToplevelFormParseScope&) = delete;
+private:
+    bool previous_;
+};
+
+/**
+ * Splice top-level sequences into the program, recursively (R7RS 5.1): every
+ * ESHKOL_SEQUENCE_OP in @p forms -- a top-level `begin`, or a parser
+ * expansion such as define-record-type -- is replaced by its forms, in order.
+ * The one splice rule for every consumer of a top-level form list (the
+ * driver, the code generator after macro expansion, the REPL).
+ */
+void splice_toplevel_forms(std::vector<eshkol_ast_t>& forms);
+
+/**
  * Apply @p rename to every identifier occurrence that is code rather than
  * data: symbols under `quote`, and under `quasiquote` outside its `unquote`
  * escapes, are left alone. Used for module-private renaming.
