@@ -1,0 +1,39 @@
+id: SW-212
+bucket: SILENT-WRONG
+family: ad/native-exact-tier
+status: fixed
+closed_at: "a9747c2bb"
+needs_decision: false
+title: "a Taylor carrier stored in a (tensor ...) literal under a tower or level pass answers 0"
+repro: >-
+  (derivative (lambda (a) (derivative-n (lambda (b) (tensor-ref (tensor (* a b b)
+  5.0) 0)) 1.0 2)) 2.0), and the same body with tensor-sum in place of
+  tensor-ref.
+observed: >-
+  0 with exit status 0 on the native JIT and AOT: the literal lowering read the
+  inner pass's Taylor carrier (a level carrier under ADR-0027) as a number, and
+  a jet tensor's tensor-sum read tower slots as doubles. The jet path refused a
+  dual in the same shape.
+correct: >-
+  2. A forward-mode carrier of any kind -- dual jet, classic tower or nested
+  level carrier -- is kept whole by the tensor slot store boundary (ADR-0020
+  amendment 2), read back whole by tensor-ref, and summed as itself by
+  tensor-sum.
+evidence: >-
+  d3d088e0a routes every tensor construction path through the slot store
+  boundary; a9747c2bb folds a jet tensor's tensor-sum with the generic Taylor
+  entry (eshkol_jet_tensor_sum). Re-measured at a9747c2bb on the ADR-0027 base
+  (fix/v135f-exact-level): tests/ad/nested_level_through_tensor_test.esk passes
+  on JIT and AOT (d1 of dn2, dn2 of dn2, d1 of d1 of dn2, tensor-sum under a
+  level, the tensor-from-list form, exact at an exact point), and
+  tests/ad/exact_collection_intermediates_test.esk passes on JIT, AOT, VM source
+  and VM ESKB.
+caught_by: [integrator-release-review]
+missed_by: [exact_point_ad_test, vm_parity]
+notes: >-
+  Re-measured after merging integration 74ab39152 (VM level carrier from
+  fix/v135f-vmtaylor): nested_level_through_tensor passes on the native JIT,
+  AOT, the VM from source and the VM from ESKB (CTest
+  nested_level_through_tensor_{runtime,aot,vm,vm_eskb}_smoke). The VM
+  tensor-kernel guard treats every non-scalar VmDual kind, LEVEL included, as a
+  derivative.

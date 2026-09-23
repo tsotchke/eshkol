@@ -1,0 +1,20 @@
+id: SW-220
+bucket: SILENT-WRONG
+subtag: autodiff
+family: vm/operator-levels
+status: fixed
+closed_at: 'ea25399476bb56bb0c7ac42e7530b3f771234250'
+title: "VM AD operators outside the level protocol: jacobian, vector hessian, divergence, curl, laplacian, directional-derivative nested in a live pass; missing first-class math builtins"
+repro: >-
+  tests/ad/nested_operator_levels_test.esk on eshkol-vm-standalone-test; (asinh 0.5) on the VM.
+observed_before: >-
+  "*: expected numeric operands" at the first jacobian cell; un-nested jacobian of a vector field answered #(0 0); asinh, acosh, atanh, log2, log10, exp2, cbrt, square, inexact and atan2 were undefined.
+observed_after: >-
+  nested_operator_levels 36/36 on the VM and the browser VM; jacobian returns the matrix native returns; the ten names are first-class VM builtins on every number kind.
+root_cause: >-
+  the operators seeded flat scalar duals or hyper-duals regardless of an enclosing pass, and jacobian read only tensor results.
+fixed_by: "ADR-0027 section 3 on the VM: forward level passes per column/axis finished in the generic carrier arithmetic (lib/backend/vm_native.c vm_ad_level_*)"
+evidence: >-
+  tests/ad/nested_operator_levels_test.esk, tests/ad/vm_math_first_class_test.esk (ctest *_vm and *_browser_vm); scripts/run_vm_parity.sh 372/0.
+caught_by: [v135f-coordinator-review]
+missed_by: [run_vm_parity]

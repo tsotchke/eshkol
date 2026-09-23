@@ -1,0 +1,61 @@
+;; tests/ad/vm_no_leaked_carrier_test.esk
+;; Ledger SW-224: no user-visible AD result is ever a carrier. On the VM,
+;; (derivative-n (lambda (x) (/ 1.0 x)) 0.0 2) printed #<dual> instead of
+;; +inf.0: the extracted coefficient kept a NaN tangent (0 * inf) and left the
+;; pass as a dual. Every extraction now leaves through one exit that, with no
+;; forward pass live, answers the primal. This guard sweeps the extraction
+;; results of the nested matrices' shapes, poles included, and fails on any
+;; carrier anywhere inside a result (lists, vectors, complex values).
+
+(define leaks 0)
+(define checks 0)
+(define (carrier-free? v)
+  (cond ((dual? v) #f)
+        ((pair? v) (and (carrier-free? (car v)) (carrier-free? (cdr v))))
+        ((vector? v) (let loop ((i 0))
+                       (or (= i (vector-length v))
+                           (and (carrier-free? (vector-ref v i)) (loop (+ i 1))))))
+        (else #t)))
+(define (guard-leak name thunk)
+  (set! checks (+ checks 1))
+  (let ((v (guard (e (#t 'raised)) (thunk))))
+    (if (carrier-free? v)
+        (begin (display "  ok   ") (display name) (newline))
+        (begin (set! leaks (+ leaks 1))
+               (display "FAIL: leaked carrier from ") (display name) (newline)))))
+
+(define (d1 f x) (derivative f x))
+(define (dn f x k) (derivative-n f x k))
+(define (ty f x k) (taylor f x k))
+(define (cube x) (* x x x))
+
+;; poles and indeterminate forms
+(guard-leak "1/x d2 at 0" (lambda () (dn (lambda (x) (/ 1.0 x)) 0.0 2)))
+(guard-leak "1/x d3 at -0.0" (lambda () (dn (lambda (x) (/ 1.0 x)) -0.0 3)))
+(guard-leak "1/x^2 d2 at 0" (lambda () (dn (lambda (x) (/ 1.0 (* x x))) 0.0 2)))
+(guard-leak "x/x d1 at 0" (lambda () (d1 (lambda (x) (* x (/ 1.0 x))) 0.0)))
+(guard-leak "taylor of 1/x at 0" (lambda () (ty (lambda (x) (/ 1.0 x)) 0.0 3)))
+(guard-leak "sqrt d2 at 0" (lambda () (dn sqrt 0.0 2)))
+(guard-leak "log d2 at 0" (lambda () (dn log 0.0 2)))
+(guard-leak "cbrt d3 at 0" (lambda () (dn cbrt 0.0 3)))
+(guard-leak "nested 1/y at 0" (lambda () (d1 (lambda (x) (d1 (lambda (y) (/ 1.0 y)) x)) 0.0)))
+;; the nested matrices' shapes
+(guard-leak "d2 dn2 x dn3" (lambda () (dn (lambda (a) (dn (lambda (b) (* a a a b b b)) 3.0 3)) 2.0 2)))
+(guard-leak "d3 1/1/1 through taylor"
+            (lambda () (ty (lambda (a) (d1 (lambda (b) (dn (lambda (cc) (* a b cc)) 1.5 1)) 3.0)) 2.0 2)))
+(guard-leak "taylor over taylor, list-valued" (lambda () (ty (lambda (a) (ty (lambda (b) (* a b b)) 1.0 2)) 2.0 1)))
+(guard-leak "exact nest" (lambda () (dn (lambda (a) (dn (lambda (b) (* a a a b b b)) 1/5 2)) 1/3 2)))
+(guard-leak "gradient of derivative" (lambda () (gradient (lambda (v) (d1 (lambda (x) (* x (vector-ref v 0) (vector-ref v 1))) 2.0)) (vector 3.0 4.0))))
+(guard-leak "derivative of gradient" (lambda () (d1 (lambda (a) (gradient (lambda (x y) (* a x y y)) (vector 1.0 2.0))) 3.0)))
+(guard-leak "jacobian under dn" (lambda () (dn (lambda (t) (jacobian (lambda (v) (vector (* t (vector-ref v 0)))) (vector 2.0))) 1.0 1)))
+(guard-leak "hessian under d1" (lambda () (d1 (lambda (q) (hessian (lambda (x y) (* q x x y)) (vector 1.0 2.0))) 1.5)))
+(guard-leak "vector-valued derivative" (lambda () (d1 (lambda (a) (vector a (* a a) (/ 1.0 a))) 0.0)))
+(guard-leak "complex nested" (lambda () (d1 (lambda (z) (d1 (lambda (w) (* w w w)) z)) (make-rectangular 1.0 1.0))))
+(guard-leak "complex pole" (lambda () (dn (lambda (z) (/ 1.0 z)) (make-rectangular 0.0 0.0) 2)))
+(guard-leak "independent inner" (lambda () (dn (lambda (x) (+ (* x x) (dn cube 3.0 2))) 4.0 1)))
+
+(newline)
+(display "checks: ") (display checks) (newline)
+(if (= leaks 0)
+    (begin (display "PASS: no leaked carrier") (newline) (exit 0))
+    (begin (display "FAIL: ") (display leaks) (display " leaked carriers") (newline) (exit 1)))

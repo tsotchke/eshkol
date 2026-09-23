@@ -503,6 +503,34 @@ static VmComplex* vm_complex_expt(VmRegionStack* rs, const VmComplex* a, const V
     eshkol_cpx av = vm_cpx_in(a), bv = vm_cpx_in(b);
     eshkol_cpx v = eshkol_cpx_pow(av, bv);
     if (!vm_complex_has_tangent(a) && !vm_complex_has_tangent(b)) return vm_cpx_out(rs, v);
+    if (vm_complex_has_carrier(a) || vm_complex_has_carrier(b)) {
+        /* Carried parts (ADR-0025/0027): compose from the carrier-aware
+         * complex operations so every derivative order survives. A constant
+         * integral exponent is repeated multiplication, defined at a zero
+         * base; any other exponent is exp(b log a). */
+        if (!vm_complex_has_tangent(b) && bv.im == 0.0 && bv.re == floor(bv.re) &&
+            fabs(bv.re) <= 1024.0) {
+            long k = (long)fabs(bv.re);
+            VmComplex* acc = vm_complex_new(rs, 1.0, 0.0);
+            VmComplex base = *a;
+            VmComplex* bp = &base;
+            while (acc && k > 0) {
+                if (k & 1) acc = vm_complex_mul(rs, acc, bp);
+                k >>= 1;
+                if (k) bp = vm_complex_mul(rs, bp, bp);
+                if (!bp) return NULL;
+            }
+            if (acc && bv.re < 0.0) acc = vm_complex_div(rs, vm_complex_new(rs, 1.0, 0.0), acc);
+            return acc;
+        }
+        if (av.re == 0.0 && av.im == 0.0) {
+            vm_complex_d_error = "expt: not differentiable at a zero base (a^b = exp(b log a) has no derivative there)";
+            return NULL;
+        }
+        VmComplex* la = vm_complex_log(rs, a);
+        VmComplex* p = la ? vm_complex_mul(rs, b, la) : NULL;
+        return p ? vm_complex_exp(rs, p) : NULL;
+    }
     if (av.re == 0.0 && av.im == 0.0) {
         vm_complex_d_error = "expt: not differentiable at a zero base (a^b = exp(b log a) has no derivative there)";
         return NULL;
