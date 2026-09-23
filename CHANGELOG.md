@@ -1484,6 +1484,12 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **Variadic builtins are variadic values.** `+`, `-`, `*`, `/` and the
+  numeric, string and char comparison chains passed as values used to be
+  their 2-argument form natively, so `(apply f (append a m))` with `+` over
+  three arguments raised an arity mismatch. They are now the R7RS variadic
+  procedures on both engines. (SW-241)
+
 - **Continuation escapes from parallel callbacks and `map` arity.** Native
   code invoking, inside a `parallel-map`, `-filter`, `-for-each`,
   `-execute` or future callback, a continuation captured outside it crashed
