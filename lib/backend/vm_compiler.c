@@ -3610,6 +3610,11 @@ static Node** vm_collect_body_nodes(Node* node, int body_start, int* out_n) {
     return out;
 }
 
+/* The name a top-level binding carries while its initializer runs: the
+ * syntax color mark alone, which no reader produces as a symbol, so nothing
+ * resolves to the slot until the definition binds it. */
+#define VM_TOPLEVEL_PENDING_BINDING "\x1d"
+
 static void compile_form_define(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -3637,6 +3642,27 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_VEC_SET, 0);
             chunk_emit(c, OP_POP, 0); /* discard VEC_SET's unspecified value */
             chunk_emit(c, OP_NIL, 0);
+            return;
+        }
+        if (redef_slot < 0 && c->enclosing == NULL && c->scope_depth == 0) {
+            /* A new top-level binding. Its operand-stack slot is reserved
+             * BEFORE the initializer runs, under a name no identifier can
+             * spell, so the initializer cannot see it; the name is bound once
+             * the value is stored. The slot therefore sits below the stack
+             * top of any continuation the initializer captures, and
+             * re-entering `(define r (call/cc ...))` -- R7RS 5.3.1: a second
+             * definition assigns the same location -- resumes onto the store
+             * instead of being refused as a binding established after the
+             * capture (vm_restore_continuation_stack). */
+            chunk_emit(c, OP_NIL, 0);
+            int slot = add_local(c, VM_TOPLEVEL_PENDING_BINDING);
+            compile_expr(c, node->children[2], 0);
+            chunk_emit(c, OP_SET_LOCAL, slot);
+            if (slot >= 0) {
+                free(c->locals[slot].name);
+                c->locals[slot].name = strdup(node->children[1]->symbol);
+                c->locals[slot].serial = ++g_vm_binding_serial;
+            }
             return;
         }
         compile_expr(c, node->children[2], 0);
