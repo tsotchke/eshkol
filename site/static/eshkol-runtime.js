@@ -22,6 +22,12 @@ class EshkolRuntime {
         this.memory = null;
     }
 
+    // A header-prefixed string buffer of `len` bytes plus the terminator;
+    // the one place the JS string allocation knows the header's size.
+    _allocString(len) {
+        return this._bump(len + 9) + 8;
+    }
+
     // Bump allocator for arena stubs
     _bump(size) {
         if (!this._bumpPtr) this._bumpPtr = 131072; // Start at 128KB
@@ -473,7 +479,7 @@ class EshkolRuntime {
                 arena_tape_reset: () => {},
                 arena_tape_get_node: () => 0,
                 arena_tape_get_node_count: () => 0,
-                arena_allocate_string_with_header: (arena, len) => rt._bump(Number(len) + 9) + 8,
+                arena_allocate_string_with_header: (arena, len) => rt._allocString(Number(len)),
                 // (make-string k [char]): the rules of the native runtime's
                 // eshkol_make_string_checked -- k an exact non-negative
                 // integer (tag 1), the fill a character (tag 4) written as
@@ -495,7 +501,7 @@ class EshkolRuntime {
                     const enc = new TextEncoder().encode(String.fromCodePoint(cp));
                     const count = Number(k);
                     const len = count * enc.length;
-                    const buf = rt._bump(len + 9) + 8;
+                    const buf = rt._allocString(len);
                     const mem = new Uint8Array(rt.memory.buffer);
                     for (let i = 0; i < count; i++) mem.set(enc, Number(buf) + i * enc.length);
                     mem[Number(buf) + len] = 0;

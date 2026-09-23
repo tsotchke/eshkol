@@ -35,6 +35,13 @@
       "from": 4,
       "to": 3,
       "reason": "SW-197 / ADR-0020 amendment 2: the tensor collection walker stores each leaf through eshkol_tensor_slot_store instead of classifying rational/bignum leaves itself, so its private ESHKOL_GET_HEADER read in coll_leaf_double is gone; the slot store boundary's own header read covers it."
+    },
+    {
+      "class": "E_alloc_with_header",
+      "path": "lib/core/runtime_string.cpp",
+      "from": 3,
+      "to": 2,
+      "reason": "make-string moved into this file (eshkol_make_string_checked); rather than add a fourth call of arena_allocate_string_with_header, every string allocation of the file now goes through one helper, eshkol_string_buffer, leaving the extern declaration and that helper as the only header-aware sites."
     }
   ]
 }

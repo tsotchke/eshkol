@@ -1,5 +1,5 @@
 {
-  "commit": "4824b16794918bf4faa58508b5d5f028226ccf7b",
+  "commit": "951effb8f418306fc804debf17a097ddbb6e56e7",
   "counts": {
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 33,
@@ -138,7 +138,7 @@
       "lib/core/runtime_parameters_hosted.cpp": 2,
       "lib/core/runtime_reader_hosted.cpp": 3,
       "lib/core/runtime_regions.cpp": 1,
-      "lib/core/runtime_string.cpp": 3,
+      "lib/core/runtime_string.cpp": 2,
       "lib/core/runtime_string_ports_hosted.cpp": 3,
       "lib/core/runtime_taylor.c": 8,
       "lib/core/runtime_tensor_alloc.cpp": 2,
@@ -202,7 +202,7 @@
       "tests/ffi/sqlite_column_roundtrip_test.c": 5
     },
     "H_wasm_glue": {
-      "site/static/eshkol-runtime.js": 17,
+      "site/static/eshkol-runtime.js": 18,
       "web/eshkol-repl.js": 17
     },
     "J_secondary_prefix_abi": {
@@ -255,25 +255,6 @@
       "lib/ffi/eshkol_ffi.cpp": 1,
       "press/ESHKOL_PRESS_INFORMATION_SHEET.md": 1,
       "site/static/eshkol-runtime.js": 1
-    },
-    "S1_clang_header_member": {
-      "inc/eshkol/eshkol.h": 1,
-      "lib/agent/c/agent_system_builtins.c": 1,
-      "tests/ffi/sqlite_column_roundtrip_test.c": 4,
-      "tests/fuzz/eskm_model_fuzz_probe.cpp": 3
-    },
-    "S2_clang_sizeof": {
-      "inc/eshkol/eshkol.h": 2,
-      "inc/eshkol/memory_abi_v2.h": 3,
-      "lib/agent/c/agent_system_builtins.c": 1,
-      "tests/ffi/sqlite_column_roundtrip_test.c": 4,
-      "tests/fuzz/eskm_model_fuzz_probe.cpp": 3
-    },
-    "S3_clang_header_cast": {
-      "inc/eshkol/eshkol.h": 1,
-      "lib/agent/c/agent_system_builtins.c": 1,
-      "tests/ffi/sqlite_column_roundtrip_test.c": 4,
-      "tests/fuzz/eskm_model_fuzz_probe.cpp": 3
     }
   },
   "generated_by": "scripts/abi_header_inventory.py baseline",
@@ -307,15 +288,12 @@
     "C_sizeof_header": 71,
     "D2_ir_field_offset": 10,
     "D_ir_const_offset": 47,
-    "E_alloc_with_header": 203,
+    "E_alloc_with_header": 202,
     "F_parallel_header_decl": 2,
     "G_header_field_write": 184,
-    "H_wasm_glue": 34,
+    "H_wasm_glue": 35,
     "J_secondary_prefix_abi": 33,
     "K_raw_byte_offset": 10,
-    "L_layout_in_prose": 86,
-    "S1_clang_header_member": 9,
-    "S2_clang_sizeof": 13,
-    "S3_clang_header_cast": 9
+    "L_layout_in_prose": 86
   }
 }

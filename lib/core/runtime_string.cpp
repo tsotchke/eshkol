@@ -34,6 +34,12 @@ const char* eshkol_runtime_ffi_surface_bytes(void) {
 
 extern void* arena_allocate_string_with_header(void* arena, uint64_t byte_len);
 
+/* The one string allocation of this file: a header-tagged buffer of
+ * @p byte_len bytes plus the terminator (the allocator owns the header). */
+static char* eshkol_string_buffer(void* arena, uint64_t byte_len) {
+    return static_cast<char*>(arena_allocate_string_with_header(arena, byte_len));
+}
+
 /* Raising entry points, declared here to keep this translation unit's include
  * surface small (as runtime_tensor_alloc.cpp does). ABI-stable symbols. */
 void eshkol_type_error_with_operand(const char* proc_name,
@@ -93,7 +99,7 @@ void* eshkol_make_string_checked(void* arena, const eshkol_tagged_value_t* k,
         return nullptr;
     }
     const uint64_t byte_len = count * width;
-    char* buf = static_cast<char*>(arena_allocate_string_with_header(arena, byte_len));
+    char* buf = eshkol_string_buffer(arena, byte_len);
     if (!buf) {
         eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
                              "make-string: cannot allocate a string of %llu bytes",
@@ -113,8 +119,7 @@ void* eshkol_make_string_checked(void* arena, const eshkol_tagged_value_t* k,
 void* eshkol_runtime_copy_string(void* arena, const char* source) {
     if (!arena || !source) return nullptr;
     const uint64_t byte_len = static_cast<uint64_t>(std::strlen(source));
-    char* result = static_cast<char*>(
-        arena_allocate_string_with_header(arena, byte_len));
+    char* result = eshkol_string_buffer(arena, byte_len);
     if (!result) return nullptr;
     std::memcpy(result, source, static_cast<std::size_t>(byte_len) + 1);
     return result;
@@ -286,7 +291,7 @@ char* eshkol_utf8_substring(const char* s, int64_t start, int64_t end, void* are
     }
 
     const int64_t byte_len = i - start_off;
-    char* buf = (char*)arena_allocate_string_with_header(arena, (uint64_t)byte_len);
+    char* buf = eshkol_string_buffer(arena, (uint64_t)byte_len);
     if (buf) {
         std::memcpy(buf, s + start_off, (std::size_t)byte_len);
         buf[byte_len] = '\0';
