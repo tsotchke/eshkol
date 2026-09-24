@@ -177,7 +177,7 @@
 <p>The neighboring modules retain their existing ownership boundaries: builtin trampolines and native dispatch are in <code>vm_native.c</code>, error-object support is in <code>vm_error.c</code>, and coverage hooks plus public ESKB/VM entry points are in <code>eshkol_vm.c</code>. The unity hub includes the extracted modules before <code>vm_run.c</code>, after the native and region-evacuation components they call. Handlers whose threaded and switch paths intentionally differ remain inline in <code>vm_run.c</code>, so this structural change does not alter behavior.</p>
 <hr />
 <h2 id="memory-architecture-oalr">Memory Architecture (OALR)</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a> and its <code>runtime_arena_*</code> / <code>runtime_regions</code> / <code>runtime_*_alloc</code> siblings (18,367 lines total), against the <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/arena_memory.h" target="_blank" rel="noopener noreferrer"><code>lib/core/arena_memory.h</code></a> interface (1,156 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a> and its <code>runtime_arena_*</code> / <code>runtime_regions</code> / <code>runtime_*_alloc</code> siblings (18,367 lines total), against the <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/arena_memory.h" target="_blank" rel="noopener noreferrer"><code>lib/core/arena_memory.h</code></a> interface (1,253 lines)</p>
 <h3 id="core-principles">Core Principles</h3>
 <p>Eshkol uses <strong>Ownership-Aware Lexical Regions</strong> (OALR) instead of garbage collection:</p>
 <ul>
@@ -254,7 +254,7 @@ ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena);</code></pre>
 <h2 id="type-system-triple-layer">Type System (Triple-Layer)</h2>
 <p>Eshkol uses <strong>three layers</strong> of type information for different purposes:</p>
 <h3 id="layer-1-runtime-types-tagged-values">Layer 1: Runtime Types (Tagged Values)</h3>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> (3,759 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> (3,786 lines)</p>
 <pre class="c"><code>typedef struct eshkol_tagged_value {
     uint8_t type;        // eshkol_value_type_t (0-255)
     uint8_t flags;       // Exactness, indirection flags
@@ -293,7 +293,7 @@ ESHKOL_VALUE_CLOSURE_PTR (38)
 // ... (deprecated, use consolidated types in new code)</code></pre>
 <p><strong>Critical</strong>: New code MUST use consolidated types (8-9) with subtypes. Legacy types exist only for the display system.</p>
 <h3 id="layer-2-compile-time-types-hott">Layer 2: Compile-Time Types (HoTT)</h3>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/hott_types.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/hott_types.cpp</code></a> (1,130 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a> (6,061 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/hott_types.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/hott_types.cpp</code></a> (1,130 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a> (6,087 lines)</p>
 <p><strong>Universe Hierarchy</strong>:</p>
 <pre class="scheme"><code>𝒰₂ (Propositions)
   ├── Eq, &lt;, Bounded, Subtype (proof types, erased at runtime)
@@ -408,7 +408,7 @@ DimensionChecker::Result checkMatMulDimensions(
 <p><strong>Usage</strong>: Tensor operations use dependent types to verify dimension compatibility.</p>
 <hr />
 <h2 id="automatic-differentiation">Automatic Differentiation</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a> (14,938 lines), with reverse-mode AD dispatch sites inside <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a></p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a> (15,512 lines), with reverse-mode AD dispatch sites inside <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a></p>
 <p>Eshkol provides <strong>three modes</strong> of automatic differentiation, each optimized for different use cases:</p>
 <h3 id="mode-1-symbolic-differentiation">Mode 1: Symbolic Differentiation</h3>
 <p><strong>Compile-time AST transformation</strong>:</p>
@@ -691,7 +691,7 @@ int64_t wrong = static_cast&lt;int64_t&gt;(value);  // → 3 (loses precision!)<
 <p><strong>Pattern Matching</strong>: Recursive patterns with <code>match</code></p>
 <hr />
 <h2 id="module-system">Module System</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a> (6,099 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a> (6,092 lines)</p>
 <h3 id="architecture">Architecture</h3>
 <pre><code>┌─────────────────────────────────────────────────────────────────┐
 │ ModuleDependencyResolver (DFS-based cycle detection)            │
@@ -738,7 +738,7 @@ __test_modules_mod_a__helper</code></pre>
 <p><strong>stdlib.o linking</strong>: - Compiler detects <code>(require stdlib)</code> or <code>(require core.*)</code> - Auto-links pre-compiled stdlib.o if found - Skips recompiling modules present in .o file - External declarations for exported symbols</p>
 <hr />
 <h2 id="repljit-system">REPL/JIT System</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> (4,679 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-repl.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-repl.cpp</code></a> (1,743 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> (4,712 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-repl.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-repl.cpp</code></a> (1,755 lines)</p>
 <h3 id="architecture-1">Architecture</h3>
 <pre><code>┌─────────────────────────────────────────────────────────────────┐
 │                    Interactive REPL                             │
@@ -1103,7 +1103,7 @@ llvm::Value* arg_value = codegen_ast_callback_(ast, callback_context_);</code></
 <p><strong>Bottleneck</strong>: LLVM optimization passes (can be reduced with -O0)</p>
 <hr />
 <h2 id="build-system">Build System</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/CMakeLists.txt" target="_blank" rel="noopener noreferrer"><code>CMakeLists.txt</code></a> (10,748 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/CMakeLists.txt" target="_blank" rel="noopener noreferrer"><code>CMakeLists.txt</code></a> (12,231 lines)</p>
 <h3 id="requirements">Requirements</h3>
 <ul>
 <li><strong>CMake</strong>: 3.14 or higher</li>
@@ -1238,13 +1238,13 @@ target_link_options(eshkol-static PUBLIC
 <h2 id="references">References</h2>
 <h3 id="primary-source-files-analyzed-in-detail">Primary Source Files (analyzed in detail)</h3>
 <ul>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> - Main system header (3,759 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a> - Core codegen (47,107 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a> - Arena runtime core (1226 lines; 4,259 across all <code>runtime_*</code> memory modules)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a> - S-expr parser (11,691 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a> - Type inference (6,061 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> - JIT compiler (4,679 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a> - Compiler executable (6,099 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> - Main system header (3,786 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a> - Core codegen (47,038 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a> - Arena runtime core (1282 lines; 4,259 across all <code>runtime_*</code> memory modules)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a> - S-expr parser (11,678 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a> - Type inference (6,087 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> - JIT compiler (4,712 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a> - Compiler executable (6,092 lines)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_relation.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_relation.cpp</code></a> - Gradual type relation (433 lines)</li>
 </ul>
 <h3 id="forward-looking-design-documents">Forward-looking design documents</h3>
