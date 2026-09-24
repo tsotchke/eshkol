@@ -21,6 +21,13 @@
 
 (require core.testing)
 
+;; Report the live backend so the gate can tell a GPU-less host (backend 0,
+;; SKIP) from a live device whose forced workload never dispatched (FAIL).
+(extern i32 gpu-init :real eshkol_gpu_init)
+(extern i32 gpu-backend :real eshkol_gpu_get_backend)
+(gpu-init)
+(display "GPU-BACKEND: ") (display (gpu-backend)) (newline)
+
 (define N 512)
 (define K 512)
 (define elems (* N K))

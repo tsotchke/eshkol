@@ -1,2 +1,8 @@
 ;; Exact rational division by exact zero must raise rather than print a value.
-(display (/ 1/2 0)) (newline)
+(define raised
+  (guard (e (#t #t))
+    (display (/ 1/2 0)) (newline)
+    #f))
+(if raised
+    (begin (display "PASS: exact rational division by exact zero raises") (newline))
+    (begin (display "FAIL: exact rational division by exact zero returned a value") (newline) (exit 1)))

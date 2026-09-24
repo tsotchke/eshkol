@@ -537,10 +537,15 @@ if gpu_dispatch_log_present "$GPU_STDERR"; then
     log "  GPU kernel dispatch confirmed live:"
     gpu_dispatch_log_lines "$GPU_STDERR" | sed 's/^/    /'
 else
-    if grep -q '\[GPU\] Metal:' "$GPU_STDERR" || [ "$UNAME_S" != "Darwin" ]; then
-        fail "GPU device initialized but forced workload produced no kernel dispatch"
+    # The payload reports eshkol_gpu_get_backend(); 0 means no live device.
+    # A live device that never dispatched the forced workload is a failure on
+    # every platform; a host without one has no execution evidence to give.
+    gpu_backend=$(sed -n 's/^GPU-BACKEND: \([0-9][0-9]*\)$/\1/p' "$GPU_STDOUT" | head -n 1)
+    [ -n "$gpu_backend" ] || fail "GPU payload did not report its live backend"
+    if [ "$gpu_backend" != "0" ]; then
+        fail "GPU backend $gpu_backend is live but the forced workload produced no kernel dispatch"
     fi
-    skip "GPU-enabled binary built and ran, but no GPU kernel dispatch was logged — no execution evidence"
+    skip "no active GPU backend on this host — no GPU execution evidence"
 fi
 
 log ""
