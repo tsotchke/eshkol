@@ -204,7 +204,7 @@ the source changes; the verification record for the tagged commit is the
   backend's diagnostics. `scripts/lib/webgpu_diff_runner.mjs` gates every kernel
   against the CPU in Chrome, including random f64 bit patterns and edge values,
   and proves itself red on five kernel corruptions. See
-  `docs/breakdown/GPU_ACCELERATION.md`, "Enabling WebGPU in a page".
+  `docs/breakdown/GPU_ACCELERATION.md`, "Enabling WebGPU in a page". (#715)
 
 - **WebGPU for the browser bytecode VM.** The VM's tensor natives already call
   the ordinary GPU seam; the WASM VM build now links it
@@ -217,9 +217,12 @@ the source changes; the verification record for the tagged commit is the
   site's REPL and runnable examples use it. The VM builds with native wasm
   exceptions, because JSPI cannot suspend across Emscripten's JavaScript
   `setjmp`/`longjmp` trampolines. `tests/webgpu/webgpu_vm_test.mjs` gates it in
-  Chrome.
+  Chrome. (#716)
 
 ### Fixed
+
+- The parser builds on toolchains whose standard headers do not provide
+  `std::strlen` transitively. (#719)
 
 - **Error irritants outlive the region that built them (SW-253).** A condition
   raised and caught inside `with-region` kept pointers to irritants in the
@@ -331,7 +334,8 @@ the source changes; the verification record for the tagged commit is the
 
 - Private, experimental ESKM v2 preflight validation with exact-byte fixtures,
   C and C++ consumers, and malformed-input checks. Public checkpoint I/O
-  remains ESKM v1. (#699)
+  remains ESKM v1. (#699) Its documentation records the current
+  integration status and Linux evidence. (#720)
 
 - **Navier-Stokes residual mechanization trajectory.** Added
   `docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md`, a step-by-step map from
