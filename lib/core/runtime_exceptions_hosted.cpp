@@ -212,9 +212,19 @@ extern "C" eshkol_exception_t* eshkol_make_exception(eshkol_exception_type_t typ
     return eshkol_make_exception_with_header(type, message);
 }
 
+extern "C" void eshkol_region_write_barrier_into(eshkol_tagged_value_t* out,
+                                                 const void* dst,
+                                                 const eshkol_tagged_value_t* value);
+
 // Add an irritant to an exception
 extern "C" void eshkol_exception_add_irritant(eshkol_exception_t* exc, eshkol_tagged_value_t irritant) {
     if (!exc) return;
+
+    // The condition lives in the process arena, so it outlives any region the
+    // irritant was built in, and region exit only walks region-owned objects.
+    // Storing an irritant is a store into a longer-lived object: it goes
+    // through the same region write barrier as every other mutation channel.
+    eshkol_region_write_barrier_into(&irritant, exc, &irritant);
 
     // Grow irritants array
     uint32_t new_count = exc->num_irritants + 1;

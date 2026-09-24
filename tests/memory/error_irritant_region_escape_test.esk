@@ -1,0 +1,25 @@
+;; An error raised inside a region and caught there escapes as a condition that
+;; lives in the process arena. Its irritants are stored into that longer-lived
+;; object, so they must be promoted out of the region; reusing the region's
+;; memory afterwards must not change them.
+(define (escape-condition)
+  (with-region ('irritant-src 65536)
+    (guard (e (#t e)) (error "escaped" (vector 1 2) (list "x" 7) (make-vector 3 9)))))
+(define (clobber)
+  (with-region ('irritant-clobber 65536)
+    (let loop ((i 0) (acc '()))
+      (if (= i 2000) (length acc) (loop (+ i 1) (cons (make-vector 4 i) acc))))))
+(define conditions
+  (let loop ((i 0) (out '()))
+    (if (= i 8) out (loop (+ i 1) (cons (escape-condition) out)))))
+(clobber)
+(define expected (list (vector 1 2) (list "x" 7) (vector 9 9 9)))
+(define ok
+  (let loop ((cs conditions))
+    (cond ((null? cs) #t)
+          ((equal? (error-object-irritants (car cs)) expected) (loop (cdr cs)))
+          (else #f))))
+(if ok
+    (begin (display "PASS: error irritants survive region exit and reuse") (newline))
+    (begin (display "FAIL: error irritants changed after region exit: ")
+           (display (error-object-irritants (car conditions))) (newline) (exit 1)))

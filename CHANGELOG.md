@@ -221,6 +221,12 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **Error irritants outlive the region that built them (SW-253).** A condition
+  raised and caught inside `with-region` kept pointers to irritants in the
+  region's memory, so after the region exited they could print as unrelated
+  values. Irritants are now stored through the region write barrier, like every
+  other store into a longer-lived object.
+
 - **Navier-Stokes evidence scope (SW-251).** Public documentation, the ICC
   oracle, and release text now describe residuals, similarity profiles,
   scaling identities, and energy estimates. The renamed evidence ledger and

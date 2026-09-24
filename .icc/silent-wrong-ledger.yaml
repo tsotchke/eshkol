@@ -16051,6 +16051,35 @@ entries:
       and the coverage and language CTest selection pass.
     caught_by: [release-dry-run]
     missed_by: [language_coverage_determinism_test]
+  - id: SW-253
+    bucket: SILENT-WRONG
+    family: memory/region-escape-condition-irritants
+    status: fixed
+    title: "error irritants built inside a region dangled after the region exited"
+    repro: >-
+      (define e (with-region ('r 65536) (guard (x (#t x)) (error "m" (vector 1 2)))))
+      then allocate in another region and display (error-object-irritants e).
+    observed_before: >-
+      The irritant list printed reused memory, for example (#(0 0 0 0) #<bytevector>)
+      or #<heap:200> in place of #(1 2). Linux native builds showed it on every run;
+      macOS showed it once the region memory was reused.
+    correct: >-
+      (#(1 2)), unchanged by later allocation in any region.
+    root_cause: >-
+      Conditions are allocated in the process arena, which outlives every region,
+      but eshkol_exception_add_irritant stored the irritant without the region
+      write barrier. Region exit promotes only region-owned objects, so the
+      condition's irritant slots kept pointers into the reclaimed region.
+    fix: >-
+      eshkol_exception_add_irritant stores through eshkol_region_write_barrier_into,
+      the barrier every other store into a longer-lived object already uses, so an
+      irritant's in-region subgraph is promoted before the condition references it.
+    evidence: >-
+      tests/memory/error_irritant_region_escape_test.esk fails without the fix and
+      passes with it on native and the VM; tests/vm_parity/corpus/error_irritants_lifetime.esk
+      passes on Linux x86_64 and macOS arm64.
+    caught_by: [release-dry-run]
+    missed_by: [vm-parity-macos]
   - id: SW-256
     bucket: SILENT-WRONG
     subtag: webgpu-artifact
