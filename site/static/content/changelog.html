@@ -37,6 +37,7 @@
 </ul>
 <h3 id="fixed">Fixed</h3>
 <ul>
+<li><p><strong>The website playground loads the current browser VM.</strong> The site runtime provides the two imports the rebuilt site WASM links, and the playground page states the bundle’s measured size. (#717) (#723)</p></li>
 <li><p>The parser builds on toolchains whose standard headers do not provide <code>std::strlen</code> transitively. (#719)</p></li>
 <li><p><strong>Error irritants outlive the region that built them (SW-253).</strong> A condition raised and caught inside <code>with-region</code> kept pointers to irritants in the region’s memory, so after the region exited they could print as unrelated values. Irritants are now stored through the region write barrier, like every other store into a longer-lived object.</p></li>
 <li><p><strong>Navier-Stokes evidence scope (SW-251).</strong> Public documentation, the ICC oracle, and release text now describe residuals, similarity profiles, scaling identities, and energy estimates. The renamed evidence ledger and checker retain all 84 computational rows and their existing status counts.</p></li>

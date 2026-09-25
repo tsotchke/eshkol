@@ -221,6 +221,10 @@ the source changes; the verification record for the tagged commit is the
 
 ### Fixed
 
+- **The website playground loads the current browser VM.** The site runtime
+  provides the two imports the rebuilt site WASM links, and the playground
+  page states the bundle's measured size. (#717) (#723)
+
 - The parser builds on toolchains whose standard headers do not provide
   `std::strlen` transitively. (#719)
 
