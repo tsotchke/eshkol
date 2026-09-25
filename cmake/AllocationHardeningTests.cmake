@@ -34,17 +34,13 @@ endfunction()
 eshkol_allocation_aot(constructor_allocation_aot tests/core/constructor_allocation_test.esk
     tests/core/constructor_allocation_shim.cpp)
 target_link_options(constructor_allocation_aot PRIVATE -Wl,--wrap=arena_allocate_vector_with_header
-    -Wl,--wrap=arena_allocate_cons_with_header -Wl,--wrap=malloc -Wl,--wrap=arena_allocate_aligned)
-eshkol_allocation_aot(exception_handler_reserve_aot tests/core/exception_handler_reserve_symbol_test.esk
-    tests/core/exception_handler_reserve_aot_shim.cpp)
-add_test(NAME exception_handler_reserve_jit COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
-    $<TARGET_FILE:eshkol-run> --no-stdlib -O 2 --run
-    "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exception_handler_reserve_symbol_test.esk")
+    -Wl,--wrap=arena_allocate_cons_with_header -Wl,--wrap=arena_allocate_closure_with_header
+    -Wl,--wrap=malloc -Wl,--wrap=arena_allocate_aligned)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 add_test(NAME checked_constructor_ir_dominance COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/check_constructor_allocation_ir.py"
     "${CMAKE_CURRENT_BINARY_DIR}/constructor_allocation_aot.o.ll")
-set_tests_properties(exception_handler_reserve_jit checked_constructor_ir_dominance PROPERTIES
+set_tests_properties(checked_constructor_ir_dominance PROPERTIES
     LABELS "allocation-hardening" TIMEOUT 60)
 add_custom_target(allocation-hardening-tests DEPENDS runtime_allocation_hardening_test
-    constructor_allocation_aot exception_handler_reserve_aot)
+    constructor_allocation_aot)

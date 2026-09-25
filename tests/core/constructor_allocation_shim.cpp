@@ -1,5 +1,4 @@
-// Test-only link wrappers: --wrap=arena_allocate_vector_with_header,
-// --wrap=arena_allocate_cons_with_header, --wrap=malloc.
+// Test-only link wrappers for constructor allocators and handler malloc.
 #include "../../lib/core/arena_memory.h"
 #include <cstdio>
 #include <cstdlib>
@@ -9,6 +8,8 @@ extern "C" void* __real_malloc(size_t);
 extern "C" void* __real_arena_allocate_aligned(arena_t*, size_t, size_t);
 extern "C" void* __real_arena_allocate_vector_with_header(arena_t*, size_t);
 extern "C" arena_tagged_cons_cell_t* __real_arena_allocate_cons_with_header(arena_t*);
+extern "C" eshkol_closure_t* __real_arena_allocate_closure_with_header(
+    arena_t*, uint64_t, uint64_t, uint64_t, uint64_t, const char*);
 static int armed, steps, expected, caught, cases, reused;
 static void check(bool ok, const char* message) {
     if (!ok) {
@@ -35,6 +36,12 @@ extern "C" void* __wrap_arena_allocate_vector_with_header(arena_t* arena, size_t
 extern "C" arena_tagged_cons_cell_t* __wrap_arena_allocate_cons_with_header(arena_t* arena) {
     return fail(2) ? nullptr : __real_arena_allocate_cons_with_header(arena);
 }
+extern "C" eshkol_closure_t* __wrap_arena_allocate_closure_with_header(
+    arena_t* arena, uint64_t function, uint64_t captures, uint64_t sexpr,
+    uint64_t return_type, const char* name) {
+    return fail(5) ? nullptr : __real_arena_allocate_closure_with_header(
+        arena, function, captures, sexpr, return_type, name);
+}
 extern "C" void* __wrap_malloc(size_t n) {
     if (n == sizeof(eshkol_exception_handler_t) && fail(3)) return nullptr;
     return __real_malloc(n);
@@ -60,7 +67,7 @@ extern "C" int64_t constructor_test_reused_list() {
     armed = 0; ++reused; return 0;
 }
 extern "C" int64_t constructor_test_finish() {
-    check(cases == 9 && caught == 8 && reused == 1 && !armed,
-          "eight constructor failures caught and existing-list apply validated");
-    std::puts("PASS AOT eight constructor null failures/order and existing-list apply"); return 0;
+    check(cases == 10 && caught == 9 && reused == 1 && !armed,
+          "nine constructor failures caught and existing-list apply validated");
+    std::puts("PASS AOT nine constructor null failures/order and existing-list apply"); return 0;
 }

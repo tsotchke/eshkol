@@ -1056,12 +1056,6 @@ class EshkolRuntime {
                 eshkol_raise_allocation_failure: () => {
                     throw new Error('Eshkol allocation failed (WASM runtime)');
                 },
-                // This browser runtime has no native handler-frame pool.
-                eshkol_runtime_reserve_exception_handlers_v1: (count) => {
-                    if (count === 0n) return 0n;
-                    if (count < 0n) return -1n;
-                    throw new Error('Exception-handler reservation is unsupported in the browser WASM runtime');
-                },
                 eshkol_push_exception_handler: () => 0,
                 eshkol_pop_exception_handler: () => {},
                 // SW-58 guard-loop replay. The browser build has no handler

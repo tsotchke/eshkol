@@ -1024,29 +1024,6 @@ static void reserve_handler_failure_condition() {
     }
 }
 
-extern "C" int64_t eshkol_runtime_reserve_exception_handlers_v1(int64_t free_count) {
-    if (free_count < 0 || static_cast<uint64_t>(free_count) >
-            SIZE_MAX / sizeof(eshkol_exception_handler_t)) return -1;
-    if (free_count == 0) return 0;
-    reserve_handler_failure_condition();
-    int64_t available = 0;
-    for (auto* frame = g_exception_handler_free_list;
-         frame && available < free_count; frame = frame->prev) ++available;
-    while (available < free_count) {
-        auto* frame = static_cast<eshkol_exception_handler_t*>(
-            malloc(sizeof(eshkol_exception_handler_t)));
-        if (!frame) eshkol_raise_allocation_failure("exception-handler reservation",
-                                                  sizeof(eshkol_exception_handler_t));
-        // In particular, replay_values/capacity must start empty on reserved
-        // frames, just as on fresh frames obtained by push.
-        *frame = {};
-        frame->prev = g_exception_handler_free_list;
-        g_exception_handler_free_list = frame;
-        ++available;
-    }
-    return 0;
-}
-
 #ifdef ESHKOL_ALLOCATION_TESTING
 extern "C" size_t eshkol_test_handler_pool_size() {
     size_t count = 0;

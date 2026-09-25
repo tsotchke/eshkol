@@ -169,7 +169,6 @@
   "eshkol_reroot_dynamic_wind",
   "eshkol_runtime_current_output_fp",
   "eshkol_runtime_init",
-  "eshkol_runtime_reserve_exception_handlers_v1",
   "eshkol_set_error_location",
   "eshkol_set_raised_value",
   "eshkol_shape_error",

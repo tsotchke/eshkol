@@ -16,36 +16,15 @@ installed handler instead of continuing with a missing frame. With no handler,
 the existing uncaught-error policy exits. Priming costs one small private arena
 per runtime thread, shared with the release's region-promotion failure path.
 
-## Handler reservation
+The inactive handler pool remains thread-local and retains peak storage. Fresh
+frames initialize replay fields; recycled frames retain their replay buffer and
+reset its active state. Test-only drain hooks free the frames and buffers. No
+public handler-reservation API is introduced: the VM and browser have different
+handler machinery, and this fix needs only the existing native push operation.
 
-```c
-int64_t eshkol_runtime_reserve_exception_handlers_v1(int64_t free_count);
-```
-
-- Returns zero when at least `free_count` inactive frames are available on the
-  calling thread. Zero is a no-op. Existing capacity is never reduced.
-- Returns -1 for a negative count or a count exceeding
-  `SIZE_MAX / sizeof(eshkol_exception_handler_t)`, before allocating or mutating
-  the pool. This replaces the unshipped draft's emergency-condition contract;
-  consumers must check the return value.
-- Allocation failure raises the release's allocation condition to the previously
-  active handler. Successfully reserved frames remain inactive and reusable, so
-  retry allocates only the deficit.
-- Reserved capacity covers additional simultaneous handler pushes. Pop recycles
-  frames, so sequential entries do not consume the reservation permanently.
-- New frames initialize the release's `replay_values` and `replay_capacity`
-  fields; recycled frames retain their replay buffer and reset its active state.
-  Reservation does not preallocate replay snapshots or arbitrary guard-body work.
-- The pool and active exception state are thread-local in this release. The
-  existing inactive pool retains peak storage and has no production destructor;
-  this change does not claim leak-free transient-worker use. Test-only drain
-  hooks free replay buffers as well as frames and are absent from normal builds.
-
-JIT registration includes the reservation and allocation-failure symbols. The
-browser glue supplies the new imports: allocation failure throws a host error;
-positive handler reservations explicitly throw as unsupported because that
-browser runtime has no native handler chain. Native allocation recovery is not a
-claim about browser exception semantics.
+The JIT registers the allocation-failure symbol. Browser glue supplies its
+import as a host throw; native allocation recovery does not imply browser guard
+recovery.
 
 ## Verification
 
@@ -60,19 +39,19 @@ python3 scripts/generate_wasm_import_glue.py --check
 ```
 
 The opt-in failure-injection suite requires Linux and GNU/Clang linker `--wrap`.
-It tests invalid/partial reservation, retry, exact capacity, repeated reuse,
-replay-buffer initialization and reuse, fresh-thread condition priming, persistent
-allocation refusal, thread-local isolation, closure size overflow, and failed
-closure-environment allocation. Both malloc and calloc are intercepted because
-optimizers may fold zero-initializing allocation into calloc.
+It tests handler-frame failure, replay-buffer initialization and reuse,
+fresh-thread condition priming, persistent allocation refusal, thread-local
+isolation, closure size overflow, and failed closure-environment allocation.
+Both malloc and calloc are intercepted because optimizers may fold
+zero-initializing allocation into calloc.
 
-The optimized AOT fixture injects eight constructor/handler failures, including a
-failed captured-lambda environment, and checks operand
-evaluation order and reuse of an existing `apply` argument list. An IR control-flow
-check covers 38 emitted constructor sites, proves the success branch dominates
-pointer uses, and rejects deliberately
-removed-branch and failure-store mutants. JIT and AOT also exercise the public
-reservation ABI and ordinary checked constructors.
+The optimized AOT fixture injects nine constructor/handler failures, including
+failed closure-object and captured-lambda environment allocations, and checks
+operand evaluation order and reuse of an existing `apply` argument list. An IR
+control-flow check covers 38 emitted constructor sites, proves the success
+branch dominates pointer uses, and rejects deliberately removed-branch and
+failure-store mutants. The runtime failpoints cover representative constructor
+families; the IR check covers the other emitted paths in this fixture.
 
 Local validation uses LLVM 21 with Clang 22 on Linux. The native failure suite and
 unchanged promotion-failure regression are also built with ASan/UBSan and run
@@ -85,11 +64,11 @@ the Linux failure-injection mechanism is not presented as cross-platform proof.
 Six existing regression fixtures also pass in optimized JIT and AOT modes against
 their checked-in expected output: nested guards, guard/dynamic-wind ordering,
 handler interplay, captured handler snapshots, nested region continuation resume,
-and assignment captured by a guard handler. Public API linkage verifies all 104
-umbrella-header exports, including the new reservation symbol.
+and assignment captured by a guard handler. Public API linkage checks the
+umbrella-header exports.
 
-The strict WASM import smoke compiles all 13 existing surfaces and verifies 135
-unique imports against both browser glue files, including the new constructor
+The strict WASM import smoke compiles all 13 existing surfaces and verifies the
+imports against both browser glue files, including the new constructor
 allocation-failure import. The glue freshness/contract and import-scanner
 self-tests also pass. This establishes import compatibility, not browser guard
 recovery or Windows/macOS runtime behavior.
@@ -104,11 +83,10 @@ checked for list head `1` and final vector element `999999`.
 
 On Linux x86-64 (Ryzen 7 3700X, Clang 22.1.6, LLVM 21.1.8), comparing release
 candidate `8f75ca49` with this branch, eight serial samples per binary pinned
-to CPU 7 gave median cons times of 1,545,259,529 vs. 1,539,394,269 jiffies
-(PR/base 0.996), and median vector-store loop times of 83,789,535 vs.
-86,969,041 jiffies (PR/base 1.038). The baseline store samples included one
-122,214,689-jiffy outlier. The `fill` function's 616 disassembled instructions
-are identical in both binaries after normalizing addresses. Thus this probe
-finds no added per-store instruction, but the roughly 4% elapsed difference is
-not enough to rule out layout, cache or background-load effects. It is not a
-whole-application performance claim.
+to CPU 7 gave median cons times of 2,104,747,812 vs. 2,110,103,330 jiffies
+(PR/base 1.003), and median vector-store loop times of 124,576,971 vs.
+133,199,877 jiffies (PR/base 1.069). The `fill` function's 616 disassembled
+instructions are identical in both binaries after normalizing addresses. This
+probe finds no added instruction in the store loop, but the measured loop time
+was about 7% higher; binary layout, cache, and background-load effects remain
+possible explanations. It is not a whole-application performance claim.

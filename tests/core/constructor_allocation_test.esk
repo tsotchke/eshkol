@@ -1,4 +1,4 @@
-;; No stdlib required. Link constructor_allocation_shim.cpp using its three
+;; No stdlib required. Link constructor_allocation_shim.cpp using its allocator
 ;; --wrap symbols. Run the handler-allocation case first, before a free handler
 ;; frame exists: failure must reach the already established outer handler.
 (extern i64 test-arm i64 i64 :real constructor_test_arm)
@@ -54,5 +54,11 @@
   (let ((captured (test-step 21)))
     (test-arm 4 0)
     ((lambda () captured))))
+
+;; Fail the closure object itself after evaluating its captured operand.
+(guard (condition (else (test-caught)))
+  (let ((captured (test-step 22)))
+    (test-arm 5 0)
+    (lambda () captured)))
 
 (test-finish)
