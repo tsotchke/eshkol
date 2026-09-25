@@ -145,6 +145,7 @@
   "eshkol_qrng_range",
   "eshkol_qrng_uint64",
   "eshkol_raise",
+  "eshkol_raise_allocation_failure",
   "eshkol_raise_not_pair",
   "eshkol_rational_binary_tagged_ptr",
   "eshkol_rational_compare_tagged_ptr",

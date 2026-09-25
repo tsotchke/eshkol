@@ -1051,6 +1051,11 @@ class EshkolRuntime {
                     console.error('Eshkol: car/cdr of non-pair');
                     throw new Error('not a pair');
                 },
+                // Native constructor null checks use a non-returning failure
+                // path. Browser exceptions already degrade to a host throw.
+                eshkol_raise_allocation_failure: () => {
+                    throw new Error('Eshkol allocation failed (WASM runtime)');
+                },
                 eshkol_push_exception_handler: () => 0,
                 eshkol_pop_exception_handler: () => {},
                 // SW-58 guard-loop replay. The browser build has no handler

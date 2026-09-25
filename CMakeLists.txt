@@ -12229,3 +12229,5 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-s
         PASS_REGULAR_EXPRESSION "variadic gradient matrix PASS"
         FAIL_REGULAR_EXPRESSION "FAIL:|ERROR|Unhandled exception|fatal signal|verification failed")
 endif()
+
+include(cmake/AllocationHardeningTests.cmake)

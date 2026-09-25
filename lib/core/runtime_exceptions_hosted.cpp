@@ -866,8 +866,8 @@ extern "C" void eshkol_raise(eshkol_exception_t* exception) {
 // nothing to copy. The object is built by the canonical header allocator, so it
 // has whatever header layout the object ABI defines.
 //
-// The reservation is made when the thread first enters a region (region_push),
-// which is before any promotion can fail, and retried here if that did not
+// The reservation is made on region entry and before installing a handler,
+// before promotion or constructor failure can be caught, and retried here if that did not
 // happen. A later failure on the same thread rewrites the message of a
 // condition a handler kept; the object stays valid for the thread's lifetime.
 namespace {
@@ -1014,8 +1014,35 @@ static thread_local eshkol_exception_handler_t* g_exception_handler_free_list = 
 // (SW-58). Thread-local for the same reason the free list is.
 static thread_local int64_t g_exception_handler_depth = 0;
 
+// Prime the existing allocation condition before publishing a handler, so a
+// subsequent failed constructor/push can raise without allocating a condition.
+static void reserve_handler_failure_condition() {
+    if (!allocation_failure_reserve().condition) {
+        eshkol_reserve_allocation_failure_condition();
+        if (!allocation_failure_reserve().condition)
+            eshkol_raise_allocation_failure("exception-handler condition", 0);
+    }
+}
+
+#ifdef ESHKOL_ALLOCATION_TESTING
+extern "C" size_t eshkol_test_handler_pool_size() {
+    size_t count = 0;
+    for (auto* frame = g_exception_handler_free_list; frame; frame = frame->prev) ++count;
+    return count;
+}
+extern "C" void eshkol_test_handler_pool_release() {
+    while (g_exception_handler_free_list) {
+        auto* frame = g_exception_handler_free_list;
+        g_exception_handler_free_list = frame->prev;
+        free(frame->replay_values);
+        free(frame);
+    }
+}
+#endif
+
 // Push exception handler onto stack
 extern "C" void eshkol_push_exception_handler(void* jmp_buf_ptr) {
+    reserve_handler_failure_condition();
     eshkol_exception_handler_t* handler = g_exception_handler_free_list;
     if (handler) {
         g_exception_handler_free_list = handler->prev;
@@ -1028,8 +1055,8 @@ extern "C" void eshkol_push_exception_handler(void* jmp_buf_ptr) {
     }
 
     if (!handler) {
-        eshkol_error("Failed to allocate exception handler");
-        return;
+        // The failed frame is not published: transfer to the established handler.
+        eshkol_raise_allocation_failure("exception-handler push", sizeof(*handler));
     }
 
     handler->jmp_buf_ptr = jmp_buf_ptr;

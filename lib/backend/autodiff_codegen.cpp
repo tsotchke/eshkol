@@ -3572,6 +3572,7 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
     // Use with_header allocator for consolidated CALLABLE type
     Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
                                              {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
+    ctx_.emitConstructorAllocationCheck(closure_ptr);
 
     // Store captured function
     Value* env_ptr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr, ConstantInt::get(ctx_.int64Type(), 8));
@@ -4679,6 +4680,7 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
         Value* static_name = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
         Value* static_closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
             {static_arena, static_func_ptr_int, static_packed, static_sexpr, static_return_type, static_name});
+        ctx_.emitConstructorAllocationCheck(static_closure_ptr);
         closure_val = tagged_.packPtr(static_closure_ptr, ESHKOL_VALUE_CALLABLE);
     }
 
@@ -4695,6 +4697,7 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
     // Use with_header allocator for consolidated CALLABLE type
     Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
                                              {arena, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
+    ctx_.emitConstructorAllocationCheck(closure_ptr);
 
     // Store captured function in closure environment
     Value* env_ptr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr, ConstantInt::get(ctx_.int64Type(), 8));
