@@ -56,6 +56,8 @@ function testPrecisionContracts() {
     const fast = new G.EshkolWebGPU(device, { precision: 'fast', threshold: 1 });
     assert.equal(fast.shouldUse(1), false);
     assert.equal(fast.supportsOperation('matmul'), false);
+    assert.match(fast.gpuPrecisionReason(), /requires gateTolerance >= 0\.000001/);
+    assert.match(fast.diagnostics.join('\n'), /requires gateTolerance >= 0\.000001/);
     const almostGate = new G.EshkolWebGPU(device, {
         precision: 'fast', threshold: 1, gateTolerance: 1.000001e-9
     });
@@ -66,6 +68,11 @@ function testPrecisionContracts() {
         log: (msg) => logs.push(msg)
     });
     assert.equal(explicitlyLoose.shouldUse(1), true);
+    assert.equal(explicitlyLoose.gpuPrecisionReason(), null);
+    explicitlyLoose.gateTolerance = NaN;
+    assert.equal(explicitlyLoose.shouldUse(1), false);
+    assert.match(explicitlyLoose.gpuPrecisionReason(), /requires gateTolerance >= 0\.000001/);
+    explicitlyLoose.gateTolerance = 1e-4;
     assert.equal(explicitlyLoose.supportsOperation('matmul'), true);
     assert.equal(explicitlyLoose.supportsOperation('reduce', G.REDUCE.SUM), false);
     assert.match(explicitlyLoose.diagnostics.join('\n'), /explicit reduced-precision opt-in/);
@@ -77,6 +84,7 @@ function testPrecisionContracts() {
         assert.equal(unknown.shouldUse(1), false);
         assert.equal(unknown.supportsOperation('matmul'), false);
         assert.equal(unknown.supportsOperation('elementwise', G.ELEM.ADD), false);
+        assert.match(unknown.gpuPrecisionReason(), /unknown WebGPU precision tier/);
     }
 }
 
@@ -127,7 +135,7 @@ async function testExecutionMarkerAndCPUFallback() {
             async elementwiseF64() {
                 const marker = ++this.executionMarker;
                 this.lastExecutionMarker = marker;
-                return marker;
+                return { marker, path: 'webgpu:elem_sf64' };
             }
         };
         const imports = G.makeImports(backend, () => memory);
@@ -169,6 +177,21 @@ async function testPromisingExports() {
         assert.equal(await wrapped.main(), 7);
         assert.equal(await wrapped.run_program(), 9);
         assert.equal(wrapped.memory.constructor, Object);
+    } finally {
+        restore();
+    }
+}
+
+async function testPromisingTableEntry() {
+    const restore = installMockJSPI();
+    try {
+        const table = { get(index) {
+            assert.equal(index, 17);
+            return () => 11;
+        } };
+        assert.equal(await G.promisingTableEntry(table, 17)(), 11);
+        assert.throws(() => G.promisingTableEntry({ get: () => null }, 3),
+                      /missing WASM callback 3/);
     } finally {
         restore();
     }
@@ -251,8 +274,8 @@ function testIntegrationContracts() {
     assert.match(runtime, /eshkol_batch_matmul_dispatch: gpu\.eshkol_batch_matmul_dispatch/);
     assert.match(repl, /G\.promisingExports\(instance\.exports\)/);
     assert.match(runtime, /G\.promisingExports\(instance\.exports\)/);
-    assert.match(repl, /promisingEntry\(fn\)/);
-    assert.match(runtime, /promisingEntry\(fn\)/);
+    assert.match(repl, /promisingTableEntry\(table, callbackFuncPtr\)/);
+    assert.match(runtime, /promisingTableEntry\(table, callbackFuncPtr\)/);
     assert.doesNotMatch(repl, /__indirect_function_table\.get\(callbackFuncPtr\)\(/);
     assert.doesNotMatch(runtime, /__indirect_function_table\.get\(callbackFuncPtr\)\(/);
     /* The browser gate runs at the runner's 1e-9 default; nothing loosens it. */
@@ -265,6 +288,7 @@ testCpuReferenceShape();
 testHeadlessCpuPathFailsClosed();
 await testExecutionMarkerAndCPUFallback();
 await testPromisingExports();
+await testPromisingTableEntry();
 testIntegrationContracts();
 await testVmBridgeContracts();
 console.log('PASS webgpu regression contracts');

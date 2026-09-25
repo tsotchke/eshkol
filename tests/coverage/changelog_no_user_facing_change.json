@@ -87,6 +87,11 @@
       "pr": 679,
       "class": "ci",
       "reason": "Bounds the sanitizer lane's build parallelism and resizes the Windows ARM64 compile-time guards and a fast-pillar budget to the hosted runners' measured capacity; CI budgets only."
+    },
+    {
+      "pr": 718,
+      "class": "test-only",
+      "reason": "The ESKM preflight test runner no longer passes empty compiler arguments; test harness only."
     }
   ]
 }

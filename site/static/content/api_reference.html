@@ -1,4 +1,4 @@
-<h1 id="eshkol-v135-api-reference">Eshkol v1.3.5 API Reference</h1>
+<h1 id="eshkol-api-reference">Eshkol API Reference</h1>
 <p><strong>Version</strong>: 1.3.5 <strong>Last Updated</strong>: 2026-09-14 <strong>Audience</strong>: Scientific Computing &amp; AI Systems Programming</p>
 <p>This reference documents Eshkol’s language surface and implementation contracts. The generated language-surface inventory and the AD support matrix distinguish implemented operations, engine-specific restrictions, and measured parity.</p>
 <blockquote>
@@ -1301,7 +1301,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <p><strong>Performance note:</strong> An escape-only capture — one whose <code>proc</code> is a literal one-parameter lambda whose parameter is only ever the operator of a direct call — is recognised at compile time and costs exactly the <code>setjmp</code>/<code>longjmp</code> it always did. Any other capture takes a durable image of the live stack and is O(stack-depth); avoid those in hot inner loops.</p>
 <h3 id="callcc-call-with-current-continuation"><code>call/cc</code> (call-with-current-continuation)</h3>
 <p><strong>Syntax:</strong> <code>(call/cc proc)</code> or <code>(call-with-current-continuation proc)</code></p>
-<p>Captures the current continuation as a first-class procedure and passes it to <code>proc</code>. Invoking it with a value resumes execution at the point where <code>call/cc</code> was called, returning that value. The continuation is multi-shot and re-entrant: it may be invoked any number of times, from any dynamic extent, including after the procedure that captured it has already returned. This holds identically on the native <code>-r</code> JIT, the native AOT compiler, and the bytecode VM (SHIPPED v1.3.5-evolve). A continuation captured inside <code>with-region</code> pins that region, so resuming after the region exits is safe. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/continuations.md" target="_blank" rel="noopener noreferrer">docs/reference/language/continuations.md</a> for the per-engine account and the remaining bounded limits.</p>
+<p>Captures the current continuation as a first-class procedure and passes it to <code>proc</code>. Invoking it with a value resumes execution at the point where <code>call/cc</code> was called, returning that value. The continuation is multi-shot and re-entrant: it may be invoked any number of times, from any dynamic extent, including after the procedure that captured it has already returned. This holds identically on the native <code>-r</code> JIT, the native AOT compiler, and the bytecode VM. A continuation captured inside <code>with-region</code> pins that region, so resuming after the region exits is safe. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/continuations.md" target="_blank" rel="noopener noreferrer">docs/reference/language/continuations.md</a> for the per-engine account and the remaining bounded limits.</p>
 <pre class="scheme"><code>(call/cc (lambda (k)
   (k 42)))  ; =&gt; 42
 
@@ -1377,7 +1377,7 @@ Shape (3, 1)    + Shape (3,)       → Error: trailing dims (1 vs empty, not 1 v
 <p><strong>Syntax:</strong> <code>(parallel-map proc list)</code> → List</p>
 <p>Like <code>map</code>, but distributes work items across the thread pool. Each element is processed independently — <code>proc</code> must be thread-safe (no shared mutable state without synchronization).</p>
 <p>Order is preserved: the output list has the same element ordering as the input.</p>
-<p>As of v1.3.4, <code>parallel-map</code> is safe for closures that <strong>allocate and return collections</strong> (including closures whose bodies use an internal named-let loop or a builtin such as <code>memv</code>): scope reclamation degrades to commit-only on pool workers sharing the thread-safe arena, so results are <strong>identical to serial <code>map</code></strong>. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/parallelism.md#scope-reclamation-on-workers-is-commit-only-v134" target="_blank" rel="noopener noreferrer">parallelism</a>.</p>
+<p><code>parallel-map</code> is safe for closures that <strong>allocate and return collections</strong> (including closures whose bodies use an internal named-let loop or a builtin such as <code>memv</code>): scope reclamation degrades to commit-only on pool workers sharing the thread-safe arena, so results are <strong>identical to serial <code>map</code></strong>. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/parallelism.md#scope-reclamation-on-workers-is-commit-only-v134" target="_blank" rel="noopener noreferrer">parallelism</a>.</p>
 <pre class="scheme"><code>(parallel-map (lambda (x) (* x x)) &#39;(1 2 3 4 5))  ; =&gt; (1 4 9 16 25)</code></pre>
 <h3 id="parallel-fold"><code>parallel-fold</code></h3>
 <p><strong>Syntax:</strong> <code>(parallel-fold proc init list)</code> → Value</p>
@@ -4873,9 +4873,6 @@ math-utils = &quot;1.0.0&quot;</code></pre>
 ;; =&gt; #(-1.414 -0.707 0.0 0.707 1.414)
 (clip #(1.0 5.0 10.0) 2.0 8.0)
 ;; =&gt; #(2.0 5.0 8.0)</code></pre>
-<hr />
-<h2 id="implementation-statistics">Implementation Statistics</h2>
-<p><strong>Codebase Size</strong>: ~329,100 lines of production C++ <strong>Main Backend</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a> — 47,107 lines <strong>Tensor Codegen</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer">tensor_codegen.cpp</a> — 2,012-line dispatcher plus 23,389 lines across thirteen per-domain <code>tensor_*_codegen.cpp</code> modules <strong>Compiler Modules</strong>: 36 specialized code generators <strong>Test Suite</strong>: 37 suites, 528 self-reported tests <strong>Verified Operations</strong>: 555+ builtins, 300+ standard library functions</p>
 <hr />
 <h2 id="see-also">See Also</h2>
 <ul>

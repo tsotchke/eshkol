@@ -44,7 +44,7 @@ Every repro was run under JIT (`-r`) **and** AOT on the fresh build. Verdicts:
 | stdlib `sort` O(n) recursion depth | ESH-0098 | `sort_100k` → `maximum recursion depth (100000) exceeded` (graceful diagnostic). |
 | parallel-map worker loops eat stack | ESH-0100 | `parallel_worker_loop_20k` CRASH (rc 132), no output. |
 | EM-5 `apply` degrades char args to raw ints | ESH-0113 (new) | `EM5…` → `97 #f` (want `a #t`); pair060/065 fail both modes. |
-| JIT deep-nested-expr compile blowup | ESH-0103 | Not re-run (35 s / 6.7 GB repro); remains pinned XKNOWN via `budgets.tsv` (AOT row passes). |
+| JIT deep-nested-expr compile growth | ESH-0103 | Not re-run (35 s / 6.7 GB repro); remains pinned XKNOWN via `budgets.tsv` (AOT row passes). |
 
 ### Ledger / corpus / expectation updates
 

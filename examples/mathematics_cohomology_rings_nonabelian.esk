@@ -28,8 +28,9 @@
 ;; Negative controls: the relation of one group fails in the other; a
 ;; coboundary is recognized; a random 2-cochain is not a cocycle.
 ;;
-;; DEFECT NOTES (routed around): as in the sibling examples; large rank
-;; computations sit in `with-region` (SW-164).
+;; DEFECT NOTES (routed around): as in the sibling examples. Exact-rational
+;; loop growth (SW-164) is closed; large rank computations still sit in
+;; `with-region` as a deliberate memory scope, not a defect workaround.
 
 (require stdlib)
 

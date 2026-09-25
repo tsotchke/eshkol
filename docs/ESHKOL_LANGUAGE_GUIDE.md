@@ -149,7 +149,7 @@ Eshkol uses **S-expression syntax** familiar to Lisp/Scheme programmers:
 | Boolean | `#t`, `#f` | True/False |
 | Character | `#\a`, `#\newline` | Unicode |
 | String | `"hello"` | UTF-8 |
-| Symbol | `'foo`, `'\|weird sym\|` | Interned identifier. R7RS 7.1.1 vertical-line syntax (`\|...\|`) reads a symbol verbatim between bars — the one spelling that can contain whitespace, start with a digit, or reuse punctuation another token claims — as of v1.3.5 (#462). `write` emits bars only when a name cannot be spelled bare; `display` never bars. |
+| Symbol | `'foo`, `'\|weird sym\|` | Interned identifier. R7RS 7.1.1 vertical-line syntax (`\|...\|`) reads a symbol verbatim between bars — the one spelling that can contain whitespace, start with a digit, or reuse punctuation another token claims. `write` emits bars only when a name cannot be spelled bare; `display` never bars. |
 | List | `(list 1 2 3)` | Linked cons cells |
 | Vector | `(vector 1 2 3)` | Indexed array (heterogeneous) |
 | Tensor | `#(1.0 2.0 3.0)` | N-dimensional array (homogeneous doubles) |
@@ -164,7 +164,7 @@ Eshkol uses **S-expression syntax** familiar to Lisp/Scheme programmers:
 
 ### 1,053 Built-in Functions
 
-Eshkol v1.3.5-evolve ships 1,056 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
+Eshkol provides 1,056 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
 
 **Arithmetic:** `+`, `-`, `*`, `/`, `abs`, `floor`, `ceiling`, `round`, `truncate`, `modulo`, `remainder`, `quotient`, `gcd`, `lcm`, `min`, `max`, `expt`, `exact->inexact`, `inexact->exact`
 
@@ -510,8 +510,7 @@ an inline literal, a top-level `define`, or the value of an expression:
 
 See [reference/language/numeric-tower.md](reference/language/numeric-tower.md)
 for the whole tower and [reference/ad/INDEX.md](reference/ad/INDEX.md) for the
-exactness tier, including the one nesting shape that is not supported in
-v1.3.5.
+exactness tier and nested differentiation.
 
 ---
 
@@ -1226,7 +1225,6 @@ Map Eshkol names to C names:
 
 ```
 $ ./eshkol-repl
-Eshkol REPL v1.3.5
 Type :help for assistance, :quit to exit
 
 eshkol> (define (square x) (* x x))
@@ -1677,7 +1675,3 @@ full account, with runnable examples and a guide to reading a diagnostic, is
 MIT License - Copyright (C) tsotchke
 
 ---
-
-<p align="center">
-<strong>Eshkol v1.3.5</strong>: Where functional programming meets scientific computing, GPU acceleration, and machine consciousness.
-</p>

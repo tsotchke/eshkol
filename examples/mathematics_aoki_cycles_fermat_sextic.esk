@@ -44,7 +44,7 @@
 ;;      sextic surface. (The open ledger prediction was 0; the receipt says
 ;;      what it says.)
 ;;
-;; DEFECT NOTES (routed around): as in the sibling examples; polynomial
+;; NOTE: as in the sibling examples, whose formerly-cited defects (LE-17/20/22/23, SW-153) are now closed; polynomial
 ;; tables use integer keys; recursive expansions are top-level definitions.
 
 (require stdlib)

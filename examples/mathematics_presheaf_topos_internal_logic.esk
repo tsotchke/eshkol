@@ -50,8 +50,9 @@
 ;;      naturality and the three axioms and exactly the 4 induced ones
 ;;      survive: Theorem V.1.2 verified by exhaustion.
 ;;
-;; DEFECT NOTES (routed around): as in the sibling examples; local
-;; procedures never take stdlib names (LE-22).
+;; NOTE: as in the sibling examples, local procedures never take stdlib
+;; names; the defect that made element-wise arithmetic read past a shorter
+;; operand's bounds (LE-22) is closed.
 
 (require stdlib)
 

@@ -4,7 +4,7 @@
 ;;; This is the exporter the qLLM A3 manifold-residual backward needs, and the
 ;;; one that justifies the whole instrument: artanh's derivative is
 ;;; 1/(1 - t^2), so as a point approaches the ball boundary the second and
-;;; third derivatives blow up like (1-t^2)^-2 and (1-t^2)^-3. Central
+;;; third derivatives diverge like (1-t^2)^-2 and (1-t^2)^-3. Central
 ;;; differences carry a truncation term proportional to h^2 * f''' and a
 ;;; round-off term proportional to eps/h, and near the boundary there is no h
 ;;; that makes both small. Worse, once |x|*sqrt(c) sits within one FD step of

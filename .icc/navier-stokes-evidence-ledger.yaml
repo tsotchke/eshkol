@@ -1,11 +1,11 @@
 ledger_version: 1
-source_doc: docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md
+source_doc: docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md
 status_vocabulary:
 - EXACT
 - VALIDATED
 - ANALYTIC-ONLY
 rows:
-- id: ns-proof-001
+- id: ns-evidence-001
   row: 1
   section: '2.1'
   paper_ref: Section 3.1; Section 3.6
@@ -15,7 +15,7 @@ rows:
   programs:
   - ns_similarity_exponents_solved
   missing_capability: null
-- id: ns-proof-002
+- id: ns-evidence-002
   row: 2
   section: '2.1'
   paper_ref: (3.2); Lemma 4.1
@@ -25,7 +25,7 @@ rows:
   programs:
   - ns_similarity_exponents_solved
   missing_capability: null
-- id: ns-proof-003
+- id: ns-evidence-003
   row: 3
   section: '2.1'
   paper_ref: Section 3.1; (4.3)
@@ -35,7 +35,7 @@ rows:
   programs:
   - ns_leading_profile_balance
   missing_capability: null
-- id: ns-proof-004
+- id: ns-evidence-004
   row: 4
   section: '2.1'
   paper_ref: (3.1); (4.12)
@@ -45,7 +45,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-005
+- id: ns-evidence-005
   row: 5
   section: '2.1'
   paper_ref: (4.7); (5.2)
@@ -55,7 +55,7 @@ rows:
   programs:
   - ns_leading_profile_balance
   missing_capability: null
-- id: ns-proof-006
+- id: ns-evidence-006
   row: 6
   section: '2.1'
   paper_ref: Section 3.1; (4.31)
@@ -65,7 +65,7 @@ rows:
   programs:
   - ns_leading_profile_balance
   missing_capability: null
-- id: ns-proof-007
+- id: ns-evidence-007
   row: 7
   section: '2.1'
   paper_ref: Section 3.1
@@ -75,7 +75,7 @@ rows:
   programs:
   - ns_similarity_exponents_solved
   missing_capability: null
-- id: ns-proof-008
+- id: ns-evidence-008
   row: 8
   section: '2.1'
   paper_ref: Section 3.5
@@ -85,7 +85,7 @@ rows:
   programs:
   - ns_similarity_exponents_solved
   missing_capability: null
-- id: ns-proof-009
+- id: ns-evidence-009
   row: 9
   section: '2.1'
   paper_ref: (10.22)-(10.23)
@@ -95,7 +95,7 @@ rows:
   programs:
   - ns_viscosity_scaling_exact
   missing_capability: null
-- id: ns-proof-010
+- id: ns-evidence-010
   row: 10
   section: '2.2'
   paper_ref: Proposition 4.2; (4.12)
@@ -105,7 +105,7 @@ rows:
   programs: []
   missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
     build item)
-- id: ns-proof-011
+- id: ns-evidence-011
   row: 11
   section: '2.2'
   paper_ref: Section 3.2
@@ -115,7 +115,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-012
+- id: ns-evidence-012
   row: 12
   section: '2.2'
   paper_ref: Section 3.2; Lemma A.8
@@ -125,7 +125,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-013
+- id: ns-evidence-013
   row: 13
   section: '2.2'
   paper_ref: (4.15)
@@ -135,7 +135,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-014
+- id: ns-evidence-014
   row: 14
   section: '2.2'
   paper_ref: Lemma 4.3; (4.16)
@@ -145,7 +145,7 @@ rows:
   programs: []
   missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
     build item)
-- id: ns-proof-015
+- id: ns-evidence-015
   row: 15
   section: '2.2'
   paper_ref: Lemma 4.4(i)
@@ -155,7 +155,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-016
+- id: ns-evidence-016
   row: 16
   section: '2.3'
   paper_ref: (4.20)
@@ -165,7 +165,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-017
+- id: ns-evidence-017
   row: 17
   section: '2.3'
   paper_ref: (4.21)
@@ -175,7 +175,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-018
+- id: ns-evidence-018
   row: 18
   section: '2.3'
   paper_ref: Lemma 4.5; (4.22)
@@ -185,7 +185,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-019
+- id: ns-evidence-019
   row: 19
   section: '2.3'
   paper_ref: Lemma 4.5, second assertion
@@ -195,7 +195,7 @@ rows:
   programs: []
   missing_capability: rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in
     place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item)
-- id: ns-proof-020
+- id: ns-evidence-020
   row: 20
   section: '2.3'
   paper_ref: (4.23)
@@ -205,7 +205,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-021
+- id: ns-evidence-021
   row: 21
   section: '2.3'
   paper_ref: Theorem 4.6
@@ -215,7 +215,7 @@ rows:
   programs: []
   missing_capability: composite of multiple rows with no single Eshkol primitive or build item; assembled
     only once its constituent rows are mechanized
-- id: ns-proof-022
+- id: ns-evidence-022
   row: 22
   section: '2.4'
   paper_ref: Lemma A.1
@@ -225,7 +225,7 @@ rows:
   programs: []
   missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
     build item)
-- id: ns-proof-023
+- id: ns-evidence-023
   row: 23
   section: '2.4'
   paper_ref: (A.1)
@@ -235,7 +235,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-024
+- id: ns-evidence-024
   row: 24
   section: '2.4'
   paper_ref: Lemma A.2; (A.2)-(A.3)
@@ -245,7 +245,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-025
+- id: ns-evidence-025
   row: 25
   section: '2.4'
   paper_ref: Corollary A.3; (A.4)
@@ -255,7 +255,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-026
+- id: ns-evidence-026
   row: 26
   section: '2.4'
   paper_ref: Proposition A.4
@@ -265,7 +265,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-027
+- id: ns-evidence-027
   row: 27
   section: '2.4'
   paper_ref: Lemma A.6; (A.33)-(A.38)
@@ -275,7 +275,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-028
+- id: ns-evidence-028
   row: 28
   section: '2.4'
   paper_ref: Lemma A.6, monotonicity
@@ -285,7 +285,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-029
+- id: ns-evidence-029
   row: 29
   section: '2.4'
   paper_ref: Proposition A.7
@@ -295,7 +295,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-030
+- id: ns-evidence-030
   row: 30
   section: '2.4'
   paper_ref: Lemma A.8; Proposition A.10
@@ -305,7 +305,7 @@ rows:
   programs: []
   missing_capability: rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in
     place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item)
-- id: ns-proof-031
+- id: ns-evidence-031
   row: 31
   section: '2.5'
   paper_ref: Lemma B.1
@@ -315,7 +315,7 @@ rows:
   programs: []
   missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
     build item)
-- id: ns-proof-032
+- id: ns-evidence-032
   row: 32
   section: '2.5'
   paper_ref: Proposition B.2; (B.12)-(B.15)
@@ -325,7 +325,7 @@ rows:
   programs: []
   missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
     build item)
-- id: ns-proof-033
+- id: ns-evidence-033
   row: 33
   section: '2.5'
   paper_ref: Proposition B.3; Lemma B.4; Proposition B.5
@@ -335,7 +335,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-034
+- id: ns-evidence-034
   row: 34
   section: '2.5'
   paper_ref: Lemma B.7; Proposition B.8; Corollary B.10
@@ -345,7 +345,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-035
+- id: ns-evidence-035
   row: 35
   section: '2.6'
   paper_ref: Lemma C.1; (C.1)-(C.5)
@@ -355,7 +355,7 @@ rows:
   programs: []
   missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
     the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
-- id: ns-proof-036
+- id: ns-evidence-036
   row: 36
   section: '2.6'
   paper_ref: Lemma C.1, removable singularity
@@ -365,7 +365,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-037
+- id: ns-evidence-037
   row: 37
   section: '2.6'
   paper_ref: Proposition C.2; (C.11)-(C.13)
@@ -375,7 +375,7 @@ rows:
   programs: []
   missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
     the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
-- id: ns-proof-038
+- id: ns-evidence-038
   row: 38
   section: '2.6'
   paper_ref: Proposition C.2; (C.14)
@@ -385,7 +385,7 @@ rows:
   programs: []
   missing_capability: rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in
     place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item)
-- id: ns-proof-039
+- id: ns-evidence-039
   row: 39
   section: '2.6'
   paper_ref: Proposition C.2, restoration; Proposition C.3
@@ -395,7 +395,7 @@ rows:
   programs: []
   missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
     the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
-- id: ns-proof-040
+- id: ns-evidence-040
   row: 40
   section: '2.7'
   paper_ref: (5.1)
@@ -405,7 +405,7 @@ rows:
   programs: []
   missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
     build item)
-- id: ns-proof-041
+- id: ns-evidence-041
   row: 41
   section: '2.7'
   paper_ref: (5.2)-(5.6)
@@ -415,7 +415,7 @@ rows:
   programs: []
   missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
     build item)
-- id: ns-proof-042
+- id: ns-evidence-042
   row: 42
   section: '2.7'
   paper_ref: Section 5.1, splitting
@@ -425,7 +425,7 @@ rows:
   programs: []
   missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
     build item)
-- id: ns-proof-043
+- id: ns-evidence-043
   row: 43
   section: '2.7'
   paper_ref: Section 5.1, regularity
@@ -435,7 +435,7 @@ rows:
   programs:
   - ns_leading_profile_balance
   missing_capability: null
-- id: ns-proof-044
+- id: ns-evidence-044
   row: 44
   section: '2.7'
   paper_ref: Lemma 5.1
@@ -445,7 +445,7 @@ rows:
   programs: []
   missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
     build item)
-- id: ns-proof-045
+- id: ns-evidence-045
   row: 45
   section: '2.7'
   paper_ref: Lemma 5.2
@@ -455,7 +455,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-046
+- id: ns-evidence-046
   row: 46
   section: '2.7'
   paper_ref: Proposition 5.3
@@ -464,7 +464,7 @@ rows:
   status: ANALYTIC-ONLY
   programs: []
   missing_capability: core.dbsp incremental knowledge-base evaluation over the closed world (GA at v1.5.0-intelligence)
-- id: ns-proof-047
+- id: ns-evidence-047
   row: 47
   section: '2.7'
   paper_ref: Lemma 5.4; Section 5.4
@@ -474,7 +474,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-048
+- id: ns-evidence-048
   row: 48
   section: '2.7'
   paper_ref: Proposition 5.5; (5.41)
@@ -484,7 +484,7 @@ rows:
   programs: []
   missing_capability: composite of multiple rows with no single Eshkol primitive or build item; assembled
     only once its constituent rows are mechanized
-- id: ns-proof-049
+- id: ns-evidence-049
   row: 49
   section: '2.8'
   paper_ref: (6.1)
@@ -494,7 +494,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-050
+- id: ns-evidence-050
   row: 50
   section: '2.8'
   paper_ref: (6.3); (6.6)
@@ -504,7 +504,7 @@ rows:
   programs: []
   missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
     the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
-- id: ns-proof-051
+- id: ns-evidence-051
   row: 51
   section: '2.8'
   paper_ref: Lemma 6.1; (6.13)-(6.15)
@@ -514,7 +514,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-052
+- id: ns-evidence-052
   row: 52
   section: '2.8'
   paper_ref: Lemma 6.1, consequence
@@ -524,7 +524,7 @@ rows:
   programs: []
   missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
     the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
-- id: ns-proof-053
+- id: ns-evidence-053
   row: 53
   section: '2.8'
   paper_ref: (6.14)
@@ -534,7 +534,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-054
+- id: ns-evidence-054
   row: 54
   section: '2.8'
   paper_ref: Definitions 6.4-6.5; Proposition 6.6
@@ -544,7 +544,7 @@ rows:
   programs: []
   missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
     build item)
-- id: ns-proof-055
+- id: ns-evidence-055
   row: 55
   section: '2.9'
   paper_ref: Lemma 7.1; (7.2)-(7.3)
@@ -554,7 +554,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-056
+- id: ns-evidence-056
   row: 56
   section: '2.9'
   paper_ref: Proposition 7.2; Corollary 7.3; (7.5)
@@ -564,7 +564,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-057
+- id: ns-evidence-057
   row: 57
   section: '2.9'
   paper_ref: Lemma 7.4; (7.22)
@@ -574,7 +574,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-058
+- id: ns-evidence-058
   row: 58
   section: '2.9'
   paper_ref: Proposition 7.5; (7.27)-(7.28)
@@ -584,7 +584,7 @@ rows:
   programs:
   - ns_covariance_two_family_solve
   missing_capability: null
-- id: ns-proof-059
+- id: ns-evidence-059
   row: 59
   section: '2.9'
   paper_ref: Proposition 7.5; (7.24),(7.29)
@@ -594,7 +594,7 @@ rows:
   programs:
   - ns_covariance_two_family_solve
   missing_capability: null
-- id: ns-proof-060
+- id: ns-evidence-060
   row: 60
   section: '2.9'
   paper_ref: Proposition 7.5, Step 3
@@ -604,7 +604,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-061
+- id: ns-evidence-061
   row: 61
   section: '2.9'
   paper_ref: (7.30)
@@ -614,7 +614,7 @@ rows:
   programs: []
   missing_capability: composite of multiple rows with no single Eshkol primitive or build item; assembled
     only once its constituent rows are mechanized
-- id: ns-proof-062
+- id: ns-evidence-062
   row: 62
   section: '2.9'
   paper_ref: Proposition 7.6; (7.31)
@@ -624,7 +624,7 @@ rows:
   programs:
   - ns_covariance_two_family_solve
   missing_capability: null
-- id: ns-proof-063
+- id: ns-evidence-063
   row: 63
   section: '2.9'
   paper_ref: Lemma 7.7; Corollary 7.8; (7.35)
@@ -634,7 +634,7 @@ rows:
   programs: []
   missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
     the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
-- id: ns-proof-064
+- id: ns-evidence-064
   row: 64
   section: '2.10'
   paper_ref: Proposition 8.1; (8.1)-(8.3)
@@ -644,7 +644,7 @@ rows:
   programs:
   - ns_five_moment_vandermonde
   missing_capability: null
-- id: ns-proof-065
+- id: ns-evidence-065
   row: 65
   section: '2.10'
   paper_ref: Lemma 8.2; Proposition 8.3; (8.12)
@@ -654,7 +654,7 @@ rows:
   programs:
   - ns_five_moment_vandermonde
   missing_capability: null
-- id: ns-proof-066
+- id: ns-evidence-066
   row: 66
   section: '2.10'
   paper_ref: Proposition 8.4; Corollary 8.5; (8.15)
@@ -664,7 +664,7 @@ rows:
   programs:
   - ns_five_moment_vandermonde
   missing_capability: null
-- id: ns-proof-067
+- id: ns-evidence-067
   row: 67
   section: '2.10'
   paper_ref: Lemma 8.6; (8.20)
@@ -674,7 +674,7 @@ rows:
   programs: []
   missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
     the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
-- id: ns-proof-068
+- id: ns-evidence-068
   row: 68
   section: '2.10'
   paper_ref: Lemma 8.7; (8.24)-(8.25)
@@ -684,7 +684,7 @@ rows:
   programs:
   - ns_five_moment_vandermonde
   missing_capability: null
-- id: ns-proof-069
+- id: ns-evidence-069
   row: 69
   section: '2.10'
   paper_ref: Lemma 8.7, Step 3
@@ -694,7 +694,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-070
+- id: ns-evidence-070
   row: 70
   section: '2.10'
   paper_ref: Lemma 8.8; (8.27); Section 8.7
@@ -704,7 +704,7 @@ rows:
   programs: []
   missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
     program exercises this row in v1.3.5
-- id: ns-proof-071
+- id: ns-evidence-071
   row: 71
   section: '2.11'
   paper_ref: Section 3.3, exact increment identity
@@ -715,7 +715,7 @@ rows:
   - ns_viscosity_scaling_exact
   - ns_residual_exponent_ladder
   missing_capability: null
-- id: ns-proof-072
+- id: ns-evidence-072
   row: 72
   section: '2.11'
   paper_ref: Proposition 9.1; Lemma 9.2
@@ -725,7 +725,7 @@ rows:
   programs: []
   missing_capability: rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in
     place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item)
-- id: ns-proof-073
+- id: ns-evidence-073
   row: 73
   section: '2.11'
   paper_ref: Proposition 9.3; (9.3)
@@ -735,7 +735,7 @@ rows:
   programs:
   - ns_residual_exponent_ladder
   missing_capability: null
-- id: ns-proof-074
+- id: ns-evidence-074
   row: 74
   section: '2.11'
   paper_ref: Definition 9.4; Proposition 9.5; (9.7)-(9.10)
@@ -745,7 +745,7 @@ rows:
   programs: []
   missing_capability: torus (T1/T2) averaging, the Haar mean, phase-map evaluation with chain rule, and
     the inverse of a directional derivative on the zero-mean subspace (v1.5.0-intelligence build item)
-- id: ns-proof-075
+- id: ns-evidence-075
   row: 75
   section: '2.11'
   paper_ref: Proposition 9.6, steps (i)-(iv)
@@ -755,7 +755,7 @@ rows:
   programs:
   - ns_residual_exponent_ladder
   missing_capability: null
-- id: ns-proof-076
+- id: ns-evidence-076
   row: 76
   section: '2.11'
   paper_ref: (9.8); (9.18)
@@ -765,7 +765,7 @@ rows:
   programs:
   - ns_residual_exponent_ladder
   missing_capability: null
-- id: ns-proof-077
+- id: ns-evidence-077
   row: 77
   section: '2.11'
   paper_ref: Lemma 9.7; Lemma 9.8
@@ -775,7 +775,7 @@ rows:
   programs: []
   missing_capability: rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in
     place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item)
-- id: ns-proof-078
+- id: ns-evidence-078
   row: 78
   section: '2.11'
   paper_ref: Proposition 9.9; (3.4); (9.20)
@@ -785,7 +785,7 @@ rows:
   programs: []
   missing_capability: rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in
     place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item)
-- id: ns-proof-079
+- id: ns-evidence-079
   row: 79
   section: '2.12'
   paper_ref: Section 3.5; Proposition 10.1; (3.3),(10.4)
@@ -795,7 +795,7 @@ rows:
   programs:
   - ns_localization_smooth_extension
   missing_capability: null
-- id: ns-proof-080
+- id: ns-evidence-080
   row: 80
   section: '2.12'
   paper_ref: Lemma 10.2; Lemma 10.3; (10.5),(10.8)-(10.9)
@@ -805,7 +805,7 @@ rows:
   programs:
   - ns_localization_smooth_extension
   missing_capability: null
-- id: ns-proof-081
+- id: ns-evidence-081
   row: 81
   section: '2.12'
   paper_ref: Lemma 10.4; (10.13)
@@ -815,7 +815,7 @@ rows:
   programs:
   - ns_energy_dissipation_bounds
   missing_capability: null
-- id: ns-proof-082
+- id: ns-evidence-082
   row: 82
   section: '2.12'
   paper_ref: Lemma 10.5; (10.20)-(10.21)
@@ -825,7 +825,7 @@ rows:
   programs: []
   missing_capability: rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in
     place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item)
-- id: ns-proof-083
+- id: ns-evidence-083
   row: 83
   section: '2.12'
   paper_ref: (10.22)-(10.23)
@@ -835,7 +835,7 @@ rows:
   programs:
   - ns_viscosity_scaling_exact
   missing_capability: null
-- id: ns-proof-084
+- id: ns-evidence-084
   row: 84
   section: '2.12'
   paper_ref: Corollary 10.6

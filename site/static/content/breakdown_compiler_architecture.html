@@ -71,7 +71,7 @@
 <hr />
 <h2 id="frontend-parsing-and-macro-expansion">Frontend: Parsing and Macro Expansion</h2>
 <h3 id="macro-system">Macro System</h3>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/macro_expander.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/macro_expander.cpp</code></a> (1,820 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/macro_expander.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/macro_expander.cpp</code></a> (1,241 lines)</p>
 <p>Hygienic macro expansion runs before parsing. The system supports:</p>
 <ul>
 <li>Pattern matching with ellipsis (<code>...</code>) for repetition</li>
@@ -90,7 +90,7 @@
 ;; =&gt; (if (&gt; x 0) (begin (display &quot;positive&quot;) (newline)) #f)</code></pre>
 <p>Several R7RS derived forms (<code>case-lambda</code>, <code>parameterize</code>, <code>cond-expand</code>, <code>define-record-type</code>) are desugared during macro expansion or the subsequent parse phase.</p>
 <h3 id="s-expression-parser">S-Expression Parser</h3>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a> (11,691 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a> (11,678 lines)</p>
 <p>The parser builds an AST from S-expressions through an explicit continuation stack: a child parse suspends into a heap-allocated coroutine frame and is resumed through a linked list, so native stack consumption is independent of grammar nesting. It handles:</p>
 <pre class="c"><code>// inc/eshkol/eshkol.h
 typedef struct eshkol_ast {
@@ -131,7 +131,7 @@ typedef struct eshkol_ast {
 <p>See <a href="/docs#page=eshkol_v1_architecture&amp;source-locations-and-node-identity" data-url="/content/eshkol_v1_architecture.html">ESHKOL_V1_ARCHITECTURE.md</a> for the full account, including the iterative ownership and escape analyses that run in the driver before codegen.</p>
 <hr />
 <h2 id="type-checking-hott-system">Type Checking (HoTT System)</h2>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a> (6,061 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a> (6,087 lines)</p>
 <p>Eshkol uses a Homotopy Type Theory-inspired type system with a universe hierarchy:</p>
 <pre><code>U_2 (universe of universes)
  +-- U_1 (universe of types)
@@ -688,7 +688,7 @@ HEAP_SUBTYPE_I128           = 25,  // Native fixed-width 128-bit integer    [LEA
 <hr />
 <h2 id="v11-accelerate-feature-codegen">v1.1-accelerate Feature Codegen</h2>
 <h3 id="gpu-dispatch-simd---cblas---metal">GPU Dispatch (SIMD -&gt; cBLAS -&gt; Metal)</h3>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/blas_backend.cpp" target="_blank" rel="noopener noreferrer"><code>blas_backend.cpp</code></a> (1,316 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/gpu/gpu_memory.mm" target="_blank" rel="noopener noreferrer"><code>gpu_memory.mm</code></a> (4,485 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/blas_backend.cpp" target="_blank" rel="noopener noreferrer"><code>blas_backend.cpp</code></a>, <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/gpu/gpu_memory.mm" target="_blank" rel="noopener noreferrer"><code>gpu_memory.mm</code></a></p>
 <p>The cost model selects the optimal compute backend based on tensor dimensions:</p>
 <table>
 <colgroup>
@@ -730,7 +730,7 @@ HEAP_SUBTYPE_I128           = 25,  // Native fixed-width 128-bit integer    [LEA
 <p><strong>Cost model calibration:</strong> Measured values are <code>blas_peak_gflops=1100</code> (Apple AMX) and <code>gpu_peak_gflops=200</code> (SF64). Configurable via environment variables <code>ESHKOL_BLAS_PEAK_GFLOPS</code> and <code>ESHKOL_GPU_PEAK_GFLOPS</code>.</p>
 <p>The Metal shader source is embedded at build time via a CMake custom command that converts <code>metal_softfloat.h</code> into a C string literal (<code>metal_sf64_embedded.inc</code>), ensuring the GPU kernel and host code stay in sync.</p>
 <h3 id="parallel-primitives">Parallel Primitives</h3>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/parallel_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>parallel_codegen.cpp</code></a> (1,009 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/parallel_llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>parallel_llvm_codegen.cpp</code></a> (2,317 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/thread_pool.cpp" target="_blank" rel="noopener noreferrer"><code>thread_pool.cpp</code></a> (1,530 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/parallel_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>parallel_codegen.cpp</code></a> (1,225 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/parallel_llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>parallel_llvm_codegen.cpp</code></a> (2,317 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/thread_pool.cpp" target="_blank" rel="noopener noreferrer"><code>thread_pool.cpp</code></a> (1,530 lines)</p>
 <p>Four parallel higher-order functions with work-stealing scheduling:</p>
 <pre class="scheme"><code>(parallel-map f vec)        ; Apply f to each element in parallel
 (parallel-fold f init vec)  ; Associative reduction with work distribution
@@ -747,7 +747,7 @@ HEAP_SUBTYPE_I128           = 25,  // Native fixed-width 128-bit integer    [LEA
 <p><code>ws-step!</code> is fully implemented: LLVM codegen generates a loop that calls registered module closures via <code>codegenClosureCall</code>, then C runtime helpers (<code>eshkol_ws_make_content_tensor</code>, <code>eshkol_ws_step_finalize</code>) handle tensor wrapping and softmax broadcast for competitive attention.</p>
 <p>Logic variables use syntax <code>?x</code> (parsed as <code>ESHKOL_LOGIC_VAR_OP</code>), which is R7RS-compatible since <code>?</code> is a valid identifier start character in Scheme.</p>
 <h3 id="exact-arithmetic-dispatch">Exact Arithmetic Dispatch</h3>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/arithmetic_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>arithmetic_codegen.cpp</code></a> (4,625 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/arithmetic_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>arithmetic_codegen.cpp</code></a> (4,830 lines)</p>
 <p>The full R7RS numeric tower with automatic precision promotion:</p>
 <pre><code>int64 -&gt; bignum -&gt; rational -&gt; double -&gt; complex
          (overflow)  (exact div)  (inexact)  (make-rectangular)</code></pre>
@@ -772,7 +772,7 @@ HEAP_SUBTYPE_I128           = 25,  // Native fixed-width 128-bit integer    [LEA
 </ul>
 <p>Continuations are <code>HEAP_PTR</code> objects with <code>HEAP_SUBTYPE_PROMISE</code> (for promises) or stored as callable closures (for <code>call/cc</code>).</p>
 <h3 id="machine-learning-framework-75-builtins">Machine Learning Framework (75+ Builtins)</h3>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensor_codegen.cpp</code></a> (2,012-line dispatcher; thirteen sibling <code>tensor_*_codegen.cpp</code> files after the v1.2 split), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_backward.cpp" target="_blank" rel="noopener noreferrer"><code>tensor_backward.cpp</code></a> (1,876 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>tensor_codegen.cpp</code></a> (2,012-line dispatcher; thirteen sibling <code>tensor_*_codegen.cpp</code> files after the v1.2 split), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/tensor_backward.cpp" target="_blank" rel="noopener noreferrer"><code>tensor_backward.cpp</code></a> (1,896 lines)</p>
 <p>Categories: activations (16), loss functions (14), optimizers (5+3), weight initializers (5), LR schedulers (4), CNN layers (7), transformer operations (8), data loading (6), plus tensor creation/manipulation ops.</p>
 <p>All ML builtins integrate with reverse-mode AD – calling <code>gradient</code> on any composition produces exact gradients via the computational tape.</p>
 <hr />
@@ -855,7 +855,7 @@ builder-&gt;CreateStore(new_counter, counter_ptr);
 <p><strong>Block Capture After IR-Generating Calls:</strong> Any function that may create basic blocks (e.g., <code>extractDoubleFromTagged</code>, <code>packDoubleToTaggedValue</code>, <code>isHeapSubtype</code>) can shift the builder’s insert point. Code that creates PHI nodes or conditional branches must capture the actual exit block with <code>builder-&gt;GetInsertBlock()</code> after such calls, not before.</p>
 <hr />
 <h2 id="jit-compilation-repl">JIT Compilation (REPL)</h2>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> (4,679 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> (4,712 lines)</p>
 <p>The REPL uses <strong>LLVM’s LLJIT</strong> (via OrcJIT v2) for interactive execution.</p>
 <h3 id="jit-architecture">JIT Architecture</h3>
 <pre><code>User Input: &quot;(+ 1 2)&quot;

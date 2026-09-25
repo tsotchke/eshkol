@@ -157,6 +157,7 @@ static int vm_capture_continuation_dynamic_state(VM* vm,
  * Returns 1 on success, 0 with vm->error set on failure.
  */
 static int vm_restore_continuation_stack(VM* vm, const VmContinuation* cont) {
+    if (!vm_ensure_frame_capacity(vm, cont->frame_count)) return 0;
     int base = vm->global_top;
     if (base < cont->stack_base) base = cont->stack_base;   /* defensive */
     if (base > cont->sp) {
@@ -303,7 +304,8 @@ static int vm_continuation_result(VM* vm, const Value* args, int argc,
 static void vm_continuation_resume(VM* vm, VmContinuation* cont, Value val) {
     vm_reroot_winds(vm, cont);
     vm_promise_eval_unwind_to(vm, cont->promise_mark);
-    if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; return; }
+    if (cont->sp > STACK_SIZE ||
+        !vm_ensure_frame_capacity(vm, cont->frame_count)) { vm->error = 1; return; }
     vm_restore_continuation_dynamic_state(vm, cont);
     if (vm->error) return;
     vm_restore_continuation_handlers(vm, cont);

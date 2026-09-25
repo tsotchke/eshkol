@@ -176,6 +176,29 @@ inverse, and `-` or `/` with no argument is an error. The output procedures
 and an argument in the port position that is not an output port raises a
 type error that `guard` can catch.
 
+Math procedures use the same call protocol when stored or passed as values.
+For example, `(apply atan2 '(1 1))` and `(let ((f atan)) (f 1 1))` dispatch
+through callable values; `atan` and `round` select their one- or two-argument
+form from the actual argument count. `procedure-arity` reports the fixed
+parameter count, so `(procedure-arity +)` is `0` for the variadic `+`.
+
+The three standard ports, `current-input-port`, `current-output-port`, and
+`current-error-port`, are parameter objects. `parameterize` binds them for its
+dynamic extent; a read or write without an explicit port uses the current
+binding. The prior binding is restored on normal return or after a caught
+raise. An explicit port argument must be a port of the required direction:
+
+```scheme
+(define out (open-output-string))
+(parameterize ((current-output-port out)) (write 'answer))
+(get-output-string out)  ; => "answer"
+(parameterize ((current-input-port (open-input-string "(1 2)")))
+  (read))                 ; => (1 2)
+```
+
+These behaviors are checked by
+`tests/core/standard_port_parameters_test.esk` on native and VM execution.
+
 ```scheme
 (define (apply-to f args) (apply f args))
 (display (apply-to + (list 1 2 3 4))) (newline)

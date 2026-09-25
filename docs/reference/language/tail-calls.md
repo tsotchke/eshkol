@@ -8,7 +8,10 @@ frame, so deep tail recursion runs in constant stack space.
 The bytecode VM follows the same R7RS tail-position contract. Its call frames
 are heap-managed, and its compiler emits the same tail transfer for the final
 operand of `and`/`or`, `when`/`unless` bodies, and `let`-family bodies even when
-local bindings need cleanup.
+local bindings need cleanup. Non-tail calls grow the frame array from
+`ESHKOL_VM_MAX_FRAMES` entries (256 by default) up to the configurable
+`ESHKOL_VM_MAX_FRAMES_CEILING` (65536 by default). Reaching the ceiling fails
+with `FRAME OVERFLOW` and a nonzero exit status.
 
 ## What is a tail position
 

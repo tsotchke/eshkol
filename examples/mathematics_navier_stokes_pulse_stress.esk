@@ -1,8 +1,8 @@
-;; Navier-Stokes blowup construction -- oscillatory pulses and the momentum flux
+;; Navier-Stokes example -- oscillatory pulses and the momentum flux
 ;; they supply.
 ;;
-;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
-;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Source: an external reference construction for the three-dimensional
+;; Navier-Stokes equations (2026), https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
 ;; Sections 2.2 (annulus and pulses), 3.2 (positive representation of the
 ;; target stress) and 3.3 / 7 (oscillatory realization of the stress).
 ;;

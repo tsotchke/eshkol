@@ -102,7 +102,7 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
 
 ### Macro System
 
-**Implementation:** [`lib/frontend/macro_expander.cpp`](../../lib/frontend/macro_expander.cpp) (1,820 lines)
+**Implementation:** [`lib/frontend/macro_expander.cpp`](../../lib/frontend/macro_expander.cpp) (1,241 lines)
 
 Hygienic macro expansion runs before parsing. The system supports:
 
@@ -127,7 +127,7 @@ Several R7RS derived forms (`case-lambda`, `parameterize`, `cond-expand`, `defin
 
 ### S-Expression Parser
 
-**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,691 lines)
+**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,678 lines)
 
 The parser builds an AST from S-expressions through an explicit continuation stack: a child parse suspends into a heap-allocated coroutine frame and is resumed through a linked list, so native stack consumption is independent of grammar nesting. It handles:
 
@@ -186,7 +186,7 @@ See [ESHKOL_V1_ARCHITECTURE.md](../ESHKOL_V1_ARCHITECTURE.md#source-locations-an
 
 ## Type Checking (HoTT System)
 
-**Implementation:** [`lib/types/type_checker.cpp`](../../lib/types/type_checker.cpp) (6,061 lines)
+**Implementation:** [`lib/types/type_checker.cpp`](../../lib/types/type_checker.cpp) (6,087 lines)
 
 Eshkol uses a Homotopy Type Theory-inspired type system with a universe hierarchy:
 
@@ -510,7 +510,7 @@ ArithmeticCodegen depends on TensorCodegen, AutodiffCodegen, and ComplexCodegen 
 
 ### GPU Dispatch (SIMD -> cBLAS -> Metal)
 
-**Implementation:** [`blas_backend.cpp`](../../lib/backend/blas_backend.cpp) (1,316 lines), [`gpu_memory.mm`](../../lib/backend/gpu/gpu_memory.mm) (4,485 lines)
+**Implementation:** [`blas_backend.cpp`](../../lib/backend/blas_backend.cpp), [`gpu_memory.mm`](../../lib/backend/gpu/gpu_memory.mm)
 
 The cost model selects the optimal compute backend based on tensor dimensions:
 
@@ -528,7 +528,7 @@ The Metal shader source is embedded at build time via a CMake custom command tha
 
 ### Parallel Primitives
 
-**Implementation:** [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) (1,009 lines), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) (2,317 lines), [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) (1,530 lines)
+**Implementation:** [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) (1,225 lines), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) (2,317 lines), [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) (1,530 lines)
 
 Four parallel higher-order functions with work-stealing scheduling:
 
@@ -561,7 +561,7 @@ Logic variables use syntax `?x` (parsed as `ESHKOL_LOGIC_VAR_OP`), which is R7RS
 
 ### Exact Arithmetic Dispatch
 
-**Implementation:** [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) (4,625 lines)
+**Implementation:** [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp) (4,830 lines)
 
 The full R7RS numeric tower with automatic precision promotion:
 
@@ -601,7 +601,7 @@ Continuations are `HEAP_PTR` objects with `HEAP_SUBTYPE_PROMISE` (for promises) 
 
 ### Machine Learning Framework (75+ Builtins)
 
-**Implementation:** [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (2,012-line dispatcher; thirteen sibling `tensor_*_codegen.cpp` files after the v1.2 split), [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) (1,876 lines)
+**Implementation:** [`tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (2,012-line dispatcher; thirteen sibling `tensor_*_codegen.cpp` files after the v1.2 split), [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp) (1,896 lines)
 
 Categories: activations (16), loss functions (14), optimizers (5+3), weight initializers (5), LR schedulers (4), CNN layers (7), transformer operations (8), data loading (6), plus tensor creation/manipulation ops.
 
@@ -677,7 +677,7 @@ builder->CreateStore(new_counter, counter_ptr);
 
 ## JIT Compilation (REPL)
 
-**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,679 lines)
+**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,712 lines)
 
 The REPL uses **LLVM's LLJIT** (via OrcJIT v2) for interactive execution.
 

@@ -2239,16 +2239,26 @@ set(ESHKOL_VM_HEAP_SIZE "65536" CACHE STRING
 set(ESHKOL_VM_STACK_SIZE "262144" CACHE STRING
     "Bytecode VM value stack slot count")
 set(ESHKOL_VM_MAX_FRAMES "256" CACHE STRING
-    "Bytecode VM call frame capacity")
+    "Bytecode VM initial call frame capacity")
+set(ESHKOL_VM_MAX_FRAMES_CEILING "65536" CACHE STRING
+    "Bytecode VM maximum call frame capacity")
 set(ESHKOL_VM_MAX_CONSTS "4096" CACHE STRING
     "Bytecode VM constant pool capacity")
 set(ESHKOL_VM_MAX_CODE "1000000" CACHE STRING
     "Bytecode VM decoded instruction capacity")
 
+if(ESHKOL_VM_MAX_FRAMES_CEILING LESS ESHKOL_VM_MAX_FRAMES)
+    message(FATAL_ERROR "ESHKOL_VM_MAX_FRAMES_CEILING must be >= ESHKOL_VM_MAX_FRAMES")
+endif()
+if(ESHKOL_VM_MAX_FRAMES_CEILING GREATER_EQUAL 2147483647)
+    message(FATAL_ERROR "ESHKOL_VM_MAX_FRAMES_CEILING must be less than INT_MAX")
+endif()
+
 foreach(_eshkol_vm_limit_name IN ITEMS
     ESHKOL_VM_HEAP_SIZE
     ESHKOL_VM_STACK_SIZE
     ESHKOL_VM_MAX_FRAMES
+    ESHKOL_VM_MAX_FRAMES_CEILING
     ESHKOL_VM_MAX_CONSTS
     ESHKOL_VM_MAX_CODE
 )
@@ -2264,6 +2274,7 @@ function(eshkol_apply_vm_limit_definitions target_name)
         ESHKOL_VM_HEAP_SIZE=${ESHKOL_VM_HEAP_SIZE}
         ESHKOL_VM_STACK_SIZE=${ESHKOL_VM_STACK_SIZE}
         ESHKOL_VM_MAX_FRAMES=${ESHKOL_VM_MAX_FRAMES}
+        ESHKOL_VM_MAX_FRAMES_CEILING=${ESHKOL_VM_MAX_FRAMES_CEILING}
         ESHKOL_VM_MAX_CONSTS=${ESHKOL_VM_MAX_CONSTS}
         ESHKOL_VM_MAX_CODE=${ESHKOL_VM_MAX_CODE}
     )
@@ -2295,6 +2306,7 @@ message(STATUS
   "VM limits: heap=${ESHKOL_VM_HEAP_SIZE}, "
   "stack=${ESHKOL_VM_STACK_SIZE}, "
   "frames=${ESHKOL_VM_MAX_FRAMES}, "
+  "frame_ceiling=${ESHKOL_VM_MAX_FRAMES_CEILING}, "
   "consts=${ESHKOL_VM_MAX_CONSTS}, "
   "code=${ESHKOL_VM_MAX_CODE}"
 )
@@ -3616,7 +3628,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
     endif()
 endif()
 
-# Navier-Stokes blowup mechanization examples.
+# Navier-Stokes residual mechanization examples.
 #
 # scripts/run_examples_tests.sh discovers examples/*.esk and is a compile-and-run
 # smoke gate: it fails a program that crashes, not one that prints a failing
@@ -7682,10 +7694,28 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/webgpu/webgp
         add_test(NAME webgpu_vm_test
                  COMMAND ${NODE_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/webgpu/webgpu_vm_test.mjs)
-        set_tests_properties(webgpu_live_test webgpu_diff_gate webgpu_vm_test PROPERTIES
+        add_test(NAME webgpu_shared_backend_race_test
+                 COMMAND ${NODE_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/webgpu/shared_backend_race_test.mjs)
+        add_test(NAME webgpu_division_parity_test
+                 COMMAND ${NODE_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/webgpu/division_parity_test.mjs)
+        set_tests_properties(webgpu_live_test webgpu_diff_gate webgpu_vm_test
+            webgpu_shared_backend_race_test webgpu_division_parity_test PROPERTIES
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
             LABELS webgpu)
     endif()
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/numeric/tensor_division_parity_test.py")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME tensor_division_parity_test
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/numeric/tensor_division_parity_test.py
+                     ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(tensor_division_parity_test PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        TIMEOUT 300)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_tagged_cons_test.cpp")
@@ -7900,7 +7930,7 @@ if(ESHKOL_BUILD_TESTS)
                     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_language_coverage_determinism.py"
                     --eshkol-run $<TARGET_FILE:eshkol-run>
                     --lib-dir "${CMAKE_BINARY_DIR}"
-                    --work-dir "${CMAKE_BINARY_DIR}/test-work/language-coverage-determinism"
+                    --work-dir "${CMAKE_CURRENT_SOURCE_DIR}/.scratch/language-coverage-determinism"
         )
         set_tests_properties(language_coverage_determinism_test PROPERTIES
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
@@ -8550,14 +8580,39 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
                 FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|LLVM module verification failed|fatal signal")
 
     if(TARGET eshkol-vm-standalone-test AND
-       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/frame_overflow_exit_status_test.py")
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/frame_growth_test.py")
         add_test(
-            NAME vm_frame_overflow_exit_status
+            NAME vm_frame_growth
             COMMAND python3
-                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/frame_overflow_exit_status_test.py"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/frame_growth_test.py"
                     $<TARGET_FILE:eshkol-vm-standalone-test>
-                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/found/frame_overflow_exit_zero.esk")
-        set_tests_properties(vm_frame_overflow_exit_status PROPERTIES TIMEOUT 120)
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/95_growable_call_frames.esk")
+        set_tests_properties(vm_frame_growth PROPERTIES TIMEOUT 120)
+    endif()
+    if(TARGET eshkol-vm-standalone-test AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/frame_ceiling_exit_status_test.py")
+        add_test(NAME vm_frame_ceiling_exit_status
+            COMMAND python3
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/frame_ceiling_exit_status_test.py"
+                $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${ESHKOL_VM_MAX_FRAMES_CEILING}")
+        set_tests_properties(vm_frame_ceiling_exit_status PROPERTIES TIMEOUT 120)
+    endif()
+    if(TARGET eshkol-vm-standalone-test)
+        foreach(_vm_cohomology_example IN ITEMS
+            mathematics_cohomology_rings_cup_products
+            mathematics_cohomology_rings_nonabelian
+            mathematics_group_cohomology_order_eight
+            mathematics_two_groups_postnikov)
+            add_test(NAME vm_${_vm_cohomology_example}
+                COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                    "${CMAKE_CURRENT_SOURCE_DIR}/examples/${_vm_cohomology_example}.esk")
+            set_tests_properties(vm_${_vm_cohomology_example} PROPERTIES
+                TIMEOUT 1800
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|FRAME OVERFLOW|ERROR:")
+        endforeach()
     endif()
     endif()
     # LE-20 VM lane: the same shape the native regression covers

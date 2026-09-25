@@ -464,8 +464,23 @@ correctness of GPU-offloaded operations: elementwise arithmetic, reduce
 (sum/product/min/max), matrix multiplication, transpose, softmax,
 normalize, and scale. Includes sf64 (simulated float64 on GPU) primitive
 tests for both uniform and non-uniform workloads, large matmul dispatch,
-and diagnostic output. The cost model ensures GPU dispatch only when
-`gpu_peak_gflops` (200) exceeds the CPU path.
+and diagnostic output. Backend admission and the cost model decide whether a
+particular call runs on a GPU; a successful tensor result alone does not prove
+GPU dispatch.
+
+Browser coverage is separate: `tests/webgpu/webgpu_regressions_test.mjs`
+checks tier admission and CPU fallback without a browser;
+`tests/webgpu/webgpu_live_test.mjs` checks device limits, tiling, and JSPI in
+Chrome; `scripts/lib/webgpu_diff_runner.mjs` compares sf64 kernels with CPU
+results and fails on zero dispatches or injected corruption; and
+`tests/webgpu/webgpu_vm_test.mjs` compares the attached browser VM with its
+unattached CPU run, including a guard after a suspended GPU operation.
+
+Runtime regressions also exercise `region_promotion_failure_test` with injected
+allocation failures, `malformed_shape_matrix` on native JIT, AOT, desktop VM,
+and browser VM, and the record, hash-table, and standard-port VM parity
+fixtures. These assert error and value behavior rather than treating shared
+output alone as proof of correct dispatch.
 
 Key files: `gpu_test.esk`, `elementwise_correctness_test.esk`,
 `reduce_correctness_test.esk`, `matmul_correctness_test.esk`,

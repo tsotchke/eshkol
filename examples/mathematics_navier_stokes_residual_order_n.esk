@@ -1,8 +1,8 @@
-;; Navier-Stokes blowup construction -- the background residual beyond
+;; Navier-Stokes example -- the background residual beyond
 ;; leading order.
 ;;
-;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
-;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Source: an external reference construction for the three-dimensional
+;; Navier-Stokes equations (2026), https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
 ;; Section 5 ("Correcting the base flow to every order") and Section 5.1,
 ;; equations (5.1)-(5.6).
 ;;
@@ -21,7 +21,7 @@
 ;; Solving that second-order elliptic system near the axis order by order is
 ;; a much larger undertaking than this file attempts (Lemma 5.1's own solve,
 ;; the radial extension of Lemma 5.2, and the five integral corrections are
-;; listed as NOT mechanized in docs/NAVIER_STOKES_BLOWUP_EXAMPLES.md).  What
+;; listed as NOT mechanized in docs/NAVIER_STOKES_EXAMPLES.md).  What
 ;; this file mechanizes exactly is the ALGEBRAIC SKELETON the paper's own
 ;; induction (Proposition 5.3) relies on: a linear order-by-order recursion
 ;; L[y_n] = f_n, with L a FIXED linear operator (independent of n, standing
@@ -45,11 +45,11 @@
 ;; whose body references only already-computed exact rational values
 ;; (u_n(X), f_n(X), the fixed operator c(X)); it is built fresh inside a
 ;; named helper taking X as a plain function argument, never as a named-let
-;; loop variable (ledger SW-151), and it is never passed to any function
-;; other than `taylor` / `derivative-n` themselves -- routing around the
-;; separate composition-depth exactness leak documented in
-;; .scratch/ns_derivative_composition_exactness_repro.esk and in
-;; examples/mathematics_navier_stokes_stress_cone.esk's AD surface note.
+;; loop variable (ledger SW-151, closed). A defect that used to make
+;; `taylor`/`derivative-n` fail to compile the whole file when given a
+;; function-call expression directly as the differentiand, alongside another
+;; differentiand call site elsewhere in the same program, is also fixed (see
+;; the Taylor tower call below, which now passes `(make-residual 5/2)` inline).
 
 (define pass-count 0)
 (define fail-count 0)
@@ -160,14 +160,7 @@
                ((not (= 0 (fn N (car xs)))) (loop (cdr xs)))
                (else #f))))
 
-;; NOTE (route-around): `taylor`/`derivative-n` fail to compile the whole
-;; file ("Failed to resolve function for derivative", no artifact produced)
-;; when given a function-call expression directly as the differentiand
-;; alongside another let-bound differentiand call site elsewhere in the same
-;; program -- repro in .scratch/ns_taylor_inline_call_argument_repro.esk.
-;; Bind the closure to a variable first, everywhere, including here.
-(define R-5-2 (make-residual 5/2))
-(show "taylor tower at X = 5/2, N = 4  " (taylor R-5-2 0 N))
+(show "taylor tower at X = 5/2, N = 4  " (taylor (make-residual 5/2) 0 N))
 
 (check "the Taylor tower matches the per-order derivative-n calls exactly (c[n] * n! = f^(n)), at every sampled X"
        (let loop ((xs sample-Xs))

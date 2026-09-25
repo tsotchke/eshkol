@@ -1,0 +1,24 @@
+id: SW-270
+bucket: SILENT-WRONG
+subtag: webgpu
+family: browser-webgpu/shared-backend-concurrency
+status: fixed
+title: "concurrent browser VMs sharing a WebGPU backend could write results into the wrong VM memory"
+repro: >-
+  Attach two browser VMs to one WebGPU backend and evaluate 1x1 or 8x8
+  matmuls concurrently with Promise.all.
+observed: >-
+  The first VM printed zero instead of 6 or 48; the second printed 20 or 160.
+correct: >-
+  Each VM receives its own matmul result: 6 and 20, or 48 and 160.
+root_cause: >-
+  attachVm replaced a shared backend.memory field, while asynchronous
+  readback decoded through that field after another VM had attached.
+fix: >-
+  Each operation captures its destination memory across asynchronous work;
+  backend diagnostics and dispatch accounting remain shared and coherent.
+evidence: >-
+  tests/webgpu/shared_backend_race_test.mjs checks concurrent 1x1 and 8x8
+  matmuls on a shared backend against serial and separate-backend controls.
+caught_by: [hardware-reproduction]
+missed_by: [webgpu_vm_test]

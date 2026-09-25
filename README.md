@@ -6,16 +6,12 @@
 
 ## A Programming Language for Mathematical Computing
 
-Eshkol is a Scheme-based programming language that unifies functional programming with native automatic differentiation, providing a mathematically rigorous foundation for gradient-based optimization, numerical simulation, and machine learning research. Built on Homotopy Type Theory foundations and compiled to native code via LLVM, Eshkol delivers mathematical correctness and deterministic performance without sacrificing the elegance of homoiconic Lisp syntax.
+Eshkol is a Scheme-based programming language that unifies functional programming with native automatic differentiation, providing a mathematically rigorous foundation for gradient-based optimization, numerical simulation, and machine learning. Built on Homotopy Type Theory foundations and compiled to native code via LLVM, Eshkol delivers mathematical correctness and deterministic performance without sacrificing the elegance of homoiconic Lisp syntax.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.5--evolve-blue.svg)](RELEASE_NOTES.md)
 
-**v1.3.5-evolve** — compiler and VM correctness, exact and nested AD,
-validated tensor/checkpoint operations, and stronger release verification.
-Release date: Tuesday, September 22, 2026. The
-[release notes](RELEASE_NOTES.md) describe the integrated changes, the migration
-requirements and the verification record bound to the tagged commit. Production
-TPU training belongs to the separate accelerator milestone.
+**Current release:** v1.3.5-evolve. **Release date:** Tuesday, September 22, 2026. See the
+[release notes](RELEASE_NOTES.md) and [upgrading guide](docs/UPGRADING.md).
 
 **[Full documentation index](docs/README.md)** — every guide, reference, and design doc in one place.
 
@@ -75,7 +71,7 @@ Eshkol brings **mathematical computing to Lisp** and delivers what other languag
 - **Learn** — interactive textbook with runnable code examples, plus 27 in-depth tutorials
 - **Examples** — 10 complete programs you can run instantly (AD, neural networks, ODE solving, logic programming)
 
-The website itself is written in Eshkol (1,658 lines of `site/src/main.esk`) and compiles to a 304,056-byte (about 297 KiB) WASM binary. Automatic differentiation works in the browser:
+The website itself is written in Eshkol and compiles to WebAssembly. Automatic differentiation works in the browser:
 
 ```scheme
 (derivative (lambda (x) (* x x x)) 2.0)  ;; => 12.0 (3x² at x=2)
@@ -219,7 +215,7 @@ Eshkol is implemented as a **production compiler** written in C17/C++20, utilizi
 
 - **Parser driven by an explicit continuation stack** — a child parse suspends into a heap-allocated coroutine frame, so native stack consumption is independent of grammar nesting — with comprehensive macro expansion (syntax-rules)
 - **HoTT type checker** with bidirectional *inference* (the checking direction is a documented placeholder for lambdas — `TypeChecker::checkLambda` ignores its `expected` parameter, `lib/types/type_checker.cpp:3295-3304` — a build item under ADR-0004) and dependent type support — corrected 2026-08-25, conformity audit item f5
-- **LLVM backend** with 39 code generation modules totalling 118,470 lines (`find lib -iname '*codegen*.cpp'`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 47,107 lines — current source measurement
+- **LLVM backend** with 39 code generation modules totalling 118,470 lines (`find lib -iname '*codegen*.cpp'`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 47,038 lines — current source measurement
 - **Arena memory allocator** with optimized allocation primitives
 - **Production JIT REPL** enabling interactive development with persistent state
 

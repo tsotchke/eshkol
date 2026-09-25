@@ -42,7 +42,7 @@
 ;;      (1/2 against 0) where TV_3, TV_4 do not, TV_5(RP^3) = 0, and TV_4
 ;;      does not separate the homotopy equivalent L(7,1), L(7,2).
 ;;
-;; DEFECT NOTES (routed around): as in the sibling examples. Cyclotomic
+;; NOTE: as in the sibling examples, whose formerly-cited defects (LE-17/20/22/23, SW-153) are now closed. Cyclotomic
 ;; fields are written by hand (about 120 lines); a number-field type in
 ;; the exact tower is the natural next stdlib module for this class.
 

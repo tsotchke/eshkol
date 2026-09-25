@@ -1,26 +1,18 @@
-# GPU Dispatch — Honest Status
+# GPU dispatch
 
-This page states what actually runs on the GPU today, verified on the
-v1.3.5-evolve build on an **Apple-silicon workstation-class GPU (Metal)**.
-CUDA and XLA notes are marked as such.
-The GPU-campaign ledger tasks **ESH-0022** and **ESH-0023** describe an older
-state ("`gpu-*` are Unknown function", "AOT runs CPU BLAS only") that is
-**partly stale** on this build — see below.
+Tensor operations use the GPU backend selected for the build: Metal, CUDA, or
+WebGPU in a browser. The native and compiled-WASM paths share the
+`eshkol_matmul_dispatch` and `eshkol_gpu_*` interfaces. The browser bytecode VM
+uses the same WebGPU backend through `EshkolWebGPU.attachVm()` and JSPI. A
+missing device or unsupported operation takes the CPU path; browser callers can
+inspect the reason in the backend diagnostics.
 
----
+## Operations and precision
 
-## The `gpu-*` builtins
-
-All five resolve as codegen builtins (`lib/backend/llvm_codegen.cpp`) in **both
-`-r` (JIT) and AOT** — none are "Unknown function" on this build.
-
-| Builtin | Signature | Result |
-|---------|-----------|--------|
-| `gpu-matmul` | `(gpu-matmul A B)` | ✅ `#((7 10) (15 22))` for `[[1,2],[3,4]]²`; probes Metal |
-| `gpu-elementwise` | `(gpu-elementwise OP A B)` | ✅ `(gpu-elementwise + A A)` → elementwise sum. `OP` is a **bare** `+ - * /` token (also `add`/`tensor-add` spellings), not a quoted symbol |
-| `gpu-softmax` | `(gpu-softmax t)` | ✅ `(gpu-softmax (tensor 1.0 2.0 3.0))` → `#(0.0900306 0.244728 0.665241)` |
-| `gpu-transpose` | `(gpu-transpose A)` | ✅ 2×2 → `#((1 3) (2 4))` |
-| `gpu-reduce` | `(gpu-reduce OP t)` | ✅ full reduction to a **scalar** (`(gpu-reduce + (tensor 1.0 2.0 3.0 4.0))` → `10`). `OP` is a bare `+ mean max min` token |
+`gpu-matmul`, `gpu-elementwise`, `gpu-softmax`, `gpu-transpose`, and
+`gpu-reduce` resolve in native JIT and AOT builds. Their names do not bypass
+backend admission: operation support, size thresholds, and device availability
+still decide whether a GPU kernel runs.
 
 ```scheme
 (define A (reshape (tensor 1.0 2.0 3.0 4.0) (list 2 2)))
@@ -29,74 +21,57 @@ All five resolve as codegen builtins (`lib/backend/llvm_codegen.cpp`) in **both
 (gpu-reduce + (tensor 1.0 2.0 3.0 4.0))  ;; => 10
 ```
 
-Note: `gpu-elementwise`/`gpu-reduce` take the operator as a **bare identifier**
-(`+`, not `'+`); a quoted symbol raises the "requires (gpu-… <op> …)" error.
+`gpu-elementwise` accepts a bare `+`, `-`, `*`, or `/` operator (also the
+`add` and `tensor-add` spellings). `gpu-reduce` accepts a bare `+`, `mean`,
+`max`, or `min` operator and returns a scalar for a full reduction. A quoted
+operator is not accepted by these forms.
 
----
+In the browser, the default `exact` tier uses sf64 kernels that perform
+binary64 arithmetic on integer words. Matmul and supported elementwise results
+match the CPU path bit for bit; reductions may differ because of block
+reassociation and are checked within `1e-9`. The `high` tier uses the same
+sf64 kernels. The f32 `fast` tier requires an explicit `precision: "fast"` and
+`gateTolerance >= 1e-6`.
 
-## What actually runs on the GPU
+WebGPU kernels cover matmul, same-shape elementwise add/subtract/multiply/divide,
+and full sum/mean/max/min reductions for the browser VM. The compiled-WASM
+backend also has sf64 negation, absolute value, relu, reciprocal, product and
+additional reductions. Softmax, transpose, axis reductions, normalization,
+transcendental elementwise operations, batched matmul and backward kernels use
+the CPU path when the browser backend cannot serve them. Equal element counts
+alone do not make two operand shapes compatible.
 
-The GPU is engaged through a **cost model**, not just the `gpu-*` names. Plain
-`tensor-matmul`/`matmul` and the `gpu-*` aliases share the same dispatch in
-`lib/backend/blas_backend.cpp`:
+## Dispatch controls
 
-- Dispatch is gated by `ESHKOL_GPU_MATMUL_THRESHOLD` (default
-  `1000000000` output elements). Below threshold → CPU BLAS/Accelerate; at or
-  above → **Metal**.
-- The Metal device is **probed and autotuned on the first matmul in both `-r`
-  and AOT** (prints ~20 `[GPU] …` config lines, including the Ozaki-II GEMM
-  pipeline). This happens even for a 2×2 — the probe fires, but small compute
-  stays on the CPU under the default threshold.
-- Forcing `ESHKOL_GPU_MATMUL_THRESHOLD=0` engages the **Metal Ozaki-II GEMM**
-  and returns correct results in **both `-r` and the AOT binary** (verified: a
-  256×256 AOT matmul prints the Metal banner and computes on-GPU).
+On native backends, `ESHKOL_GPU_MATMUL_THRESHOLD` controls the BLAS dispatch
+path by output element count (default `1000000000`; `0` forces the GPU decision
+for smaller matmuls). `ESHKOL_GPU_THRESHOLD` is a separate backend threshold
+for Metal/CUDA (default `100000`; values greater than zero apply). See
+[environment variables](../runtime/environment-variables.md) for the other
+runtime controls. Browser callers set `threshold` (default `100000`) and
+`precision` through `initWebGPU()` instead.
 
-```sh
-# Force GPU dispatch for smaller matmuls
-ESHKOL_GPU_MATMUL_THRESHOLD=0 ./build/eshkol-run -r matmul.esk
-```
+The browser requires WebGPU, a device, and JSPI for GPU dispatch. When any is
+missing, `initWebGPU()` or `attachVm()` reports a reason and evaluation runs on
+the CPU. With a device, `dispatchCount`, `fallbackCount`, `lastPath`, and
+`diagnostics` expose what the backend served or declined. VM evaluations that
+may suspend must use `EshkolWebGPU.vmCall()`; it serializes calls per module.
+See [GPU acceleration](../../breakdown/GPU_ACCELERATION.md#enabling-webgpu-in-a-page)
+for both browser setup examples.
 
-**Bottom line for Metal:** GPU matmul is functional and dispatches in *both*
-JIT and AOT when the size threshold is met — AOT is **not** CPU-only on this
-box. This contradicts the literal wording of ESH-0022/ESH-0023.
+## CUDA build architectures
 
----
-
-## Ledger status vs. observed
-
-| Task | Ledger claim | Observed on this build (Metal) |
-|------|--------------|--------------------------------|
-| **ESH-0022** | `gpu-matmul`/`gpu-elementwise`/`gpu-softmax`/`gpu-reduce`/`gpu-transpose` are "Unknown function" in both paths | ✅ all five **resolve and compute correctly** in `-r` and AOT (`gpu-reduce` now returns a scalar) |
-| **ESH-0023** | AOT-compiled binary runs matmul on CPU BLAS even in a GPU build | On **Metal**, AOT matmul dispatches to the GPU when the threshold is met (verified). The task was filed against a **discrete CUDA GPU**, which is not exercised here |
-
-Treat ESH-0022/0023 as **largely resolved**: `gpu-reduce` now returns a scalar
-(full reduction). What remains genuinely pending is low-level GPU-specific
-low-precision dtype builtins on non-Metal backends.
-
----
-
-## CUDA / XLA
-
-- **CUDA**: the CUDA runtime and cost-model dispatch exist
-  (`lib/backend/*gpu*`, GPU-campaign PRs), and lazy-init was made
-  reachable-from-language in the cross-platform campaign. ESH-0023's specific
-  observation (compiled binary at ~11% GPU util, CPU BLAS in the CUDA build)
-  was measured on a discrete CUDA GPU and is **not re-verified here** — treat CUDA AOT
-  GPU dispatch as unconfirmed on this build.
-- **XLA/StableHLO**: an optional AOT lane (`ESHKOL_LLVM_DIS`/StableHLO config in
-  CMake). It is a build-time backend option, not a per-op runtime dispatch, and
-  is not exercised by the examples on this page.
-
-For end-to-end GPU tests and benchmarks see
-[`tests/gpu/`](../../../tests/gpu/) (matmul/reduce/transpose/softmax/elementwise
-correctness, `sf64_*` software-float kernels, CUDA host-sync regression) and
-[`benchmarks/`](../../../benchmarks/) (`gpu_matmul_bench.sh`,
-`gpu_vs_cpu_bench.esk`, `matmul_extreme.sh`).
-
----
+The portable `ESHKOL_CUDA_ARCHITECTURES` defaults are filtered against the
+installed toolkit. Configuration first asks `nvcc --list-gpu-arch`; when that
+is unavailable, it uses the toolkit version's supported range. Unsupported
+defaults are reported and dropped, and configuration fails if none remain.
+For example, CUDA 13 drops SM72 while CUDA 12 can keep it. An explicit
+`CMAKE_CUDA_ARCHITECTURES` is used as supplied and is not filtered; nvcc reports
+an unsupported explicit choice. The policy is implemented in
+`cmake/EshkolCudaArchitectures.cmake`.
 
 ## See also
 
-- [operations.md](operations.md) — `tensor-matmul` and the full op surface
-- [creation.md](creation.md#data-types-dtypes) — dtypes (f16/bf16/f32/f64/i8)
-- [../../breakdown/AUTODIFF.md](../../breakdown/AUTODIFF.md) — GPU gradient flow (backward pass dispatch)
+- [Tensor operations](operations.md)
+- [Tensor creation and shapes](creation.md)
+- [GPU acceleration and backend details](../../breakdown/GPU_ACCELERATION.md)

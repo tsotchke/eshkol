@@ -53,6 +53,12 @@ and return a new tensor:
 (tensor-minimum (tensor 1.0 5.0) (tensor 3.0 2.0)) ;; => #(1 2)
 ```
 
+Inexact `tensor-div` follows IEEE 754 on native, VM, and WebGPU: a nonzero
+value divided by `+0.0` or `-0.0` produces the corresponding signed infinity,
+and `0.0/0.0` produces NaN. This applies elementwise after shape broadcasting
+and whether the GPU dispatch threshold selects the GPU or CPU path. Scalar `/`
+has the same inexact rule; division by exact zero with exact operands raises.
+
 Scalar-broadcast and unary:
 
 ```scheme

@@ -43,6 +43,11 @@ void eshkol_vm_install_tensor_limit(uint64_t max_elements, int active);
 #define ESHKOL_VM_MAX_FRAMES 256
 #endif
 
+/* Initial frame capacity and the configurable recursion ceiling. */
+#ifndef ESHKOL_VM_MAX_FRAMES_CEILING
+#define ESHKOL_VM_MAX_FRAMES_CEILING 65536
+#endif
+
 /* Initial constant-pool capacity. The pool grows on demand (see
  * vm_ensure_const_cap) up to ESHKOL_VM_MAX_CONSTS_CEILING, so a program's
  * constant count — dominated by large literals — is not a compile-time cap. */
@@ -114,6 +119,14 @@ void eshkol_vm_install_tensor_limit(uint64_t max_elements, int active);
 
 #if ESHKOL_VM_MAX_FRAMES <= 0
 #error "ESHKOL_VM_MAX_FRAMES must be positive"
+#endif
+
+#if ESHKOL_VM_MAX_FRAMES_CEILING < ESHKOL_VM_MAX_FRAMES
+#error "ESHKOL_VM_MAX_FRAMES_CEILING must be >= ESHKOL_VM_MAX_FRAMES"
+#endif
+
+#if ESHKOL_VM_MAX_FRAMES_CEILING >= INT_MAX
+#error "ESHKOL_VM_MAX_FRAMES_CEILING must be less than INT_MAX"
 #endif
 
 #if ESHKOL_VM_MAX_CONSTS <= 0

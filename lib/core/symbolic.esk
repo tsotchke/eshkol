@@ -107,7 +107,7 @@
 ;;; with `f(0) = 0` and return `exp(f)`, `sin(f)`, `cos(f)` directly —
 ;;; those three are entire functions, well-defined at the origin, so no
 ;;; shift is needed. `series-log`, `series-sqrt` and `series-inverse`
-;;; are singular AT the origin (log/sqrt/1/x blow up or branch at 0), so
+;;; are singular AT the origin (log/sqrt/1/x diverge or branch at 0), so
 ;;; they take an argument series `f` with `f(0) = 0` and return
 ;;; `log(1+f)`, `sqrt(1+f)`, `1/(1+f)` respectively — the standard
 ;;; "log1p"/"sqrt1p" convention. `series-log(x)` therefore means

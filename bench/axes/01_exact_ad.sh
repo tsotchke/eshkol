@@ -4,7 +4,7 @@
 # Substantiates two public claims about `derivative-n` (docs/guide/
 # AUTOMATIC_DIFFERENTIATION.md):
 #   * cost is O(k^2) in the derivative order k — a truncated-Taylor
-#     recurrence, never the 2^k blowup of stacked dual numbers;
+#     recurrence, never the 2^k growth of stacked dual numbers;
 #   * evaluated at an exact (rational/bignum) point, the result is exact —
 #     not a float approximation of an exact answer.
 #

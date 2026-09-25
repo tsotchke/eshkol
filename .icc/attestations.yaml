@@ -911,3 +911,252 @@ attestations:
   valid_until: null
   evidence_link: post-v1.3.1 hardening
   line_text: '        "$TIMEOUT_S" "$BIN" ) > "$RUN_OUT" 2> "$TIME_LOG"'
+- finding_key: a39cd0c5122bbdedbd4609f299f77a5b1c3bc1b0033dabacdf15dce4e5ab1460
+  path: scripts/build_site_content.py
+  line: 337
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:notes
+  severity: low
+  reason: 'self-test fixture: a temporary file the script''s own --self-test writes
+    into a per-run scratch directory to exercise its logic; it is not a product artifact
+    and nothing outside the self-test reads it. Reviewed 2026-09-25 for v1.3.5-evolve.'
+  attested_by: tsotchke
+  attested_at: '2026-09-25T05:58:31Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '        (root / "docs" / "notes.txt").write_text("x\n", encoding="utf-8")'
+  stable_key: 0daeab6bc1dce85b79d0b416847e94e460d798b41eecab818afc0d6fc119a99e
+  hmac: 5c74cada265ff99048e1435360cc151333732229d551459d10a4cf3ba1cf314b
+- finding_key: 712a666a5f2adbdeb0239efba48c9ed9ef8cc3c1d33e3db8be15db0c0b2a1662
+  path: scripts/check_self_verdicts.py
+  line: 346
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:real_fail
+  severity: low
+  reason: 'self-test fixture: a temporary file the script''s own --self-test writes
+    into a per-run scratch directory to exercise its logic; it is not a product artifact
+    and nothing outside the self-test reads it. Reviewed 2026-09-25 for v1.3.5-evolve.'
+  attested_by: tsotchke
+  attested_at: '2026-09-25T05:58:52Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '        real_fail_log = _write(tmp_dir, "real_fail.log", "MISMATCH:
+    expected 3.14 got 2.71\n")'
+  stable_key: e6113e09bffba4998dde344d7e5d8df0dd8c8cc66de3d5dd12a0aeb1537c73f6
+  hmac: 1ff093850347da7feb34a08f8d253454e87bf0fa1ce26c27bcb402a1634d9ebe
+- finding_key: c7c92edc31223da10fce2671609008f55cb365006fa423490b97c6cf2b3d635f
+  path: scripts/ci_change_class.py
+  line: 1064
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:guide
+  severity: low
+  reason: 'self-test fixture: a temporary file the script''s own --self-test writes
+    into a per-run scratch directory to exercise its logic; it is not a product artifact
+    and nothing outside the self-test reads it. Reviewed 2026-09-25 for v1.3.5-evolve.'
+  attested_by: tsotchke
+  attested_at: '2026-09-25T05:59:14Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '        _write(fixture / "docs" / "GUIDE.md", "# guide\n")'
+  stable_key: dd7530c203ef8e8cd602cd62879e4c9f509476f597f28f4855fadc1e7f9a72d0
+  hmac: f44b8112e0b38b3041ad4ac3df216709a351d7771723c052ba5c33b441da1158
+- finding_key: 304f2928cec87b3d3fd052f9c41e01d9a6fbc2588aaa43e177e44cdee82602cc
+  path: scripts/ci_change_class.py
+  line: 1066
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:scratch
+  severity: low
+  reason: 'self-test fixture: a temporary file the script''s own --self-test writes
+    into a per-run scratch directory to exercise its logic; it is not a product artifact
+    and nothing outside the self-test reads it. Reviewed 2026-09-25 for v1.3.5-evolve.'
+  attested_by: tsotchke
+  attested_at: '2026-09-25T05:59:36Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '        _write(fixture / "notes" / "scratch.md", "note\n")'
+  stable_key: 7e88891852edec96c234375f659022c92fc1c8bcf91dc0b68956410e0362d195
+  hmac: 11ccb38d27b2079bfd424cb09659d64cd819108cb8f76ff07575cd6f1104c972
+- finding_key: ef19593062f8154c0f16c4c145a3ca5fb0be43e3a449e16b99d8d2e41215f061
+  path: scripts/ci_change_class.py
+  line: 1070
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:01_intro
+  severity: low
+  reason: 'self-test fixture: a temporary file the script''s own --self-test writes
+    into a per-run scratch directory to exercise its logic; it is not a product artifact
+    and nothing outside the self-test reads it. Reviewed 2026-09-25 for v1.3.5-evolve.'
+  attested_by: tsotchke
+  attested_at: '2026-09-25T05:59:57Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '        _write(fixture / "docs" / "tutorials" / "01_INTRO.md", "```scheme\n(display
+    1)\n```\n")'
+  stable_key: e0c545dee9da57a9a61825d52c3bb83e90802d3ba0a8bf113134d6820a19989b
+  hmac: 76f224e45c0b944fa88c50a7ded1167ddda0042e354bca7e68e5b0615cc31c2f
+- finding_key: 3270c36812a8911d340a0d4fb6f84d45599e1449bea4045efdf403f253fe3588
+  path: scripts/ci_equivalent_head.py
+  line: 347
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:base
+  severity: low
+  reason: 'self-test fixture: a temporary file the script''s own --self-test writes
+    into a per-run scratch directory to exercise its logic; it is not a product artifact
+    and nothing outside the self-test reads it. Reviewed 2026-09-25 for v1.3.5-evolve.'
+  attested_by: tsotchke
+  attested_at: '2026-09-25T06:00:19Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '    (root / "base.txt").write_text("base 0\n")'
+  stable_key: 0a3601a869fd3b9328333efe12e3f8888042f4e200b9b25c73ae1dc14e441e07
+  hmac: 67b45f9bfb45a67f0bf25bb782dd3f49b626565f719634df457826585fde2582
+- finding_key: 9c140a3f7464ca844004314e27c99f5f3d5c0e40259c0b33cc5f9134ef306e55
+  path: scripts/ci_equivalent_head.py
+  line: 349
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:base
+  severity: low
+  reason: 'self-test fixture: a temporary file the script''s own --self-test writes
+    into a per-run scratch directory to exercise its logic; it is not a product artifact
+    and nothing outside the self-test reads it. Reviewed 2026-09-25 for v1.3.5-evolve.'
+  attested_by: tsotchke
+  attested_at: '2026-09-25T06:00:41Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '    (root / "base.txt").write_text("base 1\n")'
+  stable_key: 3fa59a602e99cbd641ab112cf73f0550e696d9297219f333dc2e03b1c2c7d6ba
+  hmac: e9476692928cf8633db8cbc5f3cd8e591a752c90be5968c9366ea681812ef55b
+- finding_key: bf4fea0ae3208480605165457d58f695b21a661b02ec7c679c4e48df2442c4a5
+  path: scripts/ci_equivalent_head.py
+  line: 351
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:base
+  severity: low
+  reason: 'self-test fixture: a temporary file the script''s own --self-test writes
+    into a per-run scratch directory to exercise its logic; it is not a product artifact
+    and nothing outside the self-test reads it. Reviewed 2026-09-25 for v1.3.5-evolve.'
+  attested_by: tsotchke
+  attested_at: '2026-09-25T06:01:02Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '    (root / "base.txt").write_text("base 2\n")'
+  stable_key: fd61e59d86c09c66c3bd676d3396c13f96a1e7eb419dedc3eb12e3f8bb1b6f04
+  hmac: abc8a78006793ac8b60f029504ed7dbc5f7256c34e27a1cc13e7e83890e4ceb4
+- finding_key: cbb4a4a71997ba887dd1435cef1ec8c3e1053755accbff47719fdc25f166c6e6
+  path: scripts/check_public_api_docs.py
+  line: 142
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:public_api_docs_gate
+  severity: low
+  reason: 'ICC trace output: the file is the script''s runtime-evidence stream in
+    the trace directory, consumed by the completion oracle by event name (not by file
+    name) via --trace-dir. Reviewed 2026-09-25 for v1.3.5-evolve. Consumer: completion
+    criterion public_api_docs_clean.'
+  attested_by: tsotchke
+  attested_at: '2026-09-25T06:01:24Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '            emit_trace(args.trace_dir / "public_api_docs_gate.jsonl",
+    "FAIL", "; ".join(errors))'
+  stable_key: e9dd25516a9cc075009e9e065f2d67d86a00a887fd5e62399855c16cc908cd66
+  hmac: 4adb8bb0dc3ec39db57319209101e6e5c6cf71cde128b4a7c3fedcc2f31db374
+- finding_key: 449ea2e05b5b4525f2f5df50575a9f15af18bae28a86e676c57f4f93b0583289
+  path: scripts/check_public_api_docs.py
+  line: 148
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:public_api_docs_gate
+  severity: low
+  reason: 'ICC trace output: the file is the script''s runtime-evidence stream in
+    the trace directory, consumed by the completion oracle by event name (not by file
+    name) via --trace-dir. Reviewed 2026-09-25 for v1.3.5-evolve. Consumer: completion
+    criterion public_api_docs_clean.'
+  attested_by: tsotchke
+  attested_at: '2026-09-25T06:01:46Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '        emit_trace(args.trace_dir / "public_api_docs_gate.jsonl", "PASS",'
+  stable_key: 55ba3e515f6bdd780dead0e8498cf520f54c361dbbffa3681975c35a9e2c3ae1
+  hmac: 89e280bb64fd867161430a63e1b4c897f59bb76759c98541d030fe0c0cc55d2e
+- finding_key: 6a275ba836c9df50a9a8860031b5cea906b9c07525d41c128d12b96dc9c14803
+  path: scripts/abi_header_inventory.py
+  line: 1247
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:abi_object_ratchet
+  severity: low
+  reason: 'ICC trace output: the file is the script''s runtime-evidence stream in
+    the trace directory, consumed by the completion oracle by event name (not by file
+    name) via --trace-dir. Reviewed 2026-09-25 for v1.3.5-evolve. Consumer: the ABI
+    object ratchet in scripts/abi_header_inventory.py and its self-test.'
+  attested_by: tsotchke
+  attested_at: '2026-09-25T06:02:07Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '    with (trace_dir / "abi_object_ratchet.jsonl").open("a") as fh:'
+  stable_key: 82be57bbef2b30560dc21b90274bb1aae2cd82f66f4682fc94b1b67c1cbba8b0
+  hmac: 093a5c5ab3f4bcd0d85e89a66e6edf6dda17ae80db18270b6038edf0ab1fac1e
+- finding_key: 2ad936f0de3bf2dee25c85c95802584f8e58f96698b69ee54646a8a18e9e5e8e
+  path: scripts/release_autopilot.py
+  line: 464
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:events
+  severity: low
+  reason: 'Release autopilot audit log: an append-only record of the autopilot''s
+    own actions in its run directory, kept for operator review; it is an output log,
+    not an input any gate reads. Reviewed 2026-09-25 for v1.3.5-evolve.'
+  attested_by: tsotchke
+  attested_at: '2026-09-25T06:02:29Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '            with (self.directory / "events.jsonl").open("a") as out:'
+  stable_key: ee2b1e8fb185911eeddc1305be0291f7a3b0dd928d2bc71db78ba138d9c5d3f9
+  hmac: cf1ec46f53d97cd5705ae7dff327e15cdac16371a9798df0f89b5e677d94d08f
+- finding_key: 008b8525866b22a28637e6300c26fbe580b0f53f6816f548260fbad67c89847c
+  path: scripts/run_compiler_assurance.py
+  line: 142
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:gate_frame_observations
+  severity: low
+  reason: Compiler-assurance evidence output under .icc/evidence/compiler-assurance,
+    written for review alongside the gate's certificates; the gate verdict itself
+    is emitted as a trace event. Reviewed 2026-09-25 for v1.3.5-evolve.
+  attested_by: tsotchke
+  attested_at: '2026-09-25T06:02:51Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '    (out/''gate_frame_observations.jsonl'').write_text(''''.join(json.dumps(c)+''\n''
+    for c in certificates))'
+  stable_key: 8ebd98c92b469467c4647b3aa3daa054814b1165732b204bc205f22d69b150e9
+  hmac: a06e10487a258c62d0c9807c60c1ba5abd80fd2a5c823f3130bbfd1d5c7aad6f
+- finding_key: 33da7676fd6d6c1a0ed6195ae3ff2f6f1a643ee10b43b4229621c3fbda4093cb
+  path: scripts/run_compiler_assurance.py
+  line: 144
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:sensitivity
+  severity: low
+  reason: Compiler-assurance sensitivity report under .icc/evidence/compiler-assurance,
+    written for review; the gate verdict itself is emitted as a trace event. Reviewed
+    2026-09-25 for v1.3.5-evolve.
+  attested_by: tsotchke
+  attested_at: '2026-09-25T06:03:13Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '    write(out/''sensitivity.json'',report)'
+  stable_key: 84ebfa7e2dee4caadd20df053a40162afbf0e5bd74849a938db482ef2ef2a01f
+  hmac: d818970f7cdcb2d3c3b50f302695c5bc1587b19c7221b0a4f23fff1677862940
+- finding_key: 1c32cf8f5cbf6e13d9cd4a6aad9be1e4242741ed920abd0e0a9728ce3894bb82
+  path: scripts/ci_change_class.py
+  line: 1207
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:compile_commands
+  severity: low
+  reason: 'External input: compile_commands.json is produced by CMake in the build
+    directory and read by ci_change_class.py to cross-check its derived build-input
+    set; the script''s self-test covers that check. Reviewed 2026-09-25 for v1.3.5-evolve.'
+  attested_by: tsotchke
+  attested_at: '2026-09-25T06:03:35Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '        (build_dir / "compile_commands.json").write_text(json.dumps(good_cc),
+    encoding="utf-8")'
+  stable_key: 80dcac2216411203fdad7b4f881f8b8cf9cb835ca2a68d81f26ed0ba5ae9258e
+  hmac: b328eec570b7fc9abcbe0da62438796550c4124b6e614c4a4551b94d142ad71b
+- finding_key: 9b9454fe01c798ce89522988fbdd213f1389a8cdd30ce940e6f3572adc65435f
+  path: scripts/ci_change_class.py
+  line: 1217
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:compile_commands
+  severity: low
+  reason: 'External input: compile_commands.json is produced by CMake in the build
+    directory and read by ci_change_class.py to cross-check its derived build-input
+    set; the script''s self-test covers that check. Reviewed 2026-09-25 for v1.3.5-evolve.'
+  attested_by: tsotchke
+  attested_at: '2026-09-25T06:03:58Z'
+  valid_until: null
+  evidence_link: release dry run 36036654581 readiness gaps
+  line_text: '        (build_dir / "compile_commands.json").write_text(json.dumps(bad_cc),
+    encoding="utf-8")'
+  stable_key: b012d1f6e33c1c0b60f5f00ee7e6596e0949f25ba3b8fe2e946e5304c4cf9d1a
+  hmac: e394f1efb40c50c2787a163c893ac55660f71fec38fba882722f3c4a887a0869

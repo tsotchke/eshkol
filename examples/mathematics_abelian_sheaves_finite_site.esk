@@ -47,8 +47,9 @@
 ;;      as its intersection, so both Cech routes give (1, 0, 0) and miss
 ;;      H^2: the Leray condition fails, as the descent example showed.
 ;;
-;; DEFECT NOTES (routed around): as in the sibling examples; recursive
-;; enumerators are top-level definitions or explicit loops (LE-23).
+;; NOTE: as in the sibling examples, recursive enumerators are top-level
+;; definitions or explicit loops; the defect that made a locally recursive
+;; binding re-entered from a for-each/map lambda diverge (LE-23) is closed.
 
 (require stdlib)
 

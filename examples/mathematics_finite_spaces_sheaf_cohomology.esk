@@ -42,7 +42,7 @@
 ;;      sheaf condition (descent) holds for constant and twisted
 ;;      coefficients, and the cover is Leray.
 ;;
-;; DEFECT NOTES (routed around): as in the sibling examples.
+;; NOTE: as in the sibling examples, whose formerly-cited defects (LE-17/20/22/23, SW-153) are now closed.
 
 (require stdlib)
 

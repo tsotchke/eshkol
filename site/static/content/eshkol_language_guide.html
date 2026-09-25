@@ -255,7 +255,7 @@ cmake .. &amp;&amp; make -j8
 <tr>
 <td>Symbol</td>
 <td><code>'foo</code>, <code>'\|weird sym\|</code></td>
-<td>Interned identifier. R7RS 7.1.1 vertical-line syntax (<code>\|...\|</code>) reads a symbol verbatim between bars — the one spelling that can contain whitespace, start with a digit, or reuse punctuation another token claims — as of v1.3.5 (#462). <code>write</code> emits bars only when a name cannot be spelled bare; <code>display</code> never bars.</td>
+<td>Interned identifier. R7RS 7.1.1 vertical-line syntax (<code>\|...\|</code>) reads a symbol verbatim between bars — the one spelling that can contain whitespace, start with a digit, or reuse punctuation another token claims. <code>write</code> emits bars only when a name cannot be spelled bare; <code>display</code> never bars.</td>
 </tr>
 <tr>
 <td>List</td>
@@ -315,7 +315,7 @@ cmake .. &amp;&amp; make -j8
 </tbody>
 </table>
 <h3 id="1053-built-in-functions">1,053 Built-in Functions</h3>
-<p>Eshkol v1.3.5-evolve ships 1,056 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.</p>
+<p>Eshkol provides 1,056 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.</p>
 <p><strong>Arithmetic:</strong> <code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>, <code>abs</code>, <code>floor</code>, <code>ceiling</code>, <code>round</code>, <code>truncate</code>, <code>modulo</code>, <code>remainder</code>, <code>quotient</code>, <code>gcd</code>, <code>lcm</code>, <code>min</code>, <code>max</code>, <code>expt</code>, <code>exact-&gt;inexact</code>, <code>inexact-&gt;exact</code></p>
 <p><strong>Math:</strong> <code>sin</code>, <code>cos</code>, <code>tan</code>, <code>asin</code>, <code>acos</code>, <code>atan</code>, <code>sinh</code>, <code>cosh</code>, <code>tanh</code>, <code>exp</code>, <code>log</code>, <code>log10</code>, <code>sqrt</code>, <code>pow</code>, <code>fl-next-up</code>, <code>fl-next-down</code> (directed rounding — the next representable double above / below its argument; the primitive beneath certified enclosures)</p>
 <p><strong>Comparison:</strong> <code>&lt;</code>, <code>&gt;</code>, <code>=</code>, <code>&lt;=</code>, <code>&gt;=</code>, <code>eq?</code>, <code>eqv?</code>, <code>equal?</code></p>
@@ -528,7 +528,7 @@ cmake .. &amp;&amp; make -j8
 <pre class="scheme"><code>(define c 1/5)
 (derivative (lambda (x) (* x x)) 1/3)       ;; -&gt; 2/3   exact
 (derivative (lambda (x) (* c x x)) 1/3)     ;; -&gt; 2/15  exact</code></pre>
-<p>See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md" target="_blank" rel="noopener noreferrer">reference/language/numeric-tower.md</a> for the whole tower and <a href="/docs#page=reference_ad" data-url="/content/reference_ad.html">reference/ad/INDEX.md</a> for the exactness tier, including the one nesting shape that is not supported in v1.3.5.</p>
+<p>See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md" target="_blank" rel="noopener noreferrer">reference/language/numeric-tower.md</a> for the whole tower and <a href="/docs#page=reference_ad" data-url="/content/reference_ad.html">reference/ad/INDEX.md</a> for the exactness tier and nested differentiation.</p>
 <hr />
 <h2 id="complex-numbers">Complex Numbers</h2>
 <p>Eshkol supports complex numbers as a first-class numeric type, with heap-allocated <code>{real:f64, imag:f64}</code> representation and Smith’s formula for numerically stable division.</p>
@@ -1033,7 +1033,6 @@ eshkol-run program.esk --wasm -o program.wasm
 :history   Show command history</code></pre>
 <h3 id="example-session">Example Session</h3>
 <pre><code>$ ./eshkol-repl
-Eshkol REPL v1.3.5
 Type :help for assistance, :quit to exit
 
 eshkol&gt; (define (square x) (* x x))
@@ -1550,6 +1549,3 @@ Goodbye!</code></pre>
 <h2 id="license">License</h2>
 <p>MIT License - Copyright (C) tsotchke</p>
 <hr />
-<p align="center">
-<strong>Eshkol v1.3.5</strong>: Where functional programming meets scientific computing, GPU acceleration, and machine consciousness.
-</p>

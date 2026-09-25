@@ -1,7 +1,7 @@
 ---
 kind: explanation
 status: current
-owner-area: numeric
+owner-area: language
 since: v1.3.5
 sources:
   - inc/eshkol/core/number_syntax.h

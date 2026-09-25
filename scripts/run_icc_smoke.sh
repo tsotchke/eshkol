@@ -1076,7 +1076,7 @@ EOF
      esac'
 
 # ───────────────────────────────────────────────────────────────────
-# Navier-Stokes blowup mechanization family. One probe per program
+# Navier-Stokes residual mechanization family. One probe per program
 # (examples/mathematics_navier_stokes_*.esk), matching the CTest ns_*_jit
 # names in CMakeLists.txt and the icc-target each program's own
 # ICC-EVENT lines use. Each program is itself a compile-and-run
