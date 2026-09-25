@@ -81,8 +81,14 @@ def main() -> int:
         print(f"release build cohort: FAIL: {exc}")
         return 1
     changed = [name for name in ARTIFACTS if before.get(name) != current.get(name)]
-    if before.get("__source__") != current.get("__source__"):
-        changed.append("source revision or tracked worktree state")
+    before_source = before.get("__source__") or {}
+    current_source = current["__source__"]
+    if before_source.get("git_head") != current_source.get("git_head"):
+        changed.append("source revision (git HEAD)")
+    if before_source.get("tracked_state_sha256") != current_source.get("tracked_state_sha256"):
+        changed.append("tracked worktree state")
+    if before_source != current_source and not changed:
+        changed.append("source state")
     if changed:
         detail = "main compiler/runtime artifacts changed during release evidence: " + ", ".join(changed)
         if args.mode == "verify":

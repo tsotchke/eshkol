@@ -1,11 +1,11 @@
-;; Navier-Stokes blowup construction -- compact forcing, whole-space
+;; Navier-Stokes example -- compact forcing, whole-space
 ;; breakdown, and the torus.
 ;;
-;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
-;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Source: an external reference construction for the three-dimensional
+;; Navier-Stokes equations (2026), https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
 ;; Section 10 (compact forcing and whole-space breakdown): Proposition 10.1,
 ;; Lemma 10.2, Lemma 10.3, Lemma 10.4, (10.20)-(10.23), Corollary 10.6.
-;; docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md rows 79-84 (beyond what
+;; docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md rows 79-84 (beyond what
 ;; mathematics_navier_stokes_viscosity_scaling.esk already covers for the
 ;; (10.22)-(10.23) rescaling identity itself, row 83).
 ;;
@@ -35,16 +35,17 @@
 ;; the identity is a computed consequence, not an assumption), checked
 ;; exactly by AD in t.
 ;;
-;; DEFECT NOTE (new; routed around, not fixed; minimal repro under
-;; .scratch/ns_defect_conditional_derivative.esk): `derivative`,
-;; `derivative-n` and `taylor` all return 0 for a differentiand whose
-;; top-level expression is a conditional (`if`/`cond`) at an exact rational
-;; seed. Every AD call below differentiates an unguarded polynomial; guarded
-;; (genuinely compactly supported) forms are used only for direct evaluation,
-;; never as a differentiand. Also routed around: no derivative is evaluated
-;; AT an actual pole (division by exactly zero); every "before cutoff" growth
-;; claim below is a direct numeric comparison approaching, but never landing
-;; on, the singular point.
+;; A defect that once made `derivative`, `derivative-n` and `taylor` return 0
+;; for a differentiand whose top-level expression is a conditional (`if`/
+;; `cond`) at an exact rational seed is fixed (probed directly with an
+;; `if`-headed and a `cond`-headed differentiand; both now return the correct
+;; exact value). Every AD call below still differentiates an unguarded
+;; polynomial, as originally written; guarded (genuinely compactly supported)
+;; forms are used only for direct evaluation, never as a differentiand -- that
+;; reflects what each PART is checking, not a route-around. Also: no
+;; derivative is evaluated AT an actual pole (division by exactly zero);
+;; every "before cutoff" growth claim below is a direct numeric comparison
+;; approaching, but never landing on, the pole.
 
 (define pass-count 0)
 (define fail-count 0)

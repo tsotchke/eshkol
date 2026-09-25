@@ -75,6 +75,10 @@ driver's floating-point optimizations. Operands are uploaded as raw f64 bits.
 | `high` | sf64 (same kernels) | Meets the `high` contract with the exact kernels |
 | `fast` | f32 | Only with an explicit `precision: "fast"` and `gateTolerance >= 1e-6`; otherwise refused |
 
+The backend reports a refused fast tier in `diagnostics` with the required
+minimum tolerance. The same admission check controls GPU dispatch, so a
+refused tier does not report an active fast opt-in.
+
 `eshkol_gpu_has_fp64()` reports 1 on the `exact`/`high` tiers (as on Metal,
 whose f64 is also emulated) and `eshkol_gpu_supports_f64()` reports 0 (no
 hardware f64).
@@ -93,6 +97,12 @@ serve increments `backend.fallbackCount` and records the reason in
 `backend.diagnostics`; every call it does serve increments
 `backend.dispatchCount` and sets `backend.lastPath` (for example
 `webgpu:gemm_sf64`).
+
+A backend can be attached to multiple browser VMs. Each compute call retains
+the initiating VM's memory through asynchronous readback, so concurrent calls
+write to their own destination. Dispatch counters, history and diagnostics
+describe the shared backend across those calls. Inexact tensor division has
+IEEE 754 zero-divisor behavior on both CPU fallback and sf64 GPU dispatch.
 
 **Correctness gate.** `scripts/lib/webgpu_diff_runner.mjs` drives Chrome
 (Playwright, `channel: 'chrome'`) and compares every kernel with the CPU
@@ -154,6 +164,9 @@ module is instantiated:
   (with `gateTolerance`).
 - After a run, `runtime.webgpuBackend` exposes `dispatchCount`,
   `fallbackCount`, `lastPath` and `diagnostics`.
+- Browser callbacks obtained from a WASM function table enter through
+  `promisingTableEntry`, which applies the same JSPI wrapper as exported
+  entry points before a callback can reach a suspending GPU import.
 - `EshkolRepl` in `web/eshkol-repl.js` has the same `initWebGPU()`; its
   `instantiate()` calls it automatically when `eshkol-webgpu.js` is loaded.
 

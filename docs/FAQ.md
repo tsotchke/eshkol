@@ -88,7 +88,7 @@ Yes, Eshkol implements a substantial subset of R7RS Scheme including: `lambda`, 
 
 Some R7RS features are extended: `define-library` and R7RS `import` forms lower through Eshkol's existing module system, including `only`, `except`, `rename`, and `prefix` import sets. The type system adds HoTT-based gradual typing beyond what R7RS specifies.
 
-R7RS 7.1.1's third `<identifier>` production — vertical-line symbols like `'|weird sym|` and the empty symbol `'||` — is supported as of v1.3.5 (#462), on both the native and bytecode-VM readers/writers. See [Complete Language Specification §2.1.6](COMPLETE_LANGUAGE_SPECIFICATION.md#216-symbol-interned-symbol).
+R7RS 7.1.1's third `<identifier>` production — vertical-line symbols like `'|weird sym|` and the empty symbol `'||` — is supported by both the native and bytecode-VM readers and writers. See [Complete Language Specification §2.1.6](COMPLETE_LANGUAGE_SPECIFICATION.md#216-symbol-interned-symbol).
 
 ### What does "homoiconic" mean?
 
@@ -161,4 +161,4 @@ eshkol-run program.esk -o program
 
 ### Can Eshkol run in the browser?
 
-Yes. Eshkol compiles to WebAssembly. The project website ([eshkol.ai](https://eshkol.ai)) is itself written in Eshkol — 1,641 lines compiled to a 286,605-byte (about 280 KiB) WASM binary. A bytecode VM REPL also runs in the browser for interactive evaluation, and as of v1.3.5 it answers: every `repl_eval` call in the WebAssembly bundle — the site's REPL pane and every runnable code block on the docs pages — used to return with no output at all, because the REPL's auto-print rode on the `display` opcode and lost its line terminator when that opcode was corrected to match native `display` byte-for-byte. Emscripten delivers stdout to the page one complete line at a time, so an unterminated answer was buffered forever. The echo is now emitted by the session that owns the transcript, so `(display "hi")` in the browser REPL is a fragment awaiting a `(newline)`, exactly as it is under `eshkol-run -r`.
+Yes. Eshkol compiles to WebAssembly. The project website ([eshkol.ai](https://eshkol.ai)) is written in Eshkol. Its browser bytecode VM evaluates the REPL and runnable documentation blocks, and tensor operations use WebGPU when a suitable adapter is available. A REPL answer is emitted as a complete line; `(display "hi")` alone remains a fragment until `(newline)`.

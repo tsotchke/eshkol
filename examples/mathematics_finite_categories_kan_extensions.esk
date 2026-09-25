@@ -60,9 +60,11 @@
 ;;      sheaf cohomology of the earlier examples, now as derived functors of
 ;;      lim on the presheaf category.
 ;;
-;; DEFECT NOTES (routed around): as in the sibling examples; inner loop
-;; variables never reuse an outer named-let parameter's name (LE-20, fixed
-;; in #658 but not yet on the build used here).
+;; NOTE: as in the sibling examples, inner loop variables never reuse an
+;; outer named-let parameter's name; the defect that misreported such a
+;; shadowed parameter as undefined (LE-20) no longer reproduces on this
+;; build (probed directly with tests/math_acceptance/shadowed_named_let_scope_test.esk,
+;; both engines: correct result 176).
 
 (require stdlib)
 

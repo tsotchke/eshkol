@@ -513,7 +513,7 @@ Out of scope for PR 1: matmul dense routing (C.1), the ABI, any FD removal
   variable gradients" but the tape does not track variables today. If Phase A
   ships the one-pass loop without populating `variables`/`num_variables`, it will
   read garbage. This is called out as an explicit PR-1 prerequisite.
-- **Shape-specialization blowup.** One compiled kernel per
+- **Shape-specialization growth.** One compiled kernel per
   (dtype,rank,dims,strides,…) key is combinatorial across batch sizes.
   Mitigation: cache with a bounded size; bucket/pad batch dimensions; document
   that an unbucketed dynamic batch triggers recompile until a dynamic-shape path

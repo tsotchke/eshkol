@@ -27,10 +27,11 @@ Every program on this page was run on the release compiler, on the JIT
 2. [Loop accumulators are typed by what they carry](#2-loop-accumulators-are-typed-by-what-they-carry)
 3. [A procedure variable means its current value](#3-a-procedure-variable-means-its-current-value)
 4. [Differentiation](#4-differentiation)
-5. [Library behaviour](#5-library-behaviour)
-6. [Building Eshkol](#6-building-eshkol)
-7. [Environment variables](#7-environment-variables)
-8. [Contributors](#8-contributors)
+5. [Language and error behavior](#5-language-and-error-behavior)
+6. [Library behaviour](#6-library-behaviour)
+7. [Building Eshkol](#7-building-eshkol)
+8. [Environment variables](#8-environment-variables)
+9. [Contributors](#9-contributors)
 
 ## 1. The type checker sees more of your program
 
@@ -192,7 +193,43 @@ the same program, in either order.
 The complete AD support matrix, including nesting, is
 [reference/ad/support-matrix.md](reference/ad/support-matrix.md).
 
-## 5. Library behaviour
+## 5. Language and error behavior
+
+- **Arity is checked as an error.** A call with too few or too many arguments
+  raises a catchable arity condition on native and VM. This includes an
+  `apply` call that spreads too many values into a fixed-arity procedure.
+  Check calls that previously depended on an ignored argument or an implicit
+  value; catch the condition with `guard` when the call is intentionally
+  dynamic.
+- **Macros use hygienic lexical bindings.** `syntax-rules` renames introduced
+  binders consistently. A local binding shadows a builtin with the same
+  spelling, including names that have specialized lowering. Remove any
+  workaround that depends on accidental capture; use an explicit parameter
+  when a macro needs a caller binding.
+- **The empty-list pattern matches only the empty list.** A `syntax-rules`
+  pattern `()` no longer matches a one-element list such as `(x)`. Add the
+  intended one-element pattern if a macro accepted both shapes.
+- **Top-level `begin` splices definitions.** Definitions inside a top-level
+  `begin`, including one emitted by a macro or nested in a top-level
+  `with-region`, bind at the program level on native and VM. Rename a binding
+  if it previously depended on being scoped to that `begin`.
+- **Number input follows one R7RS grammar.** Program literals, `read`, and
+  `string->number` recognize the same rectangular and polar complex forms,
+  radix and exactness prefixes, and rational parts. `string->number` accepts
+  radices 2, 8, 10, and 16. Invalid exactness requests return `#f` through
+  `string->number` and raise in program source or `read`; audit data files that
+  relied on a formerly accepted nonstandard spelling or radix.
+- **Caught conditions do not write to stderr.** A `guard` handler owns its
+  condition. If a program parsed the runtime's former stderr line after a
+  caught error, log the condition explicitly in the handler. An uncaught
+  condition still reports an error.
+
+See the [language reference](reference/language/INDEX.md) and
+[ADR-0026](design/adr/0026-syntax-rules-one-engine-one-renaming-rule.md),
+[ADR-0028](design/adr/0028-one-number-syntax-recognizer.md) for the exact
+rules.
+
+## 6. Library behaviour
 
 - `json-get-in` takes an optional default, returned when the path is absent:
   `(json-get-in obj path default)`. See
@@ -209,7 +246,7 @@ The complete AD support matrix, including nesting, is
 - The size variables (`ESHKOL_STACK_SIZE` and its siblings) accept `K`/`M`/`G`
   and `KiB`/`MiB`/`GiB`, and report a value they cannot parse.
 
-## 6. Building Eshkol
+## 7. Building Eshkol
 
 - **Host compilers.** v1.3.5-evolve is built and verified with GCC 13 and with
   Clang/LLVM 21. GCC 15 is not a supported host compiler in this release: where
@@ -229,7 +266,7 @@ The complete AD support matrix, including nesting, is
 Problems and their fixes are collected in
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
-## 7. Environment variables
+## 8. Environment variables
 
 Read by the compiler and runtime since v1.3.5. The full table, with defaults,
 is [the environment-variable reference](reference/runtime/environment-variables.md).
@@ -250,7 +287,7 @@ is [the environment-variable reference](reference/runtime/environment-variables.
 For evidence-producing scripts, a relative `TRACE_DIR` or `ICC_TRACE_DIR`
 means a path relative to the repository root.
 
-## 8. Contributors
+## 9. Contributors
 
 - **Tutorial and guide examples are executed** on the JIT and as AOT binaries
   by the documentation example gate. A page change that breaks an example fails

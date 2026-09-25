@@ -1,4 +1,4 @@
-# Eshkol v1.3.5 API Reference
+# Eshkol API Reference
 
 **Version**: 1.3.5
 **Last Updated**: 2026-09-14
@@ -2325,7 +2325,7 @@ Invoking it with a value resumes execution at the point where `call/cc` was call
 returning that value. The continuation is multi-shot and re-entrant: it may be invoked
 any number of times, from any dynamic extent, including after the procedure that captured
 it has already returned. This holds identically on the native `-r` JIT, the native AOT
-compiler, and the bytecode VM (SHIPPED v1.3.5-evolve). A continuation captured inside
+compiler, and the bytecode VM. A continuation captured inside
 `with-region` pins that region, so resuming after the region exits is safe. See
 [docs/reference/language/continuations.md](reference/language/continuations.md) for the
 per-engine account and the remaining bounded limits.
@@ -2471,7 +2471,7 @@ independently — `proc` must be thread-safe (no shared mutable state without sy
 
 Order is preserved: the output list has the same element ordering as the input.
 
-As of v1.3.4, `parallel-map` is safe for closures that **allocate and return
+`parallel-map` is safe for closures that **allocate and return
 collections** (including closures whose bodies use an internal named-let loop or a
 builtin such as `memv`): scope reclamation degrades to commit-only on pool workers
 sharing the thread-safe arena, so results are **identical to serial `map`**. See
@@ -7336,17 +7336,6 @@ for composability and custom pipelines.
 (clip #(1.0 5.0 10.0) 2.0 8.0)
 ;; => #(2.0 5.0 8.0)
 ```
-
----
-
-## Implementation Statistics
-
-**Codebase Size**: ~329,100 lines of production C++
-**Main Backend**: [llvm_codegen.cpp](../lib/backend/llvm_codegen.cpp) — 47,107 lines
-**Tensor Codegen**: [tensor_codegen.cpp](../lib/backend/tensor_codegen.cpp) — 2,012-line dispatcher plus 23,389 lines across thirteen per-domain `tensor_*_codegen.cpp` modules
-**Compiler Modules**: 36 specialized code generators
-**Test Suite**: 37 suites, 528 self-reported tests
-**Verified Operations**: 555+ builtins, 300+ standard library functions
 
 ---
 

@@ -17,7 +17,7 @@ int eshkol_vm_get_profile_limits(EshkolVmProfileLimits* out) {
     if (!out) return -1;
     out->heap_objects = ESHKOL_VM_HEAP_SIZE;
     out->stack_slots = ESHKOL_VM_STACK_SIZE;
-    out->max_frames = ESHKOL_VM_MAX_FRAMES;
+    out->max_frames = ESHKOL_VM_MAX_FRAMES_CEILING;
     out->max_constants = ESHKOL_VM_MAX_CONSTS;
     out->max_instructions = ESHKOL_VM_MAX_CODE;
     return 0;

@@ -21,7 +21,7 @@
  * Metric. Aggregate L2 relative error over a sampled set of parameter and
  * input coordinates:  ||num - ana||_2 / (||num||_2 + ||ana||_2). This is the
  * standard robust gradient-check statistic; per-element ratios are avoided
- * because they blow up on coordinates whose analytical gradient is ~0.
+ * because they diverge on coordinates whose analytical gradient is ~0.
  *
  * Copyright (C) tsotchke
  * SPDX-License-Identifier: MIT

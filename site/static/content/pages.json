@@ -199,6 +199,38 @@
       "url": "/content/known_issues.html"
     },
     {
+      "slug": "adr_0026_macro_hygiene",
+      "title": "Macro Hygiene",
+      "view": "docs",
+      "section": "DESIGN CONTRACTS",
+      "source": "docs/design/adr/0026-syntax-rules-one-engine-one-renaming-rule.md",
+      "url": "/content/adr_0026_macro_hygiene.html"
+    },
+    {
+      "slug": "adr_0027_recursive_taylor",
+      "title": "Nested Differentiation",
+      "view": "docs",
+      "section": "DESIGN CONTRACTS",
+      "source": "docs/design/adr/0027-recursive-taylor-level-carrier.md",
+      "url": "/content/adr_0027_recursive_taylor.html"
+    },
+    {
+      "slug": "adr_0028_number_syntax",
+      "title": "Number Syntax",
+      "view": "docs",
+      "section": "DESIGN CONTRACTS",
+      "source": "docs/design/adr/0028-one-number-syntax-recognizer.md",
+      "url": "/content/adr_0028_number_syntax.html"
+    },
+    {
+      "slug": "adr_0029_browser_webgpu",
+      "title": "Browser WebGPU",
+      "view": "docs",
+      "section": "DESIGN CONTRACTS",
+      "source": "docs/design/adr/0029-browser-vm-webgpu-dispatch.md",
+      "url": "/content/adr_0029_browser_webgpu.html"
+    },
+    {
       "slug": "vm_parity",
       "title": "VM Parity",
       "view": "docs",

@@ -654,7 +654,7 @@ jobs:
           python3 scripts/check_engine_parity_threshold.py --self-test
           python3 scripts/check_ps1_encoding.py --self-test
           python3 scripts/check_vm_prelude_cache_builtins.py --selftest
-          python3 scripts/check_ns_proof_ledger.py --self-test
+          python3 scripts/check_ns_evidence_ledger.py --self-test
           bash scripts/test_run_all_tests_failure_attribution.sh
           bash tests/perf/nested_expr_compile_time_test.sh --self-test
 
@@ -719,9 +719,9 @@ jobs:
         shell: bash
         run: python3 scripts/check_oracle_bindings.py --no-trace
 
-      - name: Navier-Stokes proof ledger is consistent with CTest names and the mechanization doc
+      - name: Navier-Stokes evidence ledger is consistent with CTest names and the mechanization doc
         shell: bash
-        run: python3 scripts/check_ns_proof_ledger.py --no-trace
+        run: python3 scripts/check_ns_evidence_ledger.py --no-trace
 
       - name: No oracle target can read ready on zero evidence (F19 / A13)
         shell: bash

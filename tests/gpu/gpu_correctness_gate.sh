@@ -25,6 +25,8 @@
 #   BUILD_DIR_CPU   build dir for the GPU-disabled reference binary (default: build-gpu-gate-cpuref)
 #   REUSE_BUILDS=1  skip (re)configuring/building if eshkol-run already exists
 #                   in both dirs — for CI jobs that cache the build step
+#   GPU_GATE_SOURCE_DEPS_ROOT  optional existing build/_deps directory whose
+#                   fetched source trees are reused for the fresh backend build
 #   GPU_GATE_TOL    relative tolerance for the numeric diff (default: 1e-9).
 #                   This used to default to 1e-4 on the claim that `display`
 #                   prints only ~6 significant digits — that claim is FALSE:
@@ -100,7 +102,7 @@ fail() { log "FAIL: $*"; emit_trace FAIL "$*"; exit 1; }
 # Runtime evidence must name a live backend signal, not merely prove that a GPU
 # library was compiled in. Keep the accepted spellings in one place so the
 # self-test and the real-device gate cannot drift apart as backend logs evolve.
-GPU_DISPATCH_LOG_RE='\[GPU\] (Metal: |.*-> CUDA cuBLAS|'
+GPU_DISPATCH_LOG_RE='\[GPU\] (.*-> CUDA cuBLAS|'
 GPU_DISPATCH_LOG_RE+='matmul [0-9]+x[0-9]+ @ [0-9]+x[0-9]+ -> (cublasDgemm|INT8-Ozaki)'
 GPU_DISPATCH_LOG_RE+='|sf64 (dispatch|completed):)'
 gpu_dispatch_log_present() {
@@ -108,6 +110,29 @@ gpu_dispatch_log_present() {
 }
 gpu_dispatch_log_lines() {
     grep -E "$GPU_DISPATCH_LOG_RE" "$1"
+}
+gpu_relative_diff() { # GPU value, CPU reference, tolerance -> "relative-diff mismatch-bit"
+    awk -v g="$1" -v c="$2" -v tol="$3" '
+        BEGIN {
+            diff = g - c; if (diff < 0) diff = -diff;
+            denom = c; if (denom < 0) denom = -denom;
+            if (denom < 1e-12) denom = 1e-12;
+            rel = diff / denom;
+            printf "%.10g %d", rel, (rel > tol) ? 1 : 0;
+        }'
+}
+GPU_RESULT_LABELS='matmul-checksum
+matmul-c00
+matmul-cmid
+matmul-clast
+add-checksum
+mul-checksum
+transpose-roundtrip-c00
+transpose-roundtrip-clast
+reduce-sum-A
+reduce-max-A'
+gpu_result_labels_match() {
+    [ "$(awk '{print $2}' "$1")" = "$GPU_RESULT_LABELS" ]
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -124,7 +149,8 @@ gpu_dispatch_log_lines() {
 # the FAIL and PASS paths actually writing what they claim to write.
 # Exits 0 only if every assertion below holds; runs no build, no GPU.
 if [ "${1:-}" = "--self-test" ]; then
-    st_dir="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-gpu-gate-selftest.XXXXXX")"
+    mkdir -p "$REPO_ROOT/.scratch"
+    st_dir="$(mktemp -d "$REPO_ROOT/.scratch/eshkol-gpu-gate-selftest.XXXXXX")"
     trap 'rm -rf "$st_dir"' EXIT
     st_fail=0
     st_check() {  # st_check <description> <cmd...>
@@ -171,6 +197,8 @@ if [ "${1:-}" = "--self-test" ]; then
     # 4. Pin every accepted runtime-evidence family, including the current
     #    CUDA selector wording. A CPU fallback line must never satisfy it.
     printf '%s\n' '[GPU] Metal: M2 Ultra, unified, maxBuffer=32768MB' \
+        > "$st_dir/metal_banner.log"
+    printf '%s\n' '[GPU] sf64 dispatch: M=512 K=512 N=512 chunk=512' \
         > "$st_dir/metal.log"
     printf '%s\n' '[GPU] matmul 512x512 @ 512x512 -> CUDA cuBLAS' \
         > "$st_dir/cuda_legacy.log"
@@ -184,8 +212,14 @@ if [ "${1:-}" = "--self-test" ]; then
         > "$st_dir/sf64.log"
     printf '%s\n' '[GPU] matmul 512x512 @ 512x512 -> CPU' \
         > "$st_dir/cpu_fallback.log"
-    st_check "Metal runtime evidence is accepted" \
+    st_check "Metal kernel dispatch is accepted" \
         gpu_dispatch_log_present "$st_dir/metal.log"
+    if gpu_dispatch_log_present "$st_dir/metal_banner.log"; then
+        log "  FAIL Metal initialization without a dispatch was accepted"
+        st_fail=1
+    else
+        log "  ok   Metal initialization without a dispatch is rejected"
+    fi
     st_check "legacy CUDA runtime evidence is accepted" \
         gpu_dispatch_log_present "$st_dir/cuda_legacy.log"
     st_check "current cuBLAS runtime evidence is accepted" \
@@ -200,12 +234,23 @@ if [ "${1:-}" = "--self-test" ]; then
     else
         log "  ok   CPU fallback is rejected as GPU runtime evidence"
     fi
+    st_check "matching numeric probes pass" \
+        [ "$(gpu_relative_diff 1 1 "$GPU_GATE_TOL" | awk '{print $2}')" = 0 ]
+    st_check "planted GPU-vs-CPU mismatch fails" \
+        [ "$(gpu_relative_diff 2 1 "$GPU_GATE_TOL" | awk '{print $2}')" = 1 ]
+    printf '%s\n' 'RESULT matmul-checksum 1' > "$st_dir/incomplete_results.txt"
+    if gpu_result_labels_match "$st_dir/incomplete_results.txt"; then
+        log "  FAIL missing RESULT probes were accepted"
+        st_fail=1
+    else
+        log "  ok   missing RESULT probes are rejected"
+    fi
 
     if [ "$st_fail" -eq 0 ]; then
-        log "PASS: gpu_correctness_gate.sh --self-test (trace and dispatch contracts hold)"
+        log "PASS: gpu_correctness_gate.sh --self-test (trace, dispatch, and numeric contracts hold)"
         exit 0
     else
-        log "FAIL: gpu_correctness_gate.sh --self-test (trace/dispatch contract broken — see above)"
+        log "FAIL: gpu_correctness_gate.sh --self-test (trace/dispatch/numeric contract broken — see above)"
         exit 1
     fi
 fi
@@ -303,6 +348,8 @@ configure_and_build() {
         || fail "could not create build root parent for $build_dir"
     runner="$(runner_path "$build_dir" 2>/dev/null || true)"
     if [ "$REUSE_BUILDS" = "1" ] && [ -n "$runner" ]; then
+        grep -q "^ESHKOL_GPU_ENABLED:BOOL=$gpu_flag$" "$build_dir/CMakeCache.txt" 2>/dev/null \
+            || fail "cannot reuse $build_dir: CMakeCache does not confirm ESHKOL_GPU_ENABLED=$gpu_flag"
         log "  reusing $runner (REUSE_BUILDS=1)"
         return 0
     fi
@@ -316,6 +363,14 @@ configure_and_build() {
         -DESHKOL_GPU_ENABLED="$gpu_flag"
         -DESHKOL_BUILD_TESTS=OFF
     )
+    if [ -n "${GPU_GATE_SOURCE_DEPS_ROOT:-}" ]; then
+        local dep_dir dep_key
+        for dep_dir in "$GPU_GATE_SOURCE_DEPS_ROOT"/*-src; do
+            [ -d "$dep_dir" ] || continue
+            dep_key="$(basename "$dep_dir" -src | tr '[:lower:]' '[:upper:]')"
+            cmake_args+=("-DFETCHCONTENT_SOURCE_DIR_${dep_key}=$dep_dir")
+        done
+    fi
 
     if [ "$WINDOWS_POSIX" -eq 1 ]; then
         local generator="${GPU_GATE_CMAKE_GENERATOR:-}"
@@ -407,7 +462,7 @@ EOF
     fi
 
     log "  building $build_dir..."
-    cmake --build "$build_dir" --config Release --target eshkol-run --parallel \
+    cmake --build "$build_dir" --config Release --target eshkol-run --parallel 6 \
         > "$build_dir.build.log" 2>&1 \
         || { tail -n 80 "$build_dir.build.log"; return 1; }
 }
@@ -436,7 +491,8 @@ case "$CPU_RUN" in ""|/*|[A-Za-z]:/*) ;; *) CPU_RUN="$REPO_ROOT/$CPU_RUN" ;; esa
 # ─────────────────────────────────────────────────────────────────
 # Step 3: compile the shared payload with each binary.
 # ─────────────────────────────────────────────────────────────────
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-gpu-gate.XXXXXX")"
+mkdir -p "$REPO_ROOT/.scratch"
+WORK_DIR="$(mktemp -d "$REPO_ROOT/.scratch/eshkol-gpu-gate.XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 log ""
@@ -474,12 +530,22 @@ ESHKOL_VERBOSE=1 ESHKOL_GPU_VERBOSE=1 ESHKOL_GPU_THRESHOLD=1 ESHKOL_SF64_KERNEL=
 gpu_run_rc=$?
 [ "$gpu_run_rc" -eq 0 ] || fail "GPU binary crashed/exited $gpu_run_rc — stderr: $(tail -n 40 "$GPU_STDERR")"
 grep -q "^GATE-DONE$" "$GPU_STDOUT" || fail "GPU run did not reach GATE-DONE — output: $(cat "$GPU_STDOUT")"
+! grep -Eq '(^|[^[:alnum:]_])FAIL(:|[[:space:]]|$)' "$GPU_STDOUT" || fail "GPU payload reported a failed check"
+grep -qx 'PASS: gpu_correctness_gate self-checks' "$GPU_STDOUT" || fail "GPU payload lacks its terminal self-check verdict"
 
 if gpu_dispatch_log_present "$GPU_STDERR"; then
-    log "  GPU device confirmed live (init banner / per-call dispatch log present):"
+    log "  GPU kernel dispatch confirmed live:"
     gpu_dispatch_log_lines "$GPU_STDERR" | sed 's/^/    /'
 else
-    skip "GPU-enabled binary built and ran, but no GPU device announced itself at runtime (no [GPU] init/dispatch log) — likely a GPU-less/virtualized host despite compile-time framework detection"
+    # The payload reports eshkol_gpu_get_backend(); 0 means no live device.
+    # A live device that never dispatched the forced workload is a failure on
+    # every platform; a host without one has no execution evidence to give.
+    gpu_backend=$(sed -n 's/^GPU-BACKEND: \([0-9][0-9]*\)$/\1/p' "$GPU_STDOUT" | head -n 1)
+    [ -n "$gpu_backend" ] || fail "GPU payload did not report its live backend"
+    if [ "$gpu_backend" != "0" ]; then
+        fail "GPU backend $gpu_backend is live but the forced workload produced no kernel dispatch"
+    fi
+    skip "no active GPU backend on this host — no GPU execution evidence"
 fi
 
 log ""
@@ -489,6 +555,8 @@ CPU_STDOUT="$WORK_DIR/cpu_stdout.txt"
 cpu_run_rc=$?
 [ "$cpu_run_rc" -eq 0 ] || fail "CPU-reference binary crashed/exited $cpu_run_rc"
 grep -q "^GATE-DONE$" "$CPU_STDOUT" || fail "CPU run did not reach GATE-DONE"
+! grep -Eq '(^|[^[:alnum:]_])FAIL(:|[[:space:]]|$)' "$CPU_STDOUT" || fail "CPU payload reported a failed check"
+grep -qx 'PASS: gpu_correctness_gate self-checks' "$CPU_STDOUT" || fail "CPU payload lacks its terminal self-check verdict"
 
 # ─────────────────────────────────────────────────────────────────
 # Step 5: differential comparison, tolerance-based.
@@ -498,6 +566,20 @@ log "Diffing GPU vs CPU RESULT lines (relative tolerance $GPU_GATE_TOL)..."
 
 grep '^RESULT ' "$GPU_STDOUT" > "$WORK_DIR/gpu_results.txt"
 grep '^RESULT ' "$CPU_STDOUT" > "$WORK_DIR/cpu_results.txt"
+[ -s "$WORK_DIR/gpu_results.txt" ] || fail "GPU payload emitted no RESULT probes"
+[ -s "$WORK_DIR/cpu_results.txt" ] || fail "CPU payload emitted no RESULT probes"
+valid_results() {
+    awk '
+        NF != 3 || $1 != "RESULT" || $2 in seen ||
+        $3 !~ /^[-+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][-+]?[0-9]+)?$/ { exit 1 }
+        { seen[$2]=1; count++ }
+        END { if (count == 0) exit 1 }
+    ' "$1"
+}
+valid_results "$WORK_DIR/gpu_results.txt" || fail "GPU RESULT stream is malformed, duplicated, or non-finite"
+valid_results "$WORK_DIR/cpu_results.txt" || fail "CPU RESULT stream is malformed, duplicated, or non-finite"
+gpu_result_labels_match "$WORK_DIR/gpu_results.txt" || fail "GPU RESULT probes differ from the required workload"
+gpu_result_labels_match "$WORK_DIR/cpu_results.txt" || fail "CPU RESULT probes differ from the required workload"
 
 gpu_labels="$(awk '{print $2}' "$WORK_DIR/gpu_results.txt")"
 cpu_labels="$(awk '{print $2}' "$WORK_DIR/cpu_results.txt")"
@@ -507,14 +589,7 @@ mismatch=0
 max_rel_diff=0
 while read -r _ label gval; do
     cval="$(awk -v l="$label" '$2==l {print $3}' "$WORK_DIR/cpu_results.txt")"
-    rel_diff="$(awk -v g="$gval" -v c="$cval" -v tol="$GPU_GATE_TOL" '
-        BEGIN {
-            diff = g - c; if (diff < 0) diff = -diff;
-            denom = c; if (denom < 0) denom = -denom;
-            if (denom < 1e-12) denom = 1e-12;
-            rel = diff / denom;
-            printf "%.10g %d", rel, (rel > tol) ? 1 : 0;
-        }')"
+    rel_diff="$(gpu_relative_diff "$gval" "$cval" "$GPU_GATE_TOL")"
     rel="$(echo "$rel_diff" | awk '{print $1}')"
     bad="$(echo "$rel_diff" | awk '{print $2}')"
     is_greater="$(awk -v a="$rel" -v b="$max_rel_diff" 'BEGIN{print (a>b)?1:0}')"
@@ -535,6 +610,7 @@ if [ "$mismatch" -eq 1 ]; then
 fi
 
 log ""
-log "PASS: GPU execution matches CPU reference within tolerance ($GPU_GATE_TOL) on $UNAME_S"
+log "GPU execution matches CPU reference within tolerance ($GPU_GATE_TOL) on $UNAME_S"
 emit_trace PASS "platform=$UNAME_S max_rel_diff=$max_rel_diff tol=$GPU_GATE_TOL probes=$(wc -l < "$WORK_DIR/gpu_results.txt" | tr -d ' ')"
+log "PASS: gpu_correctness_gate.sh"
 exit 0

@@ -22,6 +22,13 @@
 ;; zeros (a separate compiler-scope issue), so the probe must not touch the
 ;; tensor object itself.
 
+(extern i32 gpu-init :real eshkol_gpu_init)
+(extern i32 gpu-backend :real eshkol_gpu_get_backend)
+;; ESHKOL_GPU_CUDA = 2. CPU fallback cannot certify the CUDA INT8 kernel.
+(when (or (not (= (gpu-init) 1)) (not (= (gpu-backend) 2)))
+  (display "SKIP: CUDA is not the live GPU backend") (newline)
+  (exit 0))
+
 (define TOL 1e-6)          ;; normwise Frobenius rel-err gate; correct Ozaki is 1e-11..1e-15
 (define total-fail 0)
 

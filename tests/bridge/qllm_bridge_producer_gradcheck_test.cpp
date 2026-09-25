@@ -47,7 +47,7 @@
  * FD METHOD. Aggregate L2 relative error ||num - ana|| / (||num|| + ||ana||)
  * over all sampled coordinates, the same measure and the same 1e-6 bar as
  * tests/bridge/qllm_bridge_gradcheck_test.cpp. Per-element ratios are avoided
- * because they blow up wherever the analytic gradient is ~0 — and the embedding
+ * because they diverge wherever the analytic gradient is ~0 — and the embedding
  * gradient is exactly 0 on most of its rows by construction.
  *
  * Copyright (C) tsotchke

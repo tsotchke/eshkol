@@ -54,7 +54,9 @@ int main(int argc, char** argv) {
          expect_contains(cmake, "set(ESHKOL_VM_STACK_SIZE \"262144\" CACHE STRING",
                          "CMake exposes bytecode VM stack capacity") &&
          expect_contains(cmake, "set(ESHKOL_VM_MAX_FRAMES \"256\" CACHE STRING",
-                         "CMake exposes bytecode VM frame capacity") &&
+                         "CMake exposes bytecode VM initial frame capacity") &&
+         expect_contains(cmake, "set(ESHKOL_VM_MAX_FRAMES_CEILING \"65536\" CACHE STRING",
+                         "CMake exposes bytecode VM frame ceiling") &&
          expect_contains(cmake, "set(ESHKOL_VM_MAX_CONSTS \"4096\" CACHE STRING",
                          "CMake exposes bytecode VM constant-pool capacity") &&
          expect_contains(cmake, "set(ESHKOL_VM_MAX_CODE \"1000000\" CACHE STRING",
@@ -69,6 +71,8 @@ int main(int argc, char** argv) {
                          "CMake propagates stack limit to VM targets") &&
          expect_contains(cmake, "ESHKOL_VM_MAX_FRAMES=${ESHKOL_VM_MAX_FRAMES}",
                          "CMake propagates frame limit to VM targets") &&
+         expect_contains(cmake, "ESHKOL_VM_MAX_FRAMES_CEILING=${ESHKOL_VM_MAX_FRAMES_CEILING}",
+                         "CMake propagates frame ceiling to VM targets") &&
          expect_contains(cmake, "ESHKOL_VM_MAX_CONSTS=${ESHKOL_VM_MAX_CONSTS}",
                          "CMake propagates const limit to VM targets") &&
          expect_contains(cmake, "ESHKOL_VM_MAX_CODE=${ESHKOL_VM_MAX_CODE}",
@@ -87,6 +91,8 @@ int main(int argc, char** argv) {
                          "vm_limits.h preserves the stack default") &&
          expect_contains(header, "#define ESHKOL_VM_MAX_FRAMES 256",
                          "vm_limits.h preserves the frame default") &&
+         expect_contains(header, "#define ESHKOL_VM_MAX_FRAMES_CEILING 65536",
+                         "vm_limits.h defines the frame ceiling") &&
          expect_contains(header, "#define ESHKOL_VM_MAX_CONSTS 4096",
                          "vm_limits.h preserves the const-pool default") &&
          expect_contains(header, "#define ESHKOL_VM_MAX_CODE 1000000",

@@ -184,8 +184,8 @@ at the bignum boundary, and nothing is clamped.
 ```
 
 Every line above is byte-identical under `eshkol-run -r`, under AOT and under
-the bytecode VM; see [Engine agreement](#engine-agreement) for what changed
-there in v1.3.5.
+the bytecode VM; see [Engine agreement](#engine-agreement) for the shared
+numeric representation.
 
 ### Exact-rational temporaries are reclaimed
 
@@ -286,8 +286,8 @@ runtime value happens to be exact.
 2/15
 ```
 
-See [the AD reference](../ad/INDEX.md) for the exactness tier in full, and for
-the one nesting shape that is **not** supported in v1.3.5.
+See [the AD reference](../ad/INDEX.md) for the exactness tier and the
+recursive carrier that preserves exact values through nested passes.
 
 ## Heap accounting is a fail-closed contract
 
@@ -398,13 +398,8 @@ real and complex — in literals, in arithmetic, and in `number->string` /
 `display` / `write`. Mixed exact/inexact arithmetic agrees too:
 `(* 0.5 1/3)` is `0.16666666666666666` on both.
 
-Earlier releases carried a documented VM gap here (ESH-0105): the VM's rational
-was an `int64` numerator over an `int64` denominator, its digit-token reader
-fell through to `atof()` past `INT64_MAX`, and `number->string` coerced every
-non-fixnum through a double, so `(* 1/3 99999999999999999999)` answered
-`33333333333333330000` and `(/ 1 (expt 10 19))` answered `1e-19`. All three are
-closed for v1.3.5: the VM shares one bignum/rational runtime between its
-reader, its arithmetic and its printer, and the exact values shown under
+The VM shares one bignum/rational runtime between its reader, arithmetic and
+printer. The exact values shown under
 [Rationals carry bignum components](#rationals-carry-bignum-components) are
 what both engines print.
 

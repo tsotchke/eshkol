@@ -204,7 +204,7 @@ the source changes; the verification record for the tagged commit is the
   backend's diagnostics. `scripts/lib/webgpu_diff_runner.mjs` gates every kernel
   against the CPU in Chrome, including random f64 bit patterns and edge values,
   and proves itself red on five kernel corruptions. See
-  `docs/breakdown/GPU_ACCELERATION.md`, "Enabling WebGPU in a page".
+  `docs/breakdown/GPU_ACCELERATION.md`, "Enabling WebGPU in a page". (#715)
 
 - **WebGPU for the browser bytecode VM.** The VM's tensor natives already call
   the ordinary GPU seam; the WASM VM build now links it
@@ -217,9 +217,67 @@ the source changes; the verification record for the tagged commit is the
   site's REPL and runnable examples use it. The VM builds with native wasm
   exceptions, because JSPI cannot suspend across Emscripten's JavaScript
   `setjmp`/`longjmp` trampolines. `tests/webgpu/webgpu_vm_test.mjs` gates it in
-  Chrome.
+  Chrome. (#716)
 
 ### Fixed
+
+- The parser builds on toolchains whose standard headers do not provide
+  `std::strlen` transitively. (#719)
+
+- **Error irritants outlive the region that built them (SW-253).** A condition
+  raised and caught inside `with-region` kept pointers to irritants in the
+  region's memory, so after the region exited they could print as unrelated
+  values. Irritants are now stored through the region write barrier, like every
+  other store into a longer-lived object.
+
+- **Navier-Stokes evidence scope (SW-251).** Public documentation, the ICC
+  oracle, and release text now describe residuals, similarity profiles,
+  scaling identities, and energy estimates. The renamed evidence ledger and
+  checker retain all 84 computational rows and their existing status counts.
+
+- The bytecode VM now grows its call-frame array for non-tail recursion,
+  bounded by `ESHKOL_VM_MAX_FRAMES_CEILING`, instead of failing at the initial
+  256-frame allocation. Continuation restoration uses the same capacity gate.
+  Four cohomology and two-group examples now complete on the VM, and
+  exhausting the configured ceiling still exits with `FRAME OVERFLOW`.
+
+
+- **WebGPU fast-tier admission reports the actual gate (SW-272).** A fast
+  backend with the default `1e-9` tolerance refused dispatch but described
+  itself as opted in. Admission and diagnostics now share the same precision
+  check and report the required `gateTolerance >= 1e-6`. Browser WASM table
+  callbacks use the shared JSPI wrapper in both loaders.
+- **Shared browser WebGPU backends keep concurrent VMs isolated (SW-270).**
+  An asynchronous readback could write through another VM's memory, yielding
+  zeros in the first VM's matmul result. Each operation now retains its own
+  destination context. Reported by Colin with hardware reproductions.
+- **Inexact tensor division follows IEEE 754 across engines (SW-271).** The
+  VM and native broadcast helper previously returned zero for a zero
+  denominator, while native same-shape codegen and WebGPU returned signed
+  infinity or NaN. Reported by Colin with hardware reproductions.
+
+- Language-coverage determinism runs now create their source corpus under the
+  checkout for direct invocation, CTest, and the release coverage runner
+  (SW-252). The display-path writer correctly shortened files in a system
+  temporary directory to their basename, which the gate could not reopen
+  relative to the checkout; both JIT and AOT then failed without checking any
+  source locations. The gate still requires readable sources, in-range
+  locations, and identical records across runs.
+
+- Added Colin's requested bounded WGSL strain-energy artifact example: a native/VM-verified AD generator, sealed manifest and f32 evaluator, and a Chrome three-kernel resident-buffer demo with measured error evidence.
+
+- The GPU suite now requires a terminal named PASS, rejects any FAIL marker,
+  counts hardware absence as SKIP, and grades the GPU-versus-CPU differential
+  rather than a single execution of its workload (SW-257). A planted-failure
+  self-test covers bare and indented failures, incomplete output, and false
+  differential passes. CUDA Ozaki checks now skip without a live CUDA backend.
+
+- The v1.3.5 recursive Taylor carrier also covers the unmerged AD carrier
+  work from `172c796d7`: nested complex derivatives, exact scalar Hessians,
+  Taylor and tensor identities, parallel carrier transfer, and region
+  evacuation agree on native and VM. The existing SW-193/SW-194 regressions
+  and the level-carrier tests cover these cases without restoring the retired
+  hyper-dual companion lanes (ADR-0027).
 
 - On the bytecode VM, `tensor-sum`/`-mean`/`-max`/`-min` with no axis now
   reduce the whole tensor to a number, as on native (SW-202). The VM used to
@@ -272,52 +330,17 @@ the source changes; the verification record for the tagged commit is the
   and `tests/coverage/coverage_policy.json`, and rebuilt
   `site/static/eshkol-site.wasm` so the deployed page carries the correction.
 
-- **The browser REPL answered nothing.** Every `repl_eval` call in the
-  WebAssembly bundle — the site's REPL pane and every runnable code block on
-  the docs pages — returned with no output at all; `(+ 1 2)` printed nothing
-  and the page rendered "error: could not parse expression". The VM was
-  computing the right answer the whole time.
-
-  The REPL's auto-print of the last expression was riding on `OP_PRINT`, which
-  is the lowering of `(display x)` and nothing else. When `OP_PRINT` was
-  corrected to match native `display` byte-for-byte — no trailing newline —
-  the REPL echo silently lost its line terminator along with it. On a terminal
-  that is only untidy; through Emscripten it is an outage, because stdout
-  reaches the embedder's `print` callback one COMPLETE LINE at a time, so an
-  unterminated answer is buffered indefinitely and the page never sees it.
-
-  The echo is now emitted by the session that owns the transcript, in
-  `repl_session_eval()`: the last expression leaves its value on the VM stack
-  and the session prints it with its terminator. The opcode keeps exactly one
-  meaning. `(display "hi")` in the REPL is now a fragment awaiting a
-  `(newline)`, exactly as it is under `eshkol-run -r`, instead of gaining a
-  newline the batch engine does not emit.
-
-- **The browser REPL bundle aborted on tensor programs.** Built from candidate
-  source with the recipe CONTRIBUTING.md carried, `(make-tensor (list 2 2)
-  1.0)` killed the whole WASM module with `Aborted(missing function:
-  eshkol_tensor_shape_total)`, taking every later evaluation with it. The
-  bundle's link needs `-s ERROR_ON_UNDEFINED_SYMBOLS=0` for a few leaf runtime
-  deps that genuinely have no WASM implementation, which also means a
-  translation unit missing from the source list does not fail the build —
-  emscripten substitutes an aborting stub. The hand-copied list had fallen
-  behind `lib/core/tensor_validation.cpp`.
-
-  The recipe is now `scripts/build-wasm-repl.sh`, which shares one source list
-  (`scripts/lib/wasm_vm_sources.sh`) with the CI execute-and-diff lane, so the
-  bundle users load and the module CI executes are the same link, and fails the
-  build on any undefined symbol outside a documented allowlist.
-
 ### Added
 
 - Private, experimental ESKM v2 preflight validation with exact-byte fixtures,
   C and C++ consumers, and malformed-input checks. Public checkpoint I/O
-  remains ESKM v1. (#699)
+  remains ESKM v1. (#699) Its documentation records the current
+  integration status and Linux evidence. (#720)
 
-- **Navier-Stokes blowup mechanization trajectory.** Added
-  `docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md`, a step-by-step map from
-  the 2026 OpenAI finite-time Navier-Stokes blowup construction to Eshkol
-  primitives: 84 numbered proof steps following the paper's own structure
+- **Navier-Stokes residual mechanization trajectory.** Added
+  `docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md`, a step-by-step map from
+  the 2026 OpenAI Navier-Stokes similarity-profile analysis to Eshkol
+  primitives: 84 numbered computational rows following the paper's own structure
   (similarity coordinates, cumulative radial moments, the admissible stress
   cone, heat exterior and analytic axis profiles, order-by-order background
   correction, auxiliary torus, the two-family stress solve, the residual
@@ -344,7 +367,7 @@ the source changes; the verification record for the tagged commit is the
   contagion whenever every input does. `torus-average`/`torus-average-2d`
   weight discrete samples on a circle / T² grid by an always-exact `1/n` /
   `1/(n*m)`. Supports the auxiliary-torus and two-family stress-solve steps
-  of the Navier-Stokes blowup mechanization trajectory above.
+  of the Navier-Stokes residual mechanization trajectory above.
   (#632)
 
 - **AI-driven mathematics examples.** Added four pure Eshkol programs that
@@ -2741,8 +2764,8 @@ the source changes; the verification record for the tagged commit is the
 
 ### Documentation
 
-- Correct the list tutorial's argument order for `take`, `drop`, and `sort`.
-  (#694)
+- LJGz corrected the list tutorial's argument order for `take`, `drop`, and
+  `sort` (#694).
 
 - **v1.3.5 documentation wave.** `ROADMAP.md` re-dated (maintainer ruling R1,
   executed): the previously published v1.4-v2.0 dates were not achievable at

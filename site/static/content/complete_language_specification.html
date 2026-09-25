@@ -1,5 +1,5 @@
 <h1 id="eshkol-language---complete-technical-specification">Eshkol Language - Complete Technical Specification</h1>
-<p><strong>Version:</strong> v1.3.5 <strong>Generated:</strong> 2026-09-07 <strong>Status:</strong> Comprehensive implementation documentation from source code</p>
+<p><strong>Status:</strong> Comprehensive implementation documentation from source code</p>
 <hr />
 <h2 id="table-of-contents">Table of Contents</h2>
 <ol type="1">
@@ -28,8 +28,8 @@
 <li><a href="/docs#page=complete_language_specification&amp;23-complete-language-capabilities-summary" data-url="/content/complete_language_specification.html">Complete Language Capabilities Summary</a></li>
 <li><a href="/docs#page=complete_language_specification&amp;24-compiler-capabilities" data-url="/content/complete_language_specification.html">Compiler Capabilities</a></li>
 <li><a href="/docs#page=complete_language_specification&amp;25-implementation-details" data-url="/content/complete_language_specification.html">Implementation Details</a></li>
-<li><a href="/docs#page=complete_language_specification&amp;26-version-information" data-url="/content/complete_language_specification.html">Version Information</a></li>
-<li><a href="/docs#page=complete_language_specification&amp;27-file-organization" data-url="/content/complete_language_specification.html">File Organization</a></li>
+<li><a href="/docs#page=complete_language_specification&amp;26-file-organization" data-url="/content/complete_language_specification.html">File Organization</a></li>
+<li><a href="/docs#page=complete_language_specification&amp;27-bytecode-vm-and-eskb-format" data-url="/content/complete_language_specification.html">Bytecode VM and ESKB Format</a></li>
 </ol>
 <hr />
 <h2 id="1-language-overview">1. Language Overview</h2>
@@ -98,7 +98,7 @@
 <h4 id="216-symbol-interned-symbol">2.1.6 <code>SYMBOL</code> (Interned Symbol)</h4>
 <ul>
 <li><strong>Type Tag:</strong> <code>ESHKOL_VALUE_SYMBOL</code> (5)</li>
-<li><strong>Syntax:</strong> <code>'foo</code>, <code>'hello-world</code>, <code>'+</code>, and as of v1.3.5 (#462) the R7RS 7.1.1 third <code>&lt;identifier&gt;</code> production, <code>&lt;vertical line&gt; &lt;symbol element&gt;* &lt;vertical line&gt;</code> — <code>'|weird sym|</code>, <code>'||</code> (the empty symbol), <code>'|\x48;i|</code> (inline hex escape, reads as <code>Hi</code>)</li>
+<li><strong>Syntax:</strong> <code>'foo</code>, <code>'hello-world</code>, <code>'+</code>, and the R7RS 7.1.1 third <code>&lt;identifier&gt;</code> production, <code>&lt;vertical line&gt; &lt;symbol element&gt;* &lt;vertical line&gt;</code> — <code>'|weird sym|</code>, <code>'||</code> (the empty symbol), <code>'|\x48;i|</code> (inline hex escape, reads as <code>Hi</code>)</li>
 <li><strong>Description:</strong> Interned string used for identifiers</li>
 <li><strong>Comparison:</strong> Uses pointer equality (fast)</li>
 <li><strong>Example:</strong> <code>(symbol? 'x)</code> =&gt; <code>#t</code></li>
@@ -572,7 +572,7 @@ x  ; =&gt; 20</code></pre>
 <pre class="scheme"><code>(define x 5)
 `(1 2 ,x 4)    ; =&gt; (1 2 5 4)
 `(1 ,@(list 2 3) 4)  ; =&gt; (1 2 3 4)</code></pre>
-<p><strong>Quasiquoted vector literals</strong> (v1.3.0-evolve): <code>unquote</code>/<code>unquote-splicing</code> also work inside a <code>#(...)</code> vector literal under quasiquote:</p>
+<p><strong>Quasiquoted vector literals</strong>: <code>unquote</code>/<code>unquote-splicing</code> also work inside a <code>#(...)</code> vector literal under quasiquote:</p>
 <pre class="scheme"><code>`#(1 ,(+ 1 1) 3)        ; =&gt; #(1 2 3)
 `#(1 ,@(list 2 3) 4)    ; =&gt; #(1 2 3 4)</code></pre>
 <h3 id="36-type-annotations">3.6 Type Annotations</h3>
@@ -626,11 +626,11 @@ x  ; =&gt; 20</code></pre>
 <h4 id="3671-where-checking-applies-and-how-types-fit">3.6.7.1 Where Checking Applies, and How Types Fit</h4>
 <p>The rules below are normative for the checker; the <a href="/docs#page=guide_gradual_typing" data-url="/content/guide_gradual_typing.html">gradual typing guide</a> presents them with runnable examples, and <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0013-gradual-type-relation.md" target="_blank" rel="noopener noreferrer">ADR 0013</a> records the decision.</p>
 <ol type="1">
-<li><strong>Every evaluated subexpression is checked</strong> (since v1.3.5). A call is checked against the callee’s annotations wherever it is written: in every expression of a <code>begin</code> or body; in the tests, keys, scrutinee and branch bodies of <code>if</code>, <code>cond</code>, <code>case</code>, <code>match</code>, <code>when</code> and <code>unless</code>; in every operand of <code>and</code> and <code>or</code>; in the initialisers, steps, test, result and body of <code>do</code>; in a <code>guard</code> body and handler, a <code>raise</code> operand, a <code>set!</code> value, a quasiquote escape, the procedure of <code>call/cc</code>, the thunks of <code>dynamic-wind</code> (and so a <code>parameterize</code> body), the operands of <code>values</code>, the producer and consumer of <code>call-with-values</code>, a <code>let-values</code> producer and body, a <code>with-region</code> body, a computed callee, and the function, point, direction and order of a calculus operator. Quoted data is not evaluated and not checked.</li>
+<li><strong>Every evaluated subexpression is checked.</strong> A call is checked against the callee’s annotations wherever it is written: in every expression of a <code>begin</code> or body; in the tests, keys, scrutinee and branch bodies of <code>if</code>, <code>cond</code>, <code>case</code>, <code>match</code>, <code>when</code> and <code>unless</code>; in every operand of <code>and</code> and <code>or</code>; in the initialisers, steps, test, result and body of <code>do</code>; in a <code>guard</code> body and handler, a <code>raise</code> operand, a <code>set!</code> value, a quasiquote escape, the procedure of <code>call/cc</code>, the thunks of <code>dynamic-wind</code> (and so a <code>parameterize</code> body), the operands of <code>values</code>, the producer and consumer of <code>call-with-values</code>, a <code>let-values</code> producer and body, a <code>with-region</code> body, a computed callee, and the function, point, direction and order of a calculus operator. Quoted data is not evaluated and not checked.</li>
 <li><strong>One fitting rule.</strong> An argument, a return-annotated body and an annotated binding are accepted when the derived type is a <em>consistent subtype</em> of the expected type: a static subtype, in which every component the checker does not know (<code>Value</code>) is acceptable. A body of type <code>Value</code> therefore satisfies any return annotation, as a <code>Value</code> argument satisfies any parameter; a concrete contradiction (<code>String</code> where <code>Number</code> is expected) is reported. Members of the numeric tower are mutually acceptable at a call.</li>
 <li><strong>Function types</strong> <code>(-&gt; A ... R)</code> are contravariant in their parameters and covariant in their result, and a different number of parameters never fits. <code>procedure</code> is the top of the function types. Diagnostics print a signature as its arrow, for example <code>(-&gt; Number Int64)</code>, and a variadic one as <code>(-&gt; String ... Value)</code>.</li>
 <li><strong>Branch results join.</strong> The type of a multi-branch form is the join of its branch types, plus <code>#f</code> for a <code>cond</code>, <code>case</code>, <code>when</code> or <code>unless</code> that may run no branch. <code>if</code> and the equivalent <code>cond</code> have the same type. Branches with nothing more specific in common have type <code>Value</code>.</li>
-<li><strong>Loop parameters are typed by what the loop carries</strong> (since v1.3.5). An unannotated named-<code>let</code> parameter has the join of its initial value and of every argument the loop passes back to it, found by iterating the body to a fixpoint. A join that reaches <code>Value</code> is not adopted: the parameter keeps its type and the argument is reported. A parameter seeded with <code>#f</code> widens to <code>Value</code>. An annotated or linear parameter is never widened. A <code>do</code> variable is the join of its initialiser and its step, and adopts every join. A recursive procedure’s result is the least fixpoint over its own calls.</li>
+<li><strong>Loop parameters are typed by what the loop carries.</strong> An unannotated named-<code>let</code> parameter has the join of its initial value and of every argument the loop passes back to it, found by iterating the body to a fixpoint. A join that reaches <code>Value</code> is not adopted: the parameter keeps its type and the argument is reported. A parameter seeded with <code>#f</code> widens to <code>Value</code>. An annotated or linear parameter is never widened. A <code>do</code> variable is the join of its initialiser and its step, and adopts every join. A recursive procedure’s result is the least fixpoint over its own calls.</li>
 </ol>
 <h4 id="368-linear-types--qubit">3.6.8 Linear Types — <code>Qubit</code></h4>
 <p><code>Qubit</code> is a first-class <strong>linear</strong> type: its values must be used exactly once. A <code>define</code> or <code>lambda</code> parameter, or a <code>let</code>-family binding, may declare a linear type, and the checker enforces the use-exactly-once discipline. Both double-use (a clone) and drop are <strong>compile-time type errors</strong>: the compile exits nonzero and no artifact is written — in the default compilation mode, not only under <code>--strict-types</code>. This is what gives quantum-register operations a no-cloning guarantee at the type level rather than by convention.</p>
@@ -845,7 +845,7 @@ use-exactly-once is NOT enforced for it</code></pre>
   (syntax-rules ()
     ((when test expr ...)
      (if test (begin expr ...)))))</code></pre>
-<p><strong>Nested ellipsis</strong> (v1.3.0-evolve): a pattern variable bound at ellipsis depth N is followed by N ellipses in the template to flatten one level per extra ellipsis. Pattern matching tracks ellipsis depth explicitly, so <code>(x ... ...)</code>-style templates over a list-of-lists now expand correctly:</p>
+<p><strong>Nested ellipsis</strong>: a pattern variable bound at ellipsis depth N is followed by N ellipses in the template to flatten one level per extra ellipsis. Pattern matching tracks ellipsis depth explicitly, so <code>(x ... ...)</code>-style templates over a list-of-lists now expand correctly:</p>
 <pre class="scheme"><code>(define-syntax my-flatten
   (syntax-rules ()
     ((_ (a ...) ...) (list a ... ...))))
@@ -1107,7 +1107,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 <h4 id="472-string-access">4.7.2 String Access</h4>
 <ul>
 <li><code>(string-length str)</code> - Codepoint (character) count</li>
-<li><code>(string-byte-length str)</code> - UTF-8 byte count (v1.3.0-evolve; differs from <code>string-length</code> for any multibyte-UTF-8 string)</li>
+<li><code>(string-byte-length str)</code> - UTF-8 byte count (differs from <code>string-length</code> for any multibyte-UTF-8 string)</li>
 <li><code>(string-ref str k)</code> - Get character at index k</li>
 <li><code>(string-set! str k char)</code> - Set character at index k</li>
 <li><code>(substring str start end)</code> - Extract substring <code>[start, end)</code></li>
@@ -1164,7 +1164,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 <li><code>(vector-length vec)</code> - Element count</li>
 <li><code>(vector-ref vec k)</code> - Get element at index k</li>
 <li><code>(vector-set! vec k val)</code> - Set element at index k</li>
-<li><code>(vector-copy vec)</code> / <code>(vector-copy vec start)</code> / <code>(vector-copy vec start end)</code> - Fresh (shallow) copy of <code>vec</code>, or of the <code>[start,end)</code> slice. Also accepts a tensor-backed <code>#(...)</code> vector literal, not just <code>(vector ...)</code>-allocated vectors (v1.3.0-evolve).</li>
+<li><code>(vector-copy vec)</code> / <code>(vector-copy vec start)</code> / <code>(vector-copy vec start end)</code> - Fresh (shallow) copy of <code>vec</code>, or of the <code>[start,end)</code> slice. Also accepts a tensor-backed <code>#(...)</code> vector literal, not just <code>(vector ...)</code>-allocated vectors.</li>
 <li><code>(vector-copy! to at from)</code> / <code>(vector-copy! to at from start end)</code> - In-place copy into <code>to</code> starting at index <code>at</code></li>
 </ul>
 <h4 id="493-vector-conversions">4.9.3 Vector Conversions</h4>
@@ -1813,7 +1813,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 <ul>
 <li><strong>Global:</strong> <code>__ad_tape_stack[32]</code> - Stack of tapes</li>
 <li><strong>Depth:</strong> <code>__ad_tape_depth</code> - Current nesting level</li>
-<li><strong>Max Nesting:</strong> 32 levels</li>
+<li><strong>Tape Nesting:</strong> The reverse-mode tape stack has 32 slots. Forward differentiation passes use recursive Taylor level carriers and can nest to arbitrary depth, subject to available memory. See <a href="/docs#page=adr_0027_recursive_taylor" data-url="/content/adr_0027_recursive_taylor.html">ADR-0027</a>.</li>
 </ul>
 <h4 id="823-gradient---compute-gradient">8.2.3 <code>gradient</code> - Compute Gradient</h4>
 <p><strong>Syntax:</strong></p>
@@ -1900,7 +1900,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 <li><code>__current_ad_tape</code> - Current tape for graph recording</li>
 </ul>
 <h4 id="nested-gradients">Nested Gradients</h4>
-<p>Supports arbitrary nesting depth via tape stack:</p>
+<p>Nested differentiation uses recursive Taylor levels, with depth limited by available memory. The reverse-mode tape stack has 32 slots:</p>
 <pre class="scheme"><code>(gradient 
   (lambda (x)
     (gradient 
@@ -1908,7 +1908,7 @@ use-exactly-once is NOT enforced for it</code></pre>
       (vector 1.0)))
   (vector 2.0))
 ; Computes ∂/∂x[∂/∂y(xy²)]</code></pre>
-<h3 id="85-arbitrary-order-ad-taylor-towers-v130-evolve">8.5 Arbitrary-Order AD: Taylor Towers (v1.3.0-evolve)</h3>
+<h3 id="85-arbitrary-order-ad-taylor-towers">8.5 Arbitrary-Order AD: Taylor Towers</h3>
 <p>A second, orthogonal AD engine computes every derivative up to an arbitrary order <code>k</code> in a single pass. Full detail: the <a href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic Differentiation guide</a> and <code>docs/design/AD_TAYLOR_TOWER.md</code>.</p>
 <h4 id="851-taylor--derivative-n--core-tower-builtins">8.5.1 <code>taylor</code> / <code>derivative-n</code> — Core Tower Builtins</h4>
 <p><strong>Syntax:</strong></p>
@@ -2993,11 +2993,7 @@ eshkol-run --shared-lib input.esk -o mylib</code></pre>
 <p><strong>Private Symbols:</strong> - Module: <code>foo.bar.baz</code> - Symbol: <code>helper</code> - Mangled: <code>__foo_bar_baz__helper</code></p>
 <p><strong>Public Symbols:</strong> Keep original name (exported via <code>provide</code>)</p>
 <hr />
-<h2 id="26-version-information">26. Version Information</h2>
-<p><strong>Current Version:</strong> v1.3.5</p>
-<p><strong>Version History:</strong> - v1.3.5-evolve - Compiler/VM semantics, nested and exact AD, validated ESKM persistence, and release-assurance integration. Released 2026-09-22; verification is bound to the tagged commit. - v1.3.4-evolve - Consumer-hardening correctness wave: automatic per-iteration memory reclamation on the native engine that matches explicit <code>with-region</code>, race-free <code>parallel-map</code>, exact gradients through every callable form and at exact (rational/bignum) points, R7RS-correct exactness contagion on both the native and bytecode-VM numeric paths, same-unit <code>define-library</code>/<code>import</code> resolution on all three back ends, an emitted error diagnostic that prevents artifact emission, a portable event-loop primitive, a fixed-point/i128 exact-accumulation engine, and the high-precision numerics wave (Ozaki-II exact and reduced-precision GEMM tiers, mixed-precision <code>linear-solve</code>, native <code>i128</code>). See <a href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>. - v1.3.3-evolve - Opt-in differentiable quantum computing (Moonlab VQE/CHSH), ML-KEM post-quantum cryptography, <code>core.dbsp</code> incremental dataflow, real <code>make-parameter</code>/<code>parameterize</code> dynamic parameters, and bignum-capable exact rationals. See <a href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>. - v1.3.2-evolve - Thread-safe regions and deeper region-escape evacuation (ESH-0214d subtype coverage), plus the nine-cluster architectural research ADRs. See <a href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>. - v1.3.1 - Robustness for long-running, resident programs: per-iteration arena reclamation for define-loops guarded by a catch-all handler, an iterative reader so large persisted structures load without native stack overflow, and comprehensive C-API documentation. See <a href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>. - v1.3.0-evolve - Arbitrary-order automatic differentiation (Taylor towers, phases P0-P12: exact bignum/rational coefficients, no-heap monomorphization, GUW multivariate mixed partials, reverse-over-Taylor, tensor towers, validated Taylor models, sparse high-order tensors, differentiable control flow, checkpointed reverse-mode, tower-based numerics), full R7RS conformance on the portable differential corpus (34/34 vs. chibi-scheme), closure/TCO/memory robustness hardening (mutual tail calls, named-let TCO in every position, 16-&gt;64 capture ceiling, bounded-RSS long-running loops), and a permanent multi-pillar adversarial-testing infrastructure. See <a href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>. - v1.2.0-scale - Production readiness: model serialization, stable C ABI + Python bindings, per-thread arenas, 512 MB main-thread stack on Darwin, image I/O, plotting stdlib, actionable error messages with file:line:col + caret, JSON Schema validator (Draft 7 subset), R7RS-compliant scoping for stdlib redefines, –wasm self-contained emit, AD scalar derivative on inline lambdas, value-typed-capture LLVM verification, variadic-info hygiene on user redefines, 62-test edge-case suite + ASan/UBSan CI lane, 7 hardening fixes (subprocess injection, FFI AST injection, integer overflows, path traversal, ReDoS). - v1.1.13-accelerate - Windows ARM64 native support, 16-lane release matrix, two VM closure bug fixes (named-let nested closure PC + native 252 upvalue relay), Windows setjmp hardening for x64 and ARM64, mobile-responsive website, REPL error display - v1.1.12-accelerate - LLVM 21 toolchain unification, Windows VS 2022/ClangCL, ARM64 ABI fix, clean URL routing - v1.1.11-accelerate - Exact arithmetic, continuations, consciousness engine, parallelism, GPU dispatch, signal processing - v1.0.0-foundation - Initial stable release - Core Scheme compatibility - Automatic differentiation system - HoTT type system foundation - Arena memory management - Module system - REPL with JIT</p>
-<hr />
-<h2 id="27-file-organization">27. File Organization</h2>
+<h2 id="26-file-organization">26. File Organization</h2>
 <h3 id="source-code-structure">Source Code Structure</h3>
 <pre><code>inc/eshkol/              # Public headers
   eshkol.h               # Main API header
@@ -3028,7 +3024,7 @@ tests/                   # Test suites
   neural/                # Neural network tests
   types/                 # Type system tests</code></pre>
 <hr />
-<h2 id="28-bytecode-vm-and-eskb-format">28. Bytecode VM and ESKB Format</h2>
+<h2 id="27-bytecode-vm-and-eskb-format">27. Bytecode VM and ESKB Format</h2>
 <p>Eshkol provides a dual backend architecture: the primary LLVM compilation path and a complementary bytecode VM for the qLLM/transformer weight pipeline and portable execution.</p>
 <h3 id="281-bytecode-emission">28.1 Bytecode Emission</h3>
 <p><strong>Syntax:</strong> <code>eshkol-run input.esk -B output.eskb</code></p>
@@ -3050,5 +3046,5 @@ tests/                   # Test suites
 (display (my-param))     ; =&gt; 10</code></pre>
 <hr />
 <h2 id="conclusion">Conclusion</h2>
-<p>This document provides a <strong>complete</strong> specification of the Eshkol programming language version v1.3.5-evolve, documenting <strong>every</strong> feature, function, operator, and capability found in the implementation.</p>
+<p>This document provides a <strong>complete</strong> specification of the Eshkol programming language, documenting <strong>every</strong> feature, function, operator, and capability found in the implementation.</p>
 <p><strong>Total Coverage:</strong> (counts from <code>tests/coverage/language_surface.json</code> and <code>tests/coverage/coverage_policy.json</code>, the machine sources the coverage gate reads) - All 116 special forms and 113 parser AST operations - All 1,056 built-in functions (1,115 declared constructs in total) - 743 VM native-call IDs - 72-opcode bytecode VM with ESKB binary format - Complete type system (15+ types with 18+ heap subtypes) - Full memory management system (OALR arenas) - Entire standard library (40 modules) - Complete autodiff system (forward, reverse, symbolic, 83 AD node types declared in <code>inc/eshkol/ad_node_registry.def</code>) - Dual backend architecture (LLVM + bytecode VM) - Weight matrix transformer (3-way verified) - Module system with <code>require</code>, <code>provide</code>, <code>load</code> - REPL JIT with precompiled stdlib - Quantum RNG (8-qubit circuit simulation) - GPU dispatch (Metal SF64 + CUDA, forward and backward) - Compilation pipeline (LLVM 18-24; major pinned per build, default 21) - Runtime architecture - Exact arithmetic (bignum, rational, numeric tower) - Complex number type with overflow-safe division - First-class continuations, dynamic-wind, and exception handling - Consciousness engine (logic programming, active inference, global workspace) - Parallel execution model (thread pool, futures, memory safety) - GPU dispatch (Metal SF64, CUDA, cost model) - Signal processing (FFT, windows, filters, convolution)</p>

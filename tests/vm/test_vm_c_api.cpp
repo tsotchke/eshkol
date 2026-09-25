@@ -1928,7 +1928,7 @@ void test_profile_limits(void) {
           "profile exposes compiled heap limit");
     CHECK(limits.stack_slots == ESHKOL_VM_STACK_SIZE,
           "profile exposes compiled stack limit");
-    CHECK(limits.max_frames == ESHKOL_VM_MAX_FRAMES,
+    CHECK(limits.max_frames == ESHKOL_VM_MAX_FRAMES_CEILING,
           "profile exposes compiled frame limit");
     CHECK(limits.max_constants == ESHKOL_VM_MAX_CONSTS_CEILING,
           "profile exposes compiled constant limit");

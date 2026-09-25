@@ -1549,6 +1549,5 @@ boundaries — a bug pattern documented in audit #194.
   and probabilistic inference.]
 - Yedidia, J. S., Freeman, W. T., & Weiss, Y. (2003). Understanding
   belief propagation and its generalizations. In G. Lakemeyer & B.
-  Nebel (Eds.), *Exploring Artificial Intelligence in the New
-  Millennium*. Morgan Kaufmann.
+  Nebel (Eds.), a collected volume on artificial intelligence. Morgan Kaufmann.
 

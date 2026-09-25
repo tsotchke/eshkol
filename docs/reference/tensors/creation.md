@@ -51,7 +51,7 @@ t                               ;; => #(1 2 3)
 `shape`-dimensional. Reshape a flat tensor into higher rank with
 `tensor-reshape` (see [operations.md](operations.md)).
 
-Shape construction is checked on both engines. Every dimension is a positive
+Shape construction is checked on both engines. Every dimension is a nonnegative
 integer (zero extents produce an empty tensor), the product is overflow-checked before allocation, and the resulting
 descriptor records exactly that product. Invalid dimensions and resource-size
 requests raise a catchable condition; they are never converted into a wrapped

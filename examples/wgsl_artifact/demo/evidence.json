@@ -1,0 +1,83 @@
+{
+  "adapter": {
+    "vendor": "apple",
+    "architecture": "metal-3",
+    "device": "",
+    "description": "",
+    "isFallbackAdapter": null
+  },
+  "precision": "f32",
+  "sample_count": 9,
+  "submission_count": 1,
+  "final_readback_bytes": 144,
+  "intermediate_readback_bytes": 0,
+  "max_absolute_error": {
+    "value": 1.621991579936477e-8,
+    "first": 8.447162791469509e-8,
+    "second": 2.8045357680639427e-7
+  },
+  "max_gpu_vs_separate_f32_horner": {
+    "value": 1.4901161193847656e-8,
+    "first": 0,
+    "second": 0
+  },
+  "warm_chain_submit_and_wait_ms_median": 0.2999999523162842,
+  "warm_evaluator_submit_and_wait_ms_median": 0.30000001192092896,
+  "rows": [
+    {
+      "value": 0.09920775890350342,
+      "first": -0.9023767709732056,
+      "second": 3.292869806289673,
+      "flags": 1793
+    },
+    {
+      "value": 0.058418773114681244,
+      "first": -0.7247437238693237,
+      "second": 3.8257687091827393,
+      "flags": 1793
+    },
+    {
+      "value": 0.027212150394916534,
+      "first": -0.5183635950088501,
+      "second": 4.44490909576416,
+      "flags": 1793
+    },
+    {
+      "value": 0,
+      "first": 0,
+      "second": 6,
+      "flags": 1793
+    },
+    {
+      "value": 0.0332392081618309,
+      "first": 0.69971764087677,
+      "second": 8.099152565002441,
+      "flags": 1793
+    },
+    {
+      "value": 0.07887479662895203,
+      "first": 1.1366244554519653,
+      "second": 9.409873008728027,
+      "flags": 1793
+    },
+    {
+      "value": 0.14807921648025513,
+      "first": 1.6442375183105469,
+      "second": 10.93271255493164,
+      "flags": 1793
+    },
+    {
+      "value": 0,
+      "first": 0,
+      "second": 0,
+      "flags": 1794
+    },
+    {
+      "value": 0,
+      "first": 0,
+      "second": 0,
+      "flags": 1794
+    }
+  ],
+  "chrome": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36"
+}

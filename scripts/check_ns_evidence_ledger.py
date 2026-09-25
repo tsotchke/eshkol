@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Check the Navier-Stokes proof ledger for internal and cross-file consistency.
+"""Check the Navier-Stokes evidence ledger for internal and cross-file consistency.
 
-`.icc/navier-stokes-proof-ledger.yaml` is the machine-readable twin of
-`docs/design/NAVIER_STOKES_PROOF_LEDGER.md`, which in turn gives a status to
+`.icc/navier-stokes-evidence-ledger.yaml` is the machine-readable twin of
+`docs/design/NAVIER_STOKES_EVIDENCE_LEDGER.md`, which in turn gives a status to
 every row of the pipeline table in
-`docs/design/NAVIER_STOKES_BLOWUP_MECHANIZATION.md` Section 2. None of these
+`docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md` Section 2. None of these
 three files enforces the others by construction — a hand edit to any one of
 them (adding a row to the mechanization doc, renaming a CTest, relaxing a
 status from ANALYTIC-ONLY to EXACT without wiring a program) can drift
@@ -35,7 +35,7 @@ It answers five questions a YAML parser alone does not:
      to EXACT for a program that never touches the exact tower at all.
 
   5. Does `.icc/completion-oracles.yaml` carry the `navier-stokes-mechanization`
-     oracle with the `navier_stokes_proof_ledger_consistent` criterion this
+     oracle with the `navier_stokes_evidence_ledger_consistent` criterion this
      gate itself is bound to?
 
 Grading
@@ -47,11 +47,11 @@ Grading
           ledger (the gate fails closed).
 
 Usage
-    python3 scripts/check_ns_proof_ledger.py
-    python3 scripts/check_ns_proof_ledger.py --ledger path/to/ledger.yaml
-    python3 scripts/check_ns_proof_ledger.py --format json
-    python3 scripts/check_ns_proof_ledger.py --no-trace
-    python3 scripts/check_ns_proof_ledger.py --self-test
+    python3 scripts/check_ns_evidence_ledger.py
+    python3 scripts/check_ns_evidence_ledger.py --ledger path/to/ledger.yaml
+    python3 scripts/check_ns_evidence_ledger.py --format json
+    python3 scripts/check_ns_evidence_ledger.py --no-trace
+    python3 scripts/check_ns_evidence_ledger.py --self-test
 
 Exit status is 0 on PASS and 1 on FAIL (including under --self-test, where it
 reports whether the gate itself is capable of failing).
@@ -70,18 +70,18 @@ import sys
 import tempfile
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_LEDGER = os.path.join(REPO_ROOT, ".icc", "navier-stokes-proof-ledger.yaml")
-DEFAULT_DOC = os.path.join(REPO_ROOT, "docs", "design", "NAVIER_STOKES_BLOWUP_MECHANIZATION.md")
+DEFAULT_LEDGER = os.path.join(REPO_ROOT, ".icc", "navier-stokes-evidence-ledger.yaml")
+DEFAULT_DOC = os.path.join(REPO_ROOT, "docs", "design", "NAVIER_STOKES_RESIDUAL_MECHANIZATION.md")
 DEFAULT_CMAKE = os.path.join(REPO_ROOT, "CMakeLists.txt")
 DEFAULT_ORACLES = os.path.join(REPO_ROOT, ".icc", "completion-oracles.yaml")
 DEFAULT_EXAMPLES_DIR = os.path.join(REPO_ROOT, "examples")
 DEFAULT_TRACE_DIR = os.path.join(REPO_ROOT, "scripts", "icc_traces")
-TRACE_BASENAME = "ns_proof_ledger_gate.jsonl"
-PROBE_ID = "navier_stokes_proof_ledger_consistent"
+TRACE_BASENAME = "ns_evidence_ledger_gate.jsonl"
+PROBE_ID = "navier_stokes_evidence_ledger_consistent"
 
 STATUS_VOCAB = ("EXACT", "VALIDATED", "ANALYTIC-ONLY")
 ORACLE_NAME = "navier-stokes-mechanization"
-ORACLE_CRITERION = "navier_stokes_proof_ledger_consistent"
+ORACLE_CRITERION = "navier_stokes_evidence_ledger_consistent"
 
 DOC_ROW_RE = re.compile(r"^\|\s*(\d+)\s*\|", re.M)
 CMAKE_LIST_RE = re.compile(r"set\(ESHKOL_NS_EXAMPLES(.*?)\)", re.S)
@@ -115,11 +115,11 @@ def _read(path: str, what: str) -> str:
 def parse_doc_row_ids(doc_text: str) -> set[int]:
     """Row numbers the mechanization doc's Section 2 pipeline table declares.
 
-    Restricted to the '## 2. The proof as a pipeline' .. '## 3.' span so a
+    Restricted to the '## 2. Computational pipeline' .. '## 3.' span so a
     bare leading integer in an unrelated table can never be mistaken for a
     pipeline row.
     """
-    start = doc_text.find("## 2. The proof as a pipeline")
+    start = doc_text.find("## 2. Computational pipeline")
     end = doc_text.find("## 3. Capability ledger")
     if start == -1 or end == -1 or end <= start:
         raise LedgerError("could not locate the Section 2 pipeline table in the mechanization doc")
@@ -288,7 +288,7 @@ def emit_trace(trace_dir: str, status: str, snippet: str) -> str:
 # content.
 
 _GOOD_DOC = """
-## 2. The proof as a pipeline
+## 2. Computational pipeline
 
 | # | Paper reference | Operation | Eshkol primitive or BUILD ITEM | Status | Version | Gate |
 |---|---|---|---|---|---|---|
@@ -312,7 +312,7 @@ _GOOD_ORACLES = {
                     "runtime_event": {"event_names": [ORACLE_CRITERION]},
                     "severity": "high",
                     "label": "self-test criterion",
-                    "action": "./scripts/check_ns_proof_ledger.py",
+                    "action": "./scripts/check_ns_evidence_ledger.py",
                 }
             ],
         }
@@ -321,12 +321,12 @@ _GOOD_ORACLES = {
 
 _GOOD_LEDGER_YAML = """
 rows:
-  - id: ns-proof-001
+  - id: ns-evidence-001
     row: 1
     status: EXACT
     programs: [ns_gate_one]
     missing_capability: null
-  - id: ns-proof-002
+  - id: ns-evidence-002
     row: 2
     status: ANALYTIC-ONLY
     programs: []
@@ -335,7 +335,7 @@ rows:
 
 _MALFORMED_YAML = """
 rows:
-  - id: ns-proof-001
+  - id: ns-evidence-001
     row: 1
       status: EXACT
     programs: [ns_gate_one]
@@ -343,17 +343,17 @@ rows:
 
 _DUPLICATE_ROW_YAML = """
 rows:
-  - id: ns-proof-001a
+  - id: ns-evidence-001a
     row: 1
     status: EXACT
     programs: [ns_gate_one]
     missing_capability: null
-  - id: ns-proof-001b
+  - id: ns-evidence-001b
     row: 1
     status: ANALYTIC-ONLY
     programs: []
     missing_capability: "duplicate row number"
-  - id: ns-proof-002
+  - id: ns-evidence-002
     row: 2
     status: ANALYTIC-ONLY
     programs: []
@@ -362,12 +362,12 @@ rows:
 
 _EMPTY_MISSING_CAP_YAML = """
 rows:
-  - id: ns-proof-001
+  - id: ns-evidence-001
     row: 1
     status: EXACT
     programs: [ns_gate_one]
     missing_capability: null
-  - id: ns-proof-002
+  - id: ns-evidence-002
     row: 2
     status: ANALYTIC-ONLY
     programs: []
@@ -376,12 +376,12 @@ rows:
 
 _UNWIRED_PROGRAM_YAML = """
 rows:
-  - id: ns-proof-001
+  - id: ns-evidence-001
     row: 1
     status: EXACT
     programs: [gate_that_does_not_exist_in_cmake]
     missing_capability: null
-  - id: ns-proof-002
+  - id: ns-evidence-002
     row: 2
     status: ANALYTIC-ONLY
     programs: []
@@ -390,12 +390,12 @@ rows:
 
 _INEXACT_PROGRAM_LEDGER_YAML = """
 rows:
-  - id: ns-proof-001
+  - id: ns-evidence-001
     row: 1
     status: EXACT
     programs: [ns_gate_float_only]
     missing_capability: null
-  - id: ns-proof-002
+  - id: ns-evidence-002
     row: 2
     status: ANALYTIC-ONLY
     programs: []
@@ -415,7 +415,7 @@ _FLOAT_ONLY_PROGRAM_SOURCE = """
 
 _MISSING_ROW_LEDGER_YAML = """
 rows:
-  - id: ns-proof-001
+  - id: ns-evidence-001
     row: 1
     status: EXACT
     programs: [ns_gate_one]
@@ -463,8 +463,8 @@ def self_test() -> bool:
     ]
 
     all_ok = True
-    with tempfile.TemporaryDirectory(dir=REPO_ROOT, prefix=".selftest-ns-proof-ledger-") as tmp_dir:
-        print("check_ns_proof_ledger.py self-test:")
+    with tempfile.TemporaryDirectory(dir=REPO_ROOT, prefix=".selftest-ns-evidence-ledger-") as tmp_dir:
+        print("check_ns_evidence_ledger.py self-test:")
         for name, ledger_yaml, doc_text, cmake_text, oracles_data, examples_files, expect_pass in cases:
             passed, detail = _run_fixture(tmp_dir, ledger_yaml, doc_text, cmake_text, oracles_data, examples_files)
             ok = passed == expect_pass

@@ -279,7 +279,7 @@
 (define (sim-V X e) 0.0)                 ;; NOT the incompressibility-matching V0
 (define (sim-Pi X e) 0.0)                ;; NOT the centrifugal-balance pressure
 
-;; The ansatz is singular at tau = 0 (the similarity coordinates blow up at
+;; The ansatz is singular at tau = 0 (the similarity coordinates diverge at
 ;; t = T), so its residual does not vanish there: the scan reports order 0.
 (define sim-orders-outcome
   (let* ((sim-flow (ns-similarity-field sim-Ep sim-Up sim-V sim-Pi sim-A sim-D sim-h 1.0))

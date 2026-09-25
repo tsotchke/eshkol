@@ -1,4 +1,4 @@
-# Navier-Stokes finite-time blowup: mechanizing the leading structure
+# Navier-Stokes examples: residuals, scaling laws and similarity profiles
 
 Status: verified on macOS arm64 with native JIT (`-r`) and native AOT. The nine
 programs are discovered by `scripts/run_examples_tests.sh`, which runs on the
@@ -7,11 +7,14 @@ lite CI lanes, and each is additionally pinned by a JIT and an AOT CTest entry
 completion oracle `navier-stokes-mechanization` in
 `.icc/completion-oracles.yaml` carries one criterion per program.
 
-Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
-<https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf>
+Source: an external reference construction for the three-dimensional
+Navier-Stokes equations,
+<https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf>.
+Section, equation and lemma numbers cited below (e.g. "Lemma 4.5", "(4.20)")
+refer to that source.
 
-These programs do not reprove the theorem. They compute the *leading structure*
-of the construction mechanically, where a reader would otherwise differentiate,
+These programs do not reproduce the source's full argument. They compute the
+*leading structure* of the construction mechanically, where a reader would otherwise differentiate,
 rescale and balance powers by hand: the residual operator is assembled from AD
 partials, the similarity coordinates are differentiated through their own
 implicit definition, the scale exponents are solved as a linear system in exact
@@ -59,8 +62,8 @@ never hand-differentiated.
   the correspondingly scaled grid. These are Riemann sums, not integrals: the
   `nu` grid is the reference grid scaled by `sqrt(nu)`, so the identity is exact
   term by term, and that is what is certified.
-- The time variable is untouched by the rescaling, so the singular time is
-  unchanged.
+- The time variable is untouched by the rescaling, so the time coordinate
+  itself is unchanged.
 
 ### `mathematics_navier_stokes_similarity_scales.esk`
 
@@ -244,7 +247,7 @@ to a stated numerical tolerance (mesh refinement, not `=`), never asserted
 exact — the exactness boundary Appendix A itself does not need to cross for
 polynomial pieces. The exterior stays finite as `t -> 1` at fixed radius,
 contrasted against a deliberately wrong candidate carrying the inner profile's
-own `(1-t)^{-1}`-type blowup factor, which diverges.
+own `(1-t)^{-1}`-type divergent factor, which grows without bound.
 
 ### `mathematics_navier_stokes_oscillatory_realization.esk`
 
@@ -336,18 +339,15 @@ verdict line in both execution modes.
   (merged from `feat/exact-rational-linalg`), which are also scalar-exact —
   Eshkol tensors remain f64-backed, so `exact_linalg`'s matrices are vectors
   of row-vectors, never tensors.
-- Derivatives are exact only at exact scalar points, and not for every
-  differentiand shape even then: beyond the three closed SW-148/149/150
-  defects (below), this round of the family found FOUR MORE exactness leaks
-  in `derivative`/`derivative-n`/`taylor` that stay open — a top-level `define`d
+- Derivatives are exact at exact scalar points. Earlier rounds of this family
+  found four additional exactness leaks in `derivative`/`derivative-n`/`taylor`
+  beyond the three closed SW-148/149/150 defects: a top-level `define`d
   constant (vs. an inline literal) in the differentiand, a loop-derived point
   argument, a several-deep composed differentiand, and a function-call
   expression passed directly as the differentiand alongside another
   `derivative`/`taylor` call site in the same file causing a hard compile
-  failure. Each is reproduced under `.scratch/` in the branch that introduced
-  it (not committed — `.scratch/` is gitignored) and routed around at its own
-  call site, with an "AD surface note" at the top of the affected program
-  saying which route it takes and why. Where the field carries irrational
+  failure. All four are now fixed and no longer reproduce; the affected
+  programs' AD surface notes record this in the past tense. Where the field carries irrational
   data (`q^{2h}`, `sqrt(2X)`, the trigonometric pulses, the implicit solve for
   `q`, the RK4-integrated amplitude curve), the arithmetic is double precision
   and the verdicts state a tolerance.
@@ -363,16 +363,16 @@ verdict line in both execution modes.
 
 ## Compiler defects found while building this family
 
-The three defects this section used to describe in detail are closed: SW-148
+All defects this section used to describe in detail are closed: SW-148
 (an exact operand stealing the scalar dispatch from a live jet), SW-149 (a
 vanishing tangent returning an inexact zero at an exact rational seed) and
 SW-150 (a captured outer variable lost by an inner differentiation pass) are
 pinned by `tests/ad/exact_rational_derivative_test.esk` and
 `tests/ad/nested_operator_matrix_test.esk`, and the four programs from the
 first round of this family now call `derivative`/`derivative-n` directly at
-their own call sites instead of routing around them. The exactness leaks this
-round found instead are a different, still-open class — see "Exactness
-boundaries" above for what they are and where each is reproduced.
+their own call sites instead of routing around them. The four additional
+exactness leaks a later round of this family found — see "Exactness
+boundaries" above — are also fixed and no longer reproduce.
 
 ## Not mechanized yet
 

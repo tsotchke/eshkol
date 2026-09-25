@@ -3131,12 +3131,12 @@ entries:
     subtag: structural
     status: closed
     closed_at: "3ffbb24f"
-    closed_by: "origin/master 3ffbb24f; regression reverified in tests/vm_parity/frame_overflow_exit_status_test.py"
+    closed_by: "origin/master 3ffbb24f; ceiling regression reverified in tests/vm_parity/frame_ceiling_exit_status_test.py"
     title: "VM frame overflow was not reflected in the process exit status"
-    evidence: "lib/backend/eshkol_vm.c:258-262 reports fatal VM state and main propagates nonzero; tests/vm_parity/frame_overflow_exit_status_test.py verifies FRAME OVERFLOW and nonzero status with tests/vm_parity/found/frame_overflow_exit_zero.esk"
+    evidence: "lib/backend/eshkol_vm.c reports fatal VM state and main propagates nonzero; tests/vm_parity/frame_ceiling_exit_status_test.py verifies FRAME OVERFLOW, nonzero status, and empty stdout at the configured ceiling"
     caught_by: [parity-baselines]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
-    notes: "Loud on stderr and now nonzero; the remaining VM tail-position depth limit is tracked separately as LE-13."
+    notes: "Loud on stderr and nonzero at the configurable frame ceiling. LE-13's tail-position transfer defect is separately closed."
   - id: LE-08
     bucket: LOUD-ERROR
     subtag: structural
@@ -11687,7 +11687,7 @@ entries:
       ESH-0103 out-lines the whole numeric-tower dispatch into one
       `__eshkol_arith_{add,sub,mul,div}` helper per module, emitted at the first
       site of the operator and CALLED by every other, to avoid an O(n^2)
-      single-function blow-up. Its error branches recorded the location with
+      single-function growth. Its error branches recorded the location with
       `eshkol_set_error_location(file, line, col)` — from
       ArithmeticCodegen::emitSetErrorLocation and from
       TensorCodegen::unpackTensorOperandChecked — using
@@ -14079,8 +14079,9 @@ entries:
     caught_by: [published-site-browser-oracle-audit]
     missed_by: [site_smoke, doc_audit]
     notes: >-
-      Not yet committed to the release cut or deployed. Final artifact and
-      release qualification remain required; a refusal is not a resolution.
+      Integrated into the v1.3.5 release candidate with the ADR-0027 carrier.
+      Release qualification and publication of the browser artifact remain
+      separate from this source-level fix.
     closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
     fixed_by: "ADR-0027 level carrier, VM half; site/static/eshkol-vm.{js,wasm} rebuilt with scripts/build-wasm-repl.sh"
     observed_after: >-
@@ -15986,3 +15987,238 @@ entries:
       and VM ESKB (ctest standard_port_parameters_*); VM parity 386/386.
     caught_by: [release-dry-run]
     missed_by: [vm_parity]
+  - id: SW-251
+    bucket: SILENT-WRONG
+    subtag: documentation
+    family: navier-stokes/evidence-scope
+    status: fixed
+    title: "Navier-Stokes documentation framed partial residual checks as a complete result"
+    repro: >-
+      Read the public Navier-Stokes design note, release changelog, and ICC oracle
+      labels while comparing them with the per-row evidence ledger.
+    observed: >-
+      Public names and prose described a singular outcome and a complete
+      mechanization trajectory, while the ledger recorded 25 exact rows and 59
+      analytic-only rows among 84 total rows. This made the scope of executable
+      evidence easy to misread.
+    correct: >-
+      Public wording describes residuals, similarity profiles, scaling identities,
+      and energy estimates. The ledger and checker identify which rows have
+      executable evidence and which remain analytic-only.
+    root_cause: >-
+      The document title, ledger name, checker name, ICC labels, release text, and
+      site copies shared outcome-oriented language. The consistency checker
+      verified row wiring but did not constrain public wording.
+    fix: >-
+      Rename the design note, evidence ledger, and checker; update all references
+      and ICC criterion IDs; retain every computational row, status, numerical
+      value, and test. Regenerate the aggregate ledger and site content.
+    evidence: >-
+      The evidence-ledger checker passes on 84 rows (25 EXACT, 0 VALIDATED,
+      59 ANALYTIC-ONLY); the repository wording scan leaves only unrelated AD
+      code-generation terminology; the release and ICC gates are run on this branch.
+    caught_by: [release-review]
+    missed_by: [documentation-review, icc-readiness]
+  - id: SW-252
+    bucket: LOUD-ERROR
+    family: assurance/language-coverage-source-location
+    status: fixed
+    title: "the release language-coverage determinism gate inspected no readable source locations"
+    repro: >-
+      Run scripts/test_language_coverage_determinism.py with its corpus under an
+      ambient temporary directory outside the checkout, or under a nested project
+      root, then inspect both JIT and AOT assertions.
+    observed_before: >-
+      Coverage records existed, but their display paths were basenames relative
+      to the temporary source root. The gate resolved those names under the
+      checkout, skipped every unreadable path, and reported zero checked records.
+    correct: >-
+      Both execution modes record deterministic source locations that the gate
+      can reopen and check for valid line and column ranges.
+    root_cause: >-
+      The coverage runner omitted the determinism harness work directory, so the
+      harness chose the ambient temporary directory. CTest used a build-relative
+      root that could also lie outside the checkout. The display-path policy
+      correctly removes host directory prefixes, leaving no checkout-relative
+      name for those temporary source files.
+    fix: >-
+      Direct runs, the coverage runner, and CTest use an in-checkout scratch
+      parent for the corpus. Fresh per-run subdirectories remain isolated and
+      the source-location assertions are unchanged.
+    evidence: >-
+      scripts/test_language_coverage_determinism.py passes both JIT and AOT with
+      TMPDIR pointed at a nested project root; ctest language_coverage_determinism_test
+      and the coverage and language CTest selection pass.
+    caught_by: [release-dry-run]
+    missed_by: [language_coverage_determinism_test]
+  - id: SW-253
+    bucket: SILENT-WRONG
+    family: memory/region-escape-condition-irritants
+    status: fixed
+    title: "error irritants built inside a region dangled after the region exited"
+    repro: >-
+      (define e (with-region ('r 65536) (guard (x (#t x)) (error "m" (vector 1 2)))))
+      then allocate in another region and display (error-object-irritants e).
+    observed_before: >-
+      The irritant list printed reused memory, for example (#(0 0 0 0) #<bytevector>)
+      or #<heap:200> in place of #(1 2). Linux native builds showed it on every run;
+      macOS showed it once the region memory was reused.
+    correct: >-
+      (#(1 2)), unchanged by later allocation in any region.
+    root_cause: >-
+      Conditions are allocated in the process arena, which outlives every region,
+      but eshkol_exception_add_irritant stored the irritant without the region
+      write barrier. Region exit promotes only region-owned objects, so the
+      condition's irritant slots kept pointers into the reclaimed region.
+    fix: >-
+      eshkol_exception_add_irritant stores through eshkol_region_write_barrier_into,
+      the barrier every other store into a longer-lived object already uses, so an
+      irritant's in-region subgraph is promoted before the condition references it.
+    evidence: >-
+      tests/memory/error_irritant_region_escape_test.esk fails without the fix and
+      passes with it on native and the VM; tests/vm_parity/corpus/error_irritants_lifetime.esk
+      passes on Linux x86_64 and macOS arm64.
+    caught_by: [release-dry-run]
+    missed_by: [vm-parity-macos]
+  - id: SW-256
+    bucket: SILENT-WRONG
+    subtag: webgpu-artifact
+    family: wgsl-artifact/envelope-and-generation
+    status: fixed
+    title: "an unbounded polynomial evaluator could return plausible values outside its fitted envelope or after a coefficient refit"
+    repro: >-
+      Evaluate the prototype Taylor polynomial at strain 0.3, beyond its declared
+      radius 0.2, or reuse an output from a prior coefficient generation.
+    observed: >-
+      The prototype exposed a scalar WGSL function and a comment describing the
+      envelope, but no batch output status or generation field for consumers.
+    correct: >-
+      A bounded evaluator returns a status and generation with each sample;
+      outside-envelope samples have no usable numerical output.
+    root_cause: >-
+      The prototype generated only expression functions. It did not define a
+      storage-buffer ABI that can carry domain validity and coefficient generation
+      through ordinary resident WebGPU kernels.
+    fix: >-
+      The generated WGSL batch kernel checks finite input and radius, bounds each
+      invocation by count and both buffer lengths, returns status and generation,
+      and embeds immutable coefficients in a sealed artifact set.
+    evidence: >-
+      examples/wgsl_artifact/build_artifact.py requires byte-identical native and
+      VM output and the demo/run.mjs Chrome producer-evaluator-consumer chain checks
+      envelope, generation, convexity, deployed errors and final-only readback.
+    caught_by: [track-a-acceptance]
+    missed_by: [prototype-only-validation]
+  - id: SW-257
+    bucket: SILENT-WRONG
+    subtag: gpu
+    family: gpu-test-gate/verdict-and-differential
+    status: fixed
+    title: "GPU suite could report PASS from a one-sided workload or a missed failure marker"
+    observed: >-
+      The suite accepted a zero exit with a generic success token, while an
+      indented or bare FAIL could escape a colon-anchored check. It ran the
+      correctness payload once and could report PASS without comparing GPU and
+      CPU results. Some GPU-specific skips also printed PASS.
+    correct: >-
+      Each GPU test must exit zero and end with its named PASS, with any FAIL
+      marker taking precedence. Missing hardware must be SKIP, and GPU
+      correctness requires the live GPU-versus-CPU differential.
+    root_cause: >-
+      Verdict recognition accepted intermediate success markers as final results,
+      and the suite treated the differential payload as a standalone test instead
+      of running its driver. Skip guards emitted success markers for work they
+      did not execute; the CUDA Ozaki probe also ran on CPU fallback.
+    fix: >-
+      scripts/run_gpu_tests.sh uses one terminal verdict parser for compiled tests
+      and the differential driver. GPU-only programs emit terminal SKIP without a
+      PASS marker when the backend is unavailable; the CUDA Ozaki probe requires a
+      live CUDA backend and the suite selects the Ozaki kernel. The differential validates
+      both payload verdicts and numeric RESULT streams.
+    evidence: >-
+      scripts/run_gpu_tests.sh --self-test plants bare and indented FAIL,
+      incomplete output, misleading single-run output, a differential failure,
+      and an absent-GPU SKIP; tests/gpu/gpu_correctness_gate.sh --self-test
+      verifies trace, dispatch, a planted numeric mismatch, and missing probes.
+    caught_by: [icc-bus-report]
+    missed_by: [gpu-suite, gpu-correctness-gate]
+  - id: SW-270
+    bucket: SILENT-WRONG
+    subtag: webgpu
+    family: browser-webgpu/shared-backend-concurrency
+    status: fixed
+    title: "concurrent browser VMs sharing a WebGPU backend could write results into the wrong VM memory"
+    repro: >-
+      Attach two browser VMs to one WebGPU backend and evaluate 1x1 or 8x8
+      matmuls concurrently with Promise.all.
+    observed: >-
+      The first VM printed zero instead of 6 or 48; the second printed 20 or 160.
+    correct: >-
+      Each VM receives its own matmul result: 6 and 20, or 48 and 160.
+    root_cause: >-
+      attachVm replaced a shared backend.memory field, while asynchronous
+      readback decoded through that field after another VM had attached.
+    fix: >-
+      Each operation captures its destination memory across asynchronous work;
+      backend diagnostics and dispatch accounting remain shared and coherent.
+    evidence: >-
+      tests/webgpu/shared_backend_race_test.mjs checks concurrent 1x1 and 8x8
+      matmuls on a shared backend against serial and separate-backend controls.
+    caught_by: [hardware-reproduction]
+    missed_by: [webgpu_vm_test]
+  - id: SW-271
+    bucket: SILENT-WRONG
+    subtag: vm
+    family: numeric/inexact-tensor-division
+    status: fixed
+    title: "VM tensor division and native broadcasting returned zero for zero denominators"
+    repro: >-
+      Divide inexact tensors containing 1.0 and 0.0 by tensors containing
+      positive or negative zero, with and without WebGPU dispatch.
+    observed: >-
+      The unattached browser VM returned zero for 1.0/0.0 and 0.0/0.0;
+      native broadcasting also returned zero, while WebGPU and native same-shape
+      codegen returned positive infinity and NaN.
+    correct: >-
+      Inexact division returns signed infinity for a nonzero numerator over
+      signed zero and NaN for zero over zero; exact rational division by exact
+      zero continues to raise.
+    root_cause: >-
+      vm_op_div and the native broadcast helper replaced every zero-denominator
+      result with 0.0, unlike native fdiv and WebGPU sf64 division.
+    fix: >-
+      vm_op_div and the native broadcast helper perform ordinary floating-point
+      division for every tensor element.
+    evidence: >-
+      tests/numeric/tensor_division_parity_test.py on native and VM, and
+      tests/webgpu/division_parity_test.mjs on CPU and WebGPU browser VMs
+      across dispatch thresholds.
+    caught_by: [hardware-reproduction]
+    missed_by: [webgpu_vm_test]
+  - id: SW-272
+    bucket: SILENT-WRONG
+    subtag: webgpu
+    family: gpu/precision-admission-diagnostic
+    status: fixed
+    title: "WebGPU fast-tier diagnostic claimed opt-in when dispatch was refused"
+    repro: >-
+      Construct a browser WebGPU backend with precision fast and the default
+      1e-9 gate tolerance, then compare its diagnostics with shouldUse(1) and
+      supportsOperation(matmul).
+    observed: >-
+      Dispatch was correctly refused, but diagnostics claimed an explicit
+      reduced-precision opt-in without explaining the required tolerance.
+    correct: >-
+      A refused fast tier reports that gateTolerance must be at least 1e-6;
+      exact and high continue to use the sf64 path.
+    root_cause: >-
+      The constructor emitted an opt-in message based only on the tier name,
+      while the dispatch predicate separately checked the tolerance.
+    fix: >-
+      A shared gpuPrecisionReason admission function drives both the constructor
+      diagnostic and the dispatch predicate.
+    evidence: >-
+      tests/webgpu/webgpu_regressions_test.mjs checks refusal and admission
+      messages and the corresponding dispatch predicates.
+    caught_by: [regression-test]
+    missed_by: [webgpu_live_test]

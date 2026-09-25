@@ -1,7 +1,7 @@
-;; Navier-Stokes blowup construction -- the admissible stress cone.
+;; Navier-Stokes example -- the admissible stress cone.
 ;;
-;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
-;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Source: an external reference construction for the three-dimensional
+;; Navier-Stokes equations (2026), https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
 ;; Section 4.3, Lemma 4.5, equations (4.20)-(4.23), and Appendix C.
 ;;
 ;; The annular stress T0 has to be produced by real wave amplitudes, so it must
@@ -45,21 +45,16 @@
 ;; the construction gives v_s = 265/128 and 409/56, both exactly above 2.
 ;;
 ;; AD surface note.  Every derivative below is taken by calling the operator
-;; directly at an exact rational point.  Looped differentiands are hoisted into
-;; named helpers: a loop variable captured by an inline differentiand is
-;; miscompiled on this tree (ledger SW-151).  A SEPARATE defect, not SW-151,
-;; shows up only here: `(derivative Qs-of X)` -- Qs-of being a several-deep,
-;; multi-call composition (F-of/Sq-of/l-of, each reached more than once) --
-;; comes back INEXACT and with a float-roundoff-sized error (~1e-16) at an
-;; exact rational X, even though every intermediate function is individually
-;; exact at that same X when called outside an active `derivative`.  A
-;; two-line closure repro is .scratch/ns_derivative_composition_exactness_repro.esk.
-;; It is not routed around here (Qs-of still calls the operator on itself) --
-;; the ONE check downstream of it (4.9) is verified to a tight numerical
-;; tolerance instead of an exact zero, and says so.  Nothing else in this file
-;; depends on that nested call: a-of/bs-of/ps1-of/ps2-of call l-of, Uprof and
-;; their own `derivative`s directly at a plain (non-dual) X and stay exact,
-;; which is what keeps the cone decision itself (Parts C, D, E) exact.
+;; directly at an exact rational point.  Looped differentiands used to need
+;; hoisting into named helpers (ledger SW-151, closed), and `(derivative
+;; Qs-of X)` -- Qs-of being a several-deep, multi-call composition
+;; (F-of/Sq-of/l-of, each reached more than once) -- used to come back
+;; inexact at an exact rational X (a composition-depth exactness leak, closed;
+;; formerly reproduced in .scratch/ns_derivative_composition_exactness_repro.esk).
+;; Both are fixed: `(derivative Qs-of X)` comes back an exact rational,
+;; identical to every intermediate function evaluated at that same X outside
+;; an active `derivative`, and the downstream radial-equation check (4.9) now
+;; verifies an exact zero rather than a numerical tolerance.
 
 (define pass-count 0)
 (define fail-count 0)
@@ -142,15 +137,12 @@
 (define (phi X) (- 4 X))               ;; positive and decreasing on 0 < X < 4
 (define (Uprof X) (- 1 (* 1/8 X)))
 
-;; NOTE (route-around): `derivative` silently drops exactness when the
-;; differentiand combines its dual value with a REFERENCE to a top-level
-;; exact `define`, even though the identical arithmetic with an inline
-;; literal in the same position stays exact -- repro in
-;; .scratch/ns_derivative_topvar_const_exactness_repro.esk.  `Qs-of` below
-;; is reached through `derivative`, so F-of and Sq-of use the literals `3`
-;; and `1/200` directly instead of `C-norm` and `h-exact`; every other use
-;; site (E-of, Sn-of) is never differentiated and keeps the named constants.
-(define (F-of X) (/ (phi X) 3))
+;; `derivative` used to silently drop exactness when the differentiand
+;; combined its dual value with a reference to a top-level exact `define`
+;; rather than an inline literal in the same position; that defect is fixed,
+;; so F-of and Sq-of below use the named constants `C-norm` and `h-exact`
+;; directly, the same as every other use site.
+(define (F-of X) (/ (phi X) C-norm))
 
 ;; sqrt(2X) at the sampled radii, given exactly rather than through `sqrt`.
 ;; These two are the ADMISSIBLE-cone radii: v_s = a(1+t_s^2) comes out above 2
@@ -170,7 +162,7 @@
 (define (l-of X)
   (+ 1 (/ (* X (derivative phi X)) (phi X))))
 
-(define (Sq-of X) (- (- (l-of X)) 1/200))       ;; = h-exact, inlined (see note above)
+(define (Sq-of X) (- (- (l-of X)) h-exact))
 (define (Sn-of X)
   (- (- (* X (derivative Uprof X)))
      (* A-exact (Uprof X))))
@@ -224,18 +216,16 @@
      (* (+ 1 (l-of X)) (Qs-of X))
      (- (Sq-of X))))
 
-;; `(derivative Qs-of X)` does not come back exact (see the AD surface note
-;; above), so this is checked to a tight numerical tolerance rather than an
-;; exact zero -- the identity itself (verified symbolically offline for this
-;; profile pair) is exact; what is not exact is this one AD call's output tag.
+;; `(derivative Qs-of X)` now comes back an exact rational (see the AD surface
+;; note above), so this checks an exact zero.
 (define (all-radial-equations-near-zero?)
   (let loop ((xs sample-radii))
     (cond ((null? xs) #t)
-          ((< (abs (radial-equation-defect (car xs))) 1e-9)
+          ((= (radial-equation-defect (car xs)) 0)
            (loop (cdr xs)))
           (else #f))))
 
-(check "the integrated Q_s solves the radial equation (4.9) to numerical tolerance (nested-derivative exactness leak, not SW-151 -- see AD surface note)"
+(check "the integrated Q_s solves the radial equation (4.9) exactly"
        (all-radial-equations-near-zero?))
 
 (define (perturbed-radial-defect X)

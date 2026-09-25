@@ -8,7 +8,7 @@
 ;;  reverse tape over a DEEP composition of N layers stores O(N*K) tower-
 ;;  coefficient node/op records simultaneously — one full (order-K) Taylor
 ;;  tower's worth of ops per layer, times N layers, all alive at once. That is
-;;  the O(tape*K) blowup this phase removes.
+;;  the O(tape*K) growth this phase removes.
 ;;
 ;;  ── What this file builds, concretely ───────────────────────────────────
 ;;  A length-N composition x_i = layer(x_{i-1}, v), i = 1..N, x_0 = a seed

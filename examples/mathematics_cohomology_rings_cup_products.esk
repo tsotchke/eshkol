@@ -40,8 +40,10 @@
 ;;
 ;; DEFECT NOTES (routed around, not fixed): `#(...)` literals promote to f64
 ;; tensors (all vectors built with `vector`/`make-vector`); integer powers by
-;; repeated multiplication; no rational arithmetic in loops (SW-164): every
-;; cochain value is an integer mod p.
+;; repeated multiplication; every cochain value is an integer mod p, so no
+;; rational arithmetic is needed in loops. Exact-rational loop growth
+;; (SW-164) is closed; large-elimination steps below still use `with-region`
+;; as an explicit, deliberate memory scope, not as a defect workaround.
 
 (require stdlib)
 
@@ -369,8 +371,9 @@
             (loop (+ c 1)))))
     (let loop ((r 0)) (if (< r rows) (begin (mset! M r (+ cols r) N) (loop (+ r 1)))))
     M))
-;; The elimination is scoped in a region: the transform U grows bignum entries
-;; and the runtime's bignum allocations are reclaimed only at a region boundary (SW-164).
+;; The elimination is scoped in a region: the transform U grows bignum
+;; entries, and the region gives the elimination a deliberate reclamation
+;; boundary for them.
 (define qz-snf (with-region (let* ((A (augmented-integer-coboundary Z2Z2Z2 4)) (U (identity-matrix (mat-rows A))) (d (snf! A U))) (list d U))))
 ;; a Z/2 cochain u is a Q/Z coboundary iff 2 u is in the integer span of [delta | 4 I]
 (define (qz-coboundary? u) (in-span-with? qz-snf (vec-scale-mod u 2 0)))
@@ -389,7 +392,7 @@
 (check "none of the 127 nonzero combinations of the seven surviving monomials is a Q/Z coboundary: the twists form (Z/2)^7"
        (let loop ((mask 1))
          (cond ((= mask 128) #t)
-               ((with-region (qz-coboundary? (combination mask))) #f)   ;; the transform U carries bignum entries; a region reclaims them (SW-164)
+               ((with-region (qz-coboundary? (combination mask))) #f)   ;; the transform U carries bignum entries; a region reclaims them
                (else (loop (+ mask 1))))))
 (check "the seven survivors span the twists together with the three Sq^1 images: 7 + 3 = 10 = dim H^3(G; Z/2)"
        (independent-mod-image? image3 (append survivors sq1-images) 2))

@@ -789,7 +789,7 @@ primal-call/reverse-pass/tape counters to Scheme.
 **Arbitrary-order mode (Taylor towers, new in v1.3.0-evolve).** A closed-recurrence
 engine (`lib/core/taylor_recurrences.def`, `lib/core/runtime_taylor.c`)
 computes every derivative up to an arbitrary order `k` in one pass: `k+1`
-coefficients and O(k²) work, versus the 2^k blow-up of nested dual numbers.
+coefficients and O(k²) work, versus the 2^k growth of nested dual numbers.
 Delivered across thirteen gated phases, P0 through P12 (see
 *docs/design/AD_TAYLOR_TOWER.md* and *docs/AD_CAMPAIGN.md*):
 

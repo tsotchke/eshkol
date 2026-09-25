@@ -131,7 +131,6 @@ header. Filed while building this gate, 2026-07:
 | `consecutive_do_state_leak.esk` | consecutive top-level `do` loops corrupt each other |
 | `define_after_do_corrupted.esk` | a top-level `do` corrupts later top-level defines |
 | `do_composition_broken.esk` | nested `do` loses iterations; `do`+`when` spins forever |
-| `frame_overflow_exit_zero.esk` | non-tail depth ~300 → FRAME OVERFLOW (the VM now exits nonzero; the depth limit remains) |
 | `when_tail_call_no_tco.esk` | tail calls through `when` bodies are not TCO'd |
 | `bignum_exact_rational.esk` | historical exact bignum-rational limitation; superseded by the bignum-capable `inexact->exact` path |
 | `internal_define_then_body_form.esk` | internal `define` + any later body form loses its slot |

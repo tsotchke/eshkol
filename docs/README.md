@@ -32,6 +32,7 @@ pages and lets them fan out to their siblings.
 - [Quick Reference](ESHKOL_QUICK_REFERENCE.md) — one-page cheat sheet over the 1,053-builtin surface
 - [API Reference](API_REFERENCE.md) — comprehensive function documentation
 - [Gradual typing guide](guide/GRADUAL_TYPING.md) — annotations, what is checked where, function types, branch joins, loop typing, reading a diagnostic
+- [WGSL artifact guide](guide/WGSL_ARTIFACT.md) — derive a bounded polynomial with AD and compose its standalone evaluator with browser WebGPU kernels
 - [Standard Library API index](reference/stdlib/INDEX.md) — module-by-function map of the standard library (63 modules)
 - [Standard Library API (v1.2 surface notes)](STDLIB_V1_2_API.md) — stdlib module surfaces, including infrastructure modules
 - [Design Document](DESIGN.md) — architecture and design rationale (last revised for v1.3.0-evolve)
@@ -181,8 +182,8 @@ pages and lets them fan out to their siblings.
 - [ESKM v2 format decision](design/ESKM_V2_FORMAT_DECISION.md) — proposed extensible metadata envelope, compatibility rules, and implementation gates
 - [ESKM v1 scalar and empty-tensor VM materialization](design/ESKM_V1_VM_MATERIALIZATION.md) — the rank-0 / empty-tensor case native model loading materializes and VM model loading does not, and what closing it requires
 - [Tensor application shares ordinary callable dispatch](design/TENSOR_APPLY_CALLABLE_DISPATCH.md) — how `tensor-apply` was routed onto `codegenClosureCall` and `vm_enter_call`, and the four-engine gate that holds it there
-- [Navier-Stokes construction: proof ledger](design/NAVIER_STOKES_PROOF_LEDGER.md) — per-step record of what is exact, what is validated by enclosure, and what is analytic-only in the mechanization design note
-- [Incompressible porous media: local velocity expansion, proof ledger](design/IPM_LOCAL_EXPANSION_LEDGER.md) — the companion ledger for the local velocity expansion
+- [Navier-Stokes computations: evidence ledger](design/NAVIER_STOKES_EVIDENCE_LEDGER.md) — per-step record of what is exact, what is validated by enclosure, and what is analytic-only in the mechanization design note
+- [Incompressible porous media: local velocity expansion, evidence ledger](design/IPM_LOCAL_EXPANSION_LEDGER.md) — the companion ledger for the local velocity expansion
 
 Architecture Decision Records (`docs/design/adr/`) — design proposals and decisions, not all yet implemented. The [ADR index](design/adr/README.md) holds the full table (status, date, where each decision is implemented), the numbering rule, the status vocabulary and the registration steps. Every record has exactly one number; the status word on each line summarises the record's own `Status:` line:
 
@@ -212,6 +213,10 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0023 — A dense tensor AD node is read as a tensor through one resolver](design/adr/0023-dense-tensor-node-as-operand.md) — Accepted — a matmul result under differentiation is resolved once into a tensor of element-projection nodes, so every tensor and collection consumer accepts it and the reverse sweep reaches it
 - [ADR 0024 — One unspecified value](design/adr/0024-unspecified-value.md) — Implemented — every form R7RS leaves unspecified evaluates to one value, distinct from the empty list, printed as nothing, shared with the VM
 - [ADR 0025 — A complex value carries the derivative of its components](design/adr/0025-complex-values-carry-derivatives.md) — Accepted — a derivative with respect to a real parameter passes through every complex operation on both engines; no derivative at the origin raises
+- [ADR 0026 — One macro expansion and renaming rule](design/adr/0026-syntax-rules-one-engine-one-renaming-rule.md) — hygienic lexical binding and consistent source names
+- [ADR 0027 — Recursive Taylor level carrier](design/adr/0027-recursive-taylor-level-carrier.md) — nested differentiation carries enclosing levels in its coefficients
+- [ADR 0028 — One number syntax recognizer](design/adr/0028-one-number-syntax-recognizer.md) — program literals and datum readers share the R7RS grammar
+- [ADR 0029 — Browser VM WebGPU dispatch](design/adr/0029-browser-vm-webgpu-dispatch.md) — browser tensor operations use the shared GPU dispatch seam
 
 ## Testing and Quality Gates
 

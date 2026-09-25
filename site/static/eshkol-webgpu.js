@@ -489,9 +489,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             this.memory = null;
             this.log = o.log || function () {};
             this.diagnostics = [];
-            if (!this.precisionKnown) {
-                this.diagnostics.push('UNSUPPORTED: unknown WebGPU precision tier ' +
-                                       String(requestedPrecision));
+            const precisionReason = this.gpuPrecisionReason();
+            if (precisionReason) {
+                this.diagnostics.push(precisionReason);
                 this.log('[WebGPU] ' + this.diagnostics[this.diagnostics.length - 1]);
             } else if (this.precision === 'fast') {
                 const optIn = 'explicit reduced-precision opt-in: fast tier, ' +
@@ -552,13 +552,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
          * f32 floor. */
         _f64Tier() { return this.precision === 'exact' || this.precision === 'high'; }
 
+        gpuPrecisionReason() {
+            if (!this.precisionKnown) {
+                return 'UNSUPPORTED: unknown WebGPU precision tier ' + String(this.precision);
+            }
+            if (this.precision === 'fast' &&
+                !(Number.isFinite(this.gateTolerance) && this.gateTolerance >= FAST_GATE_TOL)) {
+                return 'UNSUPPORTED: WebGPU precision tier fast requires gateTolerance >= ' +
+                    FAST_GATE_TOL;
+            }
+            return null;
+        }
+
         fastAdmitted() {
-            return this.precision === 'fast' && this.precisionKnown &&
-                this.gateTolerance >= FAST_GATE_TOL;
+            return this.precision === 'fast' && this.gpuPrecisionReason() === null;
         }
 
         _tierAdmitted() {
-            if (!this.device || !this.precisionKnown) return false;
+            if (!this.device || this.gpuPrecisionReason()) return false;
             return this._f64Tier() || this.fastAdmitted();
         }
 
@@ -592,8 +603,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         setMemory(mem) { this.memory = mem; }
 
-        _f64View(ptr, count) {
-            return new Float64Array(this.memory.buffer, ptr, count);
+        _f64View(ptr, count, memory) {
+            const mem = memory === undefined ? this.memory : memory;
+            return new Float64Array(mem.buffer, ptr, count);
         }
 
         _pipeline(key, wgsl) {
@@ -639,7 +651,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             this.lastExecutionMarker = marker;
             this.dispatchCount++;
             this.lastPath = path;
-            return marker;
+            /* A result token belongs to this dispatch. Backend-wide counters
+             * remain telemetry only and must not be used to identify an
+             * overlapping call's completion. */
+            return { marker, path };
         }
 
         _destroyBuffers(...buffers) {
@@ -698,13 +713,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         /* Operand upload: sf64 kernels take the f64 bit patterns verbatim;
          * the fast tier converts to f32. */
-        _encode(ptr, count) {
-            const v = this._f64View(ptr, count);
+        _encode(ptr, count, memory) {
+            const v = this._f64View(ptr, count, memory);
             return this._f64Tier() ? f64Bytes(v) : encodeF32(v, count);
         }
 
-        _decode(raw, ptr, count) {
-            const dst = this._f64View(ptr, count);
+        _decode(raw, ptr, count, memory) {
+            const dst = this._f64View(ptr, count, memory);
             if (this._f64Tier()) dst.set(new Float64Array(raw, 0, count));
             else { const f = new Float32Array(raw); for (let i = 0; i < count; i++) dst[i] = f[i]; }
         }
@@ -713,13 +728,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         /* C = A * B, all row-major, pointers are byte offsets into wasm memory
          * holding f64. Mirrors eshkol_gpu_matmul_f64 / eshkol_matmul_dispatch. */
-        async matmulF64(aPtr, bPtr, cPtr, M, K, N) {
+        async matmulF64(aPtr, bPtr, cPtr, M, K, N, memory = this.memory) {
             if (!this.supportsOperation('matmul')) {
                 throw new Error('UNSUPPORTED: WebGPU matmul is not admitted for precision tier ' + this.precision);
             }
             const sf = this._f64Tier();
-            const encA = this._encode(aPtr, M * K);
-            const encB = this._encode(bPtr, K * N);
+            const encA = this._encode(aPtr, M * K, memory);
+            const encB = this._encode(bPtr, K * N, memory);
             const outBytes = M * N * (sf ? 8 : 4);
 
             let bufA = null, bufB = null, bufC = null;
@@ -762,7 +777,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
 
                 const raw = await this._readback(bufC, outBytes);
-                this._decode(raw, cPtr, M * N);
+                this._decode(raw, cPtr, M * N, memory);
                 return this._recordExecution(sf ? 'webgpu:gemm_sf64' : 'webgpu:gemm_f32');
             } finally {
                 this._destroyBuffers(bufA, bufB, bufC, ...dims);
@@ -771,19 +786,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         /* ---------------- elementwise ---------------- */
 
-        async elementwiseF64(aPtr, bPtr, outPtr, n, op) {
+        async elementwiseF64(aPtr, bPtr, outPtr, n, op, memory = this.memory) {
             if (!this.supportsOperation('elementwise', op)) {
                 throw new Error('UNSUPPORTED: WebGPU elementwise op ' + op +
                                 ' has no kernel for precision tier ' + this.precision);
             }
             const sf = this._f64Tier();
-            const encA = this._encode(aPtr, n);
+            const encA = this._encode(aPtr, n, memory);
 
             /* Binary ops read B; unary ops get the identity operand the stub
              * backend uses so the kernel needs no separate unary variant. */
             let encB;
             if (bPtr !== 0 && op <= ELEM.DIV) {
-                encB = this._encode(bPtr, n);
+                encB = this._encode(bPtr, n, memory);
             } else {
                 const ident = (op === ELEM.MUL || op === ELEM.DIV) ? 1 : 0;
                 encB = sf ? new Float64Array(n) : new Float32Array(n);
@@ -822,7 +837,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     'elementwise ' + n + ' elements');
 
                 const raw = await this._readback(bufO, bytes);
-                this._decode(raw, outPtr, n);
+                this._decode(raw, outPtr, n, memory);
                 return this._recordExecution(sf ? 'webgpu:elem_sf64' : 'webgpu:elem_f32');
             } finally {
                 this._destroyBuffers(bufA, bufB, bufO, params);
@@ -831,7 +846,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         /* ---------------- reduction ---------------- */
 
-        async reduceF64(inPtr, outPtr, n, op) {
+        async reduceF64(inPtr, outPtr, n, op, memory = this.memory) {
             if (!this.supportsOperation('reduce', op)) {
                 throw new Error('UNSUPPORTED: WebGPU reduction op ' + op +
                                 ' has no kernel for precision tier ' + this.precision);
@@ -839,7 +854,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             /* MEAN reduces as SUM then divides on the host, matching the stub
              * backend. */
             const kernelOp = (op === REDUCE.MEAN) ? REDUCE.SUM : op;
-            const encIn = this._encode(inPtr, n);
+            const encIn = this._encode(inPtr, n, memory);
             const blocks = Math.min(REDUCE_MAX_BLOCKS, Math.max(1, Math.ceil(n / REDUCE_BLOCK)));
             const perBlock = Math.ceil(n / blocks);
 
@@ -886,7 +901,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     }
                 }
                 if (op === REDUCE.MEAN) acc /= n;
-                this._f64View(outPtr, 1)[0] = acc;
+                this._f64View(outPtr, 1, memory)[0] = acc;
                 return this._recordExecution('webgpu:reduce_sf64');
             } finally {
                 this._destroyBuffers(bufIn, bufOut, params);
@@ -986,14 +1001,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 ' has no WebGPU kernel for precision tier ' + backend.precision);
             return 'refused';
         }
-        backend.setMemory(memory);
-        const before = backend.executionMarker;
         try {
             const marker = await fn();
-            if (Number.isSafeInteger(marker) && marker > before &&
-                backend.executionMarker === marker &&
-                backend.lastExecutionMarker === marker) return 'gpu';
-            throw new Error('missing WebGPU execution marker');
+            if (marker && typeof marker === 'object' && marker.path) return 'gpu';
+            throw new Error('missing WebGPU execution token');
         } catch (e) {
             if (e && e.webgpuValidation) {
                 backend.diagnostics.push(e.message);
@@ -1043,7 +1054,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     M = Number(M); K = Number(K); N = Number(N);
                     if (backend.shouldUse(M * N) &&
                         await gpuServe(backend, mem(), 'matmul', undefined,
-                            () => backend.matmulF64(aPtr, bPtr, cPtr, M, K, N)) === 'gpu') return;
+                            () => backend.matmulF64(aPtr, bPtr, cPtr, M, K, N, mem())) === 'gpu') return;
                     if (!backend.shouldUse(M * N)) { backend.fallbackCount++; backend.lastPath = 'cpu:matmul'; }
                     cpu.matmul(mem(), aPtr, bPtr, cPtr, M, K, N);
                 });
@@ -1053,7 +1064,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     n = Number(n); op = Number(op);
                     if (backend.shouldUse(n) &&
                         await gpuServe(backend, mem(), 'elementwise', op,
-                            () => backend.elementwiseF64(aPtr, bPtr, outPtr, n, op)) === 'gpu') return 0;
+                            () => backend.elementwiseF64(aPtr, bPtr, outPtr, n, op, mem())) === 'gpu') return 0;
                     if (!backend.shouldUse(n)) { backend.fallbackCount++; backend.lastPath = 'cpu:elementwise'; }
                     cpu.elementwise(mem(), aPtr, bPtr, outPtr, n, op);
                     return 0;
@@ -1064,7 +1075,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     n = Number(n); op = Number(op);
                     if (backend.shouldUse(n) &&
                         await gpuServe(backend, mem(), 'reduce', op,
-                            () => backend.reduceF64(inPtr, outPtr, n, op)) === 'gpu') return 0;
+                            () => backend.reduceF64(inPtr, outPtr, n, op, mem())) === 'gpu') return 0;
                     if (!backend.shouldUse(n)) { backend.fallbackCount++; backend.lastPath = 'cpu:reduce'; }
                     cpu.reduce(mem(), inPtr, outPtr, n, op);
                     return 0;
@@ -1151,11 +1162,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 backend.diagnostics.push('CPU fallback: ' + what + ' has no WebGPU kernel');
             },
             matmul: (a, b, c, M, K, N) => code('matmul', undefined,
-                () => backend.matmulF64(a, b, c, Number(M), Number(K), Number(N))),
+                () => backend.matmulF64(a, b, c, Number(M), Number(K), Number(N), memoryRef())),
             elementwise: (a, b, o, n, op) => code('elementwise', Number(op),
-                () => backend.elementwiseF64(a, b, o, Number(n), Number(op))),
+                () => backend.elementwiseF64(a, b, o, Number(n), Number(op), memoryRef())),
             reduce: (i, o, n, op) => code('reduce', Number(op),
-                () => backend.reduceF64(i, o, Number(n), Number(op)))
+                () => backend.reduceF64(i, o, Number(n), Number(op), memoryRef()))
         };
     }
 
@@ -1251,6 +1262,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return fn;
     }
 
+    function promisingTableEntry(table, index) {
+        const fn = table && table.get(index);
+        if (typeof fn !== 'function') throw new Error('missing WASM callback ' + index);
+        return promisingEntry(fn);
+    }
+
     /* A WebAssembly.Instance exports object is not replaceable in place. Build
      * a public export facade so every synchronous wasm entry that can reach a
      * suspending GPU import is paired with WebAssembly.promising. Keeping the
@@ -1280,6 +1297,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         vmInvoke,
         vmSerial,
         promisingEntry,
+        promisingTableEntry,
         promisingExports,
         jspiAvailable,
         cpu,
