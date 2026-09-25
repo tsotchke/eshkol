@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "../core/model_io_atomic.h"
+#include "../core/eskm_v2_experimental.h"
 
 /* Shared capability guard (inc/eshkol/runtime_exports.h), declared here so
  * this C TU stays free of the C++ export header. Checkpoint I/O is gated on
@@ -364,8 +365,11 @@ static int vm_model_write_tensor_record(VmModelWriter* writer,
 /** @brief Length of a proper Scheme list, or -1 if @p list is improper
  *         (doesn't end in nil). */
 static int vm_model_list_length(Value list, VM* vm) {
+    const int mode = eskm_v2_mode();
+    if (mode < 0) return -1;
     int count = 0;
     while (list.type == VAL_PAIR) {
+        if (mode == 2 && (uint64_t)count >= ESKM_V2_BACKEND_RECORDS) return -1;
         count++;
         list = vm->heap.objects[list.as.ptr]->cons.cdr;
     }
@@ -387,6 +391,112 @@ static Value vm_model_reverse_list(VM* vm, Value list) {
     return reversed;
 }
 
+/* No callbacks/user code run during materialization. Restore both the active
+ * bump arena and every object-table slot on failure, including recycled slots.
+ * Table/bookkeeping capacity may stay grown; no partial object remains live. */
+typedef struct {
+    int active, ready;
+    VmArena arena;
+    int32_t next_free, n_free_slots;
+    uint32_t alloc_tick;
+    int budget_reported;
+    VmHeapRegionSlots region;
+} VmModelTransaction;
+
+static VmModelTransaction vm_model_transaction_begin(VM* vm, const unsigned char* data,
+                                                       unsigned int count, uint64_t charged) {
+    VmModelTransaction tx = {0};
+    tx.active = eskm_v2_uint(data + 4, 4) == 2;
+    tx.ready = !tx.active;
+    if (!tx.active) return tx;
+    Heap* heap = &vm->heap;
+    uint64_t slots = (uint64_t)count * 5; /* string, tensor, pair, node, reversal */
+    uint64_t need = (uint64_t)heap->next_free + (slots > (uint64_t)heap->n_free_slots
+                    ? slots - (uint64_t)heap->n_free_slots : 0);
+    if (need > ESHKOL_VM_HEAP_MAX_SIZE) return tx;
+    /* Reserve exact capacity. Account the complete replacement arrays before
+     * realloc, independent of pre-existing heap size or geometric growth. */
+    uint64_t table_bytes = need > (uint64_t)heap->capacity ? need * sizeof(HeapObject*) : 0;
+    VmHeapRegionSlots* region = heap->regions.depth ? &heap->region_slots[heap->regions.depth - 1] : NULL;
+    uint64_t region_need = region ? (uint64_t)region->n_slots + slots : 0;
+    uint64_t region_bytes = region && region_need > (uint64_t)region->cap_slots ? region_need * sizeof(int32_t) : 0;
+    if (region_need > INT32_MAX || table_bytes + region_bytes > ESKM_V2_BACKEND_MEMORY - charged) return tx;
+    if (table_bytes) {
+        HeapObject** objects = (HeapObject**)realloc(heap->objects, (size_t)table_bytes);
+        if (!objects) return tx;
+        memset(objects + heap->capacity, 0, ((size_t)need - heap->capacity) * sizeof(*objects));
+        heap->objects = objects;
+        heap->capacity = (int32_t)need;
+    }
+    if (region_bytes) {
+        int32_t* indices = (int32_t*)realloc(region->slots, (size_t)region_bytes);
+        if (!indices) return tx;
+        region->slots = indices;
+        region->cap_slots = (int32_t)region_need;
+    }
+    VmArena staging;
+    vm_arena_init(&staging, VM_ARENA_DEFAULT_BLOCK_SIZE);
+    if (!staging.current) return tx;
+    tx.arena = *vm_active_arena(&heap->regions);
+    tx.next_free = heap->next_free;
+    tx.n_free_slots = heap->n_free_slots;
+    tx.alloc_tick = heap->alloc_tick;
+    tx.budget_reported = heap->budget_reported;
+    if (region) tx.region = *region;
+    *vm_active_arena(&heap->regions) = staging;
+    tx.ready = 1;
+    return tx;
+}
+
+static void vm_model_transaction_commit(VM* vm, const VmModelTransaction* tx) {
+    if (!tx->active) return;
+    VmArena* arena = vm_active_arena(&vm->heap.regions);
+    VmArenaBlock* tail = arena->current;
+    while (tail->next) tail = tail->next;
+    tail->next = tx->arena.current;
+    arena->total_allocated += tx->arena.total_allocated;
+    arena->total_used += tx->arena.total_used;
+    arena->n_blocks += tx->arena.n_blocks;
+    arena->default_block_size = tx->arena.default_block_size;
+    vm->heap.alloc_tick = 4095;
+    heap_check_budget(&vm->heap);
+}
+
+static void vm_model_transaction_abort(VM* vm, const VmModelTransaction* tx) {
+    if (!tx->active) return;
+    Heap* heap = &vm->heap;
+    for (int32_t i = tx->next_free; i < heap->next_free; ++i) heap->objects[i] = NULL;
+    for (int32_t i = heap->n_free_slots; i < tx->n_free_slots; ++i)
+        heap->objects[heap->free_slots[i]] = NULL;
+    heap->next_free = tx->next_free;
+    heap->n_free_slots = tx->n_free_slots;
+    heap->alloc_tick = tx->alloc_tick;
+    heap->budget_reported = tx->budget_reported;
+    if (heap->regions.depth) {
+        VmHeapRegionSlots* region = &heap->region_slots[heap->regions.depth - 1];
+        region->n_slots = tx->region.n_slots;
+        region->pinned = tx->region.pinned;
+        region->pin_reason = tx->region.pin_reason;
+    }
+    VmArena* arena = vm_active_arena(&heap->regions);
+    vm_arena_destroy(arena);
+    *arena = tx->arena;
+}
+
+static int vm_model_v2_account(eskm_v2_budget* budget, const char* name,
+                               int name_len, const VmTensor* tensor) {
+    if (!tensor || name_len < 0 || tensor->n_dims < 0 ||
+        tensor->n_dims > (int)ESKM_V2_BACKEND_RANK ||
+        (name_len && memchr(name, 0, (size_t)name_len))) return 0;
+    uint64_t dims[8], count;
+    for (int i = 0; i < tensor->n_dims; ++i) dims[i] = (uint64_t)tensor->shape[i];
+    eskm_v2_backend_limits limits = ESKM_V2_BACKEND_DEFAULT;
+    if (g_eshkol_vm_tensor_limit_active && g_eshkol_vm_max_tensor_elements < limits.elements)
+        limits.elements = g_eshkol_vm_max_tensor_elements;
+    return eskm_v2_account(budget, &limits, (uint64_t)name_len, (uint64_t)tensor->n_dims, dims, &count) &&
+           count == (uint64_t)tensor->total && (!count || tensor->data);
+}
+
 /** @brief Save a single tensor to @p path in the ESKM format (magic,
  *         version, a fixed count of 1, flags, one unnamed tensor record,
  *         then the CRC-32 footer). */
@@ -395,15 +505,20 @@ static int vm_model_save_tensor_file(VM* vm, Value path_value, Value tensor_valu
     const char* path = vm_model_string_ptr(vm, path_value, NULL);
     VmTensor* tensor = vm_model_value_tensor(vm, tensor_value);
     if (!path || !tensor) return 0;
+    int mode = eskm_v2_mode();
+    eskm_v2_budget budget = {0};
+    budget.wire_bytes = 28;
+    if (mode < 0 || (mode == 2 && !vm_model_v2_account(&budget, "", 0, tensor))) return 0;
 
     VmModelWriter writer = {0};
     writer.ok = eshkol_atomic_checkpoint_begin(&writer.file, path);
     if (!writer.ok) return 0;
 
     int ok = vm_model_write_bytes(&writer, VM_MODEL_MAGIC, sizeof(VM_MODEL_MAGIC), 1) &&
-             vm_model_write_u32(&writer, VM_MODEL_VERSION, 1) &&
+             vm_model_write_u32(&writer, mode == 2 ? 2u : VM_MODEL_VERSION, 1) &&
              vm_model_write_u32(&writer, 1u, 1) &&
              vm_model_write_u32(&writer, 0u, 1) &&
+             (mode != 2 || vm_model_write_u64(&writer, 0, 1)) &&
              vm_model_write_tensor_record(&writer, "", 0, tensor) &&
              vm_model_write_u32(&writer, writer.crc, 0);
 
@@ -423,15 +538,20 @@ static int vm_model_save_model_file(VM* vm, Value path_value, Value entries_valu
 
     int count = vm_model_list_length(entries_value, vm);
     if (count < 0) return 0;
+    int mode = eskm_v2_mode();
+    if (mode < 0 || (mode == 2 && (uint64_t)count > ESKM_V2_BACKEND_RECORDS)) return 0;
+    eskm_v2_budget budget = {0};
+    budget.wire_bytes = 28;
 
     VmModelWriter writer = {0};
     writer.ok = eshkol_atomic_checkpoint_begin(&writer.file, path);
     if (!writer.ok) return 0;
 
     int ok = vm_model_write_bytes(&writer, VM_MODEL_MAGIC, sizeof(VM_MODEL_MAGIC), 1) &&
-             vm_model_write_u32(&writer, VM_MODEL_VERSION, 1) &&
+             vm_model_write_u32(&writer, mode == 2 ? 2u : VM_MODEL_VERSION, 1) &&
              vm_model_write_u32(&writer, (unsigned int)count, 1) &&
-             vm_model_write_u32(&writer, 0u, 1);
+             vm_model_write_u32(&writer, 0u, 1) &&
+             (mode != 2 || vm_model_write_u64(&writer, 0, 1));
 
     Value current = entries_value;
     while (ok && current.type == VAL_PAIR) {
@@ -442,7 +562,8 @@ static int vm_model_save_model_file(VM* vm, Value path_value, Value entries_valu
         int name_len = 0;
         const char* name = vm_model_string_ptr(vm, name_value, &name_len);
         VmTensor* tensor = vm_model_value_tensor(vm, tensor_value);
-        if (!name || !tensor) { ok = 0; break; }
+        if (!name || !tensor ||
+            (mode == 2 && !vm_model_v2_account(&budget, name, name_len, tensor))) { ok = 0; break; }
         ok = vm_model_write_tensor_record(&writer, name, name_len, tensor);
         current = vm->heap.objects[current.as.ptr]->cons.cdr;
     }
@@ -464,16 +585,20 @@ static int vm_model_load_bytes(const char* path, unsigned char** data, size_t* s
     if (fseek(file, 0, SEEK_END) != 0) { fclose(file); return 0; }
     long file_size = ftell(file);
     if (file_size < 0 || fseek(file, 0, SEEK_SET) != 0) { fclose(file); return 0; }
+    if (!eskm_v2_file_admit(file, (uint64_t)file_size)) { fclose(file); return 0; }
     *size = (size_t)file_size;
     *data = (unsigned char*)malloc(*size > 0 ? *size : 1);
     if (!*data) { fclose(file); return 0; }
     if (*size > 0 && fread(*data, 1, *size, file) != *size) {
         free(*data);
+        *data = NULL;
         fclose(file);
         return 0;
     }
+    int complete = fgetc(file) == EOF && !ferror(file);
     fclose(file);
-    return 1;
+    if (!complete) { free(*data); *data = NULL; }
+    return complete;
 }
 
 /**
@@ -490,7 +615,9 @@ static int vm_model_parse_header(const unsigned char* data,
                                  size_t size,
                                  unsigned int* tensor_count,
                                  size_t* payload_size,
-                                 size_t* offset) {
+                                 size_t* offset,
+                                 uint64_t* charged) {
+    *charged = 0;
     if (!data || size < 16 || !tensor_count || !payload_size || !offset) return 0;
     *payload_size = size - 4;
     unsigned int stored_crc = 0;
@@ -507,7 +634,20 @@ static int vm_model_parse_header(const unsigned char* data,
         !vm_model_read_u32(data, *payload_size, offset, &flags)) {
         return 0;
     }
-    if (flags != 0 || version != VM_MODEL_VERSION) return 0;
+    if (version == 2) {
+#ifdef ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2
+        eskm_v2_backend_limits limits = ESKM_V2_BACKEND_DEFAULT;
+        eskm_v2_result parsed;
+        eskm_v2_budget budget;
+        if (g_eshkol_vm_tensor_limit_active && g_eshkol_vm_max_tensor_elements < limits.elements)
+            limits.elements = g_eshkol_vm_max_tensor_elements;
+        if (eskm_v2_mode() <= 0 || !eskm_v2_backend_admit(data, size, &limits, &parsed, &budget)) return 0;
+        *offset = (size_t)parsed.records_offset;
+        *charged = budget.charged_bytes;
+#else
+        return 0;
+#endif
+    } else if (flags != 0 || version != VM_MODEL_VERSION) return 0;
     /* Every record has at least name_len, ndims, and dtype (4+4+1 bytes).
      * This prevents a corrupt count from driving an unbounded parse loop. */
     if (*offset > *payload_size ||
@@ -538,8 +678,9 @@ static void vm_model_tensor_load(VM* vm) {
     unsigned int tensor_count = 0;
     size_t payload_size = 0;
     size_t offset = 0;
+    uint64_t charged = 0;
     if (!vm_model_load_bytes(path, &data, &size) ||
-        !vm_model_parse_header(data, size, &tensor_count, &payload_size, &offset) ||
+        !vm_model_parse_header(data, size, &tensor_count, &payload_size, &offset, &charged) ||
         tensor_count != 1) {
         free(data);
         vm_model_load_failure(vm, "tensor-load");
@@ -554,17 +695,25 @@ static void vm_model_tensor_load(VM* vm) {
         return;
     }
 
+    VmModelTransaction transaction = vm_model_transaction_begin(vm, data, tensor_count, charged);
+    if (!transaction.ready) {
+        free(data);
+        vm_model_load_failure(vm, "checkpoint-load");
+        return;
+    }
     size_t elements_offset = record.elements_offset;
     Value tensor_value;
     if (!vm_model_make_tensor_value(vm, record.ndims, record.dims, data,
                                     payload_size, &elements_offset, &tensor_value) ||
         elements_offset != payload_size) {
+        vm_model_transaction_abort(vm, &transaction);
         free(data);
         vm_model_load_failure(vm, "tensor-load");
         return;
     }
 
     free(data);
+    vm_model_transaction_commit(vm, &transaction);
     vm_push(vm, tensor_value);
 }
 
@@ -584,8 +733,9 @@ static void vm_model_model_load(VM* vm) {
     unsigned int tensor_count = 0;
     size_t payload_size = 0;
     size_t offset = 0;
+    uint64_t charged = 0;
     if (!vm_model_load_bytes(path, &data, &size) ||
-        !vm_model_parse_header(data, size, &tensor_count, &payload_size, &offset)) {
+        !vm_model_parse_header(data, size, &tensor_count, &payload_size, &offset, &charged)) {
         free(data);
         vm_model_load_failure(vm, "model-load");
         return;
@@ -609,10 +759,17 @@ static void vm_model_model_load(VM* vm) {
     /* Materialize only after every declared record and the exact payload
      * boundary have passed validation. A malformed suffix must not consume
      * persistent VM heap before the loader returns NIL. */
+    VmModelTransaction transaction = vm_model_transaction_begin(vm, data, tensor_count, charged);
+    if (!transaction.ready) {
+        free(data);
+        vm_model_load_failure(vm, "checkpoint-load");
+        return;
+    }
     Value list = NIL_VAL;
     offset = records_offset;
     for (unsigned int t = 0; t < tensor_count; t++) {
         if (!vm_model_parse_record(data, payload_size, &offset, &record)) {
+            vm_model_transaction_abort(vm, &transaction);
             free(data);
             vm_model_load_failure(vm, "model-load");
             return;
@@ -625,6 +782,7 @@ static void vm_model_model_load(VM* vm) {
             !vm_model_make_tensor_value(vm, record.ndims, record.dims, data,
                                         payload_size, &elements_offset, &tensor_value) ||
             elements_offset != offset) {
+            vm_model_transaction_abort(vm, &transaction);
             free(data);
             vm_model_load_failure(vm, "model-load");
             return;
@@ -633,6 +791,7 @@ static void vm_model_model_load(VM* vm) {
         int32_t pair_ptr = heap_alloc(&vm->heap);
         int32_t node_ptr = heap_alloc(&vm->heap);
         if (pair_ptr < 0 || node_ptr < 0) {
+            vm_model_transaction_abort(vm, &transaction);
             free(data);
             vm_model_load_failure(vm, "model-load");
             return;
@@ -649,9 +808,11 @@ static void vm_model_model_load(VM* vm) {
     free(data);
     Value result = vm_model_reverse_list(vm, list);
     if (tensor_count > 0 && result.type == VAL_NIL) {
+        vm_model_transaction_abort(vm, &transaction);
         vm_model_load_failure(vm, "model-load");
         return;
     }
+    vm_model_transaction_commit(vm, &transaction);
     vm_push(vm, result);
 }
 
