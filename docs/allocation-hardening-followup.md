@@ -93,3 +93,22 @@ unique imports against both browser glue files, including the new constructor
 allocation-failure import. The glue freshness/contract and import-scanner
 self-tests also pass. This establishes import compatibility, not browser guard
 recovery or Windows/macOS runtime behavior.
+
+## Release-candidate performance probe
+
+`bench/allocation_hardening_probe.esk` retains one million cons cells and then
+performs one million `vector-set!` calls. Compile it with each tree's
+`eshkol-run -n -O3 -o <binary> bench/allocation_hardening_probe.esk -L<build>`;
+run the resulting binaries alternately on one CPU. The recorded outputs were
+checked for list head `1` and final vector element `999999`.
+
+On Linux x86-64 (Ryzen 7 3700X, Clang 22.1.6, LLVM 21.1.8), comparing release
+candidate `8f75ca49` with this branch, eight serial samples per binary pinned
+to CPU 7 gave median cons times of 1,545,259,529 vs. 1,539,394,269 jiffies
+(PR/base 0.996), and median vector-store loop times of 83,789,535 vs.
+86,969,041 jiffies (PR/base 1.038). The baseline store samples included one
+122,214,689-jiffy outlier. The `fill` function's 616 disassembled instructions
+are identical in both binaries after normalizing addresses. Thus this probe
+finds no added per-store instruction, but the roughly 4% elapsed difference is
+not enough to rule out layout, cache or background-load effects. It is not a
+whole-application performance claim.
